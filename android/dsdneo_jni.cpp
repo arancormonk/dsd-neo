@@ -471,6 +471,27 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     return (rc == DSD_BOOTSTRAP_EXIT && exit_rc == 0) ? kStatusConfigExit : kStatusError;
 }
 
+/**
+ * @brief Give up a configured session that will never run (#782): DecoderService cancelled its start attempt.
+ *
+ * Clears the configuration and the run record's receiver, so neither nativeRun nor a USB detach takes the session for
+ * one that owns its receiver; the record ends cancelled. g_running stays false: a run already under way is refused.
+ */
+JNIEXPORT jint JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeDiscardConfigured(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (g_running.load()) {
+        return kStatusBadState;
+    }
+    g_configured = false;
+    std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+    g_run_status.discard_configured();
+    return kStatusOk;
+}
+
 JNIEXPORT jint JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz) {
     (void)env;

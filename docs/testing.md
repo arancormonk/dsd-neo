@@ -207,6 +207,11 @@ already queued for a normal end and a failed open, and for failed and refused st
 a replacement instance fronting a draining run, and a duplicate START; no notification may remain. Further cases check
 the intent receipt log (a stamped delay from the direct senders, none for an aged notification Stop, a Stop finding
 IDLE) and that a slow wake-lock acquire blocks neither `lifecycleStatus()` nor `stopDecoder()`.
+`DecoderServiceAttemptTest.kt` (#782) delivers START intents late, after the host retired their attempts: a timeout then
+Dismiss runs nothing, a timeout then Retry runs only the retry, a timeout then another source runs that source and
+leaves it alone when the old START arrives; a retirement during `nativeConfigure()` or just before the worker would be
+published cancels the configured session (no run, one `nativeDiscardConfigured()`, a cancelled record); a retirement
+computed from an IDLE record the service has since left finds the run published and leaves it running.
 These tests exercise the service path the desktop host fixture replaces; they do not
 model vendor scheduling, Binder latency or an attached SDR.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an

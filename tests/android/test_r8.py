@@ -14,7 +14,7 @@ import check_android_r8 as r8
 DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
 <class name="DecoderService">
   <method name="startDecoder" return="void" static="true" native="false">
-    <parameter type="android.content.Context"/><parameter type="java.lang.String[]"/>
+    <parameter type="android.content.Context"/><parameter type="java.lang.String[]"/><parameter type="long"/>
   </method>
   <method name="lifecycleStatus" return="java.lang.String" static="true" native="false"/>
 </class>
@@ -32,7 +32,7 @@ DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
 </class>
 </package></api>"""
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
-         "(Landroid/content/Context;[Ljava/lang/String;)V")
+         "(Landroid/content/Context;[Ljava/lang/String;J)V")
 NATIVE = (r8.APP_PACKAGE + "DsdNative", "nativeRun")
 
 
@@ -104,6 +104,7 @@ class R8ArtifactTests(unittest.TestCase):
         upcalls, downcalls = r8.jni_contract(ROOT)
         self.assertIn(START, upcalls)
         self.assertIn((r8.APP_PACKAGE + "DecoderService", "lifecycleStatus", "()Ljava/lang/String;"), upcalls)
+        self.assertIn((r8.APP_PACKAGE + "DecoderService", "retireAttempts", "(J)Z"), upcalls)
         self.assertIn((r8.APP_PACKAGE + "DocumentCopies", "copyDocumentToFile",
                        "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I"), upcalls)
         self.assertIn(NATIVE, downcalls)

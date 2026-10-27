@@ -8670,6 +8670,28 @@ it. Every `onStartCommand()` logs its action, start id and state, with the deliv
 `EXTRA_SENT_UPTIME` (`startDecoder()`, `stopDecoder()`); the notification's immutable Stop `PendingIntent` has none
 and logs "delay unavailable". The wake lock is acquired outside the service lock and published under it.
 
+Start attempts and what a failed start says (issue #782): every `DecoderHostAndroid::start()` takes a new attempt id
+(increasing for the life of the process), retires every earlier one through `DecoderService.retireAttempts()` (a
+synchronous companion call from the Qt thread) before it reads the service state, and passes the id with the START
+(`EXTRA_ATTEMPT`). `startDecoding()` rejects a retired or superseded attempt before anything else and logs it; one
+retired while STARTING latches `cancelRequested`, which is checked under the service lock with the STARTING→RUNNING
+publication after `nativeConfigure()`, so no worker starts, `nativeDiscardConfigured()` clears `g_configured` and the
+run record's receiver (`RunStatus::discard_configured()`), and the session ends cancelled. `retireAttempts()` answers
+whether the attempt was already taken past that point (it runs, or ended on its own). The record publishes
+`attemptId` and `failureKind`, a wire value for a failure of the attempt before its configure that
+`attempt_failure_from_wire()` maps. The start grace is `kStartGraceMs` (2 s) of `dsd_realtime_mono_ms()` from the
+request, not a count of polls; at its expiry the host logs `Start was not delivered to the decoder service within N ms
+(service state X)` and retires the attempt, and reports it undelivered unless the retirement says the service took it
+(then it follows the attempt's record). The attempt's own failures (`AttemptFailureKind` in `run_status.h`: 8 refused
+while the previous session stops, 9 undelivered, 10-12 the service's USB failures before configure; a start the host
+could not hand over has no kind) are published as Failed with `inputFailureKind()` over every record, so an older
+session's input failure never comes back, until the next start, `stop()` (Retry) or `dismissFailure()` (the card's
+Dismiss, which also retires the attempt). Both RTL-SDR open paths in `rtl_device_create()` report
+`DSD_INPUT_FAILURE_DEVICE` with the open's code, as Airspy's open does, so `failureMessage()` words them as kind 7.
+Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST` (`check_undelivered_start_after_network_failure`,
+`check_refused_start`, `check_attempt_identity`), `IO_RTL_FD_FAILURE`, `ANDROID_ENGINE_STOP_JVM`
+(`DecoderServiceAttemptTest.kt`), `ANDROID_R8`, `tst_main_receiver_notice.qml`.
+
 Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
 thread, which the rest of the interface never is.

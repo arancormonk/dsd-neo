@@ -59,6 +59,12 @@ Window {
             return qsTr("The receiver could not be opened or stopped receiving. Check its USB connection and settings.");
         if (kind === 6)
             return qsTr("The source configuration could not be applied. Review its settings and imported files.");
+        // Kinds 8 and up belong to the start attempt itself, never to an
+        // earlier session (android/run_status.h AttemptFailureKind).
+        if (kind === 8)
+            return qsTr("The previous session is still stopping. Tap Retry to start this one once it has stopped.");
+        if (kind === 9)
+            return qsTr("The decoder did not respond in time, so the session was not started. Tap Retry, or open Details if this keeps happening.");
         return awaitingUsbAccess ? usbAccessText : qsTr("The source could not be started. Review its settings or open Details.");
     }
     // #647 D2a: the host's word on the last session's receiver, scoped to that
@@ -1026,7 +1032,11 @@ Window {
             completionMessage: mainRoot.completionMessage
             onRetryFailure: mainRoot.retrySource()
             onEditFailure: mainRoot.editFailedSource()
-            onDismissFailure: mainRoot.dismissedFailure = mainRoot.failureText
+            onDismissFailure: {
+                mainRoot.dismissedFailure = mainRoot.failureText;
+                // Gives up the attempt the card reports, so it can never start later.
+                decoderHost.dismissFailure();
+            }
             onFailureDetails: failureDetails.visible = true
             onReplayAgain: mainRoot.retrySource()
             x: mainRoot.expanded ? nav.width : 0

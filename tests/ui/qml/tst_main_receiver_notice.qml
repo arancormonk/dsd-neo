@@ -398,6 +398,45 @@ Item {
             compare(findChild(home(), "dongleDetailsPanel").visible, false);
         }
 
+        // #782: a failed, refused or undelivered start says what happened.
+        // The host publishes the failure kind (kinds 8 and up are the
+        // attempt's own); the card words it, never the generic line.
+        function test_start_failure_says_what_happened_data() {
+            return [
+                {tag: "RTL-SDR open failed", source: "usb", kind: 7, error: "Decoder run failed (1); USB open/claim error -6",
+                    text: "The receiver could not be opened or stopped receiving. Check its USB connection and settings."},
+                {tag: "Airspy open failed", source: "airspy", kind: 7, error: "Decoder run failed (1)",
+                    text: "The receiver could not be opened or stopped receiving. Check its USB connection and settings."},
+                {tag: "refused, previous session stopping", source: "usb", kind: 8, error: "A previous session is still stopping",
+                    text: "The previous session is still stopping. Tap Retry to start this one once it has stopped."},
+                {tag: "not delivered", source: "usb", kind: 9, error: "The decoder service did not respond to the start",
+                    text: "The decoder did not respond in time, so the session was not started. Tap Retry, or open Details if this keeps happening."}
+            ];
+        }
+        function test_start_failure_says_what_happened(data) {
+            startTarget("saved", data.source);
+            testContext.setLifecycleFailureKind(data.kind);
+            testContext.setLifecycleFailure(data.error);
+            testContext.setLifecyclePhase(4);
+            tryCompare(card(), "visible", true);
+            compare(card().message, data.text);
+            var retry = findChild(card(), "failureRetry");
+            compare(retry.text, "Retry");
+            verify(retry.enabled);
+        }
+
+        function test_dismiss_gives_up_the_attempt() {
+            startTarget("saved", "usb");
+            testContext.setLifecycleFailureKind(9);
+            testContext.setLifecycleFailure("The decoder service did not respond to the start");
+            testContext.setLifecyclePhase(4);
+            tryCompare(card(), "visible", true);
+            var dismissals = decoderHost.dismissCalls();
+            card().dismiss();
+            compare(decoderHost.dismissCalls(), dismissals + 1, "the host hears of the dismissal");
+            tryCompare(card(), "visible", false);
+        }
+
         function test_failure_reveals_the_top_data() {
             return [
                 {tag: "brokered", brokered: true, source: "usb"},

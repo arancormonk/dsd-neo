@@ -28,6 +28,12 @@ object DsdNative {
     val stops = CopyOnWriteArrayList<Boolean>()
     val stopCauses = CopyOnWriteArrayList<String>()
     val diagnostics = CopyOnWriteArrayList<String>()
+    /** The argv of every configure, in order. */
+    val configured = CopyOnWriteArrayList<List<String>>()
+    /** Configured sessions the service gave up (nativeDiscardConfigured). */
+    @Volatile var discards = 0
+    /** Runs on every diagnostics line as it is logged, on the thread logging it: a boundary inside a start. */
+    @Volatile var diagnosticHook: ((String) -> Unit)? = null
     fun prepareRun() {
         enteredRun = CountDownLatch(1)
         finishRun = CountDownLatch(1)
@@ -41,9 +47,17 @@ object DsdNative {
         stopCauses.clear()
         lifecycle = null
         diagnostics.clear()
+        configured.clear()
+        discards = 0
+        diagnosticHook = null
     }
     fun nativeInit(config: String, cache: String) = STATUS_OK
-    fun nativeConfigure(args: Array<String>, id: Long): Int { configureHook?.invoke(); return configureCode }
+    fun nativeConfigure(args: Array<String>, id: Long): Int {
+        configured += args.toList()
+        configureHook?.invoke()
+        return configureCode
+    }
+    fun nativeDiscardConfigured(): Int { discards++; return STATUS_OK }
     fun nativeRun(): Int {
         val finish = finishRun
         enteredRun.countDown()
@@ -59,7 +73,10 @@ object DsdNative {
     fun nativeDestroy() = STATUS_OK
     @Volatile var lifecycle: LongArray? = null
     fun nativeLifecycleStatus(): LongArray? = lifecycle
-    fun nativeHostDiagnostic(line: String) { diagnostics += line }
+    fun nativeHostDiagnostic(line: String) {
+        diagnostics += line
+        diagnosticHook?.invoke(line)
+    }
     fun nativeArmStartupDiagnostics() {}
     fun nativeFlushDiagnostics() {}
     fun nativeNotificationStatus(): String? = notificationStatus

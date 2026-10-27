@@ -49,6 +49,12 @@ object DsdNative {
     /** Bounded flush of the persistent diagnostics before the process may go. */
     external fun nativeFlushDiagnostics()
 
+    /**
+     * Gives up a configured session that will never run: its start attempt was retired during configure (#782). Clears
+     * the native configuration and the run record's receiver, and ends the record cancelled.
+     */
+    external fun nativeDiscardConfigured(): Int
+
     external fun nativeRun(): Int
 
     /**

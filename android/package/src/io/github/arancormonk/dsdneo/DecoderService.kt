@@ -75,7 +75,7 @@ class DecoderService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val args = intent.getStringArrayExtra(EXTRA_ARGS) ?: emptyArray()
-                startDecoding(args, startId)
+                startDecoding(args, startId, intent.getLongExtra(EXTRA_ATTEMPT, 0L))
             }
             ACTION_STOP -> {
                 synchronized(lock) { lastStart = DeliveredStart(serial, startId) }
@@ -172,12 +172,22 @@ class DecoderService : Service() {
         super.onDestroy()
     }
 
-    private fun startDecoding(args: Array<String>, startId: Int) {
+    /**
+     * Runs one start on the main thread. [attempt] is the host's id for it (0: a start without one): the host retires
+     * an attempt it has given up on (retireAttempts()), and a retired or superseded attempt never runs (#782).
+     */
+    private fun startDecoding(args: Array<String>, startId: Int, attempt: Long) {
+        var rejectedIn: State? = null
         val session = synchronized(lock) {
             // Publish the id with the decision to start or reject. Doing this before
             // foreground promotion lets an old worker take a new run's id while the
             // main thread is still in the notification binder call.
             lastStart = DeliveredStart(serial, startId)
+            // Before the busy check: a start the host has given up on is nothing to the run that holds the service.
+            if (attempt != 0L && (attempt <= retiredThrough || attempt <= newestAttempt)) {
+                rejectedIn = state
+                return@synchronized 0L
+            }
             if (state != State.IDLE) {
                 // Not a terminal failure: the run that holds the service keeps its
                 // notification and its polling, which onStartCommand re-arms below.
@@ -190,7 +200,22 @@ class DecoderService : Service() {
             terminalReason = DsdNative.RUN_PENDING
             deviceError = 0
             lastError = ""
+            attemptId = attempt
+            if (attempt != 0L) {
+                newestAttempt = attempt
+            }
+            cancelRequested = false
+            attemptRan = false
+            failureKind = ""
             sessionId
+        }
+        rejectedIn?.let { found ->
+            // The host already shows what became of it, and a later attempt may own the screen.
+            DsdNative.nativeHostDiagnostic(
+                "service: start attempt $attempt rejected as retired or superseded (state $found)"
+            )
+            stopIfIdle()
+            return
         }
 
         // The device is about to be opened: keep the diagnostics start window open through it.
@@ -262,9 +287,22 @@ class DecoderService : Service() {
             }
             routeSessionEnd(session, completedStart)
         }, "dsd-neo-engine")
-        synchronized(lock) {
-            engineThread = thread
-            state = State.RUNNING
+        // Atomic with the host's retirement: a retireAttempts() that found this attempt STARTING latched the
+        // cancellation, and one that comes after this block finds it RUNNING and leaves it running. The latch is
+        // not the native stop flag, which nativeConfigure() clears.
+        val cancelled = synchronized(lock) {
+            if (cancelRequested) {
+                true
+            } else {
+                engineThread = thread
+                state = State.RUNNING
+                attemptRan = true
+                false
+            }
+        }
+        if (cancelled) {
+            cancelConfigured(attempt)
+            return
         }
         updateNotification(getString(R.string.decoder_running))
         thread.start()
@@ -272,10 +310,31 @@ class DecoderService : Service() {
     }
 
     /**
+     * Ends a configured start whose attempt the host retired during configuration: no worker starts, the native side
+     * gives up the configuration and the receiver it named, and the session ends cancelled. The host already shows
+     * what became of the attempt.
+     */
+    private fun cancelConfigured(attempt: Long) {
+        val rc = DsdNative.nativeDiscardConfigured()
+        DsdNative.nativeHostDiagnostic(
+            "service: start attempt $attempt retired during configuration; cancelled (discard rc=$rc)"
+        )
+        releaseWakeLock()
+        synchronized(lock) {
+            terminalReason = DsdNative.RUN_CANCELLED
+            state = State.IDLE
+        }
+        finishIdle()
+    }
+
+    /**
      * Abandons a start. [reason] goes to logcat; [userMessage] is what the UI shows,
      * because dropping back to IDLE with nothing on screen reads as "nothing happened".
+     * [kind] is the attempt's failure kind for the record's "failureKind" (a wire value
+     * android/run_status.h's attempt_failure_from_wire() reads), or "" when the message
+     * alone says it.
      */
-    private fun failStart(reason: String, userMessage: String) {
+    private fun failStart(reason: String, userMessage: String, kind: String = "") {
         Log.e(TAG, reason)
         DsdNative.nativeHostDiagnostic(reason)
         // Released before IDLE, for the same reason as the engine thread does it.
@@ -284,6 +343,7 @@ class DecoderService : Service() {
             state = State.IDLE
             lastError = userMessage
             terminalReason = DsdNative.RUN_FAILED
+            failureKind = kind
         }
         // No stopStatusPolling() here: leaveForeground() does it first thing, and it has
         // to, because stopIfIdle() reaches it by a path that does not come through here.
@@ -872,6 +932,8 @@ class DecoderService : Service() {
         const val EXTRA_STOP_SESSION = "io.github.arancormonk.dsdneo.extra.STOP_SESSION"
         /** SystemClock.uptimeMillis() as the sender dispatched the intent, so its receipt can log the delay. */
         const val EXTRA_SENT_UPTIME = "io.github.arancormonk.dsdneo.extra.SENT_UPTIME"
+        /** The host's id for a START's attempt (#782); see [retireAttempts]. Absent or 0: a start without one. */
+        const val EXTRA_ATTEMPT = "io.github.arancormonk.dsdneo.extra.ATTEMPT"
 
         private val lock = Any()
         private var state = State.IDLE
@@ -895,6 +957,27 @@ class DecoderService : Service() {
 
         /** Newest start handed to onStartCommand; the worker captures it before releasing IDLE. */
         private var lastStart = DeliveredStart(0L, 0)
+
+        /*
+         * Start attempts (#782). The host gives every start an id, increasing for the life of the process, and gives
+         * up on one (its start grace ran out, the user dismissed it, retried it or started something else) by retiring
+         * every id up to it. A START carrying a retired id, or one no newer than the newest accepted, never runs.
+         */
+        /** The current session's attempt (0: started without one), published as the record's "attemptId". */
+        private var attemptId = 0L
+        /** The newest attempt accepted; an older one arriving after it is superseded. */
+        private var newestAttempt = 0L
+        /** Attempts up to this one were retired by the host. */
+        private var retiredThrough = 0L
+        /** The current attempt was retired while STARTING: checked with the RUNNING publication; it ends cancelled. */
+        private var cancelRequested = false
+        /** The current attempt was published RUNNING: a retirement after that leaves it running. */
+        private var attemptRan = false
+        /**
+         * Why the current attempt failed before nativeConfigure(), as the wire value android/run_status.h maps to a
+         * failure kind (attempt_failure_from_wire()); "" when it did not. Published as the record's "failureKind".
+         */
+        private var failureKind = ""
 
         /**
          * The live service instance, which a session's end reaches; null between an
@@ -1004,14 +1087,43 @@ class DecoderService : Service() {
             }
         }
 
-        /** Called from the Qt host (DecoderHostAndroid) to start decoding. */
+        /**
+         * Called from the Qt host (DecoderHostAndroid) to start decoding. [attempt] is the host's id for this start,
+         * which retires every earlier attempt first ([retireAttempts]), so none of them can run once this one is asked
+         * for.
+         */
         @JvmStatic
-        fun startDecoder(context: Context, args: Array<String>) {
+        fun startDecoder(context: Context, args: Array<String>, attempt: Long = 0L) {
             val intent = Intent(context, DecoderService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_ARGS, args)
+                .putExtra(EXTRA_ATTEMPT, attempt)
             intent.putExtra(EXTRA_SENT_UPTIME, SystemClock.uptimeMillis())
             context.startForegroundService(intent)
+        }
+
+        /**
+         * Retires every start attempt up to [through], synchronously, also from the Qt thread (#782): the host gave up
+         * on it. A START for one still undelivered is rejected when it arrives. One the service is configuring is
+         * cancelled once nativeConfigure() returns: no worker starts, and it ends cancelled. One already published
+         * RUNNING keeps running.
+         *
+         * @return whether the service had already taken attempt [through] past the point a retirement can cancel it:
+         *   it runs, or it ended on its own and its record says how. False when it never will run.
+         */
+        @JvmStatic
+        fun retireAttempts(through: Long): Boolean = synchronized(lock) {
+            if (through <= 0L) {
+                return false
+            }
+            if (through > retiredThrough) {
+                retiredThrough = through
+            }
+            if (attemptId != 0L && attemptId <= through && state == State.STARTING && !attemptRan && !cancelRequested) {
+                cancelRequested = true
+                stopDiagnostic("Retiring start attempt $attemptId during configuration of session $sessionId")
+            }
+            attemptId == through && !cancelRequested
         }
 
         /**
@@ -1076,7 +1188,9 @@ class DecoderService : Service() {
                 // #647: why the session ended and its receiver, published while its cleanup still runs.
                 .put("endCause", if (matches && fields.size >= 9) fields[7].toInt() else 0)
                 .put("receiverSource", if (matches && fields.size >= 9) fields[8].toInt() else 0)
-                .put("endingAcknowledged", endingAcknowledged).toString()
+                .put("endingAcknowledged", endingAcknowledged)
+                // #782: the attempt this session was started for, and its attempt-scoped failure.
+                .put("attemptId", attemptId).put("failureKind", failureKind).toString()
         }
 
         /**

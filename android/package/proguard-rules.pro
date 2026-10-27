@@ -5,7 +5,8 @@
 # helpers remain eligible for shrinking and obfuscation. Keep signatures intact
 # while allowing R8 to optimize the method bodies.
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DecoderService {
-    public static void startDecoder(android.content.Context, java.lang.String[]);
+    public static void startDecoder(android.content.Context, java.lang.String[], long);
+    public static boolean retireAttempts(long);
     public static void stopDecoder(android.content.Context);
     public static java.lang.String lifecycleStatus();
     public static void acknowledgeReceiverEnding(long);

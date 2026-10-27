@@ -358,7 +358,7 @@ DecoderHostAndroid::setScreenPolicy(int mode, int delaySeconds) {
 }
 
 QString
-DecoderHostAndroid::platformStartDecoder(const QStringList& argv) {
+DecoderHostAndroid::platformStartDecoder(const QStringList& argv, uint64_t attempt) {
     QJniObject context = android_context();
     if (!context.isValid()) {
         return QStringLiteral("No Android context");
@@ -370,10 +370,25 @@ DecoderHostAndroid::platformStartDecoder(const QStringList& argv) {
         return QStringLiteral("Could not marshal arguments");
     }
 
-    QJniObject::callStaticMethod<void>(kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;)V",
-                                       context.object(), args);
+    // Must match DecoderService.kt: @JvmStatic fun startDecoder(context: Context, args: Array<String>, attempt: Long)
+    QJniObject::callStaticMethod<void>(kServiceClass, "startDecoder",
+                                       "(Landroid/content/Context;[Ljava/lang/String;J)V", context.object(), args,
+                                       static_cast<jlong>(attempt));
     env->DeleteLocalRef(args);
     return {};
+}
+
+bool
+DecoderHostAndroid::platformRetireAttempts(uint64_t through) {
+    // Must match DecoderService.kt: @JvmStatic fun retireAttempts(through: Long): Boolean. Short and lock-only, like
+    // stopDecoder()'s synchronous part. A failed call answers false: nothing says the service took the attempt.
+    QJniEnvironment env;
+    const jboolean taken =
+        QJniObject::callStaticMethod<jboolean>(kServiceClass, "retireAttempts", "(J)Z", static_cast<jlong>(through));
+    if (env.checkAndClearExceptions()) {
+        return false;
+    }
+    return taken == JNI_TRUE;
 }
 
 bool

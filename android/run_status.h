@@ -27,6 +27,44 @@ enum RunEndCause {
 enum ReceiverSource { kReceiverNone = 0, kReceiverRtl = 1, kReceiverAirspy = 2 };
 
 /**
+ * Why one start attempt failed before any native run could report it (#782). These continue dsd_input_failure_kind
+ * (1-7) in the one failure kind the UI reads (DecoderHost::inputFailureKind, Main.qml's failureMessage()), and belong
+ * to the attempt the host is following: a later record of an older session never replaces one. The host makes
+ * kAttemptPreviousStopping (a start refused while the service was not idle) and kAttemptUndelivered (the service took
+ * no start within kStartGraceMs). The service names the others in its lifecycle record's "failureKind", as the wire
+ * values attempt_failure_from_wire() reads: failures between its IDLE->STARTING and nativeConfigure().
+ */
+enum AttemptFailureKind {
+    kAttemptNone = 0,
+    kAttemptPreviousStopping = 8, // "previous_stopping"
+    kAttemptUndelivered = 9,      // host only
+    kAttemptUsbPermission = 10,   // "usb_permission"
+    kAttemptUsbOpenFailed = 11,   // "usb_open_failed"
+    kAttemptUsbGone = 12          // "usb_gone"
+};
+
+/** A DecoderService "failureKind" wire value; empty, null or unknown is kAttemptNone. */
+inline AttemptFailureKind
+attempt_failure_from_wire(const char* wire) {
+    if (wire == nullptr) {
+        return kAttemptNone;
+    }
+    if (strcmp(wire, "previous_stopping") == 0) {
+        return kAttemptPreviousStopping;
+    }
+    if (strcmp(wire, "usb_permission") == 0) {
+        return kAttemptUsbPermission;
+    }
+    if (strcmp(wire, "usb_open_failed") == 0) {
+        return kAttemptUsbOpenFailed;
+    }
+    if (strcmp(wire, "usb_gone") == 0) {
+        return kAttemptUsbGone;
+    }
+    return kAttemptNone;
+}
+
+/**
  * How long the USB detach broadcast owns an unplug before the reader's own report of it ends the session (#647).
  * Android delivers the broadcast on its main thread, often after librtlsdr's reader has already returned -1; the grace
  * lets the broadcast's stop arrive first, so the session ends as "detached" rather than as a receiver failure.
@@ -124,6 +162,19 @@ struct RunStatus {
         run_code = code;
         device_error = native_device_error;
         reason = cancelled ? kRunCancelled : (code == 0 ? kRunCompleted : kRunFailed);
+    }
+
+    /**
+     * The service cancelled a configured session that never ran (#782): its attempt was retired during configure.
+     * The session no longer owns its receiver, so a detach after this concerns no session.
+     */
+    void
+    discard_configured() {
+        if (session_id == 0 || reason != kRunPending) {
+            return;
+        }
+        receiver_source = kReceiverNone;
+        finish(0, true, 0);
     }
 };
 

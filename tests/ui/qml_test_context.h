@@ -173,6 +173,17 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return m_background_calls;
     }
 
+    /* #782: Main's failure card reports its dismissal, so the host can give up the attempt behind it. */
+    void
+    dismissFailure() override {
+        ++m_dismiss_calls;
+    }
+
+    Q_INVOKABLE int
+    dismissCalls() const {
+        return m_dismiss_calls;
+    }
+
     bool
     moveToBackground() override {
         ++m_background_calls;
@@ -344,6 +355,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool m_running = false;
     int m_stop_calls = 0;
     int m_background_calls = 0;
+    int m_dismiss_calls = 0;
     bool m_notification_permission_needed = false;
 };
 
@@ -1655,6 +1667,10 @@ class ReadingMap : public QQmlPropertyMap {
     copyText(const QString&) const {
         return false;
     }
+
+    /* Main's failure card tells the host it was dismissed (#782); the readings have no attempt to give up. */
+    Q_INVOKABLE void
+    dismissFailure() {}
 
   Q_SIGNALS:
     void tunerChanged();

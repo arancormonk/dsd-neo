@@ -62,14 +62,15 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         return m_notification_permission_needed;
     }
 
+    /** @brief The current attempt's own failure (#782) while it stands, else the last session's input failure. */
     int
     inputFailureKind() const override {
-        return m_input_failure;
+        return m_attempt_failed ? m_attempt_failure_kind : m_input_failure;
     }
 
     int
     inputFailureCode() const override {
-        return m_input_error;
+        return m_attempt_failed ? 0 : m_input_error;
     }
 
     int
@@ -163,6 +164,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool start(const QStringList& argv) override;
     void stop() override;
+    void dismissFailure() override;
     bool moveToBackground() override;
     void refresh() override;
     void requestLocalDeviceAccess() override;
@@ -244,8 +246,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     void requestServiceStop();
-    /** @brief DecoderService.startDecoder() with @p argv; returns why it could not be handed over, or empty. */
-    static QString platformStartDecoder(const QStringList& argv);
+    /**
+     * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
+     * handed over, or empty.
+     */
+    static QString platformStartDecoder(const QStringList& argv, uint64_t attempt);
+    /**
+     * @brief DecoderService.retireAttempts(): no attempt up to @p through may run any more (#782). Synchronous, from
+     * the Qt thread. True when the service had already taken attempt @p through past the point a retirement cancels
+     * (it runs, or it ended on its own and its record says how); false when it never will run, and when the call
+     * failed.
+     */
+    static bool platformRetireAttempts(uint64_t through);
     /** @brief UsbSourceManager.requestAccess() / requestAccessForSource(); the answer arrives through refresh(). */
     static void platformRequestAccess();
     static void platformRequestAccessForSource(const QString& source, const QString& serial);
@@ -254,6 +266,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);
+    /**
+     * @brief Latch the current attempt's own failure (#782): published as Failed with @p text and as
+     * inputFailureKind() @p kind (an AttemptFailureKind, or 0 for none the UI words), over whatever the service's
+     * records say, until the next start or a dismissal.
+     */
+    void setAttemptFailure(int kind, const QString& text);
+    /** @brief Retire the current attempt and drop its failure, then publish the phase the records give. */
+    void dismissAttemptFailure();
 
     void setStatus(const QString& text);
     void refreshLocation();
@@ -272,6 +292,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool deviceErrorApplies() const;
 
     bool m_primed = false;
+    // #782: the start attempt this host follows (0: none), and its own failure while it stands. Records of older
+    // sessions never replace it; the next start or a dismissal does.
+    uint64_t m_attempt = 0;
+    bool m_attempt_failed = false;
+    int m_attempt_failure_kind = 0;
+    QString m_attempt_failure_text;
     uint64_t m_adopted_idle_session = 0;
     uint64_t m_initialized_session = 0;
     int m_device_error = 0;
