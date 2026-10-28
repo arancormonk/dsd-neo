@@ -68,6 +68,37 @@ private fun theRecordWinsOverTheStore() {
     check(owed.entries.single().serial == "00000001") { "${owed.entries}" }
 }
 
+// Gate r1 G2: a change made before the store was read leaves storage behind the record, so the restore says to write the
+// merged record even when it dropped nothing from the store.
+private fun aChangeBeforeTheStoreIsReadIsWrittenAfter() {
+    val owed = UsbResetObligations()
+    owed.record(a(), owes = true)
+    check(owed.restore("", mapOf(RTL_A to (VID to PID)))) { "the obligation recorded before the read is stored after it" }
+    check(owed.encode().startsWith("$RTL_A\t")) { owed.encode() }
+    check(!owed.record(a(), owes = true) && !owed.restore("", mapOf(RTL_A to (VID to PID)))) {
+        "once the store was read, a restore with nothing new writes nothing"
+    }
+    val cleared = UsbResetObligations()
+    check(!cleared.record(b(), owes = false)) { "a clear of nothing changes nothing in memory" }
+    check(!cleared.restore("", emptyMap())) { "and leaves nothing to write" }
+}
+
+// G2: so does a clear, which the stored entry under that name must not undo: the engine's answer in this process (a
+// reset that succeeded, samples) is newer than anything the last process stored.
+private fun aClearBeforeTheStoreIsReadWins() {
+    val before = UsbResetObligations()
+    before.record(a(), owes = true)
+    val owed = UsbResetObligations()
+    owed.record(a(), owes = true)
+    owed.record(a(), owes = false)
+    check(owed.restore(before.encode(), mapOf(RTL_A to (VID to PID)))) { "the stale stored entry is written away" }
+    check(owed.entries.isEmpty()) { "the clear wins: ${owed.entries}" }
+    val detached = UsbResetObligations()
+    detached.detach(RTL_A)
+    detached.restore(before.encode(), mapOf(RTL_A to (VID to PID)))
+    check(detached.entries.isEmpty()) { "a detach in this process wins too: ${detached.entries}" }
+}
+
 // A new process reads the store back: A, still attached, keeps its obligation (honoured on its first open); an entry
 // for a device no longer attached, or attached with another VID:PID, is dropped and the store rewritten.
 private fun aNewProcessKeepsOnlyWhatIsStillAttached() {
@@ -107,6 +138,8 @@ fun main() {
     aDetachDropsIt()
     anotherDeviceUnderTheNameOwesNothing()
     theRecordWinsOverTheStore()
+    aChangeBeforeTheStoreIsReadIsWrittenAfter()
+    aClearBeforeTheStoreIsReadWins()
     aNewProcessKeepsOnlyWhatIsStillAttached()
     aSerialStaysOneField()
     println("UsbResetObligationsTest: OK")

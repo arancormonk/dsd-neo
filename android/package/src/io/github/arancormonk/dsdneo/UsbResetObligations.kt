@@ -22,13 +22,31 @@ package io.github.arancormonk.dsdneo
  * Entries outlive the process ([encode], [restore]): a new process can meet a dongle the last one left wedged. At
  * process start an entry whose device is no longer attached with that VID:PID is dropped, since its detach means it
  * re-enumerated, and one still attached is honoured on its first open. The worst a stale entry costs is one reset that
- * was not needed. Plain Kotlin; [UsbSourceManager] makes every call on the main thread.
+ * was not needed. What this process decided before the store was read (an entry set or cleared, a detach) is newer than
+ * the store, so it wins over the stored entry under that name, and the restore asks for the merged record to be written
+ * (#782 gate r1 G2). Plain Kotlin; [UsbSourceManager] makes every call on the main thread.
  */
 internal class UsbResetObligations {
     /** One physical attachment: the device [name], its VID:PID, and its [serial], or "" when it could not be read. */
     data class Attachment(val name: String, val vendorId: Int, val productId: Int, val serial: String)
 
     private val owed = LinkedHashMap<String, Attachment>()
+
+    /** Whether [restore] ran: until then, storage has not been read, and nothing has been written to it. */
+    private var restored = false
+
+    /** Before [restore]: the names this process set, cleared or saw detached, whose stored entries are older. */
+    private val decided = HashSet<String>()
+
+    /** Before [restore]: whether this process changed the record, which storage then still lacks. */
+    private var changedBeforeRestore = false
+
+    /** Notes a decision about [name] made before the store was read; [changed] when it changed the record. */
+    private fun noteBeforeRestore(name: String, changed: Boolean) {
+        if (restored) return
+        decided += name
+        if (changed) changedBeforeRestore = true
+    }
 
     /** The attachments that owe a reset, oldest first. */
     val entries: List<Attachment> get() = owed.values.toList()
@@ -43,6 +61,7 @@ internal class UsbResetObligations {
         val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !entry.serial.equals(serial, ignoreCase = true)
         if (entry.vendorId != vendorId || entry.productId != productId || serialDiffers) {
             owed.remove(name)
+            noteBeforeRestore(name, changed = true)
             return false
         }
         return true
@@ -50,15 +69,22 @@ internal class UsbResetObligations {
 
     /** Records whether [attachment] owes a reset now; true when that changed anything. */
     fun record(attachment: Attachment, owes: Boolean): Boolean {
-        if (!owes) {
-            return owed.remove(attachment.name) != null
+        val changed = if (!owes) {
+            owed.remove(attachment.name) != null
+        } else {
+            val entry = attachment.copy(serial = clean(attachment.serial))
+            owed.put(attachment.name, entry) != entry
         }
-        val entry = attachment.copy(serial = clean(attachment.serial))
-        return owed.put(attachment.name, entry) != entry
+        noteBeforeRestore(attachment.name, changed)
+        return changed
     }
 
     /** The device [name] was detached: whatever it owed went with it. True when it owed something. */
-    fun detach(name: String): Boolean = owed.remove(name) != null
+    fun detach(name: String): Boolean {
+        val changed = owed.remove(name) != null
+        noteBeforeRestore(name, changed)
+        return changed
+    }
 
     /** The entries as app-private storage keeps them: one line each. */
     fun encode(): String =
@@ -66,27 +92,33 @@ internal class UsbResetObligations {
 
     /**
      * At process start: add the stored [text]'s entries whose device is attached now with the same VID:PID
-     * ([attached], by device name). An entry recorded in this process before the store was read wins over the stored
-     * one under its name. Returns true when the store held anything that was dropped, so it should be written again.
+     * ([attached], by device name). Whatever this process decided about a name before the store was read (an entry
+     * recorded or cleared, a detach) wins over the stored entry under it. Returns true when storage should be written
+     * again: it held anything that was dropped, or this process changed the record before it was read (G2).
      */
     fun restore(text: String, attached: Map<String, Pair<Int, Int>>): Boolean {
         var dropped = false
-        val restored = LinkedHashMap<String, Attachment>()
+        val merged = LinkedHashMap<String, Attachment>()
         for (line in text.lineSequence().filter { it.isNotEmpty() }) {
             val fields = line.split('\t')
             val vendorId = fields.getOrNull(1)?.toIntOrNull()
             val productId = fields.getOrNull(2)?.toIntOrNull()
             val name = fields[0]
-            if (fields.size != 4 || vendorId == null || productId == null || attached[name] != (vendorId to productId)) {
+            if (fields.size != 4 || vendorId == null || productId == null || attached[name] != (vendorId to productId) ||
+                name in decided) {
                 dropped = true
                 continue
             }
-            restored[name] = Attachment(name, vendorId, productId, fields[3])
+            merged[name] = Attachment(name, vendorId, productId, fields[3])
         }
-        restored.putAll(owed)
+        merged.putAll(owed)
         owed.clear()
-        owed.putAll(restored)
-        return dropped
+        owed.putAll(merged)
+        val rewrite = dropped || changedBeforeRestore
+        restored = true
+        decided.clear()
+        changedBeforeRestore = false
+        return rewrite
     }
 
     // One line per entry, tab-separated: a serial can never break the record.

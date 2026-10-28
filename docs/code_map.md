@@ -8852,13 +8852,19 @@ native slots (`nativeSetUsbFd(-1, false)`, `nativeSetAirspyUsbFd(-1)`), and only
 `rtl_device_publish_preopened_fd()` binds it to the descriptor it publishes; `reconcileResetOwed()` compares
 `nativeUsbResetOwed()` with the connected RTL-SDR's descriptor and records the answer on its attachment
 (`UsbResetObligations.kt`, plain Kotlin: device name, VID:PID and serial; an entry for another device under that name is
-dropped when asked, a detach drops it, and an entry recorded in this process wins over a stored one). It runs at the top
-of `detachConnection()` and after each run (`noteSessionEnded()`, posted by the service's worker when `nativeRun()`
-returns). `openClaimed()` and `reopen()` publish with `owesReset(device, serial)`. The record is stored in
-`noBackupFilesDir/usb-reset-owed` (`name\tvid\tpid\tserial` lines, written to a temporary file and renamed) by a single
-storage thread (`storageExecutor`, "dsd-neo-usb-store", injectable for tests); the load starts in
-`initializeAttachments()` on that thread, and an open applies it first (`applyResetObligations()`, waiting at most 1 s),
-keeping only entries still attached with the same VID:PID. libusb's own warning and error lines reach the diagnostics
+dropped when asked, a detach drops it, and whatever this process decided about a name before the store was read, an
+entry set or cleared or a detach, wins over the stored entry under it). It runs at the top of `detachConnection()` and
+after each run (`noteSessionEnded()`, posted by the service's worker when `nativeRun()` returns). `openClaimed()` and
+`reopen()` publish with `owesReset(device, serial)`. The record is stored in `noBackupFilesDir/usb-reset-owed`
+(`name\tvid\tpid\tserial` lines, written to a temporary file and renamed) by a single storage thread (`storageExecutor`,
+"dsd-neo-usb-store", injectable for tests); the load starts in `initializeAttachments()` on that thread, and an open
+applies it first (`applyResetObligations()`, waiting at most 1 s), keeping only entries still attached with the same
+VID:PID. An open that waited out the 1 s publishes without the store, and the read's posted apply merges it later (gate
+r1, G1 and G2). Nothing is written before that apply, which writes the merged record when this process changed the
+record meanwhile (`restore()` says so) as well as when it dropped a stored entry. A descriptor published before the
+apply was never handed what loaded afterwards, so the engine's "owes nothing" for it (`connectedResetKnown` false)
+clears nothing: the entry waits for the next descriptor, which carries it. That descriptor, one that went with a reset,
+or one the engine has since said owes one, has its answer recorded as usual. libusb's own warning and error lines reach the diagnostics
 through `rtl_usb_log_install()` (IO, `rtl_usb_identity`). Tests: `ANDROID_USB_BROKER_JVM` (`UsbSourceManagerTest.kt`,
 `UsbResetObligationsTest.kt`), `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceUsbTest.kt`), `ANDROID_USB_RECEIVER_JVM`,
 `IO_RTL_FD_HELD`, `IO_RTL_USB_FD_RECOVERY`, `UI_QT_ANDROID_HOST` (`check_claim_error_connection`,

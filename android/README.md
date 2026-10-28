@@ -951,7 +951,11 @@ read starts at process start, and the first open applies it (waiting up to 1 s f
 the read if it has not finished) before it publishes a descriptor; nothing is
 written before it was applied. An entry whose device is no longer attached is
 dropped then, and one still attached is honoured on its first open (the worst a
-stale one costs is one reset that was not needed).
+stale one costs is one reset that was not needed). An open that outwaits the read
+goes without it; when the read lands, an obligation recorded or cleared meanwhile
+wins over the stored one and the merged record is written, and a stored obligation
+that loaded too late for that descriptor is kept for the next one, whatever the
+engine says about a descriptor it never received it with.
 
 `ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
 `UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.

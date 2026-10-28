@@ -110,11 +110,19 @@ object UsbSourceManager {
     private var connectionId = 0L
     private var connectedEpoch = 0L
     private var sessionsTaken = 0
+    /**
+     * Whether the engine's reset answer for the connected descriptor speaks for its attachment's obligation (#782 gate
+     * r1 G1): the stored obligations were applied before it was published, it went with a reset, or the engine has
+     * since said it owes one. Otherwise it was published while the store was still being read, and an obligation that
+     * loaded afterwards never reached the engine, so the engine's "owes nothing" says nothing about it.
+     */
+    private var connectedResetKnown = false
 
     /**
      * The attachments that owe a USB reset before their next open (#782). The record here is authoritative; storage
      * follows it. It is read from storage once per process ([resetObligationsLoad]) and applied before the first open
-     * publishes a descriptor; nothing is written back before then, so a write can never drop what was stored.
+     * publishes a descriptor; nothing is written back before then, so a write can never drop what was stored. A change
+     * made meanwhile is merged into what was read, and the merged record written once it is applied (gate r1 G2).
      */
     private val resetObligations = UsbResetObligations()
     private var resetObligationsLoad: FutureTask<String>? = null
@@ -474,6 +482,7 @@ object UsbSourceManager {
             connectionId = 0L
             connectedEpoch = 0L
             sessionsTaken = 0
+            connectedResetKnown = false
             current
         } ?: return null
         DsdNative.nativeSetUsbFd(-1, false)
@@ -629,6 +638,7 @@ object UsbSourceManager {
                     connectionId = connections
                     connectedEpoch = epoch
                     sessionsTaken = 0
+                    connectedResetKnown = resetObligationsLoaded || reset.owes
                 }
                 result
             }
@@ -675,7 +685,9 @@ object UsbSourceManager {
     /**
      * Records on the connected RTL-SDR's attachment whether its dongle owes a USB reset, as the engine says for the
      * descriptor it was handed (#782): set by a stall, cleared by samples since or a reset that succeeded. The engine's
-     * answer names a descriptor, so it only ever applies to the connection that has it. Main thread; persisted when it
+     * answer names a descriptor, so it only ever applies to the connection that has it. A "no" for a descriptor
+     * published before the stored obligations were applied clears nothing: the engine was never handed what loaded
+     * later, so it is kept for the next descriptor ([connectedResetKnown], gate r1 G1). Main thread; persisted when it
      * changed.
      */
     private fun reconcileResetOwed() {
@@ -684,6 +696,11 @@ object UsbSourceManager {
             val open = connection
             if (open == null || connectedSource != UsbReceiverKind.RTL) return
             val owes = owedFd >= 0 && owedFd == open.fileDescriptor
+            if (owes) {
+                connectedResetKnown = true
+            } else if (!connectedResetKnown) {
+                return
+            }
             val attachment = UsbResetObligations.Attachment(
                 attachedName.orEmpty(), connectedVendorId, connectedProductId, connectedSerial
             )
@@ -749,7 +766,7 @@ object UsbSourceManager {
         val manager = app.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return
         // The listing is a binder call: outside the lock.
         val attached = manager.deviceList.values.associate { it.deviceName to (it.vendorId to it.productId) }
-        val (dropped, entries) = synchronized(lock) {
+        val (rewrite, entries) = synchronized(lock) {
             if (resetObligationsLoaded) return
             resetObligationsLoaded = true
             resetObligations.restore(text, attached) to resetObligations.entries
@@ -757,13 +774,15 @@ object UsbSourceManager {
         for (entry in entries) {
             DsdNative.nativeHostDiagnostic("usb: ${entry.name} still owes a USB reset from an earlier process")
         }
-        if (dropped) saveResetObligations()
+        // Storage lacks a change this process made while it was read, or holds an entry the restore dropped (G2).
+        if (rewrite) saveResetObligations()
     }
 
     /**
      * Stores the obligations: the record is encoded here, on the main thread, and written on the storage thread (a
      * temporary file renamed over the old one), in the order the changes were made. Nothing is written before the
-     * stored record was applied.
+     * stored record was applied; a change made before then is written with the merged record when it is
+     * ([applyResetObligations]).
      */
     private fun saveResetObligations() {
         val (app, text) = synchronized(lock) {
@@ -908,6 +927,7 @@ object UsbSourceManager {
                 connectionId = connections
                 connectedEpoch = held.epoch
                 sessionsTaken = 1
+                connectedResetKnown = resetObligationsLoaded || reset.owes
             }
             rc == DsdNative.STATUS_OK
         }

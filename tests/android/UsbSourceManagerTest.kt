@@ -849,6 +849,115 @@ private fun storageRunsOffTheMainThread() {
     worker.shutdown()
 }
 
+/**
+ * A storage thread whose first task, the stored obligations' read, waits for [release]: an open meanwhile waits out
+ * its bound and publishes without them (#782 gate r1 G1, G2).
+ */
+private class SlowStore {
+    val release = CountDownLatch(1)
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val tasks = java.util.concurrent.atomic.AtomicInteger()
+    val executor = Executor { task ->
+        val first = tasks.getAndIncrement() == 0
+        worker.execute {
+            if (first) release.await(5, TimeUnit.SECONDS)
+            task.run()
+        }
+    }
+
+    /** Lets the read finish, then applies it on the main thread, as the main looper would run the apply it posts. */
+    fun finishRead() {
+        release.countDown()
+        val apply = android.os.Handler.pending.poll(5, TimeUnit.SECONDS)
+        check(apply != null) { "the finished read posts its apply to the main thread" }
+        apply.run()
+    }
+
+    /** Waits until every write handed to the storage thread so far has landed. */
+    fun flush() {
+        val done = CountDownLatch(1)
+        executor.execute { done.countDown() }
+        check(done.await(5, TimeUnit.SECONDS)) { "the storage thread finished its writes" }
+    }
+
+    fun shutdown() = worker.shutdown()
+}
+
+private fun storageWith(text: String): File =
+    java.nio.file.Files.createTempDirectory("dsd-usb-late").toFile().also { File(it, "usb-reset-owed").writeText(text) }
+
+// #782 gate r1 G1: the stored read outlasts the open's wait, so the descriptor goes to the engine without A's stored
+// obligation, which loads afterwards. The engine was never handed it, so its "owes nothing" for that descriptor must not
+// delete it: the next descriptor carries it, and only the engine's answer for that one clears it.
+private fun aLateLoadedObligationWaitsForTheEngine() {
+    val store = SlowStore()
+    val rig = Rig(
+        storage = storageWith("$RTL_A\t${0x0bda}\t${0x2838}\t00000001\n"),
+        present = listOf(rtl()),
+        storageExecutor = store.executor,
+    )
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
+    check(DsdNative.publishedResetFirst.toList() == listOf(false)) { "the open went without the unread store" }
+    store.finishRead()
+    check("usb: $RTL_A still owes a USB reset from an earlier process" in DsdNative.diagnostics) { "${DsdNative.diagnostics}" }
+    rig.take()
+    // The open from that descriptor failed: the engine answers that it owes nothing, since it was never told.
+    check(DsdNative.resetOwed == -1)
+    UsbSourceManager.noteSessionEnded()
+    store.flush()
+    check(stored(rig).startsWith("$RTL_A\t")) { "the late-loaded obligation is kept: ${stored(rig)}" }
+    rig.take()
+    check(DsdNative.publishedResetFirst.last()) { "the next descriptor carries it: ${DsdNative.publishedResetFirst}" }
+    // That descriptor's engine answer speaks for it: a reset that succeeded clears it.
+    DsdNative.resetOwed = -1
+    UsbSourceManager.noteSessionEnded()
+    store.flush()
+    check(stored(rig) == "") { "the engine's answer for a descriptor that carried it clears it: ${stored(rig)}" }
+    store.shutdown()
+}
+
+// #782 gate r1 G2: a session stalls before the stored read finished. Its obligation is recorded in memory, and stored
+// once the read is applied, though the store held nothing to drop.
+private fun anObligationBeforeTheLoadIsStored() {
+    val store = SlowStore()
+    val rig = Rig(storage = storageWith(""), present = listOf(rtl()), storageExecutor = store.executor)
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
+    rig.take()
+    DsdNative.resetOwed = DsdNative.usbFd
+    UsbSourceManager.noteSessionEnded()
+    store.finishRead()
+    store.flush()
+    check(stored(rig).startsWith("$RTL_A\t${0x0bda}\t${0x2838}\t00000001")) {
+        "the obligation recorded before the read is stored: ${stored(rig)}"
+    }
+    store.shutdown()
+}
+
+// G2: a reset that succeeded before the stored read finished clears the obligation for good: the stored entry, older,
+// does not bring it back, and storage is rewritten without it.
+private fun aClearBeforeTheLoadWins() {
+    val store = SlowStore()
+    val rig = Rig(
+        storage = storageWith("$RTL_A\t${0x0bda}\t${0x2838}\t00000001\n"),
+        present = listOf(rtl()),
+        storageExecutor = store.executor,
+    )
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
+    rig.take()
+    DsdNative.resetOwed = DsdNative.usbFd
+    UsbSourceManager.noteSessionEnded()
+    rig.take()
+    check(DsdNative.publishedResetFirst.last()) { "the stall's reset goes with the next descriptor" }
+    DsdNative.resetOwed = -1
+    UsbSourceManager.noteSessionEnded()
+    store.finishRead()
+    store.flush()
+    check(stored(rig) == "") { "the stored entry does not undo the reset: ${stored(rig)}" }
+    rig.take()
+    check(!DsdNative.publishedResetFirst.last()) { "and the next open resets nothing: ${DsdNative.publishedResetFirst}" }
+    store.shutdown()
+}
+
 /** Runs [case] as a new process would: in a class loader of its own, so every object starts afresh. */
 private fun inNewProcess(case: String) {
     val classpath = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).toURI().toURL() }
@@ -905,6 +1014,9 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "reset_owed_detach" to ::aDetachDropsTheObligation,
     "reset_owed_process" to ::aNewProcessHonoursWhatIsStillAttached,
     "reset_owed_storage_thread" to ::storageRunsOffTheMainThread,
+    "reset_owed_late_load" to ::aLateLoadedObligationWaitsForTheEngine,
+    "reset_owed_before_load" to ::anObligationBeforeTheLoadIsStored,
+    "reset_owed_cleared_before_load" to ::aClearBeforeTheLoadWins,
 )
 
 // Run only inside reset_owed_process, each as its own process.
