@@ -4633,7 +4633,8 @@ Key public headers:
     `rtl_device_usb_recovery_finish()`'s failure ending for the restart), so every committed "failed" ending of such a
     receiver owes the reset the Listen notice promises; samples after the verdict that set it, or after the monitor's
     start when the descriptor came owing one, delivered while the reader still streams, and a successful reset clear it
-    (compare-and-swap on the descriptor). The monitor's watch of a verdict's obligation ends when it posts the recovery,
+    (compare-and-swap on the descriptor). A sample clear that then finds the reader gone sets it again: the reader can
+    deliver its last block and return unasked between the monitor's streaming read and the clear. The monitor's watch of a verdict's obligation ends when it posts the recovery,
     which owns the obligation from then on, so a block the old reader delivers before the swap cancels it cannot clear
     what a failed recovery's finish sets; it starts again from a restarted reader's baseline only when the recovery kept
     the obligation (a refused reset). A swap whose reset was refused records it (`reopened_without_reset`), and the
@@ -4646,7 +4647,7 @@ Key public headers:
     own code. The host side (the broker's per-attachment record, storage and the swap) is in "Android foundation
     integration contracts" below ("USB broker") and in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
     `rtl_device_test_set_fd_reset_hook()`, `rtl_device_test_set_fd_identity_hook()`,
-    `rtl_device_test_recoveries_in_grace()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
+    `rtl_device_test_recoveries_in_grace()`, `rtl_device_test_set_owed_clear_hook()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
   - A retune writes only the capture settings that changed (#782 D3; `rtl_sdr_fm.cpp` `CaptureWriteRecord`). The
     stream records, per open device, the sample rate it asked for and the one it read back, the tuner bandwidth it
     asked for, and the gain mode and manual gain it asked for (the gain that took is `dongle.gain`). The comparison is
@@ -8780,40 +8781,43 @@ under it.
 
 Start attempts and what a failed start says (issue #782): every `DecoderHostAndroid::start()` takes a new attempt id
 (increasing for the life of the process), retires every earlier one through `DecoderService.retireAttempts()` (a
-synchronous companion call from the Qt thread) before it reads the service state, and passes the id with the START
-(`EXTRA_ATTEMPT`), with the sending process's token (`EXTRA_PROCESS`, `processToken`, a random nonzero value made once
-per process): the platform redelivers a START a dead process left undelivered into the process it restarts, whose ids
-count from 1 again, so `startDecoding()` first rejects a START from another process, with a host diagnostic, before it
-touches `newestAttempt`; that also keeps such a START from running a session no host follows. It then rejects a retired
-or superseded attempt and logs it; one retired while STARTING latches `cancelRequested`, which is checked under the
-service lock with the STARTING→RUNNING publication after `nativeConfigure()`, so no worker starts,
-`nativeDiscardConfigured()` clears `g_configured` and the run record's receiver (`RunStatus::discard_configured()`), and
-the session ends cancelled. `retireAttempts()` answers whether the attempt was already taken past that point (it runs,
-or ended on its own). The record publishes `attemptId` and `failureKind`, a wire value for a failure of the attempt
-before its configure that `attempt_failure_from_wire()` maps. The start grace is `kStartGraceMs` (2 s) of
-`dsd_realtime_mono_ms()` from the request, not a count of polls; at its expiry the host logs `Start was not delivered to
-the decoder service within N ms (service state X)` and retires the attempt, and reports it undelivered unless the
-retirement says the service took it (then it follows the attempt's record). A superseding start retires the earlier
-attempts only from a settled screen (published Idle or Failed); a start refused while one is starting or running on
-screen (an entry point no QML guard covers) leaves that attempt alone and publishes no refusal over it. Dismissing or
-retrying an undelivered start the service took after all (the expiry's retirement cancels it while it configures)
-publishes Stopping until that attempt's cancelled end (`SessionPhaseTracker::note_attempt_retired()`), not the expiry's
-failure or a Starting that never runs. The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered
-after `dsd_input_failure_kind`'s 1-7: 8 `previous_stopping`, a start refused while the previous session stops, by the
-host or by the USB broker's take; 9 undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`,
-the broker's take failing before configure; a start the host could not hand over has no kind) are published as Failed
-with `inputFailureKind()` over every record, so an older session's input failure never comes back, until the next start,
-`stop()` (Retry) or `dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's
-`failureMessage()` words kinds 8 and 9 for the card and `searchStartFailure()` for Signal search's own screen, and
-`receiverStartFailure()` kinds 10-12 for either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver"
-with no attempt); the host's failure text for a service-side kind is the record's `lastError` ("The USB receiver is no
-longer connected", ...). Both RTL-SDR open paths in `rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the
-open's code, and a successful open clears it, as Airspy's open does, so `failureMessage()` words them as kind 7 and a
-desktop run that opened after a failed open does not end as failed. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`
-(`check_undelivered_start_after_network_failure`, `check_refused_start`, `check_attempt_identity`,
-`check_dismissed_undelivered_start_winds_down`, `check_refused_start_leaves_the_run_on_screen`), `IO_RTL_FD_FAILURE`,
-`IO_RTL_STREAM_START_FAILURE` (Airspy), `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt`), `ANDROID_R8`,
-`tst_main_receiver_notice.qml`.
+synchronous companion call from the Qt thread) from a settled screen (published Idle or Failed) before it reads the
+service state, or once that read accepted it otherwise (the service is IDLE, so an earlier START is not delivered yet),
+and passes the id with the START (`EXTRA_ATTEMPT`), with the sending process's token (`EXTRA_PROCESS`, `processToken`, a
+random nonzero value made once per process): the platform redelivers a START a dead process left undelivered into the
+process it restarts, whose ids count from 1 again, so `startDecoding()` first rejects a START from another process, with
+a host diagnostic, before it touches `newestAttempt`; that also keeps such a START from running a session no host
+follows. It then rejects a retired or superseded attempt and logs it; one retired while STARTING latches
+`cancelRequested`, which is checked under the service lock with the STARTING→RUNNING publication after
+`nativeConfigure()`, so no worker starts, `nativeDiscardConfigured()` clears `g_configured` and the run record's
+receiver (`RunStatus::discard_configured()`), and the session ends cancelled. `retireAttempts()` answers whether the
+attempt was already taken past that point (it runs, or ended on its own). The record publishes `attemptId` and
+`failureKind`, a wire value for a failure of the attempt before its configure that `attempt_failure_from_wire()` maps.
+The start grace is `kStartGraceMs` (2 s) of `dsd_realtime_mono_ms()` from the request, not a count of polls; at its
+expiry the host logs `Start was not delivered to the decoder service within N ms (service state X)` and retires the
+attempt, and reports it undelivered unless the retirement says the service took it (then it follows the attempt's
+record). A superseding start retires the earlier attempts before the read only from a settled screen (published Idle or
+Failed); a start refused while one is starting or running on screen (an entry point no QML guard covers) leaves that
+attempt alone and publishes no refusal over it, and `Main.qml` keeps that run's `attemptedSource` and puts no card over
+it, while one the read accepts there supersedes the attempt on its way. Dismissing or retrying an undelivered start the
+service took after all (the expiry's retirement cancels it while it configures) publishes Stopping until that attempt's
+cancelled end (`SessionPhaseTracker::note_attempt_retired()`), not the expiry's failure or a Starting that never runs.
+The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered after `dsd_input_failure_kind`'s 1-7: 8
+`previous_stopping`, a start refused while the previous session stops, by the host or by the USB broker's take; 9
+undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`, the broker's take failing before
+configure; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
+every record, so an older session's input failure never comes back, until the next start, `stop()` (Retry) or
+`dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's `failureMessage()` words kinds 8 and
+9 for the card and `searchStartFailure()` for Signal search's own screen, and `receiverStartFailure()` kinds 10-12 for
+either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text
+for a service-side kind is the record's `lastError` ("The USB receiver is no longer connected", ...). Both RTL-SDR open
+paths in `rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the open's code, and a successful open clears it,
+as Airspy's open does, so `failureMessage()` words them as kind 7 and a desktop run that opened after a failed open does
+not end as failed. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST` (`check_undelivered_start_after_network_failure`,
+`check_refused_start`, `check_attempt_identity`, `check_dismissed_undelivered_start_winds_down`,
+`check_refused_start_leaves_the_run_on_screen`, `check_accepted_start_supersedes_the_one_on_its_way`),
+`IO_RTL_FD_FAILURE`, `IO_RTL_STREAM_START_FAILURE` (Airspy),
+`ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt`), `ANDROID_R8`, `tst_main_receiver_notice.qml`.
 
 USB broker (issue #782; user rules in `android/README.md` "USB-OTG"): `UsbSourceManager.kt` has one owner, the main
 thread. The broadcast receivers, `reportAttachment()` and the service's take already run there, and the Qt thread's
