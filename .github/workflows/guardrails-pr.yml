@@ -34,4 +34,7 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
-          comment-summary-in-pr: always
+          # The verdict stays in the job summary. A PR comment needs
+          # pull-requests: write, which this read-only workflow does not grant
+          # (and fork and Dependabot tokens never have).
+          comment-summary-in-pr: never
