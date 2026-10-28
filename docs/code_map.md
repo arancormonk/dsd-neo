@@ -1069,13 +1069,15 @@ suite runs under this compiler.
   open the new file first, so one that fails leaves what records and the mode as they were; then the static open stops
   what records and the raw open closes the raw WAV it replaces (the static file already recording is kept; the same raw
   path is closed first, as reopening truncates it). A live config apply (`DSD_APP_CMD_CONFIG_APPLY`) does not let
-  staging's mode and path writes stand alone: `apply_cfg_recording()` puts the session's back and moves them through
-  those services (start, static open, stop, raw open or close), failing the apply with a toast when a file does not
-  open. Per-call writers (the vocoder's slot writers through `dsd_audio_write_wav_short_block()`, EDACS analog,
+  staging's mode, folder and path writes stand alone: `apply_cfg_recording()` puts the session's back and, when the
+  config changes any of them, moves them through those services (start, static open, stop, raw open or close), failing
+  the apply with a toast when a file does not open. Per-call files are published in the folder they were recorded in:
+  a moved folder stops them before the new one is set, and a per-call session then opens its new pair there (or marks
+  both slots to reopen there). The NFM recording is published in `analog_call::dir`, the folder it opened in. Per-call writers (the vocoder's slot writers through `dsd_audio_write_wav_short_block()`, EDACS analog,
   `engine/analog_call.c`) write through `dsd_wav_segment_write()` (`src/core/file/wav_segment.c`): a handle
   `open_wav_file()` opened is a segment, and its first short write latches it, so nothing more is written to it and it
   is published as usual at its close; static and raw handles log each short write as before (so does a segment past
-  the table's 16 slots, reported once). A failed `sf_close()` keeps
+  the table's 16 slots, reported once per run). A failed `sf_close()` keeps
   the temp name. Open, write, close and publish failures are counted per decoder run
   (`<dsd-neo/core/wav_recording.h>`, reset by `dsd_engine_run_common_setup()`), each kind logged once per run. A slot
   whose reopen failed (at a call end or an EDACS analog grant) is marked in `opts->wav_out_reopen` and opens again at

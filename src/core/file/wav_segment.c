@@ -65,7 +65,6 @@ typedef struct {
 
 static wav_segment s_wav_segments[WAV_SEGMENT_SLOTS];
 static atomic_int s_wav_segments_failed;
-static atomic_int s_wav_segments_full_reported;
 static dsd_mutex_t s_wav_segment_mu;
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready. */
 static atomic_int s_wav_segment_mu_state;
@@ -122,7 +121,7 @@ wav_segment_opened(const SNDFILE* file) {
     dsd_mutex_unlock(&s_wav_segment_mu);
     /* More segments open at once than the decoder ever holds (two slots, an NFM call) means closes are being missed;
        such a segment is written as a static WAV is, without the latch. */
-    if (segment == NULL && atomic_exchange(&s_wav_segments_full_reported, 1) == 0) {
+    if (segment == NULL && wav_recording_table_full_first_this_run()) {
         LOG_WARN("Call recording: more than %d recordings open at once; a short write to the extra ones is logged, not "
                  "latched\n",
                  WAV_SEGMENT_SLOTS);

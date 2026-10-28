@@ -24,7 +24,7 @@
 typedef struct {
     SNDFILE* wav;
     char path[1024];
-    char dir[512]; /* The folder the recording was opened in, for a teardown that has no dsd_opts. */
+    char dir[512]; /* The folder the recording was opened in, where it is published (issue #708). */
     time_t opened;
     int active;
     int recording_attempted;
@@ -48,11 +48,11 @@ analog_call_get(const dsd_state* state) {
 }
 
 /* Close and publish the call's recording against the last accepted block's row, as the call's end does, but leave the
-   call running. */
+   call running. It is published in the folder it was opened in, which a config may have changed since (issue #708). */
 static void
 analog_call_close_recording(dsd_opts* opts, dsd_state* state, analog_call* call) {
     if (call->wav) {
-        call->wav = close_and_rename_wav_file(call->wav, opts, call->path, opts->wav_out_dir,
+        call->wav = close_and_rename_wav_file(call->wav, opts, call->path, call->dir[0] ? call->dir : opts->wav_out_dir,
                                               state->event_history_s ? &state->event_history_s[0] : NULL, call->opened);
         call->path[0] = '\0';
     }

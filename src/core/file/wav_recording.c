@@ -7,12 +7,14 @@
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <stdint.h>
+#include "wav_segment.h"
 
 /* The decoder and the watchdog both open, write and publish recordings, and a frontend's snapshot publication reads
    them: every field is atomic, and a reader can see one count move before the last error kind does. */
 static atomic_int s_failures[DSD_WAV_RECORDING_ERROR_KINDS];
 static atomic_int s_reported[DSD_WAV_RECORDING_ERROR_KINDS];
 static atomic_int s_last_error;
+static atomic_int s_table_full_reported;
 
 void
 dsd_wav_recording_status_get(dsd_wav_recording_status* out) {
@@ -36,8 +38,14 @@ dsd_wav_recording_note_failure(dsd_wav_recording_error kind) {
     return atomic_exchange(&s_reported[kind], 1) == 0;
 }
 
+int
+wav_recording_table_full_first_this_run(void) {
+    return atomic_exchange(&s_table_full_reported, 1) == 0;
+}
+
 void
 dsd_wav_recording_session_reset(void) {
+    atomic_store(&s_table_full_reported, 0);
     for (int kind = 0; kind < DSD_WAV_RECORDING_ERROR_KINDS; kind++) {
         atomic_store(&s_failures[kind], 0);
         atomic_store(&s_reported[kind], 0);

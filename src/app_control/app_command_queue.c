@@ -7882,10 +7882,12 @@ cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, i
     }
 }
 
-/* The recording outputs a session runs (issue #708): the mode, the static WAV's path and the raw WAV's. */
+/* The recording outputs a session runs (issue #708): the mode, the per-call folder, the static WAV's path and the raw
+   WAV's. */
 typedef struct {
     int per_call;
     int static_wav;
+    char dir[sizeof(((dsd_opts*)0)->wav_out_dir)];
     char static_path[sizeof(((dsd_opts*)0)->wav_out_file)];
     char raw_path[sizeof(((dsd_opts*)0)->wav_out_file_raw)];
 } cfg_recording;
@@ -7894,17 +7896,30 @@ static void
 cfg_recording_of(const dsd_opts* opts, cfg_recording* out) {
     out->per_call = opts->dmr_stereo_wav == 1;
     out->static_wav = opts->static_wav_file == 1;
+    DSD_SNPRINTF(out->dir, sizeof out->dir, "%s", opts->wav_out_dir);
     DSD_SNPRINTF(out->static_path, sizeof out->static_path, "%s", opts->wav_out_file);
     DSD_SNPRINTF(out->raw_path, sizeof out->raw_path, "%s", opts->wav_out_file_raw);
 }
 
+/* Whether a config asks the recording outputs for anything they do not run already. A per-call session's
+   wav_out_file is a slot's temp name, which staging leaves alone. */
+static int
+cfg_recording_changes(const cfg_recording* want, const cfg_recording* before) {
+    return want->per_call != before->per_call || want->static_wav != before->static_wav
+           || strcmp(want->dir, before->dir) != 0 || strcmp(want->raw_path, before->raw_path) != 0
+           || (want->static_wav && strcmp(want->static_path, before->static_path) != 0);
+}
+
 /*
- * A config's [recording] (issue #708): staging writes the mode and paths it names, and opens and closes nothing, so the
- * session's outputs are put back and moved by the services the WAV commands use. Per-call recording starts (closing a
- * static WAV as one), a static WAV opens (closing what records first, and only once it has opened), "off" stops, and a
- * raw path that changed opens or closes the raw WAV. A file that does not open leaves the recording that ran; the apply
- * then fails with a toast, the rest of the config applied. Returns 0, or -1 for a file that did not open. The caller
- * holds the P25 SM tick guard (a config apply writes the policy store).
+ * A config's [recording] (issue #708): staging writes the mode, folder and paths it names, and opens and closes
+ * nothing, so the session's are put back and moved by the services the WAV commands use. A config that changes none of
+ * them runs nothing (a slot waiting to reopen waits for its call end). Per-call recording starts (closing a static WAV
+ * as one), a static WAV opens (closing what records first, and only once it has opened), "off" stops, and a raw path
+ * that changed opens or closes the raw WAV. Per-call files are published in the folder they were recorded in: with the
+ * folder changed they are stopped before the new folder is set, and a per-call session then opens its new pair there.
+ * A file that does not open leaves the recording that ran (a new folder's pair waits to reopen at the next call end
+ * instead); the apply then fails with a toast, the rest of the config applied. Returns 0, or -1 for a file that did not
+ * open. The caller holds the P25 SM tick guard (a config apply writes the policy store).
  */
 static int
 apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* before) {
@@ -7912,30 +7927,51 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
     cfg_recording_of(opts, &want);
     opts->dmr_stereo_wav = before->per_call;
     opts->static_wav_file = before->static_wav;
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", before->dir);
     DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", before->static_path);
     DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", before->raw_path);
-    const char* failed = NULL;
+    if (!cfg_recording_changes(&want, before)) {
+        return 0;
+    }
+    const int new_dir = strcmp(want.dir, before->dir) != 0;
+    const int per_call_files = before->per_call || (!before->static_wav && (opts->wav_out_f || opts->wav_out_fR));
+    char failed[sizeof want.dir + 32] = {0};
     if (want.per_call) {
+        if (new_dir && per_call_files) {
+            (void)svc_stop_wav_recording(opts, state);
+        }
+        DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", want.dir);
         if (svc_enable_per_call_wav(opts, state) != 0) {
-            failed = "per-call WAV";
+            DSD_SNPRINTF(failed, sizeof failed, "per-call WAV in %s", want.dir);
+            if (opts->dmr_stereo_wav != 1) {
+                /* The pair this session ran was published above: the new folder's opens at the next call end. */
+                opts->dmr_stereo_wav = 1;
+                opts->wav_out_reopen = 3;
+            }
         }
     } else if (want.static_wav) {
-        if (svc_open_static_wav(opts, state, want.static_path) != 0) {
-            failed = want.static_path;
+        if (svc_open_static_wav(opts, state, want.static_path) == 0) {
+            DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", want.dir);
+        } else {
+            /* What ran goes on, its per-call files in their own folder. */
+            DSD_SNPRINTF(failed, sizeof failed, "%s", want.static_path);
         }
-    } else if (before->per_call || before->static_wav || opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {
-        (void)svc_stop_wav_recording(opts, state);
+    } else {
+        if (before->per_call || before->static_wav || opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {
+            (void)svc_stop_wav_recording(opts, state);
+        }
+        DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", want.dir);
     }
     if (strcmp(want.raw_path, before->raw_path) != 0) {
         if (want.raw_path[0] == '\0') {
             opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
             opts->wav_out_file_raw[0] = '\0';
-        } else if (svc_open_raw_wav(opts, state, want.raw_path) != 0 && failed == NULL) {
-            failed = want.raw_path;
+        } else if (svc_open_raw_wav(opts, state, want.raw_path) != 0 && failed[0] == '\0') {
+            DSD_SNPRINTF(failed, sizeof failed, "%s", want.raw_path);
         }
     }
-    if (failed != NULL) {
-        ui_set_toast(state, 5, "Config applied; the recording %s did not open, so the one that ran goes on", failed);
+    if (failed[0] != '\0') {
+        ui_set_toast(state, 5, "Config applied; the recording %s did not open", failed);
         return -1;
     }
     return 0;

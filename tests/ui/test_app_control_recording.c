@@ -62,6 +62,7 @@ expect_int(const char* what, long long got, long long want) {
 static int g_write_warnings;
 static int g_close_warnings;
 static int g_open_errors;
+static int g_table_full_warnings;
 
 static void
 count_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
@@ -75,6 +76,8 @@ count_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_close_warnings++;
     } else if (level == LOG_LEVEL_ERROR && strstr(text, "could not open wav output file") != NULL) {
         g_open_errors++;
+    } else if (level == LOG_LEVEL_WARN && strstr(text, "recordings open at once") != NULL) {
+        g_table_full_warnings++;
     }
 }
 
@@ -111,6 +114,7 @@ seam_reset(void) {
     g_write_warnings = 0;
     g_close_warnings = 0;
     g_open_errors = 0;
+    g_table_full_warnings = 0;
     dsd_wav_recording_session_reset();
 }
 
@@ -833,17 +837,171 @@ test_start_closes_handles_the_mode_does_not_cover(void) {
 }
 
 static int
-apply_recording_config(rig* r, int per_call, const char* static_path) {
+apply_recording_config_in(rig* r, int per_call, const char* static_path, const char* dir) {
     static dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_recording = 1;
     cfg.per_call_wav = per_call;
-    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r->dir);
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", dir);
     if (static_path) {
         DSD_SNPRINTF(cfg.static_wav_path, sizeof cfg.static_wav_path, "%s", static_path);
     }
     int rc = expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
     return rc | expect_int("config drained", drain(r), 1);
+}
+
+static int
+apply_recording_config(rig* r, int per_call, const char* static_path) {
+    return apply_recording_config_in(r, per_call, static_path, r->dir);
+}
+
+/* Per-call recording on in the rig's folder with slot 1 holding audio; a second, empty folder in @p other. */
+static int
+start_with_audio_and_second_folder(rig* r, char* other, size_t other_size) {
+    int rc = expect_true("second folder", dsd_test_mkdtemp(other, other_size, "dsdneo_rec_cfg_dir") != NULL);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(r);
+    fill_voice_frame(r->state);
+    dsd_write_mono_voice_to_slot_wav(r->opts, r->state, 0);
+    return rc;
+}
+
+static void
+remove_folder(const char* dir) {
+    (void)dsd_dir_list(dir, remove_file_cb, (void*)dir);
+    (void)dsd_test_rmdir(dir);
+}
+
+/* A config that moves the per-call folder publishes the files recorded so far in the folder they were recorded in, and
+   per-call recording goes on in the new one. Main left them open; each call end then filed them across folders, which
+   fails between filesystems and leaves the temp file behind. */
+static int
+test_config_moving_the_folder_publishes_in_the_old_one(void) {
+    rig r;
+    char other[DSD_TEST_PATH_MAX];
+    int rc = rig_open(&r, "dsdneo_rec_cfg_move");
+    rc |= start_with_audio_and_second_folder(&r, other, sizeof other);
+    rc |= apply_recording_config_in(&r, 1, NULL, other);
+    dir_count old_dir = count_dir(r.dir);
+    dir_count new_dir = count_dir(other);
+    rc |= expect_int("the old folder keeps no temp file", old_dir.temp, 0);
+    rc |= expect_int("slot 1's recording published in the old folder", old_dir.published, 1);
+    rc |= expect_int("a new pair opens in the new folder", new_dir.temp, 2);
+    rc |= expect_true("the folder is the config's", strcmp(r.opts->wav_out_dir, other) == 0);
+    rc |= expect_int("per-call recording on", r.opts->dmr_stereo_wav, 1);
+    rc |=
+        expect_true("the slot files are the new folder's", strstr(r.opts->wav_out_file, other) == r.opts->wav_out_file);
+    rig_close(&r);
+    remove_folder(other);
+    return rc;
+}
+
+/* The same with per-call recording turned off, and with a static WAV in its place: the files are published in their
+   own folder, and nothing lands in the new one. */
+static int
+test_config_moving_the_folder_and_stopping_publishes_in_the_old_one(void) {
+    int rc = 0;
+    for (int to_static = 0; to_static < 2; to_static++) {
+        rig r;
+        char other[DSD_TEST_PATH_MAX];
+        char static_path[DSD_TEST_PATH_MAX * 2];
+        rc |= rig_open(&r, "dsdneo_rec_cfg_move_off");
+        rc |= start_with_audio_and_second_folder(&r, other, sizeof other);
+        (void)dsd_test_path_join(static_path, sizeof static_path, other, "static.wav");
+        rc |= apply_recording_config_in(&r, 0, to_static ? static_path : NULL, other);
+        const dir_count old_dir = count_dir(r.dir);
+        const dir_count new_dir = count_dir(other);
+        const char* what = to_static ? "static" : "off";
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the old folder keeps no temp file", what);
+        rc |= expect_int(tag, old_dir.temp, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: slot 1's recording published in the old folder", what);
+        rc |= expect_int(tag, old_dir.published, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: nothing per-call in the new folder", what);
+        rc |= expect_int(tag, new_dir.temp, 0);
+        rc |= expect_int(tag, new_dir.published, to_static ? 1 : 0); /* the static file itself */
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the folder is the config's", what);
+        rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, other) == 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the mode is the config's", what);
+        rc |= expect_true(tag, r.opts->dmr_stereo_wav == 0 && r.opts->static_wav_file == to_static);
+        r.opts->wav_out_f = close_wav_file(r.opts->wav_out_f);
+        rig_close(&r);
+        remove_folder(other);
+    }
+    return rc;
+}
+
+/* A config that changes nothing about recording runs nothing: a slot waiting to reopen waits for its call end, and the
+   apply does not fail on it. */
+static int
+test_config_that_changes_no_recording_leaves_it(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_cfg_same");
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    r.opts->wav_out_fR = close_wav_file(r.opts->wav_out_fR);
+    (void)remove(r.opts->wav_out_fileR);
+    r.opts->wav_out_fileR[0] = '\0';
+    r.opts->wav_out_reopen = 2;
+    dsd_wav_test_fail_opens_after(0);
+    r.state->ui_msg[0] = '\0';
+    rc |= apply_recording_config(&r, 1, NULL);
+    dsd_wav_recording_status status;
+    dsd_wav_recording_status_get(&status);
+    rc |= expect_int("no open tried", status.failures[DSD_WAV_RECORDING_ERROR_OPEN], 0);
+    rc |= expect_true("no recording toast", strstr(r.state->ui_msg, "did not open") == NULL);
+    rc |= expect_int("slot 2 still waits for its call end", r.opts->wav_out_reopen, 2);
+    rc |= expect_int("per-call recording on", r.opts->dmr_stereo_wav, 1);
+    rig_close(&r);
+    return rc;
+}
+
+/* More segments open at once than the table holds is reported once per run, like the failures. */
+static int
+test_full_segment_table_is_reported_once_per_run(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_table");
+
+    enum { OPENED = 18 };
+
+    for (int run = 0; run < 2; run++) {
+        static SNDFILE* files[OPENED];
+        static char names[OPENED][DSD_TEST_PATH_MAX * 2];
+        dsd_wav_recording_session_reset();
+        for (int i = 0; i < OPENED; i++) {
+            files[i] = open_wav_file(r.dir, names[i], sizeof names[i], 8000, 0);
+        }
+        for (int i = 0; i < OPENED; i++) {
+            files[i] = close_wav_file(files[i]);
+            (void)remove(names[i]);
+        }
+        rc |= expect_int(run == 0 ? "the first run reports a full table once" : "the next run reports it again",
+                         g_table_full_warnings, run + 1);
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* An NFM recording stopped after the folder moved is published in the folder it was opened in. */
+static int
+test_stop_publishes_the_nfm_recording_in_its_folder(void) {
+    rig r;
+    char other[DSD_TEST_PATH_MAX];
+    int rc = rig_open(&r, "dsdneo_rec_nfm_dir");
+    rc |= expect_true("second folder", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_nfm_other") != NULL);
+    setup_nfm(r.opts, r.state);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    nfm_block(r.opts, r.state);
+    DSD_SNPRINTF(r.opts->wav_out_dir, sizeof r.opts->wav_out_dir, "%s", other);
+    submit(DSD_APP_CMD_WAV_STOP);
+    (void)drain(&r);
+    const dir_count c = count_dir(r.dir);
+    rc |= expect_true("published in its own folder", c.published == 1 && strstr(c.published_name, "_NFM") != NULL);
+    rc |= expect_int("nothing in the new folder", count_dir(other).files, 0);
+    rig_close(&r);
+    remove_folder(other);
+    return rc;
 }
 
 /* A config whose [recording] turns per-call recording off closes the slot files with their publication. Main changed
@@ -955,6 +1113,11 @@ main(void) {
     rc |= test_config_turning_per_call_on_closes_the_static_wav();
     rc |= test_config_static_wav_that_fails_keeps_the_recording();
     rc |= test_invalid_recording_command_reads_as_failed();
+    rc |= test_config_moving_the_folder_publishes_in_the_old_one();
+    rc |= test_config_moving_the_folder_and_stopping_publishes_in_the_old_one();
+    rc |= test_config_that_changes_no_recording_leaves_it();
+    rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
+    rc |= test_full_segment_table_is_reported_once_per_run();
     if (rc == 0) {
         printf("APP_CONTROL_RECORDING: OK\n");
     }
