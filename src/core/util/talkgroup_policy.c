@@ -26,8 +26,20 @@
 #include <string.h>
 #include "talkgroup_policy_internal.h"
 
+/* What the lookups scan, one small key per row, so a scan of a long list reads 12 bytes a row rather than the whole
+ * entry. keys[i] describes entries[i]; tg_policy_table_sync_keys() and the append path keep them in step. */
 typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    uint8_t kind;  /* dsd_tg_policy_row_kind */
+    uint8_t alias; /* tg_policy_entry_is_learned_alias() */
+} tg_policy_row_key;
+
+typedef struct {
+    /* One allocation of `capacity` entries followed by `capacity` keys (tg_policy_table_block_size()); freeing the
+     * entries frees the keys. */
     dsd_tg_policy_entry* entries;
+    tg_policy_row_key* keys;
     size_t count;
     size_t capacity;
     unsigned int generation;
@@ -135,6 +147,7 @@ struct dsd_tg_policy_store {
 typedef struct dsd_tg_policy_store dsd_tg_policy_context;
 
 static void tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx);
+static int tg_policy_entry_is_learned_alias(const dsd_tg_policy_entry* entry);
 
 #ifdef DSD_NEO_TEST_HOOKS
 static long s_alloc_fail_after = -1;
@@ -428,6 +441,7 @@ tg_policy_context_free(void* ptr) {
     }
     free(ctx->table.entries);
     ctx->table.entries = NULL;
+    ctx->table.keys = NULL;
     ctx->table.count = 0;
     ctx->table.capacity = 0;
     free(ctx->session_avoids);
@@ -466,6 +480,30 @@ tg_policy_ctx_get_const(const dsd_state* state) {
     return (const dsd_tg_policy_context*)dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_TG_POLICY);
 }
 
+/* Bytes per row of a table block: the entry and its key. */
+#define TG_POLICY_ROW_BYTES (sizeof(dsd_tg_policy_entry) + sizeof(tg_policy_row_key))
+
+static void
+tg_policy_key_from_entry(tg_policy_row_key* key, const dsd_tg_policy_entry* e) {
+    key->id_start = e->id_start;
+    key->id_end = e->id_end;
+    key->kind = e->kind;
+    key->alias = tg_policy_entry_is_learned_alias(e) ? 1U : 0U;
+}
+
+/* Point the keys after @p capacity entries of the table's block and recompute every row's key. */
+static void
+tg_policy_table_sync_keys(dsd_tg_policy_table* table) {
+    if (!table->entries) {
+        table->keys = NULL;
+        return;
+    }
+    table->keys = (tg_policy_row_key*)(void*)(table->entries + table->capacity);
+    for (size_t i = 0; i < table->count; i++) {
+        tg_policy_key_from_entry(&table->keys[i], &table->entries[i]);
+    }
+}
+
 static int
 tg_policy_table_reserve(dsd_tg_policy_context* ctx, size_t needed) {
     size_t target = 0;
@@ -482,11 +520,21 @@ tg_policy_table_reserve(dsd_tg_policy_context* ctx, size_t needed) {
         target *= 2u;
     }
 
-    next = (dsd_tg_policy_entry*)tg_policy_realloc(ctx->table.entries, target * sizeof(*next));
+    if (target > SIZE_MAX / TG_POLICY_ROW_BYTES) {
+        return -1;
+    }
+    const size_t old_capacity = ctx->table.capacity;
+    next = (dsd_tg_policy_entry*)tg_policy_realloc(ctx->table.entries, target * TG_POLICY_ROW_BYTES);
     if (!next) {
         return -1;
     }
+    // The keys sat after the old capacity's entries: move them after the new capacity's.
+    tg_policy_row_key* keys = (tg_policy_row_key*)(void*)(next + target);
+    if (ctx->table.count > 0) {
+        DSD_MEMMOVE(keys, (void*)(next + old_capacity), ctx->table.count * sizeof(*keys));
+    }
     ctx->table.entries = next;
+    ctx->table.keys = keys;
     ctx->table.capacity = target;
     return 0;
 }
@@ -559,7 +607,7 @@ tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_e
 /* Every mutation advances the generation (snapshots re-copy). A structural one also moves the edit anchor; a wrap is
  * structural so the edit interval stays bounded. */
 static void
-tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
+tg_policy_table_note_changed(dsd_tg_policy_context* ctx, int structural) {
     if (!ctx) {
         return;
     }
@@ -573,6 +621,17 @@ tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
         ctx->lazy = 0;
     }
     tg_policy_refresh_active_priorities(ctx);
+}
+
+/* A mutation that edited, replaced, removed or reordered rows: every key is recomputed (O(rows), at edit pace).
+ * Appends set their own key and call tg_policy_table_note_changed(). */
+static void
+tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
+    if (!ctx) {
+        return;
+    }
+    tg_policy_table_sync_keys(&ctx->table);
+    tg_policy_table_note_changed(ctx, structural);
 }
 
 static void
@@ -840,11 +899,12 @@ tg_policy_store_append_kind(dsd_tg_policy_store* store, const dsd_tg_policy_entr
     if (tg_policy_table_reserve(store, store->table.count + 1) != 0) {
         return -1;
     }
+    tg_policy_key_from_entry(&store->table.keys[store->table.count], &normalized);
     store->table.entries[store->table.count++] = normalized;
     if (normalized.kind == DSD_TG_POLICY_ROW_PATTERN) {
         store->table.pattern_count++;
     }
-    tg_policy_table_note_mutation_kind(store, structural);
+    tg_policy_table_note_changed(store, structural);
     return 0;
 }
 
@@ -1300,11 +1360,11 @@ dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsign
         return duplicates;
     }
     const size_t old_count = ctx ? ctx->table.count : 0;
-    if (count > SIZE_MAX / sizeof(dsd_tg_policy_entry) - old_count) {
+    if (count > SIZE_MAX / TG_POLICY_ROW_BYTES - old_count) {
         return -1;
     }
     const size_t capacity = old_count + count;
-    dsd_tg_policy_entry* entries = tg_policy_calloc(capacity, sizeof(*entries));
+    dsd_tg_policy_entry* entries = tg_policy_calloc(capacity, TG_POLICY_ROW_BYTES);
     if (!entries) {
         return -1;
     }
@@ -1386,13 +1446,13 @@ tg_policy_lookup_exact_in_ctx_kind(const dsd_tg_policy_context* ctx, uint32_t id
         return 0;
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
-        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->kind != DSD_TG_POLICY_ROW_EXACT || e->id_start != id || e->id_end != id) {
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->kind != DSD_TG_POLICY_ROW_EXACT || k->id_start != id || k->id_end != id) {
             continue;
         }
-        if (!tg_policy_entry_is_learned_alias(e)) {
+        if (!k->alias) {
             out->match = DSD_TG_POLICY_MATCH_EXACT;
-            out->entry = *e;
+            out->entry = ctx->table.entries[i];
             return 1;
         }
         if (alias_idx < 0) {
@@ -1422,15 +1482,15 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     }
 
     for (size_t i = 0; i < ctx->table.count; i++) {
-        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
+        const tg_policy_row_key* k = &ctx->table.keys[i];
         uint64_t span = 0;
-        if (e->kind != DSD_TG_POLICY_ROW_RANGE || tg_policy_entry_is_learned_alias(e)) {
+        if (k->kind != DSD_TG_POLICY_ROW_RANGE || k->alias) {
             continue;
         }
-        if (id < e->id_start || id > e->id_end) {
+        if (id < k->id_start || id > k->id_end) {
             continue;
         }
-        span = (uint64_t)e->id_end - (uint64_t)e->id_start;
+        span = (uint64_t)k->id_end - (uint64_t)k->id_start;
         if (best_idx < 0 || span < best_span || (span == best_span && (int)i > best_idx)) {
             best_idx = (int)i;
             best_span = span;
@@ -1454,12 +1514,12 @@ tg_policy_find_best_pattern_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     dsd_id_pattern best;
     DSD_MEMSET(&best, 0, sizeof(best));
     for (size_t i = 0; i < ctx->table.count; i++) {
-        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->kind != DSD_TG_POLICY_ROW_PATTERN || tg_policy_entry_is_learned_alias(e)) {
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->kind != DSD_TG_POLICY_ROW_PATTERN || k->alias) {
             continue;
         }
         dsd_id_pattern candidate;
-        tg_policy_entry_pattern(e, &candidate);
+        tg_policy_entry_pattern(&ctx->table.entries[i], &candidate);
         if (!dsd_id_pattern_match_decimal(&candidate, digits, len)) {
             continue;
         }
@@ -1634,12 +1694,14 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->snapshot_source_context_id = src->snapshot_source_context_id;
     clone->snapshot_parent_context_id = src->context_id;
     if (src->table.count > 0) {
-        clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, sizeof(*clone->table.entries));
+        clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, TG_POLICY_ROW_BYTES);
         if (!clone->table.entries) {
             tg_policy_context_free(clone);
             return -1;
         }
         DSD_MEMCPY(clone->table.entries, src->table.entries, src->table.count * sizeof(*clone->table.entries));
+        clone->table.keys = (tg_policy_row_key*)(void*)(clone->table.entries + clone->table.capacity);
+        DSD_MEMCPY(clone->table.keys, src->table.keys, src->table.count * sizeof(*clone->table.keys));
     }
     *out = clone;
     return 0;
@@ -3015,5 +3077,32 @@ dsd_tg_policy_test_set_generation(dsd_state* state, unsigned int generation, uns
         ctx->table.generation = generation;
         ctx->table.structural_generation = structural_generation;
     }
+}
+
+int dsd_tg_policy_test_keys_consistent(const dsd_state* state);
+
+/* 1 when the state's table has no rows, or its scan keys sit right after its capacity's entries and each describes its
+ * row (bounds, kind, learned alias). */
+int
+dsd_tg_policy_test_keys_consistent(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (!ctx || ctx->table.count == 0) {
+        return 1;
+    }
+    if (!ctx->table.entries
+        || ctx->table.keys != (const tg_policy_row_key*)(const void*)(ctx->table.entries + ctx->table.capacity)) {
+        return 0;
+    }
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        tg_policy_row_key want;
+        DSD_MEMSET(&want, 0, sizeof(want));
+        tg_policy_key_from_entry(&want, &ctx->table.entries[i]);
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->id_start != want.id_start || k->id_end != want.id_end || k->kind != want.kind
+            || k->alias != want.alias) {
+            return 0;
+        }
+    }
+    return 1;
 }
 #endif

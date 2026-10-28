@@ -1364,6 +1364,11 @@ suite runs under this compiler.
   alias-only ID over in place. Edit staleness (`dsd_tg_policy_edit_version_valid()`) is judged against the structural
   generation, which learned aliases and session avoids do not move; a context created in place by decoder writes
   accepts an edit captured with nothing loaded, and a generation wrap is structural.
+- Invariant (scan keys, `talkgroup_policy.c`): the lookups scan a compact key per row (`tg_policy_row_key`: bounds,
+  kind, learned-alias flag) stored after the entries in the table's one allocation, never the full entries; a pattern
+  row's text is read from its entry. Appends set their key; every other mutation (edit, replace, remove, selection
+  rebuild) resyncs the keys (`tg_policy_table_note_mutation_kind()`), growth moves them, clones copy them. The public
+  `dsd_tg_policy_entry` is unchanged. Tests: `CORE_TG_POLICY_ALLOC_FAIL` (`test_scan_keys_follow_every_mutation`).
 - Invariant (unknown endpoints, `talkgroup_policy.c`): an endpoint ID of 0 is unknown, never an ID. Private
   evaluation, the followed calls' priority refresh and the radio list's policy lookups look up no row for a 0 source
   or target, so a `0` row neither blocks, admits (`-W`) nor prioritises a call that names one party. Private-call vs private-grant admission is
