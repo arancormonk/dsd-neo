@@ -507,6 +507,32 @@ Item {
             verify(card().message.indexOf("Tap Retry") >= 0 || card().message.indexOf("tap Retry") >= 0, card().message);
         }
 
+        // #782: a start refused while the previous session stops (8) or never answered (9) is worded for Signal
+        // search's screen too, which has no Retry or Details, never as the host's own text.
+        function test_attempt_failure_in_signal_search_data() {
+            return [
+                {tag: "previous stopping", kind: 8, host: "A previous session is still stopping",
+                    text: "The previous session is still stopping, so Signal search was not started. Start the search again once it has stopped."},
+                {tag: "undelivered", kind: 9, host: "The decoder service did not respond to the start",
+                    text: "The decoder did not respond in time, so Signal search was not started. Start the search again, or open Diagnostics in Settings if this keeps happening."}
+            ];
+        }
+        function test_attempt_failure_in_signal_search(data) {
+            connect("usb");
+            app.attemptedSource = {kind: "explore", uid: "", remember: false,
+                system: {name: "Signal search", sourceType: "usb", signalSearch: true}};
+            home().signalSearch();
+            verify(app.signalSearchOpen);
+            testContext.setLifecycleFailureKind(data.kind);
+            testContext.setLifecycleFailure(data.host);
+            testContext.setLifecyclePhase(4);
+            var search = findChild(app, "signalSearchScreen");
+            tryCompare(findChild(search, "searchMessage"), "text", data.text);
+            app.signalSearchOpen = false;
+            tryCompare(card(), "visible", true);
+            verify(card().message.indexOf("Tap Retry") >= 0, card().message);
+        }
+
         function test_dismiss_gives_up_the_attempt() {
             startTarget("saved", "usb");
             testContext.setLifecycleFailureKind(9);

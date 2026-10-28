@@ -97,6 +97,19 @@ Window {
             return qsTr("%1 could not be reopened, so the session was not started. Tap Retry, or unplug it and plug it back in if this keeps happening.").arg(receiver);
         return qsTr("%1 is no longer connected, so the session was not started. Plug it back in, then tap Retry.").arg(receiver);
     }
+    /**
+     * A start attempt's own failure (kinds 8-12, android/run_status.h) worded
+     * for Signal search's screen, which has no Retry or Details: the search is
+     * started again from its controls. Empty for any other failure.
+     */
+    function searchStartFailure() {
+        var kind = decoderHost ? decoderHost.inputFailureKind || 0 : 0;
+        if (kind === 8)
+            return qsTr("The previous session is still stopping, so Signal search was not started. Start the search again once it has stopped.");
+        if (kind === 9)
+            return qsTr("The decoder did not respond in time, so Signal search was not started. Start the search again, or open Diagnostics in Settings if this keeps happening.");
+        return receiverStartFailure(true);
+    }
     // #647 D2a: the host's word on the last session's receiver, scoped to that
     // session. Listen gives it a notice once the session is over; while it
     // winds down, the Monitor's pill says LOST.
@@ -1388,9 +1401,9 @@ Window {
         sessionActive: decoderHost.sessionActive
         leaving: mainRoot.leavingSearch
         sessionSource: metrics.radioSource || ({})
-        // A receiver's ending, and a start that could not take its receiver, are
-        // worded for this screen: the search starts again from here.
-        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText === mainRoot.hostFailure && mainRoot.receiverStartFailure(true).length > 0 ? mainRoot.receiverStartFailure(true) : mainRoot.failureText
+        // A receiver's ending, and a start attempt's own failure, are worded for
+        // this screen: the search starts again from here.
+        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText === mainRoot.hostFailure && mainRoot.searchStartFailure().length > 0 ? mainRoot.searchStartFailure() : mainRoot.failureText
         onBackRequested: mainRoot.requestBack()
         onClosed: {
             mainRoot.abandonSignalSearchStart();
