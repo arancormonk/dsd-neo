@@ -76,7 +76,7 @@ data = true
 enabled = true
 chan_csv = "~/dsd-neo/dmr_t3_chan.csv"   # path expansion supported
 group_csv = "$HOME/dsd-neo/group.csv"
-src_csv = "$HOME/dsd-neo/src.csv"         # source radio ID names; labels only
+src_csv = "$HOME/dsd-neo/src.csv"         # source radio ID names (and optional radio policy)
 p25_bandplan_csv = "~/dsd-neo/p25_bandplan.csv"
 allow_list = true
 
@@ -344,7 +344,7 @@ small subset is exposed as config keys for convenience (for example
 | `enabled` | BOOL | Enable trunking | `false` |
 | `chan_csv` | PATH | Channel map CSV | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
-| `src_csv` | PATH | Source ID alias list CSV (`--src-csv`; labels only, loads regardless of trunking) | (empty) |
+| `src_csv` | PATH | Source ID list CSV (`--src-csv`; names, optional radio policy columns; loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |
 | `tune_group_calls` | BOOL | Follow group calls | `true` |
@@ -773,8 +773,10 @@ is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 ### Trunking
 
 `[trunking] src_csv` is the global source ID alias list, equivalent to `--src-csv <file>`. When set, it loads
-regardless of whether trunking is enabled, so conventional decode also gets source names. It supplies labels only;
-source labels prefer this list and fall back to the active group list's exact row, with OTA alias text untouched.
+regardless of whether trunking is enabled, so conventional decode also gets source names. A plain `id,name[,tags]`
+file supplies labels only; one whose header has `mode` as its third column also blocks, mutes or stops recording
+calls by radio (`docs/csv-formats.md`). Source labels prefer this list and fall back to the active group list's
+exact row, with OTA alias text untouched.
 A load failure logs a warning and lets decoding continue. A successfully read file with zero usable rows installs
 an empty list, matching live imports from the terminal and Qt/Android.
 

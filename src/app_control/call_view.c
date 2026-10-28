@@ -64,7 +64,8 @@ call_reads_encrypted(const dsd_call_snapshot* call) {
  * TETRA is exempt for another reason (issue #773): it never opens an epoch on a bare sync.
  * Its calls publish only from a CRC-checked carrier, and speech heard before any D-SETUP
  * named a party is published as a voice call with no identity -- a real transmission that
- * no PDU named, not noise.
+ * no PDU named, not noise. A direct mode call of security class DM-2-C, which encrypts
+ * every identity (EN 300 396-3), publishes no party either.
  */
 static int
 call_has_no_identity(const dsd_call_snapshot* call) {

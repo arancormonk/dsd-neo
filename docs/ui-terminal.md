@@ -468,9 +468,10 @@ RadioReference import:
   every target. The export's suggested file name carries the WACN/SYS when they are known and trunk scan is
   off; under trunk scan the merged multi-target file keeps the generic name.
 - **Trunking -> Channels & groups -> Import source ID list CSV...** prompts for an `id,name[,tags]`
-  CSV of source radio ID names. These labels carry no allow/block or media policy and apply in conventional
-  decode and trunk scan alike. A successful import replaces the source list; an unreadable file, a load
-  failure, or a file with no usable rows keeps the current list and path. Source labels prefer this list,
+  CSV of source radio ID names, or an `id,name,mode,audio,record,stream,tags` one whose rows also block, mute or
+  stop recording calls by radio, and applies in conventional decode and trunk scan alike. A successful import
+  replaces the source list, and a file with no usable rows installs an empty one; an unreadable file or a load
+  failure keeps the current list and path. Source labels prefer this list,
   then fall back to the group list's exact row, including learned talker aliases. See `docs/csv-formats.md`.
 - P25 channels are shown as four hex digits followed by the same channel as `<identifier>-<channel>` in
   parentheses (`Active Ch: 2A46 (2-2630)`, `CH:2A46 (2-2630)` in the secondary control channel list, and the
@@ -1022,9 +1023,11 @@ line only once the decoder has something for it, and under them the latest decod
 The live call heads those lines, in the P25/DMR slot rows' columns: the group (or, for a private call, the other
 party) and the talker with the call's emergency and priority tags and its kind (`Group`, `Private`, `Data`, or `Voice`
 for speech no call set-up has named yet, then `Encrypted` for an encrypted call), then their labels from the group
-and radio lists. A party not yet decoded has blank brackets, an ended call stays for 3 seconds, labels wider than the
-screen are cut at its width with a marker (`…`, or `...` without UTF-8), and with no call both lines stay in place with
-blank brackets so the lines below do not move:
+and radio lists. A party not yet decoded has blank brackets; a call with no party decoded at all (speech before
+any set-up, or a direct mode call whose DM-2-C security class encrypts every identity) still shows, with both
+brackets blank. An ended call stays for 3 seconds, labels wider than the screen are cut at its width with a marker
+(`…`, or `...` without UTF-8), and with no call both lines stay in place with blank brackets so the lines below do
+not move:
 
 ```text
 | CALL   - TGT: [  100601] SRC: [  100702] Group

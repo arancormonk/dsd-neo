@@ -1362,14 +1362,42 @@ suite runs under this compiler.
   stopping decoding. `src/core/file/source_alias_csv.c` implements `dsd_source_alias_load(path, &out)`
   (fresh candidate, output untouched on open/read/allocation failure), `csvSrcImport()`/`csvSrcImportPath()`
   from `<dsd-neo/core/csv_import.h>`, and `dsd_csv_validate_src_file()` from `<dsd-neo/core/csv_validate.h>`.
-  `dsd_source_alias_lookup()` uses exact-before-range matching (first exact row wins) and narrowest-range
-  matching (last row wins ties);
-  `dsd_source_label_lookup()` prefers aliases over the active group-list exact label, with mode only from
-  group policy and OTA alias text untouched. The list is global across scan rows and immutable once installed;
+  Rows carry the group list's row kind (`kind`, `pattern[16]`: exact, range or digit pattern) and, from a file whose
+  header's third column is `mode`, policy (`has_policy`, `mode`, `audio`, `record`, `stream`; issue #773 D3). Lookups
+  take the group list's precedence (exact, first row; narrowest range, last row; most specific pattern, last row):
+  `dsd_source_alias_lookup()` among the rows with a non-empty name, `dsd_source_policy_lookup()`
+  (`dsd_source_policy_match`) among all rows, so an unnamed policy row decides and names nothing. The store keeps
+  `pattern_count` and `has_policy` (`dsd_source_policy_loaded()`) so a list without patterns or policy costs no
+  extra pass, and a unique nonzero id (`dsd_source_alias_store_id()`, part of the P25 Phase 2 verdict key).
+  `dsd_source_label_lookup()` prefers the radio list over the active group-list exact label and returns 1 only with
+  a non-empty name; its mode is the winning radio row's when that row has policy and a mode, else the group list's
+  exact row's, and OTA alias text stays untouched. The list is global across scan rows and immutable once installed;
   live access belongs to the decoder thread. `dsd_source_alias_copy_snapshot(dst, src)` deep-copies it for
   both snapshot hops, reuses an unchanged clone, and preserves an owned destination store on allocation failure.
   A shallow alias of the source is detached so destination cleanup cannot free the source. `CORE_SOURCE_ALIAS`
-  tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
+  tests matching, precedence (patterns included), the policy header, lifecycle and policy isolation;
+  `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
+- API note (digit patterns, issue #773 D1/D2): `<dsd-neo/core/id_pattern.h>` (`src/core/util/id_pattern.c`) parses,
+  normalises and matches the `x`/`*` patterns both ID lists accept (`docs/csv-formats.md` "Digit patterns"):
+  `dsd_id_pattern_parse()` lower-cases `x`, collapses `**`, and refuses other characters, an empty or over-15-character
+  result, a leading `0`, and a pattern no ID in `0..4294967295` matches (a bounded digit-by-digit check at import);
+  the canonical text (`DSD_ID_PATTERN_TEXT_MAX` 16 with the NUL) is what rows store, key, export and compare.
+  `dsd_id_pattern_match()` formats the ID once (`dsd_id_decimal()`) and runs an iterative glob, no recursion or
+  allocation; lookups format once per lookup (`dsd_id_pattern_match_decimal()`), not per row.
+  `dsd_id_pattern_more_specific()` is the tie rule (more literal digits, then no `*`). Tests: `CORE_ID_PATTERN`.
+- Invariant (group-list row kinds, `<dsd-neo/core/talkgroup_policy.h>`): a row's `kind`
+  (`dsd_tg_policy_row_kind`: EXACT, RANGE, PATTERN) says how to read it; a pattern row keeps `id_start = id_end = 0`
+  and its text in `pattern`, and is never read as a span (Qt coverage and per-row avoid counts go through the
+  matcher, `dsd_tg_policy_session_avoid_count_pattern()`). Every constructor, copy, validator, importer, store append,
+  normaliser, snapshot and serialiser carries the kind; export and rewrite write the canonical text. One precedence
+  decides and labels (`dsd_tg_policy_lookup_id()`, `dsd_tg_policy_lookup_group()`): exact (first row) → narrowest range
+  (last row) → most specific pattern (last row), so `*` is the catch-all. The context's pattern count
+  (`dsd_tg_policy_pattern_count()`) skips the pattern pass entirely when 0. Learned aliases are always exact rows.
+  Single-row edits name their row by token (`dsd_tg_policy_row_key`: table index, kind, bounds, pattern, captured at a
+  context/generation) through `dsd_tg_policy_set_fields_key()` and `dsd_tg_policy_remove_key()`, which refuse a stale
+  capture or a row at that index whose kind or key changed, so a duplicate, a zero-start range or a pattern row is
+  the one edited; a token with index -1 keeps the old bounds-only meaning (first talkgroup row with those bounds).
+  Tests: `CORE_TALKGROUP_POLICY`, `CORE_TG_POLICY_ALLOC_FAIL`, `APP_COMMAND_QUEUE`, `UI_QT_TALKGROUP_LIST_MODEL`.
 - Invariant (learned alias rows, `<dsd-neo/core/talkgroup_policy.h>`): every over-the-air alias publisher (Motorola,
   Harris and Tait in `dsd_alias.c`, the P25 Phase 1 LSD soft ID in `p25p1_ldu1.c`/`p25p1_ldu2.c`) learns its row
   through `dsd_tg_policy_learn_exact()`, always in mode `D` (an encrypted radio is locked out by the encryption ledger,
@@ -1397,11 +1425,11 @@ suite runs under this compiler.
   learned alias never labels a talkgroup, and a deciding row without a name labels nothing). A private call's target is
   a radio and takes the source label (`dsd_source_label_lookup()`: radio list, then the group list's exact row). Data
   calls and voice of unknown kind keep the exact-row label. Every path returns 1 only with a non-empty name; a label
-  without a mode prints no `Mode:`. A textual target (YSF/D-STAR/dPMR `target_text`, no numeric ID) is never looked
-  up and keeps its text. A terminal site with no open call passes the group kind. Tests: `CORE_TALKGROUP_POLICY`
-  (`test_group_label_from_range_and_pattern`, `test_alias_never_labels_talkgroup`), `CORE_CALL_ALERT_HISTORY`
-  (`test_alias_never_labels_talkgroup`, `test_private_target_labelled_as_radio`), `UI_NCURSES_PRINTER_HELPERS`
-  (`test_target_labels_follow_call_kind`).
+  without a mode prints no `Mode:`. A textual target (`target_text`, set by YSF, D-STAR, dPMR and M17, no numeric ID)
+  is never looked up and keeps its text. A terminal site with no open call passes the group kind. Tests:
+  `CORE_TALKGROUP_POLICY` (`test_group_label_from_range_and_pattern`, `test_alias_never_labels_talkgroup`),
+  `CORE_CALL_ALERT_HISTORY` (`test_alias_never_labels_talkgroup`, `test_private_target_labelled_as_radio`),
+  `UI_NCURSES_PRINTER_HELPERS` (`test_target_labels_follow_call_kind`).
 - Invariant (scan keys, `talkgroup_policy.c`): the lookups scan a compact key per row (`tg_policy_row_key`: bounds,
   kind, learned-alias flag) stored after the entries in the table's one allocation, never the full entries; a pattern
   row's text is read from its entry. Appends set their key; every other mutation (edit, replace, remove, selection
@@ -2635,6 +2663,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     radio list's import and clear (`DSD_APP_CMD_IMPORT_SRC_LIST`, `_CLEAR`) are on that list: its policy rows judge
     calls too. Every other radio-list install is pre-start (engine start, `--src-csv`); a config apply only sets the
     path. Tests: `ENGINE_P25_POLICY_STORE_GUARD` (`test_radio_list_reload_during_playout`, TSan preset).
+  - Talkgroup row tokens (issue #773): `TG_LISTEN_SET`, `TG_ROW_SET` and `TG_ROW_REMOVE` payloads carry `table_index`,
+    `kind` (`DSD_APP_TG_ROW_EXACT`/`_RANGE`/`_PATTERN`, pinned to `dsd_tg_policy_row_kind` by a `_Static_assert` in
+    `app_command_queue.c`) and `pattern` (`DSD_ID_PATTERN_TEXT_MAX`, which is why `commands.h` includes
+    `<dsd-neo/core/id_pattern.h>`), handed to the policy's token edits; `table_index` -1 is the bounds-only edit of
+    old callers (a pattern row always needs its index). The selection file of `TG_SELECTION_SET` holds
+    `table_index,kind,start,end,pattern` rows, and still reads the old `table_index,start,end` ones. The Qt bridge
+    (`command_bridge.cpp`) and the control API (`api_commands.c`) build the same token. Tests: `APP_COMMAND_QUEUE`,
+    `API_COMMAND_PAYLOADS`, `UI_QT_TALKGROUP_LIST_MODEL`.
   - Input switches (issue #634): Input > Switch source (WAV / raw file, symbol files, UDP, Pulse and a Pulse device),
     Replay last, Stop replay and the TCP connect go through `dsd_audio_switch_input()` by way of the services in
     `menu_services.c` and `tcp_audio_connect.c` (`svc_open_audio_file_in()`, `svc_open_symbol_stream_in()`,
@@ -3162,12 +3198,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   (`tg_label`: the talkgroup's, a private call's target radio's, from the staged row or the label cached on the ended
   epoch, whatever headlines the call), the source (`src_text` with its label, empty -- never `0` -- when no source
   decoded; `src_id`, `src_label` alone), the call `kind`, `protocol_label` (the protocol's display name from
-  `dsd_synctype_to_string()`, spelled `X2-TDMA` and `ProVoice` for those two, empty for analog), crypto and service
+  `dsd_synctype_to_string()`, with its frame-type and family names spelled as the protocol: `X2-TDMA`, `ProVoice`,
+  `EDACS`, `D-STAR`, `M17`; empty for analog and the generic digital sync), crypto and service
   metadata, with the 3 s ended hold. An epoch with no identity reads idle, except on the
   protocols whose identity-less voice is a real transmission: X2-TDMA, ProVoice, analog, and TETRA, which publishes a
-  call only from a CRC-checked carrier and publishes speech no D-SETUP named as a voice call with no parties (issue
-  #773). The Qt hero and second-slot strip, the Android notification, the API `call` feed and the terminal's TETRA
-  call block (`ui_format_tetra_call_lines()`) read it; the terminal's P25/DMR slot rows do not -- they read the
+  call only from a CRC-checked carrier and publishes speech no D-SETUP named, and a direct mode DM-2-C call (whose
+  security class encrypts every identity), as a voice call with no parties (issue #773). The Qt hero and second-slot
+  strip, the Android notification, the API `call` feed and the terminal's TETRA call block
+  (`ui_format_tetra_call_lines()`) read it; the terminal's P25/DMR slot rows do not -- they read the
   call-state snapshot directly because they mix the call with per-slot decoder state (burst type, payload crypto,
   embedded GPS, talker alias). Also
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
@@ -7254,10 +7292,15 @@ single "current call".
   previous floor PDU was an individually addressed one of the same kind that named it, within `TETRA_GRANT_PAIR_S`
   (1 s) on the decode clock (pairing, a heuristic: a later group notice, or one after another floor PDU, loses the
   talker, and two floor PDUs missed in a row within the window credit the previous talker until a PDU names one;
+  a group notice addressed by event label reads as unaddressed, so pairing never sees it and the talker is lost;
   documented limits). A group D-SETUP names its calling party as talker only with transmission granted, no talker
   known, no Facility element (whose SS-TPI INFORM, not parsed, may name another) and a notification indicator that is
-  not a late-entry one (0, 1, 2); an individual D-SETUP never does (`setup_names_talker()`). A D-CONNECT granting the
-  caller transmission for a call no record holds is remembered (`tetra_pending_connect`, 4 entries) for the D-SETUP
+  not a late-entry one (0, 1, 2); an individual D-SETUP never does (`setup_names_talker()`). This is a conservative
+  decoder rule, not a spec guarantee: a SwMI may repeat a D-SETUP with another notification (EN 300 392-9 clause
+  7.2.2), and such a repeat, while no talker is known, is read as a set-up naming its calling party (documented
+  limit). A D-CONNECT granting the
+  caller transmission for a call no record holds is remembered (`tetra_pending_connect`, 4 entries, the least
+  recently remembered giving way, each used once) for the D-SETUP
   that follows it within `TETRA_GRANT_PAIR_S` on the same network (clause 14.5.2.1.2 NOTE 1: connect-first set-up),
   which takes the caller as talker and as calling party when it names none; a conflicting calling party, a release
   or floor PDU of the identifier and `tetra_calls_forget_calls()` forget it. Encryption control of D-TX GRANTED / D-TX
@@ -8640,7 +8683,9 @@ Qt Quick frontend (`src/ui/qt`):
   talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
   `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
   (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside the
-  strip's identity; a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
+  strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
+  and the ENC and EMERGENCY tags, so at phone width it can yield (decided limit; the headline still names the other
+  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
   `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever
   it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). Tests:
   `tst_monitor_call_identity.qml`, `UI_QT_METRICS_MODEL` (`test_slot_kind_and_labels()`). `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's

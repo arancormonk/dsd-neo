@@ -607,6 +607,13 @@ field, and the decoder refuses the rest when it applies the command.
   is a heard talkgroup not on the list, one non-zero exact ID). The older
   `table_index,start,end` rows are still read. `count` is the number of rows,
   `listening` the value to apply.
+* **`import_src_list`**: `value` is the path of a source ID list CSV. It replaces
+  the radio ID list, its names and, when the file has policy columns, its radio
+  rules; a call in progress keeps its receiver, and its audio and recording
+  follow the new rules
+  ([Source ID List CSV](csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
+  `import_src_list_clear` removes both. Rows of either list may be digit
+  patterns ([Digit patterns](csv-formats.md#digit-patterns)).
 * **`decryption_apply`**: `type` (`basic`, `hex`, `rc4`, `scrambler`,
   `m17_scrambler`, `m17_aes`), `value`, `hex`/`dec` key CSV paths, `map` (DMR
   key-map CSV), `profile`, `force`, `source` (`0`..`3`, default `2` direct) and

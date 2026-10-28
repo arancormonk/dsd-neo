@@ -46,7 +46,9 @@ Preempt is available above priority zero: a preempt talkgroup interrupts a lower
 announces it on the channel being received (P25, TETRA, DMR trunking, NXDN; see
 [Priority and preemption](../docs/csv-formats.md#priority-and-preemption)). The sheet says so, and says that a Not tuned
 row's priority does nothing. The card shows `P<n>` and a lightning badge when preempt is set. Heard-only rows offer
-**Add to list**; listed rows require two taps on **Remove**. An accepted submit closes the sheet; a decoder refusal
+**Add to list**; listed rows require two taps on **Remove**. A digit-pattern row (such as `12xx` or `*`, see
+[Digit patterns](../docs/csv-formats.md#digit-patterns)) shows its pattern as its ID and is edited like a range;
+patterns come only from the imported file. An accepted submit closes the sheet; a decoder refusal
 appears in the screen's message line. Over-the-air radio aliases learned while the sheet is open do not make an edit
 stale; a list reload, an edit from another frontend or a scan rotation does, and then the sheet must be reopened.
 
@@ -240,7 +242,9 @@ row per stored file, with dry-run validation counts from
 surfaced as Settings → Imported files and the wizard's Trunking data pickers.
 The imported-file kinds include `chan`, `group`, `keysDec`, `keysHex`, `p25Bandplan`,
 `src` (the **Radio IDs** picker), and `trunkTargets` (**Trunk scan targets**). Source
-ID lists use `id,name[,tags]` and supply labels only; they can be applied or cleared in a running session. A group
+ID lists use `id,name[,tags]` and supply labels; a list whose header is `id,name,mode,...` also blocks, mutes or stops
+recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
+They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved; SAF needs none.
 

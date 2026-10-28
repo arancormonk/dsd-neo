@@ -59,7 +59,8 @@ This project is an active work in progress as we decouple from the upstream fork
 - Built‑in trunking workflow
 
   - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `--frontend terminal`; `-N` is the short alias).
-  - Name source radio IDs separately with `--src-csv examples/src.csv` (labels only, with group-list fallback; works in conventional decode too).
+  - Name source radio IDs separately with `--src-csv examples/src.csv` (with group-list fallback; works in conventional decode too); a `mode` column also blocks, mutes or stops recording calls by radio (`examples/src_policy.csv`).
+  - Match whole blocks of talkgroups or radios with digit patterns such as `12xx`, `*05` or `*` in either list (`examples/group_patterns.csv`).
   - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96, NXDN48
     and analog NFM and AM targets with `--trunk-scan targets.csv`; conventional `-Y` channel maps can mix `nfm` and
     `am` rows with digital ones too.

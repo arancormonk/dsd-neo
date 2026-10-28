@@ -672,8 +672,9 @@ Purpose: Provide labels and allow/block behavior for talkgroups.
 
 Required columns:
 
-1. `id` (decimal integer; talkgroup ID or radio ID depending on protocol context). For radio ID names without
-   policy, use the [Source ID List CSV](#source-id-list-csv---src-csv-file--trunking-src_csv) below.
+1. `id` (decimal integer; talkgroup ID or radio ID depending on protocol context): an exact ID, a range or a
+   [digit pattern](#digit-patterns). For radio ID names and per-radio policy, use the
+   [Source ID List CSV](#source-id-list-csv---src-csv-file--trunking-src_csv) below.
 2. `mode` (string)
 3. `name` (string)
 
@@ -704,9 +705,13 @@ Important behavior:
 - The header must contain `priority` in column 4 and continue in that order for the available policy columns.
 - If the header is basic/unknown (for example `id,mode,name,metadata`), optional policy parsing is disabled and extra
   columns remain metadata-only values.
-- `id` supports exact IDs (`1201`) and ranges (`1200-1299`).
+- `id` supports exact IDs (`1201`), ranges (`1200-1299`) and digit patterns (`12xx`, see
+  [Digit patterns](#digit-patterns)).
   - Exact rows populate the runtime policy table used for labels and decisions.
   - Range rows are policy entries that match IDs within the configured range.
+  - Pattern rows match the talkgroup IDs whose decimal digits fit the pattern. A talkgroup is decided by its exact
+    row, else the narrowest range, else the most specific pattern, so `*` is a catch-all for every talkgroup no
+    other row matches.
   - A talkgroup is labelled by the row that decides it: its exact row, else the narrowest range, else the most
     specific pattern, with that row's `name` and `mode` (`TName:`/`Mode:` in history, the terminal and the frontends).
     A deciding row with an empty `name` labels nothing; no wider row lends it a name. A private call's target is a
@@ -732,8 +737,15 @@ Important behavior:
   changes.
 - Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
   matched by them; use the M17 CAN filter to select M17 traffic.
-- Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges plus voice talkgroups heard this
-  session that no listed row covers. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
+- A private (radio-to-radio) call is judged by the exact rows of its two radio IDs; ranges and patterns are
+  talkgroup rows and never decide or name a private call. A radio ID of `0` is unknown and matches no row. The
+  [Source ID List CSV](#source-id-list-csv---src-csv-file--trunking-src_csv) can add restrictions by radio for
+  group and private calls alike.
+- A talkgroup Hold overrides this list's restrictions for the held talkgroup, not the source ID list's.
+- Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges/patterns plus voice
+  talkgroups heard this session that no listed row covers. A pattern row shows its pattern as its ID, after the
+  numeric rows in list order; a heard talkgroup it matches is covered, and searching for a number also finds the
+  patterns that match it. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
   waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
   retained tags (RadioReference imports supply their category names).
 - **Listen all** and **Do not tune all** edit listed rows in the selected category, or every listed row under
@@ -745,16 +757,19 @@ Important behavior:
 - A row's **Record** setting is its `record` column. A row that is not tuned (`B`) records nothing and the file cannot
   say otherwise, so turning **Listening** off and on again sets `record=on`: set Record again in the same edit if the
   row should stay off. An edit that changes both applies Listening first, then Record.
-- When a group file is configured, edits atomically rewrite that file in table order, preserving ranges and
-  modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
-  when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
-  app-private imported copy, not the original document.
+- Pattern rows are edited like ranges (listening, record, name, category, priority, preemption, remove) in
+  Qt/Android and the control API, and like ranges they are added only through the file. Learned radio aliases are
+  always exact rows.
+- When a group file is configured, edits atomically rewrite that file in table order, preserving ranges, patterns
+  (in their normalized form) and modeled fields. Existing extended policy headers remain extended; otherwise the
+  output is `id,mode,name,tags` when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are
+  discarded. Android rewrites its app-private imported copy, not the original document.
 - A basic group-file header is promoted to the extended policy header when any canonical row has
   `priority != 0`, `preempt` enabled, or audio/record/stream flags that differ from the mode defaults,
   so those settings survive saving and reloading even to a new file.
-- The decoder's talkgroup-list export writes the canonical table, including aliases, all modes and ranges,
-  to the requested path. After a successful write, subsequent edits persist there. Export refuses scan-row
-  contexts and stale context/generation pairs, as do row edits after the policy changes.
+- The decoder's talkgroup-list export writes the canonical table, including aliases, all modes, ranges and
+  patterns, to the requested path. After a successful write, subsequent edits persist there. Export refuses
+  scan-row contexts and stale context/generation pairs, as do row edits after the policy changes.
   App-control retains the export result separately from toasts: `dsd_app_tg_export_result_get` copies its
   sequence, success/failure, request context/generation, and destination path. A frontend keeps one export
   outstanding and waits for a newer matching successful result before registering the file; unrelated
@@ -796,6 +811,46 @@ id,mode,name,priority,preempt,audio,record,stream,tags
 1202,A,Dispatch 2,40,false,on,off,on,secondary
 1300-1399,A,Ops Range,10,false,on,on,on,wide
 ```
+
+Pattern example (`examples/group_patterns.csv`): talkgroup 1201 is decided by its exact row, 1250 by the range,
+1340 by `13xx`, 9001 by `9*` and everything else by `*`, which plays and records it but keeps it out of the
+rdio-scanner export:
+
+```csv
+id,mode,name,priority,preempt,audio,record,stream,tags
+1201,A,Fire Dispatch,80,true,on,on,on,Fire
+1200-1299,A,Fire Ops,20,false,on,on,on,Fire
+13xx,A,Law Tac,10,false,on,off,on,Law
+9*,B,Test talkgroups
+*,A,Other,0,false,on,on,off,Other
+```
+
+### Digit patterns
+
+The group list and the source ID list accept a digit pattern wherever they accept an `id`. A pattern contains `x`
+(exactly one digit) or `*` (any run of digits, including none), and otherwise only decimal digits. It matches an
+ID written in decimal without leading zeros:
+
+| Pattern | Matches |
+| --- | --- |
+| `1xxx` | 1000-1999 |
+| `xxx` | 100-999 (not 0-99: IDs have no leading zeros) |
+| `12*` | 12 and every ID starting with 12 |
+| `*05` | every ID ending in 05 (105, 2005, ...) |
+| `*12*` | every ID containing 12 |
+| `2xx*` | every ID of three or more digits starting with 2 |
+| `*` | every ID |
+
+- `X` is read as `x` and repeated `*` as one. The result must be at most 15 characters; it is the form stored,
+  matched, exported and shown (`1XX**` is kept as `1xx*`).
+- A pattern is skipped as an invalid ID (warned, like any invalid row) when it holds any other character, is
+  longer than 15 characters, starts with `0` (`05x`, `0*`: an ID has no leading zero; write ID 0 as `0`), or matches
+  no ID in `0..4294967295` (`5xxxxxxxxx`, `xxxxxxxxxxx`, `4294967296*`).
+- Precedence, the same for decisions and names in both lists: an exact row (the first row wins duplicates), else
+  the narrowest range (the last row wins equal widths), else the most specific pattern: the one with more literal
+  digits, then one without `*` over one with it, then the last row. `*` therefore decides only the IDs no other
+  row matches.
+- A list with no pattern rows costs nothing extra to look up.
 
 ### Priority and preemption
 
@@ -841,19 +896,14 @@ announcement: one heard during the dwell is retried on the next.
 
 Purpose: Provide names for source radio IDs (unit IDs), shown as `SName:` in event history and in the terminal
 call display: after `SRC:` on the NXDN target/source line, and on the slot's `D XTRA` line beside the talkgroup
-label for DMR and P25 Phase 2. A plain list supplies labels only. A list with policy columns (below) can also
-allow, block or stop recording calls by radio, using the modes and media flags documented for the
-[group list](#group-list-csv--g-file--trunking-group_csv). Private-call destination radio IDs still use the group
-list for their names.
+label for DMR and P25 Phase 2. A private call's destination radio is named from this list too. A plain list supplies
+labels only. A list with policy columns (below) can also block, mute, stop recording or stop exporting calls by
+radio, using the modes and media flags documented for the [group list](#group-list-csv--g-file--trunking-group_csv).
 
 Required columns:
 
 1. `id` (decimal `uint32_t`, `0..4294967295`): an exact ID `1234567`, an inclusive range `2000000-2000999`, or a
-   digit pattern. A pattern contains `x`/`X` (exactly one digit) or `*` (any run of digits, including none) and
-   otherwise only digits, and matches the radio ID written in decimal without leading zeros: `1xxx` covers
-   1000-1999, `2*` every ID starting with 2, `*05` every ID ending in 05, and `*` every ID. A pattern is at most 15
-   characters once `X` is lower-cased and repeated `*` collapsed, cannot start with `0`, and must match some ID in
-   `0..4294967295`; any other pattern is skipped as an invalid ID.
+   [digit pattern](#digit-patterns) (`12345xx`, `9*`), with the group list's grammar.
 2. `name` (free text, trimmed and truncated to **49 bytes**; truncation may cut a multi-byte UTF-8 tail)
 
 Optional column:
@@ -888,7 +938,8 @@ Notes:
   skipped-row warning.
 - Exact matches beat ranges, and ranges beat patterns; the **first row wins** for duplicate exact IDs. Among
   ranges, the narrowest range wins, with the **last row winning** equal-width ties. Among patterns, the one with
-  more literal digits wins, then one without `*` over one with it, with the **last row winning** remaining ties.
+  more literal digits wins, then one without `*` over one with it, with the **last row winning** remaining ties
+  ([Digit patterns](#digit-patterns)).
 - Policy comes from the row that wins for the radio ID, named or not. The name comes from the row that wins among
   the rows with a non-empty name, so `2*,Fire,A` with `2001234,,B` names radio 2001234 `Fire` and blocks it.
 - How policy rows act on calls:

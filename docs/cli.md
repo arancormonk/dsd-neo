@@ -1852,10 +1852,13 @@ is delayed.
 - Export the learned P25 band plan at clean shutdown: `--p25-bandplan-export <file>` — writes the identifier
   tables learned this run (every target's under `--trunk-scan`, tagged with their WACN/SYS) in the same format, so
   the next run can load them with `--p25-bandplan`. The terminal menu has the same action live.
-- Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`
-- Source ID list CSV (radio ID names, labels only): `--src-csv <file>` (also `--src-csv=<file>`); format in
-  `docs/csv-formats.md`, starter in `examples/src.csv`. Source names prefer this list, then the group list's exact
-  row; OTA alias text is unchanged. Loads regardless of trunking and is allowed with `--trunk-scan`.
+- Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns; exact IDs,
+  ranges and digit patterns such as `12xx` or `*`): `-G <file>`; pattern starter in `examples/group_patterns.csv`
+- Source ID list CSV (radio ID names; with a `mode` header column also block, mute, recording and export rules by
+  radio): `--src-csv <file>` (also `--src-csv=<file>`); format in `docs/csv-formats.md`, starters in
+  `examples/src.csv` and `examples/src_policy.csv`. Source names prefer this list, then the group list's exact row;
+  OTA alias text is unchanged. Radio rules only restrict, and a talkgroup Hold does not lift them. Loads regardless
+  of trunking and is allowed with `--trunk-scan`.
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`
