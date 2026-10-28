@@ -8182,6 +8182,7 @@ render_labelled_call(dsd_opts* opts, dsd_state* state, dsd_call_kind kind, uint3
     assert(observe_test_call(state, 0U, DSD_SYNC_P25P2_POS, kind, target, source, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN)
            == 1);
     watchdog_event_current(opts, state, 0);
+    assert(state->event_history_s != NULL);
     return &state->event_history_s[0].Event_History_Items[0];
 }
 
