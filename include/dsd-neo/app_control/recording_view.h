@@ -31,8 +31,8 @@ enum {
     DSD_APP_RECORDING_MODE_PER_CALL = 2, /**< per-call WAVs (-P) */
 };
 
-/** The last recording command a frontend submitted (WAV start, stop, toggle, static open, unknown-only set); values are
- *  stable. */
+/** The last recording command a frontend submitted (WAV start, stop, toggle, static open, unknown-only set, or a config
+ *  carrying [recording], whose outcome is its recording's); values are stable. */
 enum {
     DSD_APP_RECORDING_COMMAND_NONE = 0,    /**< none submitted in this process */
     DSD_APP_RECORDING_COMMAND_PENDING = 1, /**< submitted, not applied yet */

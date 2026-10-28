@@ -16,7 +16,8 @@ extern "C" {
    publication calls it on the decode thread (dsd_app_telemetry_publish_opts_snapshot()). */
 void dsd_app_recording_view_publish(const dsd_opts* opts);
 
-/* Whether command @p cmd_id is a recording command the view reports on. */
+/* Whether command @p cmd_id is a recording command the view reports on. The queue passes a config apply's id only when
+   the config carries a [recording] section, and 0 (none) otherwise. */
 int dsd_app_recording_command_tracked(int cmd_id);
 
 /* The command queue's account of recording commands: one admitted to the queue, and how one left it (a

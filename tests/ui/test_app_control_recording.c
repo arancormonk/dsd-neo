@@ -1319,6 +1319,57 @@ test_invalid_recording_command_reads_as_failed(void) {
     return rc;
 }
 
+/* A config carrying [recording] is a recording command: the view reports its recording's outcome, so a start that
+   failed earlier no longer reads as the state of a recording the config turned on. A config without [recording] leaves
+   the view's command state alone. Main left the earlier command's state in the view. */
+static int
+test_config_recording_reports_its_outcome(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_cfg_view");
+    dsd_wav_test_fail_opens_after(0);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    rc |= expect_int("the start failed", view_now().command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+    dsd_wav_test_fail_opens_after(-1);
+
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.per_call_wav = 1;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
+    rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("the config's recording pends", view_now().command_state, DSD_APP_RECORDING_COMMAND_PENDING);
+    (void)drain(&r);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("the config's recording applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("the config is the command shown", v.command_id, DSD_APP_CMD_CONFIG_APPLY);
+    rc |= expect_int("per-call recording on", v.mode, DSD_APP_RECORDING_MODE_PER_CALL);
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_alerts = 1;
+    rc |= expect_int("a config without [recording] queued", dsd_app_command_apply_config(&cfg),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("it is no recording command", view_now().command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_int("the recording's state is kept", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("still the config's", v.command_id, DSD_APP_CMD_CONFIG_APPLY);
+    rc |= expect_int("still per-call", v.mode, DSD_APP_RECORDING_MODE_PER_CALL);
+
+    char other[DSD_TEST_PATH_MAX];
+    rc |= expect_true("second folder", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_cfg_view_dir") != NULL);
+    dsd_wav_test_fail_opens_after(0);
+    rc |= apply_recording_config_in(&r, 1, NULL, other);
+    dsd_wav_test_fail_opens_after(-1);
+    v = view_now();
+    rc |=
+        expect_int("a config whose recording fails reads as failed", v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+    rc |= expect_int("the failed config is the command shown", v.command_id, DSD_APP_CMD_CONFIG_APPLY);
+    rig_close(&r);
+    remove_folder(other);
+    return rc;
+}
+
 #ifdef DSD_TEST_WRAP_SIGNAL_SEARCH
 /* Signal search, as the queue sees it: the link wraps the engine's answer so a case can run with a search active. */
 static int g_signal_search_active;
@@ -1447,6 +1498,7 @@ main(void) {
     rc |= test_config_per_call_failures_change_nothing();
     rc |= test_raw_open_leaves_a_static_wav_without_a_file();
     rc |= test_unknown_only_set_applies_and_reports();
+    rc |= test_config_recording_reports_its_outcome();
 #ifdef DSD_TEST_WRAP_SIGNAL_SEARCH
     rc |= test_unknown_only_set_refused_during_signal_search();
 #endif

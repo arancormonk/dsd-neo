@@ -1086,8 +1086,10 @@ suite runs under this compiler.
   its next call end (`watchdog_event_rotate_wav_if_needed()`). `include/dsd-neo/app_control/recording_view.h` is the frontends' view:
   mode, open slot files, the counts and last error kind, and the last recording command's state. The queue counts
   recording commands as it admits them and as they leave it (applied, failed, refused while Signal search runs,
-  dropped); `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command
-  reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
+  dropped), a config apply among them when it carries [recording] (`recording_command_id()`), whose outcome is its
+  recording transition's, whatever else in the config failed or needs a restart;
+  `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command reads
+  PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
   `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below). Tests: `APP_CONTROL_RECORDING` (every command
   case through the queue and through config applies, the transition table (every from-mode to every to-mode, folder,
   static and raw changes, each open failing), each writer's short write and close failure behind the seams in

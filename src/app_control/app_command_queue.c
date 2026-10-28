@@ -253,6 +253,24 @@ tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
     dsd_mutex_unlock(&g_mu);
 }
 
+/* The id the recording view accounts command @p c under (issue #708): its own, which the view ignores unless it is a
+   recording command, but a config apply's only when it carries a [recording] section, so a config that leaves
+   recording alone leaves the view's command state alone. 0 for none. */
+static int
+recording_command_id(const struct dsd_app_command* c) {
+    if (c->id != DSD_APP_CMD_CONFIG_APPLY) {
+        return c->id;
+    }
+    int has_recording = 0;
+    if (c->n >= sizeof(dsdneoUserConfig)) {
+        DSD_MEMCPY(&has_recording, c->data + offsetof(dsdneoUserConfig, has_recording), sizeof has_recording);
+    }
+    return has_recording ? c->id : 0;
+}
+
+/* Whether the last config apply's [recording] took effect (ui_cmd_handle_config_apply()); decoder thread only. */
+static int g_config_recording_applied;
+
 void
 dsd_app_command_session_set_open(int open) {
     ensure_mu_init();
@@ -263,7 +281,7 @@ dsd_app_command_session_set_open(int open) {
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
-        dsd_app_recording_command_resolved(g_q[g_head].id, DSD_APP_RECORDING_COMMAND_DROPPED);
+        dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
     }
@@ -4119,7 +4137,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
-        dsd_app_recording_command_resolved(g_q[g_head].id, DSD_APP_RECORDING_COMMAND_DROPPED);
+        dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
         DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
@@ -4133,7 +4151,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     struct dsd_app_command* c = &g_q[g_tail];
     ui_cmd_store_payload(c, cmd_id, payload, payload_sz);
     g_tail = (g_tail + 1) % DSD_APP_CMD_Q_CAP;
-    dsd_app_recording_command_submitted(cmd_id);
+    dsd_app_recording_command_submitted(recording_command_id(c));
     dsd_mutex_unlock(&g_mu);
     return DSD_APP_COMMAND_SUBMIT_QUEUED;
 }
@@ -7951,6 +7969,7 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
 
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    g_config_recording_applied = 0;
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
@@ -7992,6 +8011,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     cfg_recording_of(opts, &recording_before);
     dsd_stage_user_config_to_opts(&cfg, opts, state);
     const int recording_rc = apply_cfg_recording(opts, state, &recording_before);
+    g_config_recording_applied = recording_rc == 0;
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
        force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
        keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
@@ -8605,20 +8625,23 @@ command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c)
     return 1;
 }
 
-/* How an applied command left the queue, for the recording view (issue #708). */
+/* How an applied command left the queue, for the recording view (issue #708). A config apply's is its recording's: the
+   rest of a config can fail or need a restart while its recording applied, or apply while its recording failed. */
 static int
-recording_command_outcome(int result) {
-    switch (result) {
-        case UI_CMD_APPLY_COMPLETED: return DSD_APP_RECORDING_COMMAND_APPLIED;
-        case UI_CMD_APPLY_UNSUPPORTED: return DSD_APP_RECORDING_COMMAND_REFUSED;
-        default: return DSD_APP_RECORDING_COMMAND_FAILED;
+recording_command_outcome(const struct dsd_app_command* c, int result) {
+    if (result == UI_CMD_APPLY_UNSUPPORTED) {
+        return DSD_APP_RECORDING_COMMAND_REFUSED;
     }
+    if (c->id == DSD_APP_CMD_CONFIG_APPLY) {
+        return g_config_recording_applied ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
+    }
+    return result == UI_CMD_APPLY_COMPLETED ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
 }
 
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!command_allowed_during_search(state, c)) {
-        dsd_app_recording_command_resolved(c->id, DSD_APP_RECORDING_COMMAND_REFUSED);
+        dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -8644,7 +8667,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
         }
         p25_sm_tick_guard_leave();
     }
-    dsd_app_recording_command_resolved(c->id, recording_command_outcome(result));
+    dsd_app_recording_command_resolved(recording_command_id(c), recording_command_outcome(c, result));
     return result;
 }
 
@@ -8994,8 +9017,8 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
-            dsd_app_recording_command_resolved(cmd.id, DSD_APP_RECORDING_COMMAND_FAILED);
-            if (dsd_app_recording_command_tracked(cmd.id)) {
+            dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
+            if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
                 /* Its failure shows in the next view, as an applied command's outcome does. */
                 dsd_telemetry_publish_opts_snapshot(opts);
             }
