@@ -431,6 +431,26 @@ dsd_local_file_name_is_unsafe(const char* requested) {
            || strchr(requested, '\\') != NULL || strstr(requested, "..") != NULL;
 }
 
+int
+dsd_path_canonical(const char* path, char* out, size_t out_size) {
+    if (!path || path[0] == '\0' || !out || out_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    char* resolved = realpath(path, NULL);
+    if (!resolved) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(out, out_size, "%s", resolved);
+    free(resolved);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
 static int
 dsd_copy_resolved_local_name(const char* name, char* out, size_t out_size) {
     int n = DSD_SNPRINTF(out, out_size, "%s", name);

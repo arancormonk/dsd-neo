@@ -414,6 +414,7 @@ struct dsd_opts {
     char wav_out_file[1024];
     char wav_out_fileR[1024];
     char wav_out_file_raw[1024];
+    char wav_journal_file[1024]; /* --wav-journal: the per-call recording journal (issue #708); "" for none */
     char symbol_out_file[1024];
     char symbol_out_open_path[1024]; /* the capture file symbol_out_f writes, named when it opened */
     char symbol_capture_last[1024];  /* the last capture closed this session: what Replay last replays (issue #634) */

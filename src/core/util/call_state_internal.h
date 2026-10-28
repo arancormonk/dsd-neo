@@ -91,4 +91,11 @@ void dsd_call_state_ext_unlock(const dsd_call_state_ext* ext);
  */
 void dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle);
 
+/**
+ * The call epoch whose history row the slot's staged row will commit as, or 0 when there is none: no epoch rendered
+ * yet, or that epoch's row already committed at its end. A per-call WAV closed before its call's row commits is
+ * journaled as pending on it (issue #708). Takes the call-state mutex: callers must not hold it.
+ */
+uint64_t dsd_call_state_pending_row_epoch(const dsd_state* state, uint8_t slot);
+
 #endif /* DSD_NEO_SRC_CORE_UTIL_CALL_STATE_INTERNAL_H_ */

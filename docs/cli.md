@@ -7,7 +7,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Help: `dsd-neo -h` | UI/logs: `--frontend terminal` (`-N` alias), `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
-- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
+- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
@@ -257,6 +257,14 @@ Windows console runs:
   slot's channel is written silent while the other slot is still written.
 - `-7 <dir>` Set folder for per‑call WAVs, before or after `-P`; the folder is created when decoding starts if it does
   not exist. A path longer than 511 bytes is refused.
+- `--wav-journal <file>` Append one JSON line to `<file>` for each per-call WAV published (`publish`: its name, start,
+  length, and the call history row it belongs to), each one deleted for holding no audio (`discard`) or kept under
+  its `TEMP_` name (`error`), and `link`/`unlink` lines for a recording closed before its call's history row
+  (a WAV stop mid-call, a conventional NFM call's end) once that row commits or never will. A program that manages
+  the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
+  torn line gets a newline first. A journal that cannot be opened or written is turned off for the rest of the run
+  with one error in the log; decoding and recording go on. The record format is in `docs/code_map.md` ("Recording
+  journal").
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)

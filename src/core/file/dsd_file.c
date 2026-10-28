@@ -72,6 +72,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "util/call_state_internal.h"
+#include "wav_journal.h"
 #include "wav_segment.h"
 
 void
@@ -898,6 +900,61 @@ wav_temp_token(void) {
 
 static long wav_file_get_size_or_negative(const char* filename);
 
+/* The recording journal's id for a per-call segment, "<token>-<sequence>", read back from the temp name
+   open_wav_file() gave it (so the open, its discard and its errors name one id); 0 for a name it did not make. */
+static int
+wav_temp_id(const char* temp_filename, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (!temp_filename) {
+        return 0;
+    }
+    const char* base = temp_filename;
+    for (const char* p = temp_filename; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+    if (strncmp(base, "TEMP_", 5) != 0) {
+        return 0;
+    }
+    size_t len = strlen(base);
+    if (len > 4 && strcmp(base + len - 4, ".wav") == 0) {
+        len -= 4;
+    }
+    /* ..._<16 hex>_<decimal> */
+    size_t seq_start = len;
+    while (seq_start > 0 && base[seq_start - 1] >= '0' && base[seq_start - 1] <= '9') {
+        seq_start--;
+    }
+    if (seq_start == len || seq_start < 18 || base[seq_start - 1] != '_' || base[seq_start - 18] != '_') {
+        return 0;
+    }
+    const char* token = base + seq_start - 17;
+    for (int i = 0; i < 16; i++) {
+        const char c = token[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) {
+            return 0;
+        }
+    }
+    const int n = DSD_SNPRINTF(out, out_size, "%.16s-%.*s", token, (int)(len - seq_start), base + seq_start);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        return 0;
+    }
+    return 1;
+}
+
+/* A failed per-call segment, in the journal: it is not published (issue #708). */
+static void
+wav_journal_segment_error(const char* kind, const char* temp_filename, const char* dir) {
+    if (!wav_journal_active()) {
+        return;
+    }
+    char id[48];
+    (void)wav_temp_id(temp_filename, id, sizeof id);
+    wav_journal_error(id[0] ? id : NULL, kind, temp_filename, dir);
+}
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     if (temp_filename == NULL || temp_filename_size == 0) {
@@ -924,6 +981,11 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
             LOG_ERROR("Error - wav output temp filename is too long; later open failures are counted, not logged\n");
         }
         temp_filename[0] = '\0';
+        if (wav_journal_active()) {
+            char id[48];
+            (void)DSD_SNPRINTF(id, sizeof id, "%016llX-%llu", token, seq);
+            wav_journal_error(id, "open", "", dir);
+        }
         return NULL;
     }
 
@@ -949,6 +1011,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
         if (wav_file_get_size_or_negative(temp_filename) == 0) {
             (void)remove(temp_filename);
         }
+        wav_journal_segment_error("open", temp_filename, dir);
         temp_filename[0] = '\0';
         return NULL;
     }
@@ -960,7 +1023,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 SNDFILE*
 close_wav_file(SNDFILE* wav_file) {
     if (wav_file != NULL) {
-        (void)wav_segment_close(wav_file);
+        (void)wav_segment_close(wav_file, NULL);
     }
     wav_file = NULL;
     return wav_file;
@@ -1115,16 +1178,93 @@ wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* di
     return 0;
 }
 
+/* A row's target or source as the history shows it: the text, else the number, else nothing. */
+static void
+wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) {
+    if (text && text[0] != '\0') {
+        (void)DSD_SNPRINTF(out, out_size, "%s", text);
+    } else if (id != 0U) {
+        (void)DSD_SNPRINTF(out, out_size, "%u", (unsigned int)id);
+    } else {
+        out[0] = '\0';
+    }
+}
+
+/* The segment's length and rate from libsndfile, read before the close finalizes it; 0 when unknown. */
+static void
+wav_segment_length(SNDFILE* wav_file, int64_t* duration_ms, int* rate) {
+    *duration_ms = 0;
+    *rate = 0;
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    if (wav_file == NULL || sf_command(wav_file, SFC_GET_CURRENT_SF_INFO, &info, (int)sizeof info) != 0
+        || info.samplerate <= 0 || info.frames < 0) {
+        return;
+    }
+    *rate = info.samplerate;
+    *duration_ms = (int64_t)info.frames * 1000 / info.samplerate;
+}
+
+/* The published recording, in the journal (issue #708). */
+static void
+wav_journal_published(const char* id, const char* path, const char* dir, const Event_History_I* event_struct,
+                      time_t opened, int64_t duration_ms, int rate, const dsd_wav_owner* owner, int rdio_queued,
+                      int failed) {
+    const Event_History* event_item = wav_rename_get_event_item(event_struct);
+    char target[256];
+    char source[256];
+    wav_journal_identity(target, sizeof target, event_item ? event_item->tgt_str : NULL,
+                         event_item ? event_item->target_id : 0U);
+    wav_journal_identity(source, sizeof source, event_item ? event_item->src_str : NULL,
+                         event_item ? event_item->source_id : 0U);
+    wav_journal_publish_record rec;
+    DSD_MEMSET(&rec, 0, sizeof rec);
+    rec.id = id[0] ? id : NULL;
+    rec.path = path;
+    rec.dir = dir;
+    rec.start = dsd_rdio_recording_start(event_item, opened);
+    rec.duration_ms = duration_ms;
+    rec.rate = rate;
+    rec.has_instance = event_struct != NULL;
+    rec.instance = event_struct ? event_struct->instance : 0U;
+    if (owner) {
+        rec.owner = *owner;
+    } else {
+        rec.owner.kind = DSD_WAV_OWNER_NONE;
+        rec.owner.slot = DSD_WAV_OWNER_SLOT_UNKNOWN;
+    }
+    rec.rdio_queued = rdio_queued;
+    rec.failed = failed;
+    rec.system = event_item ? event_item->sysid_string : "";
+    rec.target = target;
+    rec.source = source;
+    wav_journal_publish(&rec);
+}
+
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                      const Event_History_I* event_struct, time_t opened, int export_call, int analog) {
+                      const Event_History_I* event_struct, time_t opened, int export_call, int analog,
+                      const dsd_wav_owner* owner) {
+    /* Only a close with options is journaled: the NFM teardown's (no options, no row) writes nothing. */
+    const int journal = opts != NULL && wav_journal_active();
+    char id[48] = {0};
+    int64_t duration_ms = 0;
+    int rate = 0;
+    int failed = 0;
+    if (journal) {
+        (void)wav_temp_id(wav_out_filename, id, sizeof id);
+        wav_segment_length(wav_file, &duration_ms, &rate);
+    }
     if (wav_file != NULL) {
-        if (wav_segment_close(wav_file) != 0) {
+        if (wav_segment_close(wav_file, &failed) != 0) {
             /* The header may not hold what was written: the file keeps its temp name, as on a failed rename. */
             if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_CLOSE)) {
                 LOG_WARN("Recording %s did not close cleanly; it keeps its temp name, and later close failures are "
                          "counted, not logged\n",
                          wav_out_filename ? wav_out_filename : "");
+            }
+            if (journal) {
+                wav_journal_error(id[0] ? id : NULL, "close", wav_out_filename, dir);
             }
             return NULL;
         }
@@ -1146,6 +1286,9 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     long size = wav_file_get_size_or_negative(wav_out_filename);
     if (size == 44) {
         remove(wav_out_filename);
+        if (journal) {
+            wav_journal_discard(id[0] ? id : NULL);
+        }
         wav_file = NULL;
         return wav_file;
     }
@@ -1156,20 +1299,31 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
             LOG_ERROR("Error - could not rename wav file %s -> %s; later rename failures are counted, not logged\n",
                       wav_out_filename, new_filename);
         }
+        if (journal) {
+            wav_journal_error(id[0] ? id : NULL, "publish", wav_out_filename, dir);
+        }
         return NULL;
     }
 
     long final_size = wav_file_get_size_or_negative(new_filename);
     if (final_size == 44) {
         remove(new_filename);
+        if (journal) {
+            wav_journal_discard(id[0] ? id : NULL);
+        }
         wav_file = NULL;
         return wav_file;
     }
 
+    int rdio_queued = 0;
     if (export_call && opts && final_size > 44) {
-        if (dsd_rdio_export_call(opts, event_struct, new_filename, opened) != 0) {
+        if (dsd_rdio_export_call_ex(opts, event_struct, new_filename, opened, &rdio_queued) != 0) {
             LOG_WARN("Rdio export failed for %s\n", new_filename);
         }
+    }
+    if (journal) {
+        wav_journal_published(id, new_filename, dir, event_struct, opened, duration_ms, rate, owner, rdio_queued,
+                              failed);
     }
 
     wav_file = NULL;
@@ -1178,19 +1332,35 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call) {
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, export_call, 0);
+                             const Event_History_I* event_struct, time_t opened, int export_call,
+                             const dsd_wav_owner* owner) {
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, export_call, 0, owner);
 }
 
 SNDFILE*
 close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename, const char* dir) {
-    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 1);
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 1, NULL);
 }
 
 SNDFILE*
 close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                           const Event_History_I* event_struct, time_t opened) {
-    return close_and_rename_wav_file_ex(wav_file, opts, wav_out_filename, dir, event_struct, opened, 1);
+    return close_and_rename_wav_file_ex(wav_file, opts, wav_out_filename, dir, event_struct, opened, 1, NULL);
+}
+
+SNDFILE*
+close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                           const char* wav_out_filename, const char* dir, time_t opened) {
+    const Event_History_I* event_struct =
+        (state && state->event_history_s && slot < 2U) ? &state->event_history_s[slot] : NULL;
+    dsd_wav_owner owner = {DSD_WAV_OWNER_NONE, slot, 0U, 0U};
+    /* The epoch whose staged row names the file: its commit links the recording to the row (issue #708). Read before
+       the close, outside the event layer's lock, which none of these closers holds. */
+    if (event_struct && opts && wav_journal_active()) {
+        owner.epoch = dsd_call_state_pending_row_epoch(state, slot);
+        owner.kind = owner.epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE;
+    }
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 1, 0, &owner);
 }
 
 SNDFILE*

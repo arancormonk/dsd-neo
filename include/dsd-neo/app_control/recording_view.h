@@ -41,9 +41,11 @@ enum {
     DSD_APP_RECORDING_COMMAND_DROPPED = 5, /**< not applied: dropped from a full queue, or the session ended first */
 };
 
-/** The recording journal's state. Only NONE exists so far: no journal is written. */
+/** The recording journal's state (`--wav-journal`, <dsd-neo/core/wav_journal.h>); values are stable. */
 enum {
-    DSD_APP_RECORDING_JOURNAL_NONE = 0,
+    DSD_APP_RECORDING_JOURNAL_NONE = 0,   /**< no journal this decoder run */
+    DSD_APP_RECORDING_JOURNAL_ON = 1,     /**< records are being written */
+    DSD_APP_RECORDING_JOURNAL_FAILED = 2, /**< the open or a write failed: off for the rest of the run */
 };
 
 typedef struct {
@@ -52,7 +54,7 @@ typedef struct {
     uint8_t per_call;      /**< 1 when @c mode is PER_CALL: per-call recording is on */
     uint8_t slot_files;    /**< per-call slot files open now: bit 0 slot 1, bit 1 slot 2 */
     uint8_t unknown_only;  /**< reserved for the unknown-talkgroups-only rule: always 0 so far */
-    uint8_t journal_state; /**< DSD_APP_RECORDING_JOURNAL_*: always NONE so far */
+    uint8_t journal_state; /**< DSD_APP_RECORDING_JOURNAL_* */
     uint8_t command_state; /**< DSD_APP_RECORDING_COMMAND_* */
     int32_t command_id;    /**< the dsd_app_command_id @c command_state is about; 0 for NONE */
     uint32_t failures[DSD_WAV_RECORDING_ERROR_KINDS]; /**< this decoder run's failures by dsd_wav_recording_error */

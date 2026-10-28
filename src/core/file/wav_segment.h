@@ -22,8 +22,9 @@ int wav_segment_test_refuses_open(void);
    with the run's failure counts). */
 int wav_recording_table_full_first_this_run(void);
 
-/* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result. */
-int wav_segment_close(SNDFILE* file);
+/* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result.
+   @p failed (may be NULL) gets whether a short write had latched the segment (the journal's `failed` flag). */
+int wav_segment_close(SNDFILE* file, int* failed);
 
 #ifdef __cplusplus
 }

@@ -44,6 +44,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd_event_staging.h"
+#include "file/wav_journal.h"
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -483,7 +484,7 @@ watchdog_event_is_data_event(const Event_History* item) {
 
 static void
 watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
-                                    int export_recording) {
+                                    int export_recording, const dsd_wav_owner* owner) {
     if (opts->static_wav_file != 0) {
         return;
     }
@@ -492,8 +493,9 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
        open marks the slot for the next one (issue #708). */
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
         if (opts->wav_out_f != NULL) {
-            opts->wav_out_f = close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                           event_struct, opts->wav_out_open_time, export_recording);
+            opts->wav_out_f =
+                close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir, event_struct,
+                                             opts->wav_out_open_time, export_recording, owner);
         }
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         opts->wav_out_open_time = dsd_decode_time();
@@ -505,7 +507,7 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
         if (opts->wav_out_fR != NULL) {
             opts->wav_out_fR =
                 close_and_rename_wav_file_ex(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                             event_struct, opts->wav_out_open_timeR, export_recording);
+                                             event_struct, opts->wav_out_open_timeR, export_recording, owner);
         }
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_timeR = dsd_decode_time();
@@ -552,12 +554,14 @@ typedef enum {
 // rdio-scanner export: the recording of an epoch with no history row or log line would upload
 // under all-zero metadata the operator has nothing local to correlate against. The file itself
 // still rotates so the noise segment's audio cannot lead the next transmission's recording.
+// `owner` is the row the rotated recording belongs to, for the recording journal: the pushed
+// row, the row a merge folded into, or none on the drop path.
 static void
 watchdog_event_retire_staged_row(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
-                                 dsd_event_end_disposition end_disposition, int alert_on_final,
-                                 int last_event_is_data) {
+                                 dsd_event_end_disposition end_disposition, int alert_on_final, int last_event_is_data,
+                                 const dsd_wav_owner* owner) {
     if (end_disposition != DSD_EVENT_END_NONE) {
-        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot, alert_on_final);
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot, alert_on_final, owner);
     }
     init_event_history(event_struct, 0, 1);
     watchdog_event_reset_post_push(state);
@@ -575,7 +579,9 @@ watchdog_event_handle_source_transition_ex(dsd_opts* opts, dsd_state* state, Eve
     event_struct->Event_History_Items[0].write = 1;
     push_event_history(event_struct);
     (void)reset_slot_identity;
-    watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 1, last_event_is_data);
+    // The pushed row's stamp is the ring's push count right after the push.
+    const dsd_wav_owner owner = {DSD_WAV_OWNER_ROW, slot, event_struct->push_seq, 0U};
+    watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 1, last_event_is_data, &owner);
 }
 
 static void
@@ -1149,7 +1155,11 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
     // saw is ending.
     if (watchdog_event_voice_row_is_identityless(staged) && lifecycle != NULL
         && !watchdog_event_staged_epoch_vouches(&lifecycle->staged_env)) {
-        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 0, last_event_is_data);
+        const dsd_wav_owner none = {DSD_WAV_OWNER_NONE, slot, 0U, 0U};
+        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 0, last_event_is_data,
+                                         &none);
+        // The row the epoch's earlier recordings waited for will never exist.
+        wav_journal_unlink_pending_epoch(slot, lifecycle->epoch);
         return 0;
     }
     const uint8_t retained_index = watchdog_event_committed_row_index(event_struct, lifecycle);
@@ -1173,13 +1183,20 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
         // epoch resolves to it and the next segment in the chain has a valid merge target.
         lifecycle->committed_epoch = lifecycle->epoch;
         // Each segment keeps its own recording; leaving the WAV open would let it absorb the
-        // next transmission's audio and be exported under that call's metadata instead.
-        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 1, last_event_is_data);
+        // next transmission's audio and be exported under that call's metadata instead. It, and
+        // the epoch's recordings closed before this commit, belong to the retained row.
+        const uint64_t retained_stamp = event_struct->push_seq - (uint64_t)(retained_index - 1U);
+        const dsd_wav_owner owner = {DSD_WAV_OWNER_ROW, slot, retained_stamp, 0U};
+        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 1, last_event_is_data,
+                                         &owner);
+        wav_journal_link_pending(slot, lifecycle->epoch, event_struct->instance, retained_stamp);
         return 1;
     }
     watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
                                                last_event_is_data, reset_slot_identity, end_disposition);
     if (lifecycle != NULL) {
+        // The epoch's recordings closed before this commit belong to the row just pushed.
+        wav_journal_link_pending(slot, lifecycle->epoch, event_struct->instance, event_struct->push_seq);
         lifecycle->committed_seq = event_struct->push_seq;
         lifecycle->committed_epoch = lifecycle->epoch;
         lifecycle->committed_valid = 1U;
@@ -1271,6 +1288,9 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
 
     lifecycle->epoch = call->epoch;
     lifecycle->ended_committed = 0U;
+    // The outgoing epoch either committed above, which linked its recordings, or never will:
+    // a recording still waiting for another epoch's row has lost it.
+    wav_journal_unlink_pending_except(slot, call->epoch);
     // The commit above resolved the outgoing epoch's staged row -- committed or dropped -- so a
     // hold it left pending is spent, and a stale deadline must not make the incoming epoch's
     // own keep-or-drop verdict skip its arming step.
@@ -3204,6 +3224,8 @@ dsd_event_history_reset(dsd_state* state) {
             // the operator just deleted.
             dsd_call_state_invalidate_event_lifecycle(&ext->events[slot]);
         }
+        // The cleared rows took the rows recordings were waiting for with them.
+        wav_journal_unlink_pending_except((uint8_t)slot, 0U);
     }
     dsd_event_history_transaction_end(&transaction);
 }

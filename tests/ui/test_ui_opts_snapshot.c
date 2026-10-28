@@ -16,9 +16,11 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include "recording_view_internal.h"
 #include "snapshot_internal.h"
+#include "test_support.h"
 
 static void
 test_initial_snapshot_is_absent(void) {
@@ -159,6 +161,38 @@ test_publish_carries_the_recording_view(void) {
     assert(dsd_app_recording_view_get(NULL) == -1);
 }
 
+/* Issue #708: the view carries the recording journal's state: none without a journal, on while it is written, failed
+   when it did not open (or a write failed), until the next run's journal opens. */
+static void
+test_publish_carries_the_journal_state(void) {
+    static dsd_opts opts;
+    dsd_app_recording_view view;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+
+    assert(dsd_wav_journal_open(NULL) == 0);
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_recording_view_get(&view) == 1 && view.journal_state == DSD_APP_RECORDING_JOURNAL_NONE);
+
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_view_journal");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    assert(dsd_wav_journal_open(path) == 0);
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_recording_view_get(&view) == 1 && view.journal_state == DSD_APP_RECORDING_JOURNAL_ON);
+
+    char missing[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(missing, sizeof missing, path, "no-such-folder/calls.jsonl") == 0);
+    assert(dsd_wav_journal_open(missing) == -1);
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_recording_view_get(&view) == 1 && view.journal_state == DSD_APP_RECORDING_JOURNAL_FAILED);
+
+    assert(dsd_wav_journal_open("") == 0);
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_recording_view_get(&view) == 1 && view.journal_state == DSD_APP_RECORDING_JOURNAL_NONE);
+    (void)remove(path);
+}
+
 int
 main(void) {
     test_initial_snapshot_is_absent();
@@ -166,6 +200,7 @@ main(void) {
     test_republish_updates_stable_consumer_copy();
     test_publish_also_feeds_the_notification_record();
     test_publish_carries_the_recording_view();
+    test_publish_carries_the_journal_state();
     printf("UI_OPTS_SNAPSHOT: OK\n");
     return 0;
 }

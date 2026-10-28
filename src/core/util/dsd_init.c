@@ -122,6 +122,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->wav_out_file[0] = 0;
     opts->wav_out_fileR[0] = 0;
     opts->wav_out_file_raw[0] = 0;
+    opts->wav_journal_file[0] = 0;
     opts->symbol_out_file[0] = 0;
     opts->symbol_out_open_path[0] = 0;
     opts->symbol_capture_last[0] = 0;

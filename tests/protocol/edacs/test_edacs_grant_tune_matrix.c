@@ -19,6 +19,7 @@
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
@@ -118,6 +119,9 @@ static short g_udp_blast_samples[12][960];
 static Event_History_I g_eot_history[2];
 static max_align_t g_wav_sentinel;
 static int g_close_wav_count = 0;
+/* The state and slot the last close_and_publish_call_wav() named: the closer that journals it pending (issue #708). */
+static const dsd_state* g_close_wav_state = NULL;
+static int g_close_wav_slot = -1;
 static int g_open_wav_count = 0;
 /* Set: every per-call open fails, as on a full disk (issue #708). */
 static int g_open_wav_fail = 0;
@@ -136,12 +140,12 @@ void __wrap_watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slo
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 void __wrap_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-SNDFILE* __wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                          const char* dir, const Event_History_I* event_struct, time_t opened);
+SNDFILE* __wrap_close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                           const char* wav_out_filename, const char* dir, time_t opened);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                              const char* dir, const Event_History_I* event_struct, time_t opened,
-                                             int export_call);
+                                             int export_call, const dsd_wav_owner* owner);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 SNDFILE* __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate,
                               uint8_t ext);
@@ -239,14 +243,15 @@ __wrap_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t sl
 
 SNDFILE*
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                                 const Event_History_I* event_struct, time_t opened) {
+__wrap_close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                  const char* wav_out_filename, const char* dir, time_t opened) {
     (void)wav_file;
     (void)opts;
     (void)wav_out_filename;
     (void)dir;
-    (void)event_struct;
     (void)opened;
+    g_close_wav_state = state;
+    g_close_wav_slot = slot;
     g_close_wav_count++;
     return NULL;
 }
@@ -255,9 +260,11 @@ SNDFILE*
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                     const char* dir, const Event_History_I* event_struct, time_t opened,
-                                    int export_call) {
+                                    int export_call, const dsd_wav_owner* owner) {
     (void)export_call;
-    return __wrap_close_and_rename_wav_file(wav_file, opts, wav_out_filename, dir, event_struct, opened);
+    (void)event_struct;
+    (void)owner;
+    return __wrap_close_and_publish_call_wav(wav_file, opts, NULL, 0, wav_out_filename, dir, opened);
 }
 
 SNDFILE*
@@ -2313,9 +2320,14 @@ edacs_run_analog_wav_reopen_mark_cases(void) {
         g_opts.wav_out_reopen = fail ? 0 : 1;
         g_open_wav_fail = fail;
         g_open_wav_count = 0;
+        g_close_wav_state = NULL;
+        g_close_wav_slot = -1;
         edacs_start_tcp_analog_call(call);
         rc |= edacs_expect(g_open_wav_count >= 1, "analog-708", fail ? "open-fails" : "open-works",
                            "the analog grant opened slot 1's file");
+        rc |= edacs_expect(g_close_wav_state == &g_state && g_close_wav_slot == 0, "analog-708",
+                           fail ? "open-fails" : "open-works",
+                           "the grant closed slot 1's file as the synced call's, for the recording journal");
         rc |= edacs_expect((g_opts.wav_out_reopen & 1) == fail, "analog-708", fail ? "open-fails" : "open-works",
                            fail ? "a failed open is marked to reopen" : "an open clears the reopen mark");
         g_open_wav_fail = 0;

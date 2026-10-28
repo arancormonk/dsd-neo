@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -108,7 +109,11 @@ dsd_app_recording_view_publish(const dsd_opts* opts) {
         view.slot_files = (uint8_t)((opts->wav_out_f != NULL ? 1U : 0U) | (opts->wav_out_fR != NULL ? 2U : 0U));
     }
     view.unknown_only = 0;
-    view.journal_state = DSD_APP_RECORDING_JOURNAL_NONE;
+    switch (dsd_wav_journal_state_get()) {
+        case DSD_WAV_JOURNAL_ON: view.journal_state = DSD_APP_RECORDING_JOURNAL_ON; break;
+        case DSD_WAV_JOURNAL_FAILED: view.journal_state = DSD_APP_RECORDING_JOURNAL_FAILED; break;
+        default: view.journal_state = DSD_APP_RECORDING_JOURNAL_NONE; break;
+    }
     dsd_wav_recording_status status;
     dsd_wav_recording_status_get(&status);
     for (int kind = 0; kind < DSD_WAV_RECORDING_ERROR_KINDS; kind++) {

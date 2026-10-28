@@ -1086,11 +1086,89 @@ suite runs under this compiler.
   recording commands as it admits them and as they leave it (applied, failed, refused while Signal search runs,
   dropped); `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command
   reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
-  `unknown_only` and `journal_state` are reserved (always 0 / NONE). Tests: `APP_CONTROL_RECORDING` (every command
+  `unknown_only` is reserved (always 0); `journal_state` is the recording journal's (below). Tests: `APP_CONTROL_RECORDING` (every command
   case through the queue and through config applies, the transition table (every from-mode to every to-mode, folder,
   static and raw changes, each open failing), each writer's short write and close failure behind the seams in
   `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen
   mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states).
+- Recording journal (`--wav-journal <file>`, `opts->wav_journal_file`, issue #708). The decoder appends one JSON line
+  for each per-call WAV it publishes, discards or fails to keep, and for each recording a history row later claims;
+  the app's call recording store reads it to tie recordings to History rows and to tell the files it manages from the
+  rest. Writer: `src/core/file/wav_journal.c` (private writers in `wav_journal.h`, open, close and state in
+  `<dsd-neo/core/wav_journal.h>`). One journal per process: `dsd_engine_run_common_setup()` opens it (or turns it
+  off) before the run's first recording, `dsd_engine_cleanup()` closes it after the last close. It is appended
+  through file_compat (`dsd_fopen_private(path, "a+b")`), each record built whole and written with one `fwrite()`
+  plus `fflush()`, under the journal's own lock (taken last; the event layer writes under the call-state lock). No
+  fsync. A journal whose last byte is not `\n` gets one at open, so a line torn by a crash never swallows the next
+  record. A failed open, write or flush turns the journal off for the rest of the run (`DSD_WAV_JOURNAL_FAILED`, one
+  LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
+  - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
+    rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
+    failure that keeps the temp file. `open_wav_file()` journals an open failure. The NFM teardown close
+    (`close_and_rename_analog_wav_file()`, no options, no row) writes nothing. Each segment's id is its temp name's
+    token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
+  - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
+    `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
+    (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
+    reacquisition merge, none on a drop. A closer that runs before its call's row commits
+    (`close_and_publish_call_wav()`: the NFM call's end and toggle-off, WAV_STOP and every other recording transition
+    that publishes slot files, the EDACS analog rotation after it synced the grant's call, the engine's last close)
+    publishes `pending` on the slot's lifecycle epoch (`dsd_call_state_pending_row_epoch()`; none when no epoch was
+    rendered or its row already committed) and joins that slot's pending list. `watchdog_event_commit_staged_row()`
+    writes `link` for the entries of the committed epoch (push or merge stamp); a drop
+    (`wav_journal_unlink_pending_epoch()`), the epoch moving on without that commit
+    (`watchdog_event_history_authoritative()`), a full history reset (`dsd_event_history_reset()`), a trunk-scan
+    target restore (`trunk_scan_restore_call_snapshot()`, `dsd_wav_journal_unlink_pending()`) and the journal's close
+    write `unlink`. A departure already ends the outgoing target's calls, which resolves most entries before the restore
+    runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
+  - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
+    too: the row's `event_start_time`, or the WAV's open stamp when later (recording switched on mid-call, a
+    reacquired segment whose file opened at the previous segment's commit), else `event_time`, else the decode
+    clock. Every stamp is on the decode clock, so a replay's records carry the capture's times.
+  - Format (version 1), the contract the app-side parser follows. One JSON object per line, UTF-8; strings are
+    escaped (quotes, backslashes, control characters, U+2028/U+2029; a byte that starts no UTF-8 character becomes
+    U+FFFD). A reader skips a line that does not parse (a torn tail) and a record whose `v` it does not know. Every
+    record has:
+    - `v` (number): 1.
+    - `type` (string): `publish`, `link`, `unlink`, `discard` or `error`.
+    - `t` (number): decode-clock Unix seconds when the record was written.
+    - `id` (string or null): `<16 uppercase hex token>-<decimal sequence>`, one per segment, unique per process (the
+      token is drawn once per process), null for a name `open_wav_file()` did not make.
+
+    `publish` (a recording was published under its final name):
+    - `file` (string): the final name relative to the journal's folder (`/`-separated) when it lies inside that
+      folder, else the folder plus the base name.
+    - `folder` (string): the folder it was published in, canonical (`dsd_path_canonical()`; as given when it cannot
+      be resolved).
+    - `start` (number): Unix seconds the recording began (the rule above).
+    - `duration_ms` (number): frames / rate from libsndfile before the close; 0 when unknown.
+    - `rate` (number): sample rate in Hz (8000 digital, 48000 NFM, the EDACS analog rate); 0 when unknown.
+    - `instance` (string or null): the history ring (`Event_History_I::instance`), 16 uppercase hex digits.
+    - `slot` (number or null): history slot, 0 or 1.
+    - `row` (number or null): the row's push stamp (the History mirror's `seq`) when the recording belongs to a
+      committed row; null otherwise.
+    - `pending` (bool): true when it was closed before its call's row committed; a later `link` or `unlink` resolves
+      it.
+    - `epoch` (number): the call epoch a pending recording waits on; 0 when not pending.
+    - `rdio` (bool): an rdio-scanner API upload was queued for it (its worker may delete the file after the upload).
+    - `failed` (bool): a short write latched the segment; the file ends where the write failed.
+    - `system`, `target`, `source` (string): the row's system string and its target and source as shown (text,
+      else the number, else ""), as received (the file name holds the sanitized copies).
+
+    `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
+    `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
+    segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`, `close` or
+    `publish`), `temp` (string: the temp name it keeps, relative or absolute as `file` is; "" when none) and `folder`.
+
+    Measured (dev-release, NVMe ext4, 20000 appends): a `publish` append costs 7.5 us mean (p99 10 us; 6.1 us on
+    tmpfs), and the whole close and publish of a 1 s per-call WAV goes from 29 us to 39 us with the journal on. With
+    16 GB written alongside (the writeback throttling a slow disk causes) the p99.9 was 91 us and the worst append
+    11 ms. A record is written once per segment at a close, never per audio block.
+  Tests: `CORE_WAV_JOURNAL` (commit, merge chain, a pending close merged, drop, 44-byte, rename failure, B3 name,
+  pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
+  (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
+  journal, string escaping), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer),
+  `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR

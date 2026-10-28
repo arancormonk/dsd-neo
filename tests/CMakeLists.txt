@@ -4826,6 +4826,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
@@ -4841,6 +4842,7 @@ target_link_libraries(
         dsd-neo_test_call_state_support
         dsd-neo_test_audio_activity
         dsd-neo_platform
+        dsd-neo_test_support
 )
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT
@@ -7283,6 +7285,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    # A target restore unlinks the call recordings waiting for their rows (issue #708).
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
@@ -7692,6 +7696,44 @@ else()
     )
 endif()
 add_test(NAME APP_CONTROL_RECORDING COMMAND dsd-neo_test_app_control_recording)
+
+# Issue #708: the recording journal through the real queue, event layer, writers and trunk scan coordinator (compiled
+# here with its test clock, as the scan gate tests do).
+add_executable(
+    dsd-neo_test_core_wav_journal
+    core/test_core_wav_journal.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_core_wav_journal
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/core/file
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+)
+target_compile_definitions(
+    dsd-neo_test_core_wav_journal
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_wav_journal
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_wav_journal
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(NAME CORE_WAV_JOURNAL COMMAND dsd-neo_test_core_wav_journal)
 
 # Real watchdog flush versus policy replacement; private queue contention probe.
 add_executable(
@@ -12742,7 +12784,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=skipDibit"
             "-Wl,--wrap=watchdog_event_current"
             "-Wl,--wrap=watchdog_event_history"
-            "-Wl,--wrap=close_and_rename_wav_file"
+            "-Wl,--wrap=close_and_publish_call_wav"
             "-Wl,--wrap=close_and_rename_wav_file_ex"
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"

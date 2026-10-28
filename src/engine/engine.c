@@ -35,6 +35,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -3684,12 +3685,12 @@ static void
 dsd_engine_cleanup_close_wavs(dsd_opts* opts, dsd_state* state) {
     if (opts->static_wav_file == 0) {
         if (opts->wav_out_f != NULL) {
-            opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                        &state->event_history_s[0], opts->wav_out_open_time);
+            opts->wav_out_f = close_and_publish_call_wav(opts->wav_out_f, opts, state, 0, opts->wav_out_file,
+                                                         opts->wav_out_dir, opts->wav_out_open_time);
         }
         if (opts->wav_out_fR != NULL) {
-            opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                                         &state->event_history_s[1], opts->wav_out_open_timeR);
+            opts->wav_out_fR = close_and_publish_call_wav(opts->wav_out_fR, opts, state, 1, opts->wav_out_fileR,
+                                                          opts->wav_out_dir, opts->wav_out_open_timeR);
         }
         return;
     }
@@ -3803,6 +3804,8 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_finalize_calls(opts, state);
     dsd_engine_cleanup_close_wavs(opts, state);
     dsd_rdio_upload_shutdown();
+    /* After the last recordings closed: those no row will claim now are unlinked (issue #708). */
+    dsd_wav_journal_close();
     dsd_engine_cleanup_close_output_files(opts, state);
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
@@ -3903,8 +3906,11 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
     if (import_trunking_csvs_if_needed(opts, state) != 0) {
         return -1;
     }
-    /* A run's recording failures are its own: the status a frontend shows starts clean (issue #708). */
+    /* A run's recording failures are its own: the status a frontend shows starts clean (issue #708). The journal
+       opens before the run's first recording does, and a journal that does not open leaves decoding and recording
+       running, reported by the recording view. */
     dsd_wav_recording_session_reset();
+    (void)dsd_wav_journal_open(opts->wav_journal_file);
     open_recording_outputs_if_needed(opts, state);
 
     {

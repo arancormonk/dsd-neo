@@ -38,6 +38,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -1577,6 +1578,10 @@ trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
 static void
 trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     (void)dsd_call_context_restore_snapshot(state, &snapshot->call_context);
+    // The restore drops the commit references into the global ring, and the per-call recordings closed before their
+    // call's row lose that row with them (issue #708): another target's commit must not claim them, and this target's
+    // revisit resumes with them already resolved.
+    dsd_wav_journal_unlink_pending();
     if (state->event_history_s != NULL) {
         dsd_event_history_transaction transaction;
         dsd_event_history_transaction_begin(state, &transaction);

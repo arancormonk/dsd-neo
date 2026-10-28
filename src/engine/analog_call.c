@@ -52,8 +52,8 @@ analog_call_get(const dsd_state* state) {
 static void
 analog_call_close_recording(dsd_opts* opts, dsd_state* state, analog_call* call) {
     if (call->wav) {
-        call->wav = close_and_rename_wav_file(call->wav, opts, call->path, call->dir[0] ? call->dir : opts->wav_out_dir,
-                                              state->event_history_s ? &state->event_history_s[0] : NULL, call->opened);
+        call->wav = close_and_publish_call_wav(call->wav, opts, state, 0, call->path,
+                                               call->dir[0] ? call->dir : opts->wav_out_dir, call->opened);
         call->path[0] = '\0';
     }
 }

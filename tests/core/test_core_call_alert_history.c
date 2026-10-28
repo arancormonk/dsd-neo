@@ -237,10 +237,12 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call) {
+                             const Event_History_I* event_struct, time_t opened, int export_call,
+                             const dsd_wav_owner* owner) {
     UNUSED(wav_file);
     UNUSED(wav_out_filename);
     UNUSED(dir);
+    UNUSED(owner);
     g_close_wav_count++;
     if (export_call) {
         g_close_wav_export_count++;

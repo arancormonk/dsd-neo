@@ -603,6 +603,23 @@ typedef struct {
     const char* short_name;
 } dsd_rdio_meta_fields;
 
+time_t
+dsd_rdio_recording_start(const Event_History* event, time_t opened) {
+    // The recording is filed by when it began: when its call did, or when the WAV was opened if that came later (per-
+    // call WAV switched on mid-call). Both are decode-clock stamps. event_time is the row's last activity -- the call's
+    // end by the time its WAV closes -- so it stands in only for a row with no start of its own, such as a --playfiles
+    // row, whose event_time the file reader stamped from the recording; that stamp is on the recording's clock, so the
+    // open time is not compared with it. stop_time adds the WAV length to the start, and is never derived by moving a
+    // fallback stamp back: a played file's stamp need not be an end.
+    if (event && event->event_start_time > 0) {
+        return opened > event->event_start_time ? opened : event->event_start_time;
+    }
+    if (event && event->event_time > 0) {
+        return event->event_time;
+    }
+    return dsd_decode_time();
+}
+
 static void
 dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_rdio_meta_fields* out) {
     if (!out) {
@@ -619,17 +636,7 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_r
     if (!event) {
         return;
     }
-    // The recording is filed by when it began: when its call did, or when the WAV was opened if that came later (per-
-    // call WAV switched on mid-call). Both are decode-clock stamps. event_time is the row's last activity -- the call's
-    // end by the time its WAV closes -- so it stands in only for a row with no start of its own, such as a --playfiles
-    // row, whose event_time the file reader stamped from the recording; that stamp is on the recording's clock, so the
-    // open time is not compared with it. stop_time adds the WAV length to the start, and is never derived by moving a
-    // fallback stamp back: a played file's stamp need not be an end.
-    if (event->event_start_time > 0) {
-        out->start_time = opened > event->event_start_time ? opened : event->event_start_time;
-    } else if (event->event_time > 0) {
-        out->start_time = event->event_time;
-    }
+    out->start_time = dsd_rdio_recording_start(event, opened);
     out->talkgroup = event->target_id;
     out->source = event->source_id;
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
@@ -1012,6 +1019,15 @@ dsd_rdio_mode_to_string(int mode) {
 
 int
 dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened) {
+    return dsd_rdio_export_call_ex(opts, event_struct, wav_path, opened, NULL);
+}
+
+int
+dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
+                        int* api_queued) {
+    if (api_queued) {
+        *api_queued = 0;
+    }
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
     }
@@ -1045,6 +1061,9 @@ dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, 
         if (dsd_rdio_enqueue_api_upload(opts, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
             != 0) {
             return -1;
+        }
+        if (api_queued) {
+            *api_queued = 1;
         }
 #endif
     }

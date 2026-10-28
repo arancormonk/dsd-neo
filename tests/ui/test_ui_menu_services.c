@@ -195,13 +195,14 @@ close_wav_file(SNDFILE* wav_file) {
 }
 
 SNDFILE*
-close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                          const Event_History_I* event_struct, time_t opened) {
+close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                           const char* wav_out_filename, const char* dir, time_t opened) {
     (void)wav_file;
     (void)opts;
+    (void)state;
+    (void)slot;
     (void)wav_out_filename;
     (void)dir;
-    (void)event_struct;
     (void)opened;
     return NULL;
 }

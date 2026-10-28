@@ -439,6 +439,30 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     return -1;
 }
 
+int
+dsd_path_canonical(const char* path, char* out, size_t out_size) {
+    if (!path || path[0] == '\0' || !out || out_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    char full[_MAX_PATH];
+    if (_fullpath(full, path, sizeof full) == NULL) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    struct _stat64 st;
+    if (_stat64(full, &st) != 0) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(out, out_size, "%s", full);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
 static int
 dsd_local_file_name_is_unsafe(const char* requested) {
     return requested == NULL || requested[0] == '\0' || requested[0] == '/' || requested[0] == '\\'

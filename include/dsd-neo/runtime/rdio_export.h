@@ -67,6 +67,22 @@ int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_stru
                          time_t opened);
 
 /**
+ * As dsd_rdio_export_call(); @p api_queued (may be NULL) gets 1 when an API upload of @p wav_path was queued, whose
+ * worker may delete the file once it is uploaded.
+ */
+int dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                            time_t opened, int* api_queued);
+
+/**
+ * When a per-call recording began, the one rule the rdio-scanner sidecar's start_time and the recording journal
+ * (issue #708) share: the row's event_start_time, or @p opened (the decode time the WAV was opened, 0 when unknown)
+ * when that is later, as when per-call WAV is switched on mid-call. A row with no start falls back to its
+ * event_time, unadjusted (a --playfiles row, stamped on the file's clock), then, as does a NULL @p event, to the
+ * decode clock.
+ */
+time_t dsd_rdio_recording_start(const Event_History* event, time_t opened);
+
+/**
  * Drain queued rdio API uploads and stop the background worker.
  *
  * Intended for process shutdown after final call files are closed/renamed.

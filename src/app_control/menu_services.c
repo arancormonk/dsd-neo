@@ -150,13 +150,12 @@ svc_recording_discard(svc_recording_opened* o, const svc_recording_target* targe
 static void
 svc_publish_per_call_files(dsd_opts* opts, dsd_state* state) {
     if (opts->wav_out_f != NULL) {
-        opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                    state ? &state->event_history_s[0] : NULL, opts->wav_out_open_time);
+        opts->wav_out_f = close_and_publish_call_wav(opts->wav_out_f, opts, state, 0, opts->wav_out_file,
+                                                     opts->wav_out_dir, opts->wav_out_open_time);
     }
     if (opts->wav_out_fR != NULL) {
-        opts->wav_out_fR =
-            close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                      state ? &state->event_history_s[1] : NULL, opts->wav_out_open_timeR);
+        opts->wav_out_fR = close_and_publish_call_wav(opts->wav_out_fR, opts, state, 1, opts->wav_out_fileR,
+                                                      opts->wav_out_dir, opts->wav_out_open_timeR);
     }
     if (state) {
         dsd_engine_analog_call_stop_recording(opts, state);

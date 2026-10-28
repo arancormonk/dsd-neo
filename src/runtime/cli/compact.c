@@ -90,6 +90,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--input-level-warn-db",
     "--frame-log",
     "--p25-sm-log",
+    "--wav-journal",
     "--rdio-mode",
     "--rdio-system-id",
     "--rdio-api-url",

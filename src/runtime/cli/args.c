@@ -1713,6 +1713,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             frame_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--wav-journal") == 0 && i + 1 < argc) {                                                   \
+            wav_journal_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--p25-sm-log") == 0 && i + 1 < argc) {                                                    \
             p25_sm_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
@@ -2259,6 +2263,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         dsd_frame_log_close(opts);                                                                                     \
         LOG_INFO("NOTICE: Frame log file: %s\n", opts->frame_log_file);                                                \
     }                                                                                                                  \
+    if (wav_journal_cli) {                                                                                             \
+        DSD_SNPRINTF(opts->wav_journal_file, sizeof opts->wav_journal_file, "%s", wav_journal_cli);                    \
+        LOG_INFO("NOTICE: Call recording journal: %s\n", opts->wav_journal_file);                                      \
+    }                                                                                                                  \
     if (p25_sm_log_cli) {                                                                                              \
         DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", p25_sm_log_cli);                       \
         opts->p25_sm_log_file[sizeof opts->p25_sm_log_file - 1] = '\0';                                                \
@@ -2548,6 +2556,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* frontend_cli = NULL;
     const char* frame_log_cli = NULL;
     const char* p25_sm_log_cli = NULL;
+    const char* wav_journal_cli = NULL;
     const char* rdio_mode_cli = NULL;
     const char* rdio_system_id_cli = NULL;
     const char* rdio_api_url_cli = NULL;

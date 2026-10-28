@@ -129,13 +129,19 @@ wav_segment_opened(const SNDFILE* file) {
 }
 
 int
-wav_segment_close(SNDFILE* file) {
+wav_segment_close(SNDFILE* file, int* failed) {
+    if (failed) {
+        *failed = 0;
+    }
     if (file == NULL) {
         return 0;
     }
     wav_segment_lock();
     wav_segment* segment = wav_segment_find_locked(file);
     if (segment != NULL) {
+        if (failed) {
+            *failed = segment->failed;
+        }
         wav_segment_forget_locked(segment);
     }
     dsd_mutex_unlock(&s_wav_segment_mu);
