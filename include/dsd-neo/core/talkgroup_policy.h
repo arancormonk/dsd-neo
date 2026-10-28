@@ -183,8 +183,21 @@ int dsd_tg_policy_lookup_group(const dsd_state* state, uint32_t tg, dsd_tg_polic
 /** Number of pattern rows in the effective table; 0 without a policy context. */
 size_t dsd_tg_policy_pattern_count(const dsd_state* state);
 int dsd_tg_policy_has_entries(const dsd_state* state);
+/** Exact-row label for any ID: the first exact row (a talkgroup row before a learned alias) with its mode and name.
+ * The radio-side fallback of dsd_source_label_lookup(); a talkgroup is labelled by
+ * dsd_tg_policy_lookup_group_label(). Returns 1 when an exact row matched (its name may be empty). */
 int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                                size_t name_sz);
+/**
+ * @brief Talkgroup label: the mode and name of the row that decides talkgroup @p tg (dsd_tg_policy_lookup_group():
+ * a talkgroup exact row, else the narrowest range, else the most specific pattern).
+ *
+ * A learned alias row names a radio and never labels a talkgroup. Returns 1 only when the deciding row has a non-empty
+ * name; otherwise 0 with both outputs empty (a deciding row without a name labels nothing, and no wider row lends it
+ * one). NULL outputs are accepted.
+ */
+int dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
+                                     size_t name_sz);
 int dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src);
 int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                       int encrypted, int data_call, dsd_tg_policy_decision* out);

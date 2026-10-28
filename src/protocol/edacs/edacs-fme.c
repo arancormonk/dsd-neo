@@ -86,7 +86,7 @@ edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t samp
 static void
 edacs_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
-    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+    if (id != 0U && dsd_tg_policy_lookup_group_label(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }

@@ -707,6 +707,12 @@ Important behavior:
 - `id` supports exact IDs (`1201`) and ranges (`1200-1299`).
   - Exact rows populate the runtime policy table used for labels and decisions.
   - Range rows are policy entries that match IDs within the configured range.
+  - A talkgroup is labelled by the row that decides it: its exact row, else the narrowest range, else the most
+    specific pattern, with that row's `name` and `mode` (`TName:`/`Mode:` in history, the terminal and the frontends).
+    A deciding row with an empty `name` labels nothing; no wider row lends it a name. A private call's target is a
+    radio and is labelled as one (the source ID list, then this list's exact row, as for `SName:`), never by a range
+    or pattern. Data calls and voice calls of unknown kind keep the exact-row label. A label without a mode prints
+    no `Mode:`.
 - `preempt`, `audio`, `record`, and `stream` accept `true`/`false`, `yes`/`no`, `on`/`off`, or `1`/`0`.
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.
@@ -806,8 +812,9 @@ id,mode,name,priority,preempt,audio,record,stream,tags
 - The followed conversation counts as held in the gaps between its transmissions (hangtime), and its dwell runs from
   when it was first followed. On TDMA carriers the candidate must outrank every followed slot it would displace.
 - A row in mode `B` or `DE` (Not tuned) is never followed, so its priority and preemption do nothing.
-- Learned over-the-air radio aliases (mode `D`) name radios, not talkgroups: they never decide a talkgroup's mode,
-  priority, preemption or allow-list membership, even when a radio's ID equals a talkgroup number. Lists exported by
+- Learned over-the-air radio aliases (mode `D`) name radios, not talkgroups: they never decide or label a talkgroup
+  (its mode, name, priority, preemption or allow-list membership), even when a radio's ID equals a talkgroup number.
+  They still name that radio as a source or as a private call's target. Lists exported by
   older versions may hold an encrypted radio's alias as a `DE` row, which reads as a talkgroup lockout: delete it if
   that number is a talkgroup you want.
 

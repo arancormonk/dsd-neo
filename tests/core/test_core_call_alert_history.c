@@ -3260,7 +3260,8 @@ test_channel_label_coexists_with_policy_label(void) {
     reset_fixture(&opts, &state, event_history);
 
     int rc = expect_int("scan list name stores", arm_scanner_label(&state, &opts, 0, "Fire Dispatch"), 0);
-    rc |= expect_int("policy label appends", append_policy_label(&state, 50061U, "D", "Dispatch"), 0);
+    /* A talkgroup mode: learned/mode-D alias rows never label a talkgroup (issue #773 D4). */
+    rc |= expect_int("policy label appends", append_policy_label(&state, 50061U, "A", "Dispatch"), 0);
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
     state.nac = 0x293;
@@ -3274,7 +3275,7 @@ test_channel_label_coexists_with_policy_label(void) {
 
     const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("labelled row keeps the channel prefix", item->event_string, "[Fire Dispatch] TEST TGT:");
-    rc |= expect_has_substr("labelled row keeps the policy label", item->event_string, "TName: Dispatch; Mode: D;");
+    rc |= expect_has_substr("labelled row keeps the policy label", item->event_string, "TName: Dispatch; Mode: A;");
 
     dsd_state_trunk_lcn_name_free(&state);
     dsd_state_ext_free_all(&state);
@@ -8147,6 +8148,160 @@ test_unjudged_recordings_export(void) {
     return rc;
 }
 
+/* Issue #773 D4: append a group-list range row. */
+static int
+append_policy_range(dsd_state* state, uint32_t first, uint32_t last, const char* mode, const char* name) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(first, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return -1;
+    }
+    row.id_end = last;
+    row.kind = DSD_TG_POLICY_ROW_RANGE;
+    return dsd_tg_policy_add_range_entry(state, &row);
+}
+
+/* Issue #773 D4: install a radio list naming @p id. */
+static int
+install_radio_label(dsd_state* state, uint32_t id, const char* name) {
+    dsd_source_alias_store* store = dsd_source_alias_store_create();
+    dsd_source_alias_entry entry;
+    DSD_MEMSET(&entry, 0, sizeof entry);
+    entry.id_start = entry.id_end = id;
+    DSD_SNPRINTF(entry.name, sizeof entry.name, "%s", name);
+    if (store == NULL || dsd_source_alias_store_append(store, &entry) != 0) {
+        dsd_source_alias_store_free(store);
+        return -1;
+    }
+    dsd_source_alias_install(state, store);
+    return 0;
+}
+
+/* Render the slot's current call as a group or private call to @p target from @p source. */
+static const Event_History*
+render_labelled_call(dsd_opts* opts, dsd_state* state, dsd_call_kind kind, uint32_t target, uint32_t source) {
+    assert(observe_test_call(state, 0U, DSD_SYNC_P25P2_POS, kind, target, source, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    return &state->event_history_s[0].Event_History_Items[0];
+}
+
+/* B10: a learned alias names a radio, never a talkgroup. A group call on a talkgroup inside a named range is labelled
+ * by the range even when a radio with the same ID taught an alias; a private call to that ID is labelled as a radio. */
+static int
+test_alias_never_labels_talkgroup(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    int rc = expect_int("range row", append_policy_range(&state, 1200U, 1299U, "A", "Ops"), 0);
+    dsd_tg_policy_entry alias;
+    rc |= expect_int(
+        "alias row",
+        dsd_tg_policy_make_exact_entry(1250U, "D", "Radio 1250", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias), 0);
+    rc |= expect_int("alias learned", dsd_tg_policy_learn_exact(&state, &alias), DSD_TG_POLICY_LEARN_ADDED);
+
+    const Event_History* item = render_labelled_call(&opts, &state, DSD_CALL_KIND_GROUP_VOICE, 1250U, 77U);
+    rc |= expect_str_eq("range names the talkgroup", item->t_name, "Ops");
+    rc |= expect_has_substr("range label rendered", item->event_string, "TName: Ops; Mode: A;");
+    rc |= expect_int("alias never labels the talkgroup", strstr(item->event_string, "Radio 1250") == NULL, 1);
+
+    item = render_labelled_call(&opts, &state, DSD_CALL_KIND_PRIVATE_VOICE, 1250U, 77U);
+    rc |= expect_str_eq("private target is the radio", item->t_name, "Radio 1250");
+    rc |= expect_has_substr("radio label rendered", item->event_string, "TName: Radio 1250; Mode: D;");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* D4: a private call's target is a radio, labelled from the radio list (then the group list's exact row), never by a
+ * group range that happens to cover its ID. A group call on the same ID keeps the group label. */
+static int
+test_private_target_labelled_as_radio(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    int rc = expect_int("range row", append_policy_range(&state, 4000U, 4099U, "A", "Group Range"), 0);
+    rc |= expect_int("radio list", install_radio_label(&state, 4001U, "Unit 4001"), 0);
+
+    const Event_History* item = render_labelled_call(&opts, &state, DSD_CALL_KIND_PRIVATE_VOICE, 4001U, 4002U);
+    rc |= expect_str_eq("private target named from the radio list", item->t_name, "Unit 4001");
+    rc |= expect_has_substr("radio label without a mode", item->event_string, "TName: Unit 4001; ");
+    rc |= expect_int("no empty mode", strstr(item->event_string, "Mode: ;") == NULL, 1);
+    rc |= expect_int("group range never names a radio", strstr(item->event_string, "Group Range") == NULL, 1);
+
+    item = render_labelled_call(&opts, &state, DSD_CALL_KIND_PRIVATE_VOICE, 4003U, 4002U);
+    rc |= expect_int("unlisted radio has no label", item->t_name[0], '\0');
+    rc |= expect_int("no TName for an unlisted radio", strstr(item->event_string, "TName:") == NULL, 1);
+
+    item = render_labelled_call(&opts, &state, DSD_CALL_KIND_GROUP_VOICE, 4001U, 4002U);
+    rc |= expect_str_eq("group call keeps the group label", item->t_name, "Group Range");
+    rc |= expect_has_substr("group label rendered", item->event_string, "TName: Group Range; Mode: A;");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* B11: the row's target label is cached on the call when the row commits, keyed by the target it names, so the
+ * ended-call hold can still name the group once the staged row has gone. */
+static int
+test_commit_caches_target_label(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    int rc = expect_int("range row", append_policy_range(&state, 900U, 999U, "A", "Fireground"), 0);
+    (void)render_labelled_call(&opts, &state, DSD_CALL_KIND_GROUP_VOICE, 950U, 42U);
+    dsd_call_snapshot call;
+    rc |= expect_int("active call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("nothing cached while the row is staged", call.target_label[0], '\0');
+    rc |= expect_int("end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("row committed", (int)event_history[0].Event_History_Items[1].target_id, 950);
+    rc |= expect_int("ended call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_str_eq("target label cached", call.target_label, "Fireground");
+    rc |= expect_u64("target label keyed by its target", call.target_label_id, 950U);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A YSF call names its parties by callsign: a textual private target keeps its text, and no numeric label (a radio or
+ * group catch-all) is attached to it or cached for the hold. */
+static int
+test_ysf_textual_private_target_keeps_its_text(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    dsd_tg_policy_entry everyone;
+    int rc =
+        expect_int("catch-all row",
+                   dsd_tg_policy_make_exact_entry(0U, "A", "Everyone", DSD_TG_POLICY_SOURCE_IMPORTED, &everyone), 0);
+    everyone.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(everyone.pattern, sizeof everyone.pattern, "%s", "*");
+    rc |= expect_int("catch-all stored", dsd_tg_policy_add_pattern_entry(&state, &everyone), 0);
+    state.lastsynctype = DSD_SYNC_YSF_POS;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_YSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .observed_m = g_observed_m,
+    };
+    DSD_SNPRINTF(observation.source_text, sizeof observation.source_text, "%s", "N0CALL");
+    DSD_SNPRINTF(observation.target_text, sizeof observation.target_text, "%s", "KD9ABC");
+    rc |= expect_int("ysf call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* item = &event_history[0].Event_History_Items[0];
+    rc |= expect_has_substr("callsign target kept", item->event_string, "KD9ABC");
+    rc |= expect_int("no numeric label", item->t_name[0], '\0');
+    rc |= expect_int("end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_call_snapshot call;
+    rc |= expect_int("ended call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_str_eq("callsign target unchanged", call.target_text, "KD9ABC");
+    rc |= expect_int("no label cached", call.target_label[0], '\0');
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -8313,6 +8468,10 @@ main(void) {
     rc |= test_consecutive_calls_opposite_verdicts();
     rc |= test_hold_does_not_override_stream_off();
     rc |= test_unjudged_recordings_export();
+    rc |= test_alias_never_labels_talkgroup();
+    rc |= test_private_target_labelled_as_radio();
+    rc |= test_commit_caches_target_label();
+    rc |= test_ysf_textual_private_target_keeps_its_text();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/core/util/call_state_internal.h"
 
 static dsd_state*
 make_state(void) {
@@ -781,6 +782,61 @@ test_source_labels_keep_identity(void) {
     destroy_state(state);
 }
 
+/* Stand in for the event layer's commit: cache @p label for @p target_id on the slot's call (issue #773 B11). */
+static void
+cache_target_label(dsd_state* state, uint8_t slot, uint64_t target_id, const char* label) {
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    assert(ext != NULL);
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    DSD_SNPRINTF(call->target_label, sizeof(call->target_label), "%s", label);
+    call->target_label_id = target_id;
+}
+
+/* B11: once the row commits the staged row no longer names the call, so the ended hold names the group from the label
+ * the event layer cached on the epoch -- only for the target it was cached for, and never over a textual target. */
+static void
+test_ended_hold_keeps_target_name(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 950U, 42U, 10.0);
+    stage_group_name(history, 0U, 950U, "Fireground");
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    /* The row commits: index 0 is cleared, the label stays on the epoch. */
+    DSD_MEMSET(&history[0].Event_History_Items[0], 0, sizeof(history[0].Event_History_Items[0]));
+    cache_target_label(state, 0U, 950U, "Fireground");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0 + DSD_APP_CALL_LINE_ENDED_HOLD_S - 0.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.name, "Fireground") == 0);
+    assert(strcmp(view.tg_text, "950") == 0);
+
+    /* A label cached for another target never names this call. */
+    cache_target_label(state, 0U, 951U, "Elsewhere");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(strcmp(view.name, "950") == 0);
+
+    /* A newer staged row for this target still wins over the cache. */
+    cache_target_label(state, 0U, 950U, "Fireground");
+    stage_group_name(history, 0U, 950U, "Renamed");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(strcmp(view.name, "Renamed") == 0);
+    destroy_state(state);
+
+    /* A textual target keeps its text over a numeric label. */
+    state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 0U, 0U, 10.0);
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, "N0CALL", "KD9ABC", NULL, NULL, 10.05) == 1);
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    cache_target_label(state, 0U, 0U, "Numeric");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.name, "KD9ABC") == 0);
+    destroy_state(state);
+}
+
 static void
 test_service_metadata(void) {
     dsd_state* state = make_state();
@@ -805,6 +861,7 @@ int
 main(void) {
     test_service_metadata();
     test_source_labels_keep_identity();
+    test_ended_hold_keeps_target_name();
     test_idle_slot_reports_none();
     test_active_call_reports_identity();
     test_tg_id_falls_back_to_policy_target_id();

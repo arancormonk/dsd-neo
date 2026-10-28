@@ -344,8 +344,8 @@ dsd_audio_policy_allows_record(const dsd_tg_policy_decision* decision) {
 
 // The rdio-scanner export verdict (issue #773 D7): (Hold override ? no explicit stream block : talkgroup part with the
 // allow list) && radio part. A Hold lifts what it lifts for recording -- an allow-list miss and a stream flag only
-// derived off (a B/DE or audio=off row) -- but never an explicit stream=off on an audible row (DSD_TG_POLICY_BLOCK_STREAM;
-// the radio part sets that reason too, and is never lifted).
+// derived off (a B/DE or audio=off row) -- but never an explicit stream=off on an audible row
+// (DSD_TG_POLICY_BLOCK_STREAM; the radio part sets that reason too, and is never lifted).
 static int
 dsd_audio_policy_allows_stream(const dsd_tg_policy_decision* decision) {
     const int tg =

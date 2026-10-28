@@ -95,6 +95,25 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
     return 1;
 }
 
+/**
+ * @brief Copy the target label the event layer cached on an ended call's epoch (issue #773 B11).
+ *
+ * Once the call's row commits, the staged row no longer names it, so the ended-call hold reads the label cached on the
+ * epoch when the row committed -- only for the target it was cached for (target_label_id), and never over a textual
+ * target, whose text names the call itself.
+ *
+ * @return Non-zero when a name was written.
+ */
+static int
+cached_group_name(const dsd_call_snapshot* call, uint64_t tg_id, char* out, size_t out_size) {
+    if (call->phase != DSD_CALL_PHASE_ENDED || call->target_text[0] != '\0' || tg_id == 0U
+        || call->target_label_id != tg_id || call->target_label[0] == '\0') {
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", call->target_label);
+    return 1;
+}
+
 /* The event layer resolves source aliases before group-list exact labels. Reuse that
  * staged value only for the same nonzero source, so the previous caller cannot name
  * a new epoch. Once the row has committed (an ended call the view still holds), the
@@ -148,7 +167,8 @@ staged_channel_label(const dsd_state* state, uint8_t slot, char* out, size_t out
  * @brief Fill @c channel and @c name for a call the slot line is going to show.
  *
  * The staged row outlives a call by design and must not caption the next one, which is
- * what the target_id comparison inside staged_group_name() guards. Below it, the order
+ * what the target_id comparison inside staged_group_name() guards; once an ended call's row
+ * has committed, the label cached on its epoch names it (cached_group_name()). Below it, the order
  * the call history applies: a textual target is a name of its own; a bare talkgroup
  * number is not, so the scan channel the call was heard on names it -- the only name
  * encrypted traffic on a conventional list ever gets -- and the number stays in tg_text
@@ -168,6 +188,9 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
         return;
     }
     if (staged_group_name(state, slot, out->tg_id, out->name, sizeof(out->name))) {
+        return;
+    }
+    if (cached_group_name(call, out->tg_id, out->name, sizeof(out->name))) {
         return;
     }
     const char* fallback = (call->target_text[0] == '\0' && out->channel[0] != '\0') ? out->channel : out->tg_text;

@@ -88,21 +88,6 @@
 #endif
 
 static int
-ui_lookup_group_label(const dsd_state* state, unsigned long id, char* mode, size_t mode_sz, char* name,
-                      size_t name_sz) {
-    if (id == 0UL || id > UINT32_MAX) {
-        if (mode && mode_sz > 0) {
-            mode[0] = '\0';
-        }
-        if (name && name_sz > 0) {
-            name[0] = '\0';
-        }
-        return 0;
-    }
-    return dsd_tg_policy_lookup_label(state, (uint32_t)id, mode, mode_sz, name, name_sz);
-}
-
-static int
 ui_lookup_source_label(const dsd_state* state, unsigned long id, char* mode, size_t mode_sz, char* name,
                        size_t name_sz) {
     if (id == 0UL || id > UINT32_MAX) {
@@ -115,6 +100,23 @@ ui_lookup_source_label(const dsd_state* state, unsigned long id, char* mode, siz
         return 0;
     }
     return dsd_source_label_lookup(state, (uint32_t)id, mode, mode_sz, name, name_sz);
+}
+
+/* The label a call's target is named by, as the event layer's TName (dsd_call_target_label_lookup(), issue #773 D4).
+ * A site that knows no call kind passes DSD_CALL_KIND_GROUP_VOICE. */
+static int
+ui_lookup_target_label(const dsd_state* state, dsd_call_kind kind, unsigned long id, char* mode, size_t mode_sz,
+                       char* name, size_t name_sz) {
+    if (id == 0UL || id > UINT32_MAX) {
+        if (mode && mode_sz > 0) {
+            mode[0] = '\0';
+        }
+        if (name && name_sz > 0) {
+            name[0] = '\0';
+        }
+        return 0;
+    }
+    return dsd_call_target_label_lookup(state, kind, (uint32_t)id, mode, mode_sz, name, name_sz);
 }
 
 /* Small helpers to align key/value fields to a consistent value column. */
@@ -2756,12 +2758,14 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
         if (call.service_label[0] != '\0') {
             attron(COLOR_PAIR(4));
             printw(" [%s]", call.service_label);
-        } else if (ui_lookup_group_label(state, target, group_mode, sizeof(group_mode), group_name,
-                                         sizeof(group_name))) {
+        } else if (ui_lookup_target_label(state, call.kind, target, group_mode, sizeof(group_mode), group_name,
+                                          sizeof(group_name))) {
             printw("TG: ");
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
-            printw("[%s] ", group_mode);
+            if (group_mode[0] != '\0') {
+                printw("[%s] ", group_mode);
+            }
         }
         const int source_label =
             source == target ? (source != 0UL && source <= UINT32_MAX
@@ -2934,8 +2938,8 @@ ui_render_edacs_channel_label(const dsd_state* state, const dsd_call_observation
     char group_name[50];
     int label_found = 0;
     if (observation->ota_target_id != 0U && observation->ota_target_id <= UINT32_MAX) {
-        label_found = ui_lookup_group_label(state, (unsigned long)observation->ota_target_id, group_mode,
-                                            sizeof group_mode, group_name, sizeof group_name);
+        label_found = ui_lookup_target_label(state, observation->kind, (unsigned long)observation->ota_target_id,
+                                             group_mode, sizeof group_mode, group_name, sizeof group_name);
     }
     if (!label_found && observation->ota_source_id != 0U && observation->ota_source_id <= UINT32_MAX) {
         label_found = ui_lookup_source_label(state, (unsigned long)observation->ota_source_id, group_mode,
@@ -3704,11 +3708,15 @@ ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int
 
     char group_mode[8];
     char group_name[50];
-    if (ui_lookup_group_label(state, (unsigned long)slot->target, group_mode, sizeof(group_mode), group_name,
-                              sizeof(group_name))) {
+    /* The slot's target is the call's while one is open; otherwise it is the decoder's last talkgroup. */
+    const dsd_call_kind kind = slot->call.phase == DSD_CALL_PHASE_ACTIVE ? slot->call.kind : DSD_CALL_KIND_GROUP_VOICE;
+    if (ui_lookup_target_label(state, kind, (unsigned long)slot->target, group_mode, sizeof(group_mode), group_name,
+                               sizeof(group_name))) {
         attron(COLOR_PAIR(4));
         printw(" [%s]", group_name);
-        printw("[%s] ", group_mode);
+        if (group_mode[0] != '\0') {
+            printw("[%s] ", group_mode);
+        }
     }
 }
 

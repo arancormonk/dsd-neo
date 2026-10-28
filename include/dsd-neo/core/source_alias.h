@@ -10,6 +10,7 @@
  */
 #ifndef DSD_NEO_CORE_SOURCE_ALIAS_H
 #define DSD_NEO_CORE_SOURCE_ALIAS_H
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
@@ -71,6 +72,12 @@ int dsd_source_policy_lookup(const dsd_state* state, uint32_t id, dsd_source_pol
  * name it returns 0 and leaves both outputs empty, so an unnamed row's mode is never shown as a label. */
 int dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                             size_t name_sz);
+/* The label a call's target is named by (issue #773 D4): a group call's talkgroup by the row that decides it
+ * (dsd_tg_policy_lookup_group_label(); a learned alias never labels a talkgroup), a private call's target as a radio
+ * (dsd_source_label_lookup()), a call of any other kind (data, voice of unknown kind) by the group list's exact row.
+ * Returns 1 only with a non-empty name; with no name it returns 0 and leaves both outputs empty. */
+int dsd_call_target_label_lookup(const dsd_state* state, dsd_call_kind kind, uint32_t id, char* mode, size_t mode_sz,
+                                 char* name, size_t name_sz);
 /* Deep copy or reuse matching clone. Failure preserves an owned destination store;
  * a shallow alias of src is detached so destination cleanup cannot free src. */
 int dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src);

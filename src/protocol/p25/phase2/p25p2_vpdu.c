@@ -79,10 +79,11 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
  */
 #define P25P2_MAC_STAGING_OCTETS (P25P2_MAC_OCTETS * 2)
 
+/* The label of a call's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
-p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
-    char name[50];
-    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+p25p2_vpdu_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_call_target_label_lookup(state, kind, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -924,7 +925,7 @@ p25p2_vpdu_try_group_candidate(dsd_opts* opts, dsd_state* state, const p25p2_vpd
     int was_tuned = (opts && (opts->trunk_is_tuned != 0)) ? 1 : 0;
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
     const long was_vc_freq = sm ? sm->vc_freq_hz : 0;
-    p25p2_vpdu_print_group_label(state, (uint32_t)candidate->group);
+    p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)candidate->group);
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, candidate->freq);
     if (dispatch != P25P2_DISPATCH_NONE) {
         p25_sm_event_t ev =
@@ -1158,7 +1159,7 @@ p25p2_vpdu_handle_group_explicit_grant(dsd_opts* opts, dsd_state* state, int slo
         (void)process_channel_to_freq(opts, state, grant->channelr);
     }
     p25p2_vpdu_set_active_group_single(state, grant->channelt, grant->group, grant->svc);
-    p25p2_vpdu_print_group_label(state, (uint32_t)grant->group);
+    p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)grant->group);
 
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq_t);
     if (dispatch != P25P2_DISPATCH_NONE) {
@@ -1235,7 +1236,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
         //add active channel to string for ncurses display
         p25_set_mfid90_active_channel_single(state, channel, sgroup, svc);
 
-        p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)sgroup);
 
         const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
         if (dispatch != P25P2_DISPATCH_NONE) {
@@ -1295,7 +1296,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
         //add active channel to string for ncurses display
         p25_set_mfid90_active_channel_single(state, channel, sgroup, svc);
 
-        p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)sgroup);
 
         const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
         if (dispatch != P25P2_DISPATCH_NONE) {
@@ -1400,7 +1401,7 @@ p25p2_vpdu_iter_block_04(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d] Source [%d]", svc, channel, group, src);
         freq = process_channel_to_freq(opts, state, channel);
         p25p2_vpdu_set_active_group_single(state, channel, group, svc);
-        p25p2_vpdu_print_group_label(state, (uint32_t)group);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
 
         const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
         if (dispatch != P25P2_DISPATCH_NONE) {
@@ -1465,7 +1466,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
                                          (uint16_t)svc, "Active Tele Ch: %04X%s TGT: %u; ", channel, suffix, target);
         }
 
-        p25p2_vpdu_print_group_label(state, target);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_PRIVATE_VOICE, target);
         const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
         if (dispatch != P25P2_DISPATCH_NONE) {
             p25p2_mac_handle_indiv(opts, state, channel, svc, (int)target, /*src*/ 0,
@@ -1518,7 +1519,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
 
     p25p2_vpdu_print_source_label(state, (uint32_t)source);
     if (source != target) {
-        p25p2_vpdu_print_group_label(state, (uint32_t)target);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_PRIVATE_VOICE, (uint32_t)target);
     }
 
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
@@ -1566,7 +1567,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
 
     p25p2_vpdu_print_source_label(state, (uint32_t)source);
     if (source != target) {
-        p25p2_vpdu_print_group_label(state, (uint32_t)target);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_PRIVATE_VOICE, (uint32_t)target);
     }
 
     const int dispatch = p25p2_vpdu_can_dispatch_grant(opts, state, freq);
@@ -1897,7 +1898,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         int target = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
         DSD_FPRINTF(stderr, "\n  DSO: %02X; CHAN-T: %04X; CHAN-R: %04X; Target: %d;", dso, channelt, channelr, target);
 
-        p25p2_vpdu_print_group_label(state, (uint32_t)target);
+        p25p2_vpdu_print_target_label(state, DSD_CALL_KIND_DATA, (uint32_t)target);
 
         long int freq = process_channel_to_freq(opts, state, channelt);
 
@@ -4454,7 +4455,7 @@ p25p2_vpdu_handle_group_voice_service_request(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n Group Voice Service Request");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Group [%d][%04X] Source [%d]", svc, group, group, source);
     p25p2_vpdu_print_svc_no_state(ctx->opts, svc);
-    p25p2_vpdu_print_group_label(ctx->state, (uint32_t)group);
+    p25p2_vpdu_print_target_label(ctx->state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
     if (source != 0 && group != 0) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }

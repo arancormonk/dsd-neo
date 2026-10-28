@@ -345,6 +345,29 @@ dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t 
 }
 
 int
+dsd_call_target_label_lookup(const dsd_state* state, dsd_call_kind kind, uint32_t id, char* mode, size_t mode_sz,
+                             char* name, size_t name_sz) {
+    if (kind == DSD_CALL_KIND_GROUP_VOICE) {
+        return dsd_tg_policy_lookup_group_label(state, id, mode, mode_sz, name, name_sz);
+    }
+    if (kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_source_label_lookup(state, id, mode, mode_sz, name, name_sz);
+    }
+    char exact_mode[sizeof(((dsd_source_alias_entry*)0)->mode)] = {0};
+    char exact_name[DSD_SOURCE_ALIAS_NAME_MAX] = {0};
+    const int found =
+        dsd_tg_policy_lookup_label(state, id, exact_mode, sizeof(exact_mode), exact_name, sizeof(exact_name))
+        && exact_name[0] != '\0';
+    if (mode && mode_sz) {
+        DSD_SNPRINTF(mode, mode_sz, "%s", found ? exact_mode : "");
+    }
+    if (name && name_sz) {
+        DSD_SNPRINTF(name, name_sz, "%s", found ? exact_name : "");
+    }
+    return found;
+}
+
+int
 dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     if (!dst || !src) {
         return -1;

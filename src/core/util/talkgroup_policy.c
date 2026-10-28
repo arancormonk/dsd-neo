@@ -1658,6 +1658,25 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
     return 1;
 }
 
+int
+dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
+                                 size_t name_sz) {
+    dsd_tg_policy_lookup lookup;
+    if (mode && mode_sz > 0) {
+        mode[0] = '\0';
+    }
+    if (name && name_sz > 0) {
+        name[0] = '\0';
+    }
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (!tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, &lookup) || lookup.entry.name[0] == '\0') {
+        return 0;
+    }
+    tg_policy_safe_copy(mode, mode_sz, lookup.entry.mode);
+    tg_policy_safe_copy(name, name_sz, lookup.entry.name);
+    return 1;
+}
+
 static int
 tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context** out) {
     dsd_tg_policy_context* clone = NULL;

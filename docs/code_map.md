@@ -1277,7 +1277,11 @@ suite runs under this compiler.
   append-only). The event layer caches the label of the epoch's row on the call (`dsd_call_snapshot::source_label`,
   keyed by `source_label_id`) when the row commits and when a late alias renames it, and the shared call view
   (`slot_source_text()`) reads that cache for an ended call whose staged row is gone, so the held Monitor view names
-  the talker without a source-table search per render.
+  the talker without a source-table search per render. The row's target label is cached beside it when the row
+  commits (`target_label`, keyed by `target_label_id`, the call's OTA target else its policy target; issue #773 B11),
+  and `cached_group_name()` names an ENDED call from it once the staged row no longer matches; a textual target keeps
+  its text. Tests: `APP_CONTROL_CALL_VIEW` (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY`
+  (`test_commit_caches_target_label`), `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`).
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
@@ -1378,11 +1382,26 @@ suite runs under this compiler.
 - Invariant (alias rows are radios, `talkgroup_policy.c` `tg_policy_entry_is_learned_alias()`): a row with source
   `RUNTIME_ALIAS` or mode `D` (the durable mark a persisted alias keeps) never decides a talkgroup: group evaluation,
   allow-list membership and the followed calls' priority refresh skip it and fall through to a talkgroup row or the
-  narrowest range. Private evaluation and labels still see it, behind any talkgroup row for the ID. Edits by bounds
+  narrowest range. Private evaluation and radio labels (`dsd_tg_policy_lookup_label()`, the group-list fallback of a
+  source's or a private call's target label) still see it, behind any talkgroup row for the ID; talkgroup labels never
+  come from it (labels invariant below). Edits by bounds
   (`set_fields`, `set_mode`, `remove_bounds`, heard-only selection) address the talkgroup row first and take an
   alias-only ID over in place. Edit staleness (`dsd_tg_policy_edit_version_valid()`) is judged against the structural
   generation, which learned aliases and session avoids do not move; a context created in place by decoder writes
   accepts an edit captured with nothing loaded, and a generation wrap is structural.
+- Invariant (labels follow the row that decides, issue #773 D4): `dsd_call_target_label_lookup()`
+  (`<dsd-neo/core/source_alias.h>`) is the one rule for naming a call's target, used by the event layer's `TName:`
+  (`watchdog_event_current_load_labels()`), the terminal (`ui_lookup_target_label()`: slot, NXDN and EDACS rows) and the
+  protocols' stderr grant/call prints. A group call's talkgroup takes the name and mode of the row that decides it
+  (`dsd_tg_policy_lookup_group_label()`: talkgroup exact row, else narrowest range, else most specific pattern; a
+  learned alias never labels a talkgroup, and a deciding row without a name labels nothing). A private call's target is
+  a radio and takes the source label (`dsd_source_label_lookup()`: radio list, then the group list's exact row). Data
+  calls and voice of unknown kind keep the exact-row label. Every path returns 1 only with a non-empty name; a label
+  without a mode prints no `Mode:`. A textual target (YSF/D-STAR/dPMR `target_text`, no numeric ID) is never looked
+  up and keeps its text. A terminal site with no open call passes the group kind. Tests: `CORE_TALKGROUP_POLICY`
+  (`test_group_label_from_range_and_pattern`, `test_alias_never_labels_talkgroup`), `CORE_CALL_ALERT_HISTORY`
+  (`test_alias_never_labels_talkgroup`, `test_private_target_labelled_as_radio`), `UI_NCURSES_PRINTER_HELPERS`
+  (`test_target_labels_follow_call_kind`).
 - Invariant (scan keys, `talkgroup_policy.c`): the lookups scan a compact key per row (`tg_policy_row_key`: bounds,
   kind, learned-alias flag) stored after the entries in the table's one allocation, never the full entries; a pattern
   row's text is read from its entry. Appends set their key; every other mutation (edit, replace, remove, selection

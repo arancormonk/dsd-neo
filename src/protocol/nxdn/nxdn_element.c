@@ -70,7 +70,7 @@ struct nxdn_element_dispatch_entry {
 
 static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t duplex_sz, char* mode,
                                          size_t mode_sz);
-static void nxdn_print_group_label(const dsd_state* state, uint32_t id);
+static void nxdn_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id);
 static void nxdn_anchor_control_channel_from_current_tuner(const dsd_opts* opts, dsd_state* state, int only_if_missing);
 static nxdn_element_handler_fn nxdn_element_dispatch_handler(uint8_t message_type);
 static void nxdn_follow_release(dsd_state* state);
@@ -136,10 +136,11 @@ static void nxdn_srv_info_handler(dsd_state* state, uint16_t svc_info);
 static void nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info);
 static void nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info);
 
+/* The label of a call's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
-nxdn_print_group_label(const dsd_state* state, uint32_t id) {
-    char name[50];
-    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+nxdn_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_call_target_label_lookup(state, kind, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -2158,11 +2159,12 @@ nxdn_vcall_assgn_admit(const dsd_opts* opts, dsd_state* state, const struct nxdn
 static void
 nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq,
                             time_t now) {
+    const int is_private_call = (info->call_type == 4U) ? 1 : 0;
     if (info->destination_id != 0U) {
-        nxdn_print_group_label(state, info->destination_id);
+        nxdn_print_target_label(state, is_private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
+                                info->destination_id);
     }
     nxdn_print_source_label(state, info->source_unit_id);
-    const int is_private_call = (info->call_type == 4U) ? 1 : 0;
     const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
     const int hold_matches = (state->tg_hold != 0 && state->tg_hold == info->destination_id) ? 1 : 0;
     dsd_tg_policy_decision policy_decision;
@@ -3395,7 +3397,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
     }
 
     nxdn_scch_update_control_channel_from_map(state, info);
-    nxdn_print_group_label(state, info->id);
+    nxdn_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, info->id);
 
     const long int freq = nxdn_channel_to_frequency(opts, state, info->rep1);
     if (freq == 0) {

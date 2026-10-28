@@ -1830,8 +1830,8 @@ watchdog_event_current_load_labels(const dsd_opts* opts, const dsd_state* state,
     ctx->s_name_loaded = 0;
 
     if (ctx->target_id != 0
-        && dsd_tg_policy_lookup_label(state, ctx->target_id, ctx->t_mode, sizeof(ctx->t_mode), ctx->t_name,
-                                      sizeof(ctx->t_name))) {
+        && dsd_call_target_label_lookup(state, ctx->kind, ctx->target_id, ctx->t_mode, sizeof(ctx->t_mode), ctx->t_name,
+                                        sizeof(ctx->t_name))) {
         ctx->t_name_loaded = 1;
     }
 
@@ -2379,7 +2379,11 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
                                             size_t event_size) {
     if (ctx->t_name_loaded) {
         char group[420];
-        DSD_SNPRINTF(group, sizeof(group), "TName: %s; Mode: %s; ", ctx->t_name, ctx->t_mode);
+        if (ctx->t_mode[0]) {
+            DSD_SNPRINTF(group, sizeof(group), "TName: %s; Mode: %s; ", ctx->t_name, ctx->t_mode);
+        } else {
+            DSD_SNPRINTF(group, sizeof(group), "TName: %s; ", ctx->t_name);
+        }
         watchdog_event_str_append(event_string, event_size, group);
     }
 
@@ -2610,6 +2614,31 @@ watchdog_event_cache_source_label(dsd_state* state, uint8_t slot, uint64_t epoch
     ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
 }
 
+// The same for the label the row resolved for its target (dsd_call_snapshot::target_label, issue #773 B11), so the
+// ended-call hold still names the group once the staged row has committed. Keyed by epoch and the target the row
+// names (the call's OTA target, else its policy target); a row with no label caches an empty one. Caller holds the
+// call-state lock.
+static void
+watchdog_event_cache_target_label(dsd_state* state, uint8_t slot, uint64_t epoch, const Event_History* row) {
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (ext == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || row == NULL || row->target_id == 0U) {
+        return;
+    }
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->epoch != epoch || watchdog_event_call_target_id(call) != row->target_id) {
+        return;
+    }
+    char label[sizeof call->target_label];
+    DSD_SNPRINTF(label, sizeof label, "%s", row->t_name);
+    if (call->target_label_id == row->target_id && strcmp(call->target_label, label) == 0) {
+        return;
+    }
+    DSD_MEMCPY(call->target_label, label, sizeof call->target_label);
+    call->target_label_id = row->target_id;
+    call->revision = call->revision == UINT64_MAX ? 1U : call->revision + 1U;
+    ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
+}
+
 static void
 watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                               dsd_call_event_lifecycle* lifecycle, Event_History_I* event_struct, int finalize_ended) {
@@ -2637,8 +2666,9 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         if (watchdog_event_drop_verdict_held(lifecycle, call, event_struct, deferred_end)) {
             return;
         }
-        // The staged row is about to leave index 0, where views of the ended call read its source label.
+        // The staged row is about to leave index 0, where views of the ended call read its source and target labels.
         watchdog_event_cache_source_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
+        watchdog_event_cache_target_label(state, slot, call->epoch, &event_struct->Event_History_Items[0]);
         // A new row, a merge into the row the interrupted transmission already owns, or -- for
         // a voice epoch that never learned an identity -- a drop. The empty-staged-row branch
         // has nothing to commit; enrichment resolves that case by push sequence and declines.

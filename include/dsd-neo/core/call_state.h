@@ -316,6 +316,14 @@ typedef struct {
      */
     char source_label[DSD_CALL_IDENTITY_TEXT_SIZE];
     uint64_t source_label_id;
+    /**
+     * The target's display label (dsd_call_target_label_lookup(): the talkgroup's deciding row for a group call, the
+     * radio label for a private call) the event layer resolved for this epoch's row, cached when the row commits so the
+     * ended-call hold still names the call after the staged row has gone. Valid only while target_label_id equals the
+     * call's target (ota_target_id, else policy_target_id); empty when the epoch's row had none.
+     */
+    char target_label[DSD_CALL_IDENTITY_TEXT_SIZE];
+    uint64_t target_label_id;
 } dsd_call_snapshot;
 
 /** The logical transmission @p call belongs to (dsd_call_snapshot::transmission_epoch, else its own epoch); 0 none. */

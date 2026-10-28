@@ -310,6 +310,23 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
     return 1;
 }
 
+/* The talkgroup label: the deciding row, here an exact row for 1234 and a range-only "Ops" for 1250 that the exact
+   label above never sees (issue #773 D4). */
+int
+dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
+                                 size_t name_sz) { // NOLINT(misc-use-internal-linkage)
+    if (tg == 1250U) {
+        if (mode && mode_sz > 0U) {
+            DSD_SNPRINTF(mode, mode_sz, "A");
+        }
+        if (name && name_sz > 0U) {
+            DSD_SNPRINTF(name, name_sz, "Ops");
+        }
+        return 1;
+    }
+    return dsd_tg_policy_lookup_label(state, tg, mode, mode_sz, name, name_sz);
+}
+
 /* The terminal's UTF-8 answer, set per case: the real one reads the locale and environment. */
 static int g_unicode_stub = 1;
 
@@ -345,6 +362,19 @@ dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t 
         return dsd_source_alias_lookup(state, id, name, name_sz);
     }
     return found;
+}
+
+/* Routes by call kind as the core helper does (source_alias.c), over the stubs above. */
+int
+dsd_call_target_label_lookup(const dsd_state* state, dsd_call_kind kind, uint32_t id, char* mode, size_t mode_sz,
+                             char* name, size_t name_sz) {
+    if (kind == DSD_CALL_KIND_GROUP_VOICE) {
+        return dsd_tg_policy_lookup_group_label(state, id, mode, mode_sz, name, name_sz);
+    }
+    if (kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_source_label_lookup(state, id, mode, mode_sz, name, name_sz);
+    }
+    return dsd_tg_policy_lookup_label(state, id, mode, mode_sz, name, name_sz);
 }
 
 /* Scan-list row names. The real store lives in core, which this target does not
@@ -3728,6 +3758,71 @@ test_source_alias_rendering(void) {
     free(opts);
 }
 
+/* Issue #773 D4: a group call's target is labelled by the row that decides the talkgroup (a range here), a private
+ * call's target as a radio; never the other way round. */
+static void
+test_target_labels_follow_call_kind(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(state && opts);
+    dsd_call_observation obs = {0};
+    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1250;
+    obs.policy_target_id = 1250;
+    obs.ota_source_id = 99;
+    obs.observed_m = 1.0;
+    state->synctype = obs.protocol;
+    state->lastsynctype = obs.protocol;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    ui_slot_view slot = ui_build_slot_view(opts, state, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(opts, state, &slot);
+    assert_capture_contains("[Ops][A]");
+
+    /* A private call to 1234: the radio's label, not the talkgroup row that shares its ID. */
+    g_source_alias_stub = "Radio 1234";
+    obs.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    obs.ota_target_id = 1234;
+    obs.policy_target_id = 1234;
+    obs.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    slot = ui_build_slot_view(opts, state, 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(opts, state, &slot);
+    assert_capture_contains("[Radio 1234]");
+    assert(strstr(g_printw_capture, "Dispatch") == NULL);
+
+    obs.protocol = DSD_SYNC_NXDN_POS;
+    obs.observed_m = 3.0;
+    state->synctype = obs.protocol;
+    state->lastsynctype = obs.protocol;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(&(dsd_opts){0}, state);
+    assert_capture_contains("[Radio 1234]");
+    assert(strstr(g_printw_capture, "Dispatch") == NULL);
+    g_source_alias_stub = NULL;
+
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1250;
+    obs.policy_target_id = 1250;
+    obs.observed_m = 4.0;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(&(dsd_opts){0}, state);
+    assert_capture_contains("[Ops][A]");
+
+    obs.protocol = DSD_SYNC_EDACS_POS;
+    obs.channel = 5U;
+    reset_printw_capture();
+    ui_render_edacs_channel_label(state, &obs);
+    assert_capture_contains("[Ops][A]");
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 static void
 test_voice_average_units(void) {
     static dsd_opts opts;
@@ -4474,6 +4569,7 @@ main(void) {
     test_withheld_data_without_a_call();
     test_voice_average_units();
     test_source_alias_rendering();
+    test_target_labels_follow_call_kind();
     test_input_source_helpers();
     test_analog_output_lines_follow_open_sinks();
 #ifdef USE_RADIO

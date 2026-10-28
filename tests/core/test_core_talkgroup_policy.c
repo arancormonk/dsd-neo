@@ -2480,6 +2480,88 @@ test_pattern_precedence(void) {
     return rc;
 }
 
+/* Whether the talkgroup label for @p id is @p want_name in mode @p want_mode (issue #773 D4). */
+static int
+group_label_is(const dsd_state* st, uint32_t id, const char* want_mode, const char* want_name) {
+    char mode[8] = "x";
+    char name[50] = "x";
+    return dsd_tg_policy_lookup_group_label(st, id, mode, sizeof(mode), name, sizeof(name)) == 1
+           && strcmp(mode, want_mode) == 0 && strcmp(name, want_name) == 0;
+}
+
+/* Whether talkgroup @p id has no label, with both outputs cleared. */
+static int
+group_label_is_none(const dsd_state* st, uint32_t id) {
+    char mode[8] = "x";
+    char name[50] = "x";
+    return dsd_tg_policy_lookup_group_label(st, id, mode, sizeof(mode), name, sizeof(name)) == 0 && mode[0] == '\0'
+           && name[0] == '\0';
+}
+
+/* A talkgroup's label is the name of the row that decides it: the exact row, else the narrowest range, else the most
+ * specific pattern. A deciding row without a name labels nothing; no wider row lends it one. */
+static int
+test_group_label_from_range_and_pattern(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    char mode[8];
+    char name[50];
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("no policy, no label", group_label_is_none(st, 1250));
+    rc |= expect_true("add 1200-1299", add_range_row(st, 1200, 1299, "A", "Ops") == 0);
+    rc |= expect_true("add 1240-1249", add_range_row(st, 1240, 1249, "B", "Ops Narrow") == 0);
+    rc |= expect_true("add 13xx", add_pattern_row(st, "13xx", "DE", "Thirteens") == 0);
+    rc |= expect_true("add 1234 exact", add_exact_row(st, 1234, "A", "Exact") == 0);
+    rc |= expect_true("add unnamed 1260", add_exact_row(st, 1260, "B", "") == 0);
+    rc |= expect_true("add unnamed 1270-1279", add_range_row(st, 1270, 1279, "A", "") == 0);
+    rc |= expect_true("exact row labels", group_label_is(st, 1234, "A", "Exact"));
+    rc |= expect_true("range row labels", group_label_is(st, 1250, "A", "Ops"));
+    rc |= expect_true("narrowest range labels", group_label_is(st, 1245, "B", "Ops Narrow"));
+    rc |= expect_true("pattern row labels", group_label_is(st, 1350, "DE", "Thirteens"));
+    rc |= expect_true("unnamed exact row labels nothing", group_label_is_none(st, 1260));
+    rc |= expect_true("unnamed narrow range labels nothing", group_label_is_none(st, 1275));
+    rc |= expect_true("no row, no label", group_label_is_none(st, 2000));
+    rc |= expect_true("NULL outputs still answer",
+                      dsd_tg_policy_lookup_group_label(st, 1250, NULL, 0, NULL, 0) == 1
+                          && dsd_tg_policy_lookup_group_label(NULL, 1250, NULL, 0, NULL, 0) == 0);
+    /* The exact-only label keeps its meaning (the radio-side fallback of dsd_source_label_lookup()). */
+    rc |= expect_true("exact label ignores the range",
+                      dsd_tg_policy_lookup_label(st, 1250, mode, sizeof(mode), name, sizeof(name)) == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* B10: a learned alias names a radio, never a talkgroup. Under a range the range labels the talkgroup; an ID held only
+ * by an alias has no talkgroup label; the radio-side exact label still reads the alias. */
+static int
+test_alias_never_labels_talkgroup(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry alias;
+    char mode[8];
+    char name[50];
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("add 1200-1299", add_range_row(st, 1200, 1299, "A", "Ops") == 0);
+    init_entry(&alias, 1250, "D", "Radio 1250", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias 1250", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    init_entry(&alias, 5000, "D", "Radio 5000", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias 5000", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    init_entry(&alias, 5001, "D", "Persisted 5001", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("persisted alias 5001", dsd_tg_policy_append_exact(st, &alias) == 0);
+    rc |= expect_true("range labels the talkgroup under an alias", group_label_is(st, 1250, "A", "Ops"));
+    rc |= expect_true("alias-only ID has no talkgroup label", group_label_is_none(st, 5000));
+    rc |= expect_true("persisted alias has no talkgroup label", group_label_is_none(st, 5001));
+    rc |= expect_true("radio-side label still reads the alias",
+                      dsd_tg_policy_lookup_label(st, 1250, mode, sizeof(mode), name, sizeof(name)) == 1
+                          && strcmp(name, "Radio 1250") == 0);
+    free_test_state(st);
+    return rc;
+}
+
 /* `*` is the documented catch-all: under it a more specific row decides, and with the allow list it lists every ID. */
 static int
 test_catch_all_star(void) {
@@ -3373,5 +3455,7 @@ main(void) {
     rc |= test_radio_policy_matrix();
     rc |= test_no_radio_policy_no_change();
     rc |= test_row_token_refuses_stray_pattern_text();
+    rc |= test_group_label_from_range_and_pattern();
+    rc |= test_alias_never_labels_talkgroup();
     return rc;
 }
