@@ -4685,7 +4685,9 @@ Key public headers:
     LNA-state range follows the band), the profile matcher works on keyword substrings, and no SoapySDR hardware was
     available to check a driver on. The Airspy backend skips same-value writes in its adapter, and I/Q replay programs
     nothing. An rtl_tcp frequency write restarts the throughput watchdog's grace (`rtl_tcp_metrics_reset_device()`),
-    as each hop's rate write did before. The retune mute windows and the `--iq-capture` RETUNE events are unchanged.
+    as each hop's rate write did before. The reader reads its clock under the metrics lock every reset takes, and
+    `tcp_metrics_record_recv()` ignores a reading older than the windows' start, so a reset racing a receive cannot
+    wrap the unsigned spans into a spurious trip. The retune mute windows and the `--iq-capture` RETUNE events are unchanged.
     Per tuner (#782 gate r3 J1): after every frequency write that took (`capture_writes_note_frequency()`, at the
     hop, the Fs/4 re-centre, the start and a refused retune's restore) the stream forgets what that tuner's tune
     undoes, `rtl_device_capture_retune_resets()`, and a rate it would undo is never kept for a hop. The audit of the

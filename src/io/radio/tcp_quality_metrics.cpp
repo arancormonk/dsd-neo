@@ -36,6 +36,12 @@ tcp_metrics_record_recv(struct tcp_quality_metrics* metrics, uint32_t bytes_rece
     if (!metrics) {
         return 0;
     }
+    /* A reading from before the latest reset (the reader read the clock, then a retune or a reconnect on another
+     * thread restarted the windows before this call) belongs to no window. Counted from the newer stamps, the unsigned
+     * span would wrap far past the grace with almost no bytes in it, and fire on a healthy connection. */
+    if (now_ns < metrics->watchdog_start_ns || now_ns < metrics->connection_established_ns) {
+        return 0;
+    }
 
     metrics->watchdog_bytes += bytes_received;
     uint64_t watchdog_elapsed = now_ns - metrics->watchdog_start_ns;

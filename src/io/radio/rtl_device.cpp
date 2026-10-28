@@ -709,13 +709,15 @@ rtl_tcp_metrics_reset_device(struct rtl_device* dev, uint32_t sample_rate) {
     rtl_tcp_metrics_unlock(dev);
 }
 
+/* The clock is read under the metrics lock, which every reset takes too, so the reading never predates a reset this
+ * call follows (a retune or reconnect on another thread restarts the windows). */
 static int
-rtl_tcp_metrics_record_recv_device(struct rtl_device* dev, uint32_t bytes_received, uint64_t now_ns) {
+rtl_tcp_metrics_record_recv_device(struct rtl_device* dev, uint32_t bytes_received) {
     if (!dev) {
         return 0;
     }
     rtl_tcp_metrics_lock(dev);
-    int fired = tcp_metrics_record_recv(&dev->tcp_metrics, bytes_received, now_ns);
+    int fired = tcp_metrics_record_recv(&dev->tcp_metrics, bytes_received, dsd_realtime_mono_ns());
     rtl_tcp_metrics_unlock(dev);
     return fired;
 }
@@ -6564,8 +6566,7 @@ rtl_tcp_watchdog_allows_processing(struct rtl_device* s, int r) {
     if (!s) {
         return 0;
     }
-    uint64_t recv_ns = dsd_realtime_mono_ns();
-    if (!rtl_tcp_metrics_record_recv_device(s, (uint32_t)r, recv_ns)) {
+    if (!rtl_tcp_metrics_record_recv_device(s, (uint32_t)r)) {
         return 1;
     }
     DSD_FPRINTF(stderr, "rtl_tcp: throughput watchdog triggered; reconnecting to %s:%d...\n", s->host, s->port);

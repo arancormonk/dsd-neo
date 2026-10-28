@@ -34,6 +34,9 @@ void tcp_metrics_reset(struct tcp_quality_metrics* metrics, uint32_t sample_rate
 /**
  * Record received bytes and evaluate the current watchdog window.
  *
+ * A @p now_ns earlier than the latest init or reset (a reading taken before another thread restarted the windows)
+ * records nothing and never fires.
+ *
  * @return 1 when sustained throughput is below the reconnect threshold, otherwise 0.
  */
 int tcp_metrics_record_recv(struct tcp_quality_metrics* metrics, uint32_t bytes_received, uint64_t now_ns);
