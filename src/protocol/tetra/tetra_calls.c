@@ -79,6 +79,20 @@ address_ssi(const tetra_mac_address* addr, uint32_t* ssi) {
     }
 }
 
+/* The address names a management identity (types 100, 111): an SMI. */
+static int
+address_is_smi(const tetra_mac_address* addr) {
+    return addr->type == TETRA_MAC_ADDR_SMI || addr->type == TETRA_MAC_ADDR_SMI_EVENT;
+}
+
+/* The call party a MAC address names: the SSI of address_ssi(), never an SMI. The SMI serves mobility management only,
+ * and one may equal an SSI in number while being another identity (EN 300 392-1 clauses 7.3.2, 7.3.3), so a PDU
+ * addressed by one names no called, calling or talking party. */
+static int
+party_address_ssi(const tetra_mac_address* addr, uint32_t* ssi) {
+    return !address_is_smi(addr) && address_ssi(addr, ssi);
+}
+
 /* An address that assigns an event label (types 101, 111): it names its party by the SSI or SMI, and gives it the label
  * (EN 300 392-2 clause 23.4.1.2.3.1). */
 static int
@@ -94,6 +108,12 @@ address_assigns_event_label(const tetra_mac_address* addr) {
 static int
 sdu_ssi(const tetra_mac_sdu* sdu, uint32_t* ssi) {
     return sdu && sdu->has_addr && address_ssi(&sdu->addr, ssi);
+}
+
+/* The call party @p sdu's address names (party_address_ssi()). */
+static int
+sdu_party_ssi(const tetra_mac_sdu* sdu, uint32_t* ssi) {
+    return sdu && sdu->has_addr && party_address_ssi(&sdu->addr, ssi);
 }
 
 /* ---- The table ------------------------------------------------------------------------------------------------- */
@@ -298,17 +318,30 @@ calls_label_here(const dsd_opts* opts, const dsd_state* state, const tetra_state
     return label_channels_meet(opts, state, &c->label_chan, &here, 0);
 }
 
+/* The party an event label assignment names (address types 101, 111): its 24-bit identity, and whether that is an SMI,
+ * which is never a call party even when an SSI has its number (EN 300 392-1 clauses 7.3.2, 7.3.3). */
+typedef struct {
+    uint32_t ssi; /* 0 for none */
+    uint8_t is_smi;
+} label_party;
+
+/* @p party is a party of @p c. */
+static int
+label_party_of(const tetra_call_t* c, const label_party* party) {
+    return !party->is_smi && call_has_party(c, party->ssi);
+}
+
 /* Label @p value goes to @p holder (NULL: a party no record holds) on channel @p ch (NULL: one the decoder cannot tell,
  * which binds none). A label stands for one party on its channel, so no record of another party than @p party keeps
  * that number on a channel that may be the same one (all of them, for @p ch NULL); on another channel it is another
  * label and stays. */
 static void
-label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder, uint32_t party,
-           uint16_t value, const tetra_label_channel* ch) {
+label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder,
+           const label_party* party, uint16_t value, const tetra_label_channel* ch) {
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const o = &ts->calls.call[i];
         if (o != holder && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && o->event_label == value
-            && !call_has_party(o, party) && (!ch || label_channels_meet(opts, state, &o->label_chan, ch, 1))) {
+            && !label_party_of(o, party) && (!ch || label_channels_meet(opts, state, &o->label_chan, ch, 1))) {
             label_drop(o);
         }
     }
@@ -326,11 +359,11 @@ label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetr
 
 /* The PDU of @p sdu was delivered (a fragmented TM-SDU at its MAC-END, clause 23.4.1.2.3.1 b; an encrypted PDU as far
  * as its clear address goes): an SSI or SMI + event label address (types 101, 111) names its party, whose call
- * @p holder is (NULL when no record holds it, or when the SSI is an encrypted short identity, which names no one,
- * clause 4.2.6 of EN 300 392-7). Label 0 withdraws the party's label. The all-ones label keeps the party's current
- * label valid after the channel change the PDU makes (clause 23.4.1.2.3.0): with an allocation the label moves to the
- * allocated channel, as an assignment there would bind it; without one no channel changes. Any other value is assigned
- * to the party on the channel it applies on. */
+ * @p holder is (NULL when no record holds it, when the SSI is an encrypted short identity, which names no one, clause
+ * 4.2.6 of EN 300 392-7, and for an SMI, which is no call's party). Label 0 withdraws the party's label. The all-ones
+ * label keeps the party's current label valid after the channel change the PDU makes (clause 23.4.1.2.3.0): with an
+ * allocation the label moves to the allocated channel, as an assignment there would bind it; without one no channel
+ * changes. Any other value is assigned to the party on the channel it applies on. */
 static void
 calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder,
                       const tetra_mac_sdu* sdu) {
@@ -348,22 +381,23 @@ calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_
     if (keep && (!sdu->has_alloc || !holder || (holder->flags & TETRA_CALL_F_EVENT_LABEL) == 0u)) {
         return;
     }
-    uint32_t party = 0;
-    if (!address_ssi(addr, &party)) {
-        party = 0u;
+    label_party party = {0u, (uint8_t)address_is_smi(addr)};
+    if (!address_ssi(addr, &party.ssi)) {
+        party.ssi = 0u;
     }
     tetra_label_channel ch;
     const int known = label_channel_of(state, ts, sdu, &ch);
-    label_bind(opts, state, ts, holder, party, keep ? holder->event_label : addr->event_label, known ? &ch : NULL);
+    label_bind(opts, state, ts, holder, &party, keep ? holder->event_label : addr->event_label, known ? &ch : NULL);
 }
 
 /* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
  * label (type 010), by the label assigned to one of them on this channel (calls_label_here()); an address that assigns
- * a label names its party by the SSI alone. The most recently heard of several. */
+ * a label names its party by the SSI alone, and an SMI names none (party_address_ssi()). The most recently heard of
+ * several. */
 static tetra_call_t*
 calls_by_address(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, const tetra_mac_address* addr) {
     uint32_t ssi = 0;
-    if (!address_ssi(addr, &ssi)) {
+    if (!party_address_ssi(addr, &ssi)) {
         ssi = 0u;
     }
     const int by_label = addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_WITHDRAW
@@ -740,6 +774,7 @@ call_route(const tetra_call_t* c, int requires_retune) {
     return route;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
 int
 tetra_calls_followed_route(const dsd_state* state, dsd_tg_policy_call_route* out) {
     const tetra_call_t* const c = tetra_calls_followed(state);
@@ -749,6 +784,7 @@ tetra_calls_followed_route(const dsd_state* state, dsd_tg_policy_call_route* out
     *out = call_route(c, 0);
     return 1;
 }
+#endif
 
 /* A downlink pi/4-DQPSK channel with a frequency and a timeslot: what the state machine can follow. */
 static int
@@ -1197,7 +1233,7 @@ calls_note_pending_connect(tetra_state_t* ts, const tetra_call_t* c, const tetra
     tetra_pending_connect* p = pending_find(ts, id);
     uint32_t caller = 0;
     if (ev->kind == TETRA_CALL_EV_CONNECT && !c && (ev->has & TETRA_CALL_HAS_GRANT) != 0u && ev->grant == 0u
-        && sdu_ssi(sdu, &caller)) {
+        && sdu_party_ssi(sdu, &caller)) {
         /* Its own entry, else a free one, else the least recently remembered. */
         for (size_t i = 0; !p && i < TETRA_PENDING_CONNECTS; i++) {
             if (!ts->calls.pending[i].used) {
@@ -1275,7 +1311,7 @@ static tetra_call_t*
 call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
            const tetra_mac_sdu* sdu) {
     uint32_t called = 0;
-    const int has_called = sdu_ssi(sdu, &called);
+    const int has_called = sdu_party_ssi(sdu, &called);
     const uint32_t calling_net = calls_party_net(ts, (ev->has & TETRA_CALL_HAS_CALLING_EXT) != 0u, ev->calling_ext);
     if (c && setup_reuses_id(c, ev, has_called, called, calling_net)) {
         /* The call whose identifier the D-SETUP reuses ended with its release unheard. */
@@ -1364,7 +1400,7 @@ static void
 call_connect(const tetra_state_t* ts, tetra_call_t* c, const tetra_mac_sdu* sdu) {
     uint32_t ssi = 0;
     call_connected(c);
-    if (sdu_ssi(sdu, &ssi) && c->calling_ssi == 0u) {
+    if (sdu_party_ssi(sdu, &ssi) && c->calling_ssi == 0u) {
         c->calling_ssi = ssi;
         c->calling_net = calls_party_net(ts, 0, 0u);
     }
@@ -1427,7 +1463,7 @@ static uint32_t
 floor_transition(const tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu, double now_m,
                  int* pairs) {
     uint32_t addr = 0;
-    const int addressed = sdu_ssi(sdu, &addr);
+    const int addressed = sdu_party_ssi(sdu, &addr);
     const int group = addressed && basic_is_group(c->basic_service) && addr == c->called_ssi;
     const int individual = addressed && !group;
     const int has_grant = (ev->has & TETRA_CALL_HAS_GRANT) != 0u;
@@ -1648,7 +1684,7 @@ calls_on_followed_channel(const dsd_state* state, const tetra_state_t* ts, const
 static int
 address_maintains(const tetra_mac_address* addr) {
     uint32_t ssi = 0;
-    if (address_ssi(addr, &ssi)) {
+    if (party_address_ssi(addr, &ssi)) {
         return ssi != 0xFFFFFFu;
     }
     return addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_KEEP;

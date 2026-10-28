@@ -207,6 +207,7 @@ typedef struct {
     uint8_t type_valid;
     uint8_t ssi_valid;
     uint8_t extension_valid;
+    uint8_t reserved_type; /**< the type is a reserved one: no address was read, and what follows it cannot be placed */
 } tetra_cmce_party;
 
 /** D-STATUS (table 14.14). */

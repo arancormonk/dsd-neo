@@ -12747,6 +12747,17 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
     )
 endforeach()
 
+# tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
+# the hooks on, ahead of the library's.
+target_sources(
+    dsd-neo_test_tetra_tetra_calls
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/protocol/tetra/tetra_calls.c
+)
+target_compile_definitions(
+    dsd-neo_test_tetra_tetra_calls
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+
 add_executable(
     dsd-neo_bench_tetra_viterbi
     EXCLUDE_FROM_ALL

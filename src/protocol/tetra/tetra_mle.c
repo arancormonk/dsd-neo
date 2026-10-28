@@ -78,25 +78,40 @@ require_absent_type2(tetra_bit_reader* r, int count) {
 
 /* CMCE (clause 14). */
 
+/* The address a party type identifier announces (table 14.43): an SSI for 01, an SSI and its extension for 10. A
+ * reserved type (00, 11) announces none the decoder knows, so nothing is read and reserved_type is set. */
 static void
 cmce_read_party_address(tetra_bit_reader* r, tetra_cmce_party* party) {
-    if (party->type == 1 || party->type == 2) {
-        party->ssi = tetra_bits_read(r, 24);
-        party->ssi_valid = 1;
+    if (party->type != 1 && party->type != 2) {
+        party->reserved_type = 1;
+        return;
     }
+    party->ssi = tetra_bits_read(r, 24);
+    party->ssi_valid = 1;
     if (party->type == 2) {
         party->extension = tetra_bits_read(r, 24);
         party->extension_valid = 1;
     }
 }
 
-/* The type-2 calling/transmitting party type identifier with its conditional address. */
-static void
+/* The type-2 calling/transmitting party type identifier with its conditional address. 0 after a reserved type: the
+ * length of the address it stands for is not known, so the rest of the optional part cannot be placed and is not read
+ * (a decoder policy, as for a nonzero reserved bit of D-TX GRANTED: the PDU is still published, its party unknown). */
+static int
 cmce_read_party_type2(tetra_bit_reader* r, tetra_cmce_party* party) {
     if (tetra_bits_present(r)) {
         party->type = (uint8_t)tetra_bits_read(r, 2);
         party->type_valid = 1;
         cmce_read_party_address(r, party);
+    }
+    return !party->reserved_type;
+}
+
+/* Log note of a party with a reserved type identifier, @p what naming the element. */
+static void
+cmce_log_reserved_party(const tetra_cmce_party* party, const char* what) {
+    if (party->reserved_type) {
+        DSD_FPRINTF(stderr, " %s_type=%u(reserved; rest not read)", what, (unsigned)party->type);
     }
 }
 
@@ -153,7 +168,9 @@ cmce_read_setup(tetra_bit_reader* r, cmce_setup* s) {
     const unsigned present = read_type2_elements(r, k_type2, 2, values);
     s->notification = (uint8_t)values[0];
     s->notification_valid = type2_present(present, 0);
-    cmce_read_party_type2(r, &s->calling);
+    if (!cmce_read_party_type2(r, &s->calling)) {
+        return;
+    }
     (void)tetra_bits_skip_type34_ids(r, &type3);
     s->facility = (uint8_t)((type3 >> CMCE_TYPE3_FACILITY) & 1u);
 }
@@ -174,6 +191,7 @@ parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
     if (s.calling.ssi_valid) {
         DSD_FPRINTF(stderr, " calling_SSI=%u", s.calling.ssi);
     }
+    cmce_log_reserved_party(&s.calling, "calling");
     DSD_FPRINTF(stderr, "\n");
 
     tetra_call_event ev;
@@ -390,8 +408,8 @@ cmce_read_floor_optional(tetra_bit_reader* r, cmce_floor* f, int with_party) {
     }
     f->notification_valid = (uint8_t)read_type2_elements(r, k_type2, 1, &notification);
     f->notification = (uint8_t)notification;
-    if (with_party) {
-        cmce_read_party_type2(r, &f->party);
+    if (with_party && !cmce_read_party_type2(r, &f->party)) {
+        return;
     }
     (void)tetra_bits_skip_type34(r);
 }
@@ -429,6 +447,7 @@ parse_cmce_d_tx_granted(tetra_bit_reader* r, const mle_ctx* ctx) {
     if (f.reserved) {
         DSD_FPRINTF(stderr, " reserved=%u", f.reserved);
     }
+    cmce_log_reserved_party(&f.party, "party");
     DSD_FPRINTF(stderr, "\n");
     cmce_floor_event(ctx, &f, TETRA_CALL_EV_TX_GRANTED);
     return 1;
@@ -474,8 +493,10 @@ parse_cmce_tx_event(tetra_bit_reader* r, const mle_ctx* ctx, uint32_t pdu_type, 
     if (!tetra_bits_ok(r)) {
         return cmce_reject(ctx, name);
     }
-    DSD_FPRINTF(stderr, "[TETRA CMCE %s] CC=%d call=%u request=%u notif=%u continue=%u grant=%u enc=%u\n", name,
-                ctx->cc, f.call_id, f.permission, f.notification, f.continue_value, f.grant, f.encryption);
+    DSD_FPRINTF(stderr, "[TETRA CMCE %s] CC=%d call=%u request=%u notif=%u continue=%u grant=%u enc=%u", name, ctx->cc,
+                f.call_id, f.permission, f.notification, f.continue_value, f.grant, f.encryption);
+    cmce_log_reserved_party(&f.party, "party");
+    DSD_FPRINTF(stderr, "\n");
     if (pdu_type == TETRA_CMCE_D_TX_INTERRUPT) {
         cmce_floor_event(ctx, &f, TETRA_CALL_EV_TX_INTERRUPT);
     } else {

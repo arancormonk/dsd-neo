@@ -1104,26 +1104,64 @@ advance_decode_clock(session* s, double seconds) {
     at_seconds(dsd_decode_now_mono_s() + seconds);
 }
 
+/* A MAC-RESOURCE to the address of type @p addr_type (table 21.55) with identity @p ssi carrying @p cmce, with no
+ * channel allocation; decoded as send_block() does. */
+static void
+send_block_to(session* s, uint32_t addr_type, uint32_t ssi, const ttb_block* cmce) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, addr_type, ssi);
+    ttb_resource_flags(&b, 0u);
+    ttb_put(&b, 2, 4); /* BL-UDATA */
+    ttb_put_bits(&b, cmce->bits, cmce->n);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_confirm_note_signalling(s->state);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* The type-1 elements of D-TX GRANTED (table 14.18) or D-TX INTERRUPT (table 14.19), @p pdu_type, of call @p call_id
+ * with transmission grant @p grant (table 14.80). */
+static void
+put_floor_grant_type1(ttb_block* cmce, uint32_t pdu_type, uint16_t call_id, uint32_t grant) {
+    ttb_put(cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(cmce, pdu_type, 5);
+    ttb_put(cmce, call_id, 14);
+    ttb_put(cmce, grant, 2);
+    ttb_put(cmce, 0, 3); /* request permission, encryption control, reserved */
+}
+
+/* D-TX GRANTED or D-TX INTERRUPT, @p pdu_type, of call @p call_id with transmission grant @p grant, naming @p talker as
+ * the transmitting party (none when 0). */
+static void
+put_floor_grant(ttb_block* cmce, uint32_t pdu_type, uint16_t call_id, uint32_t grant, uint32_t talker) {
+    put_floor_grant_type1(cmce, pdu_type, call_id, grant);
+    if (talker != 0u) {
+        ttb_put(cmce, 1, 1); /* O-bit */
+        ttb_put(cmce, 0, 1); /* no notification indicator */
+        ttb_put(cmce, 1, 1); /* transmitting party type identifier present */
+        ttb_put(cmce, 1, 2); /* SSI */
+        ttb_put(cmce, talker, 24);
+        ttb_put(cmce, 0, 1); /* M-bit */
+    } else {
+        ttb_put(cmce, 0, 1); /* O-bit */
+    }
+}
+
+/* A type-3 element whose length runs past the end of any PDU of these tests (an M-bit, identifier 1111 and the
+ * largest length): a reader that reached it would reject the PDU. */
+static void
+put_type3_past_end(ttb_block* cmce) {
+    ttb_put(cmce, 1, 1);      /* M-bit */
+    ttb_put(cmce, 0xF, 4);    /* type-3 element identifier */
+    ttb_put(cmce, 0x7FF, 11); /* length */
+}
+
 /* D-TX GRANTED (table 14.18) or D-TX INTERRUPT (table 14.19), @p pdu_type, of call @p call_id to @p ssi with
  * transmission grant @p grant (table 14.80), naming @p talker as the transmitting party (none when 0). */
 static void
 send_floor_grant(session* s, uint32_t ssi, uint32_t pdu_type, uint16_t call_id, uint32_t grant, uint32_t talker) {
     ttb_block cmce = {0};
-    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
-    ttb_put(&cmce, pdu_type, 5);
-    ttb_put(&cmce, call_id, 14);
-    ttb_put(&cmce, grant, 2);
-    ttb_put(&cmce, 0, 3); /* request permission, encryption control, reserved */
-    if (talker != 0u) {
-        ttb_put(&cmce, 1, 1); /* O-bit */
-        ttb_put(&cmce, 0, 1); /* no notification indicator */
-        ttb_put(&cmce, 1, 1); /* transmitting party type identifier present */
-        ttb_put(&cmce, 1, 2); /* SSI */
-        ttb_put(&cmce, talker, 24);
-        ttb_put(&cmce, 0, 1); /* M-bit */
-    } else {
-        ttb_put(&cmce, 0, 1); /* O-bit */
-    }
+    put_floor_grant(&cmce, pdu_type, call_id, grant, talker);
     send_block(s, ssi, &cmce, 0, 0);
 }
 
@@ -1156,18 +1194,24 @@ send_tx_wait(session* s, uint32_t ssi, uint16_t call_id) {
     send_call_pdu(s, ssi, TETRA_CMCE_D_TX_WAIT, call_id, 1);
 }
 
-/* D-CONNECT (table 14.7) of call @p call_id to @p ssi (the calling party) with transmission grant @p grant. */
+/* D-CONNECT (table 14.7) of call @p call_id with transmission grant @p grant. */
+static void
+put_connect(ttb_block* cmce, uint16_t call_id, uint32_t grant) {
+    ttb_put(cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(cmce, TETRA_CMCE_D_CONNECT, 5);
+    ttb_put(cmce, call_id, 14);
+    ttb_put(cmce, 4, 4); /* call time-out */
+    ttb_put(cmce, 0, 2); /* hook method and simplex/duplex selection */
+    ttb_put(cmce, grant, 2);
+    ttb_put(cmce, 0, 2); /* transmission request permission, call ownership */
+    ttb_put(cmce, 0, 1); /* O-bit */
+}
+
+/* put_connect() to @p ssi, the calling party. */
 static void
 send_connect(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant) {
     ttb_block cmce = {0};
-    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
-    ttb_put(&cmce, TETRA_CMCE_D_CONNECT, 5);
-    ttb_put(&cmce, call_id, 14);
-    ttb_put(&cmce, 4, 4); /* call time-out */
-    ttb_put(&cmce, 0, 2); /* hook method and simplex/duplex selection */
-    ttb_put(&cmce, grant, 2);
-    ttb_put(&cmce, 0, 2); /* transmission request permission, call ownership */
-    ttb_put(&cmce, 0, 1); /* O-bit */
+    put_connect(&cmce, call_id, grant);
     send_block(s, ssi, &cmce, 0, 0);
 }
 
@@ -1312,7 +1356,8 @@ test_two_missed_pdus_limit(void) {
 }
 
 /* An individually addressed D-TX INTERRUPT to the talker that names no transmitting party takes the floor from it
- * (clause 14.5.2.2.1 f): the talker is not known. */
+ * (clause 14.5.2.2.1 f): the talker is not known. Nor does an individually addressed D-TX INTERRUPT "transmission
+ * granted", or a group-addressed D-TX GRANTED "transmission granted", that names no transmitting party name one. */
 static void
 test_individual_interrupt_to_talker_clears(void) {
     session s = session_group_call();
@@ -1320,6 +1365,15 @@ test_individual_interrupt_to_talker_clears(void) {
     send_grant(&s, 0x100u, 0x0A, 3, 0);
     assert(canonical(s.state).ota_source_id == TALKER_A);
     send_tx_interrupt(&s, TALKER_A, 0x0A, 3, 0);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    send_tx_interrupt(&s, TALKER_B, 0x0A, 0, 0);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    send_grant(&s, 0x100u, 0x0A, 0, 0);
     assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
     session_close(&s);
 }
@@ -1368,7 +1422,7 @@ test_individual_rejection_keeps_talker(void) {
 }
 
 /* D-TX WAIT pauses the transmission (clause 14.5.2.2.1 c); D-TX CONTINUE "continue" lets the talker go on (d.2), "not
- * continue" withdraws its permission (d.1). */
+ * continue" withdraws its permission (d.1), and so does a group-addressed D-TX GRANTED "not granted" (d.1). */
 static void
 test_wait_continue(void) {
     session s = session_group_call();
@@ -1380,6 +1434,11 @@ test_wait_continue(void) {
     send_tx_wait(&s, 0x100u, 0x0A);
     assert(record_talker(&s, 0x0A) == TALKER_A);
     send_tx_continue(&s, 0x100u, 0x0A, 0);
+    assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_tx_wait(&s, 0x100u, 0x0A);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    send_grant(&s, 0x100u, 0x0A, 1, 0);
     assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
     session_close(&s);
 }
@@ -1398,9 +1457,11 @@ test_restore_grants(void) {
         send_restore(&s, TALKER_A, 0x0A, grant);
         assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
     }
-    send_grant(&s, TALKER_A, 0x0A, 0, 0);
-    send_restore(&s, TALKER_C, 0x0A, 1);
-    assert(record_talker(&s, 0x0A) == TALKER_A && canonical(s.state).ota_source_id == TALKER_A);
+    for (uint32_t grant = 1; grant <= 3u; grant++) {
+        send_grant(&s, TALKER_A, 0x0A, 0, 0);
+        send_restore(&s, TALKER_C, 0x0A, grant);
+        assert(record_talker(&s, 0x0A) == TALKER_A && canonical(s.state).ota_source_id == TALKER_A);
+    }
     session_close(&s);
 }
 
@@ -1422,19 +1483,23 @@ test_connect_first_setup(void) {
     session_close(&s);
 }
 
-/* What forgets a connect-first D-CONNECT: a release of its call identifier, a D-SETUP naming another calling party, the
- * window passing, a floor PDU of the call, the least recent of TETRA_PENDING_CONNECTS + 1 giving way, and the call
+/* What forgets a connect-first D-CONNECT: a release or disconnect of its call identifier, a D-SETUP naming another
+ * calling party, the window passing, a floor PDU of the call, the least recent of TETRA_PENDING_CONNECTS + 1 giving way, and the call
  * identifiers naming nothing any more (tetra_calls_forget_calls()). An entry is taken once. */
 static void
 test_connect_cache_dropped_by_release_and_conflict(void) {
-    session s = session_open();
-    session_history(&s);
-    send_connect(&s, 0x7777u, 0x0B, 0);
-    send_call_pdu(&s, 0x7777u, TETRA_CMCE_D_RELEASE, 0x0B, 5);
-    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
-    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0B) == 0u);
-    assert(tetra_calls_peek(s.state, 0x0B)->calling_ssi == 0u);
-    session_close(&s);
+    static const uint32_t k_ends[] = {TETRA_CMCE_D_RELEASE, TETRA_CMCE_D_DISCONNECT};
+    session s;
+    for (size_t i = 0; i < sizeof k_ends / sizeof k_ends[0]; i++) {
+        s = session_open();
+        session_history(&s);
+        send_connect(&s, 0x7777u, 0x0B, 0);
+        send_call_pdu(&s, 0x7777u, k_ends[i], 0x0B, 5); /* cause */
+        send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+        assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0B) == 0u);
+        assert(tetra_calls_peek(s.state, 0x0B)->calling_ssi == 0u);
+        session_close(&s);
+    }
 
     s = session_open();
     session_history(&s);
@@ -1492,6 +1557,109 @@ test_setup_facility_blocks_talker_inference(void) {
         const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
         assert(c && c->calling_ssi == TALKER_A);
         assert(canonical(s.state).ota_source_id == (facility ? 0u : TALKER_A));
+        session_close(&s);
+    }
+}
+
+/* A management identity (SMI) serves mobility management only, and may equal an SSI while being another identity (EN
+ * 300 392-1 clauses 7.3.2, 7.3.3): a call PDU addressed by an SMI names no party of its call. A D-SETUP so addressed
+ * has no called party, a D-CONNECT "transmission granted" names no caller or talker (and leaves no connect-first caller
+ * to remember), and an individually addressed "transmission granted" names no talker. */
+static void
+test_smi_address_is_never_a_party(void) {
+    session s = session_group_call();
+    ttb_block connect = {0};
+    put_connect(&connect, 0x0A, 0);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &connect);
+    const tetra_call_t* c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && c->calling_ssi == 0u && c->talker_ssi == 0u);
+    ttb_block grant = {0};
+    put_floor_grant(&grant, TETRA_CMCE_D_TX_GRANTED, 0x0A, 0, 0);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &grant);
+    assert(c->calling_ssi == 0u && c->talker_ssi == 0u);
+    ttb_block repeat = {0};
+    ttb_d_setup(&repeat, 0x0A, TTB_SPEECH_GROUP);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &repeat);
+    c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && c->called_ssi == 0x100u && c->calling_ssi == 0u && c->talker_ssi == 0u);
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x100u && call.ota_source_id == 0u);
+    ttb_block setup = {0};
+    ttb_d_setup(&setup, 0x0B, TTB_SPEECH_GROUP);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &setup);
+    c = tetra_calls_peek(s.state, 0x0B);
+    assert(c && c->called_ssi == 0u && c->calling_ssi == 0u && c->talker_ssi == 0u);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    ttb_block first = {0};
+    put_connect(&first, 0x0C, 0);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &first);
+    send_setup(&s, 0x200u, 0x0C, TTB_SPEECH_GROUP, 4, 120);
+    c = tetra_calls_peek(s.state, 0x0C);
+    assert(c && c->calling_ssi == 0u && c->talker_ssi == 0u && canonical(s.state).ota_source_id == 0u);
+    session_close(&s);
+}
+
+/* A reserved calling or transmitting party type identifier (00 or 11, tables 14.43 and 14.82) is followed by no
+ * address, and where the rest of the PDU starts is not known: the party is unknown and the optional part is read no
+ * further (the type-3 element after the identifier, which would not fit, is never reached), while the PDU and its
+ * mandatory elements still count. D-SETUP sets up its group call without a calling party; D-TX GRANTED
+ * "transmission granted" individually addressed to B makes the addressed party the talker; D-TX INTERRUPT
+ * "granted to another user" individually addressed to that talker takes the floor from it. */
+static void
+test_reserved_party_type_stops_optional_part(void) {
+    static const uint32_t k_reserved[] = {0u, 3u};
+    for (size_t i = 0; i < sizeof k_reserved / sizeof k_reserved[0]; i++) {
+        session s = session_open();
+        session_history(&s);
+        ttb_block setup = {0};
+        ttb_put(&setup, TETRA_MLE_PD_CMCE, 3);
+        ttb_put(&setup, TETRA_CMCE_D_SETUP, 5);
+        ttb_put(&setup, 0x0A, 14);
+        ttb_put(&setup, 5, 4); /* call time-out */
+        ttb_put(&setup, 0, 2); /* hook method and simplex/duplex selection */
+        ttb_put(&setup, TTB_SPEECH_GROUP, 8);
+        ttb_put(&setup, 3, 2); /* transmission grant: granted to another user */
+        ttb_put(&setup, 0, 1); /* transmission request permission */
+        ttb_put(&setup, 0, 4); /* call priority */
+        ttb_put(&setup, 1, 1); /* O-bit */
+        ttb_put(&setup, 0, 1); /* no notification indicator */
+        ttb_put(&setup, 0, 1); /* no temporary address */
+        ttb_put(&setup, 1, 1); /* calling party type identifier present */
+        ttb_put(&setup, k_reserved[i], 2);
+        put_type3_past_end(&setup);
+        send_block(&s, 0x100u, &setup, 4, 120);
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+        assert(c && c->called_ssi == 0x100u && c->basic_service == TTB_SPEECH_GROUP && c->timeout == 5u);
+        assert(c->calling_ssi == 0u && c->talker_ssi == 0u);
+        const dsd_call_snapshot call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x100u && call.ota_source_id == 0u);
+        session_close(&s);
+
+        s = session_group_call();
+        send_grant(&s, TALKER_A, 0x0A, 0, 0);
+        assert(record_talker(&s, 0x0A) == TALKER_A);
+        ttb_block grant = {0};
+        put_floor_grant_type1(&grant, TETRA_CMCE_D_TX_GRANTED, 0x0A, 0);
+        ttb_put(&grant, 1, 1); /* O-bit */
+        ttb_put(&grant, 0, 1); /* no notification indicator */
+        ttb_put(&grant, 1, 1); /* transmitting party type identifier present */
+        ttb_put(&grant, k_reserved[i], 2);
+        put_type3_past_end(&grant);
+        send_block(&s, TALKER_B, &grant, 0, 0);
+        assert(record_talker(&s, 0x0A) == TALKER_B && canonical(s.state).ota_source_id == TALKER_B);
+
+        ttb_block interrupt = {0};
+        put_floor_grant_type1(&interrupt, TETRA_CMCE_D_TX_INTERRUPT, 0x0A, 3);
+        ttb_put(&interrupt, 1, 1); /* O-bit */
+        ttb_put(&interrupt, 0, 1); /* no notification indicator */
+        ttb_put(&interrupt, 1, 1); /* transmitting party type identifier present */
+        ttb_put(&interrupt, k_reserved[i], 2);
+        put_type3_past_end(&interrupt);
+        send_block(&s, TALKER_B, &interrupt, 0, 0);
+        assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
         session_close(&s);
     }
 }
@@ -2392,6 +2560,41 @@ test_event_label_reuse_on_another_channel(void) {
     session_close(&s);
 }
 
+/* A MAC-RESOURCE to SMI @p smi that assigns it event label @p label (address type 111, EN 300 392-2 table 21.55), with
+ * no TM-SDU and no channel allocation. */
+static void
+send_smi_event_label(session* s, uint32_t smi, uint32_t label) {
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SMI_EVENT, smi);
+    ttb_put(&b, label, 10);
+    ttb_resource_flags(&b, 0u);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* An SMI is another identity than the SSI of the same number (EN 300 392-1 clauses 7.3.2, 7.3.3): an SMI + event label
+ * address (type 111) assigning label 5 on the channel where the call of SSI 0x4444 holds label 5 assigns it to another
+ * party, so the call's label goes; an SSI + event label address for 0x4444 assigns the call's party its label. */
+static void
+test_smi_label_does_not_bind_ssi_party(void) {
+    session s = session_open();
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    send_setup(&s, TALKER_A, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && c->called_ssi == TALKER_A);
+    send_event_label(&s, TALKER_A, 5u, 0, 0);
+    assert(has_label(c, 5u));
+    send_smi_event_label(&s, TALKER_A, 5u);
+    assert(!has_label(c, 5u));
+    send_event_label(&s, TALKER_A, 5u, 0, 0);
+    assert(has_label(c, 5u));
+    send_event_label(&s, TALKER_A, 5u, 0, 0);
+    assert(has_label(c, 5u));
+    session_close(&s);
+}
+
 /* The all-ones label of an SSI + event label address keeps the party's current label valid after the channel change
  * its PDU makes (EN 300 392-2 clause 23.4.1.2.3.0): the label moves with the party to the allocated channel, where its
  * label-addressed PDUs are the party's, and is the party's no more on the channel left: from carrier 120 to 140, and
@@ -2512,8 +2715,9 @@ send_encrypted_label(session* s, uint32_t type, uint32_t ssi, uint32_t label) {
  * TM-SDU's at its MAC-END: a first fragment assigning another party the label a call holds takes it from no one, nor
  * does a TM-SDU whose MAC-END never comes (the timeslot's next block failed); its MAC-END does. An encrypted PDU assigns
  * as a clear one, its address being clear but for an SSI (EN 300 392-7 clause 4.2.6): an encrypted short identity names
- * no party, so its assignment only takes the label from the call that held it, and an SMI names its party, whose call
- * takes the label. */
+ * no party, so its assignment only takes the label from the call that held it, and an SMI names its party, a
+ * management identity that is never a call's party even with the number of the call's SSI (EN 300 392-1 clauses 7.3.2,
+ * 7.3.3), so the label leaves the call and a PDU addressed by it is not the call's. */
 static void
 test_event_label_takes_effect_at_delivery(void) {
     session s = session_open();
@@ -2538,10 +2742,12 @@ test_event_label_takes_effect_at_delivery(void) {
     assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x66u);
     send_encrypted_label(&s, TETRA_MAC_ADDR_SSI_EVENT, 0x999u, 0x66u);
     assert((c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
-    send_encrypted_label(&s, TETRA_MAC_ADDR_SMI_EVENT, 0x100u, 0x77u);
+    send_event_label(&s, 0x100u, 0x77u, 0, 0);
     assert((c->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && c->event_label == 0x77u);
+    send_encrypted_label(&s, TETRA_MAC_ADDR_SMI_EVENT, 0x100u, 0x77u);
+    assert((c->flags & TETRA_CALL_F_EVENT_LABEL) == 0u);
     send_by_event_label(&s, 0x77u, 2, 130);
-    assert(c->alloc.carrier == 130 && c->alloc.timeslots == 2);
+    assert(c->alloc.timeslots == 0u);
     session_close(&s);
 }
 
@@ -4440,6 +4646,8 @@ main(void) {
     test_restore_grants();
     test_connect_first_setup();
     test_connect_cache_dropped_by_release_and_conflict();
+    test_smi_address_is_never_a_party();
+    test_reserved_party_type_stops_optional_part();
     test_setup_facility_blocks_talker_inference();
     test_setup_le_repeat_never_names_talker();
     test_individual_setup_never_names_talker();
@@ -4461,6 +4669,7 @@ main(void) {
     test_event_label_assignment();
     test_event_label_takes_effect_at_delivery();
     test_event_label_reuse_on_another_channel();
+    test_smi_label_does_not_bind_ssi_party();
     test_event_label_kept_across_a_channel_change();
     test_event_label_reallocation_and_ageing();
     test_event_label_channel();

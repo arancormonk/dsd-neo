@@ -182,7 +182,7 @@ typedef struct {
     uint8_t usage_marker_before; /**< 1 + the usage marker the last allocation ended, 0 for none: one it assigns again
                                       is no new marker (tetra_calls.c) */
     uint8_t pair_kind;           /**< 1 + the kind of the last floor PDU, when a group-addressed one may pair with it
-                            (floor_transition() in tetra_calls.c); 0 for none */
+                                      (floor_transition() in tetra_calls.c); 0 for none */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the

@@ -36,9 +36,11 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <stdint.h>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/core/talkgroup_policy.h>
+#endif
 
 #include "tetra_state.h"
 
@@ -206,10 +208,12 @@ uint32_t tetra_calls_target(const tetra_call_t* c);
 /** @brief The record of the call the trunking state machine follows, or NULL when it follows none. */
 const tetra_call_t* tetra_calls_followed(const dsd_state* state);
 
+#ifdef DSD_NEO_TEST_HOOKS
 /** @brief The route the talkgroup policy's preemption bookkeeping knows the followed call by: its called party, its
  * source (the talker; an individual call's calling party while none is named), its carrier and any timeslot.
  * @return 1 and @p out when the state machine follows a call record, else 0. */
 int tetra_calls_followed_route(const dsd_state* state, dsd_tg_policy_call_route* out);
+#endif
 
 /**
  * @brief The ACCESS-ASSIGN PDU of the downlink normal burst being decoded (@p read 0 when its AACH could not be read),
