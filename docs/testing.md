@@ -216,16 +216,21 @@ stop remaining retryable, a delayed stop after a subsequent start, and ordered c
 start delivery. Worker completion cases hold the old run's end on the main queue while the next run starts, and finish
 the old run while an arriving START is promoting its notification; both check the old id stays attached to the
 completed run. A platform stub models the shade and `ActiveServices`: `stopSelf()` for the newest start takes the
-foreground notification down at once and `onDestroy()` comes later, which the #782 cases replay with a status tick
-already queued for a normal end and a failed open, and for failed and refused starts, a service destroyed while running,
-a replacement instance fronting a draining run, and a duplicate START; no notification may remain. Further cases check
-the intent receipt log (a stamped delay from the direct senders, none for an aged notification Stop, a Stop finding
-IDLE) and that a slow wake-lock acquire blocks neither `lifecycleStatus()` nor `stopDecoder()`.
+foreground notification down at once and `onDestroy()` comes later. The #782 cases replay that with a status tick
+already queued for a normal end and a failed open; for failed and refused starts (a configure failure, a one-shot
+configuration exit, a `nativeInit` failure, a Stop with nothing running, an unrecognised action), a service destroyed
+while running and a replacement instance fronting a draining run, no notification may remain. A duplicate START keeps
+the running session's notification and polling. Further cases check the intent receipt log (a stamped delay from the
+direct senders, none for an aged notification Stop, a Stop finding IDLE, a Stop during STARTING logged as deferred to
+the stop intent, nothing for the idle teardown that follows every session) and that a slow wake-lock acquire blocks
+neither `lifecycleStatus()` nor `stopDecoder()`.
 `DecoderServiceAttemptTest.kt` (#782) delivers START intents late, after the host retired their attempts: a timeout then
 Dismiss runs nothing, a timeout then Retry runs only the retry, a timeout then another source runs that source and
 leaves it alone when the old START arrives; a retirement during `nativeConfigure()` or just before the worker would be
 published cancels the configured session (no run, one `nativeDiscardConfigured()`, a cancelled record); a retirement
-computed from an IDLE record the service has since left finds the run published and leaves it running.
+computed from an IDLE record the service has since left finds the run published and leaves it running; a START an
+earlier process left undelivered, which carries that process's token, runs nothing and leaves the attempt ids alone, so
+the new host's first start runs.
 `DecoderServiceUsbTest.kt` (#782) scripts the USB broker's take (a stub `UsbSourceManager` in `ServiceNative.kt`): an
 RTL-SDR or Airspy start takes its receiver while STARTING and before configure, and its record names the connection;
 an rtl_tcp start takes none; a failed take ends the start before configure with its kind and text; a retirement before

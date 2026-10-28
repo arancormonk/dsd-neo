@@ -898,13 +898,18 @@ on the main thread, and by then the native record names the session's receiver.
 Unplugging a retained receiver no session uses, or one during an rtl_tcp session,
 stops nothing.
 
-One serialized owner holds the broker's state (#782): every change runs on the
-main thread, where the USB broadcasts and the service's start arrive, and the Qt
-thread's Connect, Retry and pill requests are posted there. The broker's lock only
-makes its record readable from the Qt thread's poll and is never held across a
-binder call: the bus listing and the serial reads come first, and the poll's own
-listing for an attachment is dropped when an attach or detach was applied while it
-was taken, so it can never clear a newer attachment.
+One serialized owner holds the broker's state (#782): changes run on the main
+thread, where the USB broadcasts and the service's start arrive, and the Qt
+thread's Connect, Retry and pill requests are posted there. Two reads of the Qt
+thread's poll also change state, each in one step under the broker's lock:
+`deviceStatus()` retires a permission request whose answer never came, and
+`takeAttachment()` takes the attach edge. Otherwise the lock only makes the record
+readable from the poll, and it is never held across a binder call: the bus listing
+and the serial reads come first, and the poll's own listing for an attachment is
+dropped when an attach or detach was applied while it was taken, so it can never
+clear a newer attachment. While a session reopens its receiver, the poll reads the
+record from before the reopen, never the moment between the old connection's close
+and the new one's publish as a receiver that is not ready.
 
 Each session gets a connection of its own (#782). The first session after an open
 takes that connection; every later start of a local receiver, on the main thread
@@ -1448,7 +1453,10 @@ Android version, boot count (`Settings.Global.BOOT_COUNT`), manufacturer and
 model, app version. Android 11 and later add up to three `exit:` lines from
 `ActivityManager.getHistoricalProcessExitReasons()`, newest first, each with time,
 pid, reason (`CRASH_NATIVE`, `LOW_MEMORY`, `ANR`, `SIGNALED`, ...), importance,
-PSS and Android's description. These are repeated on every launch. Each new
+PSS and Android's description. Each exit is logged once: a launch skips the ones
+an earlier launch read (their time and pid are kept in
+`noBackupFilesDir/exit-facts-logged`), so the host store does not fill with the
+same history. Each new
 segment starts again with the current `process:` and `session starting:` lines.
 The screen, Copy and Share keep the previous run's and this run's `process:` and
 `session starting:` lines at the top, however many records the 2000-row limit
@@ -1516,26 +1524,36 @@ it took, so a relaunch that waited for the old process shows which stage held it
 teardown: activity 2 destroying at uptime 1234.567 s
 teardown: engine stop request took 0 ms
 teardown: stopService took 3 ms
-teardown: diagnostics flush took 12 ms
+teardown: diagnostics flush request took 0 ms
 teardown: nativeQuitUi took 0 ms
 teardown: Qt event loop returned at uptime 1234.890 s
+teardown: QML engine and its models started
+teardown: ~BackupModel started
 teardown: ~BackupModel took 0 ms
+teardown: ~CallHistoryModel started
 teardown: ~CallHistoryModel took 41 ms
+teardown: ~SignalSearchModel started
 teardown: ~SignalSearchModel took 2 ms
+teardown: ~RadioReferenceModel started
 teardown: ~RadioReferenceModel took 1012 ms
 teardown: QML engine and its models took 1090 ms
+teardown: decoder host started
 teardown: decoder host took 1 ms
 teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms
 ```
 
 The models whose destructors can wait (`~BackupModel`, `~CallHistoryModel`,
 `~SignalSearchModel`, `~RadioReferenceModel`) each mark their stage inside the QML
-engine's. A stage that never returned is the one after the last marker, and a
-watchdog incident during the wait names the activity `in Qt teardown`. Uptimes on
-the Kotlin and native sides are the same clock, so they line up. No record can
-follow the final flush durably, so its own time is reported by the next start of
-the app's screen: `teardown: the previous process's final diagnostics flush took
-N ms` (with `, and timed out` when the flush did not complete).
+engine's. A stage that started and never took is the one that held the teardown;
+when the last record is a stage's `took`, the hold is in an object no marker covers
+(other models, the app's settings, the QML objects). A watchdog incident during the
+wait names the activity `in Qt teardown`. Uptimes on the Kotlin and native sides
+are the same clock, so they line up. The teardown waits for one diagnostics flush
+only, `main()`'s final one, bounded at 500 ms; the activity's and the quit's only
+start one. No record can follow the final flush durably, so its own time is
+reported by the next start of the app's screen: `teardown: the previous process's
+final diagnostics flush took N ms`, with `, and timed out` when its bound ran out
+or `, and failed to write` when the store could not write or sync it.
 
 ### Screen records
 
@@ -1551,6 +1569,12 @@ it. So a change that never drew is told apart from one that drew while the panel
 stayed dim, which points at the platform. Change records come at most once a
 second; of the changes inside that second, only the latest is recorded, at its
 end, saying how late and how many changes it replaced.
+
+A touch that comes down while the screen is dimmed is recorded as well, at most
+once every 5 s (the next record counts the ones left out): `screen: touch while
+dimmed: swallowed, dim off`, `passed on, dim still on`, or `not taken: the screen
+policy follows another activity`. A tap that reached the app but did not lift the
+dim leaves this record; a tap that never reached the app leaves none.
 
 ### Reading a shared report
 

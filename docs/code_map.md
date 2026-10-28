@@ -4615,28 +4615,31 @@ Key public headers:
     descriptor is identified by it: VID:PID from the usbfs device descriptor (`pread()` at offset 0) and the strings on
     the opened handle (`rtl_usb_fd_identity_read()`); unreadable, recovery is off with the errno. Its swap closes the
     old handle as above, then `rtl_usb_fd_reset_and_reopen()`: `USBDEVFS_RESET` on the same descriptor
-    (`rtl_usb_fd_reset()`, logged with errno), then `rtlsdr_open_fd()` on it, the identity checked again (another
-    dongle turns recovery off), then the replay and the publish. Outcomes: done; refused (any errno but ENODEV/EBADF),
-    reopened without a reset, so a persisting stall ends through the budget; dead (ENODEV/EBADF, or an open that
-    fails), the recovery fails and the session ends as #774's, the host's detach and attach taking over. A stop is
-    checked right before the reset, and a host publish since the device took its descriptor (a detach clears the slot)
-    fails it. A device that failed its recovery holds no handle; destroy hands its descriptor back all the same. Before
-    posting, the monitor of such a device waits out the unplug-owner grace (`rtl_usb_recovery_grace()`, 2 s from the
-    Android host): samples since the verdict drop the recovery (the watch restarts), a stop, an exit request or the
-    monitor's own stop end it silently, and a moved publish ends the session for the receiver with "its USB connection
-    was released, so it was not reset". Desktop receivers post at once. The reset obligation
-    (`g_preopened_usb_fd_reset_owed`, `rtl_device_preopened_fd_reset_owed()`) is a descriptor, never a flag, so it can
-    only apply to that descriptor: `rtl_device_publish_preopened_fd(fd, reset_first)` sets or clears it with the slot
-    in one step (every publish replaces it; `rtl_device_set_preopened_fd()` passes 0), the stall verdict and the swap's
-    retirement set it for the held descriptor before any grace or Stop, and so do a reader that returned unasked
-    (`rtl_usb_reader_end_session()`) and a recovery that failed after its reset went through (the swap's reopen,
-    identity check, replay or publish, and `rtl_device_usb_recovery_finish()`'s failure ending for the restart), so
-    every committed "failed" ending of such a receiver owes the reset the Listen notice promises; samples after the
-    verdict that set it, or after the monitor's start when the descriptor came owing one, and a successful reset clear
-    it (compare-and-swap on the descriptor). A swap whose reset was refused records it (`reopened_without_reset`), and
-    the budget's "one per stall" ending then reads "none since it was reopened (its USB reset was refused)". The open
-    that takes a descriptor owing a reset resets it first: `rtl_preopened_fd_take()` reads the slot, the obligation and
-    the publish generation in one step under the slot's lock and marks the descriptor held
+    (`rtl_usb_fd_reset()`, logged with errno), then `rtlsdr_open_fd()` on it, the identity checked again (another dongle
+    turns recovery off), then the replay and the publish. Outcomes: done; refused (any errno but ENODEV/EBADF), reopened
+    without a reset, so a persisting stall ends through the budget; dead (ENODEV/EBADF, or an open that fails), the
+    recovery fails and the session ends as #774's, the host's detach and attach taking over. A stop is checked right
+    before the reset, and a host publish since the device took its descriptor (a detach clears the slot) fails it. A
+    device that failed its recovery holds no handle; destroy hands its descriptor back all the same. Before posting, the
+    monitor of such a device waits out the unplug-owner grace (`rtl_usb_recovery_grace()`, 2 s from the Android host):
+    samples since the verdict drop the recovery (the watch restarts), a stop, an exit request or the monitor's own stop
+    end it silently, and a moved publish ends the session for the receiver with "its USB connection was released, so it
+    was not reset". Desktop receivers post at once. The reset obligation (`g_preopened_usb_fd_reset_owed`,
+    `rtl_device_preopened_fd_reset_owed()`) is a descriptor, never a flag, so it can only apply to that descriptor:
+    `rtl_device_publish_preopened_fd(fd, reset_first)` sets or clears it with the slot in one step (every publish
+    replaces it; `rtl_device_set_preopened_fd()` passes 0), the stall verdict sets it for the held descriptor before any
+    grace or Stop, and so do a reader that returned unasked (`rtl_usb_reader_end_session()`) and a recovery that failed
+    after its reset went through (the swap's reopen, identity check, replay or publish, and
+    `rtl_device_usb_recovery_finish()`'s failure ending for the restart), so every committed "failed" ending of such a
+    receiver owes the reset the Listen notice promises; samples after the verdict that set it, or after the monitor's
+    start when the descriptor came owing one, delivered while the reader still streams, and a successful reset clear it
+    (compare-and-swap on the descriptor). The monitor's watch of a verdict's obligation ends when it posts the recovery,
+    which owns the obligation from then on, so a block the old reader delivers before the swap cancels it cannot clear
+    what a failed recovery's finish sets; it starts again from a restarted reader's baseline only when the recovery kept
+    the obligation (a refused reset). A swap whose reset was refused records it (`reopened_without_reset`), and the
+    budget's "one per stall" ending then reads "none since it was reopened (its USB reset was refused)". The open that
+    takes a descriptor owing a reset resets it first: `rtl_preopened_fd_take()` reads the slot, the obligation and the
+    publish generation in one step under the slot's lock and marks the descriptor held
     (`rtl_device_preopened_fd_held()`, -1 again once the device lets go of it, also after a failed open or recovery);
     Airspy's open marks its descriptor held the same way (`rtl_device_airspy_preopened_fd_held()`). A refused reset at
     open opens without one and keeps the obligation; one that leaves the descriptor unusable lets the open fail with its
@@ -8058,20 +8061,25 @@ Qt Quick frontend (`src/ui/qt`):
   the pause.
   Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
   platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
-  Android's stderr pump splits its stream with `DiagnosticsLog::StreamCapture`. After a dropped record it also drops
-  the lines that could still be its value, split off at a newline: a single token, key characters only, or the rest of
-  a quoted string (to its close, at most one record's 1024 bytes). An unquoted multi-word value continued on a later
-  line is not recognised. `redact()` drops a whole record that carries a key word or any key-taking CLI option,
-  attached, separate or bundled behind option letters (a decimal such as `-3.2 dB` is no option cluster). The one
-  exemption is a record that is wholly one producer's error line: the librtlsdr, dsd-neo rtl/usb and Android service
+  Android's stderr pump splits its stream with `DiagnosticsLog::StreamCapture`. After a dropped record it also drops the
+  lines that could still be its value, split off at a newline: a single token, key characters only, or the rest of a
+  quoted string (to its close, at most one record's 1024 bytes). The quote is followed through a line dropped for its
+  own sake inside it, and through an oversized line, whose bytes are omitted unread. An unquoted multi-word value
+  continued on a later line is not recognised. `redact()` drops a whole record that carries a key word or any key-taking
+  CLI option, attached, separate or bundled behind options that take no argument (`args.c`'s option string; after a
+  letter that takes one, the rest of the token is its value, so `-DMR` is no key option; a decimal such as `-3.2 dB` is
+  no option cluster). The decoder's own frame-sync labels (`printFrameSync()`, `print_dmr_sync_polarity()`) are exempt
+  as exact whole tokens right after `Sync: ` (`withoutSyncLabels()`): inverted `-P25p1`, `-YSF` and `-TETRA` read as
+  bundled key options, and anything else on such a line is still judged. Keep that list in step with those labels. The
+  one exemption is a record that is wholly one producer's error line: the librtlsdr, dsd-neo rtl/usb and Android service
   lines in `kProducerLines` (only `%d`, bounded to three digits, and `%u` fields), or a libusb log line (`libusb: `
   header) whose text before its code has no key label. A producer line whose code is a key option with a value of at
   most two digits would still be kept. Keep `kProducerLines` in step with those producers' format strings
-  (`UI_QT_DIAGNOSTICS_LOG` counts them) and the key-option pattern in step with `src/runtime/cli/args.c`.
-  The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
-  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains
-  every 250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything
-  before it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
+  (`UI_QT_DIAGNOSTICS_LOG` counts them) and the key-option pattern in step with `src/runtime/cli/args.c`. The persistent
+  tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
+  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
+  250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before
+  it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
   - drops a crash's unterminated last record;
   - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log` (and of the host pair below);
   - expires each segment after seven days;
@@ -8121,7 +8129,10 @@ Qt Quick frontend (`src/ui/qt`):
   - `UiController`'s Starting transition calls it with no context. It records the plain marker only when no start note
     just described the attempt.
   - Android re-arms the window at `UsbManager.openDevice` and the service's `startDecoding` (`armStartupWindow()`).
-  - `aboutToQuit` and the Activity teardown make the tail durable with a bounded flush.
+  - `aboutToQuit` makes the tail durable with a bounded flush (`flushAtQuit()`). On Android, whose `main()` flushes
+    once more after its teardown (`setFinalFlushAfterQuit()`), the quit's flush and the Activity teardown's
+    (`nativeFlushDiagnostics`) only start one, so the teardown holds a single bounded flush wait. `flushOutcome()` and
+    `flushDiagnosticsOutcome()` tell a flush that timed out from one that failed to write or sync.
 
   A failed sync is retried after `kSyncIntervalMs`, never in a loop, and a file given up on (`closeCurrent()`) drops its
   unsynced count, so a lost segment never leaves the writer due. A failed append, sync, open or Clear makes the next
@@ -8134,16 +8145,17 @@ Qt Quick frontend (`src/ui/qt`):
 - `teardown_trace.h` (issue #782, header-only, no link dependency): stage markers for the Android app's teardown.
   `android/main.cpp` installs `TeardownTraceHooks` (log through `DiagnosticsLog::submitHostDiagnostic()`, clock
   `dsd_realtime_mono_ms()`) once `app.exec()` returns; a `TeardownStage` declared first in a scope logs `teardown:
-  <name> took <n> ms` when the scope ends, and nothing unless hooks were installed when it was made, so the desktop and
-  tests that install none are unaffected. `~BackupModel`, `~CallHistoryModel`, `~SignalSearchModel` and
-  `~RadioReferenceModel`, whose bodies wait with no timeout (a worker pool, a synchronous save, a store flush, the
-  RadioReference client), each declare one first. `main()` times the QML engine's and the host's destruction the same
-  way, then flushes with `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes that flush's own time to
+  <name> started` when made and `teardown: <name> took <n> ms` when the scope ends, so a hang names the stage that
+  started and never took, and nothing unless hooks were installed when it was made, so the desktop and tests that
+  install none are unaffected. `~BackupModel`, `~CallHistoryModel`, `~SignalSearchModel` and `~RadioReferenceModel`,
+  whose bodies wait with no timeout (a worker pool, a synchronous save, a store flush, the RadioReference client), each
+  declare one first. `main()` times the QML engine's and the host's destruction the same way, then flushes with
+  `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes that flush's own time to
   `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI start reports it once and
-  removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics flush took N ms`, with
-  `, and timed out` when it did; a malformed marker is dropped). Tests: `UI_QT_CALL_HISTORY_MODEL`,
-  `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each destructor marks its stage only while
-  hooks are installed, through `tests/ui/teardown_trace_capture.h`), `UI_QT_DIAGNOSTICS_LOG`
+  removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics flush took N ms`, with `,
+  and timed out` or `, and failed to write` (`TeardownFlush`); a malformed marker is dropped). Tests:
+  `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each destructor
+  marks its stage only while hooks are installed, through `tests/ui/teardown_trace_capture.h`), `UI_QT_DIAGNOSTICS_LOG`
   (`teardownFlushMarkerRoundTrip()`).
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
   crypto's `backup_seal`; everything inside it is Qt code.
@@ -8750,52 +8762,70 @@ handed to) with its locked start/reject decision; the worker captures it under t
 with its session id, to `routeSessionEnd()`, so completion cannot read and stop a newer start. `ANDROID_ENGINE_STOP_JVM`
 now runs the actual service against a deferred-intent transport, a controlled native worker and platform stubs.
 
-Session end and the notification (issue #782): `stopSelf()` makes ActiveServices cancel the foreground notification
-and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that called `notify()`
-posted an ordinary ongoing "Stopping…" that nothing removed. A run's end now reaches the main thread through
-`routeSessionEnd()`, on the live instance (`current`, set in `onCreate()`, cleared in `onDestroy()`), which may be a
-replacement created after a timed-out join; `finishSession()` stops the poll, leaves the foreground and cancels the
-notification, unless a newer accepted run owns the service again, and only then calls `stopSelf()`. That call is made
-only on the instance the start was handed to: start ids restart with each service record, and the platform matches
-`stopSelf()` to the calling instance's token. Failed, refused and one-shot starts take the same path (`finishIdle()`).
-The poll's not-RUNNING tail never posts, and `onDestroy()` cancels the notification unless another live instance holds
-it. Every `onStartCommand()` logs its action, start id and state, with the delivery delay when the sender stamped
-`EXTRA_SENT_UPTIME` (`startDecoder()`, `stopDecoder()`); the notification's immutable Stop `PendingIntent` has none
-and logs "delay unavailable". The wake lock is acquired outside the service lock and published under it.
+Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the
+foreground notification and only then schedule `onDestroy()` on the main looper, so a status tick queued in between that
+called `notify()` posted an ordinary ongoing "Stopping…" that nothing removed. The cancel itself is asynchronous:
+`ServiceRecord.cancelNotification()` posts it to the system server's handler, so a platform cancel that landed after the
+app's repost removed it, and one that landed before did not, which is why the field bug was intermittent. A run's end
+now reaches the main thread through `routeSessionEnd()`, on the live instance (`current`, set in `onCreate()`, cleared
+in `onDestroy()`), which may be a replacement created after a timed-out join; `finishSession()` stops the poll, leaves
+the foreground and cancels the notification, unless a newer accepted run owns the service again, and only then calls
+`stopSelf()`. That call is made only on the instance the start was handed to: start ids restart with each service
+record, and the platform matches `stopSelf()` to the calling instance's token. Failed, refused and one-shot starts take
+the same path (`finishIdle()`). The poll's not-RUNNING tail never posts, and `onDestroy()` cancels the notification
+unless another live instance holds it. Every `onStartCommand()` logs its action, start id and state, with the delivery
+delay when the sender stamped `EXTRA_SENT_UPTIME` (`startDecoder()`, `stopDecoder()`); the notification's immutable Stop
+`PendingIntent` has none and logs "delay unavailable". The wake lock is acquired outside the service lock and published
+under it.
 
 Start attempts and what a failed start says (issue #782): every `DecoderHostAndroid::start()` takes a new attempt id
 (increasing for the life of the process), retires every earlier one through `DecoderService.retireAttempts()` (a
 synchronous companion call from the Qt thread) before it reads the service state, and passes the id with the START
-(`EXTRA_ATTEMPT`). `startDecoding()` rejects a retired or superseded attempt before anything else and logs it; one
-retired while STARTING latches `cancelRequested`, which is checked under the service lock with the STARTING→RUNNING
-publication after `nativeConfigure()`, so no worker starts, `nativeDiscardConfigured()` clears `g_configured` and the
-run record's receiver (`RunStatus::discard_configured()`), and the session ends cancelled. `retireAttempts()` answers
-whether the attempt was already taken past that point (it runs, or ended on its own). The record publishes `attemptId`
-and `failureKind`, a wire value for a failure of the attempt before its configure that `attempt_failure_from_wire()`
-maps. The start grace is `kStartGraceMs` (2 s) of `dsd_realtime_mono_ms()` from the request, not a count of polls; at
-its expiry the host logs `Start was not delivered to the decoder service within N ms (service state X)` and retires the
-attempt, and reports it undelivered unless the retirement says the service took it (then it follows the attempt's
-record). The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered after `dsd_input_failure_kind`'s
-1-7: 8 `previous_stopping`, a start refused while the previous session stops, by the host or by the USB broker's take; 9
-undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`, the broker's take failing before
-configure; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
-every record, so an older session's input failure never comes back, until the next start, `stop()` (Retry) or
-`dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's `failureMessage()` words kinds 8 and
-9, and `receiverStartFailure()` kinds 10-12 for the card or for Signal search's own screen, naming the attempted
-receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text for a service-side kind is
-the record's `lastError` ("The USB receiver is no longer connected", ...). Both RTL-SDR open paths in
-`rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the open's code, as Airspy's open does, so
-`failureMessage()` words them as kind 7. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`
-(`check_undelivered_start_after_network_failure`, `check_refused_start`, `check_attempt_identity`), `IO_RTL_FD_FAILURE`,
-`ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt`), `ANDROID_R8`, `tst_main_receiver_notice.qml`.
+(`EXTRA_ATTEMPT`), with the sending process's token (`EXTRA_PROCESS`, `processToken`, a random nonzero value made once
+per process): the platform redelivers a START a dead process left undelivered into the process it restarts, whose ids
+count from 1 again, so `startDecoding()` first rejects a START from another process, with a host diagnostic, before it
+touches `newestAttempt`; that also keeps such a START from running a session no host follows. It then rejects a retired
+or superseded attempt and logs it; one retired while STARTING latches `cancelRequested`, which is checked under the
+service lock with the STARTING→RUNNING publication after `nativeConfigure()`, so no worker starts,
+`nativeDiscardConfigured()` clears `g_configured` and the run record's receiver (`RunStatus::discard_configured()`), and
+the session ends cancelled. `retireAttempts()` answers whether the attempt was already taken past that point (it runs,
+or ended on its own). The record publishes `attemptId` and `failureKind`, a wire value for a failure of the attempt
+before its configure that `attempt_failure_from_wire()` maps. The start grace is `kStartGraceMs` (2 s) of
+`dsd_realtime_mono_ms()` from the request, not a count of polls; at its expiry the host logs `Start was not delivered to
+the decoder service within N ms (service state X)` and retires the attempt, and reports it undelivered unless the
+retirement says the service took it (then it follows the attempt's record). A superseding start retires the earlier
+attempts only from a settled screen (published Idle or Failed); a start refused while one is starting or running on
+screen (an entry point no QML guard covers) leaves that attempt alone and publishes no refusal over it. Dismissing or
+retrying an undelivered start the service took after all (the expiry's retirement cancels it while it configures)
+publishes Stopping until that attempt's cancelled end (`SessionPhaseTracker::note_attempt_retired()`), not the expiry's
+failure or a Starting that never runs. The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered
+after `dsd_input_failure_kind`'s 1-7: 8 `previous_stopping`, a start refused while the previous session stops, by the
+host or by the USB broker's take; 9 undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`,
+the broker's take failing before configure; a start the host could not hand over has no kind) are published as Failed
+with `inputFailureKind()` over every record, so an older session's input failure never comes back, until the next start,
+`stop()` (Retry) or `dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's
+`failureMessage()` words kinds 8 and 9 for the card and `searchStartFailure()` for Signal search's own screen, and
+`receiverStartFailure()` kinds 10-12 for either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver"
+with no attempt); the host's failure text for a service-side kind is the record's `lastError` ("The USB receiver is no
+longer connected", ...). Both RTL-SDR open paths in `rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the
+open's code, and a successful open clears it, as Airspy's open does, so `failureMessage()` words them as kind 7 and a
+desktop run that opened after a failed open does not end as failed. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`
+(`check_undelivered_start_after_network_failure`, `check_refused_start`, `check_attempt_identity`,
+`check_dismissed_undelivered_start_winds_down`, `check_refused_start_leaves_the_run_on_screen`), `IO_RTL_FD_FAILURE`,
+`IO_RTL_STREAM_START_FAILURE` (Airspy), `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt`), `ANDROID_R8`,
+`tst_main_receiver_notice.qml`.
 
 USB broker (issue #782; user rules in `android/README.md` "USB-OTG"): `UsbSourceManager.kt` has one owner, the main
 thread. The broadcast receivers, `reportAttachment()` and the service's take already run there, and the Qt thread's
-`requestAccess()`/`requestAccessForSource()` post their work there (`onMain`). `lock` only makes the record readable
-from other threads (`deviceStatus()`, the poll's `takeAttachment()`) and is never held across a binder call: device
+`requestAccess()`/`requestAccessForSource()` post their work there (`onMain`). Two reads of the Qt thread's poll also
+change state, each in one step under `lock`: `deviceStatus()` retires a permission request whose answer never came
+(`UsbRequestState.expireIfStale()`), and `takeAttachment()` takes the attach edge (`UsbAttachmentTracker.take()`).
+Otherwise `lock` only makes the record readable from other threads, and it is never held across a binder call: device
 listings and serial reads come first, and the poll applies its listing only if `events` (attach and detach events
 applied) did not move meanwhile. `deviceStatus()` names the ready connection (`device`; `epoch`, the attach edge it came
-from; `connection`, a process-wide generation). Every session gets a connection of its own:
+from; `connection`, a process-wide generation); while a session's `reopen()` runs it answers the record from before the
+reopen (`reopening`), so the poll never reads the gap between the old connection's close and the new one's publish as
+not ready, and a failed reopen then publishes its own. Every session gets a connection of its own:
 `DecoderService.startDecoding()`, after IDLE→STARTING and before `nativeConfigure()`, classifies the start's `-i` as
 getopt would (`UsbReceiverKind.sourceOfArgs()`: the last one, before any `--`) and calls `takeForSession()`. A start
 with no broker connection of its kind takes nothing, and the native open then fails as kind 7. The first session on a
@@ -9007,7 +9037,10 @@ The Android glue only delegates:
   waits, and only the latest waiting one is recorded, saying how late and how many it replaced. Pre-draw and draw
   listeners on the attached activity's decor view (moved at `attach()`, removed at `detach()`) follow the latest written
   change, and one follow record says when its traversal and draw came, that no draw came within 2 s, or that a later
-  change replaced it; it never precedes its change record. The same inputs go to `MainLooperWatchdog` for its incidents
+  change replaced it; it never precedes its change record. A touch that comes down while the dim is on
+  (`ScreenSupport.dispatchTouch()`) is recorded too, at most one per 5 s with a count of those left out: whether the
+  policy took it (the activity it follows) and its answer (swallowed or passed on, dim off or still on), so a tap that
+  was ignored is told apart from no tap at all. The same inputs go to `MainLooperWatchdog` for its incidents
   ("Android host diagnostics").
 
 Qt side: `AppPrefs` stores `screenMode` (`listen/screenMode`) and `screenDelaySec` (`listen/screenDelaySec`) under
