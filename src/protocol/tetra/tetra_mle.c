@@ -117,6 +117,10 @@ cmce_call_event(const mle_ctx* ctx, tetra_call_event* ev, uint8_t kind, uint16_t
 
 /* D-SETUP, table 14.15. */
 
+/* The type-3 element identifier of Facility (EN 300 392-2 table 14.86: 0011), which carries supplementary service
+ * PDUs such as the SS-TPI INFORM naming the talking party. */
+#define CMCE_TYPE3_FACILITY 3u
+
 typedef struct {
     tetra_cmce_party calling;
     uint16_t call_id;
@@ -125,6 +129,9 @@ typedef struct {
     uint8_t grant;
     uint8_t permission;
     uint8_t priority;
+    uint8_t notification;       /* notification indicator (EN 300 392-9 table 3) */
+    uint8_t notification_valid; /* ...present */
+    uint8_t facility;           /* a Facility type-3 element came with it */
 } cmce_setup;
 
 static void
@@ -132,6 +139,7 @@ cmce_read_setup(tetra_bit_reader* r, cmce_setup* s) {
     /* Type-2: notification indicator, temporary address; the calling party follows. */
     static const uint8_t k_type2[] = {6, 24};
     uint32_t values[2];
+    uint16_t type3 = 0;
     s->call_id = (uint16_t)tetra_bits_read(r, 14);
     s->timeout = (uint8_t)tetra_bits_read(r, 4);
     (void)tetra_bits_skip(r, 2); /* hook method selection, simplex/duplex selection */
@@ -142,9 +150,12 @@ cmce_read_setup(tetra_bit_reader* r, cmce_setup* s) {
     if (!tetra_bits_present(r)) {
         return;
     }
-    (void)read_type2_elements(r, k_type2, 2, values);
+    const unsigned present = read_type2_elements(r, k_type2, 2, values);
+    s->notification = (uint8_t)values[0];
+    s->notification_valid = type2_present(present, 0);
     cmce_read_party_type2(r, &s->calling);
-    (void)tetra_bits_skip_type34(r);
+    (void)tetra_bits_skip_type34_ids(r, &type3);
+    s->facility = (uint8_t)((type3 >> CMCE_TYPE3_FACILITY) & 1u);
 }
 
 static int
@@ -180,6 +191,11 @@ parse_cmce_d_setup(tetra_bit_reader* r, const mle_ctx* ctx) {
         ev.has = (uint16_t)(ev.has | TETRA_CALL_HAS_CALLING_EXT);
         ev.calling_ext = s.calling.extension;
     }
+    if (s.notification_valid) {
+        ev.has = (uint16_t)(ev.has | TETRA_CALL_HAS_NOTIFICATION);
+        ev.notification = s.notification;
+    }
+    ev.facility = s.facility;
     cmce_call_event(ctx, &ev, TETRA_CALL_EV_SETUP, s.call_id);
     return 1;
 }

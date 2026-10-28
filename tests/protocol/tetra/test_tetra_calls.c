@@ -1004,7 +1004,9 @@ test_setup_reusing_id_with_another_caller(void) {
     send_private_setup(&s, 0x222u, 0x0E, 0x333u, 0, 4, 120);
     assert(g_returns == 1 && g_tunes == 1 && followed_call(s.state) == -1);
     const tetra_call_t* c = tetra_calls_peek(s.state, 0x0E);
-    assert(c && c->calling_ssi == 0x333u && c->talker_ssi == 0x333u && c->called_ssi == 0x222u);
+    /* An individual D-SETUP names no talker: the initial permission may go to either party (EN 300 392-2 clause
+     * 14.5.1.2.1 a); the published source is the calling party (calls_source()). */
+    assert(c && c->calling_ssi == 0x333u && c->talker_ssi == 0u && c->called_ssi == 0x222u);
     dsd_call_snapshot call = canonical(s.state);
     assert(call.epoch == first && call.phase == DSD_CALL_PHASE_ENDED && call.ota_source_id == 0x111u);
     session_close(&s);
@@ -1086,6 +1088,475 @@ test_private_call_names_both_parties(void) {
     send_tx_granted(&s, 0x222u, 0x0E, 0x222u);
     call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x222u && call.ota_target_id == 0x111u);
+    session_close(&s);
+}
+
+/* ---- Floor control, connect-first set-up and late entry (EN 300 392-2 clauses 14.5.1, 14.5.2) ------------------- */
+
+#define TALKER_A 0x4444u
+#define TALKER_B 0x5555u
+#define TALKER_C 0x6666u
+
+/* Move the decode clock on by @p seconds. */
+static void
+advance_decode_clock(session* s, double seconds) {
+    (void)s;
+    at_seconds(dsd_decode_now_mono_s() + seconds);
+}
+
+/* D-TX GRANTED (table 14.18) or D-TX INTERRUPT (table 14.19), @p pdu_type, of call @p call_id to @p ssi with
+ * transmission grant @p grant (table 14.80), naming @p talker as the transmitting party (none when 0). */
+static void
+send_floor_grant(session* s, uint32_t ssi, uint32_t pdu_type, uint16_t call_id, uint32_t grant, uint32_t talker) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, pdu_type, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, grant, 2);
+    ttb_put(&cmce, 0, 3); /* request permission, encryption control, reserved */
+    if (talker != 0u) {
+        ttb_put(&cmce, 1, 1); /* O-bit */
+        ttb_put(&cmce, 0, 1); /* no notification indicator */
+        ttb_put(&cmce, 1, 1); /* transmitting party type identifier present */
+        ttb_put(&cmce, 1, 2); /* SSI */
+        ttb_put(&cmce, talker, 24);
+        ttb_put(&cmce, 0, 1); /* M-bit */
+    } else {
+        ttb_put(&cmce, 0, 1); /* O-bit */
+    }
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+static void
+send_grant(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant, uint32_t talker) {
+    send_floor_grant(s, ssi, TETRA_CMCE_D_TX_GRANTED, call_id, grant, talker);
+}
+
+static void
+send_tx_interrupt(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant, uint32_t talker) {
+    send_floor_grant(s, ssi, TETRA_CMCE_D_TX_INTERRUPT, call_id, grant, talker);
+}
+
+/* D-TX CONTINUE (table 14.17) of call @p call_id to @p ssi, "continue" when @p cont. */
+static void
+send_tx_continue(session* s, uint32_t ssi, uint16_t call_id, uint32_t cont) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_TX_CONTINUE, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, cont, 1);
+    ttb_put(&cmce, 0, 1); /* transmission request permission */
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+/* D-TX WAIT (table 14.20) of call @p call_id to @p ssi. */
+static void
+send_tx_wait(session* s, uint32_t ssi, uint16_t call_id) {
+    send_call_pdu(s, ssi, TETRA_CMCE_D_TX_WAIT, call_id, 1);
+}
+
+/* D-CONNECT (table 14.7) of call @p call_id to @p ssi (the calling party) with transmission grant @p grant. */
+static void
+send_connect(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_CONNECT, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 4, 4); /* call time-out */
+    ttb_put(&cmce, 0, 2); /* hook method and simplex/duplex selection */
+    ttb_put(&cmce, grant, 2);
+    ttb_put(&cmce, 0, 2); /* transmission request permission, call ownership */
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+/* D-CONNECT ACKNOWLEDGE (table 14.8) of call @p call_id to @p ssi (the called MS) with transmission grant @p grant. */
+static void
+send_connect_ack(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_CONNECT_ACK, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 4, 4); /* call time-out */
+    ttb_put(&cmce, grant, 2);
+    ttb_put(&cmce, 0, 1); /* transmission request permission */
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+/* D-CALL RESTORE (table 14.6) of call @p call_id to @p ssi (the restoring MS) with transmission grant @p grant. */
+static void
+send_restore(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_CALL_RESTORE, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, grant, 2);
+    ttb_put(&cmce, 0, 2); /* transmission request permission, reset call time-out */
+    ttb_put(&cmce, 0, 1); /* O-bit */
+    send_block(s, ssi, &cmce, 0, 0);
+}
+
+/* D-SETUP (table 14.15) of group call @p call_id to @p called with transmission grant @p grant, from @p caller (none
+ * when 0), with notification indicator @p notification (none when negative) and, when @p facility, a Facility type-3
+ * element (table 14.86 0011); an allocation of @p timeslots on @p carrier (none when 0). */
+static void
+send_group_setup(session* s, uint32_t called, uint16_t call_id, uint32_t caller, uint32_t grant, int notification,
+                 int facility, uint32_t timeslots, uint32_t carrier) {
+    ttb_block cmce = {0};
+    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(&cmce, TETRA_CMCE_D_SETUP, 5);
+    ttb_put(&cmce, call_id, 14);
+    ttb_put(&cmce, 4, 4); /* call time-out */
+    ttb_put(&cmce, 0, 2); /* hook method and simplex/duplex selection */
+    ttb_put(&cmce, TTB_SPEECH_GROUP, 8);
+    ttb_put(&cmce, grant, 2);
+    ttb_put(&cmce, 0, 1); /* transmission request permission */
+    ttb_put(&cmce, 0, 4); /* call priority */
+    ttb_put(&cmce, 1, 1); /* O-bit */
+    ttb_put(&cmce, notification >= 0 ? 1u : 0u, 1);
+    if (notification >= 0) {
+        ttb_put(&cmce, (uint32_t)notification, 6);
+    }
+    ttb_put(&cmce, 0, 1); /* no temporary address */
+    ttb_put(&cmce, caller != 0u ? 1u : 0u, 1);
+    if (caller != 0u) {
+        ttb_put(&cmce, 1, 2); /* SSI */
+        ttb_put(&cmce, caller, 24);
+    }
+    if (facility) {
+        ttb_put(&cmce, 1, 1);    /* M-bit */
+        ttb_put(&cmce, 3, 4);    /* Facility */
+        ttb_put(&cmce, 8, 11);   /* length */
+        ttb_put(&cmce, 0x5A, 8); /* its SS-PDUs, not read */
+    }
+    ttb_put(&cmce, 0, 1); /* M-bit */
+    send_block(s, called, &cmce, timeslots, carrier);
+}
+
+/* Group call 0x0A to GSSI 0x100, followed and published, with no talker named yet. */
+static session
+session_group_call(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).ota_source_id == 0u);
+    return s;
+}
+
+/* The talker of call @p call_id's record. */
+static uint32_t
+record_talker(const session* s, uint16_t call_id) {
+    const tetra_call_t* const c = tetra_calls_peek(s->state, call_id);
+    assert(c != NULL);
+    return c->talker_ssi;
+}
+
+/* A transmission granted in the order of clause 14.5.2.2.1 b) (NOTE 1): the individually addressed D-TX GRANTED
+ * "transmission granted" to the talker, then the group-addressed one "granted to another user" that need not name it.
+ * The pair is one transmission: one epoch, its talker kept. */
+static void
+test_individual_grant_then_unnamed_group_grant_keeps_talker(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == TALKER_A);
+    const uint64_t first = call.epoch;
+    advance_decode_clock(&s, 0.2);
+    send_grant(&s, 0x100u, 0x0A, 3, 0);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == TALKER_A && call.epoch == first);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    session_close(&s);
+}
+
+/* A group notice later than TETRA_GRANT_PAIR_S after the individual grant is no pair: the talker is not known. */
+static void
+test_unnamed_group_grant_after_window_is_unknown(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    const uint64_t first = canonical(s.state).epoch;
+    advance_decode_clock(&s, 1.5);
+    send_grant(&s, 0x100u, 0x0A, 3, 0);
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0u && call.epoch != first);
+    assert(record_talker(&s, 0x0A) == 0u);
+    session_close(&s);
+}
+
+/* Another floor PDU between the individual grant and the group notice ends the pairing. */
+static void
+test_unnamed_group_grant_after_other_floor_pdu_is_unknown(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_tx_wait(&s, 0x100u, 0x0A);
+    assert(canonical(s.state).ota_source_id == TALKER_A);
+    send_grant(&s, 0x100u, 0x0A, 3, 0);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+    session_close(&s);
+}
+
+/* The documented limit of pairing: A's individual grant, then a group notice within the window that was really B's,
+ * B's individual grant (and A's D-TX CEASED) having been missed, credits A until a PDU names the talker. */
+static void
+test_two_missed_pdus_limit(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    advance_decode_clock(&s, 0.3);
+    send_grant(&s, 0x100u, 0x0A, 3, 0); /* B's group notice */
+    assert(canonical(s.state).ota_source_id == TALKER_A);
+    send_grant(&s, 0x100u, 0x0A, 3, TALKER_B);
+    assert(canonical(s.state).ota_source_id == TALKER_B);
+    session_close(&s);
+}
+
+/* An individually addressed D-TX INTERRUPT to the talker that names no transmitting party takes the floor from it
+ * (clause 14.5.2.2.1 f): the talker is not known. */
+static void
+test_individual_interrupt_to_talker_clears(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_grant(&s, 0x100u, 0x0A, 3, 0);
+    assert(canonical(s.state).ota_source_id == TALKER_A);
+    send_tx_interrupt(&s, TALKER_A, 0x0A, 3, 0);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+    session_close(&s);
+}
+
+/* An immediate pre-emption (clause 14.5.2.2.1 f): the individual D-TX INTERRUPT to talker A naming B as the
+ * transmitting party, then the group-addressed one that names no one, pair: B talks. */
+static void
+test_interrupt_pair_names_new_talker(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_tx_interrupt(&s, TALKER_A, 0x0A, 3, TALKER_B);
+    assert(canonical(s.state).ota_source_id == TALKER_B);
+    advance_decode_clock(&s, 0.2);
+    send_tx_interrupt(&s, 0x100u, 0x0A, 3, 0);
+    assert(canonical(s.state).ota_source_id == TALKER_B && record_talker(&s, 0x0A) == TALKER_B);
+    session_close(&s);
+}
+
+/* A withdrawal of the permission wins over the transmitting party the PDU names: a group-addressed D-TX GRANTED "not
+ * granted" (clause 14.5.2.2.1 d.1) and a D-TX INTERRUPT "not granted" (a delayed pre-emption, f) leave no talker. */
+static void
+test_withdrawal_ignores_tpti(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_grant(&s, 0x100u, 0x0A, 1, TALKER_B);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    assert(canonical(s.state).ota_source_id == TALKER_A);
+    send_tx_interrupt(&s, TALKER_A, 0x0A, 1, TALKER_B);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+    session_close(&s);
+}
+
+/* An individually addressed D-TX GRANTED "not granted" or "queued" answers another MS's request (clause 14.5.2.2.1
+ * b): the talker goes on. */
+static void
+test_individual_rejection_keeps_talker(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    const uint64_t first = canonical(s.state).epoch;
+    send_grant(&s, TALKER_C, 0x0A, 1, 0);
+    assert(canonical(s.state).ota_source_id == TALKER_A && record_talker(&s, 0x0A) == TALKER_A);
+    send_grant(&s, TALKER_C, 0x0A, 2, 0);
+    assert(canonical(s.state).ota_source_id == TALKER_A && canonical(s.state).epoch == first);
+    session_close(&s);
+}
+
+/* D-TX WAIT pauses the transmission (clause 14.5.2.2.1 c); D-TX CONTINUE "continue" lets the talker go on (d.2), "not
+ * continue" withdraws its permission (d.1). */
+static void
+test_wait_continue(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_tx_wait(&s, 0x100u, 0x0A);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    send_tx_continue(&s, 0x100u, 0x0A, 1);
+    assert(record_talker(&s, 0x0A) == TALKER_A && canonical(s.state).ota_source_id == TALKER_A);
+    send_tx_wait(&s, 0x100u, 0x0A);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    send_tx_continue(&s, 0x100u, 0x0A, 0);
+    assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
+    session_close(&s);
+}
+
+/* D-CALL RESTORE goes to the restoring MS (clause 14.5.2.2.4): "transmission granted" makes it the talker; any other
+ * grant takes the floor from it when it was the talker, and leaves another talker alone. */
+static void
+test_restore_grants(void) {
+    session s = session_group_call();
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_restore(&s, TALKER_B, 0x0A, 0);
+    assert(record_talker(&s, 0x0A) == TALKER_B && canonical(s.state).ota_source_id == TALKER_B);
+    for (uint32_t grant = 1; grant <= 3u; grant++) {
+        send_grant(&s, TALKER_A, 0x0A, 0, 0);
+        assert(canonical(s.state).ota_source_id == TALKER_A);
+        send_restore(&s, TALKER_A, 0x0A, grant);
+        assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
+    }
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    send_restore(&s, TALKER_C, 0x0A, 1);
+    assert(record_talker(&s, 0x0A) == TALKER_A && canonical(s.state).ota_source_id == TALKER_A);
+    session_close(&s);
+}
+
+/* Connect-first set-up (clause 14.5.2.1.2 NOTE 1): the D-CONNECT granting the caller transmission comes before the
+ * D-SETUP, which names no calling party. The D-SETUP within TETRA_GRANT_PAIR_S takes the caller as calling party and
+ * talker. */
+static void
+test_connect_first_setup(void) {
+    session s = session_open();
+    session_history(&s);
+    send_connect(&s, 0x7777u, 0x0B, 0);
+    assert(tetra_calls_peek(s.state, 0x0B) == NULL);
+    advance_decode_clock(&s, 0.1);
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x7777u && call.ota_target_id == 0x200u);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0B);
+    assert(c && c->calling_ssi == 0x7777u && c->talker_ssi == 0x7777u && c->called_ssi == 0x200u);
+    session_close(&s);
+}
+
+/* What forgets a connect-first D-CONNECT: a release of its call identifier, a D-SETUP naming another calling party, the
+ * window passing, a floor PDU of the call, the least recent of TETRA_PENDING_CONNECTS + 1 giving way, and the call
+ * identifiers naming nothing any more (tetra_calls_forget_calls()). An entry is taken once. */
+static void
+test_connect_cache_dropped_by_release_and_conflict(void) {
+    session s = session_open();
+    session_history(&s);
+    send_connect(&s, 0x7777u, 0x0B, 0);
+    send_call_pdu(&s, 0x7777u, TETRA_CMCE_D_RELEASE, 0x0B, 5);
+    send_setup(&s, 0x200u, 0x0B, TTB_SPEECH_GROUP, 4, 120);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0B) == 0u);
+    assert(tetra_calls_peek(s.state, 0x0B)->calling_ssi == 0u);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    send_connect(&s, 0x7777u, 0x0C, 0);
+    send_group_setup(&s, 0x200u, 0x0C, 0x8888u, 3, -1, 0, 4, 120);
+    assert(canonical(s.state).ota_source_id == 0x8888u && tetra_calls_peek(s.state, 0x0C)->calling_ssi == 0x8888u);
+    session_close(&s);
+
+    s = session_open();
+    send_connect(&s, 0x7777u, 0x0D, 0);
+    advance_decode_clock(&s, 1.5);
+    send_setup(&s, 0x200u, 0x0D, TTB_SPEECH_GROUP, 0, 0);
+    assert(record_talker(&s, 0x0D) == 0u);
+    /* A floor PDU of the call identifier. */
+    send_connect(&s, 0x7777u, 0x0E, 0);
+    send_grant(&s, 0x200u, 0x0E, 3, 0);
+    send_setup(&s, 0x200u, 0x0E, TTB_SPEECH_GROUP, 0, 0);
+    assert(record_talker(&s, 0x0E) == 0u);
+    /* Taken once: the record's own talker goes with D-TX CEASED, and a late-entry D-SETUP takes nothing again. */
+    send_connect(&s, 0x7777u, 0x0F, 0);
+    send_setup(&s, 0x200u, 0x0F, TTB_SPEECH_GROUP, 0, 0);
+    assert(record_talker(&s, 0x0F) == 0x7777u);
+    send_call_pdu(&s, 0x200u, TETRA_CMCE_D_TX_CEASED, 0x0F, 1);
+    send_setup(&s, 0x200u, 0x0F, TTB_SPEECH_GROUP, 0, 0);
+    assert(record_talker(&s, 0x0F) == 0u);
+    session_close(&s);
+
+    /* Five D-CONNECTs: the first gives way. */
+    s = session_open();
+    for (uint16_t id = 0x10; id <= 0x14; id++) {
+        send_connect(&s, 0x7000u + id, id, 0);
+        advance_decode_clock(&s, 0.01);
+    }
+    send_setup(&s, 0x200u, 0x10, TTB_SPEECH_GROUP, 0, 0);
+    assert(record_talker(&s, 0x10) == 0u);
+    for (uint16_t id = 0x11; id <= 0x14; id++) {
+        send_setup(&s, 0x200u, id, TTB_SPEECH_GROUP, 0, 0);
+        assert(record_talker(&s, id) == 0x7000u + id);
+    }
+    send_connect(&s, 0x7777u, 0x15, 0);
+    tetra_calls_forget_calls(s.opts, s.state);
+    send_setup(&s, 0x200u, 0x15, TTB_SPEECH_GROUP, 0, 0);
+    assert(record_talker(&s, 0x15) == 0u);
+    session_close(&s);
+}
+
+/* A group D-SETUP carrying a Facility element (whose SS-TPI INFORM may name another talker) does not make its calling
+ * party the talker; one without does (EN 300 392-12-3 clause 5.2.1.5 NOTE 2). */
+static void
+test_setup_facility_blocks_talker_inference(void) {
+    for (int facility = 1; facility >= 0; facility--) {
+        session s = session_open();
+        session_history(&s);
+        send_group_setup(&s, 0x100u, 0x0A, TALKER_A, 3, -1, facility, 4, 120);
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+        assert(c && c->calling_ssi == TALKER_A);
+        assert(canonical(s.state).ota_source_id == (facility ? 0u : TALKER_A));
+        session_close(&s);
+    }
+}
+
+/* A late-entry repeat of the D-SETUP (notification indicator LE broadcast, acknowledgement or paging, EN 300
+ * 392-12-14 clause 5.5.3.3) never names the talker by its calling party; a D-SETUP with another notification does. */
+static void
+test_setup_le_repeat_never_names_talker(void) {
+    static const int k_notification[] = {0, 1, 2, 8};
+    for (size_t i = 0; i < sizeof k_notification / sizeof k_notification[0]; i++) {
+        session s = session_open();
+        session_history(&s);
+        send_group_setup(&s, 0x100u, 0x0A, TALKER_A, 3, k_notification[i], 0, 4, 120);
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+        assert(c && c->calling_ssi == TALKER_A);
+        assert(canonical(s.state).ota_source_id == (k_notification[i] <= 2 ? 0u : TALKER_A));
+        session_close(&s);
+    }
+}
+
+/* The initial permission of an individual call may go to either party (clause 14.5.1.2.1 a): its D-SETUP never names
+ * the talker, and the published source is the calling party only as the individual call's stand-in; D-CONNECT
+ * ACKNOWLEDGE "transmission granted" names the called MS it is addressed to (clause 14.5.1.4.1). */
+static void
+test_individual_setup_never_names_talker(void) {
+    session s = session_open();
+    session_history(&s);
+    send_private_setup(&s, 0x222u, 0x0E, 0x111u, 0, 4, 120);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x111u && call.ota_target_id == 0x222u);
+    assert(record_talker(&s, 0x0E) == 0u);
+    send_connect_ack(&s, 0x222u, 0x0E, 0);
+    call = canonical(s.state);
+    assert(record_talker(&s, 0x0E) == 0x222u);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x222u && call.ota_target_id == 0x111u);
+    session_close(&s);
+}
+
+/* The talkgroup policy's preemption route knows a group call by the source it publishes, its talker: never its calling
+ * party while no one talks. */
+static void
+test_group_decision_uses_talker(void) {
+    session s = session_open();
+    send_group_setup(&s, 0x100u, 0x0A, TALKER_A, 1, -1, 0, 4, 120);
+    assert(followed_call(s.state) == 0x0A);
+    dsd_tg_policy_call_route route;
+    DSD_MEMSET(&route, 0, sizeof route);
+    assert(tetra_calls_followed_route(s.state, &route) == 1);
+    assert(route.target_id == 0x100u && route.source_id == 0u);
+    send_grant(&s, TALKER_B, 0x0A, 0, 0);
+    assert(tetra_calls_followed_route(s.state, &route) == 1 && route.source_id == TALKER_B);
+    session_close(&s);
+}
+
+/* A group-addressed grant to another user naming no one, with no individual grant before it, leaves the talker unknown:
+ * the calling party of a set-up that granted no one is not the talker. */
+static void
+test_unnamed_talker_stays_unknown(void) {
+    session s = session_open();
+    session_history(&s);
+    send_group_setup(&s, 0x100u, 0x0A, TALKER_A, 1, -1, 0, 4, 120);
+    assert(canonical(s.state).ota_source_id == 0u);
+    send_grant(&s, 0x100u, 0x0A, 3, 0);
+    assert(canonical(s.state).ota_source_id == 0u && record_talker(&s, 0x0A) == 0u);
+    assert(tetra_calls_peek(s.state, 0x0A)->calling_ssi == TALKER_A);
     session_close(&s);
 }
 
@@ -3957,6 +4428,23 @@ main(void) {
     test_fragmented_header_encryption_reaches_the_call();
     test_grant_without_talker_is_the_next_transmission();
     test_private_call_names_both_parties();
+    test_individual_grant_then_unnamed_group_grant_keeps_talker();
+    test_unnamed_group_grant_after_window_is_unknown();
+    test_unnamed_group_grant_after_other_floor_pdu_is_unknown();
+    test_two_missed_pdus_limit();
+    test_individual_interrupt_to_talker_clears();
+    test_interrupt_pair_names_new_talker();
+    test_withdrawal_ignores_tpti();
+    test_individual_rejection_keeps_talker();
+    test_wait_continue();
+    test_restore_grants();
+    test_connect_first_setup();
+    test_connect_cache_dropped_by_release_and_conflict();
+    test_setup_facility_blocks_talker_inference();
+    test_setup_le_repeat_never_names_talker();
+    test_individual_setup_never_names_talker();
+    test_group_decision_uses_talker();
+    test_unnamed_talker_stays_unknown();
     test_encrypted_and_unfollowed_calls();
     test_sds_and_status_notices();
     test_direct_mode_calls();

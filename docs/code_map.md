@@ -7137,9 +7137,28 @@ single "current call".
   grant the policy allows follows the new call as a call of its own. D-INFO and D-CALL RESTORE may rename a call: the
   state machine takes the followed one's new identifier as it is (`tetra_sm_on_call_renamed()`), in what a tune in
   flight would put back too, not as a grant to admit, since the first block decoded on a new traffic carrier can
-  rename it before anything proved that carrier, and no timer starts over; it stays one canonical call. D-TX GRANTED / D-TX INTERRUPT give
-  the transmitting party (or the addressed one when granted) and their encryption control the end-to-end flag; D-TX
-  CEASED ends the transmission. The records belong to the network and location area they were made in: a BSCH of
+  rename it before anything proved that carrier, and no timer starts over; it stays one canonical call. Floor control names the talker
+  (`floor_transition()`, one table of EN 300 392-2 clause 14.5.2.2.1 rows, matched top down): a transmitting party in
+  a D-TX GRANTED / D-TX INTERRUPT granting transmission wins over the address, but a withdrawal (a group-addressed
+  grant "not granted", any D-TX INTERRUPT "not granted") leaves no talker whatever it names; an individually addressed
+  grant "granted" names the addressed party, an individually addressed "not granted" or "queued" leaves the talker,
+  an individually addressed D-TX INTERRUPT naming no one takes the floor from it; D-TX CEASED and D-TX CONTINUE "not
+  continue" end it, D-TX WAIT and "continue" keep it; D-CALL RESTORE "granted" names the restoring party and any other
+  grant ends a talker that is the restoring party; D-CONNECT "granted" names the caller while no talker is known and
+  D-CONNECT ACKNOWLEDGE "granted" the called MS. Group-addressed means the call's called GSSI; an individual call has
+  no group address. A group-addressed grant to another user that names no one keeps the talker only when the call's
+  previous floor PDU was an individually addressed one of the same kind that named it, within `TETRA_GRANT_PAIR_S`
+  (1 s) on the decode clock (pairing, a heuristic: a later group notice, or one after another floor PDU, loses the
+  talker, and two floor PDUs missed in a row within the window credit the previous talker until a PDU names one;
+  documented limits). A group D-SETUP names its calling party as talker only with transmission granted, no talker
+  known, no Facility element (whose SS-TPI INFORM, not parsed, may name another) and a notification indicator that is
+  not a late-entry one (0, 1, 2); an individual D-SETUP never does (`setup_names_talker()`). A D-CONNECT granting the
+  caller transmission for a call no record holds is remembered (`tetra_pending_connect`, 4 entries) for the D-SETUP
+  that follows it within `TETRA_GRANT_PAIR_S` on the same network (clause 14.5.2.1.2 NOTE 1: connect-first set-up),
+  which takes the caller as talker and as calling party when it names none; a conflicting calling party, a release
+  or floor PDU of the identifier and `tetra_calls_forget_calls()` forget it. Encryption control of D-TX GRANTED / D-TX
+  INTERRUPT is the end-to-end flag. The group decision and the preemption route take the source the call publishes
+  (the talker), never a group call's calling party. The records belong to the network and location area they were made in: a BSCH of
   another network or a SYSINFO of another location area ends them all (`tetra_calls_forget_calls()`, Signalling
   decoders above). What a record holds of a cell goes with the cell: a channel allocation names a carrier number and
   timeslots of the cell that made it (clause 21.5.2), and an event label or usage marker is valid on one channel of one
@@ -7365,8 +7384,9 @@ single "current call".
   BSCH, its SCH/HU or MAC blocks), one call per timeslot (`speech_anonymous()`: each timeslot is a traffic channel of its own, EN
   300 392-2 clause 9.4.2.2), so when the heard timeslot moves, the speech of the new one ends the last one's anonymous
   call and publishes its own, with its own epoch, media and crypto class. A grant is the SwMI's floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1),
-  so one that names no talker where the last named one is the next transmission with its D-TX CEASED unheard: the
-  last talker's canonical call ends and the next one publishes without a talker. Once published, a call follows its record: whatever a CRC-passed PDU, its allocation, an
+  so a floor PDU that leaves no talker where one was known (an unpaired group grant naming no one, a withdrawal,
+  "not continue", a restore taking the floor) ends the last talker's canonical call, and the next one publishes
+  without a talker. Once published, a call follows its record: whatever a CRC-passed PDU, its allocation, an
   allocation addressed to the call's party or a MAC header changes of it (its parties, basic service, traffic channel or
   encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
   published before and the PDU passed its CRC; only publication itself waits for the proof. A reallocation of the

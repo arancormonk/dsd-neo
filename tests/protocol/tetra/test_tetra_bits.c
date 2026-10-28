@@ -60,6 +60,23 @@ test_type34_chain(void) {
     static const uint8_t empty[] = {0};
     tetra_bit_reader e = tetra_bits_reader(empty, 1, 0);
     assert(tetra_bits_skip_type34(&e) == 1);
+
+    /* The identifiers skipped: 0011 (length 1) and 0101 (length 3), then M=0. */
+    static const uint8_t two[] = {
+        1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,       /* M, 0011, length 1, value */
+        1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, /* M, 0101, length 3, value */
+        0,                                                       /* M */
+    };
+    tetra_bit_reader t = tetra_bits_reader(two, (int)sizeof two, 0);
+    uint16_t ids = 0xFFFFu;
+    assert(tetra_bits_skip_type34_ids(&t, &ids) == 1 && ids == ((1u << 3) | (1u << 5)));
+    assert(tetra_bits_left(&t) == 0);
+    tetra_bit_reader t_cut = tetra_bits_reader(two, (int)sizeof two - 1, 0);
+    assert(tetra_bits_skip_type34_ids(&t_cut, &ids) == 0 && ids == 0u);
+    tetra_bit_reader none = tetra_bits_reader(empty, 1, 0);
+    assert(tetra_bits_skip_type34_ids(&none, &ids) == 1 && ids == 0u);
+    tetra_bit_reader no_mask = tetra_bits_reader(two, (int)sizeof two, 0);
+    assert(tetra_bits_skip_type34_ids(&no_mask, NULL) == 1);
 }
 
 static void
