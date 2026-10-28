@@ -575,9 +575,12 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
                                                        jstring cause) {
     (void)clazz;
 
-    /* Never takes g_lock. This is called from the main thread on a USB detach
-     * broadcast, and nativeConfigure holds g_lock across the whole bootstrap, which
-     * can block on an rtl_tcp connect — waiting for it here would be an ANR. There
+    /* Never takes g_lock. This is called from the main thread (a USB detach
+     * broadcast, the Activity's teardown) and from the Qt thread under the service's
+     * lock, and nativeConfigure holds g_lock across the whole bootstrap, which reads
+     * the user config and every CSV and key file the arguments name from storage.
+     * The input itself, an rtl_tcp connect included, opens later in nativeRun,
+     * outside g_lock. A stop has to land at once, not behind that file I/O, and there
      * is nothing to protect: dsd_request_shutdown() ignores both arguments and only
      * raises the process exit flag, so the guard below is purely "has the engine
      * been initialized". */
