@@ -414,7 +414,7 @@ Item {
         // Without a leading "v", as Settings shows this build's version.
         var version = String(summary.app || "").replace(/^v/, "");
         var source = day.length && version.length ? qsTr("the backup from %1 (DSD-neo %2)").arg(day).arg(version) : day.length ? qsTr("the backup from %1").arg(day) : version.length ? qsTr("the backup (DSD-neo %1)").arg(version) : qsTr("the backup");
-        var question = qsTr("Replace this phone's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings with %5? Call history and recordings on this phone are kept.").arg(count(summary.systems)).arg(count(summary.scanLists)).arg(count(summary.libraryFiles)).arg(count(summary.profiles)).arg(source);
+        var question = qsTr("Replace this phone's saved systems (%1), scan lists (%2), imported files (%3), decryption profiles (%4), search ranges and settings with %5? Call history, call recordings and replay recordings on this phone are kept.").arg(count(summary.systems)).arg(count(summary.scanLists)).arg(count(summary.libraryFiles)).arg(count(summary.profiles)).arg(source);
         var notes = [];
         var replays = count(summary.recordingsToChoose);
         if (replays === 1)
@@ -541,8 +541,9 @@ Item {
             color: Theme.textPrimary
         }
         Text {
+            objectName: "backupExportScope"
             width: parent.width
-            text: qsTr("Includes your settings, saved systems, scan lists, imported files, decryption profiles with their keys, and search ranges. Call history and recordings stay on this phone.")
+            text: qsTr("Includes your settings, saved systems, scan lists, imported files, decryption profiles with their keys, and search ranges. Call history, call recordings, and replay recordings stay on this phone.")
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(13)

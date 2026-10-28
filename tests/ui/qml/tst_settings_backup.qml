@@ -537,6 +537,8 @@ Item {
             var sheet = part("backupPassphraseSheet");
             compare(sheet.accessibleName, "Encrypt backup");
             verify(part("backupExportWarning").text.indexOf("There is no recovery.") >= 0);
+            // Issue #708: what stays behind names both kinds of recording.
+            verify(part("backupExportScope").text.indexOf("Call history, call recordings, and replay recordings stay on this phone.") >= 0);
             typePassphrases(pass, pass);
             var button = part("backupEncryptButton");
             button.activate();
@@ -895,7 +897,7 @@ Item {
 
         function test_confirm_message_data() {
             var day = Qt.formatDate(new Date(1760000000 * 1000), "MMM d, yyyy");
-            var head = "Replace this phone's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings with the backup from " + day + " (DSD-neo 1.4.0)? Call history and recordings on this phone are kept.";
+            var head = "Replace this phone's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings with the backup from " + day + " (DSD-neo 1.4.0)? Call history, call recordings and replay recordings on this phone are kept.";
             var close = "DSD-neo will close; open it again to finish.";
             return [
                 {tag: "every note", summary: fullSummary, has: [head, "2 replay systems will need their recording chosen again.", "1 system carries extra decoder options.", close], lacks: ["Your settings carry"]},
