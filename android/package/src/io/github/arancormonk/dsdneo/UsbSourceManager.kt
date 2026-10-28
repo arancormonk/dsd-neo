@@ -20,6 +20,8 @@ import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -72,8 +74,12 @@ object UsbSourceManager {
 
     /** Where the attachments that owe a USB reset are kept across processes, in app-private storage (#782). */
     private const val RESET_OBLIGATIONS_FILE = "usb-reset-owed"
-    /** How long an open waits for the stored obligations' read, started at process start, before it goes without. */
-    private const val RESET_OBLIGATIONS_LOAD_WAIT_MS = 1000L
+    /**
+     * How long an open waits for the stored obligations' read, started at process start, before it goes without. A
+     * test that holds the read back shortens it.
+     */
+    @Volatile
+    internal var resetObligationsLoadWaitMs = 1000L
 
     private val lock = Any()
     private var connection: UsbDeviceConnection? = null
@@ -747,12 +753,12 @@ object UsbSourceManager {
      * Applies the stored obligations, keeping those whose device is attached now with the same VID:PID (#782). Main
      * thread, once. The storage thread posts it when its read is done, and an open calls it first, so the first
      * descriptor published is handed with what storage held: should the read still be running, the open waits for it
-     * (at most [RESET_OBLIGATIONS_LOAD_WAIT_MS]; past that it goes without, and the posted apply applies it later).
+     * (at most [resetObligationsLoadWaitMs]; past that it goes without, and the posted apply applies it later).
      */
     private fun applyResetObligations() {
         val load = synchronized(lock) { if (resetObligationsLoaded) null else resetObligationsLoad } ?: return
         val text = try {
-            load.get(RESET_OBLIGATIONS_LOAD_WAIT_MS, TimeUnit.MILLISECONDS)
+            load.get(resetObligationsLoadWaitMs, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
             Log.w(TAG, "usb: the stored USB reset obligations are not read yet; opening without them")
             return
@@ -794,7 +800,13 @@ object UsbSourceManager {
             val temporary = File(file.parentFile, "${file.name}.tmp")
             try {
                 temporary.writeText(text)
-                if (!temporary.renameTo(file)) throw IOException("rename to ${file.name} failed")
+                // Files.move, not File.renameTo: renameTo refuses to replace an existing file on some platforms.
+                Files.move(
+                    temporary.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
             } catch (e: IOException) {
                 Log.w(TAG, "usb: could not store the USB reset obligations", e)
             }

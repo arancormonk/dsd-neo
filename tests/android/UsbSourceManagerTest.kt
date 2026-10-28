@@ -33,7 +33,12 @@ private fun airspy(name: String = AIRSPY_A, serial: String = SERIAL) = UsbDevice
 
 // One per case: the manager registers its receiver once, on the first context it sees. [storage] is the app-private
 // directory, one a "previous process" wrote to; [present] is on the bus, permitted, before the process starts.
-private class Rig(storage: File? = null, present: List<UsbDevice> = emptyList(), storageExecutor: Executor? = null) {
+private class Rig(
+    storage: File? = null,
+    present: List<UsbDevice> = emptyList(),
+    storageExecutor: Executor? = null,
+    loadWaitMs: Long = 1000L,
+) {
     val context = Context()
     val usb: UsbManager get() = context.usb
 
@@ -43,6 +48,7 @@ private class Rig(storage: File? = null, present: List<UsbDevice> = emptyList(),
         Looper.mainThread = Thread.currentThread()
         // The obligations' storage thread runs its reads and writes inline, so each case sees them at once.
         UsbSourceManager.storageExecutor = storageExecutor ?: Executor { it.run() }
+        UsbSourceManager.resetObligationsLoadWaitMs = loadWaitMs
         storage?.let { context.noBackupFilesDir = it }
         for (device in present) {
             usb.plug(device)
@@ -895,6 +901,9 @@ private class SlowStore {
     fun shutdown() = worker.shutdown()
 }
 
+/** A read the test holds back is outwaited in this rather than the app's full second, which slow runners add up. */
+private const val HELD_READ_WAIT_MS = 50L
+
 private fun storageWith(text: String): File =
     java.nio.file.Files.createTempDirectory("dsd-usb-late").toFile().also { File(it, "usb-reset-owed").writeText(text) }
 
@@ -907,6 +916,7 @@ private fun aLateLoadedObligationWaitsForTheEngine() {
         storage = storageWith("$RTL_A\t${0x0bda}\t${0x2838}\t00000001\n"),
         present = listOf(rtl()),
         storageExecutor = store.executor,
+        loadWaitMs = HELD_READ_WAIT_MS,
     )
     UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
     check(DsdNative.publishedResetFirst.toList() == listOf(false)) { "the open went without the unread store" }
@@ -932,7 +942,12 @@ private fun aLateLoadedObligationWaitsForTheEngine() {
 // once the read is applied, though the store held nothing to drop.
 private fun anObligationBeforeTheLoadIsStored() {
     val store = SlowStore()
-    val rig = Rig(storage = storageWith(""), present = listOf(rtl()), storageExecutor = store.executor)
+    val rig = Rig(
+        storage = storageWith(""),
+        present = listOf(rtl()),
+        storageExecutor = store.executor,
+        loadWaitMs = HELD_READ_WAIT_MS,
+    )
     UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
     rig.take()
     DsdNative.resetOwed = DsdNative.usbFd
@@ -953,6 +968,7 @@ private fun aClearBeforeTheLoadWins() {
         storage = storageWith("$RTL_A\t${0x0bda}\t${0x2838}\t00000001\n"),
         present = listOf(rtl()),
         storageExecutor = store.executor,
+        loadWaitMs = HELD_READ_WAIT_MS,
     )
     UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
     rig.take()
