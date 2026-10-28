@@ -8750,7 +8750,8 @@ Since issue #782 the receiver is the connection the session took (the record's `
 `usbConnection`, from `UsbSourceManager.takeForSession()`), compared with the broker record's `device`, `epoch`,
 `connection`; a record without one falls back to source and the ready connection's serial when the error is first
 seen. The run record's error is the session's own receiver's latch (`receiver_open_error()`: the RTL-SDR's, or the
-Airspy's `rtl_device_airspy_last_open_error()`). The USB record also carries the broker's
+Airspy's `rtl_device_airspy_last_open_error()`); each holds the last open's result, so a live reconfigure that failed
+to open and then reopened the previous stream reports no error. The USB record also carries the broker's
 request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request; `LocalDeviceState`), published
 as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch refusal) maps to no device
 failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request generations and their 60 s

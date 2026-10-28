@@ -224,7 +224,8 @@ int rtl_device_airspy_set_preopened_fd(int fd);
 int rtl_device_airspy_preopened_fd_in_use(void);
 /** The descriptor the Airspy holds, or -1; as rtl_device_preopened_fd_held() is for the RTL-SDR (#782). */
 int rtl_device_airspy_preopened_fd_held(void);
-/** The Airspy's last open/claim error, as rtl_device_last_open_error() is the RTL-SDR's; cleared at session start. */
+/** The Airspy's last open/claim error, as rtl_device_last_open_error() is the RTL-SDR's: 0 once an open succeeds, and
+ * cleared at session start. */
 int rtl_device_airspy_last_open_error(void);
 void rtl_device_airspy_clear_open_error(void);
 

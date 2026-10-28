@@ -108,21 +108,32 @@ main() {
     dsd_input_failure latched{};
     dsd_input_failure_get(&latched);
     CHECK(latched.kind == DSD_INPUT_FAILURE_DEVICE);
+    const int open_error = airspy_source_last_open_error();
+    CHECK(open_error != 0);
     cfg.serial[0] = '\0';
     s = airspy_source_open(&cfg, capture, received.get());
     CHECK(s);
     dsd_input_failure_get(&latched);
     CHECK(latched.kind == DSD_INPUT_FAILURE_NONE);
+    // #782 gate r2 H2: the open that succeeded is the last open, so the run record must not publish the failed one's
+    // error (a live reconfigure that fails, then restores the previous stream).
+    CHECK(airspy_source_last_open_error() == 0);
     airspy_source_close(s);
     cfg.sample_rate = 2500000; // Configuration failures also clear on recovery.
     CHECK(!airspy_source_open(&cfg, capture, received.get()));
     dsd_input_failure_get(&latched);
     CHECK(latched.kind == DSD_INPUT_FAILURE_DEVICE);
+    // The device opened and was claimed: only its configuration failed, which is no open/claim error.
+    CHECK(airspy_source_last_open_error() == 0);
+    DSD_SNPRINTF(cfg.serial, sizeof cfg.serial, "%s", "0000000000000001");
     cfg.sample_rate = 0;
+    CHECK(!airspy_source_open(&cfg, capture, received.get()) && airspy_source_last_open_error() == open_error);
+    cfg.serial[0] = '\0';
     s = airspy_source_open(&cfg, capture, received.get());
     CHECK(s);
     dsd_input_failure_get(&latched);
     CHECK(latched.kind == DSD_INPUT_FAILURE_NONE);
+    CHECK(airspy_source_last_open_error() == 0);
     airspy_source_close(s);
     CHECK(airspy_source_set_fd(42) != 0 && !airspy_source_fd_in_use());
     return 0;
@@ -394,10 +405,13 @@ main() {
     dsd_input_failure latched{};
     dsd_input_failure_get(&latched);
     CHECK(latched.kind == DSD_INPUT_FAILURE_DEVICE && latched.native_code != 0);
+    CHECK(rtl_device_airspy_last_open_error() != 0);
     struct rtl_device* opened = rtl_device_create_airspy(&opts->airspy, ring.get());
     CHECK(opened != nullptr);
     dsd_input_failure_get(&latched);
     CHECK(latched.kind == DSD_INPUT_FAILURE_NONE);
+    // #782 gate r2 H2: nor does the run record (collect_run_result()) read the failed open's error once one succeeds.
+    CHECK(rtl_device_airspy_last_open_error() == 0);
     rtl_device_destroy(opened);
     return 0;
 }

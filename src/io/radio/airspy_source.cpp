@@ -26,7 +26,7 @@ static std::mutex usb_fd_lock;
 #endif
 /* The descriptor the open path holds, or -1: set before airspy_open_fd() and cleared once the device is closed. */
 static std::atomic<int> usb_held{-1};
-/* The last open/claim error, for the host's receiver pill; cleared at session start (#782). */
+/* The last open's open/claim error (0 once one succeeds), for the host's receiver pill; cleared at session start (#782). */
 static std::atomic<int> last_open_error{0};
 
 struct airspy_source {
@@ -235,9 +235,9 @@ airspy_source_open(const dsd_airspy_config* config, airspy_source_callback callb
     s->context = context;
     s->config = *config;
     int rc = checked(open_device(s, serial), "open");
-    if (rc != 0) {
-        last_open_error.store(rc, std::memory_order_release);
-    }
+    /* The last open's result, as the RTL-SDR's latch is (#782): an open that succeeds clears an earlier one's error, so
+       a reconfigure that failed to open and then reopened the previous stream reports no open/claim error. */
+    last_open_error.store(rc, std::memory_order_release);
     if (rc == 0) {
         rc = checked(configure_device(s, serial), "configure");
     }
