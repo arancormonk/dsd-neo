@@ -457,6 +457,9 @@ typedef struct {
     uint32_t capture_rate_hz; /* capture rate the stream runs at */
     int offset_tuning;        /* whether the stream counts on the dongle's hardware offset tuning */
     int fs4_rotation;         /* whether the stream shifts the capture by Fs/4 and rotates it back in software */
+    int rate_out_hz;          /* the demod's output rate for that capture rate */
+    int rate_forced;          /* the device runs another rate than the stream's plan (capture_rate_device_forced) */
+    int downsample_passes;    /* half-band passes from the capture rate */
 } rtl_stream_test_capture_result;
 
 /* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
@@ -468,6 +471,26 @@ int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_op
 int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
                                            uint32_t retune_center_hz, int retune_rate_in_hz,
                                            rtl_stream_test_capture_result* out);
+
+/* A capture-programming session on @p dev as the open device (issue #782 D3): the stream start's programming for
+ * @p center_hz, with a 48 kHz demod input, into @p out; then steps, until rtl_stream_test_capture_session_end() puts
+ * the stream's own state back. One at a time, with no stream running. */
+int rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                          rtl_stream_test_capture_result* out);
+
+/* A step of a capture-programming session (rtl_stream_test_capture_session_step()). */
+enum {
+    RTL_STREAM_TEST_CAPTURE_HOP = 0,         /* a controller retune to center_hz, at demod input rate value (0: kept) */
+    RTL_STREAM_TEST_CAPTURE_GAIN_AUTO = 1,   /* a retune profile's automatic gain */
+    RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL = 2, /* a retune profile's manual gain of value tenths of a dB */
+    RTL_STREAM_TEST_CAPTURE_AUTOGAIN = 3,    /* the tuner autogain supervisor's gain of value tenths of a dB */
+    RTL_STREAM_TEST_CAPTURE_PPM = 4,         /* a PPM correction of value */
+    RTL_STREAM_TEST_CAPTURE_OFFSET = 5,      /* offset tuning turned on (value 1) or off */
+};
+
+/* Run one step; @p out (optional) holds the capture after it, with its rc. Returns -1 with no session, else 0. */
+int rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out);
+void rtl_stream_test_capture_session_end(void);
 
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
 enum {

@@ -14754,6 +14754,31 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_RTL_USB_FD_RECOVERY PROPERTIES TIMEOUT 120)
 
+    # Issue #782 D3: a retune writes only the capture settings that changed. The stream's
+    # programming on a whole fake dongle: same-rate hops write the frequency alone and run the
+    # rate read back, a quantized rate or a nearest gain is never rewritten, a changed rate is
+    # written once, and a failure, a PPM or offset tuning change or a USB recovery writes again.
+    add_executable(
+        dsd-neo_test_io_rtl_capture_writes
+        io/test_io_rtl_capture_writes.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_capture_writes
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_capture_writes
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_capture_writes
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_CAPTURE_WRITES
+        COMMAND dsd-neo_test_io_rtl_capture_writes
+    )
+
     # rtl_tcp connection handling against a scripted fake rtl_tcp server on loopback:
     # the exact header parser, bounded and cancellable connects, header reads and
     # command sends, the reconnect handed to the stream's controller with the last

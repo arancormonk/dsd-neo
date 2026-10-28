@@ -472,6 +472,9 @@ struct rtl_device {
     uint32_t soapy_nearest_rate_cache_actual = 0U;
     int soapy_named_gain_override = 0;
     int soapy_named_gain_skip_logged = 0;
+    /* The driver is a known one (its profile from the driver alone, not a forced one), whose rate, bandwidth and gain
+       hold across a retune: rtl_device_capture_settings_generation(). */
+    int soapy_keeps_capture_settings = 0;
     char soapy_args_string[1024] = {};
     char soapy_driver_key[64] = {};
     char soapy_hardware_key[128] = {};
@@ -518,6 +521,9 @@ struct rtl_device {
     std::atomic<uint64_t> progress{0U};
     int thread_started = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
+    /* Moves before a USB recovery reopens the dongle and before an rtl_tcp reconnect replays the server's settings:
+       rtl_device_capture_settings_generation(). */
+    std::atomic<uint32_t> capture_settings_generation{0U};
     std::atomic<int> capture_reconfigure_hold{0};
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
     int backend = 0;
@@ -4216,6 +4222,15 @@ soapy_select_profile_locked(struct rtl_device* dev) {
     selection.hardware_key = dev->soapy_hardware_key;
     selection.args = dev->soapy_args_string;
     dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
+    /* Each known driver's setFrequency() leaves its rate, bandwidth and gain alone, so a retune need not write them
+       again (issue #782): SoapyRTLSDR, SoapyHackRF, SoapySDRPlay3, SoapyLMS7 (it re-applies its own baseband filter on
+       each tune), SoapyPlutoSDR, SoapyUHD, SoapySDDC and SoapyAirspy, the last two of which take a new rate only at the
+       stream's activation anyway. A same-value rewrite costs on some: SoapyLMS7 stops and restarts the stream on every
+       setSampleRate(), SoapyRTLSDR drops its buffered samples and soft-resets the demod. A driver none of them is (a
+       forced profile does not count) keeps every write: what its tune does to the rest is not known. */
+    selection.requested_profile.clear();
+    dev->soapy_keeps_capture_settings =
+        dsdneo::soapy_select_profile_id(selection) != dsdneo::SoapyProfileId::Generic ? 1 : 0;
 }
 
 static void
@@ -6130,6 +6145,8 @@ rtl_device_tcp_publish_handoff(struct rtl_device* dev, char* why, size_t why_siz
         }
         return -EINVAL;
     }
+    /* A new server connection, set up from the record: the next retune writes what it recorded again. */
+    dev->capture_settings_generation.fetch_add(1U, std::memory_order_acq_rel);
     int rc = rtl_tcp_send_replay(dev, conn);
     rtl_tcp_lock(dev);
     rc = rtl_tcp_settle_handoff_locked(dev, conn, rc);
@@ -9030,6 +9047,8 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     const char* gains = cfg ? cfg->gains : NULL;
     const char* stream_format = cfg ? cfg->stream_format : NULL;
 
+    /* The driver settings below can move its rate grid and gains under what a retune recorded. */
+    dev->capture_settings_generation.fetch_add(1U, std::memory_order_acq_rel);
     rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), profile);
     rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), antenna);
     rtl_device_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock), clock_source);
@@ -9990,6 +10009,18 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
         return (dev->rate > 0) ? (int)dev->rate : -1;
     }
     return (int)dev->rate;
+}
+
+int
+rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* out_generation) {
+    if (!dev || !out_generation) {
+        return 0;
+    }
+    *out_generation = dev->capture_settings_generation.load(std::memory_order_acquire);
+    if (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) {
+        return 1;
+    }
+    return (dev->backend == RTL_BACKEND_SOAPY && dev->soapy_keeps_capture_settings) ? 1 : 0;
 }
 
 static int
@@ -11133,6 +11164,8 @@ rtl_usb_port_reset_and_reopen(struct rtl_device* dev, rtlsdr_dev_t** out, struct
 /* The swap itself, under usb_lifecycle_lock with recovering set. */
 static int
 rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
+    /* Whatever the swap ends in, the dongle no longer holds what a retune recorded: the next one writes it all. */
+    dev->capture_settings_generation.fetch_add(1U, std::memory_order_acq_rel);
     /* The reader first, cancelled until it returned (silently: recovering is set) and joined, so nothing streams from
      * the dongle while it is reset and configured. */
     if (dev->thread_started) {

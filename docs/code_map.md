@@ -4632,6 +4632,28 @@ Key public headers:
     attachment record, storage and the swap) is in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
     `rtl_device_test_set_fd_reset_hook()`, `rtl_device_test_set_fd_identity_hook()`,
     `rtl_device_test_recoveries_in_grace()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
+  - A retune writes only the capture settings that changed (#782 D3; `rtl_sdr_fm.cpp` `CaptureWriteRecord`). The
+    stream records, per open device, the sample rate it asked for and the one it read back, the tuner bandwidth it
+    asked for, and the gain mode and manual gain it asked for (the gain that took is `dongle.gain`). The comparison is
+    on the request, so a quantized rate or a nearest gain (30 dB taking as 29.7) is never rewritten. A hop still runs
+    `optimal_settings()`; when the requested rate is the recorded one and the device still reads it back,
+    `program_capture_frequency_and_rate()` runs the rate chain, the Fs/4 centre and `capture_rate_device_forced` for
+    the recorded actual rate and writes the frequency alone (and the bandwidth only if its request moved); otherwise it
+    writes the rate, reads it back (`apply_actual_capture_rate()`, so #573's width check sees a real rate change) and
+    writes the bandwidth again, since librtlsdr resets the tuner filter with the rate. A retune profile's gain
+    (`rtl_stream_apply_auto_retune_gain()`, `..._manual_...`) is written only when it differs; the stream open's gain,
+    the autogain supervisor's (`demod_autogain_set_gain()`) and every profile write record what they asked for. The
+    record is forgotten by a device open or close, any failed or partial write (frequency, rate, the Fs/4 re-centre,
+    bandwidth, gain), a refused retune's rollback, a PPM change (`apply_ppm_setting()`, not an unsupported one) and an
+    offset tuning change (`capture_set_offset_tuning()`; the start records the rate only after its rate, offset tuning,
+    bandwidth order ran). An entry counts only under the device's `rtl_device_capture_settings_generation()`, which
+    moves before every USB recovery swap and every rtl_tcp reconnect replay and before a Soapy configuration. Which
+    backends skip: USB and rtl_tcp; SoapySDR only for a known driver (the profile from driver key, hardware key and args,
+    a forced profile ignored: SoapyRTLSDR, HackRF, SDRPlay3, LMS7, PlutoSDR, UHD, SDDC, Airspy, whose tune leaves rate,
+    bandwidth and gain alone), a generic driver keeps every write; the Airspy backend skips same-value writes in its
+    adapter, and I/Q replay programs nothing. The retune mute windows and the `--iq-capture` RETUNE events are
+    unchanged. Test seam: `rtl_stream_test_capture_session_begin()`/`_step()`/`_end()`. Tests: `IO_RTL_CAPTURE_WRITES`
+    (device-call counts on the whole fake dongle), `IO_RTL_TCP_RECONNECT` (the generation moves on a replay).
   - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
     12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
     twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,

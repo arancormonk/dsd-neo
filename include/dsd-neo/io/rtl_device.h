@@ -297,6 +297,21 @@ int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested
 int rtl_device_get_sample_rate(struct rtl_device* dev);
 
 /**
+ * @brief Whether a retune may leave a capture setting @p dev already holds unwritten (issue #782 D3).
+ *
+ * The backends that keep their sample rate, tuner bandwidth and gain across a retune answer 1: a USB RTL-SDR, an
+ * rtl_tcp server, and a SoapySDR device whose driver is a known one (a generic driver keeps every write). An Airspy
+ * skips a same-value write itself, and an I/Q replay has nothing to program, so both answer 0.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param out_generation Receives a count that moves each time the device's settings were put back without the
+ * caller: a USB recovery's reopen and replay, an rtl_tcp reconnect's replay. What the caller recorded under an
+ * older count no longer describes the device.
+ * @return 1 when the caller may skip a write that matches what it recorded, else 0.
+ */
+int rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* out_generation);
+
+/**
  * @brief Set tuner gain mode and value.
  *
  * On USB a gain change is one transaction over the RTL digital AGC, the tuner's gain mode and its gain: a change that

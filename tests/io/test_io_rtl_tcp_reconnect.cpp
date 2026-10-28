@@ -1067,6 +1067,8 @@ test_latest_effective_settings_replayed(void) {
     assert(rtl_device_set_frequency(r.dev, 854000000U) == 0);
     assert(rtl_device_set_xtal_freq(r.dev, 28800300U, 0U) == 0);
     assert(rtl_device_set_xtal_freq(r.dev, 0U, 28800400U) == 0);
+    uint32_t settings_before = 0U;
+    assert(rtl_device_capture_settings_generation(r.dev, &settings_before) == 1);
     rig_start(r);
     lose_connection(r);
     wait_generation(r, 2U);
@@ -1074,6 +1076,10 @@ test_latest_effective_settings_replayed(void) {
         return m.freq == 854000000U && m.rate == 960000U && m.ppm == 0 && m.bias == 0 && m.gain_manual == 1
                && m.gain == 280 && m.reg19 == 0x05;
     });
+    /* The new server was set up from the record behind the stream: a retune writes what it recorded again (#782). */
+    uint32_t settings_after = 0U;
+    assert(rtl_device_capture_settings_generation(r.dev, &settings_after) == 1);
+    assert(settings_after != settings_before);
     assert(server_params(1, 0x01).size() == 1U);
     const std::vector<uint32_t> rtl_xtal{28800300U};
     const std::vector<uint32_t> tuner_xtal{28800400U};
