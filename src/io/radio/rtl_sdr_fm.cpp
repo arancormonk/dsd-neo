@@ -667,6 +667,22 @@ capture_writes_claim(void) {
     }
 }
 
+/* A frequency write that took: forget what the device's tuner undoes when it tunes (rtl_device_capture_retune_resets():
+ * an FC2580 resets its channel filter on every tune), so it is written again. */
+static void
+capture_writes_note_frequency(void) {
+    const unsigned resets = rtl_device_capture_retune_resets(rtl_device_handle);
+    if (resets & RTL_CAPTURE_SETTING_RATE) {
+        g_capture_writes.rate_valid = 0;
+    }
+    if (resets & RTL_CAPTURE_SETTING_BANDWIDTH) {
+        g_capture_writes.bw_valid = 0;
+    }
+    if (resets & RTL_CAPTURE_SETTING_GAIN) {
+        g_capture_writes.gain_valid = 0;
+    }
+}
+
 /* Whether an entry written under @p generation still describes the open device. */
 static int
 capture_writes_entry_current(int valid, uint32_t generation) {
@@ -694,6 +710,10 @@ static int
 capture_writes_kept_rate(uint32_t requested_hz, uint32_t* out_actual_hz) {
     if (!capture_writes_entry_current(g_capture_writes.rate_valid, g_capture_writes.rate_generation)
         || g_capture_writes.rate_requested_hz != requested_hz) {
+        return 0;
+    }
+    /* The hop's own frequency write, which comes after this check, would undo it. */
+    if (rtl_device_capture_retune_resets(rtl_device_handle) & RTL_CAPTURE_SETTING_RATE) {
         return 0;
     }
     const int actual = rtl_device_get_sample_rate(rtl_device_handle);
@@ -808,6 +828,7 @@ retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t reque
 
     int rc = rtl_device_set_frequency(rtl_device_handle, actual_capture_freq_hz);
     if (rc == 0) {
+        capture_writes_note_frequency();
         store_dongle_frequency(actual_capture_freq_hz);
         LOG_INFO("Adjusted fs/4 capture center for actual device rate: center=%u, capture=%u Hz.\n", center_freq_hz,
                  actual_capture_freq_hz);
@@ -4981,6 +5002,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
         LOG_ERROR("Failed to apply RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
         return rc;
     }
+    capture_writes_note_frequency();
     if (out_hardware_changed) {
         *out_hardware_changed = 1;
     }
@@ -5333,6 +5355,8 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     if (frequency_rc != 0) {
         LOG_ERROR("Failed to return the RTL-SDR to center frequency %u Hz (rc=%d).\n", previous->dongle_frequency_hz,
                   frequency_rc);
+    } else {
+        capture_writes_note_frequency();
     }
     const int rate_rc = device->set_sample_rate(rtl_device_handle, previous->dongle_rate_hz);
     if (rate_rc != 0) {
@@ -6128,6 +6152,8 @@ controller_set_initial_frequency(uint32_t capture_freq_hz) {
     int rc = rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     if (rc != 0) {
         LOG_ERROR("Failed to apply initial RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
+    } else {
+        capture_writes_note_frequency();
     }
     return rc;
 }

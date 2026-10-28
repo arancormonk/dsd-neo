@@ -171,6 +171,7 @@ struct conn_script {
     int send_header = 1;
     int magic_ok = 1;
     uint32_t gain_count = 29U;
+    uint32_t tuner_type = 5U;         /* the header's RTLSDR_TUNER_* (5: R820T) */
     std::vector<size_t> header_parts; /* the header in these parts (empty: whole) */
     unsigned int header_gap_ms = 0U;
     size_t first_bytes = 0U;   /* this many I/Q bytes in the "first" phase after the header */
@@ -282,6 +283,10 @@ server_serve(dsd_socket_t sock, const conn_script& sc, size_t idx) {
         if (sc.magic_ok == 0) {
             hdr[0] = 'X';
         }
+        hdr[4] = (unsigned char)(sc.tuner_type >> 24);
+        hdr[5] = (unsigned char)(sc.tuner_type >> 16);
+        hdr[6] = (unsigned char)(sc.tuner_type >> 8);
+        hdr[7] = (unsigned char)sc.tuner_type;
         hdr[8] = (unsigned char)(sc.gain_count >> 24);
         hdr[9] = (unsigned char)(sc.gain_count >> 16);
         hdr[10] = (unsigned char)(sc.gain_count >> 8);
@@ -1139,6 +1144,52 @@ test_hops_write_only_changes(void) {
     rtl_stream_test_capture_session_end();
     free(opts);
     rig_close(r);
+}
+
+/* fc2580_hops_write_rate (#782 gate r3 J1): an FC2580 resets its channel filter on every tune, and rtl_tcp takes no
+ * bandwidth command from this backend; the server's rate write (rtlsdr_set_sample_rate() sets the tuner filter) is
+ * what puts it back. Behind a server whose header names an FC2580, or a tuner this build does not know, every hop
+ * sends the rate after the frequency, as every hop did before D3. */
+void
+test_fc2580_hops_write_rate(void) {
+    for (uint32_t tuner : {4U, 0U}) {
+        conn_script sc = default_script();
+        sc.tuner_type = tuner;
+        server_reset(sc);
+        const auto r_owner = std::make_unique<dev_rig>();
+        dev_rig& r = *r_owner;
+        rig_open(r, 0, 0);
+        dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+        assert(opts != nullptr);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:127.0.0.1:%d", g_srv.port);
+        rtl_stream_test_capture_result out{};
+        assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
+        assert(out.rc == 0);
+        rig_start(r);
+        (void)sync_server(r.dev, 0);
+        const size_t rates = server_params(0, 0x02).size();
+        const uint32_t hops[] = {851262500U, 852037500U, 853087500U};
+        for (uint32_t center : hops) {
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, center, 0, &out) == 0);
+            assert(out.rc == 0);
+        }
+        (void)sync_server(r.dev, 0);
+        assert(server_params(0, 0x02).size() == rates + 3U);
+        /* Each rate went out right after its hop's frequency. */
+        const server_conn c = server_conn_get(0);
+        size_t hop_freqs = 0U;
+        for (size_t i = 0; i < c.cmds.size(); ++i) {
+            if (c.cmds[i].id == 0x01 && i > 0U && c.cmds[i - 1U].id != 0x01) {
+                assert(i + 1U < c.cmds.size() && c.cmds[i + 1U].id == 0x02);
+                ++hop_freqs;
+            }
+        }
+        assert(hop_freqs >= 3U);
+        (void)rtl_device_stop_async(r.dev);
+        rtl_stream_test_capture_session_end();
+        free(opts);
+        rig_close(r);
+    }
 }
 
 /* replay_failure_not_published: a replay that fails part way publishes nothing (no stream, setters still refused),
@@ -2315,6 +2366,7 @@ const named_test kTests[] = {
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
     {"hops_write_only_changes", test_hops_write_only_changes},
+    {"fc2580_hops_write_rate", test_fc2580_hops_write_rate},
     {"replay_failure_not_published", test_replay_failure_not_published},
     {"concurrent_partial_writes_never_interleave", test_concurrent_partial_writes_never_interleave},
     {"old_sender_does_not_touch_replacement", test_old_sender_does_not_touch_replacement},

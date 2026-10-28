@@ -4684,10 +4684,23 @@ Key public headers:
     available to check a driver on. The Airspy backend skips same-value writes in its adapter, and I/Q replay programs
     nothing. An rtl_tcp frequency write restarts the throughput watchdog's grace (`rtl_tcp_metrics_reset_device()`),
     as each hop's rate write did before. The retune mute windows and the `--iq-capture` RETUNE events are unchanged.
+    Per tuner (#782 gate r3 J1): after every frequency write that took (`capture_writes_note_frequency()`, at the
+    hop, the Fs/4 re-centre, the start and a refused retune's restore) the stream forgets what that tuner's tune
+    undoes, `rtl_device_capture_retune_resets()`, and a rate it would undo is never kept for a hop. The audit of the
+    vendored osmocom librtlsdr 2.0.3 (the same driver code the desktop's osmocom and rtl-sdr-blog builds link) is in a
+    comment at that function: `rtlsdr_set_center_freq()` only calls the tuner's `set_freq()`, and
+    `rtlsdr_set_sample_rate()` sets the tuner filter itself. E4000, FC0012, FC0013, R820T and R828D tunes leave the
+    IF filter and the gains alone (FC0012/FC0013 have a fixed 6 MHz filter and a no-op `set_bw`), so they keep all
+    three. An FC2580 tune sets the band's channel filter (7.8 MHz UHF, 6.8 MHz VHF, 1.53 MHz L-band) and only
+    `fc2580_set_bw()` restores it: on USB every hop writes the bandwidth again; through rtl_tcp, which takes no
+    bandwidth command, every hop writes the rate (the server's rate write resets the filter), as before D3. A tuner
+    this build does not know (the rtl_tcp header's type, `tcp_tuner_type`, or librtlsdr's) rewrites all three.
     Test seam: `rtl_stream_test_capture_session_begin()`/`_step()`/`_end()`. Tests: `IO_RTL_CAPTURE_WRITES`
-    (device-call counts on the whole fake dongle; a Soapy device still writes on a same-rate hop),
-    `IO_RTL_TCP_RECONNECT` (same-rate hops send no rate command and restart the watchdog grace, the first hop after a
-    reconnect writes the rate, the generation moves on a replay).
+    (device-call counts on the whole fake dongle; a Soapy device still writes on a same-rate hop; an FC2580, whose
+    fake resets its filter on a tune, rewrites the bandwidth each hop and ends on the filter asked for, the other
+    tuners skip it, an unknown tuner rewrites everything), `IO_RTL_TCP_RECONNECT` (same-rate hops send no rate
+    command and restart the watchdog grace, the first hop after a reconnect writes the rate, the generation moves on
+    a replay; behind an FC2580 or unknown tuner header each hop's frequency is followed by a rate).
   - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
     12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
     twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,

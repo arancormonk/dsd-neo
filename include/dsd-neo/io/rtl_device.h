@@ -312,6 +312,26 @@ int rtl_device_get_sample_rate(struct rtl_device* dev);
  */
 int rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* out_generation);
 
+/** @brief Capture settings, as rtl_device_capture_retune_resets() names them. */
+enum {
+    RTL_CAPTURE_SETTING_RATE = 1,
+    RTL_CAPTURE_SETTING_BANDWIDTH = 2,
+    RTL_CAPTURE_SETTING_GAIN = 4,
+};
+
+/**
+ * @brief The capture settings a frequency write on @p dev undoes (issue #782 gate r3 J1).
+ *
+ * A caller that skips a matching write (rtl_device_capture_settings_generation()) writes these again after every
+ * frequency write. An FC2580 tuner resets its channel filter on every tune, which only a bandwidth write restores on
+ * USB and only a sample-rate write restores through an rtl_tcp server; a tuner this build does not know resets
+ * everything. The other RTL-SDR tuners keep all three (the per-tuner audit is at the definition).
+ *
+ * @param dev RTL-SDR device handle.
+ * @return A mask of RTL_CAPTURE_SETTING_* bits; 0 for a device whose writes are never skipped.
+ */
+unsigned rtl_device_capture_retune_resets(const struct rtl_device* dev);
+
 /**
  * @brief Set tuner gain mode and value.
  *

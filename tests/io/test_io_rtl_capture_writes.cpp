@@ -15,7 +15,9 @@
  * - a scan target's gain is written on the hop where it changes, compared on the gain asked for, not the nearest one
  *   the tuner took;
  * - a failed write, a PPM or offset tuning change, and a USB recovery's replay make the next hop write again;
- * - a SoapySDR device keeps every write, whatever its driver.
+ * - a SoapySDR device keeps every write, whatever its driver;
+ * - a tuner whose tune undoes a setting has it written again on every hop: an FC2580 its bandwidth, a tuner this build
+ *   does not know everything (gate r3 J1).
  */
 
 #include <assert.h>
@@ -47,8 +49,13 @@ namespace {
 constexpr uint32_t kCenterHz = 851012500U;
 constexpr uint32_t kHopsHz[] = {851262500U, 852037500U, 853087500U};
 constexpr int kFd = 41;
+constexpr int kTunerUnknown = 0;
 constexpr int kTunerE4000 = 1;
+constexpr int kTunerFC0012 = 2;
+constexpr int kTunerFC0013 = 3;
+constexpr int kTunerFC2580 = 4;
 constexpr int kTunerR820T = 5;
+constexpr int kTunerR828D = 6;
 constexpr int kRateIn = 48000;
 /* An R820T's gain table in tenths of a dB: 30 dB is asked for, 29.7 dB takes. */
 const int k_gains[] = {0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372};
@@ -447,6 +454,75 @@ test_recovery_rewrites(void) {
     rig_close(r);
 }
 
+/* Gate r3 J1: an FC2580 sets its channel filter for the band on every tune (fc2580_set_freq(): 7.8 MHz on UHF), which
+ * only a bandwidth write puts back. Each same-rate hop writes the frequency and then the bandwidth again, and the
+ * filter ends on what the stream asked for; the rate and a repeated gain stay unwritten. */
+void
+test_fc2580_hops_rewrite_bandwidth(void) {
+    rig r;
+    rig_open(r, kTunerFC2580);
+    const uint32_t asked_bw = r.dongle->tuner.bw;
+    assert(asked_bw != 0U);
+    assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+    const writes mark = writes_now(r);
+    for (uint32_t center : kHopsHz) {
+        const writes before = writes_now(r);
+        expect_capture_at(r, hop(center), center, r.start.capture_rate_hz, 0);
+        assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+        const writes w = writes_since(r, before);
+        assert(w.freq == 1 && w.bandwidth == 1);
+        /* The filter the tune reset is the one the stream asked for again. */
+        assert(r.dongle->tuner.bw == asked_bw);
+        assert(r.dongle->tuner.filter_bw == asked_bw);
+    }
+    const writes w = writes_since(r, mark);
+    assert(w.freq == 3 && w.bandwidth == 3);
+    assert(w.rate == 0);
+    assert(gain_writes(w) == 0);
+    assert(w.offset == 0);
+    rig_close(r);
+}
+
+/* The tuners whose tune leaves the rate, the filter and the gain as they were (rtl_device_capture_retune_resets()):
+ * same-rate hops with a repeated gain write the frequency alone, as before J1. */
+void
+test_safe_tuners_skip_unchanged(void) {
+    const int tuners[] = {kTunerE4000, kTunerFC0012, kTunerFC0013, kTunerR820T, kTunerR828D};
+    for (int tuner : tuners) {
+        rig r;
+        rig_open(r, tuner);
+        assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+        const uint32_t filter_bw = r.dongle->tuner.filter_bw;
+        const writes mark = writes_now(r);
+        for (uint32_t center : kHopsHz) {
+            expect_capture_at(r, hop(center), center, r.start.capture_rate_hz, 0);
+            assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+        }
+        const writes w = writes_since(r, mark);
+        assert(w.freq == 3);
+        assert(w.rate == 0 && w.bandwidth == 0 && gain_writes(w) == 0);
+        assert(r.dongle->tuner.filter_bw == filter_bw);
+        rig_close(r);
+    }
+}
+
+/* A tuner this build does not know may undo anything when it tunes: every hop writes the rate, the bandwidth and the
+ * gain again, as every hop did before the record. */
+void
+test_unknown_tuner_rewrites_every_hop(void) {
+    rig r;
+    rig_open(r, kTunerUnknown);
+    assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+    for (uint32_t center : kHopsHz) {
+        const writes before = writes_now(r);
+        assert(hop(center).rc == 0);
+        assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+        const writes w = writes_since(r, before);
+        assert(w.freq >= 1 && w.rate == 1 && w.bandwidth == 1 && w.gain == 1);
+    }
+    rig_close(r);
+}
+
 /* A SoapySDR device keeps every write, whatever its driver: a generic one, and ones keyed as an RTL-SDR or an SDRplay
  * alike write the rate on every same-rate hop and the gain on every repeated request. */
 void
@@ -509,6 +585,9 @@ main(int argc, char** argv) {
         {"readback", test_readback_disagreeing_rewrites},
         {"recovery", test_recovery_rewrites},
         {"soapy", test_soapy_rewrites_every_hop},
+        {"fc2580_bandwidth", test_fc2580_hops_rewrite_bandwidth},
+        {"safe_tuners", test_safe_tuners_skip_unchanged},
+        {"unknown_tuner", test_unknown_tuner_rewrites_every_hop},
     };
 
     /* An argument runs that case alone. */

@@ -364,7 +364,8 @@ int rtl_device_test_usb_gain_unknown(const struct rtl_device* dev);
 
 /* An RTL-SDR's tuning controls as librtlsdr keeps them, in place of librtlsdr's. */
 typedef struct {
-    int tuner_type; /* an RTLSDR_TUNER_* value: R820T (5) and R828D (6) refuse offset tuning with -2 */
+    int tuner_type; /* an RTLSDR_TUNER_* value: R820T (5) and R828D (6) refuse offset tuning with -2, and an FC2580
+                       (4) sets filter_bw for the band on every tune, as fc2580_set_freq() does */
     uint32_t rate;  /* sample rate, 0 on a fresh handle */
     uint32_t freq;  /* centre frequency the samples are delivered around, 0 until set */
     uint32_t
