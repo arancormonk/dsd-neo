@@ -11160,6 +11160,11 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         if (rc != 0 && handle) {
             rtl_usb_close_swapped(dev, handle);
         }
+        /* A reset that went through cleared the obligation, but what followed it failed: the session ends as a failed
+         * recovery, whose notice promises that Reconnect resets the dongle (#782). */
+        if (rc != 0 && rc != -ECANCELED) {
+            rtl_usb_reset_owed_set(dev->preopened_fd);
+        }
         return rc;
     }
 #endif
@@ -11335,6 +11340,11 @@ rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) 
         /* Reset and reopened, but the restarted reader returned already: the session ends as for any reader's. */
         rtl_usb_reader_end_session(dev, dev->recovery_reader_rc.load(std::memory_order_relaxed));
         return 0;
+    }
+    /* Whatever failed after the swap (the reader's restart, or the stream boundary around it) ends the session the same
+     * way, so the descriptor owes its reset here too (#782). */
+    if (dev->owns_preopened_fd) {
+        rtl_usb_reset_owed_set(dev->preopened_fd);
     }
     char cause[320];
     DSD_SNPRINTF(cause, sizeof cause,

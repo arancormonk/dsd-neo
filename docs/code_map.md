@@ -4621,9 +4621,10 @@ Key public headers:
     (`g_preopened_usb_fd_reset_owed`, `rtl_device_preopened_fd_reset_owed()`) is a descriptor, never a flag, so it can
     only apply to that descriptor: `rtl_device_publish_preopened_fd(fd, reset_first)` sets or clears it with the slot
     in one step (every publish replaces it; `rtl_device_set_preopened_fd()` passes 0), the stall verdict and the swap's
-    retirement set it for the held descriptor before any grace or Stop, and so does a reader that returned unasked
-    (`rtl_usb_reader_end_session()`), so every committed "failed" ending of such a receiver owes the reset the Listen
-    notice promises; samples after the verdict that set it, or after the monitor's start when the descriptor came
+    retirement set it for the held descriptor before any grace or Stop, and so do a reader that returned unasked
+    (`rtl_usb_reader_end_session()`) and a recovery that failed after its reset went through (the swap's reopen,
+    identity check, replay or publish, and `rtl_device_usb_recovery_finish()`'s failure ending for the restart), so
+    every committed "failed" ending of such a receiver owes the reset the Listen notice promises; samples after the verdict that set it, or after the monitor's start when the descriptor came
     owing one, and a successful reset clear it (compare-and-swap on the descriptor). A swap whose reset was refused
     records it (`reopened_without_reset`), and the budget's "one per stall" ending then reads "none since it was
     reopened (its USB reset was refused)". The open that takes a descriptor owing a reset

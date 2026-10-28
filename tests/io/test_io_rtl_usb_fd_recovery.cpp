@@ -628,6 +628,30 @@ test_swap_reopen_fails(void) {
     assert(wait_receiver_ended(kWaitMs) != 0U);
     expect_receiver_ending(-4);
     assert(log_has(log_take(), "could not reopen the receiver's descriptor after the USB reset (rc=-4)"));
+    /* The reset went through, but the session ends as a failed recovery: Reconnect must reset the dongle again. */
+    assert(g_resets.load() == 1);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    rig_close(r);
+}
+
+/* Reset and reopened, but the controller could not restart the stream after it (the reader's thread, or the stream
+ * boundary around the swap): the session ends as a failed recovery, and the dongle owes its reset again. */
+void
+test_restart_after_reset_fails(void) {
+    seams_reset();
+    (void)log_take();
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    (void)wait_posted(r, 1);
+    assert(rtl_device_usb_recovery_take(r.dev) == 1);
+    char why[256] = {};
+    assert(rtl_device_usb_recover_handle(r.dev, why, sizeof why) == 0);
+    assert(g_resets.load() == 1 && rtl_device_preopened_fd_reset_owed() == -1);
+    rtl_device_usb_recovery_finish(r.dev, -EAGAIN, "could not restart the USB reader (rc=-11)");
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    expect_receiver_ending(-EAGAIN);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
     rig_close(r);
 }
 
@@ -647,6 +671,8 @@ test_swap_identity_mismatch(void) {
     assert(rtl_device_usb_recovery_eligible(r.dev) == 0);
     assert(r.dongle->open_handles == 0);
     assert(wait_receiver_ended(kWaitMs) != 0U);
+    assert(g_resets.load() == 1);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
     rig_close(r);
 }
 
@@ -852,6 +878,7 @@ main(void) {
     test_swap_descriptor_dead();
     test_swap_reopen_fails();
     test_swap_identity_mismatch();
+    test_restart_after_reset_fails();
     test_stop_just_before_reset();
 
     rtl_device_set_unplug_owner_grace_ms(kGraceMs);
