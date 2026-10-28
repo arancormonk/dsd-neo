@@ -450,6 +450,8 @@ open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
         opts->static_wav_file = 0;
     }
 
+    /* -P opens nothing while it is parsed: the per-call files open here, in the folder the whole command line and
+       config name, after the decode clock has moved onto a replay's capture (issue #708). */
     if (opts->dmr_stereo_wav == 1 && opts->wav_out_f == NULL && opts->wav_out_fR == NULL) {
         dsd_stat_t st;
         char wav_file_directory[1024];

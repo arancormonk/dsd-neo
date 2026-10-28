@@ -218,6 +218,7 @@ static void
 init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
     opts->static_wav_file = 0; //single static wav file for decoding duration
+    opts->cli_wav_mode = DSD_CLI_WAV_MODE_NONE;
     opts->rdio_mode = 0;
     opts->rdio_system_id = 0;
     opts->rdio_upload_timeout_ms = 5000;
@@ -480,8 +481,8 @@ dsd_state_rebase_decode_timestamps(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->symbol_out_file_creation_time = now;
         /* A per-call WAV cannot have been opened after now. One opened on the system clock before the decode clock
-           moved back onto a replay's capture (-P opens while the arguments are parsed) has recorded nothing yet, so it
-           takes the capture's now; a stamp already behind now is a real open time and stays. */
+           moved back onto a replay's capture has recorded nothing yet, so it takes the capture's now; a stamp already
+           behind now is a real open time and stays. */
         if (opts->wav_out_open_time > now) {
             opts->wav_out_open_time = now;
         }

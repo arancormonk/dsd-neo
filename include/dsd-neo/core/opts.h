@@ -154,6 +154,7 @@ struct dsd_opts {
     int audio_out;
     int dmr_stereo_wav;  //per-call wav file use (rename later)
     int static_wav_file; //single static wav file for decoding duration
+    int cli_wav_mode;    // the WAV mode the command line chose (dsd_cli_wav_mode); a config's choice is never set here
     int rdio_mode;       //0=off, 1=dirwatch, 2=api, 3=both
     int rdio_system_id;  //rdio-scanner system id used for API upload
     int rdio_upload_timeout_ms;
@@ -465,6 +466,18 @@ struct dsd_opts {
 enum DSD_ATTR_PACKED {
     DSD_IQ_REPLAY_RATE_FAST = 0,
     DSD_IQ_REPLAY_RATE_REALTIME = 1,
+};
+
+/**
+ * The WAV recording mode the command line chose (dsd_opts::cli_wav_mode). -P and -w refuse each other on one command
+ * line but each replaces a mode a config file chose, so the parser keeps which one the command line gave. -P opens
+ * nothing while it is parsed: the engine opens the per-call files at start, in the folder the whole command line
+ * names (open_recording_outputs_if_needed()).
+ */
+enum dsd_cli_wav_mode {
+    DSD_CLI_WAV_MODE_NONE = 0,     ///< neither -P nor -w: a config's mode, if any, stands
+    DSD_CLI_WAV_MODE_STATIC = 1,   ///< -w <file>
+    DSD_CLI_WAV_MODE_PER_CALL = 2, ///< -P
 };
 
 /** Where dsd_opts::rtl_dsp_bw_khz came from (dsd_opts::rtl_dsp_bw_source). */

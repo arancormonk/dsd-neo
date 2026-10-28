@@ -3712,6 +3712,266 @@ test_r_playback_optind_is_first_file_regardless_of_option_order(void) {
 }
 
 static int
+test_path_exists(const char* path) {
+    dsd_stat_t st;
+    return dsd_stat_path(path, &st) == 0;
+}
+
+/* Closes and removes the WAV outputs a parse opened, so a temp working directory empties even where the parse opened
+   them (it should not). */
+static void
+discard_parse_wav_outputs(dsd_opts* opts) {
+    close_parse_outputs(opts);
+    if (opts->wav_out_file[0] != '\0') {
+        (void)remove(opts->wav_out_file);
+    }
+    if (opts->wav_out_fileR[0] != '\0') {
+        (void)remove(opts->wav_out_fileR);
+    }
+}
+
+/*
+ * Issue #708: -P selects per-call WAV and nothing more; the engine opens the slot files when it starts, in the folder
+ * the whole command line names. Opened while the arguments were parsed, they went into whatever folder was set when
+ * -P was read, so `-P -7 calls` created ./WAV in the working directory and recorded the first calls there.
+ */
+static int
+test_per_call_wav_flag_opens_nothing_while_parsing(void) {
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_per_call") != 0) {
+        DSD_FPRINTF(stderr, "per-call parse: temp working directory failed\n");
+        return 1;
+    }
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        const char* tag = order == 0 ? "-P -7 calls" : "-7 calls -P";
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            rc = 1;
+            break;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char opt_p[] = "-P";
+        char opt_7[] = "-7";
+        char dir[] = "calls";
+        char* argv_p_first[] = {arg0, opt_p, opt_7, dir, NULL};
+        char* argv_dir_first[] = {arg0, opt_7, dir, opt_p, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int parsed =
+            dsd_parse_args(4, order == 0 ? argv_p_first : argv_dir_first, opts, state, &argc_effective, &exit_rc);
+        if (parsed != DSD_PARSE_CONTINUE || opts->dmr_stereo_wav != 1 || opts->static_wav_file != 0
+            || strcmp(opts->wav_out_dir, "calls") != 0) {
+            DSD_FPRINTF(stderr, "%s: rc=%d per_call=%d static=%d dir=%s\n", tag, parsed, opts->dmr_stereo_wav,
+                        opts->static_wav_file, opts->wav_out_dir);
+            rc = 1;
+        }
+        if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL || opts->wav_out_file[0] != '\0'
+            || opts->wav_out_fileR[0] != '\0') {
+            DSD_FPRINTF(stderr, "%s: the parse opened slot files (%s, %s)\n", tag, opts->wav_out_file,
+                        opts->wav_out_fileR);
+            rc = 1;
+        }
+        if (test_path_exists("WAV") || test_path_exists("calls")) {
+            DSD_FPRINTF(stderr, "%s: the parse created a folder (WAV %d, calls %d)\n", tag, test_path_exists("WAV"),
+                        test_path_exists("calls"));
+            rc = 1;
+        }
+
+        discard_parse_wav_outputs(opts);
+        (void)dsd_test_rmdir("WAV");
+        (void)dsd_test_rmdir("calls");
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "per-call parse: the temp working directory was left non-empty\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+/* -P and -w on one command line are refused in either order, as before issue #708 took the open files out of -P. */
+static int
+test_per_call_and_static_wav_flags_refuse_each_other(void) {
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_wav_modes") != 0) {
+        DSD_FPRINTF(stderr, "WAV mode conflict: temp working directory failed\n");
+        return 1;
+    }
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        const char* tag = order == 0 ? "-P -w static.wav" : "-w static.wav -P";
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            rc = 1;
+            break;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char opt_p[] = "-P";
+        char opt_w[] = "-w";
+        char file[] = "static.wav";
+        char* argv_p_first[] = {arg0, opt_p, opt_w, file, NULL};
+        char* argv_w_first[] = {arg0, opt_w, file, opt_p, NULL};
+        int argc_effective = 0;
+        int exit_rc = 0;
+        char err[1024];
+        const int parsed = parse_args_capture_stderr(4, order == 0 ? argv_p_first : argv_w_first, opts, state,
+                                                     &argc_effective, &exit_rc, err, sizeof err);
+        const char* want = order == 0 ? "-w cannot be used with -P" : "-P cannot be used with -w";
+        if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, want) == NULL) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit=%d\n%s\n", tag, parsed, exit_rc, err);
+            rc = 1;
+        }
+
+        discard_parse_wav_outputs(opts);
+        (void)remove("static.wav");
+        (void)dsd_test_rmdir("WAV");
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "WAV mode conflict: the temp working directory was left non-empty\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+/* One INI recording mode under one command line, through the bootstrap that applies the INI first. */
+typedef struct {
+    const char* tag;
+    const char* ini;
+    const char* cli[3]; /* up to three arguments after the config, NULL-terminated when fewer */
+    int want_per_call;
+    int want_static_open;
+    const char* want_dir;
+} wav_mode_precedence_case;
+
+static int
+run_wav_mode_precedence_case(const wav_mode_precedence_case* tc) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(tc->ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "%s: temp ini failed\n", tc->tag);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    char args[6][1024];
+    char* argv[7] = {NULL};
+    int argc = 0;
+    DSD_SNPRINTF(args[argc], sizeof args[argc], "%s", "dsd-neo");
+    argc++;
+    DSD_SNPRINTF(args[argc], sizeof args[argc], "%s", "--config");
+    argc++;
+    DSD_SNPRINTF(args[argc], sizeof args[argc], "%s", cfg_path);
+    argc++;
+    for (int i = 0; i < 3 && tc->cli[i] != NULL; i++) {
+        DSD_SNPRINTF(args[argc], sizeof args[argc], "%s", tc->cli[i]);
+        argc++;
+    }
+    for (int i = 0; i < argc; i++) {
+        argv[i] = args[i];
+    }
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc_boot = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, &exit_rc);
+    int rc = 0;
+    if (rc_boot != DSD_BOOTSTRAP_CONTINUE) {
+        DSD_FPRINTF(stderr, "%s: bootstrap rc=%d exit=%d\n", tc->tag, rc_boot, exit_rc);
+        rc = 1;
+    } else {
+        const int want_static = tc->want_per_call ? 0 : 1;
+        if (opts->dmr_stereo_wav != tc->want_per_call || opts->static_wav_file != want_static) {
+            DSD_FPRINTF(stderr, "%s: per_call=%d static=%d\n", tc->tag, opts->dmr_stereo_wav, opts->static_wav_file);
+            rc = 1;
+        }
+        if ((opts->wav_out_f != NULL) != tc->want_static_open || opts->wav_out_fR != NULL) {
+            DSD_FPRINTF(stderr, "%s: open after the parse: left %d right %d\n", tc->tag, opts->wav_out_f != NULL,
+                        opts->wav_out_fR != NULL);
+            rc = 1;
+        }
+        if (tc->want_per_call && (opts->wav_out_file[0] != '\0' || strcmp(opts->wav_out_dir, tc->want_dir) != 0)) {
+            DSD_FPRINTF(stderr, "%s: file=%s dir=%s\n", tc->tag, opts->wav_out_file, opts->wav_out_dir);
+            rc = 1;
+        }
+        if (test_path_exists("ini_calls") || test_path_exists("cli_calls") || test_path_exists("ini.wav")) {
+            DSD_FPRINTF(stderr, "%s: the parse created a configured output\n", tc->tag);
+            rc = 1;
+        }
+    }
+
+    discard_parse_wav_outputs(opts);
+    (void)remove("cli.wav");
+    (void)remove("ini.wav");
+    (void)dsd_test_rmdir("ini_calls");
+    (void)dsd_test_rmdir("cli_calls");
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/* The command line's WAV mode replaces the INI's, either way round, and opens nothing per-call while it is parsed. */
+static int
+test_cli_wav_mode_overrides_the_ini_recording_mode(void) {
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_wav_ini") != 0) {
+        DSD_FPRINTF(stderr, "WAV mode precedence: temp working directory failed\n");
+        return 1;
+    }
+    static const char ini_per_call[] = "[recording]\n"
+                                       "per_call_wav = true\n"
+                                       "per_call_wav_dir = \"ini_calls\"\n";
+    static const char ini_static[] = "[recording]\n"
+                                     "static_wav = \"ini.wav\"\n";
+    const wav_mode_precedence_case cases[] = {
+        {"INI per-call, CLI -w", ini_per_call, {"-w", "cli.wav", NULL}, 0, 1, NULL},
+        {"INI static, CLI -P", ini_static, {"-P", NULL, NULL}, 1, 0, "./WAV"},
+        {"INI per-call, CLI -P -7", ini_per_call, {"-P", "-7", "cli_calls"}, 1, 0, "cli_calls"},
+        {"INI per-call alone", ini_per_call, {NULL, NULL, NULL}, 1, 0, "ini_calls"},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= run_wav_mode_precedence_case(&cases[i]);
+        (void)dsd_test_rmdir("WAV");
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "WAV mode precedence: the temp working directory was left non-empty\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
 test_open_mbe_missing_file_leaves_stream_null(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -10618,6 +10878,9 @@ main(void) {
     rc |= test_bootstrap_missing_profile_errors_without_applying_config_or_cli();
     rc |= test_bootstrap_cli_call_alert_restores_all_config_filtered_events();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
+    rc |= test_per_call_wav_flag_opens_nothing_while_parsing();
+    rc |= test_per_call_and_static_wav_flags_refuse_each_other();
+    rc |= test_cli_wav_mode_overrides_the_ini_recording_mode();
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_sdrtrunk_json_forced_dmr_algid_uses_talkgroup_key();
     rc |= test_rdio_long_options_parse();

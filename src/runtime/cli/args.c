@@ -2875,31 +2875,21 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: Frontend: terminal\n");                                                                  \
             break;                                                                                                     \
         case 'P':                                                                                                      \
+            /* Per-call WAV mode only: the engine opens the slot files at start, in the folder the whole command       \
+               line names (issue #708). Opened here, they went into the folder set when -P was read. */                \
+            if (opts->cli_wav_mode == DSD_CLI_WAV_MODE_STATIC) {                                                       \
+                LOG_ERROR("-P cannot be used with -w (static WAV output)\n");                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             if (opts->static_wav_file == 1) {                                                                          \
-                /* Allow CLI to override config-derived static WAV settings (file not opened yet). */                  \
-                if (opts->wav_out_f != NULL) {                                                                         \
-                    LOG_ERROR("-P cannot be used with -w (static WAV output)\n");                                      \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
+                /* Override config-derived static WAV settings (file not opened yet). */                               \
                 opts->static_wav_file = 0;                                                                             \
                 opts->wav_out_file[0] = '\0';                                                                          \
             }                                                                                                          \
-            DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);                      \
-            wav_file_directory[1023] = '\0';                                                                           \
-            if (dsd_stat_path(wav_file_directory, &st) == -1) {                                                        \
-                LOG_INFO("NOTICE: -P %s WAV file directory does not exist\n", wav_file_directory);                     \
-                LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);             \
-                dsd_mkdir(wav_file_directory, 0700);                                                                   \
-            }                                                                                                          \
             LOG_INFO("NOTICE: Per Call Wav File Enabled.\n");                                                          \
-            opts->wav_out_f =                                                                                          \
-                open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);              \
-            opts->wav_out_fR =                                                                                         \
-                open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);            \
-            opts->wav_out_open_time = dsd_decode_time();                                                               \
-            opts->wav_out_open_timeR = opts->wav_out_open_time;                                                        \
             opts->dmr_stereo_wav = 1;                                                                                  \
+            opts->cli_wav_mode = DSD_CLI_WAV_MODE_PER_CALL;                                                            \
             break;                                                                                                     \
         case '7':                                                                                                      \
             /* Set custom directory for per-call WAV saving; one that does not fit is refused, never cut short. */     \
@@ -3037,19 +3027,17 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         }                                                                                                              \
         case 'w':                                                                                                      \
-            if (opts->dmr_stereo_wav == 1) {                                                                           \
-                /* Allow CLI to override config-derived per-call WAV settings (files not opened yet). */               \
-                if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {                                             \
-                    LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                    \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                opts->dmr_stereo_wav = 0;                                                                              \
+            if (opts->cli_wav_mode == DSD_CLI_WAV_MODE_PER_CALL) {                                                     \
+                LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                        \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            /* Overrides config-derived per-call WAV settings (files not opened yet). */                               \
             DSD_STRNCPY(opts->wav_out_file, optarg, 1023);                                                             \
             opts->wav_out_file[1023] = '\0';                                                                           \
             opts->dmr_stereo_wav = 0;                                                                                  \
             opts->static_wav_file = 1;                                                                                 \
+            opts->cli_wav_mode = DSD_CLI_WAV_MODE_STATIC;                                                              \
             openWavOutFileLR(opts, state);                                                                             \
             LOG_INFO("NOTICE: Static WAV output: %s\n", opts->wav_out_file);                                           \
             break;                                                                                                     \

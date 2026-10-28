@@ -16,6 +16,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -1130,6 +1131,124 @@ test_missing_source_labels_do_not_stop_decode(void) {
     return rc;
 }
 
+#if DSD_PLATFORM_WIN_NATIVE
+/* The Windows CRT's narrow file calls read a path in the ANSI code page, so a UTF-8 folder name is not tried there. */
+#define PER_CALL_TEST_FOLDER "Call recordings"
+#else
+#define PER_CALL_TEST_FOLDER "Call recordings \xC3\xA9t\xC3\xA9"
+#endif
+
+/* What the per-call WAV outputs were when the run started. */
+typedef struct {
+    const char* dir;
+    int starts;
+    int opened_in_dir;
+} per_call_start_probe;
+
+static int
+path_has_dir(const char* path, const char* dir) {
+    const size_t n = strlen(dir);
+    return strncmp(path, dir, n) == 0 && path[n] == '/';
+}
+
+static int
+probe_per_call_outputs_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)state;
+    per_call_start_probe* probe = (per_call_start_probe*)context;
+    probe->starts++;
+    probe->opened_in_dir = opts->wav_out_f != NULL && opts->wav_out_fR != NULL
+                           && path_has_dir(opts->wav_out_file, probe->dir)
+                           && path_has_dir(opts->wav_out_fileR, probe->dir);
+    return 0;
+}
+
+static int
+remove_listed_file(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/*
+ * Issue #708: with -P on the command line, the engine opens both slots' recordings when it starts, in the folder -7
+ * names, creating it, whichever order the two options come in. -P used to open them while it was parsed, in the folder
+ * set by then, so `-P -7 <folder>` recorded into ./WAV and left the folder empty. The folder's name has a space, and
+ * non-ASCII letters where the platform's file calls take UTF-8.
+ */
+static int
+test_per_call_wav_opens_in_the_cli_folder_at_start(void) {
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_engine_per_call") != 0) {
+        DSD_FPRINTF(stderr, "per-call start: temp working directory failed\n");
+        return 1;
+    }
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        const char* tag = order == 0 ? "-P -7" : "-7 -P";
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            rc = 1;
+            break;
+        }
+        char dir[DSD_TEST_PATH_MAX];
+        if (dsd_test_path_join(dir, sizeof dir, cwd.dir, PER_CALL_TEST_FOLDER) != 0) {
+            free_test_runtime(opts, state);
+            rc = 1;
+            break;
+        }
+        char arg0[] = "dsd-neo";
+        char opt_p[] = "-P";
+        char opt_7[] = "-7";
+        char* argv_p_first[] = {arg0, opt_p, opt_7, dir, NULL};
+        char* argv_dir_first[] = {arg0, opt_7, dir, opt_p, NULL};
+        int argc_effective = 0;
+        int exit_rc = 0;
+        const int parsed =
+            dsd_parse_args(4, order == 0 ? argv_p_first : argv_dir_first, opts, state, &argc_effective, &exit_rc);
+        if (parsed != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "%s: parse rc=%d\n", tag, parsed);
+            rc = 1;
+        }
+
+        per_call_start_probe probe = {dir, 0, 0};
+        const dsd_engine_lifecycle_hooks hooks = {.start = probe_per_call_outputs_at_start, .context = &probe};
+        if (dsd_engine_run_with_lifecycle(opts, state, &hooks) != 0 || probe.starts != 1) {
+            DSD_FPRINTF(stderr, "%s: the run failed (starts %d)\n", tag, probe.starts);
+            rc = 1;
+        }
+        if (!probe.opened_in_dir) {
+            DSD_FPRINTF(stderr, "%s: the slot recordings were not open in the -7 folder at start (%s, %s)\n", tag,
+                        opts->wav_out_file, opts->wav_out_fileR);
+            rc = 1;
+        }
+        dsd_stat_t st;
+        if (dsd_stat_path(dir, &st) != 0) {
+            DSD_FPRINTF(stderr, "%s: the engine did not create the -7 folder\n", tag);
+            rc = 1;
+        }
+        if (dsd_stat_path("WAV", &st) == 0) {
+            DSD_FPRINTF(stderr, "%s: ./WAV was created\n", tag);
+            rc = 1;
+        }
+
+        /* The run's end discards recordings that hold no audio; whatever is left goes. */
+        (void)dsd_dir_list(dir, remove_listed_file, dir);
+        (void)dsd_test_rmdir(dir);
+        char default_dir[] = "WAV";
+        (void)dsd_dir_list(default_dir, remove_listed_file, default_dir);
+        (void)dsd_test_rmdir(default_dir);
+        free_test_runtime(opts, state);
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "per-call start: the temp working directory was left non-empty\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 /* Occurrences of @p needle in @p text. */
 static int
 count_text(const char* text, const char* needle) {
@@ -1634,6 +1753,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_missing_source_labels_do_not_stop_decode();
+    rc |= test_per_call_wav_opens_in_the_cli_folder_at_start();
     rc |= test_conflicting_scan_modes_fail_before_live_setup();
     rc |= test_m17_udp_input_and_output_specs();
     rc |= test_m17_userdata_is_normalized_during_common_setup();

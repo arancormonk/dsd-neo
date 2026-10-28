@@ -1046,13 +1046,17 @@ suite runs under this compiler.
   other failure (issue #661). Every publication is serialized: the decoder and the watchdog publish under the P25 SM
   tick guard or the event layer's call-state lock, and the WAV app commands (start, stop, toggle, static and raw open)
   take the tick guard in `apply_cmd()`, so one process never publishes two recordings at once.
-  `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, which covers the `-P` open
-  while arguments are parsed, before a replay moves the clock. `event_time` is the row's last activity, the segment's
-  end by the time its WAV closes. It is only the fallback for a row with no start (a `--playfiles` row, whose stamp is
-  on the file's clock, so the open time is not compared with it), and decode time comes after that. `stop_time` adds
-  the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and
-  `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`. The control API's
-  event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests:
+  `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, so a recording opened before a
+  replay moves the clock is never dated after its calls. `-P` opens nothing while it is parsed (issue #708): it sets the
+  mode and `opts->cli_wav_mode` (`dsd_cli_wav_mode`, which `-P` and `-w` read to refuse each other while still replacing
+  a config's mode), and the engine opens the slot files at start (`open_recording_outputs_if_needed()`, creating the
+  folder), after the replay clock is set and in the folder the whole command line names. `event_time` is the row's last
+  activity, the segment's end by the time its WAV closes. It is only the fallback for a row with no start (a
+  `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it), and decode time
+  comes after that. `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
+  `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
+  on `event_time`. The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the
+  row fingerprint. Tests:
   `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a

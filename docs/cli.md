@@ -250,7 +250,8 @@ Windows console runs:
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
   for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
   slot's channel is written silent while the other slot is still written.
-- `-7 <dir>` Set folder for per‑call WAVs (use before `-P`). A path longer than 511 bytes is refused.
+- `-7 <dir>` Set folder for per‑call WAVs, before or after `-P`; the folder is created when decoding starts if it does
+  not exist. A path longer than 511 bytes is refused.
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
