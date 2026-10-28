@@ -20,7 +20,6 @@
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <functional>
-#include <memory>
 #include <qqml.h>
 
 #include "app_prefs.h"
@@ -162,8 +161,8 @@ wire_screen_policy(DecoderHost* host, const AppPrefs* prefs) {
 }
 
 // Issue #708: the call recording store indexes the recordings, History asks it which rows have one, and the session
-// starters ask it for each session's folder. The host's report that a run ended frees the folders those starts marked;
-// a session already running when the UI came up keeps every journal untouched until it ends.
+// starters ask it for each session's folder. It follows the host's session reports, holding every journal until the
+// host knows its state (a decoder that kept running while the UI was recreated is only learnt at the first poll).
 static RecordingStore*
 wire_recordings(QQmlApplicationEngine& engine, DecoderHost* host, CallHistoryModel* history,
                 SessionArgsBuilder* sessionArgs, ScanListStarter* scanListStarter) {
@@ -174,17 +173,7 @@ wire_recordings(QQmlApplicationEngine& engine, DecoderHost* host, CallHistoryMod
                      &CallHistoryModel::recordingFragmentsChanged);
     sessionArgs->setRecordingSessions(recordings);
     scanListStarter->setRecordingSessions(recordings);
-    const auto wasActive = std::make_shared<bool>(host->sessionActive());
-    if (*wasActive) {
-        recordings->assumeSessionRunning();
-    }
-    QObject::connect(host, &DecoderHost::sessionStateChanged, recordings, [host, recordings, wasActive]() {
-        const bool active = host->sessionActive();
-        if (*wasActive && !active) {
-            recordings->endSession();
-        }
-        *wasActive = active;
-    });
+    recording_store_follow_host(recordings, host);
     recordings->start();
     return recordings;
 }

@@ -265,10 +265,7 @@ DecoderHost::licenseNotices() const {
 
 QStringList
 DecoderHost::recordingRoots() const {
-    // json_store's root, like the imports: one app data location for everything the app keeps. The store reads a root
-    // whose parent folder is missing as storage that is not mounted, and on a first launch nothing has made the app
-    // data folder yet.
-    (void)QDir().mkpath(json_store_root());
+    // json_store's root, like the imports: one app data location for everything the app keeps.
     return {json_store_path(QStringLiteral("Call recordings"))};
 }
 

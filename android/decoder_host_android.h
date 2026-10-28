@@ -103,6 +103,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     SessionState sessionState() const override;
     QString failureText() const override;
 
+    /** @brief Known after the first poll of the decoder service (a session may already be running then). */
+    bool
+    sessionStateKnown() const override {
+        return m_primed;
+    }
+
     /** @brief Native Running can precede initialization; wait for its explicit success signal. */
     bool
     signalsSessionInitialized() const override {

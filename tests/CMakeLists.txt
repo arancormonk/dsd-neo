@@ -18990,6 +18990,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_recording_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_journal.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_store.cpp

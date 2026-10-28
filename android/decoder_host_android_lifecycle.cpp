@@ -268,6 +268,9 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
 
     // Attachment delivery can synchronously call start() through QML.
     m_primed = true;
+    if (first_poll) {
+        Q_EMIT sessionStateKnownChanged();
+    }
 }
 
 bool

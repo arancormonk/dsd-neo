@@ -42,19 +42,24 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <chrono>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/wav_journal.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <initializer_list>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <thread>
 #include <time.h>
 #include "../test_support/qt_test_paths.h"
 #include "call_history_model.h"
 #include "call_recording_provider.h"
+#include "decoder_host.h"
 #include "recording_journal.h"
 #include "recording_store.h"
 #include "wav_journal.h"
@@ -64,6 +69,21 @@ using dsd_qt::RecordingStore;
 namespace {
 
 int g_failures = 0;
+
+/* The store's once-only warnings, counted and kept out of the output. */
+std::atomic<int> g_storeWarnings{0};
+QtMessageHandler g_previousHandler = nullptr;
+
+void
+count_warnings(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (message.startsWith(QLatin1String("call recordings: "))) {
+        g_storeWarnings++;
+        return;
+    }
+    if (g_previousHandler != nullptr) {
+        g_previousHandler(type, context, message);
+    }
+}
 
 void
 expect(const char* what, bool ok) {
@@ -103,8 +123,10 @@ struct Store {
     QSet<QString> uploading;
     std::atomic<bool> uploadingSet{false};
 
+    /* The host is known and idle unless a test says otherwise (hostSessionReport() before start()). */
     explicit Store(const QStringList& roots, bool startNow = true) {
         store.setRoots(roots);
+        store.hostSessionReport(true, false);
         store.setTimingForTest(3600000, 3600000);
         store.setUploadHoldsForTest([this](const QString& path) {
             return uploadingSet.load() && uploading.contains(QFileInfo(path).fileName());
@@ -486,7 +508,7 @@ test_compaction(void) {
     }
     {
         Store s(roots.list(), false);
-        s.store.assumeSessionRunning();
+        s.store.hostSessionReport(true, true); // a session no starter here began: its folder is not known
         s.start();
         expect("a new store reads the rewrite", s.store.recordingCount() == 3
                                                     && s.store.hasRecordingForFragments({fragment(50)})
@@ -497,6 +519,9 @@ test_compaction(void) {
         s.pass();
         expect("a session running when the store started holds every journal", s.store.compactionsForTest() == 0);
         s.store.endSession();
+        s.pass();
+        expect("a starter's endSession() does not free it", s.store.compactionsForTest() == 0);
+        s.store.hostSessionReport(true, false);
         s.pass();
         expect("until it ends", s.store.compactionsForTest() == 1 && read_all(journal_of(folder)).count('\n') == 1);
     }
@@ -554,9 +579,11 @@ test_roots_unavailable_vs_deleted(void) {
                QFileInfo::exists(folder + QStringLiteral("/stray.wav")) && s.store.usedBytes() == 0);
     }
     {
-        // Every root away: the store says so.
+        // Every root away: the store says so. The fallback's parent is made at start, unless it cannot be (here a file
+        // stands where a folder on its path would go).
         expect("both roots go away", QDir(roots.dir.path() + QStringLiteral("/ext")).removeRecursively()
                                          && QDir(roots.dir.path() + QStringLiteral("/int")).removeRecursively());
+        make_file(roots.dir.path() + QStringLiteral("/int"), 1);
         Store s(roots.list());
         expect("no storage", !s.store.available() && s.store.ready());
         expect("no folder without storage",
@@ -855,6 +882,339 @@ test_export_selection(void) {
                && s.store.recordingCount() == 1);
 }
 
+/* A host whose session state arrives by polling, as Android's does: Idle and unknown until its first poll. */
+class PolledHost : public dsd_qt::DecoderHost {
+  public:
+    bool
+    isRunning() const override {
+        return m_phase == Running;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    SessionState
+    sessionState() const override {
+        return m_phase;
+    }
+
+    bool
+    sessionStateKnown() const override {
+        return m_known;
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        (void)argv;
+        return true;
+    }
+
+    void
+    stop() override {}
+
+    /* One poll, in Android's order: the phase is published first, then the state turns known. */
+    void
+    poll(SessionState phase) {
+        if (phase != m_phase) {
+            m_phase = phase;
+            Q_EMIT sessionStateChanged();
+        }
+        if (!m_known) {
+            m_known = true;
+            Q_EMIT sessionStateKnownChanged();
+        }
+    }
+
+  private:
+    SessionState m_phase = Idle;
+    bool m_known = false;
+};
+
+/* A folder the app made, with one live recording and three more lines: more than twice its live entries. */
+QString
+compactable_folder(const Roots& roots) {
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    QDir().mkpath(folder);
+    QFile json(folder + QStringLiteral("/folder.json"));
+    if (!json.open(QIODevice::WriteOnly)
+        || json.write(QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"County\"}\n").arg(kUidA).toUtf8())
+               < 0) {
+        g_failures++;
+    }
+    json.close();
+    record(folder, QStringLiteral("0000000000000055-1"), QStringLiteral("live.wav"), 1754710000, 500);
+    for (int i = 2; i <= 4; i++) {
+        append(
+            journal_of(folder),
+            QStringLiteral("{\"v\":1,\"type\":\"discard\",\"t\":1,\"id\":\"0000000000000055-%1\"}\n").arg(i).toUtf8());
+    }
+    return folder;
+}
+
+/* Issue #708, C1: on Android the host does not know its session state until its first poll of the decoder service, so a
+ * session that kept running while the UI was recreated reads as Idle when the store starts. Every journal is held until
+ * the host knows; a running session nobody here began holds them until it ends; a host that knows it is idle frees
+ * them at once. */
+void
+test_session_running_at_ui_load(void) {
+    {
+        Roots roots;
+        const QString folder = compactable_folder(roots);
+        PolledHost host;
+        RecordingStore store;
+        store.setRoots(roots.list());
+        store.setTimingForTest(3600000, 3600000);
+        dsd_qt::recording_store_follow_host(&store, &host);
+        store.start();
+        store.waitForPassForTest();
+        expect("a journal is held while the host does not know its state", store.compactionsForTest() == 0);
+        host.poll(dsd_qt::DecoderHost::Running);
+        store.waitForPassForTest();
+        expect("a session running when the UI loaded holds every journal",
+               store.compactionsForTest() == 0 && read_all(journal_of(folder)).count('\n') == 4);
+        host.poll(dsd_qt::DecoderHost::Stopping);
+        store.waitForPassForTest();
+        expect("and while it winds down", store.compactionsForTest() == 0);
+        host.poll(dsd_qt::DecoderHost::Idle);
+        store.waitForPassForTest();
+        expect("until it ends", store.compactionsForTest() == 1 && read_all(journal_of(folder)).count('\n') == 1);
+    }
+    {
+        Roots roots;
+        (void)compactable_folder(roots);
+        PolledHost host;
+        RecordingStore store;
+        store.setRoots(roots.list());
+        store.setTimingForTest(3600000, 3600000);
+        dsd_qt::recording_store_follow_host(&store, &host);
+        store.start();
+        host.poll(dsd_qt::DecoderHost::Idle);
+        store.waitForPassForTest();
+        expect("a first poll that finds no session frees the journals", store.compactionsForTest() == 1);
+    }
+    {
+        // A start: the starter marks the folder, the host goes Starting, Running, then Idle.
+        Roots roots;
+        const QString folder = compactable_folder(roots);
+        PolledHost host;
+        host.poll(dsd_qt::DecoderHost::Idle);
+        RecordingStore store;
+        store.setRoots(roots.list());
+        store.setTimingForTest(3600000, 3600000);
+        // The first read waits for the start, so the folder is marked before any compaction could look at it.
+        std::atomic<bool> begun{false};
+        store.setFolderLoadHookForTest([&begun]() {
+            while (!begun.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+        dsd_qt::recording_store_follow_host(&store, &host);
+        store.start();
+        expect("the starter's folder",
+               store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County")) == folder);
+        begun = true;
+        store.waitForPassForTest();
+        const int before = store.compactionsForTest();
+        expect("held from the start", before == 0);
+        host.poll(dsd_qt::DecoderHost::Idle); // a start clearing an old failure reports Idle again: nothing changes
+        host.poll(dsd_qt::DecoderHost::Starting);
+        host.poll(dsd_qt::DecoderHost::Running);
+        store.waitForPassForTest();
+        expect("the session's folder is held", store.compactionsForTest() == before);
+        host.poll(dsd_qt::DecoderHost::Idle);
+        store.waitForPassForTest();
+        expect("and freed when it ends", store.compactionsForTest() == before + 1);
+    }
+    {
+        // Android polls for the first time inside start(): the starter's mark comes before the host knows anything,
+        // and the first known state (Idle, the start not yet sent) must not free it.
+        Roots roots;
+        const QString folder = compactable_folder(roots);
+        PolledHost host;
+        RecordingStore store;
+        store.setRoots(roots.list());
+        store.setTimingForTest(3600000, 3600000);
+        dsd_qt::recording_store_follow_host(&store, &host);
+        store.start();
+        expect("marked before the host knows",
+               store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County")) == folder);
+        host.poll(dsd_qt::DecoderHost::Idle);
+        store.waitForPassForTest();
+        expect("the first known state keeps the starter's mark", store.compactionsForTest() == 0);
+        host.poll(dsd_qt::DecoderHost::Running);
+        host.poll(dsd_qt::DecoderHost::Idle);
+        store.waitForPassForTest();
+        expect("which the session's end frees", store.compactionsForTest() == 1);
+    }
+}
+
+/* Issue #708, I1: a session start needs only the folder table, never the journals: beginSession() returns while the
+ * worker is still reading them (here held at the first one), finding a renamed owner's folder by uid. */
+void
+test_start_does_not_wait_for_journals(void) {
+    Roots roots;
+    const QString folder = compactable_folder(roots);
+    std::atomic<bool> release{false};
+    std::atomic<int> reads{0};
+    RecordingStore store;
+    store.setRoots(roots.list());
+    store.setTimingForTest(3600000, 3600000);
+    store.hostSessionReport(true, false);
+    store.setFolderLoadHookForTest([&release, &reads]() {
+        reads++;
+        while (!release.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    store.start();
+    while (reads.load() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const QString path = store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("Renamed"));
+    expect("a start does not wait for the journals, and finds the owner's folder by uid", path == folder);
+    expect("whose journal is not read yet", !store.hasRecordingForFragments({fragment(500)}));
+    release = true;
+    store.waitForPassForTest();
+    QCoreApplication::processEvents();
+    expect("then it is", store.hasRecordingForFragments({fragment(500)}) && store.indexed());
+    store.endSession();
+}
+
+/* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
+ * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
+ * removed. */
+void
+test_recheck_recordings(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    for (int i = 0; i < 12; i++) {
+        record(folder, QStringLiteral("0000000000000066-%1").arg(i), QStringLiteral("g%1.wav").arg(i), 1754711000 + i,
+               600 + i, 100000);
+    }
+    s.pass();
+    QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
+    QFile::remove(folder + QStringLiteral("/g5.wav"));
+    make_file(folder + QStringLiteral("/g6.wav"), 150000);
+    expect("still indexed until asked",
+           s.store.recordingCount() == 12 && s.store.isIndexedPath(folder + QStringLiteral("/g5.wav")));
+    s.store.recheckRecordings({QStringLiteral("0000000000000066-5"), QStringLiteral("0000000000000066-6"),
+                               QStringLiteral("not-a-recording")});
+    s.pass();
+    expect("a missing file leaves the index, announced",
+           s.store.recordingCount() == 11 && !s.store.hasRecordingForFragments({fragment(605)})
+               && spied(news, fragment(605)) && !s.store.isIndexedPath(folder + QStringLiteral("/g5.wav")));
+    expect("a file still there has its size read again", s.store.usedBytes() == 1150000);
+
+    // Removed behind the store's back without a recheck: the limit finds it gone and does not count it.
+    QFile::remove(folder + QStringLiteral("/g0.wav"));
+    QSignalSpy reached(&s.store, &RecordingStore::limitReached);
+    s.store.setLimitMb(1);
+    s.pass();
+    // 1.15 MB indexed, 1.05 MB on disk: the gone g0 is taken off, g1 removed, and 0.95 MB is reached.
+    expect("the limit removes what it must, not counting the gone file",
+           s.store.removedByLimit() == 1 && reached.count() == 1 && reached.at(0).at(0).toInt() == 1
+               && !QFileInfo::exists(folder + QStringLiteral("/g1.wav"))
+               && QFileInfo::exists(folder + QStringLiteral("/g2.wav")) && s.store.usedBytes() == 950000);
+}
+
+/* Issue #708, I3: a delete the filesystem refuses is counted and its reason kept for the Call recordings screen, the
+ * recording stays indexed, and each cause (asked for, the limit) is logged once per run. */
+void
+test_delete_failures_are_reported(void) {
+    Roots roots;
+    Store s(roots.list(), false);
+    s.store.setRemoveForTest([](const QString& path, QString* error) {
+        if (path.endsWith(QLatin1String("/stuck.wav")) || path.endsWith(QLatin1String("/big1.wav"))) {
+            *error = QStringLiteral("Permission denied");
+            return false;
+        }
+        return QFile::remove(path);
+    });
+    s.start();
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(folder, QStringLiteral("0000000000000077-1"), QStringLiteral("stuck.wav"), 1754712000, 700);
+    s.pass();
+    const int warnings = g_storeWarnings.load();
+    s.store.deleteRecording(QStringLiteral("0000000000000077-1"));
+    s.pass();
+    expect("a refused delete is counted with its reason",
+           s.store.deleteFailures() == 1 && s.store.lastDeleteError() == QStringLiteral("Permission denied")
+               && s.store.deletesWaiting() == 0);
+    expect("the recording stays",
+           s.store.recordingCount() == 1 && QFileInfo::exists(folder + QStringLiteral("/stuck.wav")));
+    expect("logged once", g_storeWarnings.load() == warnings + 1);
+    s.store.deleteRecording(QStringLiteral("0000000000000077-1"));
+    s.pass();
+    expect("a second failure is counted, not logged",
+           s.store.deleteFailures() == 2 && g_storeWarnings.load() == warnings + 1);
+
+    record(folder, QStringLiteral("0000000000000077-2"), QStringLiteral("big1.wav"), 1754712010, 701, 600000);
+    record(folder, QStringLiteral("0000000000000077-3"), QStringLiteral("big2.wav"), 1754712020, 702, 600000);
+    s.store.setLimitMb(1);
+    s.pass();
+    expect("the limit's failures are counted and logged once on their own",
+           s.store.deleteFailures() == 4 && g_storeWarnings.load() == warnings + 2
+               && QFileInfo::exists(folder + QStringLiteral("/big1.wav"))
+               && !QFileInfo::exists(folder + QStringLiteral("/big2.wav")) && s.store.removedByLimit() == 1);
+}
+
+/* Issue #708, M5: an exit during a long first read does not wait for the rest of it. */
+void
+test_stop_during_the_first_read(void) {
+    Roots roots;
+    QDir().mkpath(roots.external);
+    for (int i = 0; i < 30; i++) {
+        const QString folder = roots.external + QStringLiteral("/F%1").arg(i);
+        QDir().mkpath(folder);
+        QFile json(folder + QStringLiteral("/folder.json"));
+        if (!json.open(QIODevice::WriteOnly) || json.write(QStringLiteral("{\"uid\":\"u%1\"}\n").arg(i).toUtf8()) < 0) {
+            g_failures++;
+        }
+    }
+    std::atomic<int> reads{0};
+    auto store = std::make_unique<RecordingStore>();
+    store->setRoots(roots.list());
+    store->setFolderLoadHookForTest([&reads]() {
+        reads++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    });
+    store->start();
+    while (reads.load() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    store.reset();
+    expect("the worker stops between folders", reads.load() <= 2);
+}
+
+/* Issue #708, M6: a delete waiting on the file the player had open runs as soon as the player moves on, not at the next
+ * timed pass (an hour away here). */
+void
+test_player_release_wakes_a_waiting_delete(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(folder, QStringLiteral("0000000000000088-1"), QStringLiteral("p1.wav"), 1754713000, 800);
+    record(folder, QStringLiteral("0000000000000088-2"), QStringLiteral("p2.wav"), 1754713010, 801);
+    s.pass();
+    s.store.setPlayingPath(folder + QStringLiteral("/p1.wav"));
+    s.store.deleteRecording(QStringLiteral("0000000000000088-1"));
+    s.pass();
+    expect("held while it plays", QFileInfo::exists(folder + QStringLiteral("/p1.wav")));
+    s.store.setPlayingPath(folder + QStringLiteral("/p2.wav"));
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (QFileInfo::exists(folder + QStringLiteral("/p1.wav")) && dsd_realtime_mono_ms() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    expect("deleted once the player moves on", !QFileInfo::exists(folder + QStringLiteral("/p1.wav")));
+    s.store.setPlayingPath(QString());
+}
+
 } // namespace
 
 int
@@ -864,6 +1224,7 @@ main(int argc, char** argv) {
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-recording-store-%1").arg(QCoreApplication::applicationPid()));
     dsd_test_qt_isolate_paths();
+    g_previousHandler = qInstallMessageHandler(count_warnings);
 
     test_tail_reads_complete_lines_only();
     test_journal_from_the_writer();
@@ -876,6 +1237,12 @@ main(int argc, char** argv) {
     test_retention();
     test_free_space_warning();
     test_export_selection();
+    test_session_running_at_ui_load();
+    test_start_does_not_wait_for_journals();
+    test_recheck_recordings();
+    test_delete_failures_are_reported();
+    test_stop_during_the_first_read();
+    test_player_release_wakes_a_waiting_delete();
 
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

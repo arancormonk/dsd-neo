@@ -438,6 +438,37 @@ check_document_dispatch() {
           "after an abort the base host's copies fail too");
 }
 
+/* #708: the host knows its session state only after its first poll of the service; the call recording store holds
+ * every journal until then. The known signal comes once, after the polled phase is published, so a session that kept
+ * running while the UI was recreated is seen as running when the store hears of it. */
+static void
+check_session_state_known_after_first_poll() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    int known = 0;
+    bool activeWhenKnown = false;
+    QObject::connect(&host, &DecoderHost::sessionStateKnownChanged, [&]() {
+        ++known;
+        activeWhenKnown = host.sessionStateKnown() && host.sessionActive();
+    });
+    check(!host.sessionStateKnown() && host.sessionState() == DecoderHost::Idle,
+          "before its first poll the host does not know its state");
+    nowMs = 20000;
+    retained_record() = {{"sessionId", 70}, {"state", "RUNNING"}, {"reason", dsd_android::kRunPending}};
+    running = true;
+    host.refresh();
+    check(host.sessionStateKnown() && known == 1 && activeWhenKnown,
+          "the first poll makes it known, once, with the running session already published");
+    nowMs += 250;
+    host.refresh();
+    check(known == 1, "later polls do not announce it again");
+    retained_record() = {{"sessionId", 70}, {"state", "IDLE"}, {"reason", dsd_android::kRunCancelled}};
+    running = false;
+    nowMs += 250;
+    host.refresh();
+}
+
 /* #718: Stop listening shows Stopping the moment it is tapped, before the service has seen the intent, and holds it
  * through the RUNNING polls that arrive until the service reports STOPPING. */
 static void
@@ -1576,6 +1607,7 @@ main(int argc, char** argv) {
     check_engine_busy();
     check_document_dispatch();
     check_stop_publishes_stopping();
+    check_session_state_known_after_first_poll();
     check_receiver_health();
     check_claim_error_scope();
     check_claim_error_connection();

@@ -225,8 +225,8 @@ class DecoderHost : public QObject {
      * one available.
      *
      * Every root the host knows, a root whose storage is not mounted right now included, so the recording store can
-     * tell storage that is away from recordings that were deleted. The base host keeps them in one root, "Call
-     * recordings" in the app data folder.
+     * tell storage that is away from recordings that were deleted; the last is the fallback in the app's own storage.
+     * The base host keeps them in one root, "Call recordings" in the app data folder.
      */
     virtual QStringList recordingRoots() const;
 
@@ -279,6 +279,18 @@ class DecoderHost : public QObject {
     sessionActive() const {
         const SessionState state = sessionState();
         return state == Starting || state == Running || state == Stopping;
+    }
+
+    /**
+     * @brief Whether sessionState() reflects the decoder yet (issue #708).
+     *
+     * A host that learns its session state by polling (Android asks the decoder service) does not know it until its
+     * first poll, so a session already running when the UI loads first reads as Idle. sessionStateKnownChanged()
+     * fires when it turns true. Hosts that always know answer true.
+     */
+    virtual bool
+    sessionStateKnown() const {
+        return true;
     }
 
     /** @brief Whether the session is mid-transition, so the primary action must wait. */
@@ -582,6 +594,7 @@ class DecoderHost : public QObject {
     void runningChanged();
     void statusTextChanged();
     void sessionStateChanged();
+    void sessionStateKnownChanged();
     void localDeviceChanged();
 
   protected:
