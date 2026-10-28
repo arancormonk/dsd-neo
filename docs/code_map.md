@@ -8070,19 +8070,21 @@ Qt Quick frontend (`src/ui/qt`):
     at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
     streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
     on the refresh tick; the end comes back queued. A host going away aborts the document transfers, cancels its
-    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe) it logs, leaves the
-    pool to finish (never deleted) and cuts the job off from itself (`TransferLink`); a single save to a file URL takes
-    the base copy, which no cancel reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a
-    regular `.wav`, not a link, whose real path is inside a root, folder by folder), then the chooser on the Android
-    main thread through `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two
-    folders only), read grant only; a share that fails there is queued (`RecordingShare.takeFailure()`) and each refresh
-    emits `DecoderHost::recordingShareFailed(path)`. A player open failure is "missing" only when the file does not
-    exist. The store compacts a journal only while the session reads inactive: the engine's run opens and closes the
-    journal inside `nativeRun()`, the service reports IDLE after it returns, and a lifecycle record that cannot be read
-    while the engine runs reads RUNNING, not IDLE. Tests: `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`,
-    `ANDROID_RECORDING_EXPORT_JVM`, `ANDROID_RECORDING_SHARE_JVM` (also the provider declaration and the codes that
-    cross JNI); they run wherever ctest runs the JVM suites, skipping the FIFO and symbolic-link cases where the host
-    cannot make them.
+    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a file URL's
+    storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself (`TransferLink`): a job
+    never calls into the host. A single save to a file URL takes the base copy
+    (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
+    reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
+    whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder), then the
+    chooser on the Android main thread through `RecordingsProvider` (`${applicationId}.recordings`,
+    `res/xml/recordings_paths.xml`: the two folders only), read grant only; a share that fails there is queued
+    (`RecordingShare.takeFailure()`) and each refresh emits `DecoderHost::recordingShareFailed(path)`. A player open
+    failure is "missing" only when the file does not exist. The store compacts a journal only while the session reads
+    inactive: the engine's run opens and closes the journal inside `nativeRun()`, the service reports IDLE after it
+    returns, and a lifecycle record that cannot be read while the engine runs reads RUNNING, not IDLE. Tests:
+    `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`, `ANDROID_RECORDING_EXPORT_JVM`, `ANDROID_RECORDING_SHARE_JVM`
+    (also the provider declaration and the codes that cross JNI); they run wherever ctest runs the JVM suites, skipping
+    the FIFO and symbolic-link cases where the host cannot make them.
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
     reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
     true and a session may start; only after that does it read each folder whole (one directory listing, the journal

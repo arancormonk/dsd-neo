@@ -798,6 +798,13 @@ class DecoderHost : public QObject {
     /** @brief Tell the recording store these call recordings were found gone. */
     void reportRecordingsMissing(const QStringList& paths);
 
+    /**
+     * @brief The base host's copyFileToDocument(), stopped before any chunk once @p aborted is set; it touches no host
+     * state, so a platform's worker job may run it on its own flag.
+     */
+    static bool copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
+                                        const std::atomic<bool>* aborted);
+
     /** Whether abortDocumentTransfers() was called; document copies check it before every chunk. */
     bool
     documentTransfersAborted() const {

@@ -12,6 +12,7 @@ import android.os.Environment
 import android.util.Log
 import androidx.core.content.FileProvider
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -93,6 +94,9 @@ object RecordingShare {
     /**
      * [path] as a file to share when it is a regular .wav file, not a symbolic link, whose real path lies inside one
      * of [roots] (compared folder by folder, so "Call recordings 2" is not inside "Call recordings"); else null.
+     *
+     * Real paths come from toRealPath(), which resolves every link on the way (a linked folder included) on every
+     * platform; getCanonicalFile() does not on some Windows JDKs. A root that is not there holds nothing to share.
      */
     internal fun sharable(path: String, roots: List<File>): File? {
         val file = File(path)
@@ -103,12 +107,16 @@ object RecordingShare {
             if (!Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) {
                 return null
             }
-            val real = file.canonicalFile
+            val real = file.toPath().toRealPath()
             val inside = roots.any { root ->
-                val folder = root.canonicalFile
-                generateSequence(real.parentFile, File::getParentFile).any { it == folder }
+                val folder = try {
+                    root.toPath().toRealPath()
+                } catch (_: IOException) {
+                    null
+                }
+                folder != null && real.parent?.startsWith(folder) == true
             }
-            if (inside) real else null
+            if (inside) real.toFile() else null
         } catch (e: Exception) {
             Log.w(TAG, "could not resolve a call recording's path", e)
             null

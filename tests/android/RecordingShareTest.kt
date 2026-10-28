@@ -8,7 +8,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.nio.file.Files
 
-private val scratch: File = Files.createTempDirectory("dsd-recording-share").toFile().canonicalFile
+private val scratch: File = Files.createTempDirectory("dsd-recording-share").toRealPath().toFile()
 
 /** An app whose shared and internal storage are folders under [scratch]; shared storage may be away (null). */
 private class App(private val external: File?) : Context() {
@@ -108,7 +108,7 @@ private fun aShareOffersOneRecordingReadOnly() {
     val send = chooser.extras[Intent.EXTRA_INTENT] as Intent
     val uri = send.extras[Intent.EXTRA_STREAM] as Uri
     check(send.action == Intent.ACTION_SEND && send.type == "audio/wav") { "one WAV is sent" }
-    check(uri.toString() == "content://io.github.arancormonk.dsdneo.recordings${file.canonicalFile.path}") {
+    check(uri.toString() == "content://io.github.arancormonk.dsdneo.recordings${file.toPath().toRealPath()}") {
         "through the recordings provider: $uri"
     }
     check(send.clipData?.uri == uri) { "the grant covers the clip" }

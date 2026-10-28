@@ -187,14 +187,19 @@ DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPat
 
 bool
 DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
+    return copyFileToLocalDocument(sourcePath, reference, &m_documentTransfersAborted);
+}
+
+bool
+DecoderHost::copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
+                                     const std::atomic<bool>* aborted) {
     const QString path = local_document_path(reference);
     QFile source(sourcePath);
     if (path.isEmpty() || !QFileInfo(sourcePath).isFile() || !source.open(QIODevice::ReadOnly)) {
         return false;
     }
     QSaveFile out(path);
-    return open_private(out) && copy_stream_capped(source, out, -1, &m_documentTransfersAborted) == DocumentCopied
-           && out.commit();
+    return open_private(out) && copy_stream_capped(source, out, -1, aborted) == DocumentCopied && out.commit();
 }
 
 void

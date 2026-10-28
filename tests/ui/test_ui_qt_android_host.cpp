@@ -994,6 +994,23 @@ check_recording_transfers() {
     check(r.cancelled.load() == r.transferId.load(), "a host destroyed mid-transfer cancels it first");
     check(r.returned.tryAcquire(1, 5000), "and its job returned before the host was gone");
 
+    // A file URL's copy in flight when its host goes: the job copies on its own abort flag, never through the host,
+    // so the host goes within its bound and the document is whole or absent, never partial.
+    {
+        constexpr qsizetype kBigBytes = qsizetype{32} * 1024 * 1024;
+        const QString big = temp_recording(dir, "big.wav", QByteArray(kBigBytes, 'x'));
+        const QString dest = dir.filePath(QStringLiteral("big-copy.wav"));
+        hostDiagnostics = 0;
+        {
+            DecoderHostAndroid going;
+            going.saveRecording({{"selection", 12}, {"paths", QStringList({big})}},
+                                QUrl::fromLocalFile(dest).toString());
+        }
+        check(hostDiagnostics == 0, "a host whose file copy runs goes within its bound");
+        check(!QFileInfo::exists(dest) || QFileInfo(dest).size() == kBigBytes,
+              "and the file copy is whole or not there");
+    }
+
     drain();
     // A job blocked where a cancel cannot reach (a provider's pipe): the host waits a bounded time, says so, and goes;
     // the job finishes later and touches nothing of it.

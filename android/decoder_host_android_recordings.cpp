@@ -17,7 +17,6 @@
 #include <Qt>
 #include <QtGlobal>
 #include <atomic>
-#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include "decoder_host.h"
@@ -126,15 +125,14 @@ DecoderHostAndroid::refreshPlayback() {
 }
 
 /*
- * A transfer job holds this, not the host: the destructor clears host after its bounded wait, so a job it stopped
- * waiting for (blocked in a provider's write) posts nothing more and never touches the host.
+ * A transfer job holds this, never the host itself: the destructor clears host after its bounded wait, so a job it
+ * stopped waiting for (blocked in a provider's write, or in a file URL's write) posts nothing more and never touches
+ * the host. The file copy stops before its next chunk once aborted is set.
  */
 struct DecoderHostAndroid::TransferLink {
     std::mutex mutex;
-    std::condition_variable idle;
     DecoderHostAndroid* host = nullptr;
-    // Jobs inside a call on the host (the base host's file copy), which the destructor waits out.
-    int inHost = 0;
+    std::atomic<bool> aborted{false};
 };
 
 std::shared_ptr<DecoderHostAndroid::TransferLink>
@@ -204,18 +202,9 @@ DecoderHostAndroid::runRecordingTransfer(const std::shared_ptr<TransferLink>& li
             result = ok && code >= TransferDone && code <= TransferMissing ? code : TransferFailed;
             missing += answer.mid(1);
         } else if (!zip) {
-            result = TransferFailed;
-            std::unique_lock<std::mutex> lock(link->mutex);
-            DecoderHostAndroid* host = link->host;
-            if (host != nullptr) {
-                ++link->inHost;
-                lock.unlock();
-                const bool saved = host->copyFileToDocument(present.first(), reference);
-                lock.lock();
-                --link->inHost;
-                link->idle.notify_all();
-                result = saved ? TransferDone : TransferFailed;
-            }
+            // The base host's copy, on the link's own abort flag: the host may be gone before it ends.
+            result =
+                copyFileToLocalDocument(present.first(), reference, &link->aborted) ? TransferDone : TransferFailed;
         } else {
             result = TransferFailed; // a ZIP goes only into a platform document
         }
@@ -267,21 +256,21 @@ void
 DecoderHostAndroid::closeRecordingWork() {
     if (m_transfer_id != 0) {
         // As ~BackupModel: the provider calls in flight are cancelled and no document transfer starts again, then this
-        // transfer is cancelled; each stops at its next chunk.
+        // transfer is cancelled, and a file URL's copy is stopped; each stops at its next chunk.
         abortDocumentTransfers();
         cancelRecordingTransfer();
+        m_transfer_link->aborted.store(true);
     }
     if (!m_transfer_worker->waitForDone(kTransferStopWaitMs)) {
-        // A write blocked on a provider's pipe ignores both. Deleting the pool would wait for it, so the pool is left
-        // to finish that job (reachable, never deleted), and the cleared link keeps the job away from this host.
+        // A write blocked on a provider's pipe, or on a file URL's storage, ignores all of these. Deleting the pool
+        // would wait for it, so the pool is left to finish that job (reachable, never deleted), and the cleared link
+        // keeps the job away from this host: the job never calls into it.
         hostDiagnostic(QStringLiteral("A call recording export did not stop within %1 ms; the app closes without it")
                            .arg(kTransferStopWaitMs));
         abandoned_transfer_workers().append(m_transfer_worker.release());
     }
     {
-        // Out of a call on this host (the base copy stops at its next chunk once aborted), and then cut off.
-        std::unique_lock<std::mutex> lock(m_transfer_link->mutex);
-        m_transfer_link->idle.wait(lock, [this]() { return m_transfer_link->inHost == 0; });
+        const std::lock_guard<std::mutex> lock(m_transfer_link->mutex);
         m_transfer_link->host = nullptr;
     }
     if (m_playback_generation != 0) {
