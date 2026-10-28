@@ -9168,11 +9168,16 @@ lookups. `tools/check_android_r8.py` validates shipped DEX definitions and bundl
 metadata in Android CI; `ANDROID_R8` tests its failure cases. Device testing of
 optimized releases and mapping retention are described in `android/README.md`.
 
-Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
-`policy_context` and `policy_generation` to reject edits from a stale list. The
-row `fields` mask selects listen/priority/preempt/name/tags/record. IDs 652/653 reserve a
-typed, bounded direct key and an int32 force-key mode. These five handlers currently
-report “not implemented”; force-key is registered as a configured scan-mode setting.
+Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`apply_cmd_tg_row_set()`,
+`apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless
+its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
+listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
+learned alias row, rewrite the group file (outside a scan row) and release the calls the edit no longer blocks; export
+is refused for a scan row's list, writes the list to the given path and makes it the session's group file. IDs 652/653
+are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
+`dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32
+force-key mode 0/1/2 (`apply_cmd_force_key()`; a change bumps the key epoch). Force-key and the export run against the
+saved scan baseline as configured scan-mode settings (`command_updates_scan_mode()`).
 Queue storage and drain temporaries are securely erased after use and on discard,
 including eviction, coalescing and rejection. Submitters own and must erase their
 original secret payloads.
