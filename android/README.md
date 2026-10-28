@@ -1391,7 +1391,10 @@ characters only, or the rest of a quoted string) are dropped with it.
 librtlsdr's, libusb's and dsd-neo's own rtl/usb error lines, and the service's
 `engine run returned` and `engine configuration returned` lines, keep their negative codes
 (`usb_claim_interface error -1`): a record that is wholly one of those producers' fixed
-lines is exempt from the key-option rule.
+lines is exempt from the key-option rule. So are signed measurements and settings, where
+the number cannot be a key option's value: one with a fraction (`-50.0 dBFS`), a short
+integer before a unit such as `ppm` or before closing punctuation (`Tuner error set to
+-5 ppm.`, `TX Offset: -25;`), and the requested-ppm and scan-squelch lines whole.
 
 ### The persistent tail
 

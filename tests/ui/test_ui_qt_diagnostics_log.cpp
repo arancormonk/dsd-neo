@@ -1495,7 +1495,7 @@ producerErrorLinesSurvive() {
     }
     // Every listed producer line has only %d and %u conversions, so each one counts.
     const auto counts = DiagnosticsLog::producerLineCountsForTest();
-    check(counts.first == 28 && counts.second == counts.first, "a producer line was left out or the list changed");
+    check(counts.first == 32 && counts.second == counts.first, "a producer line was left out or the list changed");
 }
 
 /* A decimal is no option cluster (getopt stops at the '.'), so measurements keep their negative values; a digit cluster
@@ -1509,6 +1509,125 @@ negativeDecimalsSurvive() {
     }
     for (const auto& record : {QStringLiteral("[stderr] [info] level -35"), QStringLiteral("[stderr] [info] -ZT1F")}) {
         checkLabelled(DiagnosticsLog::redact(record) == kDropped, "option cluster kept: " + record.toUtf8());
+    }
+}
+
+/* #782 gate r1 G5: lines that report a signed measurement or setting keep it, as each producer writes it, though its
+ * leading digit is a key option's letter (-1, -2, -5, -9, or one bundled behind -0, -3, -4, -8): a number with a
+ * fraction, one followed by a unit that is no hex value, or by punctuation that no key value starts with, and the whole
+ * lines that end on an integer or follow it with a word. Live through the stream capture and the log tap, and again
+ * from a saved record. */
+static void
+negativeMeasurementsSurvive() {
+    const QStringList stderrLines = {
+        // rtl_device.cpp: the applied ppm and tuner gains (E4000 and FC0012 tables go below 0 dB).
+        QStringLiteral("Tuner error set to -5 ppm."),
+        QStringLiteral("Tuner error set to -12 ppm."),
+        QStringLiteral("Tuner gain set to -9.90 dB."),
+        QStringLiteral("Tuner gain set to -1.00 dB."),
+        QStringLiteral("Tuner manual gain (nearest): -9.9 dB."),
+        QStringLiteral("SoapySDR: adjusted gain LNA from -12.00 dB to -10.00 dB."),
+        // Protocol lines: P25 channel identifier offsets, a P25p2 local time offset, M17's power, DMR's offset.
+        QStringLiteral(" Channel Identifier Update; Iden: 1; BW: 5; TX Offset: -25; Spacing: 64; Base: 170200000;"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
+        QStringLiteral("  Local Time Offset: -5.0 Hours;"),
+        QStringLiteral(" PWR: -51.2 dB SQL HIT: 0;"),
+        QStringLiteral(" Offset: -5;"),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        QStringList expected;
+        for (const auto& line : stderrLines) {
+            bytes += line.toUtf8() + '\n';
+            expected << QStringLiteral("[stderr] [info] ") + line;
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records == expected, "a measurement line was dropped by the stream capture");
+        for (const auto& record : expected) {
+            checkLabelled(DiagnosticsLog::redact(record) == record, "stored measurement dropped: " + record.toUtf8());
+        }
+    }
+
+    struct DecoderLine {
+        dsd_neo_log_level_t level;
+        const char* levelName;
+        QByteArray text;
+    };
+
+    const DecoderLine decoderLines[] = {
+        // args.c: the low input warning threshold, from the CLI or the environment.
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold: -50.0 dBFS"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold (env): -35.5 dBFS"},
+        // rtl_sdr_fm.cpp and rtl_device.cpp: ppm requests, corrections and the replay resampler's ratio error.
+        {LOG_LEVEL_INFO, "info", "AUTO-PPM: src=1 pwr=-25.3 dB snr=12.0 dB df=-120.5 Hz ppm -5->-3"},
+        {LOG_LEVEL_INFO, "info",
+         "IQ replay: resampling the 2048000 Hz capture to 1536000 Hz (L/M=3/4, -5.00 ppm, 32 taps per phase, group "
+         "delay 0.50 ms)."},
+        {LOG_LEVEL_INFO, "info", "PPM correction applied: -15."},
+        {LOG_LEVEL_INFO, "info", "Requested RTL PPM Error Set to -5"},
+        {LOG_LEVEL_INFO, "info",
+         "Device does not support frequency (PPM) correction; configured ppm -25 will have no effect."},
+        // channel_scan.c and trunk_scan.c: a row's squelch, -100..0 dB.
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -50 cannot gate digital acquisition without a radio "
+         "input; here it gates only the analog input monitor (-8) and the carrier activity it stamps."},
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Trunk scan target 'site_1': --squelch-db -50 cannot gate digital acquisition without a radio input; "
+         "here it gates only the analog input monitor (-8) and the carrier activity it stamps."},
+    };
+    auto& log = DiagnosticsLog::instance();
+    for (const auto& line : decoderLines) {
+        dsd_neo_log_write(line.level, "%s\n", line.text.constData());
+        const auto ring = log.snapshot();
+        const QString expected =
+            QStringLiteral("[decoder] [%1] ").arg(QLatin1String(line.levelName)) + QString::fromUtf8(line.text) + ' ';
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "decoder measurement dropped: " + line.text);
+        checkLabelled(DiagnosticsLog::redact(expected) == expected, "stored decoder measurement dropped: " + line.text);
+    }
+}
+
+/* G5: beside those measurements, and in the forms a key option could take, a key value still drops the record: an
+ * integer with more digits than a measurement keeps, one followed by a unit that is itself hex ("dB"), by a value or by
+ * nothing, a bracket that does not close on it, and a template line with anything added or a field that is not one. */
+static void
+negativeMeasurementsDoNotCarryKeys() {
+    const QStringList records = {
+        QStringLiteral("[stderr] [info] Tuner error set to -5 ppm. -2 1A2B"),
+        QStringLiteral("[stderr] [info] Tuner error set to -5 1A2B ppm."),
+        QStringLiteral("[stderr] [info] Tuner error set to -51A2B ppm."),
+        QStringLiteral("[stderr] [info] Tuner error set to -5123 ppm."),
+        QStringLiteral("[stderr] [info] Tuner error set to -912 ppm."),
+        QStringLiteral("[stderr] [info] gain -2 dB"),
+        QStringLiteral("[stderr] [info] gain -2dB"),
+        QStringLiteral("[stderr] [info] threshold -5"),
+        QStringLiteral("[stderr] [info] threshold -5 1A2B"),
+        QStringLiteral("[stderr] [info] level -50.0 -9 12345"),
+        QStringLiteral("[stderr] [info] args: -5 ppm -9 123"),
+        QStringLiteral("[stderr] [info] TX Offset [-5, 1A2B]"),
+        QStringLiteral("[stderr] [info] Offset: -5,1A2B"),
+        QStringLiteral("[stderr] [info] Offset: -5-2 1A2B"),
+        QStringLiteral("[stderr] [info] [-5] -2 1A2B"),
+        QStringLiteral("[stderr] [info] Low input warning threshold: -50.0 dBFS key 1A2B"),
+        QStringLiteral("[stderr] [info] Requested RTL PPM Error Set to -5"),
+        QStringLiteral("[decoder] [info] Requested RTL PPM Error Set to -5 -2 1A2B\n"),
+        QStringLiteral("[decoder] [info] Requested RTL PPM Error Set to -5123\n"),
+        QStringLiteral(
+            "[decoder] [info] Device does not support frequency (PPM) correction; configured ppm -21A2B will "
+            "have no effect.\n"),
+        QStringLiteral("[decoder] [warn] WARNING: Trunk scan target '-21A2B': --squelch-db -50 cannot gate digital "
+                       "acquisition without a radio input; here it gates only the analog input monitor (-8) and the "
+                       "carrier activity it stamps.\n"),
+        QStringLiteral("[decoder] [warn] WARNING: Trunk scan target 'key1A2B': --squelch-db -50 cannot gate digital "
+                       "acquisition without a radio input; here it gates only the analog input monitor (-8) and the "
+                       "carrier activity it stamps.\n"),
+        QStringLiteral("[decoder] [warn] WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -5123 cannot gate "
+                       "digital acquisition without a radio input; here it gates only the analog input monitor (-8) "
+                       "and the carrier activity it stamps.\n"),
+    };
+    for (const auto& record : records) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      "key form beside a measurement kept: " + record.toUtf8());
     }
 }
 
@@ -2227,6 +2346,8 @@ main(int argc, char** argv) {
     producerErrorLinesSurvive();
     producerErrorLinesDoNotCarryKeys();
     negativeDecimalsSurvive();
+    negativeMeasurementsSurvive();
+    negativeMeasurementsDoNotCarryKeys();
     syncLabelsSurvive();
     androidHostRecordsSurvive();
     teardownFlushMarkerRoundTrip();

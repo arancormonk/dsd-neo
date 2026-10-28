@@ -8075,12 +8075,20 @@ Qt Quick frontend (`src/ui/qt`):
   letter that takes one, the rest of the token is its value, so `-DMR` is no key option; a decimal such as `-3.2 dB` is
   no option cluster). The decoder's own frame-sync labels (`printFrameSync()`, `print_dmr_sync_polarity()`) are exempt
   as exact whole tokens right after `Sync: ` (`withoutSyncLabels()`): inverted `-P25p1`, `-YSF` and `-TETRA` read as
-  bundled key options, and anything else on such a line is still judged. Keep that list in step with those labels. The
-  one exemption is a record that is wholly one producer's error line: the librtlsdr, dsd-neo rtl/usb and Android service
-  lines in `kProducerLines` (only `%d`, bounded to three digits, and `%u` fields), or a libusb log line (`libusb: `
-  header) whose text before its code has no key label. A producer line whose code is a key option with a value of at
-  most two digits would still be kept. Keep `kProducerLines` in step with those producers' format strings
-  (`UI_QT_DIAGNOSTICS_LOG` counts them) and the key-option pattern in step with `src/runtime/cli/args.c`. The persistent
+  bundled key options, and anything else on such a line is still judged. Keep that list in step with those labels.
+  Signed measurements are exempt the same way, token by token (`withoutMeasurements()`, #782 gate r1 G5), where getopt's
+  reading would give a digit key option (`-1`, `-2`, `-5`, `-9`, alone or behind `-0`, `-3`, `-4`, `-8`) a value no key
+  is written as: a whitespace-led number with a fraction (`-50.0 dBFS`, `-9.90 dB`), an integer of at most two digits
+  followed by a unit that is not hex (`ppm`, `dBFS`, `dBm`, `Hz`, `kHz`, `MHz`; `-2 dB` is still -2 with `DB`) or by
+  `;`, `)`, `>`, `%`, `-` or a sentence's `.`, or a number alone in brackets (`[-25]`). A one-digit value attached to a
+  key option before such a unit or mark (`-95 ppm`) would be kept. The one whole-record exemption is a record that is
+  wholly one producer's line: the librtlsdr, dsd-neo rtl/usb and Android service error lines and the signed settings
+  that end on an integer or follow it with a word (requested ppm, a scan row's `--squelch-db`) in `kProducerLines`
+  (`%d`/`%i` bounded to three digits, `%u`, fixed-point `%f` with at most four integer digits, and `%s`, one token that
+  must itself be free of key labels), or a libusb log line (`libusb: ` header) whose text before its code has no key
+  label. A producer line whose code is a key option with a value of at most two digits would still be kept. Keep
+  `kProducerLines` in step with those producers' format strings (`UI_QT_DIAGNOSTICS_LOG` counts them) and the
+  key-option pattern in step with `src/runtime/cli/args.c`. The persistent
   tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before

@@ -173,11 +173,37 @@ withoutSyncLabels(const QString& text) {
     return QString(text).remove(labels);
 }
 
+/**
+ * @brief @p text without the signed measurements producers print, which the key rule must not read as options.
+ *
+ * A negative number whose first digit is a key option's letter (-1, -2, -5, -9, or one behind -0, -3, -4 or -8) reads
+ * to getopt as that option, its value being the rest of the token or the next one (#782 gate r1 G5: "Tuner error set
+ * to -5 ppm.", "Low input warning threshold: -50.0 dBFS"). A token leaves the scan only where that value cannot be a
+ * key, every digit option's key being hex or decimal digits: a number with a fraction, whose value then holds the '.';
+ * an integer of one or two digits followed by a unit that is no hex value (ppm, dBFS, dBm, Hz, kHz, MHz; "dB" is hex,
+ * so "-2 dB" stays a key form), or by punctuation no key value is written with (`;`, `)`, `>`, `%`, `-`, or a
+ * sentence's '.'); or a number alone in brackets, a list that ends before any value. Each is led by whitespace, as a
+ * producer prints it. What remains: a one-digit value attached to a key option before a unit or that punctuation
+ * ("-95 ppm" is -9 with "5") would be kept. A '-' after an integer re-exposes what follows it once the integer is
+ * gone, so "-5-2 1A2B" still drops.
+ */
+QString
+withoutMeasurements(const QString& text) {
+    static const QRegularExpression measurements(
+        QStringLiteral("(?:^|(?<=\\s))-(?:[0-9]{1,3}\\.[0-9]{1,3}(?=\\.?(?:[\\s;,)%]|\\z))"
+                       "|[0-9]{1,2}(?=(?: ?(?:ppm|dBFS|dBm|Hz|kHz|MHz)(?![0-9A-Za-z]))|[;)>%-]|\\.(?:\\s|\\z)))"
+                       "|(?<=\\[)-[0-9]{1,3}(?:\\.[0-9]{1,3})?(?=\\])"));
+    return QString(text).remove(measurements);
+}
+
 /*
  * Lines that name why a USB receiver failed, which the key rule would drop for their negative code (" error -1"
- * reads as option -1). Each is one producer's fixed text, whole: the source and level formatRecord() gives it, then
- * the producer's format, in which only the numeric fields vary. %d and %u are the only conversions accepted; an entry
- * with any other is left out (producerLineCountsForTest() reports it).
+ * reads as option -1), and lines that report a signed setting where withoutMeasurements() cannot tell it from a key
+ * option's value: an integer that ends the line or is followed by a word. Each is one producer's fixed text, whole:
+ * the source and level formatRecord() gives it, then the producer's format, in which only the fields vary. Accepted
+ * conversions: %d, %i and %u, a fixed-point %f (precision, flags and an l length allowed), and %s, whose text must not
+ * hold a key label itself (isProducerErrorLine()); an entry with any other is left out (producerLineCountsForTest()
+ * reports it).
  */
 struct ProducerLine {
     const char* record;
@@ -219,6 +245,17 @@ const ProducerLine kProducerLines[] = {
     // The Android service's run and configure results (DecoderService.kt), through nativeHostDiagnostic().
     {"[host] [info] ", "engine run returned %d"},
     {"[host] [info] ", "service: engine configuration returned %d"},
+    // Signed settings (#782 gate r1 G5): the requested ppm (rtl_sdr_fm.cpp), and a scan row's squelch, -100..0 dB, on a
+    // digital channel without a radio input (channel_scan.c, trunk_scan.c).
+    {"[decoder] [info] ", "Requested RTL PPM Error Set to %d"},
+    {"[decoder] [info] ", "Device does not support frequency (PPM) correction; configured ppm %d will have no effect."},
+    {"[decoder] [warn] ",
+     "WARNING: Scan channel %d (%.6lf MHz): --squelch-db %d cannot gate digital acquisition without "
+     "a radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+     "stamps."},
+    {"[decoder] [warn] ", "WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
+                          "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                          "stamps."},
 };
 
 /*
@@ -242,7 +279,41 @@ struct ProducerTemplates {
     int accepted = 0;
 };
 
-/** @brief The producer lines as one anchored pattern; an entry with a conversion other than %d or %u is left out. */
+/**
+ * @brief The pattern for the conversion that starts at @p at in @p format, and where it ends (@p end); empty when it is
+ * not one producerTemplates() accepts.
+ */
+QString
+conversionPattern(const QString& format, qsizetype at, qsizetype* end) {
+    static const QRegularExpression spec(QStringLiteral("%([-+ 0#]*)(?:\\.([0-9]+))?(l?)([diufs])"));
+    const auto match =
+        spec.match(format, at, QRegularExpression::NormalMatch, QRegularExpression::AnchorAtOffsetMatchOption);
+    if (!match.hasMatch()) {
+        return {};
+    }
+    *end = match.capturedEnd();
+    const QChar conversion = match.captured(4).at(0);
+    const bool precise = !match.captured(2).isEmpty();
+    if (conversion == QLatin1Char('f')) {
+        // A printed measurement or frequency in MHz: at most four integer digits, then exactly the precision's.
+        const QString sign =
+            match.captured(1).contains(QLatin1Char('+')) ? QStringLiteral("[-+]") : QStringLiteral("-?");
+        return sign + QStringLiteral("[0-9]{1,4}\\.[0-9]{%1}").arg(precise ? match.captured(2) : QStringLiteral("6"));
+    }
+    if (precise || !match.captured(1).isEmpty() || !match.captured(3).isEmpty()) {
+        return {};
+    }
+    if (conversion == QLatin1Char('d') || conversion == QLatin1Char('i')) {
+        return QLatin1String(kSignedField);
+    }
+    if (conversion == QLatin1Char('u')) {
+        return QStringLiteral("[0-9]{1,10}");
+    }
+    // A name the producer quotes (a scan target's id): one token, captured so isProducerErrorLine() can judge it.
+    return QStringLiteral("([^\\s'\"]{1,64})");
+}
+
+/** @brief The producer lines as one anchored pattern; an entry with a conversion it does not accept is left out. */
 const ProducerTemplates&
 producerTemplates() {
     static const ProducerTemplates templates = [] {
@@ -257,15 +328,11 @@ producerTemplates() {
             for (qsizetype at = format.indexOf(QLatin1Char('%')); at >= 0 && accepted;
                  at = format.indexOf(QLatin1Char('%'), literal)) {
                 pattern += QRegularExpression::escape(format.mid(literal, at - literal));
-                const QChar conversion = at + 1 < format.size() ? format.at(at + 1) : QChar();
-                if (conversion == QLatin1Char('d')) {
-                    pattern += QLatin1String(kSignedField);
-                } else if (conversion == QLatin1Char('u')) {
-                    pattern += QStringLiteral("[0-9]{1,10}");
-                } else {
-                    accepted = false;
-                }
-                literal = at + 2;
+                qsizetype end = at;
+                const QString field = conversionPattern(format, at, &end);
+                accepted = !field.isEmpty();
+                pattern += field;
+                literal = end;
             }
             if (accepted) {
                 ++built.accepted;
@@ -279,10 +346,19 @@ producerTemplates() {
     return templates;
 }
 
-/** @brief Whether @p text is one whole producer error line (see kProducerLines and kLibusbRecordPrefix). */
+/**
+ * @brief Whether @p text is one whole producer error line (see kProducerLines and kLibusbRecordPrefix). A %s field's
+ * text is the producer's to quote, so a key label inside it keeps the key rule.
+ */
 bool
 isProducerErrorLine(const QString& text) {
-    if (producerTemplates().fixed.match(text).hasMatch()) {
+    const auto fixed = producerTemplates().fixed.match(text);
+    if (fixed.hasMatch()) {
+        for (int group = 1; group <= fixed.lastCapturedIndex(); ++group) {
+            if (fixed.captured(group).contains(keyLabel())) {
+                return false;
+            }
+        }
         return true;
     }
     static const QRegularExpression libusb(QStringLiteral("\\A\\[decoder\\] \\[(?:error|warn)\\] ")
@@ -675,7 +751,7 @@ DiagnosticsLog::redact(QString text) {
     // Drop whole key-bearing records, including malformed values and labelled
     // short decimal/basic keys. Strip ANSI before matching to prevent evasion.
     text = withoutAnsi(std::move(text));
-    if (withoutSyncLabels(text).contains(keyLabel()) && !isProducerErrorLine(text)) {
+    if (withoutMeasurements(withoutSyncLabels(text)).contains(keyLabel()) && !isProducerErrorLine(text)) {
         return QLatin1String(kDroppedRecord);
     }
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
