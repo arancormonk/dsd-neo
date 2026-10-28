@@ -96,6 +96,8 @@ QtObject {
     readonly property color toggleKnobOff: dark ? "#6B7690" : "#FFFFFF"
     readonly property color chipSelectedFill: Qt.alpha(cyan, dark ? 0.10 : 0.08)
     readonly property color encBorder: Qt.alpha(magenta, dark ? 0.40 : 0.35)
+    // The PRIVATE tag's outline: neutral, since a private call is a kind of call, not a warning.
+    readonly property color privateBorder: Qt.alpha(textSecondary, dark ? 0.40 : 0.35)
 
     // Radii
     readonly property int radiusPanel: 12

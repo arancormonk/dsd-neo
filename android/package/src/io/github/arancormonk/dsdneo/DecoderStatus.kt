@@ -18,9 +18,64 @@ data class SlotCall(
     val elapsedMs: Long,
     val emergency: Boolean,
     val priority: Int,
+    /** `dsd_call_kind`: [KIND_PRIVATE] is one radio calling another, so its target is a radio, never a talkgroup. */
+    val kind: Int,
+    /** The target's own label (a private call's: the other radio's), whatever [name] headlines; may be empty. */
+    val tgLabel: String,
+    /** The protocol's display name ("TETRA", "ProVoice", "X2-TDMA", ...); empty for analog, whose channel names it. */
+    val protocolLabel: String,
 ) {
     val hasContent: Boolean
         get() = state == DecoderStatus.LINE_ACTIVE || state == DecoderStatus.LINE_ENDED
+
+    val isPrivate: Boolean
+        get() = kind == KIND_PRIVATE
+
+    /**
+     * A call no party named (issue #773): no target text or number and no source. TETRA speech before a D-SETUP, and
+     * X2-TDMA and ProVoice voice, which never carry identity. The same rule as the Qt hero's `Util.callIsAnonymous()`.
+     */
+    val isAnonymous: Boolean
+        get() = tgText.isEmpty() && tgId == 0uL && srcText.isEmpty() && protocolLabel.isNotEmpty()
+
+    /** TETRA names its parties in the call setup, so an anonymous TETRA call says the identity did not decode. */
+    val identityNotDecoded: Boolean
+        get() = isAnonymous && protocolLabel == "TETRA"
+
+    /**
+     * What to headline the call with, the Qt hero's rules (`Util.callHeadline()`): a private call names its other party
+     * -- its label, else its text (a callsign), else a known nonzero id, else none -- never a service or channel name; a
+     * call no party named names its protocol; anything else is headlined by [name]. The renderer words each case.
+     */
+    val headline: CallHeadline
+        get() = when {
+            isPrivate && tgLabel.isNotEmpty() -> CallHeadline.Named(tgLabel)
+            isPrivate && tgText.isNotEmpty() && !(tgId != 0uL && tgText == tgId.toString()) -> CallHeadline.Named(tgText)
+            isPrivate && tgId != 0uL -> CallHeadline.RadioId(tgId.toString())
+            isPrivate -> CallHeadline.PrivateUnknown
+            isAnonymous -> CallHeadline.Protocol(protocolLabel)
+            else -> CallHeadline.Named(name)
+        }
+
+    companion object {
+        /** `DSD_CALL_KIND_PRIVATE_VOICE`. */
+        const val KIND_PRIVATE = 3
+    }
+}
+
+/** How the notification headlines one call; see [SlotCall.headline]. */
+sealed class CallHeadline {
+    /** A name to show as it is. Empty when the record carried none (the renderer falls back to its phase wording). */
+    data class Named(val text: String) : CallHeadline()
+
+    /** A private call's other party known only by its number: rendered as "ID <id>". */
+    data class RadioId(val id: String) : CallHeadline()
+
+    /** A private call whose other party has not decoded: rendered as "Private call". */
+    object PrivateUnknown : CallHeadline()
+
+    /** A call no party named: rendered as "<protocol> call". */
+    data class Protocol(val label: String) : CallHeadline()
 }
 
 /**
@@ -75,10 +130,11 @@ data class DecoderStatus(
         const val LINE_ENDED = 3
 
         // v3 put the audible-audio stamp and its age at header indices 9 and 10, after the
-        // lead slot (index 8); the slots follow at 11 and 22.
-        private const val VERSION = "v3"
+        // lead slot (index 8); v4 (issue #773) added kind, tgLabel and protocolLabel after
+        // each slot's priority, so the slots follow at 11 and 25.
+        private const val VERSION = "v4"
         private const val HEADER_FIELDS = 11
-        private const val SLOT_FIELDS = 11
+        private const val SLOT_FIELDS = 14
         private const val SLOT_COUNT = 2
         private const val TOTAL_FIELDS = HEADER_FIELDS + SLOT_FIELDS * SLOT_COUNT
 
@@ -136,6 +192,9 @@ data class DecoderStatus(
                             elapsedMs = f[b + 8].toLong(),
                             emergency = f[b + 9] == "1",
                             priority = f[b + 10].toInt(),
+                            kind = f[b + 11].toInt(),
+                            tgLabel = f[b + 12],
+                            protocolLabel = f[b + 13],
                         )
                     },
                 )

@@ -416,6 +416,12 @@ encode_slot_call(dsd_json_writer* w, const dsd_state* state, int slot, double no
     (void)dsd_json_kv_strn(w, "name", view.name, sizeof view.name);
     (void)dsd_json_kv_strn(w, "tg_text", view.tg_text, sizeof view.tg_text);
     (void)dsd_json_kv_strn(w, "src_text", view.src_text, sizeof view.src_text);
+    /* Issue #773: the parties apart from the display strings above -- the source radio's id and label, the target's own
+       label -- and the protocol's display name. The call kind keeps its one "kind" key below. */
+    (void)dsd_json_kv_u64(w, "src_id", view.src_id);
+    (void)dsd_json_kv_strn(w, "src_label", view.src_label, sizeof view.src_label);
+    (void)dsd_json_kv_strn(w, "tg_label", view.tg_label, sizeof view.tg_label);
+    (void)dsd_json_kv_strn(w, "protocol_label", view.protocol_label, sizeof view.protocol_label);
     (void)dsd_json_kv_strn(w, "channel", view.channel, sizeof view.channel);
     (void)dsd_json_kv_strn(w, "service_label", view.service, sizeof view.service);
     (void)dsd_json_kv_u64(w, "receive_kind", view.receive_identity.kind);

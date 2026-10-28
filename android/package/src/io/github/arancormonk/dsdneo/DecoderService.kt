@@ -568,15 +568,13 @@ class DecoderService : Service() {
             builder.setShowWhen(false).setUsesChronometer(false)
         }
 
-        // "0" is the encoder's not-decoded sentinel, the same one srcText is filtered for
-        // in bodyText() -- X2-TDMA and standalone ProVoice never parse a talkgroup at all
-        // and their calls arrive carrying it, and a policy-resolved target with no CSV
-        // alias does too. Empty is the other unrenderable case: the record's charset
-        // filter drops a multi-byte sequence the field ended part-way through, which can
-        // take the whole name with it. Either way there is a transmission, it just has no
-        // name, so the phase wording is the honest headline -- "Listening" would say the
-        // opposite of what is happening.
-        val leadName = lead?.name?.takeIf { it.isNotEmpty() && it != "0" }
+        // The Qt hero's headline rules (issue #773): a private call names its other party,
+        // a call no party named its protocol. An empty name -- a policy-resolved target
+        // with no CSV alias, or the record's charset filter dropping a multi-byte sequence
+        // the field ended part-way through -- is still a transmission with no name, so the
+        // phase wording is the honest headline; "Listening" would say the opposite of what
+        // is happening.
+        val leadName = lead?.let { headlineText(it) }
         builder.setContentTitle(
             (if (lead?.emergency == true) getString(R.string.decoder_emergency_prefix) else "") + when {
                 leadName != null -> leadName
@@ -594,17 +592,34 @@ class DecoderService : Service() {
         val body = bodyText(lead, frequency)
         builder.setContentText(body.ifEmpty { text })
 
-        // Gated on the expanded text itself, not on "some slot has content": a slot whose
-        // name and source are both the encoder's "0" sentinel — X2-TDMA and standalone
-        // ProVoice, which call_view.c deliberately lets through with no identity —
-        // contributes no row at all, so the guard would pass with nothing to show. An
-        // empty big text, or one that just repeats the collapsed line, turns the expand
-        // chevron into a lie.
+        // Gated on the expanded text itself, not on "some slot has content": a slot with no
+        // name and no source -- a policy-resolved target with no alias -- contributes no
+        // row at all, so the guard would pass with nothing to show. An empty big text, or
+        // one that just repeats the collapsed line, turns the expand chevron into a lie.
         val expanded = expandedText(status, frequency)
         if (expanded.isNotEmpty() && expanded != body) {
             builder.setStyle(Notification.BigTextStyle().bigText(expanded))
         }
         return builder.build()
+    }
+
+    /** The call's headline as [SlotCall.headline] decides it, worded; null when it has no name to show. */
+    private fun headlineText(call: SlotCall): String? = when (val headline = call.headline) {
+        is CallHeadline.Named -> headline.text.takeIf { it.isNotEmpty() }
+        is CallHeadline.RadioId -> getString(R.string.notif_radio_id, headline.id)
+        CallHeadline.PrivateUnknown -> getString(R.string.notif_private_call)
+        is CallHeadline.Protocol -> getString(R.string.notif_protocol_call, headline.label)
+    }
+
+    /**
+     * What the call is beside its headline, as the Qt hero's subline tags it: a private call says so, and a TETRA call
+     * no party named says the identity did not decode.
+     */
+    private fun kindParts(call: SlotCall?): List<String> = when {
+        call == null -> emptyList()
+        call.isPrivate -> listOf(getString(R.string.notif_private))
+        call.identityNotDecoded -> listOf(getString(R.string.notif_identity_not_decoded))
+        else -> emptyList()
     }
 
     /**
@@ -686,8 +701,9 @@ class DecoderService : Service() {
     private fun bodyText(lead: SlotCall?, frequency: String?): String {
         val parts = mutableListOf<String>()
         parts += cryptoParts(lead)
-        // "0" is what the encoder writes for a source that never decoded, not a unit.
-        if (lead != null && lead.srcText.isNotEmpty() && lead.srcText != "0") {
+        parts += kindParts(lead)
+        // A source that never decoded has no text (never "0").
+        if (lead != null && lead.srcText.isNotEmpty()) {
             parts += getString(R.string.notif_unit, lead.srcText)
         }
         frequency?.let { parts += it }
@@ -713,12 +729,11 @@ class DecoderService : Service() {
             if (occupied > 1) {
                 parts += getString(R.string.notif_slot, index + 1)
             }
-            // Same two unrenderable cases the content title guards against; a bare "0" or
-            // an empty name would otherwise leave a row that is nothing but a separator.
-            if (call.name.isNotEmpty() && call.name != "0") {
-                parts += call.name
-            }
-            if (call.srcText.isNotEmpty() && call.srcText != "0") {
+            // The content title's headline; an empty one would otherwise leave a row that is
+            // nothing but a separator.
+            headlineText(call)?.let { parts += it }
+            parts += kindParts(call)
+            if (call.srcText.isNotEmpty()) {
                 parts += getString(R.string.notif_unit, call.srcText)
             }
             parts += cryptoParts(call)

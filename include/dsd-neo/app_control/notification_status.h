@@ -123,10 +123,10 @@ enum {
     /**
      * @brief Comfortably larger than any record the encoder produces.
      *
-     * The worst case is less than 1400 bytes: the fixed header, its audible stamp up to
-     * 20 digits, plus two slots each carrying a full-length @c name
-     * (@ref DSD_APP_CALL_NAME_SIZE), @c tg_text and @c src_text alongside their numeric
-     * fields. Rounded well past that, because a record that outgrows this buffer is not
+     * The worst case is less than 1800 bytes: the fixed header, its audible stamp up to
+     * 20 digits, plus two slots each carrying a full-length @c name and @c tg_label
+     * (@ref DSD_APP_CALL_NAME_SIZE), @c tg_text, @c src_text and @c protocol_label alongside
+     * their numeric fields. Rounded well past that, because a record that outgrows this buffer is not
      * truncated -- it is dropped, and the notification would silently stop updating.
      */
     DSD_APP_NOTIFICATION_RECORD_SIZE = 2048,
@@ -135,10 +135,11 @@ enum {
 /**
  * @brief Encode the latest status as one versioned, tab-separated record.
  *
- * Version "v3", 33 fields: an 11-field header -- version, protocol, radio_input, trunking,
+ * Version "v4", 39 fields: an 11-field header -- version, protocol, radio_input, trunking,
  * trunk_tuned, cc_freq_hz, vc_freq_hz, center_freq_hz, lead_slot, audible_stamp (unsigned
- * decimal), audible_age_ms (signed decimal, -1 for none) -- then 11 fields per slot:
- * state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority.
+ * decimal), audible_age_ms (signed decimal, -1 for none) -- then 14 fields per slot:
+ * state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority,
+ * kind (dsd_call_kind), tg_label, protocol_label.
  * android/.../DecoderStatus.kt reads it; change both together, version included.
  *
  * One record per call so a reader cannot tear its view across fields. Text fields have

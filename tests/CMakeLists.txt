@@ -2977,6 +2977,7 @@ add_executable(
     dsd-neo_test_app_control_call_view
     ui/test_app_control_call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_app_control_call_view
@@ -3976,6 +3977,7 @@ add_executable(
     dsd-neo_test_ui_qt_call_line
     ui/test_ui_qt_call_line.cpp
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_line

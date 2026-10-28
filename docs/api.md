@@ -202,7 +202,8 @@ committed to the event history.
 
 ```json
 {"type":"call","seq":12,"slots":[
-  {"slot":0,"state":2,"name":"Dispatch","tg_text":"101","src_text":"Unit 7",
+  {"slot":0,"state":2,"name":"Dispatch","tg_text":"101","src_text":"Unit 7 (7)",
+   "src_id":7,"src_label":"Unit 7","tg_label":"Dispatch","protocol_label":"P25p1",
    "channel":"Site 1","service_label":"Hospital","receive_kind":3,
    "receive_value":659,"receive_known":true,"tg_id":101,"elapsed_ms":1815,"kid":0,"algid":0,
    "emergency":false,"priority":0,"enc":false,
@@ -212,6 +213,13 @@ committed to the event history.
 `state` is a `DSD_APP_CALL_LINE_*` value (`1` idle, `2` active, `3` ended); a
 slot with nothing to show is omitted. The fields are documented in
 [`include/dsd-neo/app_control/call_view.h`](../include/dsd-neo/app_control/call_view.h).
+`tg_text` and `src_text` are empty, never `"0"`, for a party that has not decoded.
+`src_id` is the source radio's id (`0` when none decoded) and `src_label` its label
+alone; `tg_label` is the target's own label (a private call's: the other radio's),
+whatever `name` headlines. `protocol_label` is the protocol's display name (`TETRA`,
+`ProVoice`, `X2-TDMA`, `P25p2`, `DMR`, ...; empty for analog), what a client can
+headline a call no party named with. `kind` is the call's `dsd_call_kind` (`0` unknown, `1` voice,
+`2` group voice, `3` private voice, `4` data); a private call's target is a radio.
 `service_label` is the name selected by the validated received identifier; `channel`
 keeps the base channel label. Receive identity fields use the same values as event rows below.
 

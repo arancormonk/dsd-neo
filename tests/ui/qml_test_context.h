@@ -3227,6 +3227,11 @@ class Setup : public QObject {
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();
             metrics[p + QStringLiteral("SrcText")] = QString();
+            // Issue #773: the call kind (dsd_call_kind, 0 unknown), the parties' own labels and the protocol's name.
+            metrics[p + QStringLiteral("CallKind")] = 0;
+            metrics[p + QStringLiteral("TgLabel")] = QString();
+            metrics[p + QStringLiteral("SrcLabel")] = QString();
+            metrics[p + QStringLiteral("ProtocolLabel")] = QString();
             metrics[p + QStringLiteral("EncText")] = QString();
             metrics[p + QStringLiteral("TgId")] = 0;
         }

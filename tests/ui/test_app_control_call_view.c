@@ -1003,6 +1003,81 @@ test_tetra_identityless_epoch_still_shows(void) {
     destroy_state(state);
 }
 
+/* Issue #773: the protocol's display name, which headlines a call no party named ("TETRA call", "ProVoice call",
+ * "X2-TDMA call"). The two frame-type names of the sync table are spelled as the protocol; analog has none, its channel
+ * names its call. */
+static void
+test_protocol_label(void) {
+    static const struct {
+        int protocol;
+        const char* label;
+    } cases[] = {
+        {DSD_SYNC_TETRA_NDB_POS, "TETRA"},
+        {DSD_SYNC_TETRA_NDB_NEG, "TETRA"},
+        {DSD_SYNC_X2TDMA_VOICE_POS, "X2-TDMA"},
+        {DSD_SYNC_X2TDMA_DATA_NEG, "X2-TDMA"},
+        {DSD_SYNC_PROVOICE_POS, "ProVoice"},
+        {DSD_SYNC_PROVOICE_NEG, "ProVoice"},
+        {DSD_SYNC_P25P2_POS, "P25p2"},
+        {DSD_SYNC_DMR_BS_VOICE_POS, "DMR"},
+        {DSD_SYNC_NXDN_POS, "NXDN"},
+        {DSD_SYNC_ANALOG, ""},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_state* state = make_state();
+        dsd_call_observation observation = dsd_call_observation_data(cases[i].protocol, 0U, 0U, 0U);
+        observation.kind = DSD_CALL_KIND_VOICE;
+        if (cases[i].protocol != DSD_SYNC_ANALOG && !DSD_SYNC_IS_TETRA(cases[i].protocol)
+            && !DSD_SYNC_IS_X2TDMA(cases[i].protocol) && !DSD_SYNC_IS_PROVOICE(cases[i].protocol)) {
+            observation.ota_target_id = 101U; /* named, or the view reads idle */
+        }
+        observation.observed_m = 10.0;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        dsd_app_slot_call view;
+        dsd_app_slot_call_view(state, 0U, 10.5, &view);
+        assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+        if (strcmp(view.protocol_label, cases[i].label) != 0) {
+            DSD_FPRINTF(stderr, "protocol %d: '%s', want '%s'\n", cases[i].protocol, view.protocol_label,
+                        cases[i].label);
+            assert(0);
+        }
+        destroy_state(state);
+    }
+
+    /* Nothing on the slot: no label. */
+    dsd_state* state = make_state();
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.protocol_label[0] == '\0');
+    destroy_state(state);
+}
+
+/* Issue #773: a source that never decoded has no text -- empty, never "0", which would read as a radio numbered zero --
+ * like the target's. */
+static void
+test_unknown_source_has_no_text(void) {
+    dsd_state* state = make_state();
+    observe_group_call(state, 0U, 51023U, 0U, 10.0);
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strcmp(view.tg_text, "51023") == 0);
+    assert(view.src_text[0] == '\0' && view.src_label[0] == '\0' && view.src_id == 0U);
+    destroy_state(state);
+
+    /* An identity-less TETRA voice epoch: neither party has text. */
+    state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 0U);
+    observation.kind = DSD_CALL_KIND_VOICE;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(view.tg_text[0] == '\0' && view.src_text[0] == '\0');
+    destroy_state(state);
+}
+
 static void
 test_service_metadata(void) {
     dsd_state* state = make_state();
@@ -1026,6 +1101,8 @@ test_service_metadata(void) {
 int
 main(void) {
     test_service_metadata();
+    test_protocol_label();
+    test_unknown_source_has_no_text();
     test_view_carries_call_kind();
     test_source_id_and_label_split();
     test_target_label_independent_of_headline();

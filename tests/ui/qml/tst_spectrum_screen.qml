@@ -751,12 +751,11 @@ Item {
             tryVerify(function () { return call.visible && call.text === "1201" },
                       2000, "an active call did not reach the strip")
 
-            // A control channel opens call epochs whose target has not decoded
-            // yet. Rendering that as talkgroup 0 would name a transmission
-            // nobody is making.
-            testContext.setMetric("slot1TgText","0")
+            // A call whose target has not decoded has no target text (the view
+            // leaves it empty, never "0", issue #773): nothing to name.
+            testContext.setMetric("slot1TgText","")
             tryVerify(function () { return !call.visible }, 2000,
-                      "an unidentified call was shown as talkgroup 0")
+                      "an unidentified call was shown with a target")
 
             testContext.setMetric("slot1CallState",0)
             testContext.setMetric("slot1TgText","")

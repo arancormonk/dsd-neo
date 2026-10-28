@@ -131,8 +131,12 @@ slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* 
     char identity[DSD_CALL_IDENTITY_TEXT_SIZE];
     if (call->source_text[0] != '\0') {
         DSD_SNPRINTF(identity, sizeof(identity), "%s", call->source_text);
-    } else {
+    } else if (call->ota_source_id != 0U) {
         DSD_SNPRINTF(identity, sizeof(identity), "%llu", (unsigned long long)call->ota_source_id);
+    } else {
+        /* No source decoded: no text, never "0", which would read as a radio numbered zero (issue #773). A label needs
+           a nonzero source below, so src_label stays empty too. */
+        return;
     }
     const Event_History* staged = state->event_history_s ? &state->event_history_s[slot].Event_History_Items[0] : NULL;
     const char* label = NULL;
@@ -211,6 +215,23 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
     DSD_SNPRINTF(out->name, sizeof(out->name), "%s", fallback);
 }
 
+/**
+ * @brief The protocol's display name for @c protocol_label: the sync table's name, except where that names a frame type
+ * rather than the protocol (X2-TDMA, ProVoice). Empty for analog, whose channel names its call, and for no sync.
+ */
+static void
+slot_protocol_label(int protocol, char* out, size_t out_size) {
+    const char* label = dsd_synctype_to_string(protocol);
+    if (DSD_SYNC_IS_X2TDMA(protocol)) {
+        label = "X2-TDMA";
+    } else if (DSD_SYNC_IS_PROVOICE(protocol)) {
+        label = "ProVoice";
+    } else if (protocol == DSD_SYNC_ANALOG || strcmp(label, "NONE") == 0 || strcmp(label, "UNKNOWN") == 0) {
+        label = "";
+    }
+    DSD_SNPRINTF(out, out_size, "%s", label);
+}
+
 int
 dsd_app_call_line_state(int lookup, const dsd_call_snapshot* call, double now_m, double hold_s) {
     if (lookup <= 0 || call == NULL) {
@@ -255,6 +276,7 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
     }
 
     out->kind = (uint8_t)call.kind;
+    slot_protocol_label(call.protocol, out->protocol_label, sizeof(out->protocol_label));
     /* A target that has not decoded has no text: "0" would read as a talkgroup numbered zero. */
     if (call.target_text[0] != '\0') {
         DSD_SNPRINTF(out->tg_text, sizeof(out->tg_text), "%s", call.target_text);

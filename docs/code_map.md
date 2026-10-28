@@ -3160,8 +3160,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line (`dsd_app_slot_call`): the
   headline `name`, the target as decoded (`tg_text`, empty -- never `0` -- when no target decoded) and its own label
   (`tg_label`: the talkgroup's, a private call's target radio's, from the staged row or the label cached on the ended
-  epoch, whatever headlines the call), the source (`src_text` with its label, `src_id`, `src_label` alone), the call
-  `kind`, crypto and service metadata, with the 3 s ended hold. An epoch with no identity reads idle, except on the
+  epoch, whatever headlines the call), the source (`src_text` with its label, empty -- never `0` -- when no source
+  decoded; `src_id`, `src_label` alone), the call `kind`, `protocol_label` (the protocol's display name from
+  `dsd_synctype_to_string()`, spelled `X2-TDMA` and `ProVoice` for those two, empty for analog), crypto and service
+  metadata, with the 3 s ended hold. An epoch with no identity reads idle, except on the
   protocols whose identity-less voice is a real transmission: X2-TDMA, ProVoice, analog, and TETRA, which publishes a
   call only from a CRC-checked carrier and publishes speech no D-SETUP named as a voice call with no parties (issue
   #773). The Qt hero and second-slot strip, the Android notification, the API `call` feed and the terminal's TETRA
@@ -3407,10 +3409,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
 - Android notification record: `include/dsd-neo/app_control/notification_status.h` and
   `src/app_control/notification_status.c`. The snapshot publishers (`ui_snapshot.c`, `ui_opts_snapshot.c`) feed it
   through `dsd_app_notification_publish_state()`/`_publish_opts()`, which stay dormant until a reader has called
-  `dsd_app_notification_get()` once. `dsd_app_notification_encode()` writes one tab-separated record, version `v3`, 33
+  `dsd_app_notification_get()` once. `dsd_app_notification_encode()` writes one tab-separated record, version `v4`, 39
   fields: an 11-field header (version, protocol, radio_input, trunking, trunk_tuned, cc_freq_hz, vc_freq_hz,
   center_freq_hz, lead_slot, audible_stamp in unsigned decimal, audible_age_ms in signed decimal with -1 for none), then
-  11 fields per slot (state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority). Text
+  14 fields per slot (state, name, tg_text, src_text, tg_id, enc, algid, kid, elapsed_ms, emergency, priority, kind,
+  tg_label, protocol_label; issue #773 added the last three so the notification headlines a private call and a call no
+  party named as the Qt hero does, `SlotCall.headline` in `DecoderStatus.kt`). Text
   fields have control characters replaced with spaces, and a record that does not fit is dropped (0), never truncated.
   `nativeNotificationStatus()` in `android/dsdneo_jni.cpp` is its one caller, from the Android service's status poll and
   `ScreenSupport`'s synchronous samples, and `DecoderStatus.kt` parses the record; change both together, the version
@@ -3420,9 +3424,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   API feed uses, never does. `dsd_app_notification_reset()` (from `dsd_app_frontend_runtime_stop()`) clears the
   published status and the stamp, which stays armed. `DecoderStatus.sameDisplay()` compares all but the audible pair, so
   the service re-posts the notification only when what it shows changed, while every running poll tick still feeds the
-  screen policy (see "Android screen modes" under Build Targets). Tests: `APP_CONTROL_NOTIFICATION_STATUS` (the v3 field
-  order, the pair before any audio and after a note, the unsigned stamp, the reset, only `encode()` arming), and
-  `ANDROID_DECODER_STATUS_JVM`, which parses the same golden v3 record.
+  screen policy (see "Android screen modes" under Build Targets). Tests: `APP_CONTROL_NOTIFICATION_STATUS` (the v4 field
+  order, the pair before any audio and after a note, the unsigned stamp, the reset, only `encode()` arming, the kind,
+  labels and protocol of private and identity-less calls), and `ANDROID_DECODER_STATUS_JVM`, which parses the same
+  golden v4 record, rejects v3, and pins the headline rules.
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## API
@@ -8631,7 +8636,14 @@ Qt Quick frontend (`src/ui/qt`):
 - Second-slot strip (`otherSlotPanel` in `qml/MonitorScreen.qml`): shown while `MetricsModel::twoSlotCarrier` holds or
   the non-hero slot has an active call, so on a two-slot carrier the other slot's calls never move what is below it.
   Idle, it reads "SLOT N · idle" (slot 2 with no call or slot 1 leading, slot 1 with slot 2 leading), and Skip and More
-  are hidden in their places and `Accessible.ignored`. `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
+  are hidden in their places and `Accessible.ignored`. Hero and strip headlines (issue #773, `Util.callHeadline()`): a
+  talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
+  `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
+  (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside the
+  strip's identity; a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
+  `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever
+  it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). Tests:
+  `tst_monitor_call_identity.qml`, `UI_QT_METRICS_MODEL` (`test_slot_kind_and_labels()`). `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
   own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
   bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
   RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,

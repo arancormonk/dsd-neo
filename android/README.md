@@ -1750,10 +1750,11 @@ and failure clear it too. Unknown fields are omitted; the row is hidden when no
 identity fields are available.
 Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
 slot), recent calls, and history. The notification title prefixes the lead call
-with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v3:
-each of the two slot records ends with emergency and priority (11 slot fields),
-and the header carries the audible-audio stamp and its age at indices 9 and 10,
-which the screen modes read (see [Screen](#screen)).
+with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v4:
+each of the two slot records ends with emergency, priority, the call kind, the
+target's own label and the protocol's name (14 slot fields), and the header carries
+the audible-audio stamp and its age at indices 9 and 10, which the screen modes read
+(see [Screen](#screen)).
 Call-history JSON stores `"em": true` only for emergency rows; older history
 without that optional key remains readable. Emergency indication persists when
 later fragments enrich a history row. The notification channel remains
@@ -1900,6 +1901,14 @@ if its slot or talkgroup changes or the call ends.
 
 The hero stays on the earliest-started identified active call when the other slot
 starts; the notification uses the same rule.
+
+A private (radio-to-radio) call carries a **PRIVATE** tag and headlines the other
+radio: its name from the radio list, else its callsign, else **ID** and its number,
+else **Private call** while the destination is unknown. The talker stays on the line
+below. A call no radio was named on headlines its protocol: **TETRA call** (with
+"identity not decoded", since TETRA normally names both parties), **ProVoice call** or
+**X2-TDMA call**. The SLOT n strip and the notification follow the same rules; the
+notification says **Private** or **Identity not decoded** beside the talker.
 
 ### Scan lists
 

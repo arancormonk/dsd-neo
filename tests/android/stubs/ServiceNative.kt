@@ -140,5 +140,10 @@ object R {
         const val error_usb_gone = 20
         const val error_usb_permission = 21
         const val error_usb_open_failed = 22
+        const val notif_private = 23
+        const val notif_radio_id = 24
+        const val notif_private_call = 25
+        const val notif_protocol_call = 26
+        const val notif_identity_not_decoded = 27
     }
 }

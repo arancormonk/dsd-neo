@@ -353,9 +353,10 @@ Item {
             testContext.setMetric("leadSlot", 0)
         }
 
-        // A zero talkgroup is "none decoded": the hero headline is already the
-        // channel for such a call, and a subline reading "TG 0" under it would
-        // only say the decoder saw nothing. The source still shows when known.
+        // A talkgroup that did not decode has no text (the view leaves it empty,
+        // never "0", issue #773): the hero headline is already the channel for
+        // such a call, and the subline names no talkgroup. The source still shows
+        // when known, and nothing at all when neither decoded.
         function test_03c_the_hero_subline_hides_a_zero_talkgroup() {
             var ids = findChild(screenLoader.item, "heroIds")
             verify(ids !== null, "the hero ids text is missing")
@@ -366,13 +367,13 @@ Item {
             testContext.setMetric("slot1SrcText", "7001")
             tryVerify(function () { return ids.text === "TG 4001 · SRC 7001" }, 5000, "a decoded call names both ids")
 
-            testContext.setMetric("slot1TgText", "0")
-            tryVerify(function () { return ids.text === "SRC 7001" }, 5000, "a zero talkgroup still prints")
+            testContext.setMetric("slot1TgText", "")
+            tryVerify(function () { return ids.text === "SRC 7001" }, 5000, "an undecoded talkgroup still prints")
 
             testContext.setMetric("slot1SrcText", "Radio 1201 (1201)")
             tryVerify(function () { return ids.text === "SRC Radio 1201 (1201)" }, 5000, "source alias missing from hero")
 
-            testContext.setMetric("slot1SrcText", "0")
+            testContext.setMetric("slot1SrcText", "")
             tryVerify(function () { return !ids.visible }, 5000, "an id-less call keeps an empty subline")
 
             testContext.setMetric("slot1TgText", "")
@@ -453,8 +454,8 @@ Item {
 
                 // With no decoded identity the security fields start the row.
                 testContext.setMetric("slot1CallEnc", true)
-                testContext.setMetric("slot1TgText", "0")
-                testContext.setMetric("slot1SrcText", "0")
+                testContext.setMetric("slot1TgText", "")
+                testContext.setMetric("slot1SrcText", "")
                 tryVerify(function () {
                     return !ids.visible && enc.visible && Math.abs(enc.x) < 0.5
                             && algorithm.visible && !algorithm.truncated

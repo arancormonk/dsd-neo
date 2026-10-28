@@ -386,6 +386,72 @@ test_lead_slot_change_alone_notifies() {
     freeState(&state);
 }
 
+/* Issue #773 (D10): the hero and the second-slot strip word a private call and a call no party named apart from a
+   talkgroup call, so each slot exposes the call kind, the target's and the source's own labels and the protocol's
+   name, and a change to any of them alone notifies. */
+static void
+test_slot_kind_and_labels() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.synctype = DSD_SYNC_NXDN_POS;
+    dsd_qt::MetricsModel model;
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 2001U);
+    call.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    call.observed_m = dsd_decode_now_mono_s() + 60.0;
+    expect("a private call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    expect("the state carries an event ring", state.event_history_s != nullptr);
+    if (state.event_history_s == nullptr) {
+        freeState(&state);
+        return;
+    }
+    Event_History* staged = &state.event_history_s[0].Event_History_Items[0];
+    staged->target_id = 2001U;
+    DSD_SNPRINTF(staged->t_name, sizeof(staged->t_name), "%s", "Dispatcher 7");
+    staged->source_id = 4242U;
+    DSD_SNPRINTF(staged->s_name, sizeof(staged->s_name), "%s", "Engine 21");
+    model.refresh(&opts, &state);
+    expect("the slot exposes the call kind", model.slot1CallKind() == DSD_CALL_KIND_PRIVATE_VOICE);
+    expect("the slot exposes the target's label", model.slot1TgLabel() == QStringLiteral("Dispatcher 7"));
+    expect("the slot exposes the source's label", model.slot1SrcLabel() == QStringLiteral("Engine 21"));
+    expect("the slot exposes the protocol's name", model.slot1ProtocolLabel() == QStringLiteral("NXDN"));
+    expect("the other slot has none", model.slot2CallKind() == 0 && model.slot2TgLabel().isEmpty()
+                                          && model.slot2SrcLabel().isEmpty() && model.slot2ProtocolLabel().isEmpty());
+
+    int slot1_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::slot1Changed, [&]() { ++slot1_changes; });
+    DSD_SNPRINTF(staged->t_name, sizeof(staged->t_name), "%s", "Dispatcher 8");
+    model.refresh(&opts, &state);
+    expect("a target label change alone notifies", slot1_changes == 1);
+    DSD_SNPRINTF(staged->s_name, sizeof(staged->s_name), "%s", "Engine 22");
+    model.refresh(&opts, &state);
+    expect("a source label change notifies",
+           slot1_changes == 2 && model.slot1SrcLabel() == QStringLiteral("Engine 22"));
+    model.refresh(&opts, &state);
+    expect("an unchanged slot is silent", slot1_changes == 2);
+
+    /* The same call restarted as a group call, every other field equal: the kind alone notifies. */
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    expect("the group call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("a kind change alone notifies", model.slot1CallKind() == DSD_CALL_KIND_GROUP_VOICE && slot1_changes == 3
+                                               && model.slot1TgLabel() == QStringLiteral("Dispatcher 8"));
+
+    /* Speech no D-SETUP named: no party's text, and the protocol to headline it with. */
+    dsd_call_observation anonymous = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 1U, 0U, 0U);
+    anonymous.kind = DSD_CALL_KIND_VOICE;
+    anonymous.observed_m = dsd_decode_now_mono_s() + 61.0;
+    expect("an identity-less TETRA call opens",
+           dsd_call_state_observe(&state, &anonymous, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("an identity-less TETRA call is presented", model.slot2CallState() == 2);
+    expect("it names no party", model.slot2TgText().isEmpty() && model.slot2SrcText().isEmpty());
+    expect("it names its protocol", model.slot2ProtocolLabel() == QStringLiteral("TETRA"));
+    freeState(&state);
+}
+
 /* twoSlotCarrier is the decoder's own verdict, copied from each snapshot: no latch of its own. Snapshots that still
    carry a TDMA sync type after an acquisition reset cleared the verdict read false however many of them come, a
    snapshot whose verdict is set reads true at once, and a clear reads false at once. */
@@ -1893,6 +1959,7 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_tetra_rows();
+    test_slot_kind_and_labels();
     test_scan_row();
     test_dmr_ras_and_crc_policy();
     test_rigctl_audio_passband();

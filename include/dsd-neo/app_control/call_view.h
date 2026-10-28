@@ -85,6 +85,8 @@ enum {
      * here for the same reason as @c DSD_APP_CALL_NAME_SIZE and pinned by a static assert.
      */
     DSD_APP_CALL_CHANNEL_SIZE = 64,
+    /** Width of @c protocol_label: the longest protocol name it holds ("X2TDMA VOICE"), plus room and a NUL. */
+    DSD_APP_CALL_PROTOCOL_SIZE = 16,
 };
 
 /**
@@ -112,7 +114,10 @@ typedef struct {
      * headline instead. Empty when no row names the target.
      */
     char tg_label[DSD_APP_CALL_NAME_SIZE];
-    /** Resolved source label with the OTA identity, or the OTA identity alone. */
+    /**
+     * Resolved source label with the OTA identity, or the OTA identity alone. Empty when no source decoded -- never
+     * "0", which would read as a radio numbered zero.
+     */
     char src_text[DSD_APP_CALL_SOURCE_SIZE];
     /** The source radio's label alone, without its id (see @c src_text). Empty when none names it. */
     char src_label[DSD_SOURCE_ALIAS_NAME_MAX];
@@ -124,6 +129,11 @@ typedef struct {
      */
     char channel[DSD_APP_CALL_CHANNEL_SIZE];
     char service[DSD_SERVICE_LABEL_SIZE];
+    /**
+     * The protocol's display name ("TETRA", "ProVoice", "X2-TDMA", "P25p2", "DMR", ...), what a surface headlines a call
+     * no party named with ("TETRA call"). Empty for analog, whose channel names its call, and on other lines.
+     */
+    char protocol_label[DSD_APP_CALL_PROTOCOL_SIZE];
     dsd_receive_identity receive_identity;
     uint64_t tg_id;      /**< OTA target when one decoded, else the policy-resolved id. */
     uint64_t src_id;     /**< OTA source id; 0 when none decoded. */
