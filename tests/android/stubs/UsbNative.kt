@@ -2,6 +2,7 @@
 package io.github.arancormonk.dsdneo
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 // The engine as the USB broker sees it: descriptor slots, whether a session uses the local receiver, which
 // descriptors it holds, and stops.
@@ -20,6 +21,8 @@ object DsdNative {
     val publishedResetFirst = CopyOnWriteArrayList<Boolean>()
     /** What nativeHeldUsbFds() answers: { RTL-SDR, Airspy }, -1 for none. */
     @Volatile var held = intArrayOf(-1, -1)
+    /** How many times nativeHeldUsbFds() was asked: a test waits for the deferred close to ask again, not for time. */
+    val heldQueries = AtomicInteger()
     /** Every descriptor published to a slot, in order (clears included). */
     val published = CopyOnWriteArrayList<Int>()
     val stopCauses = CopyOnWriteArrayList<String>()
@@ -34,7 +37,10 @@ object DsdNative {
     }
     fun nativeSetAirspyUsbFd(fd: Int): Int { airspyFd = fd; published += fd; return STATUS_OK }
     fun nativeUsbResetOwed() = resetOwed
-    fun nativeHeldUsbFds(): IntArray? = held.copyOf()
+    fun nativeHeldUsbFds(): IntArray? {
+        heldQueries.incrementAndGet()
+        return held.copyOf()
+    }
     fun nativeIsRunning() = running
     fun nativeIsUsbFdInUse() = fdInUse
     fun nativeSessionUsesLocalReceiver() = sessionUsesLocalReceiver

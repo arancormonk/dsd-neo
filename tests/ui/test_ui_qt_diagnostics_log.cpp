@@ -2273,10 +2273,15 @@ installTapDoesNotWaitForTheLoad() {
             DiagnosticsLog::flushAtQuit();
             return dsd_realtime_mono_ms() - start;
         };
-        check(timed() + 50 >= static_cast<uint64_t>(DiagnosticsLog::kShutdownFlushMs),
+        check(DiagnosticsLog::quitFlushBoundMs() == DiagnosticsLog::kShutdownFlushMs
+                  && timed() + 50 >= static_cast<uint64_t>(DiagnosticsLog::kShutdownFlushMs),
               "the quit's own flush did not wait for its bound");
+        // Its bound, not the time it took: a test thread a loaded runner preempts would make any ceiling on the
+        // elapsed time fail (#782 gate r2 H5). A bound of 0 asks for the flush and returns, the log being unpublished.
         DiagnosticsLog::setFinalFlushAfterQuit(true);
-        check(timed() < 100, "the quit's flush waited though a final flush follows the teardown");
+        check(DiagnosticsLog::quitFlushBoundMs() == 0,
+              "the quit's flush waits though a final flush follows the teardown");
+        DiagnosticsLog::flushAtQuit();
         DiagnosticsLog::setFinalFlushAfterQuit(false);
     }
     // A flush asked for before the publish is honoured once it happens, within its bound.

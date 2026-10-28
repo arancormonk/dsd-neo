@@ -240,6 +240,17 @@ unsigned int rtl_device_test_verdicts_in_grace(void);
 /* How many stall recoveries of a receiver opened from an Android descriptor began waiting out the pre-recovery grace,
  * ever (#782): a test polls it to know the verdict was reached and the recovery waits. */
 unsigned int rtl_device_test_recoveries_in_grace(void);
+/* While @p hold is set, a pre-recovery grace does not pass at its deadline (samples, a stop or a released connection
+ * still end it), so a test acts inside it however late its thread runs; clearing it lets the grace pass once its
+ * deadline has. */
+void rtl_device_test_hold_recovery_grace(int hold);
+/* The monitor's clock reading (dsd_realtime_mono_ms()) the latest pre-recovery grace's deadline counts from, stored
+ * before rtl_device_test_recoveries_in_grace() counts it. */
+uint64_t rtl_device_test_recovery_grace_started_ms(void);
+/* How many pre-recovery graces ended, ever, and how the latest ended: 0 passed, 1 samples resumed, 2 a stop, exit
+ * request or detach, 3 the connection was released or replaced; -1 before any. */
+unsigned int rtl_device_test_recovery_graces_ended(void);
+int rtl_device_test_recovery_grace_result(void);
 /* The Android descriptor's seams (#782), in the pattern of the open-fd failure hook: @p hook stands in for
  * USBDEVFS_RESET on the descriptor, and for reading the descriptor's VID:PID and the opened handle's USB strings; each
  * answers 0 or a negative errno. NULL restores the platform's, which a host build has none of: it never touches a

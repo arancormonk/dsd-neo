@@ -266,9 +266,21 @@ private fun aDetachStopsOnlyTheSessionThatUsesTheReceiver(owner: String) {
 }
 
 private fun awaitClosed(connection: UsbDeviceConnection, what: String) {
-    val deadline = System.nanoTime() + 2_000_000_000L
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
     while (!connection.closed && System.nanoTime() < deadline) Thread.sleep(10)
     check(connection.closed) { what }
+}
+
+/**
+ * Wait until the deferred close has asked again whether the engine holds a descriptor, twice after this call, so it
+ * has seen it held and polled once more (#782 gate r2 H5): a check that the connection is still open then does not
+ * depend on how long this thread slept.
+ */
+private fun awaitHeldRechecked() {
+    val target = DsdNative.heldQueries.get() + 2
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+    while (DsdNative.heldQueries.get() < target && System.nanoTime() < deadline) Thread.sleep(5)
+    check(DsdNative.heldQueries.get() >= target) { "the deferred close never asked again whether the engine holds it" }
 }
 
 // #647: a retained receiver unplugged during an rtl_tcp, UDP or file session is closed at once, not held until that
@@ -295,7 +307,7 @@ private fun aConfiguredSessionKeepsTheConnectionUntilItEnds() {
     DsdNative.held = intArrayOf(connection.fileDescriptor, -1)
     rig.unplug(device)
     check(DsdNative.stopCauses == listOf("detached"))
-    Thread.sleep(300)
+    awaitHeldRechecked()
     check(!connection.closed) { "the connection stays open while the session's engine holds its descriptor" }
     DsdNative.held = intArrayOf(-1, -1)
     awaitClosed(connection, "the connection closes once the engine let go of it")
@@ -397,7 +409,7 @@ private fun aDetachAfterASuccessfulReopenStopsTheSession() {
     rig.unplug(device)
     check(DsdNative.stopCauses == listOf("detached")) { "the session on the reopened receiver is stopped" }
     check(!rig.record().optBoolean("ready") && DsdNative.usbFd == -1) { "the connection is released" }
-    Thread.sleep(300)
+    awaitHeldRechecked()
     check(!reopened.closed) { "the reopened connection stays open while the engine holds its descriptor" }
     DsdNative.held = intArrayOf(-1, -1)
     DsdNative.sessionUsesLocalReceiver = false
@@ -555,7 +567,7 @@ private fun aDeferredCloseWaitsOnlyOnItsOwnDescriptor() {
     DsdNative.sessionUsesLocalReceiver = true
     DsdNative.fdInUse = true
     rig.unplug(first)
-    Thread.sleep(200)
+    awaitHeldRechecked()
     check(!old.closed) { "held: the retired connection stays open" }
     // A replacement attaches and a session runs on it, holding its own descriptor; the global flags stay raised
     // throughout, as they would for the new session.

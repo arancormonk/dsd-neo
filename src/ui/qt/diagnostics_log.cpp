@@ -715,9 +715,14 @@ DiagnosticsLog::setFinalFlushAfterQuit(bool owned) {
     g_finalFlushAfterQuit.store(owned, std::memory_order_release);
 }
 
+int
+DiagnosticsLog::quitFlushBoundMs() {
+    return g_finalFlushAfterQuit.load(std::memory_order_acquire) ? 0 : kShutdownFlushMs;
+}
+
 void
 DiagnosticsLog::flushAtQuit() {
-    (void)flushDiagnostics(g_finalFlushAfterQuit.load(std::memory_order_acquire) ? 0 : kShutdownFlushMs);
+    (void)flushDiagnostics(quitFlushBoundMs());
 }
 
 DiagnosticsLog::FlushOutcome

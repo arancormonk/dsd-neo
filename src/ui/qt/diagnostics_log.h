@@ -103,6 +103,8 @@ class DiagnosticsLog {
     // #782), so the teardown holds one bounded flush.
     static void flushAtQuit();
     static void setFinalFlushAfterQuit(bool owned);
+    // How long flushAtQuit() waits at most: kShutdownFlushMs, or 0 (it only asks) once setFinalFlushAfterQuit(true).
+    static int quitFlushBoundMs();
     // Test seams: whether installTap()'s publish has happened, and the thread that resolved the log's directory (the
     // one QStandardPaths call).
     static bool installedForTest();

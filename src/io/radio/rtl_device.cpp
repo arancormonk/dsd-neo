@@ -3238,6 +3238,13 @@ static std::atomic<unsigned int> g_test_verdicts_paused{0U};
 static std::atomic<unsigned int> g_test_verdicts_in_grace{0U};
 /* rtl_device_test_recoveries_in_grace(): stall recoveries that began waiting out the pre-recovery grace (#782). */
 static std::atomic<unsigned int> g_test_recoveries_in_grace{0U};
+/* rtl_device_test_hold_recovery_grace(): while set, a pre-recovery grace does not pass at its deadline. */
+static std::atomic<int> g_test_hold_recovery_grace{0};
+/* rtl_device_test_recovery_grace_started_ms(): the clock reading the latest pre-recovery grace's deadline counts from. */
+static std::atomic<uint64_t> g_test_recovery_grace_started_ms{0U};
+/* rtl_device_test_recovery_graces_ended() and _grace_result(): pre-recovery graces that ended, and the latest's end. */
+static std::atomic<unsigned int> g_test_recovery_graces_ended{0U};
+static std::atomic<int> g_test_recovery_grace_result{-1};
 
 extern "C" void
 rtl_device_test_set_progress_limit_ms(uint32_t limit_ms) {
@@ -3307,6 +3314,26 @@ rtl_device_test_verdicts_in_grace(void) {
 extern "C" unsigned int
 rtl_device_test_recoveries_in_grace(void) {
     return g_test_recoveries_in_grace.load(std::memory_order_acquire);
+}
+
+extern "C" void
+rtl_device_test_hold_recovery_grace(int hold) {
+    g_test_hold_recovery_grace.store(hold ? 1 : 0, std::memory_order_release);
+}
+
+extern "C" uint64_t
+rtl_device_test_recovery_grace_started_ms(void) {
+    return g_test_recovery_grace_started_ms.load(std::memory_order_acquire);
+}
+
+extern "C" unsigned int
+rtl_device_test_recovery_graces_ended(void) {
+    return g_test_recovery_graces_ended.load(std::memory_order_acquire);
+}
+
+extern "C" int
+rtl_device_test_recovery_grace_result(void) {
+    return g_test_recovery_grace_result.load(std::memory_order_acquire);
 }
 #endif
 
@@ -3961,6 +3988,16 @@ enum rtl_usb_grace_result : int {
 };
 } // namespace
 
+/* Whether a test holds the pre-recovery grace open past its deadline (rtl_device_test_hold_recovery_grace()). */
+static int
+rtl_usb_recovery_grace_held(void) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    return g_test_hold_recovery_grace.load(std::memory_order_acquire);
+#else
+    return 0;
+#endif
+}
+
 /* Before a stall recovery resets a dongle behind an Android descriptor, wait out the unplug-owner grace
  * (rtl_device_set_unplug_owner_grace_ms()) as a session's ending does (#782): a stall can be an unplug whose detach
  * broadcast is on its way, and the host owns that. Polled until the deadline and once more at it: samples since the
@@ -3972,25 +4009,38 @@ rtl_usb_recovery_grace(const struct rtl_device* s, uint64_t verdict_progress) {
     if (!s->owns_preopened_fd || grace_ms == 0U) {
         return RTL_USB_GRACE_PASSED;
     }
+    const uint64_t started_ms = dsd_realtime_mono_ms();
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    /* The start first: a test that sees the count reads this grace's start. */
+    g_test_recovery_grace_started_ms.store(started_ms, std::memory_order_release);
     g_test_recoveries_in_grace.fetch_add(1U, std::memory_order_acq_rel);
 #endif
-    const uint64_t deadline_ms = dsd_realtime_mono_ms() + grace_ms;
+    const uint64_t deadline_ms = started_ms + grace_ms;
+    rtl_usb_grace_result result = RTL_USB_GRACE_PASSED;
     for (;;) {
         if (!rtl_monitor_running(s)) {
-            return RTL_USB_GRACE_LEFT;
+            result = RTL_USB_GRACE_LEFT;
+            break;
         }
         if (rtl_device_receiver_progressed_since(s, verdict_progress)) {
-            return RTL_USB_GRACE_RESUMED;
+            result = RTL_USB_GRACE_RESUMED;
+            break;
         }
         if (rtl_usb_preopened_fd_moved(s)) {
-            return RTL_USB_GRACE_MOVED;
+            result = RTL_USB_GRACE_MOVED;
+            break;
         }
-        if (dsd_realtime_mono_ms() >= deadline_ms) {
-            return RTL_USB_GRACE_PASSED;
+        if (dsd_realtime_mono_ms() >= deadline_ms && !rtl_usb_recovery_grace_held()) {
+            result = RTL_USB_GRACE_PASSED;
+            break;
         }
         dsd_sleep_ms(10);
     }
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_recovery_grace_result.store(static_cast<int>(result), std::memory_order_release);
+    g_test_recovery_graces_ended.fetch_add(1U, std::memory_order_acq_rel);
+#endif
+    return result;
 }
 
 /* Post a stall recovery request for @p s to its stream's controller (the registered callback). */

@@ -163,6 +163,7 @@ seams_reset(void) {
     g_events.recording.store(0);
     (void)events_take();
     (void)reset_fds_take();
+    rtl_device_test_hold_recovery_grace(0);
 }
 
 /* ---- Log tap ---- */
@@ -335,15 +336,30 @@ wait_posted(const rig& r, int n) {
     return r.posted.last_ms.load();
 }
 
-/* Wait until a stall recovery began its grace (the @p n-th ever); the time it was seen. */
-uint64_t
+/* Wait until a stall recovery began its grace (the @p n-th ever). A test that acts inside the grace holds it open
+ * first (rtl_device_test_hold_recovery_grace()), so its action lands there however late this thread runs. */
+void
 wait_in_grace(unsigned int n) {
     for (uint64_t waited = 0; waited < kWaitMs && rtl_device_test_recoveries_in_grace() < n; ++waited) {
         dsd_sleep_ms(1);
     }
     assert(rtl_device_test_recoveries_in_grace() >= n);
-    return dsd_realtime_mono_ms();
 }
+
+/* Wait until the @p n-th pre-recovery grace ever has ended; how it ended. */
+int
+wait_grace_ended(unsigned int n) {
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_test_recovery_graces_ended() < n; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    assert(rtl_device_test_recovery_graces_ended() >= n);
+    return rtl_device_test_recovery_grace_result();
+}
+
+/* The pre-recovery grace's ends, as rtl_device_test_recovery_grace_result() reports them. */
+constexpr int kGraceResumed = 1;
+constexpr int kGraceLeft = 2;
+constexpr int kGraceMoved = 3;
 
 /* The stream's controller: take the request, reset and reopen, restart the reader, report. */
 int
@@ -865,19 +881,24 @@ test_reader_return_inside_the_clear_keeps_obligation(void) {
 
 /* ---- The pre-recovery grace ---- */
 
-/* The verdict sets the obligation, then the recovery waits out the grace before it is posted. */
+/* The verdict sets the obligation, then the recovery waits out the grace before it is posted. Held open, nothing is
+ * posted inside it; released, the post comes no sooner than the whole grace after it began. Both readings are the
+ * monitor's (the grace's start, and note_post() on its thread), so a late test thread cannot shorten the measure
+ * (#782 gate r2 H5). */
 void
 test_grace_then_recovery(void) {
     seams_reset();
     rig r;
     rig_open(r);
     const unsigned int graces = rtl_device_test_recoveries_in_grace();
+    rtl_device_test_hold_recovery_grace(1);
     deliver(r, 5, 10U);
-    const uint64_t in_grace_ms = wait_in_grace(graces + 1U);
+    wait_in_grace(graces + 1U);
     assert(rtl_device_preopened_fd_reset_owed() == kFd);
     assert(r.posted.count.load() == 0);
+    rtl_device_test_hold_recovery_grace(0);
     const uint64_t posted_ms = wait_posted(r, 1);
-    assert(posted_ms - in_grace_ms + kPeriodMs >= kGraceMs);
+    assert(posted_ms - rtl_device_test_recovery_grace_started_ms() >= kGraceMs);
     char why[256] = {};
     assert(play_controller(r, why, sizeof why) == 0);
     assert(rtl_device_preopened_fd_reset_owed() == -1);
@@ -892,9 +913,12 @@ test_grace_samples_resume(void) {
     rig r;
     rig_open(r);
     const unsigned int graces = rtl_device_test_recoveries_in_grace();
+    const unsigned int ended = rtl_device_test_recovery_graces_ended();
+    rtl_device_test_hold_recovery_grace(1);
     deliver(r, 5, 10U);
-    (void)wait_in_grace(graces + 1U);
+    wait_in_grace(graces + 1U);
     deliver(r, 1, 0U);
+    assert(wait_grace_ended(ended + 1U) == kGraceResumed);
     for (uint64_t waited = 0; waited < kWaitMs && rtl_device_preopened_fd_reset_owed() != -1; ++waited) {
         dsd_sleep_ms(1);
     }
@@ -902,9 +926,10 @@ test_grace_samples_resume(void) {
     assert(r.posted.count.load() == 0 && g_resets.load() == 0);
     expect_running();
     /* The next silence is a new stall: a new verdict and grace, nothing posted before its grace ran. */
-    (void)wait_in_grace(graces + 2U);
+    wait_in_grace(graces + 2U);
     assert(r.posted.count.load() == 0);
     assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    rtl_device_test_hold_recovery_grace(0);
     (void)wait_posted(r, 1);
     rig_close(r);
 }
@@ -917,9 +942,12 @@ test_grace_stop_keeps_obligation(void) {
     rig r;
     rig_open(r);
     const unsigned int graces = rtl_device_test_recoveries_in_grace();
+    const unsigned int ended = rtl_device_test_recovery_graces_ended();
+    rtl_device_test_hold_recovery_grace(1);
     deliver(r, 5, 10U);
-    (void)wait_in_grace(graces + 1U);
+    wait_in_grace(graces + 1U);
     assert(rtl_device_stop_async(r.dev) == 0);
+    assert(wait_grace_ended(ended + 1U) == kGraceLeft);
     assert(r.posted.count.load() == 0 && g_resets.load() == 0);
     assert(dsd_input_failure_receiver_ended() == 0);
     rtl_device_destroy(r.dev);
@@ -954,11 +982,14 @@ test_grace_detach(void) {
     rig r;
     rig_open(r);
     const unsigned int graces = rtl_device_test_recoveries_in_grace();
+    const unsigned int ended = rtl_device_test_recovery_graces_ended();
+    rtl_device_test_hold_recovery_grace(1);
     deliver(r, 5, 10U);
-    (void)wait_in_grace(graces + 1U);
+    wait_in_grace(graces + 1U);
     dsd_exitflag_store(1);
     rtl_device_set_preopened_fd(-1);
-    dsd_sleep_ms(kGraceMs + 100U);
+    /* The exit request comes first, so the grace ends as the stop's, and the monitor posts and resets nothing after. */
+    assert(wait_grace_ended(ended + 1U) == kGraceLeft);
     assert(r.posted.count.load() == 0 && g_resets.load() == 0);
     assert(dsd_input_failure_receiver_ended() == 0);
     assert(rtl_device_preopened_fd_reset_owed() == -1);
@@ -974,9 +1005,12 @@ test_grace_connection_released(void) {
     rig r;
     rig_open(r);
     const unsigned int graces = rtl_device_test_recoveries_in_grace();
+    const unsigned int ended = rtl_device_test_recovery_graces_ended();
+    rtl_device_test_hold_recovery_grace(1);
     deliver(r, 5, 10U);
-    (void)wait_in_grace(graces + 1U);
+    wait_in_grace(graces + 1U);
     rtl_device_set_preopened_fd(-1);
+    assert(wait_grace_ended(ended + 1U) == kGraceMoved);
     assert(wait_receiver_ended(kWaitMs) != 0U);
     expect_receiver_ending(-ETIMEDOUT);
     assert(r.posted.count.load() == 0 && g_resets.load() == 0);

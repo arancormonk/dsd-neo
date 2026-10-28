@@ -474,7 +474,8 @@ private fun aSlowWakeLockAcquireBlocksNoLockReader() {
     val acquired = CountDownLatch(1)
     service.power.acquireHook = {
         acquiring.countDown()
-        await(acquired)
+        // Held until the test lets go, however long the reader below takes to be scheduled.
+        check(acquired.await(30, TimeUnit.SECONDS)) { "the test never released the wake-lock acquire" }
     }
     val startId = nextStartId++
     val starter = Thread { service.deliver(Intent().setAction(DecoderService.ACTION_START), startId) }
@@ -487,7 +488,8 @@ private fun aSlowWakeLockAcquireBlocksNoLockReader() {
             DecoderService.stopDecoder(service)
             read.countDown()
         }.start()
-        check(read.await(2, TimeUnit.SECONDS)) { "a wake-lock acquire blocked lifecycleStatus() or stopDecoder()" }
+        // A blocked reader never finishes; the bound only has to outlast a loaded runner's scheduling (#782 gate r2 H5).
+        check(read.await(10, TimeUnit.SECONDS)) { "a wake-lock acquire blocked lifecycleStatus() or stopDecoder()" }
         // A stop while STARTING is not lost: the intent it sends cancels the run once the start has published it.
         check(DsdNative.diagnostics.any { it.endsWith("cause=user state=STARTING: deferred to the stop intent ordered behind its start") }) {
             DsdNative.diagnostics

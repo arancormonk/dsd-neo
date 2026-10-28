@@ -4658,7 +4658,11 @@ Key public headers:
     own code. The host side (the broker's per-attachment record, storage and the swap) is in "Android foundation
     integration contracts" below ("USB broker") and in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
     `rtl_device_test_set_fd_reset_hook()`, `rtl_device_test_set_fd_identity_hook()`,
-    `rtl_device_test_recoveries_in_grace()`, `rtl_device_test_set_owed_clear_hook()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
+    `rtl_device_test_recoveries_in_grace()`, `rtl_device_test_set_owed_clear_hook()`, and for the pre-recovery grace
+    `rtl_device_test_hold_recovery_grace()` (held open past its deadline, so a test acts inside it however late it
+    runs), `rtl_device_test_recovery_grace_started_ms()` (the monitor's own start reading, which a grace length is
+    measured from) and `rtl_device_test_recovery_graces_ended()` / `_grace_result()`. Tests: `IO_RTL_USB_FD_RECOVERY`,
+    `IO_RTL_FD_HELD`.
   - A retune writes only the capture settings that changed (#782 D3; `rtl_sdr_fm.cpp` `CaptureWriteRecord`). The
     stream records, per open device, the sample rate it asked for and the one it read back, the tuner bandwidth it
     asked for, and the gain mode and manual gain it asked for (the gain that took is `dongle.gain`). The comparison is
@@ -8157,7 +8161,8 @@ Qt Quick frontend (`src/ui/qt`):
   - Android re-arms the window at `UsbManager.openDevice` and the service's `startDecoding` (`armStartupWindow()`).
   - `aboutToQuit` makes the tail durable with a bounded flush (`flushAtQuit()`). On Android, whose `main()` flushes
     once more after its teardown (`setFinalFlushAfterQuit()`), the quit's flush and the Activity teardown's
-    (`nativeFlushDiagnostics`) only start one, so the teardown holds a single bounded flush wait. `flushOutcome()` and
+    (`nativeFlushDiagnostics`) only start one (`quitFlushBoundMs()` is 0), so the teardown holds a single bounded
+    flush wait. `flushOutcome()` and
     `flushDiagnosticsOutcome()` tell a flush that timed out from one that failed to write or sync.
 
   A failed sync is retried after `kSyncIntervalMs`, never in a loop, and a file given up on (`closeCurrent()`) drops its
