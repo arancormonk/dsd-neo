@@ -884,7 +884,9 @@ Notes:
     keep their role there, and radio rows add restrictions for either party.
   - A talkgroup Hold overrides the talkgroup part only. A held call whose radio is blocked is not tuned and stays
     muted, and one whose radio has `record=off` plays but is not recorded.
-  - Radio rules act once the radio is known; a source or destination ID of `0` is unknown and never matches a row.
+  - Radio rules act once the radio is known; a source or destination ID of `0` is unknown and never matches a row
+    (of this list, or of the group list for a private call). A group call's target of `0` (an EDACS all-call) still
+    matches a group-list `0` row.
     A grant that names a blocked radio is not tuned. A grant without a source is tuned on the talkgroup decision,
     and when the source decodes mid-call the audio and recording gates apply its row. A call already followed is
     never released for a radio rule: it stays tuned, and a blocked radio's audio stays muted.

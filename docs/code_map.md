@@ -1373,7 +1373,8 @@ suite runs under this compiler.
   evaluation, the followed calls' priority refresh and the radio list's policy lookups look up no row for a 0 source
   or target, so a `0` row neither blocks, admits (`-W`) nor prioritises a call that names one party. Private-call vs private-grant admission is
   unchanged: `dsd_tg_policy_evaluate_private_call()` still needs a listed known party under `-W`, the grant variant
-  still tunes unlisted parties. Tests: `CORE_TALKGROUP_POLICY` (`test_unknown_private_endpoints`,
+  still tunes unlisted parties. Decided limit: a group call's target is not an endpoint, so a group target of 0 (the
+  EDACS all-call, which names no talkgroup) still matches a `0` row of the group list. Tests: `CORE_TALKGROUP_POLICY` (`test_unknown_private_endpoints`,
   `test_priority_refresh_pattern_and_unknown`).
 - Invariant (radio policy, `<dsd-neo/core/talkgroup_policy.h>`, issue #773 D5/D6/D8): the group and private evaluators
   apply the radio list's policy rows (`dsd_source_policy_lookup()`) for each known party (a group call's source,
@@ -1392,7 +1393,8 @@ suite runs under this compiler.
     untouched), DMR resident members and C_MOVE of the followed call. TETRA never re-judges the call it follows, and
     NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
     per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
-    radio. App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose.
+    radio. DMR's C_MOVE keeps following on a radio-only rejection, and its Hold allowance ignores the radio part.
+    App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose.
   - A call whose target is unknown but whose source is known (`dsd_tg_policy_radio_blocked()`): the `-Y` voice gate
     holds no blocked radio (M17 stays outside policy) and the Qt block label names it.
   - The P25 Phase 2 verdict key carries the radio list's store id (`dsd_p25p2_policy_key::radio_store`), read from the
@@ -6550,7 +6552,9 @@ Private per-protocol modules worth knowing about:
     heard on the carrier the receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is
     known there and admitted by the policy, on a slot the receive policy admits (`dsd_receive_allows()`, as for the
     receive hold: rejected media never holds the receiver); an unknown, blocked or receive-rejected resident call never
-    makes it busy. Held slots are described into the policy's followed-call ledger
+    makes it busy. The one exception (D5): a resident call refused only because the radio list blocks its talker
+    (`dsd_tg_policy_decision_only_radio_blocks()`) still holds the receiver, its audio muted by the media gates, as
+    a followed call is never let go for a radio rule. Held slots are described into the policy's followed-call ledger
     (`dsd_tg_policy_describe_followed_call()`, start = the slot's follow time) and every other ledger slot is cleared; a
     held carrier whose slots name nothing yet is described by the grant's identity (slot -1).
   - Gate. A candidate on another carrier while held (or while the caller's own legacy window says busy: `caller_busy`)

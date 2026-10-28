@@ -1192,6 +1192,31 @@ test_radio_block_keeps_followed_call(dsd_opts* opts, dsd_state* st) {
     rc |= expect_true("a move of the followed call naming a blocked talker is followed",
                       submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
 
+    /* Under a Hold on another talkgroup too: neither the Hold mismatch nor the radio block lets it go. */
+    init_env(opts, st, 2.0);
+    rc |= expect_true("radio list (hold)", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
+    st->tg_hold = 555U;
+    clock_at(0.4);
+    rc |= expect_true("a held-elsewhere move naming a blocked talker is followed",
+                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
+    st->tg_hold = 0U;
+
+    /* A talkgroup block still lets the moved call go. */
+    init_env(opts, st, 2.0);
+    rc |= expect_true("radio list (talkgroup block)", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
+    seed_row(st, 100, "B", 0, 0);
+    clock_at(0.4);
+    rc |= expect_true("a move of a talkgroup-blocked call is refused",
+                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_REFUSED && vc(st) == VC_A);
+
     init_env(opts, st, 2.0);
     rc |= expect_true("radio list again", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
     clock_at(1.0);
@@ -1199,6 +1224,15 @@ test_radio_block_keeps_followed_call(dsd_opts* opts, dsd_state* st) {
     dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
     tv_grant(opts, st, LPCN_B, 0, 200, 2);
     rc |= expect_true("a resident call with a blocked talker is still busy", g_tunes == 0 && opts->trunk_is_tuned == 0);
+
+    init_env(opts, st, 2.0);
+    rc |= expect_true("radio list (resident talkgroup block)", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
+    seed_row(st, 100, "B", 0, 0);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a talkgroup-blocked resident call with a blocked talker is not busy", vc(st) == VC_B);
     return rc;
 }
 

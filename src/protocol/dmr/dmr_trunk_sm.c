@@ -2144,10 +2144,13 @@ dmr_sm_move_decision(const dsd_opts* opts, const dsd_state* state, const dmr_sm_
     if (!dmr_sm_slot_identity_decision(opts, state, moved, decision)) {
         return 0;
     }
+    if (decision->tune_allowed || dsd_tg_policy_decision_only_radio_blocks(decision)) {
+        return 1;
+    }
+    // The Hold allowance: a Hold mismatch (with or without a radio block) never stops following the moved call either.
     const uint32_t non_tuning = (uint32_t)DSD_TG_POLICY_BLOCK_HOLD | (uint32_t)DSD_TG_POLICY_BLOCK_AUDIO
-                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM
-                                | (uint32_t)DSD_TG_POLICY_BLOCK_SOURCE;
-    if (!decision->tune_allowed && (decision->block_reasons & ~non_tuning) != 0U) {
+                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM;
+    if ((decision->block_reasons & ~non_tuning & ~(uint32_t)DSD_TG_POLICY_BLOCK_SOURCE) != 0U) {
         sm_log(opts, "move-refused-policy");
         return 0;
     }
