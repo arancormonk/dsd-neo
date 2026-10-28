@@ -5,6 +5,8 @@
 
 #include "recording_status.h"
 
+#include "decoder_host.h"
+
 #include <QLatin1String>
 #include <QMap>
 #include <QVariant>
@@ -62,6 +64,44 @@ RecordingStatus::noteRefusal(const QString& reason) {
     Q_EMIT changed();
 }
 
+void
+RecordingStatus::noteSent() {
+    const bool moved = !m_refusal.isEmpty() || !m_sentThisSession;
+    m_refusal.clear();
+    m_sentThisSession = true;
+    dsd_app_recording_view view{};
+    (void)dsd_app_recording_view_get(&view);
+    if (!same_view(view, m_view)) {
+        m_view = view;
+        Q_EMIT changed();
+    } else if (moved) {
+        Q_EMIT changed();
+    }
+}
+
+void
+RecordingStatus::setSessionActive(bool active) {
+    if (active == m_sessionActive) {
+        return;
+    }
+    m_sessionActive = active;
+    m_refusal.clear();
+    m_sentThisSession = false;
+    Q_EMIT changed();
+}
+
+bool
+RecordingStatus::sessionActive() const {
+    return m_sessionActive;
+}
+
+void
+recording_status_follow_host(RecordingStatus* status, DecoderHost* host) {
+    const auto follow = [status, host]() { status->setSessionActive(host->sessionActive()); };
+    follow();
+    QObject::connect(host, &DecoderHost::sessionStateChanged, status, follow);
+}
+
 bool
 RecordingStatus::published() const {
     return m_view.published != 0U;
@@ -103,6 +143,9 @@ RecordingStatus::journal() const {
 
 QString
 RecordingStatus::command() const {
+    if (!m_sentThisSession) {
+        return {};
+    }
     switch (m_view.command_id) {
         case DSD_APP_CMD_WAV_START: return QStringLiteral("start");
         case DSD_APP_CMD_WAV_STOP: return QStringLiteral("stop");
@@ -116,6 +159,9 @@ RecordingStatus::command() const {
 
 QString
 RecordingStatus::commandState() const {
+    if (!m_sentThisSession) {
+        return QStringLiteral("none");
+    }
     switch (m_view.command_state) {
         case DSD_APP_RECORDING_COMMAND_PENDING: return QStringLiteral("pending");
         case DSD_APP_RECORDING_COMMAND_APPLIED: return QStringLiteral("applied");

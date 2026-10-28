@@ -22,6 +22,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <dsd-neo/app_control/recording_view.h>
 class QTemporaryFile;
 
 namespace dsd_qt {
@@ -131,12 +132,13 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setRelaxedCrc(bool on) const;
     /**
      * @brief Start or stop recording each call in the running session (issue #708, D8), into the folder the session
-     * was started with. On sends @p unknownOnly first and then WAV start; off sends WAV stop and unknown-only off,
-     * which travels with Record calls (an off switch filters no recording of the user's own options).
+     * was started with. On sends @p unknownOnly and then WAV start; off sends unknown-only off and then WAV stop
+     * (unknown-only travels with Record calls: an off switch filters no recording of the user's own options).
      *
-     * Refused without sending anything, and said in RecordingStatus::refusal(), when the session has no folder to
-     * record into ("storage-unavailable") or records to one static WAV from its extra options ("static-wav"); the
-     * preference then applies at the next start. Queued like every command; the decoder holds it while a carrier loop
+     * Refused without sending anything, and said in RecordingStatus::refusal(), when no session is on ("no-session"),
+     * when on would record into a session with no folder ("storage-unavailable"), or either way when the session
+     * records to one static WAV from its extra options ("static-wav": a start or a stop would close the user's file);
+     * the preference then applies at the next start. Queued like every command; the decoder holds it while a carrier loop
      * of its own runs and refuses it during Signal search, which RecordingStatus shows.
      */
     Q_INVOKABLE bool setRecordCalls(bool on, bool unknownOnly) const;
@@ -357,6 +359,8 @@ class CommandBridge : public QObject {
     QString submitDecryption(const QVariantMap& fields, int scope, const QVariantMap& context);
     /* Why a recording switch was refused, or (empty) that it was sent. */
     void noteRecording(const QString& refusal) const;
+    /* The recording view of the session on, or false (refused as "no-session") with none. */
+    bool recordingSessionLive(dsd_app_recording_view* view) const;
 
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;

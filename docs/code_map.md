@@ -8022,10 +8022,14 @@ Qt Quick frontend (`src/ui/qt`):
     `dsd_cli_short_options()` the parser reads), so an option's value is never taken for an option and an option never
     for a value. A target CSV's options cell refuses every recording switch already (`dsd_scan_options_parse()` has
     none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and on every change.
-  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or WAV stop
-    then unknown-only off; it sends nothing, and says why in `RecordingStatus::refusal`, when the session names no
-    recording journal ("storage-unavailable": no folder to record into) or records to a static WAV of its extra options
-    ("static-wav": a start would close the user's file); the preference applies at the next start.
+  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or
+    unknown-only off then WAV stop; it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
+    ("no-session", from the host, since a view outlives its run), when on would record into a session that names no
+    recording journal ("storage-unavailable": no folder to record into), or either way in a session recording to a static
+    WAV of its extra options ("static-wav": a start or a stop would close the user's file); the preference applies at the
+    next start. `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the
+    refusal, and its command readings stay "none" until this session sends a switch (the decoder's command state is
+    process-wide).
     `setRecordUnknownOnly()` is sent only while the session records each call (a start still applying counts) and is
     otherwise inert: it travels with the next Record calls on. `RecordingStatus` (`recording_status.{h,cpp}`, context
     property `recordingStatus`, refreshed every UI tick by `UiController`) reads `recording_view` for QML: per-call,

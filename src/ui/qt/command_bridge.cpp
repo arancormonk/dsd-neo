@@ -230,33 +230,48 @@ CommandBridge::setRelaxedCrc(bool on) const {
 void
 CommandBridge::noteRecording(const QString& refusal) const {
     if (m_recordingStatus != nullptr) {
-        m_recordingStatus->noteRefusal(refusal);
+        if (refusal.isEmpty()) {
+            m_recordingStatus->noteSent();
+        } else {
+            m_recordingStatus->noteRefusal(refusal);
+        }
     }
+}
+
+bool
+CommandBridge::recordingSessionLive(dsd_app_recording_view* view) const {
+    // A view stays readable after its run ends, so whether a session is on comes from the host (through the status).
+    if (dsd_app_recording_view_get(view) != 1
+        || (m_recordingStatus != nullptr && !m_recordingStatus->sessionActive())) {
+        noteRecording(QStringLiteral("no-session"));
+        return false;
+    }
+    return true;
 }
 
 bool
 CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
     dsd_app_recording_view view{};
-    if (dsd_app_recording_view_get(&view) != 1) {
-        return false; // no decoder run has published its recording yet
+    if (!recordingSessionLive(&view)) {
+        return false;
     }
-    if (on) {
-        // Never record-on into a session the app gave no folder: it would record outside the app's storage.
-        if (view.journal_named == 0U) {
-            noteRecording(QStringLiteral("storage-unavailable"));
-            return false;
-        }
-        // Nor into one recording to a static WAV of the user's: starting per-call recording would close it.
-        if (view.mode == DSD_APP_RECORDING_MODE_STATIC) {
-            noteRecording(QStringLiteral("static-wav"));
-            return false;
-        }
+    // Never record-on into a session the app gave no folder: it would record outside the app's storage.
+    if (on && view.journal_named == 0U) {
+        noteRecording(QStringLiteral("storage-unavailable"));
+        return false;
     }
-    // Unknown-only first, so the first call recorded already follows it; off again after a stop.
+    // Nothing either way in a session recording to the user's own static WAV: a start would close it, and so would a
+    // stop. The preference applies at the next start.
+    if (view.mode == DSD_APP_RECORDING_MODE_STATIC) {
+        noteRecording(QStringLiteral("static-wav"));
+        return false;
+    }
+    // Unknown-only first either way: on, so the first call recorded already follows it; off, as it travels with Record
+    // calls. The start or stop goes last, so it is the command the status shows applying.
     const bool sent = on ? accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
                                && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0))
-                         : accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_STOP, nullptr, 0))
-                               && accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0));
+                         : accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0))
+                               && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_STOP, nullptr, 0));
     if (sent) {
         noteRecording(QString());
     }
@@ -266,7 +281,7 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
 bool
 CommandBridge::setRecordUnknownOnly(bool on) const {
     dsd_app_recording_view view{};
-    if (dsd_app_recording_view_get(&view) != 1) {
+    if (!recordingSessionLive(&view)) {
         return false;
     }
     // Whether the session records each call, a start or stop still applying counted as done.

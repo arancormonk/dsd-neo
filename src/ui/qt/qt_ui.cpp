@@ -266,6 +266,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* recordingStatus = new RecordingStatus(&engine);
     controller->setRecordingStatus(recordingStatus);
     commands->setRecordingStatus(recordingStatus);
+    recording_status_follow_host(recordingStatus, host);
     wire_attachment(host, controller, prefs, systems, scanLists);
 
     prune_missing_csv_paths(importedFiles, systems, scanLists);

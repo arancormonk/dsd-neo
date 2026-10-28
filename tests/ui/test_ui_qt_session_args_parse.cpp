@@ -270,6 +270,7 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     dsd_qt::CommandBridge bridge;
     dsd_qt::RecordingStatus status;
     bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
     status.refresh();
     expect("the status has the session's view", status.published() && !status.perCall() && status.storageNamed()
                                                     && !status.staticWav() && status.commandState() == "none");
@@ -291,7 +292,7 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("and applied", live.drain() == 1 && opts->record_unknown_only == 0);
 
     expect("Record calls off is queued", bridge.setRecordCalls(false, true));
-    expect("the stop and unknown-only off apply", live.drain() == 2);
+    expect("unknown-only off and the stop apply", live.drain() == 2);
     status.refresh();
     expect("the session stops recording", opts->record_unknown_only == 0 && opts->dmr_stereo_wav == 0
                                               && opts->wav_out_f == nullptr && opts->wav_out_fR == nullptr
@@ -309,6 +310,7 @@ test_live_without_storage(dsd_qt::AppPrefs& prefs) {
     dsd_qt::CommandBridge bridge;
     dsd_qt::RecordingStatus status;
     bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
     expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
     status.refresh();
     expect("nothing is sent", live.drain() == 0 && live.decoder.opts->dmr_stereo_wav == 0);
@@ -329,17 +331,106 @@ test_live_beside_a_static_wav(dsd_qt::AppPrefs& prefs, Sessions& sessions, const
     dsd_qt::CommandBridge bridge;
     dsd_qt::RecordingStatus status;
     bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
     expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
     status.refresh();
     expect("nothing is sent and the static WAV stays open",
            live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
     expect("the status says why", status.refusal() == QStringLiteral("static-wav") && status.staticWav());
+    // Nor is Record calls off sent: a stop would close the user's file as surely as a start.
+    expect("Record calls off is refused too", !bridge.setRecordCalls(false, false));
+    expect("nothing is sent and the static WAV stays open",
+           live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
+    expect("for the same reason", status.refusal() == QStringLiteral("static-wav"));
+}
+
+/* A host whose session a test starts and ends. */
+class PhaseHost : public dsd_qt::DecoderHost {
+  public:
+    SessionState phase = Idle;
+
+    bool
+    isRunning() const override {
+        return phase == Running;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    SessionState
+    sessionState() const override {
+        return phase;
+    }
+
+    bool
+    start(const QStringList& args) override {
+        (void)args;
+        return false;
+    }
+
+    void
+    stop() override {}
+
+    void
+    setPhase(SessionState next) {
+        phase = next;
+        Q_EMIT sessionStateChanged();
+    }
+};
+
+/* RecordingStatus is the session's: a start and an end clear its refusal, the command readings show nothing of the
+ * last session's until this one sends a switch, and with no session a switch is refused as such. */
+void
+test_status_follows_the_session(dsd_qt::AppPrefs& prefs) {
+    Sessions none; // a session with no storage, so a Record calls on is refused while it runs
+    bool started = false;
+    LiveSession live(prefs, none, &started);
+    expect("a session starts", started);
+    PhaseHost host;
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    dsd_qt::recording_status_follow_host(&status, &host);
+
+    expect("with no session, Record calls is refused", !bridge.setRecordCalls(true, false));
+    expect("as no session", status.refusal() == QStringLiteral("no-session") && live.drain() == 0);
+    expect("and so is unknown-only", !bridge.setRecordUnknownOnly(true) && live.drain() == 0);
+
+    dsd_app_recording_view view{};
+    (void)dsd_app_recording_view_get(&view);
+    expect("an earlier session left a command outcome behind", view.command_state != DSD_APP_RECORDING_COMMAND_NONE);
+    host.setPhase(dsd_qt::DecoderHost::Running);
+    status.refresh();
+    expect("a start clears the refusal", status.refusal().isEmpty() && status.sessionActive());
+    expect("and shows no command of the last session's",
+           status.commandState() == QStringLiteral("none") && status.command().isEmpty());
+
+    expect("Record calls on with no storage is refused", !bridge.setRecordCalls(true, false));
+    expect("as such", status.refusal() == QStringLiteral("storage-unavailable"));
+    host.setPhase(dsd_qt::DecoderHost::Idle);
+    expect("an end clears it", status.refusal().isEmpty() && !status.sessionActive());
+
+    host.setPhase(dsd_qt::DecoderHost::Running);
+    expect("Record calls off is sent", bridge.setRecordCalls(false, false));
+    expect("and this session's command shows at once",
+           status.commandState() == QStringLiteral("pending") && status.command() == QStringLiteral("stop"));
+    expect("both apply", live.drain() == 2);
+    status.refresh();
+    expect("then applied", status.commandState() == QStringLiteral("applied"));
+    host.setPhase(dsd_qt::DecoderHost::Idle);
+    expect("and gone with the session", status.commandState() == QStringLiteral("none"));
 }
 
 /* RecordingStatus reads the view as QML gets it: names for the states and failure kinds, one change signal per move. */
 void
 test_status_readings(void) {
     dsd_qt::RecordingStatus status;
+    // As in a session that sent a switch: the command readings are the decoder's.
+    status.setSessionActive(true);
+    status.noteSent();
+    status.apply(dsd_app_recording_view{});
     int changes = 0;
     QObject::connect(&status, &dsd_qt::RecordingStatus::changed, &status, [&changes]() { ++changes; });
     expect("nothing published yet", !status.published() && status.commandState() == "none" && status.journal() == "none"
@@ -397,6 +488,7 @@ main(int argc, char** argv) {
         test_live_commands(prefs, sessions);
         test_live_without_storage(prefs);
         test_live_beside_a_static_wav(prefs, sessions, dir.filePath(QStringLiteral("static.wav")));
+        test_status_follows_the_session(prefs);
     }
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {
