@@ -42,6 +42,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QMessageLogContext>
 #include <QMetaType>
 #include <QModelIndex>
 #include <QObject>
@@ -89,6 +90,21 @@ class QThread;
 namespace {
 
 int g_failures = 0;
+
+/* The model's once-only save-failure warning, counted and kept out of the output (the tests fail saves on purpose). */
+std::atomic<int> g_saveFailedWarnings{0};
+QtMessageHandler g_previousHandler = nullptr;
+
+void
+count_warnings(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (message.startsWith(QLatin1String("call history: saving the log failed"))) {
+        g_saveFailedWarnings++;
+        return;
+    }
+    if (g_previousHandler != nullptr) {
+        g_previousHandler(type, context, message);
+    }
+}
 
 void
 expect(const char* what, bool ok) {
@@ -2564,6 +2580,7 @@ test_failed_save_is_kept_and_retried(void) {
     const QString seenPath = dsd_qt::json_store_path("call_history_seen.json");
     expect("the seen store is blocked", QDir().mkpath(seenPath));
     QSignalSpy failing(&model, &CallHistoryModel::saveFailingChanged);
+    g_saveFailedWarnings = 0;
     model.startSaveForTest();
     settle_save(model);
     expect("a half-written save is a failure", model.saveFailing() && failing.count() == 1);
@@ -2575,7 +2592,7 @@ test_failed_save_is_kept_and_retried(void) {
     settle_save(model);
     expect("a failure again keeps it owed, on a longer delay",
            model.saveFailing() && model.savePendingForTest() && model.saveDelayMsForTest() > firstRetry);
-    expect("the failure is reported once", failing.count() == 1);
+    expect("the failure is reported once", failing.count() == 1 && g_saveFailedWarnings == 1);
 
     expect("the seen store is unblocked", QDir(seenPath).removeRecursively());
     model.startSaveForTest();
@@ -2595,6 +2612,7 @@ test_failed_save_is_kept_and_retried(void) {
     model.saveNow();
     settle_save(model);
     expect("a save of neither store is a failure, owed again", model.saveFailing() && model.savePendingForTest());
+    expect("a new run of failures is reported once more", g_saveFailedWarnings == 2);
     QDir(rowsPath).removeRecursively();
     QDir(seenPath).removeRecursively();
     model.saveNow();
@@ -2802,6 +2820,7 @@ main(int argc, char** argv) {
     }
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
+    g_previousHandler = qInstallMessageHandler(count_warnings);
 
     test_system_identity_persistence();
     test_scanning_rows_never_gain_hold_identity();

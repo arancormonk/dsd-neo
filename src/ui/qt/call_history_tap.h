@@ -20,6 +20,7 @@
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_TAP_H_
 
 #include <QByteArray>
+#include <QList>
 #include <QString>
 #include <QtGlobal>
 #include <condition_variable>
@@ -148,8 +149,10 @@ class CallHistoryTap {
     bool m_clearBound[2] = {false, false};
     std::unique_ptr<Event_History_I[]> m_rings;
     dsd_app_history_tap_cursor m_cursor[2] = {};
-    QByteArray m_pending;
+    /* The spill lines found and not yet appended, oldest first. */
+    QList<QByteArray> m_pending;
     int m_pendingPolls = 0;
+    bool m_dropReported = false;
     int m_batchPollsRun = 5;
 };
 

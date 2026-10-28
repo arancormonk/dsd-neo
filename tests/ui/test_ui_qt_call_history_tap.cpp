@@ -12,8 +12,10 @@
  * Everything here runs the real publisher (dsd_app_telemetry_publish_snapshot()), the real tap and the real GUI
  * consumer (dsd_app_get_latest_snapshot()): 300 commits while suspended keep every row; a process that dies in the
  * background leaves a spill the relaunch folds in, once, and drops only after an acknowledged save; the commits a
- * stopped decoder left published are captured; a clear made while the tap runs keeps its rows cleared; and the spill
- * is written in batches of about a kilobyte a row. */
+ * stopped decoder left published are captured; a clear made while the tap runs keeps its rows cleared, and one made
+ * after the app returned but before its first ingest hands the tap off instead of restarting it; the spill is written
+ * in batches of about a kilobyte a row; and a spill that cannot be written holds a bounded backlog, the newest rows,
+ * reported once. Notices fold once like calls. The deliberate failures' warnings are counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -21,6 +23,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QMessageLogContext>
 #include <QModelIndex>
 #include <QSet>
 #include <QSettings>
@@ -30,6 +33,7 @@
 #include <QVariant>
 #include <Qt>
 #include <QtGlobal>
+#include <atomic>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/events.h>
@@ -54,6 +58,26 @@ using dsd_qt::CallHistoryModel;
 namespace {
 
 int g_failures = 0;
+
+/* The model's and the tap's once-only warnings, counted (from any thread) and kept out of the output. */
+std::atomic<int> g_saveFailedWarnings{0};
+std::atomic<int> g_spillDropWarnings{0};
+QtMessageHandler g_previousHandler = nullptr;
+
+void
+count_warnings(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (message.startsWith(QLatin1String("call history: saving the log failed"))) {
+        g_saveFailedWarnings++;
+        return;
+    }
+    if (message.startsWith(QLatin1String("call history: the background capture cannot write its spill"))) {
+        g_spillDropWarnings++;
+        return;
+    }
+    if (g_previousHandler != nullptr) {
+        g_previousHandler(type, context, message);
+    }
+}
 
 void
 expect(const char* what, bool ok) {
@@ -143,6 +167,16 @@ struct Decoder {
         }
     }
 
+    /** Commit a data notice the way dsd_event_emit_data_notice() does. */
+    void
+    commitNotice(int slot, time_t when, const char* text) {
+        commit(slot, 0U, 0U, when);
+        Event_History* item = &state->event_history_s[slot].Event_History_Items[1];
+        item->category = DSD_EVENT_CATEGORY_DATA;
+        item->event_time = when;
+        DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s", text);
+    }
+
     void
     publish() {
         dsd_app_telemetry_publish_snapshot(state);
@@ -169,6 +203,15 @@ settle_save(CallHistoryModel& model) {
 }
 
 int
+notice_rows(const CallHistoryModel& model) {
+    int notices = 0;
+    for (int i = 0; i < model.count(); i++) {
+        notices += model.data(model.index(i), CallHistoryModel::KindRole).toInt() == CallHistoryModel::KindNotice;
+    }
+    return notices;
+}
+
+int
 rows_in_tg_range(const CallHistoryModel& model, qulonglong lo, qulonglong hi) {
     QSet<qulonglong> tgs;
     for (int i = 0; i < model.count(); i++) {
@@ -180,10 +223,12 @@ rows_in_tg_range(const CallHistoryModel& model, qulonglong lo, qulonglong hi) {
     return static_cast<int>(tgs.size());
 }
 
+/* The tap polls at its start and then only when a test asks (waitForBackgroundPollForTest()): a poll a minute
+ * otherwise, so a loaded machine cannot slip extra polls between a test's commits and change the batching. */
 void
 start_tap(CallHistoryModel& model) {
     model.setHistoryTapSource(&dsd_app_history_tap_copy);
-    model.setBackgroundCaptureTimingForTest(2, 5);
+    model.setBackgroundCaptureTimingForTest(60000, 5);
 }
 
 /* B1: 300 commits while the app is suspended, more than the ring holds, and every one is in History after it
@@ -224,9 +269,11 @@ test_background_commits_keep_every_row(void) {
     const QString seenPath = dsd_qt::json_store_path("call_history_seen.json");
     QFile::remove(seenPath);
     expect("the seen store is blocked", QDir().mkpath(seenPath));
+    g_saveFailedWarnings = 0;
     model.saveNow();
     settle_save(model);
     expect("a failed save keeps the spill", model.saveFailing() && spill_lines() == 300);
+    expect("the failure is reported once", g_saveFailedWarnings == 1);
     QDir(seenPath).removeRecursively();
     model.saveNow();
     settle_save(model);
@@ -251,37 +298,40 @@ test_spill_reload_after_process_death(void) {
         set_app_state(Qt::ApplicationSuspended);
         decoder.commitCalls(0, 40, 32001U, when);
         decoder.commitCalls(1, 20, 32101U, when + 15);
+        decoder.commitNotice(1, when + 700, "2025-08-06 12:00:00 SMS from 4321");
         decoder.publish();
         for (int poll = 0; poll < 6; poll++) {
             model.waitForBackgroundPollForTest();
         }
         expect("the batch reached the disk while the tap still runs",
-               model.backgroundCaptureRunningForTest() && spill_lines() == 60 && model.spillAppendsForTest() == 1);
+               model.backgroundCaptureRunningForTest() && spill_lines() == 61 && model.spillAppendsForTest() == 1);
     } // the process "dies": nothing folds the spill or saves the rows it holds
-    expect("the spill outlives the process", spill_lines() == 60);
+    expect("the spill outlives the process", spill_lines() == 61);
     const QString seenPath = dsd_qt::json_store_path("call_history_seen.json");
     {
         CallHistoryModel relaunched;
-        expect("the relaunch folds the spill", relaunched.count() == 61
-                                                   && rows_in_tg_range(relaunched, 32000U, 32040U) == 41
-                                                   && rows_in_tg_range(relaunched, 32101U, 32120U) == 20);
+        expect("the relaunch folds the spill",
+               relaunched.count() == 62 && rows_in_tg_range(relaunched, 32000U, 32040U) == 41
+                   && rows_in_tg_range(relaunched, 32101U, 32120U) == 20 && notice_rows(relaunched) == 1);
         gui_ingest(relaunched);
-        expect("the ring the rows are still in adds none twice", relaunched.count() == 61);
+        expect("the ring the rows are still in adds none twice",
+               relaunched.count() == 62 && notice_rows(relaunched) == 1);
         // This one cannot save either (its last save, on destruction, fails).
         QFile::remove(seenPath);
         expect("the seen store is blocked", QDir().mkpath(seenPath));
     }
     QDir(seenPath).removeRecursively();
-    expect("a relaunch that folded but did not get its save acknowledged keeps the spill", spill_lines() == 60);
+    expect("a relaunch that folded but did not get its save acknowledged keeps the spill", spill_lines() == 61);
     {
         CallHistoryModel again;
-        expect("folding it a second time adds nothing", again.count() == 61);
+        expect("folding it a second time adds nothing, a notice included",
+               again.count() == 62 && notice_rows(again) == 1);
         again.saveNow();
         settle_save(again);
         expect("the acknowledged save drops it", spill_size() == 0);
     }
     CallHistoryModel last;
-    expect("the log keeps every call", last.count() == 61);
+    expect("the log keeps every call", last.count() == 62 && notice_rows(last) == 1);
 }
 
 /* A decoder that stops while the app is away leaves its last rings published; the tap's next copy has its final
@@ -349,6 +399,70 @@ test_clear_while_suspended(void) {
            relaunched.count() == 3 && rows_in_tg_range(relaunched, 34201U, 34203U) == 3);
 }
 
+/* A clear made after the app returned but before the first ingest hands the tap off rather than restarting it in the
+ * foreground: the tap stays stopped, its rows stay cleared, and what comes after shows. */
+void
+test_clear_before_the_first_ingest_after_return(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754850000;
+    CallHistoryModel model;
+    start_tap(model);
+    decoder.commitCalls(0, 3, 36001U, when);
+    decoder.publish();
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commitCalls(0, 8, 36101U, when + 600);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    expect("the return owes the handoff", model.backgroundCaptureHandoffOwed());
+    model.clearAll();
+    expect("the clear hands the tap off and leaves it stopped", !model.backgroundCaptureRunningForTest()
+                                                                    && !model.backgroundCaptureHandoffOwed()
+                                                                    && model.count() == 0 && spill_size() == 0);
+    decoder.commitCalls(1, 2, 36201U, when + 1200);
+    decoder.publish();
+    gui_ingest(model);
+    expect("only the calls after the clear show", model.count() == 2 && rows_in_tg_range(model, 36201U, 36202U) == 2
+                                                      && !model.backgroundCaptureRunningForTest());
+}
+
+/* A spill that cannot be written (a full disk; here a directory in its place) leaves the tap holding at most twice one
+ * ring's rows: the newest, the oldest dropped and reported once. What it held reaches History once the spill can be
+ * written. */
+void
+test_unwritable_spill_keeps_a_bounded_backlog(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754860000;
+    CallHistoryModel model;
+    start_tap(model);
+    gui_ingest(model);
+    expect("the spill is blocked", QDir().mkpath(spill_path()));
+    g_spillDropWarnings = 0;
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commitCalls(0, 250, 37001U, when);
+    decoder.commitCalls(1, 250, 37301U, when);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    decoder.commitCalls(0, 250, 37601U, when + 9000);
+    decoder.publish();
+    for (int poll = 0; poll < 6; poll++) {
+        model.waitForBackgroundPollForTest();
+    }
+    expect("the backlog beyond the bound is reported once", g_spillDropWarnings == 1);
+    QDir(spill_path()).removeRecursively();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    // Held: the newest 508 of 750 (the first call batch's last 8, the second slot's 250, the last batch's 250); the
+    // ring still had the first batch's last 4 besides.
+    expect("the newest rows reach History", model.count() == 508 && rows_in_tg_range(model, 37601U, 37850U) == 250
+                                                && rows_in_tg_range(model, 37301U, 37550U) == 250
+                                                && rows_in_tg_range(model, 37243U, 37250U) == 8);
+    expect("the oldest held rows were dropped", rows_in_tg_range(model, 37001U, 37242U) == 0);
+}
+
 /* The spill is written in batches, never per row: a call a poll for 100 polls appends at most once every five
  * polls (five seconds at the app's pace), about a kilobyte a row, so even ten calls a second stay under the 16 KiB/s
  * the History stores budget. */
@@ -397,12 +511,15 @@ main(int argc, char** argv) {
     }
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
+    g_previousHandler = qInstallMessageHandler(count_warnings);
 
     test_background_commits_keep_every_row();
     test_spill_reload_after_process_death();
     test_stop_while_suspended();
     test_clear_while_suspended();
     test_sustained_write_volume();
+    test_clear_before_the_first_ingest_after_return();
+    test_unwritable_spill_keeps_a_bounded_backlog();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

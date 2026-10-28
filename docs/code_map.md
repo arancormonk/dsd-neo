@@ -7911,7 +7911,9 @@ Qt Quick frontend (`src/ui/qt`):
       once a minute instead of every 3 s, which was ~1 GB/hour of flash on a busy system.
     - **Worker:** the UI thread hands the single save worker (`m_savePool`, one thread) copies of `m_rows` and `m_seen`.
       The worker builds the JSON and writes both files, reading nothing live (issue #718: the build alone cost ~62 ms
-      per save at a full log). It reports the bytes written to `onSaveFinished()`.
+      per save at a full log). The copies are detached on the UI thread, each row's fragment list too, and the UI
+      thread replaces a row's fragment list rather than appending to it in place. It reports the bytes written to
+      `onSaveFinished()`.
     - **Ordinary saves:** the debounce and `clearAll()` never queue a second save while one is in flight
       (`m_savesInFlight`); a change during it marks the stores dirty and re-arms the debounce when the last one finishes.
     - **Forced saves:** `saveNow()`, when something is owed, copies the stores at once and queues the save straight onto
@@ -7951,8 +7953,10 @@ Qt Quick frontend (`src/ui/qt`):
     at start, and walks the copy outside every lock with the model's own rules (`walkRing()`, `noteSeen()`, the clear
     mark settled as `settleClear()` would, attribution from the tap's options fields). Rows it finds new or advanced
     are appended as JSON lines (`spillLine()`: the row with its `fr`, its seen key and entry, the verdict) to
-    `call_history_spill.jsonl` (`CallHistorySpill`, one mutex), at most once every five polls and at stop; a torn last
-    line gets a newline before the next append. Any other application state owes the handoff
+    `call_history_spill.jsonl` (`CallHistorySpill`, one mutex), oldest first, at most once every five polls (at once
+    when the held rows reach twice one ring's, 508) and at stop; a torn last line gets a newline before the next
+    append. While the spill cannot be written (a full disk) the tap keeps only the newest 508 rows it holds, the ring
+    still having the newest for the model, and reports the drop once per run of failures. Any other application state owes the handoff
     (`backgroundCaptureHandoffOwed()`): the next `refresh()`, which `UiController::tick()` forces with
     `flushHistory()` when no redraw would, stops the tap (a last poll, then its last append), adopts the clear mark the
     tap bound if the model's was still pending, and folds the spill in before its own ring walk (`foldSpill()`). The
@@ -7961,7 +7965,11 @@ Qt Quick frontend (`src/ui/qt`):
     fresh read would; lines a clear covers are skipped. The spill is emptied only after a save of the generation the
     fold made is acknowledged, and only if it still holds exactly what the fold read, so a tap appending meanwhile
     loses nothing. `clearAll()` while the tap runs stops it, takes its read position into the mark, empties the spill
-    and starts it again. Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs
+    and starts it again; after the app returned but before the first ingest it hands the tap off instead, which leaves
+    it stopped. Decided limit: the tap binds a clear the model made before it had read any ring per slot, at its first
+    copy of each, and the model adopts the binding only once both slots are bound (its own mark binds both slots
+    together). A tap that read one slot only leaves the mark pending, the model binds it at its own first read, and the
+    ring rows between the two binds stay hidden in that ring (the tap's spilled rows are already in the log). Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs
     about 210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy
     does); a minimal row spills as about 440 bytes (a named row about a kilobyte).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits

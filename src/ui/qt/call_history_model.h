@@ -592,8 +592,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void onApplicationStateChanged(Qt::ApplicationState state);
     /** @brief Start the background tap on what the model knows now (the app is leaving the screen). */
     void startBackgroundCapture();
-    /** @brief Stop the background tap, take the clear it settled, and fold in its spill. */
+    /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill. */
     void handOffBackgroundCapture();
+    /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
+    void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
     /** @brief Fold the spill into the log, idempotently by fragment; @return whether the row count changed. */
     bool foldSpill();
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.

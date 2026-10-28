@@ -1287,14 +1287,22 @@ CallHistoryModel::adoptNewRow(Row& row) {
 
 void
 CallHistoryModel::unionFragments(Row& existing, const QStringList& fragments) {
+    // Built aside and assigned rather than appended in place: a save worker may still hold the list
+    // (queueSave()), and the row only lets go of it.
+    QStringList merged = existing.fragments;
+    bool added = false;
     for (const QString& fragment : fragments) {
-        if (!existing.fragments.contains(fragment)) {
-            existing.fragments.append(fragment);
+        if (!merged.contains(fragment)) {
+            merged.append(fragment);
+            added = true;
         }
         // A row load() is still folding has no uid yet; rebuildFragmentIndex() indexes it then.
         if (existing.uid > 0) {
             m_fragmentIndex.insert(fragment, existing.uid);
         }
+    }
+    if (added) {
+        existing.fragments = std::move(merged);
     }
 }
 
@@ -1458,18 +1466,15 @@ CallHistoryModel::clearAll() {
     // A clear while the background tap runs (the app hidden but its loop running) covers what the tap read too: the
     // tap stops, its read position joins the model's, and it starts again behind the new mark. Everything spilled so
     // far is cleared rows.
+    // A tap the app's return already owes a handoff (no ingest since) is handed off instead: stopped, its clear
+    // adopted and its spill folded, as the next ingest would have, and it stays stopped in the foreground.
     const bool tapWasRunning = m_tap && m_tap->running();
-    if (tapWasRunning) {
+    const bool resumeTap = tapWasRunning && !m_handoffOwed;
+    if (resumeTap) {
         const CallHistoryTap::Result tapped = m_tap->stop();
-        if (tapped.read && (!m_ringRead || tapped.ring != m_ringPushSeqRing)) {
-            m_ringPushSeq[0] = tapped.pushSeq[0];
-            m_ringPushSeq[1] = tapped.pushSeq[1];
-            m_ringPushSeqRing = tapped.ring;
-            m_ringRead = true;
-        } else if (tapped.read) {
-            m_ringPushSeq[0] = qMax(m_ringPushSeq[0], tapped.pushSeq[0]);
-            m_ringPushSeq[1] = qMax(m_ringPushSeq[1], tapped.pushSeq[1]);
-        }
+        takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
+    } else if (tapWasRunning) {
+        handOffBackgroundCapture();
     }
     m_handoffOwed = false;
     m_clearRev++;
@@ -1510,7 +1515,7 @@ CallHistoryModel::clearAll() {
     // through); the emptied stores can follow on the worker without a stall here.
     m_generation++;
     startAsyncSave();
-    if (tapWasRunning) {
+    if (resumeTap) {
         startBackgroundCapture();
     }
 }
@@ -1891,10 +1896,15 @@ CallHistoryModel::queueSave() {
     // Snapshots the worker owns outright. Detached here, on the GUI thread, so the GUI thread's later
     // edits of m_rows and m_seen and the worker's reads never touch one container block: an implicitly
     // shared copy would leave the GUI thread deciding whether to detach from a relaxed reference count
-    // the worker drops. Copying the containers costs a fraction of a millisecond at a full log; building
-    // their JSON costs tens. The rows' strings stay shared, and nothing edits a string in place.
+    // the worker drops. That holds for the containers nested in a row too: each row's fragment list is
+    // detached as well, since a merge appends to the GUI's copy (unionFragments()). Copying the containers
+    // costs a fraction of a millisecond at a full log; building their JSON costs tens. The strings stay
+    // shared, and nothing edits a string in place.
     QList<Row> rows = m_rows;
     rows.detach();
+    for (Row& row : rows) {
+        row.fragments.detach();
+    }
     QHash<QString, SeenState> seen = m_seen;
     seen.detach();
     const quint64 generation = m_generation;
@@ -2027,12 +2037,32 @@ CallHistoryModel::startBackgroundCapture() {
 }
 
 void
+CallHistoryModel::takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring) {
+    if (!read) {
+        return;
+    }
+    // The tap read the ring after this model last did (Qt was paused), unless the loop kept running: on the
+    // same ring the later position of the two, else the tap's.
+    if (!m_ringRead || ring != m_ringPushSeqRing) {
+        m_ringPushSeq[0] = pushSeq[0];
+        m_ringPushSeq[1] = pushSeq[1];
+        m_ringPushSeqRing = ring;
+        m_ringRead = true;
+    } else {
+        m_ringPushSeq[0] = qMax(m_ringPushSeq[0], pushSeq[0]);
+        m_ringPushSeq[1] = qMax(m_ringPushSeq[1], pushSeq[1]);
+    }
+}
+
+void
 CallHistoryModel::handOffBackgroundCapture() {
     m_handoffOwed = false;
     if (!m_tap || !m_tap->running()) {
         return;
     }
     const CallHistoryTap::Result tapped = m_tap->stop();
+    // A clear before the next ingest covers what the tap read.
+    takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
     // A clear this model made before it had read any ring binds to what the first read finds (settleClear()). The
     // tap made that first read, so its binding is the one: binding later, here, would hide what the ring took in
     // between. A clear made after the tap started supersedes whatever the tap settled.

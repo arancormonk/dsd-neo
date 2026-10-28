@@ -18,6 +18,13 @@
 
 namespace dsd_qt {
 
+namespace {
+
+/* The most rows the tap holds while the spill cannot be written: twice what one slot's ring keeps. */
+constexpr qsizetype kMaxPendingRows = 2 * (DSD_EVENT_HISTORY_LEN - 1);
+
+} // namespace
+
 CallHistorySpill::CallHistorySpill(QString path) : m_path(std::move(path)) {}
 
 bool
@@ -106,6 +113,7 @@ CallHistoryTap::start(Context context) {
     m_cursor[1] = dsd_app_history_tap_cursor{};
     m_pending.clear();
     m_pendingPolls = 0;
+    m_dropReported = false;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_batchPollsRun = m_batchPolls;
@@ -211,8 +219,9 @@ CallHistoryTap::poll() {
         walk.clearedThrough = clear.pushSeq[slot];
         QList<CallHistoryModel::FreshRow> fresh;
         CallHistoryModel::walkRing(*ring, slot, walk, fresh);
-        for (const CallHistoryModel::FreshRow& row : fresh) {
-            m_pending.append(CallHistoryModel::spillLine(row));
+        // The walk goes newest first; held oldest first, so a backlog the spill cannot take loses its oldest rows.
+        for (auto it = fresh.crbegin(); it != fresh.crend(); ++it) {
+            m_pending.append(CallHistoryModel::spillLine(*it));
         }
         if (m_result.read && m_result.ring != instance) {
             m_result.pushSeq[0] = 0U;
@@ -226,8 +235,9 @@ CallHistoryTap::poll() {
     if (m_pending.isEmpty()) {
         return;
     }
-    // At most one append every m_batchPolls polls: the oldest held row waits that long, no longer.
-    if (++m_pendingPolls >= m_batchPollsRun) {
+    // At most one append every m_batchPolls polls: the oldest held row waits that long, no longer. A burst that
+    // fills the bound is written at once instead.
+    if (++m_pendingPolls >= m_batchPollsRun || m_pending.size() >= kMaxPendingRows) {
         flush();
     }
 }
@@ -237,11 +247,28 @@ CallHistoryTap::flush() {
     if (m_pending.isEmpty()) {
         return;
     }
-    // A failed append keeps the rows for the next one; the ring may still hold them for the model besides.
-    if (m_spill->append(m_pending)) {
-        m_pending.clear();
+    QByteArray lines;
+    for (const QByteArray& line : m_pending) {
+        lines.append(line);
     }
     m_pendingPolls = 0;
+    if (m_spill->append(lines)) {
+        m_pending.clear();
+        m_dropReported = false;
+        return;
+    }
+    // A failed append (a full disk) keeps the rows for the next one, but only the newest kMaxPendingRows: the
+    // ring holds the newest rows for the model besides, and an unbounded backlog would only grow while the disk
+    // stays full. Reported once per run of failures.
+    const qsizetype excess = m_pending.size() - kMaxPendingRows;
+    if (excess > 0) {
+        m_pending.erase(m_pending.begin(), m_pending.begin() + excess);
+        if (!m_dropReported) {
+            qWarning("call history: the background capture cannot write its spill; dropping the oldest of the rows "
+                     "it holds");
+            m_dropReported = true;
+        }
+    }
 }
 
 } // namespace dsd_qt
