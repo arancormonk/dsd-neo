@@ -46,6 +46,28 @@
     public static void abort();
 }
 
+# Call recordings (#708): playback, export/save and share.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingPlayback {
+    public static int play(android.content.Context, java.lang.String);
+    public static void pause();
+    public static void resume();
+    public static void seek(long);
+    public static void stop();
+    public static java.lang.String status();
+}
+
+-keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingExport {
+    public static java.lang.String[] transfer(android.content.ContentResolver, long, java.lang.String[], java.lang.String[], java.lang.String, boolean);
+    public static long progress(long);
+    public static void cancel(long);
+}
+
+-keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingShare {
+    public static java.lang.String[] roots(android.content.Context);
+    public static boolean canShare(android.content.Context, java.lang.String);
+    public static void share(android.content.Context, java.lang.String, java.lang.String);
+}
+
 -keep,allowoptimization class io.github.arancormonk.dsdneo.LocationSupport {
     public static void requestCurrentLocation(android.app.Activity, long);
     public static void requestSiteLocation(android.app.Activity, long);

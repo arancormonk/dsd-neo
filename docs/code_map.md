@@ -8051,6 +8051,29 @@ Qt Quick frontend (`src/ui/qt`):
     at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`. `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing
     (`setPlayingPath()` from Preparing to the end), releases each transfer's selection when it finishes, rechecks the
     missing files (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`).
+  - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
+    D10). Roots: `RecordingShare.roots()`, shared storage's `getExternalFilesDir(null)/Call recordings` first (named
+    even while away, at the path Android gives the app there), then `filesDir/Call recordings`. Playback:
+    `RecordingPlayback.kt` runs the pure `RecordingPlayer.kt` state machine on one looper thread with a `MediaPlayer`
+    and the transient speech audio focus; the player starts only when prepared, wanted, in the foreground and with the
+    focus, and a pause, the background or a focus change while preparing only change what is wanted. Each play has a
+    generation; the host polls `status()` on its refresh tick while a play is open and ignores another play's record.
+    `DsdNeoActivity` reports `onStart`/`onStop` (leaving pauses, D10) and releases the player in `onDestroy`. A play
+    that reaches its end reads Stopped with its path kept and its position at its length (a stop clears the path).
+    Export and save run on the host's one-thread transfer worker: it skips and counts the files there, then a
+    `content://` document goes to `RecordingExport.transfer()`, which writes through `DocumentCopies.beginWrite()`'s
+    `DocumentWrite` (the backup save's open, trim, sync, `closeWithError()` and delete) with its own
+    `CancellationSignal` (`cancelRecordingTransfer()`), distinct from the teardown abort. A ZIP's entries are DEFLATED
+    at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
+    streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
+    on the refresh tick; the end comes back queued. Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
+    whose real path is inside a root, folder by folder), then the chooser on the Android main thread through
+    `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two folders only), read
+    grant only. The store compacts a journal only while the session reads inactive: the engine's run opens and closes
+    the journal inside `nativeRun()`, the service reports IDLE after it returns, and a lifecycle record that cannot be
+    read while the engine runs reads RUNNING, not IDLE. Tests: `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`,
+    `ANDROID_RECORDING_EXPORT_JVM`, `ANDROID_RECORDING_SHARE_JVM` (also the provider declaration and the codes that
+    cross JNI).
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
     reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
     true and a session may start; only after that does it read each folder whole (one directory listing, the journal
@@ -9366,7 +9389,9 @@ thread, which the rest of the interface never is.
   ints, and the `document_transfer` suite checks that both sides name the same values. A save opens the document `wt`,
   else `w`; a file (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
-  than a short document, and deletes it; only a whole save closes normally.
+  than a short document, and deletes it; only a whole save closes normally. The write side is
+  `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
+  too.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.

@@ -54,7 +54,7 @@ receiver_source_name(int source) {
 
 } // namespace
 
-DecoderHostAndroid::~DecoderHostAndroid() = default;
+DecoderHostAndroid::~DecoderHostAndroid() { closeRecordingWork(); }
 
 bool
 DecoderHostAndroid::isRunning() const {
@@ -174,7 +174,11 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
     }
 
     const uint64_t session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
-    const QByteArray name = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
+    /* A record that could not be read names no service state. With the engine running it is not IDLE: the engine's
+     * run opens and closes the call recording journal (#708), and the recording store may rewrite a folder's journal
+     * only once the session reads inactive. */
+    const QString fallback = status.isEmpty() && running ? QStringLiteral("RUNNING") : QStringLiteral("IDLE");
+    const QByteArray name = status.value(QStringLiteral("state")).toString(fallback).toUtf8();
     const uint64_t now_ms = readRealtimeMs();
     /* Gate r5 L1: a record of another attempt than the current one (one this host retired or superseded, or the
      * previous session's while the start waits) is none of the current attempt's start, run or end. It leaves the
@@ -566,5 +570,7 @@ DecoderHostAndroid::refresh() {
     const auto status = readLifecycleStatus();
     applyLifecycleStatus(status, running);
     refreshLocalDevice();
+    refreshPlayback();
+    refreshRecordingTransfer();
 }
 } // namespace dsd_android

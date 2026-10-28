@@ -46,6 +46,9 @@ constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSup
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 constexpr const char* kScreenClass = "io/github/arancormonk/dsdneo/ScreenSupport";
 constexpr const char* kDocumentsClass = "io/github/arancormonk/dsdneo/DocumentCopies";
+constexpr const char* kPlaybackClass = "io/github/arancormonk/dsdneo/RecordingPlayback";
+constexpr const char* kExportClass = "io/github/arancormonk/dsdneo/RecordingExport";
+constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/RecordingShare";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
@@ -531,6 +534,127 @@ DecoderHostAndroid::platformCopyFileToDocument(const QString& sourcePath, const 
                "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z", resolver, source.object(),
                uri.object())
            == JNI_TRUE;
+}
+
+/*
+ * Call recordings (#708; the dispatch is decoder_host_android_recordings.cpp). Roots, playback and share are asked on
+ * the Qt main thread and only post or read there; the transfer runs on the host's transfer worker, which QJniObject
+ * attaches, with the held ContentResolver. RecordingShare's chooser starts on the Android main thread.
+ */
+QStringList
+DecoderHostAndroid::platformRecordingRoots() {
+    const QJniObject context = android_context();
+    if (!context.isValid()) {
+        return {};
+    }
+    // Must match RecordingShare.kt: @JvmStatic fun roots(context: Context): Array<String>.
+    return java_strings(QJniObject::callStaticObjectMethod(
+        kRecordingShareClass, "roots", "(Landroid/content/Context;)[Ljava/lang/String;", context.object()));
+}
+
+int
+DecoderHostAndroid::platformPlayRecording(const QString& path) {
+    const QJniObject context = android_context();
+    if (!context.isValid()) {
+        return 0;
+    }
+    const QJniObject file = QJniObject::fromString(path);
+    // Must match RecordingPlayback.kt: @JvmStatic fun play(context: Context, path: String): Int.
+    return QJniObject::callStaticMethod<jint>(kPlaybackClass, "play", "(Landroid/content/Context;Ljava/lang/String;)I",
+                                              context.object(), file.object());
+}
+
+void
+DecoderHostAndroid::platformPausePlayback() {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "pause", "()V");
+}
+
+void
+DecoderHostAndroid::platformResumePlayback() {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "resume", "()V");
+}
+
+void
+DecoderHostAndroid::platformSeekPlayback(qint64 positionMs) {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "seek", "(J)V", static_cast<jlong>(positionMs));
+}
+
+void
+DecoderHostAndroid::platformStopPlayback() {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "stop", "()V");
+}
+
+QString
+DecoderHostAndroid::platformPlaybackStatus() {
+    const QJniObject status = QJniObject::callStaticObjectMethod(kPlaybackClass, "status", "()Ljava/lang/String;");
+    return status.isValid() ? status.toString() : QString();
+}
+
+QStringList
+DecoderHostAndroid::platformTransferRecordings(qint64 id, const QStringList& paths, const QStringList& names,
+                                               const QString& reference, bool zip) {
+    const jobject resolver = g_content_resolver.load();
+    if (resolver == nullptr) {
+        return {};
+    }
+    /* This worker thread has no Java frame to reclaim local references, so each one goes by hand. */
+    QJniEnvironment env;
+    jobjectArray files = to_java_string_array(env, paths);
+    jobjectArray entries = files == nullptr ? nullptr : to_java_string_array(env, names);
+    if (entries == nullptr) {
+        if (files != nullptr) {
+            env->DeleteLocalRef(files);
+        }
+        return {};
+    }
+    const QJniObject uri = QJniObject::fromString(reference);
+    // Must match RecordingExport.kt: @JvmStatic fun transfer(ContentResolver, Long, Array<String>, Array<String>,
+    // String, Boolean): Array<String>. The descriptor stays one literal, which tools/check_android_r8.py reads whole.
+    // clang-format off
+    const QJniObject answer = QJniObject::callStaticObjectMethod(kExportClass, "transfer",
+        "(Landroid/content/ContentResolver;J[Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Z)[Ljava/lang/String;",
+        resolver, static_cast<jlong>(id), files, entries, uri.object(), static_cast<jboolean>(zip));
+    // clang-format on
+    env->DeleteLocalRef(entries);
+    env->DeleteLocalRef(files);
+    return java_strings(answer);
+}
+
+qint64
+DecoderHostAndroid::platformRecordingTransferProgress(qint64 id) {
+    return QJniObject::callStaticMethod<jlong>(kExportClass, "progress", "(J)J", static_cast<jlong>(id));
+}
+
+void
+DecoderHostAndroid::platformCancelRecordingTransfer(qint64 id) {
+    QJniObject::callStaticMethod<void>(kExportClass, "cancel", "(J)V", static_cast<jlong>(id));
+}
+
+bool
+DecoderHostAndroid::platformShareRecording(const QString& path, const QString& title) {
+    const QJniObject context = android_context();
+    if (!context.isValid()) {
+        return false;
+    }
+    const QJniObject file = QJniObject::fromString(path);
+    // Must match RecordingShare.kt: @JvmStatic fun canShare(context: Context, path: String): Boolean.
+    if (QJniObject::callStaticMethod<jboolean>(kRecordingShareClass, "canShare",
+                                               "(Landroid/content/Context;Ljava/lang/String;)Z", context.object(),
+                                               file.object())
+        != JNI_TRUE) {
+        return false;
+    }
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([path, title]() -> QVariant {
+        const auto activity = android_context();
+        if (activity.isValid()) {
+            // Must match RecordingShare.kt: @JvmStatic fun share(context: Context, path: String, title: String).
+            QJniObject::callStaticMethod<void>(
+                kRecordingShareClass, "share", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+                activity.object(), QJniObject::fromString(path).object(), QJniObject::fromString(title).object());
+        }
+        return {};
+    });
+    return true;
 }
 
 void

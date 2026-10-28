@@ -18877,6 +18877,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_android_host.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -19316,6 +19317,27 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             watchdog
     )
+    add_test(
+        NAME ANDROID_RECORDING_PLAYER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            recording_player
+    )
+    add_test(
+        NAME ANDROID_RECORDING_EXPORT_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            recording_export
+    )
+    add_test(
+        NAME ANDROID_RECORDING_SHARE_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            recording_share
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -19326,6 +19348,9 @@ if(Python3_Interpreter_FOUND)
         ANDROID_ENGINE_STOP_JVM
         ANDROID_EXIT_FACTS_JVM
         ANDROID_WATCHDOG_JVM
+        ANDROID_RECORDING_PLAYER_JVM
+        ANDROID_RECORDING_EXPORT_JVM
+        ANDROID_RECORDING_SHARE_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

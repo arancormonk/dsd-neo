@@ -116,5 +116,15 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/diagnostics_paths"/>
         </provider>
+        <!-- #708: call recordings, shared one at a time and read-only; only the "Call recordings" folders of the
+             two recording roots are reachable through it. -->
+        <provider
+            android:name="io.github.arancormonk.dsdneo.RecordingsProvider"
+            android:authorities="${applicationId}.recordings"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/recordings_paths"/>
+        </provider>
     </application>
 </manifest>

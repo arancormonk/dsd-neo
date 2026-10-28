@@ -146,6 +146,78 @@ def document_copy_codes_match():
     return None
 
 
+def kotlin_codes(path, names):
+    """The `const val NAME = <int>` values of `names` in the Kotlin source at `path`."""
+    text = path.read_text(encoding="utf-8")
+    return {name: int(value) for name, value in re.findall(r"const val ([A-Z_]+) = (\d+)", text) if name in names}
+
+
+def native_enum_matches(enum_name, prefix, source, names):
+    """Whether DecoderHost's `enum_name` (members `prefix<Name>`) and the Kotlin `source`'s `names` agree."""
+    header = REPO / "src/ui/qt/decoder_host.h"
+    try:
+        enum = re.search(rf"enum\s+{enum_name}\s*\{{([^}}]*)\}}", header.read_text(encoding="utf-8"))
+        jvm = kotlin_codes(REPO / APP_SOURCES / source, names)
+    except OSError as error:
+        return f"cannot read the {enum_name} codes: {error}"
+    if not enum:
+        return f"{header.relative_to(REPO)}: no enum {enum_name}"
+    native = {name.upper(): int(value) for name, value in re.findall(rf"{prefix}(\w+)\s*=\s*(\d+)", enum.group(1))}
+    native = {name: value for name, value in native.items() if name in names}
+    if len(jvm) != len(names) or native != jvm:
+        return (
+            f"DecoderHost::{enum_name} in {header.relative_to(REPO)} ({native}) and the codes in "
+            f"{APP_SOURCES / source} ({jvm}) must name the same values"
+        )
+    return None
+
+
+def recording_transfer_codes_match():
+    """#708: a call recording transfer's result crosses JNI as a plain int."""
+    names = ("DONE", "FAILED", "CANCELLED", "MISSING")
+    return native_enum_matches("RecordingTransferResult", "Transfer", "RecordingExport.kt", names)
+
+
+def playback_states_match():
+    """#708: the call recording player's state crosses JNI as a plain int."""
+    names = ("STOPPED", "PREPARING", "PLAYING", "PAUSED", "FAILED")
+    return native_enum_matches("PlaybackState", "Playback", "RecordingPlayer.kt", names)
+
+
+def recordings_provider_contract():
+    """#708: the recordings provider serves the two "Call recordings" folders RecordingShare names, and no more."""
+    package = REPO / "android/package"
+    try:
+        manifest = (package / "AndroidManifest.xml").read_text(encoding="utf-8")
+        paths = (package / "res/xml/recordings_paths.xml").read_text(encoding="utf-8")
+        share = (REPO / APP_SOURCES / "RecordingShare.kt").read_text(encoding="utf-8")
+        host = (REPO / "src/ui/qt/decoder_host.cpp").read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the recordings provider sources: {error}"
+    providers = re.findall(r"<provider\b(.*?)</provider>", manifest, re.S)
+    ours = [p for p in providers if 'android:authorities="${applicationId}.recordings"' in p]
+    if len(ours) != 1:
+        return "AndroidManifest.xml: one provider must have the authority ${applicationId}.recordings"
+    for attribute in (
+        'android:name="io.github.arancormonk.dsdneo.RecordingsProvider"',
+        'android:exported="false"',
+        'android:grantUriPermissions="true"',
+        'android:resource="@xml/recordings_paths"',
+    ):
+        if attribute not in ours[0]:
+            return f"AndroidManifest.xml: the recordings provider needs {attribute}"
+    entries = re.findall(r"<([\w-]+)\s+name=\"(\w+)\"\s+path=\"([^\"]*)\"\s*/>", paths)
+    if sorted(entries) != [("external-files-path", "external", "Call recordings/"), ("files-path", "internal", "Call recordings/")]:
+        return f"res/xml/recordings_paths.xml: only the two Call recordings folders may be served, not {entries}"
+    if 'const val FOLDER = "Call recordings"' not in share or 'const val AUTHORITY_SUFFIX = ".recordings"' not in share:
+        return f"{APP_SOURCES / 'RecordingShare.kt'}: FOLDER and AUTHORITY_SUFFIX must match the provider"
+    if 'json_store_path(QStringLiteral("Call recordings"))' not in host:
+        return "src/ui/qt/decoder_host.cpp: the base host's root must use the same folder name"
+    if "FLAG_GRANT_WRITE_URI_PERMISSION" in share:
+        return f"{APP_SOURCES / 'RecordingShare.kt'}: a share grants read access only"
+    return None
+
+
 def stop_callers_carry_their_cause():
     """Each production nativeStop caller names its own StopCause; only the user's Stop may abandon rdio uploads."""
     app = REPO / APP_SOURCES
@@ -462,6 +534,46 @@ SUITES = {
                     "SystemOs.kt",
                     "Uri.kt",
                 ),
+            ),
+        ),
+    ),
+    # The call recording player's state machine (#708). Plain Kotlin with no Android imports, so no stubs;
+    # RecordingPlayback runs it with a MediaPlayer and the audio focus.
+    "recording_player": Suite(
+        checks=(playback_states_match,),
+        builds=(Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),),
+    ),
+    # Call recording export and save (#708): the ZIP writer and the transfer into a document, through DocumentCopies'
+    # managed write, against the same resolver stubs as the backup's copies.
+    "recording_export": Suite(
+        checks=(recording_transfer_codes_match,),
+        builds=(
+            Build(
+                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt"),
+                tests=("RecordingExportTest.kt",),
+                stubs=(
+                    "AssetFileDescriptor.kt",
+                    "ContentResolver.kt",
+                    "Cursor.kt",
+                    "Log.kt",
+                    "Os.kt",
+                    "ParcelFileDescriptor.kt",
+                    "Provider.kt",
+                    "SystemOs.kt",
+                    "Uri.kt",
+                ),
+            ),
+        ),
+    ),
+    # Where call recordings live and sharing one (#708): the roots, the path checks and the share's intent, against
+    # stubs of the context, intents and FileProvider; the provider's declaration is read from the sources.
+    "recording_share": Suite(
+        checks=(recordings_provider_contract,),
+        builds=(
+            Build(
+                sources=("RecordingShare.kt",),
+                tests=("RecordingShareTest.kt",),
+                stubs=("ShareContext.kt", "ShareEnvironment.kt", "ShareFileProvider.kt", "Uri.kt", "Log.kt"),
             ),
         ),
     ),

@@ -10,15 +10,20 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSemaphore>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QUrl>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <atomic>
 #include <cstdio>
+#include <functional>
 #include <initializer_list>
+#include <mutex>
 #include <stdint.h>
 #include <utility>
 #include "../../android/decoder_host_android.h"
@@ -60,6 +65,79 @@ static PlatformCopies&
 platform() {
     static PlatformCopies value;
     return value;
+}
+
+namespace {
+/* The platform's call recording transport (#708): RecordingShare, RecordingPlayback and RecordingExport as the test
+ * arranged them. The transfer runs on the host's worker thread; a held one waits for the test or its own cancel. */
+struct PlatformRecordings {
+    QStringList roots;
+    int plays = 0;
+    int nextGeneration = 0;
+    QString played;
+    QStringList commands;
+    QString status;
+    int statusReads = 0;
+    // Guards what the worker writes and the test reads: paths through answer (std::mutex, which TSan sees).
+    std::mutex mutex;
+    std::atomic<int> transfers{0};
+    std::atomic<qint64> transferId{0};
+    QStringList paths;
+    QStringList names;
+    QString reference;
+    bool zip = false;
+    bool onWorker = false;
+    QStringList answer = {QStringLiteral("0")};
+    std::atomic<bool> hold{false};
+    QSemaphore entered;
+    QSemaphore released;
+    std::atomic<qint64> progress{-1};
+    std::atomic<qint64> cancelled{0};
+    int shares = 0;
+    QString sharedPath;
+    QString sharedTitle;
+    bool shareAnswer = true;
+};
+} // namespace
+
+static PlatformRecordings&
+recordings() {
+    static PlatformRecordings value;
+    return value;
+}
+
+/* What the platform's transfer last saw, and the answer it gives, under its lock. */
+template <class F>
+static auto
+with_transfer(F f) {
+    PlatformRecordings& r = recordings();
+    const std::lock_guard<std::mutex> lock(r.mutex);
+    return f(r);
+}
+
+static void
+reset_recordings() {
+    PlatformRecordings& r = recordings();
+    r.roots.clear();
+    r.plays = 0;
+    r.nextGeneration = 0;
+    r.played.clear();
+    r.commands.clear();
+    r.status.clear();
+    r.statusReads = 0;
+    r.transfers = 0;
+    r.transferId = 0;
+    r.paths.clear();
+    r.names.clear();
+    r.reference.clear();
+    r.zip = false;
+    r.onWorker = false;
+    r.answer = {QStringLiteral("0")};
+    r.hold = false;
+    r.progress = -1;
+    r.cancelled = 0;
+    r.shares = 0;
+    r.shareAnswer = true;
 }
 
 static bool running;
@@ -279,6 +357,85 @@ DecoderHostAndroid::platformCopyFileToDocument(const QString& sourcePath, const 
 void
 DecoderHostAndroid::abortDocumentTransfers() {
     DecoderHost::abortDocumentTransfers();
+}
+
+QStringList
+DecoderHostAndroid::platformRecordingRoots() {
+    return recordings().roots;
+}
+
+int
+DecoderHostAndroid::platformPlayRecording(const QString& path) {
+    PlatformRecordings& r = recordings();
+    ++r.plays;
+    r.played = path;
+    return r.nextGeneration;
+}
+
+void
+DecoderHostAndroid::platformPausePlayback() {
+    recordings().commands.append(QStringLiteral("pause"));
+}
+
+void
+DecoderHostAndroid::platformResumePlayback() {
+    recordings().commands.append(QStringLiteral("resume"));
+}
+
+void
+DecoderHostAndroid::platformSeekPlayback(qint64 positionMs) {
+    recordings().commands.append(QStringLiteral("seek %1").arg(positionMs));
+}
+
+void
+DecoderHostAndroid::platformStopPlayback() {
+    recordings().commands.append(QStringLiteral("stop"));
+}
+
+QString
+DecoderHostAndroid::platformPlaybackStatus() {
+    ++recordings().statusReads;
+    return recordings().status;
+}
+
+QStringList
+DecoderHostAndroid::platformTransferRecordings(qint64 id, const QStringList& paths, const QStringList& names,
+                                               const QString& reference, bool zip) {
+    PlatformRecordings& r = recordings();
+    {
+        const std::lock_guard<std::mutex> lock(r.mutex);
+        r.paths = paths;
+        r.names = names;
+        r.reference = reference;
+        r.zip = zip;
+        r.onWorker = QThread::currentThread() != QCoreApplication::instance()->thread();
+    }
+    r.transferId = id;
+    ++r.transfers;
+    r.entered.release();
+    // At most about five seconds, so a host that never cancels fails its checks instead of hanging the test.
+    for (int waits = 0; r.hold && r.cancelled.load() != id && waits < 1000 && !r.released.tryAcquire(1, 5); ++waits) {}
+    const std::lock_guard<std::mutex> lock(r.mutex);
+    return r.answer;
+}
+
+qint64
+DecoderHostAndroid::platformRecordingTransferProgress(qint64 id) {
+    return id == recordings().transferId.load() ? recordings().progress.load() : -1;
+}
+
+void
+DecoderHostAndroid::platformCancelRecordingTransfer(qint64 id) {
+    recordings().cancelled = id;
+}
+
+bool
+DecoderHostAndroid::platformShareRecording(const QString& path, const QString& title) {
+    PlatformRecordings& r = recordings();
+    ++r.shares;
+    r.sharedPath = path;
+    r.sharedTitle = title;
+    return r.shareAnswer;
 }
 } // namespace dsd_android
 
@@ -543,6 +700,300 @@ check_stop_publishes_stopping() {
     check(host.sessionState() == DecoderHost::Idle && changes == 0, "a stop from Idle publishes no phase");
     retained_record() = QJsonObject();
     serviceStops = 0;
+}
+
+/*
+ * #708: the call recording store may rewrite a folder's journal only while no decoder can be writing it, which it
+ * learns from the session reading inactive. The engine's run opens the journal and closes it before nativeRun returns,
+ * and the service reports IDLE only after that (pinned by the session state test). A record that could not be read
+ * names no state: while the engine runs it must not read as IDLE.
+ */
+static void
+check_unreadable_record_keeps_the_session() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    // Each time the session went from active to inactive: what the recording store hears as its end.
+    int ended = 0;
+    bool active = false;
+    QObject::connect(&host, &DecoderHost::sessionStateChanged, [&]() {
+        ended += active && !host.sessionActive() ? 1 : 0;
+        active = host.sessionActive();
+    });
+    nowMs = 40000;
+    retained_record() = {{"sessionId", 90}, {"state", "RUNNING"}, {"reason", dsd_android::kRunPending}};
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "the session runs");
+    retained_record() = QJsonObject();
+    for (int poll = 0; poll < 3; ++poll) {
+        nowMs += 250;
+        host.refresh();
+        check(host.sessionActive() && ended == 0, "an unreadable record while the engine runs keeps the session");
+    }
+    running = false;
+    nowMs += 250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && ended == 1,
+          "once the engine has returned (its journal closed), an unreadable record reads Idle");
+
+    /* The first poll of a UI recreated over a running session: known, and active. */
+    DecoderHostAndroid recreated;
+    running = true;
+    recreated.refresh();
+    check(recreated.sessionStateKnown() && recreated.sessionActive(),
+          "a first poll that cannot read the record while the engine runs knows the session as active");
+    running = false;
+}
+
+static QString
+temp_recording(const QTemporaryDir& dir, const char* name, const QByteArray& bytes) {
+    const QString path = dir.filePath(QString::fromLatin1(name));
+    write_file(path, bytes);
+    return path;
+}
+
+/* #708 D1: the roots are the platform's, shared storage first; the base host's when it names none. */
+static void
+check_recording_roots() {
+    dsd_android::DecoderHostAndroid host;
+    reset_recordings();
+    recordings().roots = {QStringLiteral("/storage/emulated/0/Android/data/app/files/Call recordings"),
+                          QStringLiteral("/data/user/0/app/files/Call recordings")};
+    check(host.recordingRoots() == recordings().roots, "the platform's roots, in its order");
+    recordings().roots.clear();
+    const QStringList fallback = host.recordingRoots();
+    check(fallback.size() == 1 && fallback.first().endsWith(QStringLiteral("/Call recordings")),
+          "the base host's root when the platform names none");
+}
+
+/* #708 D6/D10: the player's status reaches the host through its poll, for the play it opened only. */
+static void
+check_recording_playback() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    const QString a = temp_recording(dir, "a.wav", "RIFF");
+    DecoderHostAndroid host;
+    QStringList gone;
+    QObject::connect(&host, &DecoderHost::recordingFilesMissing, [&gone](const QStringList& paths) { gone += paths; });
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    check(host.playbackSupported() && host.property("playbackSupported").toBool(), "the Android host plays");
+
+    r.nextGeneration = 7;
+    host.playRecording(a);
+    check(r.plays == 1 && r.played == a, "a play reaches the platform's player");
+    check(host.playbackState() == DecoderHost::PlaybackPreparing && host.playbackPath() == a, "and reads Preparing");
+    r.status = QStringLiteral("6\t2\t900\t60000\t");
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackPreparing, "an earlier play's record is not this one's");
+    r.status = QStringLiteral("7\tnot a state\t0\t0\t");
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackPreparing, "a record that cannot be read says nothing");
+    r.status = QStringLiteral("7\t2\t1500\t60000\t");
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackPlaying && host.playbackPositionMs() == 1500
+              && host.playbackDurationMs() == 60000,
+          "the play's record is published");
+
+    host.pausePlayback();
+    host.resumePlayback();
+    host.seekPlayback(90000);
+    check(r.commands == QStringList({QStringLiteral("pause"), QStringLiteral("resume"), QStringLiteral("seek 90000")}),
+          "pause, resume and seek reach the player");
+    check(host.playbackPositionMs() == 60000, "a seek shows its target at once, inside the recording");
+
+    r.status = QStringLiteral("7\t0\t60000\t60000\t");
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStopped && host.playbackPath() == a
+              && host.playbackPositionMs() == 60000,
+          "a play that ended reads Stopped at its end, its path kept");
+    const int reads = r.statusReads;
+    host.refresh();
+    host.pausePlayback();
+    check(r.statusReads == reads && r.commands.size() == 3, "an ended play is polled and steered no more");
+
+    r.nextGeneration = 8;
+    host.playRecording(a);
+    r.status = QStringLiteral("8\t4\t0\t0\tmissing");
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("missing")
+              && gone == QStringList({a}),
+          "a file the player found gone fails as missing and is reported");
+
+    r.nextGeneration = 9;
+    host.playRecording(a);
+    r.commands.clear();
+    host.stopPlayback();
+    check(r.commands == QStringList({QStringLiteral("stop")}) && host.playbackState() == DecoderHost::PlaybackStopped
+              && host.playbackPath().isEmpty(),
+          "a stop reaches the player and reads Stopped with no path");
+    r.status = QStringLiteral("9\t2\t10\t60000\t");
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStopped, "a stopped play's late record is not published");
+
+    r.nextGeneration = 0;
+    host.playRecording(a);
+    check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("failed"),
+          "a play the platform cannot take fails");
+
+    r.commands.clear();
+    host.playRecording(dir.filePath(QStringLiteral("gone.wav")));
+    check(r.commands == QStringList({QStringLiteral("stop")}) && r.plays == 4,
+          "a missing file stops what plays and never reaches the player");
+}
+
+/* Pump the GUI thread until the host's transfer ends, for at most about five seconds. */
+static bool
+wait_for(const std::function<bool()>& done) {
+    for (int i = 0; i < 1000 && !done(); ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(5);
+    }
+    return done();
+}
+
+/* #708 D9: exports and saves run on the host's worker, count what is there, and report their end on the GUI thread. */
+static void
+check_recording_transfers() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    const QString a = temp_recording(dir, "a.wav", QByteArray(100, 'a'));
+    const QString b = temp_recording(dir, "b.wav", QByteArray(250, 'b'));
+    const QString gone = dir.filePath(QStringLiteral("gone.wav"));
+    const QString document = QStringLiteral("content://com.example.documents/document/calls.zip");
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    DecoderHostAndroid host;
+    check(host.recordingExportSupported(), "the Android host exports ZIPs");
+    QList<QList<int>> finished;
+    QStringList reported;
+    QObject::connect(
+        &host, &DecoderHost::recordingTransferFinished,
+        [&finished](int selection, int result, int missing) { finished.append({selection, result, missing}); });
+    QObject::connect(&host, &DecoderHost::recordingFilesMissing,
+                     [&reported](const QStringList& paths) { reported += paths; });
+
+    r.hold = true;
+    const QVariantMap selection = {{"selection", 5},
+                                   {"paths", QStringList({a, gone, b})},
+                                   {"names", QStringList({"S/a.wav", "S/gone.wav", "S/b.wav"})},
+                                   {"bytes", 999}};
+    check(host.exportRecordings(selection, document), "an export begins");
+    check(r.entered.tryAcquire(1, 5000), "the export reaches the platform");
+    check(with_transfer([](const PlatformRecordings& seen) { return seen.onWorker; }),
+          "on the transfer worker, not the GUI thread");
+    check(with_transfer([&](const PlatformRecordings& seen) {
+              return seen.paths == QStringList({a, b}) && seen.names == QStringList({"S/a.wav", "S/b.wav"}) && seen.zip
+                     && seen.reference == document;
+          }),
+          "with the files that are there, named in order");
+    check(wait_for([&host]() { return host.recordingTransferTotalBytes() == 350; }),
+          "its total is what the worker counted");
+    r.progress = 120;
+    host.refresh();
+    check(host.recordingTransferActive() && host.recordingTransferBytes() == 120, "a poll publishes its progress");
+    // The held platform call returns once it sees its own cancel, as RecordingExport's does.
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("2")}; });
+    host.cancelRecordingTransfer();
+    check(r.cancelled.load() == r.transferId.load(), "a cancel names the running transfer");
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "the export ends");
+    check(finished.value(0) == QList<int>({5, DecoderHost::TransferCancelled, 1}) && reported == QStringList({gone}),
+          "cancelled, the file found gone counted and reported");
+    check(!host.recordingTransferActive(), "and nothing runs");
+    r.hold = false;
+
+    // A save is the same transfer of one file, not zipped; the platform's own finds come back too.
+    finished.clear();
+    reported.clear();
+    with_transfer(
+        [](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0"), QStringLiteral("/vanished.wav")}; });
+    const qint64 first = r.transferId.load();
+    check(host.saveRecording({{"selection", 6}, {"paths", QStringList({b})}, {"bytes", 250}}, document),
+          "a save begins");
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "the save ends");
+    check(with_transfer([&](const PlatformRecordings& seen) {
+              return !seen.zip && seen.paths == QStringList({b}) && seen.names.isEmpty();
+          }) && r.transferId.load() > first,
+          "a save is one file, not zipped, under a new id");
+    check(finished.value(0) == QList<int>({6, DecoderHost::TransferDone, 1})
+              && reported == QStringList({"/vanished.wav"}),
+          "done, with what the platform found gone");
+
+    // Nothing there: the platform is never asked.
+    finished.clear();
+    const int transfers = r.transfers.load();
+    host.saveRecording({{"selection", 7}, {"paths", QStringList({gone})}}, document);
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "a save of a gone file ends");
+    check(finished.value(0) == QList<int>({7, DecoderHost::TransferMissing, 1}) && r.transfers.load() == transfers,
+          "as missing, without the platform");
+
+    // An answer the host cannot read fails.
+    for (const QStringList& answer : {QStringList(), QStringList({QStringLiteral("x")}), QStringList({"9"})}) {
+        finished.clear();
+        with_transfer([&answer](PlatformRecordings& seen) { return seen.answer = answer; });
+        host.exportRecordings({{"selection", 8}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
+                              document);
+        check(wait_for([&finished]() { return !finished.isEmpty(); }), "the export ends");
+        check(finished.value(0).value(1) == DecoderHost::TransferFailed, "an answer that cannot be read fails");
+    }
+
+    // A file URL: the base host's copy, still off the GUI thread; no ZIP goes there.
+    finished.clear();
+    const QString copy = dir.filePath(QStringLiteral("copy.wav"));
+    host.saveRecording({{"selection", 9}, {"paths", QStringList({b})}}, QUrl::fromLocalFile(copy).toString());
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "a save to a file ends");
+    check(finished.value(0) == QList<int>({9, DecoderHost::TransferDone, 0}) && read_file(copy) == QByteArray(250, 'b'),
+          "a save to a file URL copies the recording");
+    finished.clear();
+    host.exportRecordings({{"selection", 10}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
+                          QUrl::fromLocalFile(dir.filePath(QStringLiteral("x.zip"))).toString());
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "a ZIP to a file ends");
+    check(finished.value(0).value(1) == DecoderHost::TransferFailed, "a ZIP goes only into a platform document");
+
+    // A host that goes away mid-transfer cancels it and waits for its worker.
+    {
+        DecoderHostAndroid leaving;
+        r.hold = true;
+        with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("2")}; });
+        leaving.exportRecordings({{"selection", 11}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
+                                 document);
+        check(r.entered.tryAcquire(1, 5000), "the leaving host's export runs");
+    }
+    check(r.cancelled.load() == r.transferId.load(), "a host destroyed mid-transfer cancels it first");
+    r.hold = false;
+
+    // After the teardown abort nothing begins.
+    finished.clear();
+    host.abortDocumentTransfers();
+    const int before = r.transfers.load();
+    check(!host.exportRecordings({{"selection", 12}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
+                                 document),
+          "an export after the abort does not begin");
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "and still ends");
+    check(finished.value(0).value(1) == DecoderHost::TransferFailed && r.transfers.load() == before,
+          "failed, without the platform");
+}
+
+/* #708: a share reaches the platform only for a recording the store manages that is there. */
+static void
+check_recording_share() {
+    using dsd_android::DecoderHostAndroid;
+    const QTemporaryDir dir;
+    const QString a = temp_recording(dir, "a.wav", "RIFF");
+    DecoderHostAndroid host;
+    reset_recordings();
+    host.setRecordingIndex([&a](const QString& path) { return path == a; });
+    check(host.shareRecording(a, QStringLiteral("Call recording")) && recordings().shares == 1
+              && recordings().sharedPath == a && recordings().sharedTitle == QStringLiteral("Call recording"),
+          "an indexed recording is shared through the platform");
+    recordings().shareAnswer = false;
+    check(!host.shareRecording(a, QStringLiteral("Call recording")), "the platform's refusal is the answer");
+    check(!host.shareRecording(dir.filePath(QStringLiteral("other.wav")), QStringLiteral("x"))
+              && recordings().shares == 2,
+          "a path the store does not manage never reaches the platform");
 }
 
 static QString
@@ -1622,6 +2073,11 @@ main(int argc, char** argv) {
     check_superseded_attempt_never_drives_the_phase();
     check_retired_attempt_records_are_ignored();
     check_superseded_attempt_that_ran_keeps_the_screen();
+    check_unreadable_record_keeps_the_session();
+    check_recording_roots();
+    check_recording_playback();
+    check_recording_transfers();
+    check_recording_share();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");
