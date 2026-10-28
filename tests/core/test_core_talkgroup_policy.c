@@ -2966,6 +2966,137 @@ test_session_avoid_count_pattern(void) {
     return rc;
 }
 
+/* B9: an endpoint ID of 0 is unknown, never an ID. A `0` row (B, A, priority 90) neither blocks, admits nor
+ * prioritises a private call that names only one party; private-call vs private-grant admission is unchanged. */
+static int
+test_unknown_private_endpoints(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_private_calls = 1;
+    opts.trunk_tune_group_calls = 1;
+
+    rc |= expect_true("zero row B", add_exact_row(st, 0, "B", "Zero") == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("src 0 ignores a B row", d.tune_allowed && d.audio_allowed && d.block_reasons == 0u
+                                                   && d.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 0, 0, 0, &d);
+    rc |= expect_true("dst 0 ignores a B row", d.tune_allowed && d.audio_allowed && d.block_reasons == 0u
+                                                   && d.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("grant src 0 ignores a B row", d.tune_allowed && d.block_reasons == 0u);
+
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    DSD_SNPRINTF(values.mode, sizeof values.mode, "%s", "A");
+    values.priority = 90;
+    rc |= expect_true(
+        "zero row A priority 90",
+        dsd_tg_policy_set_fields(st, 0, 0, &values, DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("src 0 takes no priority",
+                      d.tune_allowed && d.priority == 0 && d.match == DSD_TG_POLICY_MATCH_NONE && d.name[0] == '\0');
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 0, 0, 0, &d);
+    rc |= expect_true("dst 0 takes no priority", d.tune_allowed && d.priority == 0);
+
+    opts.trunk_use_allow_list = 1;
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("-W: src 0 never admits a private call",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 0, 0, 0, &d);
+    rc |= expect_true("-W: dst 0 never admits a private call",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("-W: an unlisted private grant still tunes", d.tune_allowed && d.block_reasons == 0u);
+
+    rc |= expect_true("listed radio 5", add_exact_row(st, 5, "A", "Five") == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("-W: a listed known party still admits",
+                      d.tune_allowed && d.match == DSD_TG_POLICY_MATCH_EXACT && strcmp(d.name, "Five") == 0);
+    rc |= expect_true("radio 6 blocked", add_exact_row(st, 6, "B", "Six") == 0);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 0, 6, 0, 0, &d);
+    rc |= expect_true("grant naming a blocked known party is refused",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0u);
+    free_test_state(st);
+    return rc;
+}
+
+/* The followed calls' priority refresh uses the evaluators' lookups: a pattern row's edited priority reaches a group
+ * call (dwell and preemption cooldown ages unchanged) and a private call with source 0 ignores a `0` row. */
+static int
+test_priority_refresh_pattern_and_unknown(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
+    dsd_tg_policy_call_route active, candidate;
+    init_route(&active, 1234, 1, 851000000L, 1, 0, 0);
+    init_route(&candidate, 200, 2, 851000000L, 1, 0, 0);
+    dsd_tg_policy_decision decision, competing;
+    dsd_tg_policy_evaluate_group_call(&opts, st, 1234, 1, 0, 0, &decision);
+    rc |= expect_true("followed group call",
+                      dsd_tg_policy_describe_followed_call(st, &active, &decision, 10.0, 10.0) == 0);
+    rc |= expect_true("takeover cooldown", dsd_tg_policy_commit_preemption(st, 11.0) == 0);
+    init_decision(&competing, 200, 2, 50, 1, 1);
+    rc |= expect_true("low pattern priority yields",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 90;
+    rc |= expect_true("raise the pattern row's priority",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 0);
+    rc |= expect_true("edited pattern priority holds the call",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+    dsd_tg_policy_table_version(st, &context, &generation);
+    values.priority = 0;
+    rc |= expect_true("lower the pattern row's priority",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 0);
+    rc |= expect_true("lowered pattern priority yields",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+    rc |= expect_true("cooldown age unchanged", !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 11.5));
+    rc |= expect_true("clear records", dsd_tg_policy_clear_active_call(st, -1) == 0);
+
+    dsd_tg_policy_call_route priv;
+    init_route(&priv, 5, 0, 851000000L, 1, 0, 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &decision);
+    rc |= expect_true("followed private call",
+                      dsd_tg_policy_describe_followed_call(st, &priv, &decision, 20.0, 20.0) == 0);
+    rc |= expect_true("zero row priority 90", add_exact_row(st, 0, "A", "Zero") == 0);
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 90;
+    rc |= expect_true("zero row priority set",
+                      dsd_tg_policy_set_fields(st, 0, 0, &values, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    rc |= expect_true("src 0 private call ignores the 0 row",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 23.0));
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3011,5 +3142,7 @@ main(void) {
     rc |= test_selection_accepts_zero_start_range();
     rc |= test_pattern_row_edit_remove();
     rc |= test_session_avoid_count_pattern();
+    rc |= test_unknown_private_endpoints();
+    rc |= test_priority_refresh_pattern_and_unknown();
     return rc;
 }

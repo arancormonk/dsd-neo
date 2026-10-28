@@ -1364,6 +1364,12 @@ suite runs under this compiler.
   alias-only ID over in place. Edit staleness (`dsd_tg_policy_edit_version_valid()`) is judged against the structural
   generation, which learned aliases and session avoids do not move; a context created in place by decoder writes
   accepts an edit captured with nothing loaded, and a generation wrap is structural.
+- Invariant (unknown endpoints, `talkgroup_policy.c`): an endpoint ID of 0 is unknown, never an ID. Private
+  evaluation and the followed calls' priority refresh look up no row for a 0 source or target, so a `0` row neither
+  blocks, admits (`-W`) nor prioritises a call that names one party. Private-call vs private-grant admission is
+  unchanged: `dsd_tg_policy_evaluate_private_call()` still needs a listed known party under `-W`, the grant variant
+  still tunes unlisted parties. Tests: `CORE_TALKGROUP_POLICY` (`test_unknown_private_endpoints`,
+  `test_priority_refresh_pattern_and_unknown`).
 - Invariant (preemption bookkeeping, `dsd_tg_policy_should_preempt()`): the active-call records are what a protocol
   describes, not a history. Right before asking, a protocol calls `dsd_tg_policy_describe_followed_call()` for each
   call it holds, with the time it began following that call (dwell runs from it; a matching record keeps its start and

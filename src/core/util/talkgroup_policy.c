@@ -1507,8 +1507,9 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
         dsd_tg_policy_lookup lookup = {0};
         int matched = 0;
         if (call->private_call) {
-            matched = tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup)
-                      || tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup);
+            // As private evaluation: the target's row, else the source's; an endpoint of 0 is unknown.
+            matched = (call->tg != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup))
+                      || (call->src != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup));
         } else {
             matched = tg_policy_lookup_group_in_ctx(ctx, call->tg, &lookup);
         }
@@ -1992,8 +1993,8 @@ tg_policy_private_call_known(const dsd_opts* opts, int src_match, const dsd_tg_p
 static int
 tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst, int encrypted,
                                 int data_call, int allow_unlisted, dsd_tg_policy_decision* out) {
-    dsd_tg_policy_entry src_entry;
-    dsd_tg_policy_entry dst_entry;
+    dsd_tg_policy_entry src_entry = {0};
+    dsd_tg_policy_entry dst_entry = {0};
     const dsd_tg_policy_entry* chosen = NULL;
     int src_match = 0;
     int dst_match = 0;
@@ -2006,8 +2007,9 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_init_decision(out, dst, src, encrypted, data_call);
     out->private_call = 1;
 
-    src_match = tg_policy_lookup_exact_only(state, src, &src_entry);
-    dst_match = tg_policy_lookup_exact_only(state, dst, &dst_entry);
+    // An endpoint of 0 is unknown, never an ID: no row (a `0` row included) decides, admits or prioritises it.
+    src_match = src != 0U && tg_policy_lookup_exact_only(state, src, &src_entry);
+    dst_match = dst != 0U && tg_policy_lookup_exact_only(state, dst, &dst_entry);
     chosen = tg_policy_choose_private_entry(&src_entry, src_match, &dst_entry, dst_match);
     if (chosen) {
         tg_policy_decision_apply_entry(out, chosen, DSD_TG_POLICY_MATCH_EXACT);
