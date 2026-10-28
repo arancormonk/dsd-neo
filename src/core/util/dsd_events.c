@@ -488,19 +488,28 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
         return;
     }
 
-    if (slot == 0 && opts->wav_out_f != NULL) {
-        opts->wav_out_f = close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                       event_struct, opts->wav_out_open_time, export_recording);
+    /* A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and a failed
+       open marks the slot for the next one (issue #708). */
+    if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
+        if (opts->wav_out_f != NULL) {
+            opts->wav_out_f = close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
+                                                           event_struct, opts->wav_out_open_time, export_recording);
+        }
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         opts->wav_out_open_time = dsd_decode_time();
+        opts->wav_out_reopen = opts->wav_out_f != NULL ? (opts->wav_out_reopen & ~1) : (opts->wav_out_reopen | 1);
         return;
     }
 
-    if (slot == 1 && opts->wav_out_fR != NULL) {
-        opts->wav_out_fR = close_and_rename_wav_file_ex(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                                        event_struct, opts->wav_out_open_timeR, export_recording);
+    if (slot == 1 && (opts->wav_out_fR != NULL || (opts->wav_out_reopen & 2))) {
+        if (opts->wav_out_fR != NULL) {
+            opts->wav_out_fR =
+                close_and_rename_wav_file_ex(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
+                                             event_struct, opts->wav_out_open_timeR, export_recording);
+        }
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_timeR = dsd_decode_time();
+        opts->wav_out_reopen = opts->wav_out_fR != NULL ? (opts->wav_out_reopen & ~2) : (opts->wav_out_reopen | 2);
     }
 }
 

@@ -148,6 +148,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     /* No per-call WAV is open yet; set before the rebase below, which clamps these. */
     opts->wav_out_open_time = 0;
     opts->wav_out_open_timeR = 0;
+    opts->wav_out_reopen = 0;
     /* symbol_out_file_creation_time, on the list the engine's replay rebase shares. */
     dsd_state_rebase_decode_timestamps(opts, NULL);
     opts->symbol_out_file_is_auto = 0;

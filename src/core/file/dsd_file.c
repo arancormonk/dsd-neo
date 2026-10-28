@@ -39,6 +39,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -71,6 +72,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "wav_segment.h"
 
 void
 saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
@@ -916,7 +918,10 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
                                timestr, token, seq);
     }
     if (written < 0 || (size_t)written >= temp_filename_size) {
-        LOG_ERROR("Error - wav output temp filename is too long\n");
+        if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_OPEN)) {
+            LOG_ERROR("Error - wav output temp filename is too long; later open failures are counted, not logged\n");
+        }
+        temp_filename[0] = '\0';
         return NULL;
     }
 
@@ -927,19 +932,30 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
     info.samplerate = sample_rate;
     info.channels = 1;
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    wav = sf_open(temp_filename, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
+    //RDWR will append to file instead of overwrite file
+    wav = wav_segment_test_refuses_open() ? NULL : sf_open(temp_filename, SFM_RDWR, &info);
 
     if (wav == NULL) {
-        LOG_ERROR("Error - could not open wav output file %s\n", temp_filename);
+        /* Once per run, as for every kind of per-call recording failure: a full disk fails every segment that follows,
+           and the recording status counts them all (issue #708). */
+        if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_OPEN)) {
+            LOG_ERROR("Error - could not open wav output file %s; later open failures are counted, not logged\n",
+                      temp_filename);
+        }
+        /* No file holds the name, so no later close may try to publish it. */
+        temp_filename[0] = '\0';
         return NULL;
     }
 
+    wav_segment_opened(wav);
     return wav;
 }
 
 SNDFILE*
 close_wav_file(SNDFILE* wav_file) {
-    sf_close(wav_file);
+    if (wav_file != NULL) {
+        (void)wav_segment_close(wav_file);
+    }
     wav_file = NULL;
     return wav_file;
 }
@@ -1097,7 +1113,15 @@ static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                       const Event_History_I* event_struct, time_t opened, int export_call, int analog) {
     if (wav_file != NULL) {
-        sf_close(wav_file);
+        if (wav_segment_close(wav_file) != 0) {
+            /* The header may not hold what was written: the file keeps its temp name, as on a failed rename. */
+            if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_CLOSE)) {
+                LOG_WARN("Recording %s did not close cleanly; it keeps its temp name, and later close failures are "
+                         "counted, not logged\n",
+                         wav_out_filename ? wav_out_filename : "");
+            }
+            return NULL;
+        }
     }
 
     if (wav_out_filename == NULL || wav_out_filename[0] == '\0') {
@@ -1122,7 +1146,10 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
     /* Never over an earlier recording (issue #661); any failure but a taken name keeps the temp file, as before. */
     if (!wav_publish_noreplace(wav_out_filename, new_filename, sizeof(new_filename), dir, &metadata)) {
-        LOG_ERROR("Error - could not rename wav file %s -> %s\n", wav_out_filename, new_filename);
+        if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_PUBLISH)) {
+            LOG_ERROR("Error - could not rename wav file %s -> %s; later rename failures are counted, not logged\n",
+                      wav_out_filename, new_filename);
+        }
         return NULL;
     }
 

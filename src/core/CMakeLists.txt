@@ -53,6 +53,8 @@ target_sources(
         util/source_alias.c
         util/synctype.c
         file/dsd_file.c
+        file/wav_recording.c
+        file/wav_segment.c
         file/dsd_import.c
         file/p25_bandplan_csv.c
         file/source_alias_csv.c

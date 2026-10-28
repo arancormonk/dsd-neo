@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
+#include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -103,6 +104,7 @@
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
+#include "recording_view_internal.h"
 #include "scan_row_edit.h"
 #include "services.h"
 
@@ -261,6 +263,7 @@ dsd_app_command_session_set_open(int open) {
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_recording_command_resolved(g_q[g_head].id, DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
     }
@@ -4116,6 +4119,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_recording_command_resolved(g_q[g_head].id, DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
         DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
@@ -4129,6 +4133,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     struct dsd_app_command* c = &g_q[g_tail];
     ui_cmd_store_payload(c, cmd_id, payload, payload_sz);
     g_tail = (g_tail + 1) % DSD_APP_CMD_Q_CAP;
+    dsd_app_recording_command_submitted(cmd_id);
     dsd_mutex_unlock(&g_mu);
     return DSD_APP_COMMAND_SUBMIT_QUEUED;
 }
@@ -7119,33 +7124,25 @@ ui_cmd_handle_replay_last(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* Per-call WAV start, stop and toggle (issue #708). A start with per-call recording on opens only a slot file that is
+   missing, and fails without changing anything when one does not open (svc_enable_per_call_wav()); a stop closes a
+   static WAV as one and publishes per-call files (svc_stop_wav_recording()). The toggle follows the mode, not the open
+   files: per-call recording on, even with a slot whose file failed to open, stops. */
 static int
 ui_cmd_handle_wav_start(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-
-    int rc = svc_enable_per_call_wav(opts, state);
-    return ui_cmd_apply_status_from_service_rc(rc);
+    return ui_cmd_apply_status_from_service_rc(svc_enable_per_call_wav(opts, state));
 }
 
 static int
 ui_cmd_handle_wav_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                state ? &state->event_history_s[0] : NULL, opts->wav_out_open_time);
-    opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                                 state ? &state->event_history_s[1] : NULL, opts->wav_out_open_timeR);
-    opts->wav_out_file[0] = 0;
-    opts->wav_out_fileR[0] = 0;
-    opts->dmr_stereo_wav = 0;
-    return 1;
+    return ui_cmd_apply_status_from_service_rc(svc_stop_wav_recording(opts, state));
 }
 
 static int
 ui_cmd_handle_wav_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
+    if (opts->dmr_stereo_wav == 1) {
         return ui_cmd_handle_wav_stop(opts, state, c);
     }
     return ui_cmd_handle_wav_start(opts, state, c);
@@ -8537,9 +8534,20 @@ command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c)
     return 1;
 }
 
+/* How an applied command left the queue, for the recording view (issue #708). */
+static int
+recording_command_outcome(int result) {
+    switch (result) {
+        case UI_CMD_APPLY_COMPLETED: return DSD_APP_RECORDING_COMMAND_APPLIED;
+        case UI_CMD_APPLY_UNSUPPORTED: return DSD_APP_RECORDING_COMMAND_REFUSED;
+        default: return DSD_APP_RECORDING_COMMAND_FAILED;
+    }
+}
+
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!command_allowed_during_search(state, c)) {
+        dsd_app_recording_command_resolved(c->id, DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -8565,6 +8573,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
         }
         p25_sm_tick_guard_leave();
     }
+    dsd_app_recording_command_resolved(c->id, recording_command_outcome(result));
     return result;
 }
 
@@ -8913,6 +8922,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
+            dsd_app_recording_command_resolved(cmd.id, DSD_APP_RECORDING_COMMAND_FAILED);
             DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;

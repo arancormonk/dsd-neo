@@ -47,6 +47,17 @@ analog_call_get(const dsd_state* state) {
     return (analog_call*)dsd_engine_scan_owned(state, 2);
 }
 
+/* Close and publish the call's recording against the last accepted block's row, as the call's end does, but leave the
+   call running. */
+static void
+analog_call_close_recording(dsd_opts* opts, dsd_state* state, analog_call* call) {
+    if (call->wav) {
+        call->wav = close_and_rename_wav_file(call->wav, opts, call->path, opts->wav_out_dir,
+                                              state->event_history_s ? &state->event_history_s[0] : NULL, call->opened);
+        call->path[0] = '\0';
+    }
+}
+
 int
 dsd_engine_analog_call_active(const dsd_state* state) {
     const analog_call* call = analog_call_get(state);
@@ -69,11 +80,7 @@ dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state) {
     call->recording_attempted = 0;
     dsd_analog_sink_end_call(state);
     /* Close against the last accepted block's row before a retune or new service can replace it. */
-    if (call->wav) {
-        call->wav = close_and_rename_wav_file(call->wav, opts, call->path, opts->wav_out_dir,
-                                              state->event_history_s ? &state->event_history_s[0] : NULL, call->opened);
-        call->path[0] = '\0';
-    }
+    analog_call_close_recording(opts, state, call);
     (void)dsd_call_state_end_ex(state, 0, 0.0, DSD_CALL_END_EXPLICIT);
     dsd_event_sync_slot(opts, state, 0);
 }
@@ -99,9 +106,7 @@ typedef struct {
 static void
 analog_call_write(const void* context, const short* samples, size_t count) {
     const analog_call_sink* sink = (const analog_call_sink*)context;
-    if (sink->wav) {
-        (void)sf_write_short(sink->wav, samples, (sf_count_t)count);
-    }
+    dsd_wav_segment_write(sink->wav, samples, count, "NFM call");
 }
 
 static analog_call*
@@ -120,6 +125,17 @@ analog_call_ensure(dsd_state* state) {
     return call;
 }
 
+void
+dsd_engine_analog_call_stop_recording(dsd_opts* opts, dsd_state* state) {
+    analog_call* call = (opts && state) ? analog_call_get(state) : NULL;
+    if (!call) {
+        return;
+    }
+    analog_call_close_recording(opts, state, call);
+    /* A start later in the same call opens a new recording at the next block. */
+    call->recording_attempted = 0;
+}
+
 static void
 analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const float* samples, size_t count,
                    int sample_rate) {
@@ -132,10 +148,8 @@ analog_call_record(dsd_opts* opts, dsd_state* state, analog_call* call, const fl
         DSD_SNPRINTF(call->dir, sizeof(call->dir), "%s", opts->wav_out_dir);
         call->opened = dsd_decode_time();
     }
-    if (!opts->dmr_stereo_wav && call->wav) {
-        call->wav = close_and_rename_wav_file(call->wav, opts, call->path, opts->wav_out_dir,
-                                              state->event_history_s ? &state->event_history_s[0] : NULL, call->opened);
-        call->path[0] = '\0';
+    if (!opts->dmr_stereo_wav) {
+        analog_call_close_recording(opts, state, call);
     }
     if (call->wav) {
         const analog_call_sink sink = {call->wav};

@@ -95,6 +95,9 @@ struct dsd_opts {
     // on after its call began holds only what followed, so its rdio-scanner sidecar starts here, not at the call's start.
     time_t wav_out_open_time;
     time_t wav_out_open_timeR;
+    // Per-call slot files whose last open failed (a full disk): bit 0 wav_out_f, bit 1 wav_out_fR. The slot's next call
+    // end opens it again, rather than leaving the slot unrecorded for the rest of the run (issue #708).
+    int wav_out_reopen;
     SNDFILE* wav_out_raw;
     double rtl_pwr;
     dsd_audio_stream* audio_in_stream;   /* Primary audio input stream */

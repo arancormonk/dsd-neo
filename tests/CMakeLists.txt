@@ -4825,6 +4825,8 @@ add_executable(
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
@@ -7658,6 +7660,37 @@ else()
     )
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
+
+# Issue #708: the WAV recording commands through the real queue, the per-call writers' failure policy behind a
+# libsndfile seam, and the recording view.
+add_executable(
+    dsd-neo_test_app_control_recording
+    ui/test_app_control_recording.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_recording
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_app_control_recording
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_app_control_recording
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(NAME APP_CONTROL_RECORDING COMMAND dsd-neo_test_app_control_recording)
 
 # Real watchdog flush versus policy replacement; private queue contention probe.
 add_executable(

@@ -100,6 +100,19 @@ void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);
 /**
+ * Write @p count samples to @p file (issue #708). On a per-call segment (one open_wav_file() opened) the first short
+ * write latches the segment failed: nothing more is written to it, the failure is counted
+ * (<dsd-neo/core/wav_recording.h>) and logged once per run, and the segment is closed and published as usual. Any other
+ * handle (static or raw WAV) logs each short write and goes on, as before.
+ */
+void dsd_wav_segment_write(SNDFILE* file, const short* samples, size_t count, const char* context);
+/** Test seam: replace the sf_write_short() and sf_close() the per-call recordings make; NULL restores libsndfile's. */
+typedef long long (*dsd_wav_test_write_fn)(SNDFILE* file, const short* samples, long long count);
+typedef int (*dsd_wav_test_close_fn)(SNDFILE* file);
+void dsd_wav_test_set_io(dsd_wav_test_write_fn write_fn, dsd_wav_test_close_fn close_fn);
+/** Test seam: let @p successful_opens more per-call segments open, then fail every open_wav_file(); -1 disables. */
+void dsd_wav_test_fail_opens_after(long successful_opens);
+/**
  * Close a per-call WAV, name it from the slot's staged row and export it to rdio-scanner.
  * `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
  * 0 when unknown; see dsd_rdio_export_call().

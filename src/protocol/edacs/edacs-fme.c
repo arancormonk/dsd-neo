@@ -74,15 +74,13 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
+/* The per-call recording latches failed at its first short write (issue #708); a static WAV logs each one. */
 static void
 edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
-    if (file == NULL || samples == NULL || sample_count <= 0) {
+    if (sample_count <= 0) {
         return;
     }
-    sf_count_t written = sf_write_short(file, samples, sample_count);
-    if (written != sample_count) {
-        LOG_WARN("%s: wrote %lld/%lld samples to WAV output", context, (long long)written, (long long)sample_count);
-    }
+    dsd_wav_segment_write(file, samples, (size_t)sample_count, context);
 }
 
 static void

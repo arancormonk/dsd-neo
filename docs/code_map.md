@@ -1058,6 +1058,28 @@ suite runs under this compiler.
   on `event_time`. The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the
   row fingerprint. Tests:
   `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
+- WAV recording commands and failures (issue #708). `svc_enable_per_call_wav()` (WAV_START) keeps a slot file that is
+  open and opens a missing one; it completes only with both open, and otherwise removes what it opened and leaves the
+  mode as it was. A static `-w` WAV it replaces is closed as a static file (`close_wav_file()`: never renamed or
+  exported) and `static_wav_file` cleared. `svc_stop_wav_recording()` (WAV_STOP) closes a static WAV the same way, or
+  closes and publishes the slot files and the NFM call's recording at once (`dsd_engine_analog_call_stop_recording()`,
+  which keeps the call and its epoch). WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so does
+  the terminal's `Per-call WAV` label. A static open first stops what records; a raw open closes the raw WAV it
+  replaces. Per-call writers (the vocoder's slot writers through `dsd_audio_write_wav_short_block()`, EDACS analog,
+  `engine/analog_call.c`) write through `dsd_wav_segment_write()` (`src/core/file/wav_segment.c`): a handle
+  `open_wav_file()` opened is a segment, and its first short write latches it, so nothing more is written to it and it
+  is published as usual at its close; static and raw handles log each short write as before. A failed `sf_close()` keeps
+  the temp name. Open, write, close and publish failures are counted per decoder run
+  (`<dsd-neo/core/wav_recording.h>`, reset by `dsd_engine_run_common_setup()`), each kind logged once per run. A slot
+  whose reopen failed is marked in `opts->wav_out_reopen` and opens again at its next call end
+  (`watchdog_event_rotate_wav_if_needed()`). `include/dsd-neo/app_control/recording_view.h` is the frontends' view:
+  mode, open slot files, the counts and last error kind, and the last recording command's state. The queue counts
+  recording commands as it admits them and as they leave it (applied, failed, refused while Signal search runs,
+  dropped); `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command
+  reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
+  `unknown_only` and `journal_state` are reserved (always 0 / NONE). Tests: `APP_CONTROL_RECORDING` (every command
+  case through the queue, each writer's short write and close failure behind `dsd_wav_test_set_io()`, the reopen
+  retry), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR

@@ -29,6 +29,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -176,14 +177,39 @@ parse_audio_input_string(dsd_opts* opts, char* input) {
     (void)input;
 }
 
+/* A per-call slot file that opens: svc_enable_per_call_wav() keeps what it opens only when both slots open. */
+static int g_fake_wav_handle;
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
-    (void)dir;
-    (void)temp_filename;
-    (void)temp_filename_size;
     (void)sample_rate;
     (void)ext;
+    DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_stub", dir);
+    return (SNDFILE*)&g_fake_wav_handle;
+}
+
+SNDFILE*
+close_wav_file(SNDFILE* wav_file) {
+    (void)wav_file;
     return NULL;
+}
+
+SNDFILE*
+close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                          const Event_History_I* event_struct, time_t opened) {
+    (void)wav_file;
+    (void)opts;
+    (void)wav_out_filename;
+    (void)dir;
+    (void)event_struct;
+    (void)opened;
+    return NULL;
+}
+
+void
+dsd_engine_analog_call_stop_recording(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void

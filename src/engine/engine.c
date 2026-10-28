@@ -35,6 +35,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
@@ -465,6 +466,8 @@ open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_time = dsd_decode_time();
         opts->wav_out_open_timeR = opts->wav_out_open_time;
+        // A slot that did not open tries again at its first call end (issue #708).
+        opts->wav_out_reopen = (opts->wav_out_f == NULL ? 1 : 0) | (opts->wav_out_fR == NULL ? 2 : 0);
     } else if (opts->static_wav_file == 1 && opts->wav_out_f == NULL && opts->wav_out_file[0] != '\0') {
         openWavOutFileLR(opts, state);
     }
@@ -3900,6 +3903,8 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
     if (import_trunking_csvs_if_needed(opts, state) != 0) {
         return -1;
     }
+    /* A run's recording failures are its own: the status a frontend shows starts clean (issue #708). */
+    dsd_wav_recording_session_reset();
     open_recording_outputs_if_needed(opts, state);
 
     {

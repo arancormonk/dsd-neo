@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "recording_view_internal.h"
 #include "snapshot_internal.h"
 
 static dsd_opts g_pub_opts;     // latest published
@@ -57,6 +58,9 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
        publisher takes its own, and nesting the two would put a lock-order edge between
        the snapshot path and a JNI poll. */
     dsd_app_notification_publish_opts(opts);
+    /* The recording view goes out with each options snapshot, so a command reads as applied together with the mode it
+       left (issue #708). */
+    dsd_app_recording_view_publish(opts);
     dsd_app_telemetry_notify_opts(opts);
 }
 

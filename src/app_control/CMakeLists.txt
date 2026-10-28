@@ -32,6 +32,7 @@ target_sources(
         rx_tone_view.c
         receive_note.c
         receive_view.c
+        recording_view.c
         scan_row_edit.c
         scan_row_view.c
         scan_timing_view.c

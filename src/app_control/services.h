@@ -38,9 +38,15 @@ extern "C" {
  */
 int svc_toggle_all_mutes(dsd_opts* opts);
 /**
- * @brief Enable per-call WAV capture, creating the output directory if needed.
+ * @brief Enable per-call WAV capture, creating the output directory if needed. Opens the slot files that are not open
+ * and keeps those that are; 0 with both open, -1 (nothing changed) when one does not open. A static WAV open closes.
  */
 int svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Stop WAV recording: close a static WAV as one, or close and publish the per-call slot files and the NFM
+ * call's recording. Returns 0 (also with nothing open), -1 without @p opts.
+ */
+int svc_stop_wav_recording(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Set the symbol capture output filename and open it for writing.

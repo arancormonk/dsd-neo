@@ -247,7 +247,9 @@ Windows console runs:
   `-y`, with `-o null`, muted, or under any preset (issue #653). The system, target and source in a file's name have
   the characters a file name cannot hold (`/`, as in an M17 or D-STAR callsign, `\`, `:`, `*`, `?`, `"`, `<`, `>`,
   `|`, control characters) and dots and spaces replaced with `_`; the call history and rdio-scanner metadata keep
-  them as received.
+  them as received. A recording whose write falls short (a full disk) ends there and is published with what it holds;
+  one that does not close cleanly keeps its `TEMP_` name. A slot file that fails to open opens again at the slot's
+  next call end. Each kind of failure (open, write, close, rename) is logged the first time in a run and counted after.
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
