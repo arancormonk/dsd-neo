@@ -60,6 +60,7 @@
 -keep,allowoptimization class io.github.arancormonk.dsdneo.ProcessFacts {
     public static java.lang.String processFacts();
     public static java.lang.String[] exitLines();
+    public static java.lang.String[] exitsMarker();
     public static java.lang.String attemptContext(java.lang.String);
 }
 

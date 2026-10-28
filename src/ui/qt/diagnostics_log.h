@@ -44,6 +44,8 @@ class DiagnosticsLog {
     static constexpr int kStartupSyncWindowMs = 10000;
     static constexpr int kAttemptFlushMs = 200;
     static constexpr int kShutdownFlushMs = 500;
+    // How long the log's build thread waits for the platform's following lines to be durable (PlatformLinesLogged).
+    static constexpr int kPlatformLinesFlushMs = 10000;
 
     struct IoStats {
         quint64 appends = 0;
@@ -76,12 +78,16 @@ class DiagnosticsLog {
     // Extra platform facts for the process line (Android: boot count, device) and any lines that
     // follow it (Android: recent app exits). Registered before installTap().
     using PlatformFactsProvider = std::pair<QString, QStringList> (*)();
+    // Told once the lines the provider gave are synced to the log, on the log's build thread, so the platform marks
+    // them logged only then: marked when they were read, a process that died before the sync lost them for good
+    // (Android: the exit records, #782). Not called when they could not be made durable.
+    using PlatformLinesLogged = void (*)();
 
     static DiagnosticsLog& instance();
     // Installs the runtime log tap and returns at once: the log itself (its directory and saved records) is built on
     // a thread of its own and then published. Until then records wait, bounded and redacted.
     static void installTap();
-    static void setPlatformFactsProvider(PlatformFactsProvider provider);
+    static void setPlatformFactsProvider(PlatformFactsProvider provider, PlatformLinesLogged logged = nullptr);
     // These three never wait for the log's construction, so they are safe from Android's main thread, and before
     // Qt/nativeInit: bounded redacted records wait for installTap()'s publish.
     static void submitHostDiagnostic(const QString& text);
@@ -116,6 +122,9 @@ class DiagnosticsLog {
     bool flush(int timeoutMs = -1);
     // flush(), with what became of it.
     FlushOutcome flushOutcome(int timeoutMs = -1);
+    // flush(), then @p logged once everything submitted before the call is durable; not when the flush failed or timed
+    // out. Whether it was called.
+    bool reportWhenDurable(int timeoutMs, PlatformLinesLogged logged);
     // Records the process line (also the head of every later segment). Once per instance.
     void noteProcess(const QString& facts, const QStringList& followingLines = {});
     // A session attempt is about to touch the device: records the line for the stage (a USB access request, or the
@@ -174,6 +183,8 @@ class DiagnosticsLog {
     // Under the host lock, once installTap() has run: the process line, the records held for the log, a held
     // startup-window request; then the log is ready.
     static void publish(DiagnosticsLog& log);
+    // On the build thread, after the publish: flush, and tell the platform its lines are durable (PlatformLinesLogged).
+    static void notePlatformLinesDurable();
 
     // One append-only segment pair (previous, then current) and its writer state: the main tail, or the host records'
     // own pair. Only the writer step touches it, except stats, which are under m_statsMutex.
@@ -202,14 +213,14 @@ class DiagnosticsLog {
     void seedRing(const QByteArray& text);
     void seedHostRing(const QByteArray& text, qsizetype currentAt);
     void openCurrent(Segments& segments);
-    void closeCurrent(Segments& segments);
-    bool appendBytes(Segments& segments, const QByteArray& bytes);
-    bool syncCurrent(Segments& segments);
+    static void closeCurrent(Segments& segments);
+    bool appendBytes(Segments& segments, const QByteArray& bytes) const;
+    bool syncCurrent(Segments& segments) const;
     void rotate(Segments& segments, const QByteArray& header);
-    bool clearFiles(Segments& segments);
+    bool clearFiles(Segments& segments) const;
     static void trimFragment(const QString& path);
     bool writeBatch(Segments& segments, const std::deque<QByteArray>& batch);
-    bool syncDue(const Segments& segments, quint64 now) const;
+    static bool syncDue(const Segments& segments, quint64 now);
     QByteArray headerExcluding(const std::deque<QByteArray>::const_iterator& from,
                                const std::deque<QByteArray>::const_iterator& end) const;
     // Which of this run's identity lines a record is, if any: the ring pins that very line, not its text.
@@ -235,11 +246,18 @@ class DiagnosticsLog {
 
     void step(std::unique_lock<std::mutex>& lock, bool forceSync);
     bool writeStep(const StepWork& work, bool forceSync);
+    // writeStep()'s sync of @p segments when one is due, and a flush's verdict on the step (which clears the failures
+    // it reports).
+    bool syncIfDue(Segments& segments, const StepWork& work, bool forceSync) const;
+    bool takeFlushResult(bool ok);
     bool dueLocked(quint64 now) const;
     void completeFlushes(quint64 through, bool ok);
     bool flushResult(quint64 ticket) const;
     QString filePath(const char* name) const;
     void writeLoop();
+    // Under the queue lock: nothing is left to write, and how long the writer may wait before something is due.
+    bool drainedLocked() const;
+    quint64 writerWaitLocked(quint64 now) const;
     quint64 nowMs() const;
     bool inStartupWindow(quint64 now) const;
 

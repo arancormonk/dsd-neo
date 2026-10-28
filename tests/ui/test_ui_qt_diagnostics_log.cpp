@@ -756,6 +756,41 @@ crashZeroRunIsDropped() {
     check(!rows.contains(QChar(0)) && !rows.contains(QStringLiteral("zeroed")), "a zeroed run loaded as a record");
 }
 
+// Re-review N2: the platform hears its lines are durable only from a completed flush, so it never marks lines logged
+// that a process death could still lose.
+static QString g_durablePath;
+static int g_durableCalls = 0;
+static bool g_durableOnDisk = false;
+
+static void
+durableLogged() {
+    ++g_durableCalls;
+    g_durableOnDisk = readFile(g_durablePath).contains("exit: durable platform line");
+}
+
+static void
+platformLinesReportedOnlyWhenDurable() {
+    g_durableCalls = 0;
+    {
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        check(log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "durable lines were not reported");
+        check(g_durableOnDisk, "lines were reported durable before they were written");
+    }
+    {
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "unsynced lines were reported durable");
+    }
+}
+
 static void
 flushReportsFailures() {
     QTemporaryDir dir;
@@ -2003,12 +2038,40 @@ blockedLoad() {
     g_loadDone = true;
 }
 
+// Re-review N2: the platform's lines after the process line (Android: the exit records) are reported durable, so the
+// platform marks them logged, only once they are synced to the host log: on the build thread, after the publish.
+static const char kPlatformLine[] = "exit: platform line that must be durable first";
+static QString g_platformHostLog;
+static int g_platformLogged = 0;
+static bool g_platformLineOnDisk = false;
+static bool g_platformLoggedAfterPublish = false;
+
+static std::pair<QString, QStringList>
+platformFacts() {
+    return {QString(), {QString::fromLatin1(kPlatformLine)}};
+}
+
+static void
+platformLinesLogged() {
+    QFile host(g_platformHostLog);
+    const bool onDisk = host.open(QIODevice::ReadOnly) && host.readAll().contains(kPlatformLine);
+    const bool published = DiagnosticsLog::installedForTest();
+    std::lock_guard<std::mutex> lock(g_loadMutex);
+    g_platformLineOnDisk = onDisk;
+    g_platformLoggedAfterPublish = published;
+    ++g_platformLogged;
+    g_loadChanged.notify_all();
+}
+
 // installTap() runs on Android's main thread (the service's nativeInit), as do the host records, the startup-window
 // arming and the teardown flush. None of them waits for the log's construction: the tap returns at once, the records
 // and the arming are held and applied at the publish, and a flush waits for the publish only within its own bound.
 static void
 installTapDoesNotWaitForTheLoad() {
     DiagnosticsLog::setLoadHookForTest(blockedLoad);
+    g_platformHostLog =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/diagnostics/host.log");
+    DiagnosticsLog::setPlatformFactsProvider(platformFacts, platformLinesLogged);
     DiagnosticsLog::installTap();
     {
         std::lock_guard<std::mutex> lock(g_loadMutex);
@@ -2070,12 +2133,20 @@ installTapDoesNotWaitForTheLoad() {
     {
         std::lock_guard<std::mutex> lock(g_loadMutex);
         check(!g_loadDone, "a host record, startup-window request or flush waited for the saved records to load");
+        check(g_platformLogged == 0, "the platform was told its lines are durable while the log was loading");
         g_loadReleased = true;
     }
     g_loadChanged.notify_all();
     flusher.join();
     direct.join();
     check(flushed, "a flush asked for during the load was not honoured");
+    {
+        std::unique_lock<std::mutex> lock(g_loadMutex);
+        const bool logged = g_loadChanged.wait_for(lock, std::chrono::seconds(15), [] { return g_platformLogged > 0; });
+        check(logged && g_platformLogged == 1, "the platform was not told once that its lines are durable");
+        check(g_platformLoggedAfterPublish, "the platform was told its lines are durable before the publish");
+        check(g_platformLineOnDisk, "the platform was told its lines are durable before they were in the host log");
+    }
     check(publishedFirst, "a direct writer got the log before it was published");
     DiagnosticsLog::setLoadHookForTest(nullptr);
     check(DiagnosticsLog::installedForTest(), "the log was not published");
@@ -2089,6 +2160,7 @@ installTapDoesNotWaitForTheLoad() {
               && !host.contains(QStringLiteral("decoder line during the load")),
           "a decoder record that arrived during the load was not kept once");
     check(log.startupWindowOpenForTest(), "a startup-window request made during the load was lost");
+    check(host.count(QString::fromLatin1(kPlatformLine)) == 1, "the platform's line is not in the host records once");
     const QStringList verbatim = {
         QStringLiteral("[host] [info] service: engine configuration returned -2"),
         QStringLiteral("[host] [info] engine run returned -1"),
@@ -2168,6 +2240,7 @@ main(int argc, char** argv) {
     crashFragmentIsDropped();
     crashZeroRunIsDropped();
     flushReportsFailures();
+    platformLinesReportedOnlyWhenDurable();
     syncCadenceAndStartupWindow();
     segmentsStartWithTheirContext();
     contextLineWrittenOnce();

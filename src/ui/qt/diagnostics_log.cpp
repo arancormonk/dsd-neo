@@ -72,6 +72,7 @@ struct HostDiagnostics {
     // Set once, under the mutex, after the pending records are in; read without it on the fast path.
     std::atomic<bool> ready{false};
     DiagnosticsLog::PlatformFactsProvider provider = nullptr;
+    DiagnosticsLog::PlatformLinesLogged logged = nullptr;
 };
 
 HostDiagnostics&
@@ -514,10 +515,36 @@ DiagnosticsLog::publish(DiagnosticsLog& log) {
 }
 
 void
-DiagnosticsLog::setPlatformFactsProvider(PlatformFactsProvider provider) {
+DiagnosticsLog::setPlatformFactsProvider(PlatformFactsProvider provider, PlatformLinesLogged logged) {
     auto& host = hostDiagnostics();
     std::lock_guard<std::mutex> lock(host.mutex);
     host.provider = provider;
+    host.logged = logged;
+}
+
+void
+DiagnosticsLog::notePlatformLinesDurable() {
+    auto& host = hostDiagnostics();
+    PlatformLinesLogged logged = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(host.mutex);
+        if (!host.following.isEmpty()) {
+            logged = host.logged;
+        }
+    }
+    // The publish queued the lines: a completed flush has them appended and synced.
+    if (logged != nullptr) {
+        (void)instance().reportWhenDurable(kPlatformLinesFlushMs, logged);
+    }
+}
+
+bool
+DiagnosticsLog::reportWhenDurable(int timeoutMs, PlatformLinesLogged logged) {
+    if (!flush(timeoutMs)) {
+        return false;
+    }
+    logged();
+    return true;
 }
 
 void
@@ -555,12 +582,15 @@ DiagnosticsLog::installTap() {
         // The log is built on a thread of its own. Creating the directory and loading the saved records is file I/O,
         // and on Android the caller can be the main thread (the service's nativeInit). Until the publish, records,
         // startup-window requests and flushes wait in the host state, bounded. A log built before this call is
-        // published by the thread.
-        const auto build = [] { publish(instance()); };
+        // published by the thread, which then waits for the platform's lines to be durable. Built on the calling
+        // thread instead, nothing waits there: the lines are not marked logged, so the next start logs them again.
         try {
-            std::thread(build).detach();
+            std::thread([] {
+                publish(instance());
+                notePlatformLinesDurable();
+            }).detach();
         } catch (const std::system_error&) {
-            build();
+            publish(instance());
         }
     });
 }
@@ -1240,7 +1270,7 @@ DiagnosticsLog::setIoFaultForTest(IoFault fault) {
 }
 
 bool
-DiagnosticsLog::syncDue(const Segments& segments, quint64 now) const {
+DiagnosticsLog::syncDue(const Segments& segments, quint64 now) {
     return segments.dirtyBytes > 0 && now - segments.lastSync >= kSyncIntervalMs && now >= segments.syncRetryAt;
 }
 
@@ -1314,7 +1344,7 @@ DiagnosticsLog::openCurrent(Segments& segments) {
 }
 
 bool
-DiagnosticsLog::appendBytes(Segments& segments, const QByteArray& bytes) {
+DiagnosticsLog::appendBytes(Segments& segments, const QByteArray& bytes) const {
     if (!segments.file) {
         return false;
     }
@@ -1333,7 +1363,7 @@ DiagnosticsLog::appendBytes(Segments& segments, const QByteArray& bytes) {
 }
 
 bool
-DiagnosticsLog::syncCurrent(Segments& segments) {
+DiagnosticsLog::syncCurrent(Segments& segments) const {
     if (!segments.file) {
         return false;
     }
@@ -1392,7 +1422,7 @@ DiagnosticsLog::rotate(Segments& segments, const QByteArray& header) {
 }
 
 bool
-DiagnosticsLog::clearFiles(Segments& segments) {
+DiagnosticsLog::clearFiles(Segments& segments) const {
     // What the cleared file held unsynced no longer matters: Clear removes it.
     segments.dirtyBytes = 0;
     segments.file.reset();
@@ -1484,6 +1514,26 @@ DiagnosticsLog::step(std::unique_lock<std::mutex>& lock, bool forceSync) {
 }
 
 bool
+DiagnosticsLog::syncIfDue(Segments& segments, const StepWork& work, bool forceSync) const {
+    const bool due = forceSync || work.window || work.clear || work.now - segments.lastSync >= kSyncIntervalMs;
+    if (segments.dirtyBytes > 0 && due && (forceSync || work.now >= segments.syncRetryAt)) {
+        return syncCurrent(segments);
+    }
+    return true;
+}
+
+bool
+DiagnosticsLog::takeFlushResult(bool ok) {
+    // A flush is durable only if nothing failed since the last one completed.
+    for (const Segments* segments : {&m_tail, &m_host}) {
+        ok = ok && !segments->ioFailed && segments->dirtyBytes == 0;
+    }
+    m_tail.ioFailed = false;
+    m_host.ioFailed = false;
+    return ok;
+}
+
+bool
 DiagnosticsLog::writeStep(const StepWork& work, bool forceSync) {
     std::lock_guard<std::mutex> stepLock(m_stepMutex);
     m_header = work.header;
@@ -1498,22 +1548,29 @@ DiagnosticsLog::writeStep(const StepWork& work, bool forceSync) {
     if (!work.hostBatch.empty()) {
         ok = writeBatch(m_host, work.hostBatch) && ok;
     }
-    for (Segments* segments : {&m_tail, &m_host}) {
-        const bool due = forceSync || work.window || work.clear || work.now - segments->lastSync >= kSyncIntervalMs;
-        if (segments->dirtyBytes > 0 && due && (forceSync || work.now >= segments->syncRetryAt)) {
-            ok = syncCurrent(*segments) && ok;
+    ok = syncIfDue(m_tail, work, forceSync) && ok;
+    ok = syncIfDue(m_host, work, forceSync) && ok;
+    return work.flushing ? takeFlushResult(ok) : ok;
+}
+
+bool
+DiagnosticsLog::drainedLocked() const {
+    return m_queue.empty() && m_hostQueue.empty() && !m_clearPending && m_flushRequested == m_flushDone;
+}
+
+quint64
+DiagnosticsLog::writerWaitLocked(quint64 now) const {
+    quint64 waitMs = std::numeric_limits<quint64>::max();
+    if (!m_queue.empty() || !m_hostQueue.empty()) {
+        waitMs = kWriteIntervalMs - (now - m_lastDrain);
+    }
+    for (const Segments* segments : {&m_tail, &m_host}) {
+        if (segments->dirtyBytes > 0) {
+            const quint64 due = std::max<quint64>(segments->lastSync + kSyncIntervalMs, segments->syncRetryAt);
+            waitMs = std::min<quint64>(waitMs, due > now ? due - now : 0U);
         }
     }
-    if (!work.flushing) {
-        return ok;
-    }
-    // A flush is durable only if nothing failed since the last one completed.
-    for (Segments* segments : {&m_tail, &m_host}) {
-        ok = ok && !segments->ioFailed && segments->dirtyBytes == 0;
-    }
-    m_tail.ioFailed = false;
-    m_host.ioFailed = false;
-    return ok;
+    return waitMs;
 }
 
 void
@@ -1525,22 +1582,12 @@ DiagnosticsLog::writeLoop() {
         if (m_stop || dueLocked(now)) {
             const bool stopping = m_stop;
             step(lock, stopping || m_flushRequested > m_flushDone);
-            if (stopping && m_queue.empty() && m_hostQueue.empty() && !m_clearPending
-                && m_flushRequested == m_flushDone) {
+            if (stopping && drainedLocked()) {
                 break;
             }
             continue;
         }
-        quint64 waitMs = std::numeric_limits<quint64>::max();
-        if (!m_queue.empty() || !m_hostQueue.empty()) {
-            waitMs = kWriteIntervalMs - (now - m_lastDrain);
-        }
-        for (const Segments* segments : {&m_tail, &m_host}) {
-            if (segments->dirtyBytes > 0) {
-                const quint64 due = std::max<quint64>(segments->lastSync + kSyncIntervalMs, segments->syncRetryAt);
-                waitMs = std::min<quint64>(waitMs, due > now ? due - now : 0U);
-            }
-        }
+        const quint64 waitMs = writerWaitLocked(now);
         if (waitMs == std::numeric_limits<quint64>::max()) {
             m_ready.wait(lock);
         } else {

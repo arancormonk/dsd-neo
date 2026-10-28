@@ -21,7 +21,7 @@ import java.util.Locale
  * After a phone restarts, a diagnostics share has to tell whether Android restarted while a
  * session ran or only the app process ended. Android records app exits but not restarts of the
  * phone itself, so the process line carries the boot count, and each session's start line carries
- * it again. Native code calls the three static methods below (see android/decoder_host_android.cpp);
+ * it again. Native code calls the four static methods below (see android/decoder_host_android.cpp);
  * R8 keeps them by name.
  */
 object ProcessFacts {
@@ -51,12 +51,18 @@ object ProcessFacts {
             .joinToString(", ")
     }
 
+    /** The logged marker [exitLines] prepared, for [exitsMarker]: its file's path and its text; null when none. */
+    @Volatile
+    private var pendingMarker: Array<String>? = null
+
     /**
      * The newest recorded exits of this app's processes that no earlier start logged, newest first (Android 11+; empty
-     * before). The keys of the records read are kept in app-private storage, so the next start skips them (#782).
+     * before). The keys of the records read go to app-private storage only once these lines are durable ([exitsMarker]),
+     * so the next start skips them (#782).
      */
     @JvmStatic
     fun exitLines(): Array<String> {
+        pendingMarker = null
         val context = appContext ?: return emptyArray()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return emptyArray()
@@ -74,11 +80,7 @@ object ProcessFacts {
             }
             val fresh = ExitFacts.unlogged(records, logged)
             if (fresh.isNotEmpty()) {
-                try {
-                    marker.writeText(records.joinToString("\n") { ExitFacts.key(it) })
-                } catch (_: IOException) {
-                    // Unrecorded, the next start logs these again, which is all it costs.
-                }
+                pendingMarker = arrayOf(marker.path, records.joinToString("\n") { ExitFacts.key(it) })
             }
             val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
             ExitFacts.lines(fresh) { format.format(Date(it)) }.toTypedArray()
@@ -86,6 +88,14 @@ object ProcessFacts {
             emptyArray()
         }
     }
+
+    /**
+     * The marker for the records the last [exitLines] read: its file's path and the text it gets, or empty when that
+     * read found nothing new. Native code writes it only after the diagnostics log synced the lines, so a process that
+     * dies first logs them again at the next start rather than losing them (#782).
+     */
+    @JvmStatic
+    fun exitsMarker(): Array<String> = pendingMarker ?: emptyArray()
 
     /** What a session start line says about the attempt: source, boot count and, for a dongle, which one. */
     @JvmStatic

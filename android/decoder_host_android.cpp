@@ -22,12 +22,14 @@
 #include <QJniObject>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 #include <QScreen>
 #include <QVariant>
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <mutex>
 #include <utility>
 
 #include <jni.h>
@@ -133,29 +135,75 @@ hold_content_resolver() {
 
 constexpr const char* kFactsClass = "io/github/arancormonk/dsdneo/ProcessFacts";
 
+/** @brief The strings of a Java String[] @p array, invalid or null entries left out. */
+QStringList
+java_strings(const QJniObject& array) {
+    QStringList strings;
+    if (!array.isValid()) {
+        return strings;
+    }
+    QJniEnvironment env;
+    const auto items = static_cast<jobjectArray>(array.object());
+    const jsize count = env->GetArrayLength(items);
+    for (jsize i = 0; i < count; ++i) {
+        const QJniObject item = QJniObject::fromLocalRef(env->GetObjectArrayElement(items, i));
+        if (item.isValid()) {
+            strings.append(item.toString());
+        }
+    }
+    return strings;
+}
+
+/* The exit records' logged marker (ProcessFacts.exitsMarker()): where it lives and what it says once the exit lines
+ * read with it are durable. Read with the lines, written by android_exit_lines_logged() on the log's build thread. */
+std::mutex g_exits_marker_lock;
+QString g_exits_marker_path;
+QByteArray g_exits_marker_text;
+
 /** @brief Boot count, device and recent app exits for the diagnostics process line (issue #745). */
 std::pair<QString, QStringList>
 android_process_facts() {
     const QJniObject facts = QJniObject::callStaticObjectMethod(kFactsClass, "processFacts", "()Ljava/lang/String;");
-    QStringList exits;
-    const QJniObject lines = QJniObject::callStaticObjectMethod(kFactsClass, "exitLines", "()[Ljava/lang/String;");
-    if (lines.isValid()) {
-        QJniEnvironment env;
-        const auto array = static_cast<jobjectArray>(lines.object());
-        const jsize count = env->GetArrayLength(array);
-        for (jsize i = 0; i < count; ++i) {
-            const QJniObject line = QJniObject::fromLocalRef(env->GetObjectArrayElement(array, i));
-            if (line.isValid()) {
-                exits.append(line.toString());
-            }
-        }
+    const QStringList exits =
+        java_strings(QJniObject::callStaticObjectMethod(kFactsClass, "exitLines", "()[Ljava/lang/String;"));
+    const QStringList marker =
+        java_strings(QJniObject::callStaticObjectMethod(kFactsClass, "exitsMarker", "()[Ljava/lang/String;"));
+    if (marker.size() == 2) {
+        const std::lock_guard<std::mutex> lock(g_exits_marker_lock);
+        g_exits_marker_path = marker.at(0);
+        g_exits_marker_text = marker.at(1).toUtf8();
     }
     return {facts.isValid() ? facts.toString() : QString(), exits};
 }
 
+/**
+ * @brief The exit lines are durable: record their keys, so the next start does not log them again (#782).
+ *
+ * Only now, not when they were read: a process that dies before its log syncs them logs them again at the next start
+ * instead of losing them. Plain file I/O on the log's build thread, which has no Java frame to call ProcessFacts from.
+ * Unwritten, the next start logs them again, which is all it costs.
+ */
+void
+android_exit_lines_logged() {
+    QString path;
+    QByteArray text;
+    {
+        const std::lock_guard<std::mutex> lock(g_exits_marker_lock);
+        path.swap(g_exits_marker_path);
+        text.swap(g_exits_marker_text);
+    }
+    if (path.isEmpty()) {
+        return;
+    }
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly) && file.write(text) == text.size()) {
+        (void)file.commit();
+    }
+}
+
 /* Registered at load, before either installTap() call site (the UI or the service's nativeInit) can run. */
 [[maybe_unused]] const bool g_process_facts_registered =
-    (dsd_qt::DiagnosticsLog::setPlatformFactsProvider(&android_process_facts), true);
+    (dsd_qt::DiagnosticsLog::setPlatformFactsProvider(&android_process_facts, &android_exit_lines_logged), true);
 
 } // namespace
 
