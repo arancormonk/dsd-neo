@@ -413,7 +413,10 @@ python3 tools/check_android_r8.py path/to/release.aab \
   --dexdump "$ANDROID_SDK_ROOT/build-tools/36.0.0/dexdump"
 ```
 
-Keep `mapping.txt` from each distributed APK to retrace Java/Kotlin crash reports.
+Keep `mapping.txt` from each distributed APK to retrace Java/Kotlin crash reports
+and the main-thread stacks in diagnostics ("Main-thread watchdog"). Release builds
+keep line numbers (`-keepattributes SourceFile,LineNumberTable`, with every source
+file name replaced by `SourceFile`), which at minSdk 29 costs no DEX size.
 CI saves the mapping and other R8 reports as `<APK artifact name>.r8` before building
 the AAB (90 days for tags, 30 otherwise); archive release mappings before expiry.
 An AAB includes its own mapping at
@@ -747,7 +750,8 @@ For Airspy, the broker recognizes `1d50:60a1` and routes the descriptor through
 `nativeSetAirspyUsbFd()` to the native adapter's `airspy_open_fd()` path. Source
 kind and an explicit serial are checked before a session starts. Readiness and
 native descriptor-in-use reporting cover both drivers; switching between USB
-receivers requires the current session to stop. Both drivers share the vendored
+receivers requires the current session to have ended (one still configured, or
+still holding its descriptor, counts). Both drivers share the vendored
 libusb target, and Java retains descriptor ownership until native transfers end.
 
 ### Receiver status on Listen
@@ -786,11 +790,15 @@ tapping it explains that the session is finishing and offers **Stop now**, which
 drops the uploads still waiting. On a short landscape Monitor, where the header
 scrolls away, a fixed `RTL-SDR LOST` line above Stop does the same. A stalled
 RTL-SDR is reset and reopened in place, once per stall, as on the desktop
-(`docs/cli.md`, "Stall recovery"), and Listen shows the toast "RTL-SDR stopped
-sending samples; reset and reopened" (#782). The app resets it through its own USB
-descriptor, after the 2 s grace below lets a detach broadcast own an unplug.
-Only when that does not bring samples back (or the dongle stalls again within
-60 s) does the session end; an Airspy, which is never reset, ends as before.
+(`docs/cli.md`, "Stall recovery"), and the Monitor shows "RTL-SDR stopped sending
+samples; reset and reopened" for 5 s while the session goes on (#782). The app
+resets it through its own USB descriptor, after the 2 s grace below lets a detach
+broadcast own an unplug; the descriptor's own VID:PID and strings identify the
+dongle, so no unique serial is needed. Only when that does not bring samples back
+(or the dongle stalls again within 60 s) does the session end; an Airspy, which is
+never reset, ends as before. If the descriptor's identity cannot be read, the open
+logs `RTL-SDR: stall recovery is off for this receiver: its descriptor's USB
+identity could not be read (errno <n>)` and a stall ends the session.
 
 Once the session has ended, Listen shows a notice in place of the receiver card:
 "RTL-SDR was unplugged, so <system> stopped. Plug it back in, then tap Reconnect."
@@ -826,6 +834,35 @@ the notice for that Activity only, as it does any failure, so a recreated Activi
 shows a dismissed (but not acknowledged) notice again; a healthy session
 reattached after a recreation shows LIVE with no receiver sheet (LOST still shows
 if it ends).
+
+### What a failed start says
+
+A start that fails says why on Home's failure card (#782), and the card's own
+failure stays until the next start, Retry or Dismiss, so a poll of an older
+session can never put that session's failure back:
+
+- **The previous session is still stopping:** "The previous session is still
+  stopping. Tap Retry to start this one once it has stopped."
+- **The decoder service did not take the start within 2 s:** "The decoder did not
+  respond in time, so the session was not started. Tap Retry, or open Details if
+  this keeps happening."
+- **The receiver's USB permission was revoked:** "RTL-SDR needs USB permission
+  again, so the session was not started. Tap Retry, then allow access when asked."
+- **Android could not open the receiver again for this session:** "RTL-SDR could
+  not be reopened, so the session was not started. Tap Retry, or unplug it and plug
+  it back in if this keeps happening."
+- **The receiver is no longer connected:** "RTL-SDR is no longer connected, so the
+  session was not started. Plug it back in, then tap Retry."
+- **The RTL-SDR or Airspy failed to open in the decoder:** "The receiver could not
+  be opened or stopped receiving. Check its USB connection and settings."
+
+An Airspy is named "Airspy", and a start the app cannot tie to a receiver says "The
+receiver". For the three USB cases, Signal search's own screen says the search was
+not started and to start it again. A start that timed out can never run later:
+Dismiss gives it up, and Retry or another start replaces it. Settings → Diagnostics
+keeps the line behind each (`Start attempt N refused: the decoder service is
+STOPPING`, `Start was not delivered to the decoder service within N ms (service
+state X)`, `usb: <device> is no longer attached; not reopened`, ...).
 
 ### Permission requests and detaches
 
@@ -1319,8 +1356,9 @@ module behind it, so androiddeployqt has nothing extra to package.
 
 Settings → Diagnostics shows current-process decoder and host diagnostics plus a
 bounded redacted persistent tail from previous runs, including how Android says
-recent app processes ended. It captures no crash stacks or tombstones. The process
-ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause freezes the displayed list while capture continues; Copy and Share
+recent app processes ended. It captures no crash stacks or tombstones; the one
+stack it records is the main thread's during a stall (see "Main-thread watchdog").
+The process ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause freezes the displayed list while capture continues; Copy and Share
 include the current ring, after the host records (see below). Clear removes the ring, the host records, pending earlier
 records and both persistent stores; records captured after Clear remain available, and each saved store starts again
 with the running process's `process:` line (never the cleared session's). Diagnostics deliberately survive decoder
@@ -1381,6 +1419,11 @@ Copy and Share start with these records under `--- host and session records ---`
 the previous run's first under `--- previous run ---`, then give the full log under
 `--- all records ---`. The records therefore appear twice when the ring still holds
 them. The screen shows the full log only. Clear removes this store with the rest.
+The watchdog, teardown and screen records below are host records too. Written
+from Kotlin, they can come before the native library is ready; up to 64 wait for
+it in order (later ones are counted and reported as `diagnostics: N host records
+dropped while waiting for native diagnostics`), and each also goes to logcat at
+once under the `dsd-neo` tag.
 
 **Durable start.** A phone that restarts while listening loses whatever was not
 yet on flash. So a start records itself before it touches the device:
@@ -1432,6 +1475,90 @@ The app's argv token gate rejects `--show-keys` (including assignment syntax).
 `session_args_extra_safe()` is the shared gate for future scan-list generation.
 Malformed CLI key diagnostics report the expected shape, never the value.
 QString/QML copies cannot promise erasure; only filtered content enters diagnostics.
+
+### Main-thread watchdog
+
+The records in this and the next two sections were added to diagnose two reports
+in issue #782: the dim between calls not lifting, and a relaunch waiting on the
+splash screen after the app was closed. They change nothing the app does.
+
+A thread of its own (`dsd-main-watchdog`) posts one ordinary message to the main
+thread every 500 ms and waits for it to run. One that waits more than 1.5 s is a
+stall, and the first stall in any 30 s is recorded as an incident of up to eight
+records, each `watchdog: stall <id>.<n> of <total>: ...`:
+- **Header:** how long the main thread has been blocked and in which thread state
+  (`BLOCKED`, `WAITING`, `TIMED_WAITING`, or `RUNNABLE`, which a native or binder
+  call also shows as), how many touch events Android delivered since the message
+  was posted, where the activity stood (`activity 2 resumed, window 3 attached`),
+  and how many stack frames follow.
+- **Screen:** the screen policy's inputs as last applied, and how long ago.
+- **Main stack:** up to six records of the main thread's stack, top frame first,
+  numbered (`main stack 1-3: ...`); when not every frame fits, the header says how
+  many were recorded (`stack of 120 frames, top 31 recorded`).
+
+When the main thread runs the message again, one more record says `main thread
+resumed after N ms` and how many touches arrived while it waited. Touches during a
+stall mean input still ran while ordinary messages did not. Stalls the 30 s limit
+kept out are counted in the next incident's header. When Android freezes the whole
+app in the background, the watchdog is frozen too; that time is not counted as a
+stall, and a resume names it (`the watchdog itself was held for N ms, not
+counted`). The cost is two short messages every 500 ms, for as long as the app
+process lives.
+
+### Teardown markers
+
+When the app's activity is destroyed for good (closing the app, not a rotation or
+another configuration change), each stage of the teardown is recorded with how long
+it took, so a relaunch that waited for the old process shows which stage held it:
+
+```
+teardown: activity 2 destroying at uptime 1234.567 s
+teardown: engine stop request took 0 ms
+teardown: stopService took 3 ms
+teardown: diagnostics flush took 12 ms
+teardown: nativeQuitUi took 0 ms
+teardown: Qt event loop returned at uptime 1234.890 s
+teardown: ~BackupModel took 0 ms
+teardown: ~CallHistoryModel took 41 ms
+teardown: ~SignalSearchModel took 2 ms
+teardown: ~RadioReferenceModel took 1012 ms
+teardown: QML engine and its models took 1090 ms
+teardown: decoder host took 1 ms
+teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms
+```
+
+The models whose destructors can wait (`~BackupModel`, `~CallHistoryModel`,
+`~SignalSearchModel`, `~RadioReferenceModel`) each mark their stage inside the QML
+engine's. A stage that never returned is the one after the last marker, and a
+watchdog incident during the wait names the activity `in Qt teardown`. Uptimes on
+the Kotlin and native sides are the same clock, so they line up. No record can
+follow the final flush durably, so its own time is reported by the next start of
+the app's screen: `teardown: the previous process's final diagnostics flush took
+N ms` (with `, and timed out` when the flush did not complete).
+
+### Screen records
+
+Each time the app writes the screen's brightness for the dim, or the dim it wants
+changes without a write, it records `screen: change <n>: ...`: dim on or off, the
+brightness requested and read back from the window (or why nothing was written:
+`brightness already <v>`, `no attached window`), the policy's inputs (mode, delay,
+session, visible, focused, top, multi-window, screen on or off, what it wants, and
+what engaged it, such as `engaged by touch 300 ms ago`) and the activity. A written
+change is followed to the screen: one more record says `traversal after X ms, draw
+after Y ms on window W`, `no draw within 2000 ms`, or that a later change replaced
+it. So a change that never drew is told apart from one that drew while the panel
+stayed dim, which points at the platform. Change records come at most once a
+second; of the changes inside that second, only the latest is recorded, at its
+end, saying how late and how many changes it replaced.
+
+### Reading a shared report
+
+In a release build the app's own stack frames are obfuscated, with line numbers
+kept: retrace them with the `mapping.txt` of that exact APK ("Release optimization
+and JNI"). In the watchdog and screen records, a word the key filter would drop the
+whole record for is broken with a `*` (`dispatchK*yEvent`, `javax.crypto.A*S`), and
+a dash that reads like an option becomes `~`. That is deliberate, not corruption:
+without it the filter would drop the record and everything correlated with it.
 
 ### Monitor site identity
 

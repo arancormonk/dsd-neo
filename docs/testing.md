@@ -146,7 +146,8 @@ build or emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite 
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
 `ANDROID_DECODER_STATUS_JVM` runs `DecoderStatus.kt`, the notification status record's reader, with no stubs, and
 `ANDROID_SCREEN_POLICY_JVM` (the `screen` suite) runs the screen modes' policy and pure adapters (`ScreenPolicy.kt`,
-`ScreenController.kt`, `ScreenWake.kt`, `StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`) with no stubs at
+`ScreenController.kt`, `ScreenWake.kt`, `StatusFeed.kt`, `ActivitySlot.kt`, with `DecoderStatus.kt`, and the #782
+screen trace `ScreenTrace.kt` with `HostRecordText.kt` and `ActivityTrace.kt`) with no stubs at
 all, so an `android.*` import in any of them fails the compile, then `ScreenLocks.kt` (with `ScreenWake.kt`) on its own
 against a `PowerManager` stub that models reference counting and the screen's interactive state.
 `ANDROID_DOCUMENT_TRANSFER_JVM` (the `document_transfer` suite) runs `DocumentTransfer.kt`, the backup's bounded
@@ -187,7 +188,14 @@ start with its kind and leaves the broker not ready; a start while the previous 
 the Airspy gets the same rule; a serial request keeps its serial; a configured session refuses a switch; the Qt
 thread's switches run in order on the main thread; a released connection waits only on its own descriptor; a bus
 listing made stale by an attach, a replug or a detach is dropped; and a serial read held up inside an attach blocks
-neither the poll nor another broadcast. A source check first reads
+neither the poll nor another broadcast. The reset obligation (#782) runs first as plain Kotlin
+(`UsbResetObligationsTest.kt`: one receiver's obligation never reaches another, a refused reset keeps it, a detach or
+another device under the same name drops it, a new process keeps only what is still attached, and what this process
+recorded wins over the store), then through the manager (the `reset_owed_*` cases): a stall the engine reports travels
+with the next descriptor of that attachment, the swap reads the engine's answer itself, a refused reset is asked again
+until a session streams, a detach drops it from storage, a second class-loader "process" sharing the storage resets
+what is still attached on its first open, and with a real storage thread the first open waits for the stored record
+and no read or write runs on the main thread. A source check first reads
 `UsbSourceManager.kt` for the same wiring (the generation as every permission `PendingIntent`'s request code, no
 `FLAG_UPDATE_CURRENT`, the detach's ownership test, the poll's expiry, the ready rewrite), and checks that every failure
 kind the broker writes is one `android/local_device_state.h` maps (`refused` to no device failure).
@@ -221,7 +229,8 @@ computed from an IDLE record the service has since left finds the run published 
 `DecoderServiceUsbTest.kt` (#782) scripts the USB broker's take (a stub `UsbSourceManager` in `ServiceNative.kt`): an
 RTL-SDR or Airspy start takes its receiver while STARTING and before configure, and its record names the connection;
 an rtl_tcp start takes none; a failed take ends the start before configure with its kind and text; a retirement before
-or during the take configures nothing.
+or during the take configures nothing; and a run's end is reported to the broker once, so it can read what the run
+left the receiver owing.
 These tests exercise the service path the desktop host fixture replaces; they do not
 model vendor scheduling, Binder latency or an attached SDR.
 `ScreenPolicyTest.kt` takes the policy through each row of its transition table and through whole histories on an
@@ -239,7 +248,22 @@ three lock-screen wake cycles with broadcast delays from 0 to 10 s, including th
 screen-off, unlock, Activity destruction and session changes cancel pending claims, and that screen-off keeps the
 claim of a new pulse it triggers for held audio. `ScreenLocksTest.kt` checks that a screen already on
 is never pulsed; `StatusFeedTest.kt`
-that the verdict is handed on unasked; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception. Each suite
+that the verdict is handed on unasked; `ScreenTouchTest.kt` the gesture latch and the TalkBack exception.
+`ScreenTraceTest.kt` (#782) checks the screen trace's exact records: a written change followed to its traversal and
+draw, no draw within 2 s with and without a traversal, an unwritten change not followed, at most one change record a
+second with the latest waiting change replacing the others and its follow record held back until it is written, a
+tick held up by a busy main thread letting the next change replace the waiting one, and the policy inputs read from a
+real `ScreenController`. `ANDROID_WATCHDOG_JVM` (the `watchdog` suite, #782) runs `LooperWatchdog.kt`,
+`ActivityTrace.kt`, `PendingHostRecords.kt` and `HostRecordText.kt` with no stubs, against a fake clock, a fake
+watchdog thread whose checks can run late and a fake main looper that can block: one probe outstanding however long
+the looper blocks, a stall recorded at 1501 ms and not before, one incident per stall however long it lasts, stalls
+within 30 s of an incident counted rather than recorded, a frozen process (checks running late, with the probe
+outstanding or run first) never read as a stall, the records split top frame first within 498 bytes each, the
+activity generations ignoring an old instance's late callbacks, the 64-record pending bound, delivery in order from
+two threads, and delivery that never holds the lock a class initializer (`DsdNative`'s) waits for. The `screen` and
+`watchdog` suites first check that their golden records are byte-identical to the ones
+`UI_QT_DIAGNOSTICS_LOG` passes through the native redaction (`DIAGNOSTICS_GOLDEN_SCREEN`,
+`DIAGNOSTICS_GOLDEN_WATCHDOG`), so a record the native key rule would drop fails a test. Each suite
 compiles its own files, each build in a suite its own set, and the CTest entries share a resource lock so two Kotlin
 compiles never run at once. `DecoderStatusTest.kt` parses the same golden v3 record literal that
 `APP_CONTROL_NOTIFICATION_STATUS` makes the C encoder write; the `decoder_status` suite reads both literals before
@@ -2715,7 +2739,8 @@ that flag literally.
 ### RTL-SDR stall emulation (hardware)
 
 The USB stall recovery and the rtl_tcp reconnect run against fakes in CTest (`IO_RTL_USB_IDENTITY`, `IO_RTL_USB_SWAP`,
-`IO_RTL_USB_RECOVERY`, `IO_RTL_TCP_RECONNECT`, `DSP_SYMBOL_STREAM_GAP`, `ENGINE_STREAM_GAP`), which never open a real
+`IO_RTL_USB_RECOVERY`, `IO_RTL_TCP_RECONNECT`, `DSP_SYMBOL_STREAM_GAP`, `ENGINE_STREAM_GAP`, and for the Android
+descriptor path `IO_RTL_USB_FD_RECOVERY`, whose reset and identity reads are test hooks), which never open a real
 dongle. To check one on hardware, use a spare RTL-SDR that nothing else needs: the emulation stalls it until it is
 reset or replugged.
 
@@ -2765,6 +2790,55 @@ ineligible-device paths. `IO_RTL_CONTROL_EDGES` covers unset-center refusal, tes
 unsupported operations on narrow fake devices. `RUNTIME_STREAM_NOTICE_INIT_FAILURE` covers a failed notice lock
 initialization. The benchmark harnesses also have bounded smoke checks: `dsd-neo_bench_rtl_consumer --check-stop`
 and `dsd-neo_bench_soapy_ingest --check-exit` / `--check-report-math`.
+
+### Android USB on the emulator (real dongle, optional)
+
+The Android receiver paths (#782: the broker's connection per session, the reset at open, recovery through the app's
+descriptor, detach and attach) run against stubs in CTest (`ANDROID_USB_BROKER_JVM`, `ANDROID_ENGINE_STOP_JVM`,
+`IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`). To see them with a real RTL-SDR, pass one through to an emulator on a
+Linux host. This is a manual check, not part of CTest or CI.
+
+1. Create an AVD from the API 36 `google_apis` x86_64 image. The arm64 APK runs there through the image's NDK
+   translation, so the release or CI APK installs as it is.
+2. Find the dongle's bus and address on the host (`lsusb`: `Bus <B> Device <A>`; QEMU needs write access to
+   `/dev/bus/usb/<B>/<A>`), and boot the AVD with a QEMU monitor socket and the dongle on an xHCI controller:
+
+   ```sh
+   emulator -avd <avd> -writable-system -qemu \
+     -monitor unix:<sock>,server,nowait \
+     -device qemu-xhci,id=xhci \
+     -device usb-host,bus=xhci.0,hostbus=<B>,hostaddr=<A>,id=rtl,guest-resets-all=on
+   ```
+
+   `guest-resets-all=on` is required: without it QEMU drops the guest's `USBDEVFS_RESET`, so the reset the app makes
+   at open and in a stall recovery never reaches the dongle.
+3. The image does not declare USB host support, so Android never offers the dongle to an app. Declare it once:
+   `adb root`, `adb remount`, push a permissions file declaring the feature to `/system/etc/permissions/`, and
+   reboot:
+
+   ```xml
+   <?xml version="1.0" encoding="utf-8"?>
+   <permissions>
+       <feature name="android.hardware.usb.host" />
+   </permissions>
+   ```
+
+   saved as `android.hardware.usb.host.xml`, then
+   `adb push android.hardware.usb.host.xml /system/etc/permissions/` and `adb reboot`.
+4. Install the APK, allow the dongle when Android asks, and start a session. Settings → Diagnostics shows the steps:
+   `usb: the session takes <device> (connection N)` for the first session after a connect, and `usb: reopening
+   <device> for the new session` for each later one. An open that owes a reset (after a stall) logs `RTL-SDR: reset
+   the USB device through descriptor N before opening it`, and the guest kernel log (`adb shell dmesg`) shows `reset
+   high-speed USB device`.
+5. Unplug and replug the dongle from the monitor socket: `device_del rtl`, then `device_add
+   usb-host,bus=xhci.0,hostbus=<B>,hostaddr=<A>,id=rtl,guest-resets-all=on` with the dongle's current host address,
+   which a reset can change (for example `printf 'device_del rtl\n' | socat - UNIX-CONNECT:<sock>`). Android sees a
+   detach and an attach, as for a cable: the session ends as unplugged, Listen shows the unplug notice, and Reconnect
+   starts it again.
+
+An emulator under heavy host load can stall the passed-through dongle's stream by itself, which exercises the stall
+recovery (`RTL-SDR: the receiver sent no samples for <ms> ms; resetting the USB device`); read such stalls as rig
+conditions until the same build stalls on a phone.
 
 ## Continuous Integration
 

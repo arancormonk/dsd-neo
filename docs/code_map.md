@@ -4531,8 +4531,15 @@ Key public headers:
     the "stall recovery is off" text. Every libusb/librtlsdr call goes through `struct rtl_usb_driver_ops`
     (`rtl_usb_identity_set_driver_ops()`, test hooks only). CMake defines `DSD_HAVE_LIBUSB` (`cmake/FindLibusb.cmake`:
     header, library and a `libusb_reset_device` link check) privately on `dsd-neo_io_radio` and its test mirror, only
-    with a system librtlsdr and never on Android; otherwise every call returns `RTL_USB_ID_NO_LIBUSB`. Tests:
-    `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
+    with a system librtlsdr and never on Android; otherwise every call returns `RTL_USB_ID_NO_LIBUSB`. The same file
+    forwards libusb's own log lines (#782): an open from a descriptor fails inside libusb (the descriptor read, the
+    claim) and only libusb's text says which step and with what errno. `rtl_usb_log_install()` (process-wide,
+    idempotent) sets libusb's default log callback and level (WARNING) for every context created after it, so it runs
+    before `rtl_usb_open_preopened_fd()` and before Airspy's `airspy_open_fd()`; only the Android build, where
+    `src/io/CMakeLists.txt` defines `DSD_HAVE_LIBUSB_LOG` and links the vendored libusb, installs anything.
+    `rtl_usb_log_forward()` writes each line once, at `LOG_ERROR` or `LOG_WARN`, without its line ending and with
+    libusb's `libusb: ` header never doubled, which is the form diagnostics_log's libusb exemption keeps with its code.
+    Tests: `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`, `IO_RTL_USB_LOG`.
   - USB handle swap (`rtl_device.cpp`): `rtl_device_create()` resolves the identity before the open and verifies the
     handle after (an Android descriptor: see "Android descriptor recovery" below); any other result logs `RTL-SDR:
     stall recovery is off for this receiver: <reason>` once, as a warning, and leaves
@@ -4624,12 +4631,17 @@ Key public headers:
     retirement set it for the held descriptor before any grace or Stop, and so do a reader that returned unasked
     (`rtl_usb_reader_end_session()`) and a recovery that failed after its reset went through (the swap's reopen,
     identity check, replay or publish, and `rtl_device_usb_recovery_finish()`'s failure ending for the restart), so
-    every committed "failed" ending of such a receiver owes the reset the Listen notice promises; samples after the verdict that set it, or after the monitor's start when the descriptor came
-    owing one, and a successful reset clear it (compare-and-swap on the descriptor). A swap whose reset was refused
-    records it (`reopened_without_reset`), and the budget's "one per stall" ending then reads "none since it was
-    reopened (its USB reset was refused)". The open that takes a descriptor owing a reset
-    resets it first (`rtl_preopened_fd_take()` reads both under the slot's lock). The host side (the broker's per-
-    attachment record, storage and the swap) is in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
+    every committed "failed" ending of such a receiver owes the reset the Listen notice promises; samples after the
+    verdict that set it, or after the monitor's start when the descriptor came owing one, and a successful reset clear
+    it (compare-and-swap on the descriptor). A swap whose reset was refused records it (`reopened_without_reset`), and
+    the budget's "one per stall" ending then reads "none since it was reopened (its USB reset was refused)". The open
+    that takes a descriptor owing a reset resets it first: `rtl_preopened_fd_take()` reads the slot, the obligation and
+    the publish generation in one step under the slot's lock and marks the descriptor held
+    (`rtl_device_preopened_fd_held()`, -1 again once the device lets go of it, also after a failed open or recovery);
+    Airspy's open does the same under its own lock (`rtl_device_airspy_preopened_fd_held()`). A refused reset at open
+    opens without one and keeps the obligation; one that leaves the descriptor unusable lets the open fail with its own
+    code. The host side (the broker's per-attachment record, storage and the swap) is in "Android foundation integration
+    contracts" below ("USB broker") and in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
     `rtl_device_test_set_fd_reset_hook()`, `rtl_device_test_set_fd_identity_hook()`,
     `rtl_device_test_recoveries_in_grace()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
   - A retune writes only the capture settings that changed (#782 D3; `rtl_sdr_fm.cpp` `CaptureWriteRecord`). The
@@ -7517,8 +7529,10 @@ Qt Quick frontend (`src/ui/qt`):
     missing, Connect for available and absent, and none while ready or pending (Connect returns once the request
     expires); it only asks for access (`requestLocalDeviceAccess()`), never starts, and is offered only with no session
     active or in transition (`canAct`). It also gives the accessible name, the detail line (the host record's text where
-    it has one; a receiver on the bus reads "plugged in. Tap Connect", not "Plug in") and Onboarding's card title
-    (`headline`, e.g. "Airspy detected"), so Onboarding names the receiver it found.
+    it has one; a receiver on the bus reads "plugged in. Tap Connect", not "Plug in"; `fault` reads "RTL-SDR stopped
+    sending samples while listening. Tap Retry, then start listening again to reset it.", with no reset promised for
+    an Airspy, #782) and Onboarding's card title (`headline`, e.g. "Airspy detected"), so Onboarding names the receiver
+    it found.
   - Listen (`qml/HomeScreen.qml`): the title row is a fixed `listenHeader` above the scroll body, on the content
     column's x and width (`columnX`/`columnWidth`; the supporting pane is untouched; safe areas come from the parent),
     so the pill (`dongleStatusPill`, label `dongleStatusLabel`) never scrolls away. The body is clipped 6 px under the
@@ -8075,14 +8089,19 @@ Qt Quick frontend (`src/ui/qt`):
   outside the host lock, and the construction ends by publishing it under that lock (`publish()`: process line, held
   records, a held startup-window request, `ready`), so a thread that waited for the construction (the stderr pump, a
   session note) writes after them. Held records are formatted as `submit()` would format them, prefix included, so the
-  producer-line exemptions apply to them. On Android the caller can be the main thread (the service's `nativeInit`). Until the publish, the tap, `submitHostDiagnostic()` and
-  `armStartupDiagnostics()` only touch the bounded pending state, and `flushDiagnostics()` waits for the publish within
-  its own bound. Android's main-thread entry points (`nativeHostDiagnostic`, `nativeArmStartupDiagnostics`,
-  `nativeFlushDiagnostics`) and `DecoderHostAndroid::hostDiagnostic` use these. The remaining direct `instance()` users
-  run on the Qt thread (`DiagnosticsLogModel`, `noteAttempt`, the desktop install) or the stderr pump's thread, and
-  can wait for the construction there. `setLoadHookForTest()` lets `UI_QT_DIAGNOSTICS_LOG` hold a load open to prove it.
-  A host pair's rotation failure is noted in the host ring as well as the main ring. Reloading the host pair skips the
-  current segment's header lines where the previous segment already holds them.
+  producer-line exemptions apply to them. On Android the caller can be the main thread (the service's `nativeInit`).
+  Until the publish, the tap, `submitHostDiagnostic()` and `armStartupDiagnostics()` only touch the bounded pending
+  state, and `flushDiagnostics()` waits for the publish within its own bound. Android's main-thread entry points
+  (`nativeHostDiagnostic`, `nativeArmStartupDiagnostics`, `nativeFlushDiagnostics`) and
+  `DecoderHostAndroid::hostDiagnostic` use these. The remaining direct `instance()` users run on the Qt thread
+  (`DiagnosticsLogModel`, `noteAttempt`, the desktop install) or the stderr pump's thread, and can wait for the
+  construction there. `setLoadHookForTest()` lets `UI_QT_DIAGNOSTICS_LOG` hold a load open to prove it. A host pair's
+  rotation failure is noted in the host ring as well as the main ring. Reloading the host pair skips the current
+  segment's header lines where the previous segment already holds them. Android's Kotlin host records (the main-looper
+  watchdog, the screen trace, the teardown markers; "Android host diagnostics" under "Android foundation integration
+  contracts") arrive through `nativeHostDiagnostic` as `[host] [info]` records: they are written to pass `redact()`
+  (`HostRecordText.kt`), and `UI_QT_DIAGNOSTICS_LOG` (`androidHostRecordsSurvive()`) checks golden copies of them,
+  byte-identical to the Kotlin tests' (`run_jvm_tests.py` compares the two).
 
   `installTap()` records the run's `process:` line (pid, OS, app version, plus Android's boot count, device and recent
   `exit:` lines from the platform facts provider). Each new segment starts with that line and the current
@@ -8112,6 +8131,20 @@ Qt Quick frontend (`src/ui/qt`):
   previous segment holds its prefix, so a failed write of that segment loses nothing.
 
   `dsd_fsync_parent_dir()` (platform `file_compat`) makes a created, renamed or removed entry durable on POSIX.
+- `teardown_trace.h` (issue #782, header-only, no link dependency): stage markers for the Android app's teardown.
+  `android/main.cpp` installs `TeardownTraceHooks` (log through `DiagnosticsLog::submitHostDiagnostic()`, clock
+  `dsd_realtime_mono_ms()`) once `app.exec()` returns; a `TeardownStage` declared first in a scope logs `teardown:
+  <name> took <n> ms` when the scope ends, and nothing unless hooks were installed when it was made, so the desktop and
+  tests that install none are unaffected. `~BackupModel`, `~CallHistoryModel`, `~SignalSearchModel` and
+  `~RadioReferenceModel`, whose bodies wait with no timeout (a worker pool, a synchronous save, a store flush, the
+  RadioReference client), each declare one first. `main()` times the QML engine's and the host's destruction the same
+  way, then flushes with `DiagnosticsLog::kShutdownFlushMs` (500 ms) as its bound and writes that flush's own time to
+  `diagnostics/teardown-flush.marker` (`teardownFlushMarkerWrite()`, unsynced); the next UI start reports it once and
+  removes it (`teardownFlushMarkerTake()`: `teardown: the previous process's final diagnostics flush took N ms`, with
+  `, and timed out` when it did; a malformed marker is dropped). Tests: `UI_QT_CALL_HISTORY_MODEL`,
+  `UI_QT_BACKUP_MODEL`, `UI_QT_RADIO_REFERENCE`, `UI_QT_SIGNAL_SEARCH` (each destructor marks its stage only while
+  hooks are installed, through `tests/ui/teardown_trace_capture.h`), `UI_QT_DIAGNOSTICS_LOG`
+  (`teardownFlushMarkerRoundTrip()`).
 - Configuration backup (issue #580; user rules in `android/README.md` "Backup and restore"). The sealed envelope is
   crypto's `backup_seal`; everything inside it is Qt code.
   - Archive (`backup_archive.{h,cpp}` public surface, `backup_archive_build.cpp` export, `backup_archive_parse.cpp`
@@ -8688,11 +8721,11 @@ Monitor's LOST stays) and, for a session that ended Failed by that same ending, 
 Listen shows one card. Each acknowledgement is also handed to `DecoderService.acknowledgeReceiverEnding()`, and a host
 takes the service's `endingAcknowledged` mark from every record, so a recreated Activity's host starts from it. A native
 claim error is kept with the receiver of the session it came from and shown only while that receiver is the ready one.
-#782: the receiver is the connection the session took (the record's `usbDevice`, `usbEpoch`, `usbConnection`, from
-`UsbSourceManager.takeForSession()`), compared with the broker record's `device`, `epoch`, `connection`; a record
-without one falls back to source and the ready connection's serial when the error is first seen. The run record's error
-is the session's own receiver's latch (`receiver_open_error()`: the RTL-SDR's, or the Airspy's
-`rtl_device_airspy_last_open_error()`). The USB record also carries the broker's
+Since issue #782 the receiver is the connection the session took (the record's `usbDevice`, `usbEpoch`,
+`usbConnection`, from `UsbSourceManager.takeForSession()`), compared with the broker record's `device`, `epoch`,
+`connection`; a record without one falls back to source and the ready connection's serial when the error is first
+seen. The run record's error is the session's own receiver's latch (`receiver_open_error()`: the RTL-SDR's, or the
+Airspy's `rtl_device_airspy_last_open_error()`). The USB record also carries the broker's
 request (`pending`, `requestedSource`, `requestedSerial`, empty before the first request; `LocalDeviceState`), published
 as `localDeviceRequestPending`/`localDeviceRequestedSource`; kind `refused` (the switch refusal) maps to no device
 failure. The broker itself (`UsbSourceManager.kt`, `UsbRequestState.kt`: permission request generations and their 60 s
@@ -8737,20 +8770,93 @@ synchronous companion call from the Qt thread) before it reads the service state
 retired while STARTING latches `cancelRequested`, which is checked under the service lock with the STARTING→RUNNING
 publication after `nativeConfigure()`, so no worker starts, `nativeDiscardConfigured()` clears `g_configured` and the
 run record's receiver (`RunStatus::discard_configured()`), and the session ends cancelled. `retireAttempts()` answers
-whether the attempt was already taken past that point (it runs, or ended on its own). The record publishes
-`attemptId` and `failureKind`, a wire value for a failure of the attempt before its configure that
-`attempt_failure_from_wire()` maps. The start grace is `kStartGraceMs` (2 s) of `dsd_realtime_mono_ms()` from the
-request, not a count of polls; at its expiry the host logs `Start was not delivered to the decoder service within N ms
-(service state X)` and retires the attempt, and reports it undelivered unless the retirement says the service took it
-(then it follows the attempt's record). The attempt's own failures (`AttemptFailureKind` in `run_status.h`: 8 refused
-while the previous session stops, 9 undelivered, 10-12 the service's USB failures before configure; a start the host
-could not hand over has no kind) are published as Failed with `inputFailureKind()` over every record, so an older
-session's input failure never comes back, until the next start, `stop()` (Retry) or `dismissFailure()` (the card's
-Dismiss, which also retires the attempt). Both RTL-SDR open paths in `rtl_device_create()` report
-`DSD_INPUT_FAILURE_DEVICE` with the open's code, as Airspy's open does, so `failureMessage()` words them as kind 7.
-Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST` (`check_undelivered_start_after_network_failure`,
-`check_refused_start`, `check_attempt_identity`), `IO_RTL_FD_FAILURE`, `ANDROID_ENGINE_STOP_JVM`
-(`DecoderServiceAttemptTest.kt`), `ANDROID_R8`, `tst_main_receiver_notice.qml`.
+whether the attempt was already taken past that point (it runs, or ended on its own). The record publishes `attemptId`
+and `failureKind`, a wire value for a failure of the attempt before its configure that `attempt_failure_from_wire()`
+maps. The start grace is `kStartGraceMs` (2 s) of `dsd_realtime_mono_ms()` from the request, not a count of polls; at
+its expiry the host logs `Start was not delivered to the decoder service within N ms (service state X)` and retires the
+attempt, and reports it undelivered unless the retirement says the service took it (then it follows the attempt's
+record). The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered after `dsd_input_failure_kind`'s
+1-7: 8 `previous_stopping`, a start refused while the previous session stops, by the host or by the USB broker's take; 9
+undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`, the broker's take failing before
+configure; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
+every record, so an older session's input failure never comes back, until the next start, `stop()` (Retry) or
+`dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's `failureMessage()` words kinds 8 and
+9, and `receiverStartFailure()` kinds 10-12 for the card or for Signal search's own screen, naming the attempted
+receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text for a service-side kind is
+the record's `lastError` ("The USB receiver is no longer connected", ...). Both RTL-SDR open paths in
+`rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the open's code, as Airspy's open does, so
+`failureMessage()` words them as kind 7. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST`
+(`check_undelivered_start_after_network_failure`, `check_refused_start`, `check_attempt_identity`), `IO_RTL_FD_FAILURE`,
+`ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt`), `ANDROID_R8`, `tst_main_receiver_notice.qml`.
+
+USB broker (issue #782; user rules in `android/README.md` "USB-OTG"): `UsbSourceManager.kt` has one owner, the main
+thread. The broadcast receivers, `reportAttachment()` and the service's take already run there, and the Qt thread's
+`requestAccess()`/`requestAccessForSource()` post their work there (`onMain`). `lock` only makes the record readable
+from other threads (`deviceStatus()`, the poll's `takeAttachment()`) and is never held across a binder call: device
+listings and serial reads come first, and the poll applies its listing only if `events` (attach and detach events
+applied) did not move meanwhile. `deviceStatus()` names the ready connection (`device`; `epoch`, the attach edge it came
+from; `connection`, a process-wide generation). Every session gets a connection of its own:
+`DecoderService.startDecoding()`, after IDLE→STARTING and before `nativeConfigure()`, classifies the start's `-i` as
+getopt would (`UsbReceiverKind.sourceOfArgs()`: the last one, before any `--`) and calls `takeForSession()`. A start
+with no broker connection of its kind takes nothing, and the native open then fails as kind 7. The first session on a
+connection takes it; a later one runs `reopen()`: the old connection is closed through `detachConnection()`, the same
+`UsbDevice` is opened again and published (`UsbSessionTake` carries device, epoch and connection into the lifecycle
+record as `usbDevice`, `usbEpoch`, `usbConnection`). It fails, before configure, as `previous_stopping` while
+`nativeSessionUsesLocalReceiver()` or `nativeIsUsbFdInUse()` says the previous session still owns the receiver, and as
+`usb_gone` (not listed, or another serial under its name), `usb_permission` or `usb_open_failed`, leaving the broker not
+ready. A retirement of the attempt is checked before and after the take (`cancelledBeforeConfigure()`). A switch to
+another receiver is refused while a session runs, is configured on a local receiver, or holds a descriptor. Every
+release goes through `detachConnection()`: it reconciles the reset obligation (below), clears the record, then both
+native slots (`nativeSetUsbFd(-1, false)`, `nativeSetAirspyUsbFd(-1)`), and only then hands the connection back.
+`closeWhenReleased()` closes it once that connection's own descriptor is not in `nativeHeldUsbFds()`
+(`rtl_device_preopened_fd_held()`, `rtl_device_airspy_preopened_fd_held()`; a failed call counts as held), polling every
+50 ms, and leaks it after 10 s. The reset obligation's host side: `nativeSetUsbFd(fd, resetFirst)` →
+`rtl_device_publish_preopened_fd()` binds it to the descriptor it publishes; `reconcileResetOwed()` compares
+`nativeUsbResetOwed()` with the connected RTL-SDR's descriptor and records the answer on its attachment
+(`UsbResetObligations.kt`, plain Kotlin: device name, VID:PID and serial; an entry for another device under that name is
+dropped when asked, a detach drops it, and an entry recorded in this process wins over a stored one). It runs at the top
+of `detachConnection()` and after each run (`noteSessionEnded()`, posted by the service's worker when `nativeRun()`
+returns). `openClaimed()` and `reopen()` publish with `owesReset(device, serial)`. The record is stored in
+`noBackupFilesDir/usb-reset-owed` (`name\tvid\tpid\tserial` lines, written to a temporary file and renamed) by a single
+storage thread (`storageExecutor`, "dsd-neo-usb-store", injectable for tests); the load starts in
+`initializeAttachments()` on that thread, and an open applies it first (`applyResetObligations()`, waiting at most 1 s),
+keeping only entries still attached with the same VID:PID. libusb's own warning and error lines reach the diagnostics
+through `rtl_usb_log_install()` (IO, `rtl_usb_identity`). Tests: `ANDROID_USB_BROKER_JVM` (`UsbSourceManagerTest.kt`,
+`UsbResetObligationsTest.kt`), `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceUsbTest.kt`), `ANDROID_USB_RECEIVER_JVM`,
+`IO_RTL_FD_HELD`, `IO_RTL_USB_FD_RECOVERY`, `UI_QT_ANDROID_HOST` (`check_claim_error_connection`,
+`check_receiver_take_failures`), `tst_main_receiver_notice.qml`.
+
+Android host diagnostics (issue #782; user-facing in `android/README.md` "Diagnostics"). These were added to diagnose
+two reports, a dim that did not lift and a relaunch held after the app closed; they change nothing that is applied.
+Kotlin writes them through `HostDiagnostics.submit()`, which logs each to logcat and holds up to 64 in a
+`PendingHostRecords` until native diagnostics are ready (native code asked `ProcessFacts` for the process facts, or
+`DsdNative` loaded the library), then delivers them through `nativeHostDiagnostic`; later ones while waiting are counted
+(`diagnostics: N host records dropped while waiting for native diagnostics`). No lock is held while a record is
+delivered: one deliverer at a time takes the queue as a batch under the lock and delivers it outside, so `DsdNative`'s
+class initializer, which marks ready, cannot deadlock with a thread delivering a record. In `HostRecordText.kt`, `fit()`
+keeps a record within 498 UTF-8 bytes (512 less the `[host] [info] ` prefix) and `safe()` breaks every word the native
+key rule matches with a `*` (`K*yEvent`, `A*S`) and turns an option-like dash into `~`, so a stack frame never gets its
+record dropped.
+- `LooperWatchdog.kt` (plain Kotlin) with `MainLooperWatchdog.kt` (its `HandlerThread` "dsd-main-watchdog", started once
+  from `ProcessFacts.attach()` and run for the life of the process): one synchronous probe on the main looper at a time,
+  every 500 ms; a probe waiting over 1.5 s is a stall, and the first stall in any 30 s becomes an incident (`watchdog:
+  stall <id>.<n> of <total>: ...`): a header with the wait, the main thread's `Thread.State`, the touches delivered
+  since the probe and the activity snapshot; the screen policy's inputs as last applied; up to six records of the main
+  thread's Java stack (`Thread.getStackTrace()`, never the message queue), top frame first. The probe's run adds
+  `resumed after N ms` with the touches the stall saw. A check more than 1 s late means the watchdog thread was held too
+  (the cached-apps freezer), so that time is left out and named. Release builds keep line numbers (`proguard-rules.pro`:
+  `-keepattributes SourceFile,LineNumberTable`), so stacks retrace with that build's `mapping.txt`.
+- `ActivityTrace.kt` (plain Kotlin): activity and window generations, the lifecycle phase (including "in Qt teardown",
+  set in `DsdNeoActivity.onDestroy()` before `super.onDestroy()`) and the touch count, published as one immutable
+  snapshot; as in `ActivitySlot`, only the newest instance moves them. `DsdNeoActivity.onDestroy()`, when not a
+  configuration change, logs `teardown: activity N destroying at uptime S` and times the engine stop request,
+  `stopService`, the diagnostics flush and `nativeQuitUi`; `teardown_trace.h` (UI, Qt) carries the markers on through
+  `main()`. Uptimes on both sides are CLOCK_MONOTONIC.
+- `ScreenTrace.kt` (plain Kotlin), fed by `ScreenSupport.kt`: see "Android screen modes".
+
+Tests: `ANDROID_WATCHDOG_JVM` (`LooperWatchdogTest.kt`, `ActivityTraceTest.kt`, `PendingHostRecordsTest.kt`),
+`ANDROID_SCREEN_POLICY_JVM` (`ScreenTraceTest.kt`), `UI_QT_DIAGNOSTICS_LOG` (the golden records pass `redact()`
+unchanged; an unbroken `dispatchKeyEvent` frame is dropped).
 
 Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration backup") adds five `DecoderHost`
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
@@ -8891,6 +8997,18 @@ The Android glue only delegates:
   `pulseWake()` reads `isInteractive` before the pulse: a screen already on is not pulsed (`ALREADY_ON`); otherwise
   it pulses and answers `WOKE` or `REFUSED` by `isInteractive` after. This is the one file that names the deprecated
   levels.
+- `ScreenTrace.kt` (issue #782, plain Kotlin; diagnostics only, it changes nothing applied). A window's brightness
+  reaches the display only through a relayout that the next traversal sends, and only for a window that is drawn, and
+  the value read back from the window is the client's copy, so `ScreenSupport.applyWindow()` hands the trace every
+  brightness write (requested and read back) and every change of the wanted dim that wrote nothing, and why (`brightness
+  already <v>`, `no attached window`), with the policy inputs (`ScreenTrace.inputs()`: mode, delay, session, visible,
+  focused, top, multi-window, screen on or off, the outputs wanted, and each engagement within the delay with its age)
+  and the activity snapshot. `screen: change <n>: ...` records come at most one per second; a change inside that second
+  waits, and only the latest waiting one is recorded, saying how late and how many it replaced. Pre-draw and draw
+  listeners on the attached activity's decor view (moved at `attach()`, removed at `detach()`) follow the latest written
+  change, and one follow record says when its traversal and draw came, that no draw came within 2 s, or that a later
+  change replaced it; it never precedes its change record. The same inputs go to `MainLooperWatchdog` for its incidents
+  ("Android host diagnostics").
 
 Qt side: `AppPrefs` stores `screenMode` (`listen/screenMode`) and `screenDelaySec` (`listen/screenDelaySec`) under
 one `screenPolicyChanged` signal, with the offered delays as the CONSTANT `screenDelayChoices`. A stored value off
@@ -8901,9 +9019,9 @@ Android host overrides both. `qt_ui.cpp` applies the pair at startup and on ever
 `screenModeRow` and, for the two between-calls modes only, `screenDelayRow` ("Dim after", or "Turn off after" in Off
 between calls), both through the `screenChoices` `ChoiceSheet` and hidden unless `screenPolicySupported`. Tests:
 `ANDROID_SCREEN_POLICY_JVM` (`ScreenPolicyTest.kt`, `ScreenControllerTest.kt`, `ScreenTouchTest.kt`,
-`StatusFeedTest.kt`, `ActivitySlotTest.kt`; `ScreenLocksTest.kt` against a `PowerManager` stub, with `ScreenWake.kt`),
-`UI_QT_PERSISTENCE` (`test_screen_policy_prefs()`), `UI_QT_QML_CALL_LISTS` (`tst_settings_screen_policy.qml`) and
-`UI_QT_ANDROID_HOST`.
+`StatusFeedTest.kt`, `ActivitySlotTest.kt`, `ScreenTraceTest.kt`; `ScreenLocksTest.kt` against a `PowerManager` stub,
+with `ScreenWake.kt`), `UI_QT_PERSISTENCE` (`test_screen_policy_prefs()`), `UI_QT_QML_CALL_LISTS`
+(`tst_settings_screen_policy.qml`) and `UI_QT_ANDROID_HOST`.
 
 ### Direct key application
 
