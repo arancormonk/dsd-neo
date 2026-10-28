@@ -997,9 +997,6 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
     SessionArgsError error = SessionArgsError::None;
     QStringList args = buildArgs(system, &error);
     const bool recording = error == SessionArgsError::None && host && m_recordingSessions;
-    if (error == SessionArgsError::None && host) {
-        host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
-    }
     if (recording) {
         // A saved system records into its own folder; Explore and Signal search share one, whatever uid the map
         // carries. The folder goes into the argv, so the system is built again with it once it is known valid.
@@ -1012,6 +1009,10 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
         args = buildArgs(system, &error, folder, folder.isEmpty());
     }
     auto result = validationResult(error);
+    // Noted only for a start that goes to the host: the build with the folder can still refuse it, as a scan list's can.
+    if (error == SessionArgsError::None && host) {
+        host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
+    }
     const bool started = error == SessionArgsError::None && host && host->start(args);
     if (recording && !started && !host->sessionActive()) {
         m_recordingSessions->endSession();

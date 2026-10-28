@@ -381,6 +381,11 @@ test_recording_sessions(void) {
         }
 
         void
+        noteStartAttempt(const QString& sourceType) override {
+            calls->append(QStringLiteral("note ") + sourceType);
+        }
+
+        void
         stop() override {}
     } host;
 
@@ -392,7 +397,9 @@ test_recording_sessions(void) {
     sys["name"] = QStringLiteral("County");
     expect("a saved system starts", builder.start(sys, &host, QStringLiteral("saved")).value("started").toBool());
     expect("its folder is asked for before the host starts",
-           sessions.calls == QStringList({QStringLiteral("begin saved sys-1 County"), QStringLiteral("start")}));
+           sessions.calls
+               == QStringList(
+                   {QStringLiteral("begin saved sys-1 County"), QStringLiteral("note usb"), QStringLiteral("start")}));
     const qsizetype folderAt = host.received.indexOf(QStringLiteral("-7"));
     const qsizetype journalAt = host.received.indexOf(QStringLiteral("--wav-journal"));
     expect("the session records into that folder",
@@ -426,7 +433,7 @@ test_recording_sessions(void) {
     sessions.calls.clear();
     host.accept = false;
     expect("a refused start", !builder.start(sys, &host, QStringLiteral("explore")).value("started").toBool());
-    expect("frees the folder", sessions.calls.size() == 3 && sessions.calls.value(2) == QStringLiteral("end"));
+    expect("frees the folder", sessions.calls.size() == 4 && sessions.calls.value(3) == QStringLiteral("end"));
 
     sessions.calls.clear();
     sys["freqMhz"] = QStringLiteral("not a frequency");
@@ -447,6 +454,8 @@ test_recording_sessions(void) {
                && !noStorage.value("started").toBool());
     expect("and frees the session it began",
            sessions.calls.size() == 2 && sessions.calls.value(1) == QStringLiteral("end"));
+    expect("and notes no start attempt: the device was never asked",
+           !sessions.calls.contains(QStringLiteral("note usb")));
     sessions.folder = QStringLiteral("/recordings/folder");
 
     sessions.calls.clear();

@@ -68,6 +68,10 @@ class RecordingStatus : public QObject {
      * session's command readings. Off until the host says otherwise. */
     void setSessionActive(bool active);
     bool sessionActive() const;
+    /** @brief Whether the session's run is up: its decoder takes commands and its recording view is its own (until
+     * then the view is the last run's). Off until the host says otherwise; recording_status_follow_host() sets it. */
+    void setRunUp(bool up);
+    bool runUp() const;
 
     bool published() const;
     /** @brief Calls record, one file per call (-P or Record calls). */
@@ -94,7 +98,8 @@ class RecordingStatus : public QObject {
     /** @brief The latest failure's kind, or empty. */
     QString lastError() const;
     /** @brief Why CommandBridge last refused a switch in this session without sending it: "storage-unavailable" (no
-     *  folder to record into), "static-wav" (the session records to the user's own -w file), "no-session", or empty.
+     *  folder to record into), "static-wav" (the session records to the user's own -w file), "no-session", "starting"
+     *  (the session's run is not up yet), or empty.
      *  Such a change applies at the next start. */
     QString refusal() const;
 
@@ -105,6 +110,7 @@ class RecordingStatus : public QObject {
     dsd_app_recording_view m_view{};
     QString m_refusal;
     bool m_sessionActive = false;
+    bool m_runUp = false;
     /* CommandBridge sent a switch since this session started: the decoder's command state is this session's. */
     bool m_sentThisSession = false;
 };

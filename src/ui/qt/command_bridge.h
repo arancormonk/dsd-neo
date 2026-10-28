@@ -136,6 +136,7 @@ class CommandBridge : public QObject {
      * (unknown-only travels with Record calls: an off switch filters no recording of the user's own options).
      *
      * Refused without sending anything, and said in RecordingStatus::refusal(), when no session is on ("no-session"),
+     * while its run is not up yet ("starting"),
      * when on would record into a session with no folder ("storage-unavailable"), or either way when the session
      * records to one static WAV from its extra options ("static-wav": a start or a stop would close the user's file);
      * the preference then applies at the next start. Queued like every command; the decoder holds it while a carrier loop

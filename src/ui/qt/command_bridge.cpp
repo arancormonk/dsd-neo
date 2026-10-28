@@ -246,6 +246,11 @@ CommandBridge::recordingSessionLive(dsd_app_recording_view* view) const {
         noteRecording(QStringLiteral("no-session"));
         return false;
     }
+    // Until the run is up the view is the last run's, whose folder and mode say nothing of this session's.
+    if (m_recordingStatus != nullptr && !m_recordingStatus->runUp()) {
+        noteRecording(QStringLiteral("starting"));
+        return false;
+    }
     return true;
 }
 

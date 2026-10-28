@@ -271,6 +271,7 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     dsd_qt::RecordingStatus status;
     bridge.setRecordingStatus(&status);
     status.setSessionActive(true);
+    status.setRunUp(true);
     status.refresh();
     expect("the status has the session's view", status.published() && !status.perCall() && status.storageNamed()
                                                     && !status.staticWav() && status.commandState() == "none");
@@ -311,6 +312,7 @@ test_live_without_storage(dsd_qt::AppPrefs& prefs) {
     dsd_qt::RecordingStatus status;
     bridge.setRecordingStatus(&status);
     status.setSessionActive(true);
+    status.setRunUp(true);
     expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
     status.refresh();
     expect("nothing is sent", live.drain() == 0 && live.decoder.opts->dmr_stereo_wav == 0);
@@ -332,6 +334,7 @@ test_live_beside_a_static_wav(dsd_qt::AppPrefs& prefs, Sessions& sessions, const
     dsd_qt::RecordingStatus status;
     bridge.setRecordingStatus(&status);
     status.setSessionActive(true);
+    status.setRunUp(true);
     expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
     status.refresh();
     expect("nothing is sent and the static WAV stays open",
@@ -378,7 +381,85 @@ class PhaseHost : public dsd_qt::DecoderHost {
         phase = next;
         Q_EMIT sessionStateChanged();
     }
+
+    /* As Android's: the run says when it is up, and the state is unknown until a first poll. */
+    bool signalsInit = false;
+    bool known = true;
+
+    bool
+    signalsSessionInitialized() const override {
+        return signalsInit;
+    }
+
+    bool
+    sessionStateKnown() const override {
+        return known;
+    }
+
+    void
+    initialized() {
+        Q_EMIT sessionInitialized();
+    }
+
+    void
+    firstPoll(SessionState state) {
+        phase = state;
+        Q_EMIT sessionStateChanged();
+        known = true;
+        Q_EMIT sessionStateKnownChanged();
+    }
 };
+
+/* Until a session's run is up the recording view is the last run's, so a live switch is refused as "starting",
+ * whatever that view says, and nothing is sent: while Starting, while Running before a host that signals it says the
+ * run is up, and never for a session the UI found running (its run was up long before). */
+void
+test_status_waits_for_the_run(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    expect("a session starts", started);
+    dsd_qt::CommandBridge bridge;
+    {
+        PhaseHost host;
+        dsd_qt::RecordingStatus status;
+        bridge.setRecordingStatus(&status);
+        dsd_qt::recording_status_follow_host(&status, &host);
+        host.setPhase(dsd_qt::DecoderHost::Starting);
+        expect("while Starting a switch is refused", !bridge.setRecordCalls(false, false));
+        expect("as starting, sending nothing", status.refusal() == QStringLiteral("starting") && live.drain() == 0);
+        host.setPhase(dsd_qt::DecoderHost::Running);
+        expect("Running, it is sent", bridge.setRecordCalls(false, false) && live.drain() == 2);
+    }
+    {
+        PhaseHost host;
+        host.signalsInit = true;
+        dsd_qt::RecordingStatus status;
+        bridge.setRecordingStatus(&status);
+        dsd_qt::recording_status_follow_host(&status, &host);
+        host.setPhase(dsd_qt::DecoderHost::Starting);
+        host.initialized(); // can come while Starting
+        host.setPhase(dsd_qt::DecoderHost::Running);
+        expect("a run said up before Running is up", bridge.setRecordCalls(false, false) && live.drain() == 2);
+        host.setPhase(dsd_qt::DecoderHost::Idle);
+        host.setPhase(dsd_qt::DecoderHost::Running);
+        expect("the next session waits for its own", !bridge.setRecordUnknownOnly(true)
+                                                         && status.refusal() == QStringLiteral("starting")
+                                                         && live.drain() == 0);
+        host.initialized();
+        expect("until it says so", bridge.setRecordCalls(false, false) && live.drain() == 2);
+    }
+    {
+        PhaseHost host;
+        host.signalsInit = true;
+        host.known = false;
+        dsd_qt::RecordingStatus status;
+        bridge.setRecordingStatus(&status);
+        dsd_qt::recording_status_follow_host(&status, &host);
+        host.firstPoll(dsd_qt::DecoderHost::Running);
+        expect("a session the UI found running is up", bridge.setRecordCalls(false, false) && live.drain() == 2);
+    }
+    bridge.setRecordingStatus(nullptr);
+}
 
 /* RecordingStatus is the session's: a start and an end clear its refusal, the command readings show nothing of the
  * last session's until this one sends a switch, and with no session a switch is refused as such. */
@@ -429,6 +510,7 @@ test_status_readings(void) {
     dsd_qt::RecordingStatus status;
     // As in a session that sent a switch: the command readings are the decoder's.
     status.setSessionActive(true);
+    status.setRunUp(true);
     status.noteSent();
     status.apply(dsd_app_recording_view{});
     int changes = 0;
@@ -489,6 +571,7 @@ main(int argc, char** argv) {
         test_live_without_storage(prefs);
         test_live_beside_a_static_wav(prefs, sessions, dir.filePath(QStringLiteral("static.wav")));
         test_status_follows_the_session(prefs);
+        test_status_waits_for_the_run(prefs, sessions);
     }
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

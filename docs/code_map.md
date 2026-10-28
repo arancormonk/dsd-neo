@@ -8024,7 +8024,9 @@ Qt Quick frontend (`src/ui/qt`):
     none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and on every change.
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or
     unknown-only off then WAV stop; it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
-    ("no-session", from the host, since a view outlives its run), when on would record into a session that names no
+    ("no-session", from the host, since a view outlives its run), while its run is not up yet ("starting": until then
+    the view is the last run's; up when Running, after `sessionInitialized()` on a host that signals it, or at once for a
+    session the UI found running), when on would record into a session that names no
     recording journal ("storage-unavailable": no folder to record into), or either way in a session recording to a static
     WAV of its extra options ("static-wav": a start or a stop would close the user's file); the preference applies at the
     next start. `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the

@@ -7,6 +7,8 @@
 
 #include "decoder_host.h"
 
+#include <memory>
+
 #include <QLatin1String>
 #include <QMap>
 #include <QVariant>
@@ -96,10 +98,47 @@ RecordingStatus::sessionActive() const {
 }
 
 void
+RecordingStatus::setRunUp(bool up) {
+    m_runUp = up;
+}
+
+bool
+RecordingStatus::runUp() const {
+    return m_sessionActive && m_runUp;
+}
+
+void
 recording_status_follow_host(RecordingStatus* status, DecoderHost* host) {
-    const auto follow = [status, host]() { status->setSessionActive(host->sessionActive()); };
+    /* Whether this session's run said it is up: its decoder opened the queue and published its recording view. A host
+       that signals it (sessionInitialized(), which can come while Starting) says so once per session; a session the
+       host was already running when it first knew its state (the UI recreated over it) was up long before. A host
+       that does not signal it is up when Running. */
+    struct Seen {
+        bool known = false;
+        bool initialized = false;
+    };
+
+    const auto seen = std::make_shared<Seen>();
+    const auto follow = [status, host, seen]() {
+        const bool active = host->sessionActive();
+        if (!seen->known && host->sessionStateKnown()) {
+            seen->known = true;
+            seen->initialized = active;
+        }
+        if (!active) {
+            seen->initialized = false;
+        }
+        status->setSessionActive(active);
+        status->setRunUp(host->sessionState() == DecoderHost::Running
+                         && (!host->signalsSessionInitialized() || seen->initialized));
+    };
     follow();
     QObject::connect(host, &DecoderHost::sessionStateChanged, status, follow);
+    QObject::connect(host, &DecoderHost::sessionStateKnownChanged, status, follow);
+    QObject::connect(host, &DecoderHost::sessionInitialized, status, [seen, follow]() {
+        seen->initialized = true;
+        follow();
+    });
 }
 
 bool
