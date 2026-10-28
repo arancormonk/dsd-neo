@@ -7,6 +7,7 @@ import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.PLAYING
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.PREPARING
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.STOPPED
 import io.github.arancormonk.dsdneo.RecordingPlayer.FocusChange
+import java.io.File
 import java.io.FileNotFoundException
 
 /** A MediaPlayer stand-in that refuses every call its state would not take, as the platform's throws. */
@@ -258,6 +259,17 @@ private fun failuresSayWhy() {
     rig.nextPrepareFails = FileNotFoundException("/r/gone.wav")
     rig.play("/r/gone.wav")
     check(rig.state == FAILED && rig.machine.status.error == RecordingPlayer.ERROR_MISSING) { "a file gone is missing" }
+    // The same exception for a file that is there (no access, a folder) is a failure, not a missing file.
+    val there = File.createTempFile("dsd-player", ".wav")
+    try {
+        rig.nextPrepareFails = FileNotFoundException("${there.path} (Permission denied)")
+        rig.play(there.path)
+        check(rig.state == FAILED && rig.machine.status.error == RecordingPlayer.ERROR_FAILED) {
+            "a file there that cannot be opened fails, it is not missing"
+        }
+    } finally {
+        there.delete()
+    }
     rig.nextPrepareFails = IllegalStateException("bad header")
     rig.play()
     check(rig.state == FAILED && rig.machine.status.error == RecordingPlayer.ERROR_FAILED) { "an unreadable file fails" }

@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QThreadPool>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -572,5 +573,6 @@ DecoderHostAndroid::refresh() {
     refreshLocalDevice();
     refreshPlayback();
     refreshRecordingTransfer();
+    refreshRecordingShares();
 }
 } // namespace dsd_android

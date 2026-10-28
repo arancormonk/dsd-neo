@@ -757,6 +757,12 @@ class DecoderHost : public QObject {
     void recordingTransferFinished(int selection, int result, int missing);
     /** @brief Playback, an export or a share found these call recordings gone: the store looks at them again. */
     void recordingFilesMissing(const QStringList& paths);
+    /**
+     * @brief A share the platform took (shareRecording() answered true) could not be handed to another app after all:
+     * the recording went, or nothing could take it. The platform hands a share over without waiting, so this comes
+     * later.
+     */
+    void recordingShareFailed(const QString& path);
 
   protected:
     /** @brief Start playing @p path, a file that exists, published Preparing. The base host has no player. */

@@ -65,7 +65,8 @@
 -keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingShare {
     public static java.lang.String[] roots(android.content.Context);
     public static boolean canShare(android.content.Context, java.lang.String);
-    public static void share(android.content.Context, java.lang.String, java.lang.String);
+    public static boolean share(android.content.Context, java.lang.String, java.lang.String);
+    public static java.lang.String takeFailure();
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.LocationSupport {

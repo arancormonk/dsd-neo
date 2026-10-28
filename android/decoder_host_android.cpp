@@ -644,17 +644,24 @@ DecoderHostAndroid::platformShareRecording(const QString& path, const QString& t
         != JNI_TRUE) {
         return false;
     }
-    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([path, title]() -> QVariant {
-        const auto activity = android_context();
-        if (activity.isValid()) {
-            // Must match RecordingShare.kt: @JvmStatic fun share(context: Context, path: String, title: String).
-            QJniObject::callStaticMethod<void>(
-                kRecordingShareClass, "share", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
-                activity.object(), QJniObject::fromString(path).object(), QJniObject::fromString(title).object());
-        }
+    /* Not waited for; a share that fails from here on is queued in RecordingShare for refreshRecordingShares(). The
+     * context checked here goes along (a global reference), so the share always runs and always reports. */
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([context, path, title]() -> QVariant {
+        // Must match RecordingShare.kt: @JvmStatic fun share(context: Context, path: String, title: String): Boolean.
+        (void)QJniObject::callStaticMethod<jboolean>(
+            kRecordingShareClass, "share", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z",
+            context.object(), QJniObject::fromString(path).object(), QJniObject::fromString(title).object());
         return {};
     });
     return true;
+}
+
+QString
+DecoderHostAndroid::platformTakeRecordingShareFailure() {
+    // Must match RecordingShare.kt: @JvmStatic fun takeFailure(): String.
+    const QJniObject path =
+        QJniObject::callStaticObjectMethod(kRecordingShareClass, "takeFailure", "()Ljava/lang/String;");
+    return path.isValid() ? path.toString() : QString();
 }
 
 void

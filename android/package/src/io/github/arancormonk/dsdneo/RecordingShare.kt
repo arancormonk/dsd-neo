@@ -14,6 +14,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /** #708: its own provider, so only the call recording folders (res/xml/recordings_paths.xml) are ever served. */
 class RecordingsProvider : FileProvider()
@@ -43,11 +44,23 @@ object RecordingShare {
     @JvmStatic
     fun canShare(context: Context, path: String): Boolean = sharable(path, rootFolders(context)) != null
 
-    /** Offer the recording at [path] to another app under [title]; nothing outside the roots is ever offered. */
+    /** Shares that failed after [canShare] said yes, by path, oldest first, until the host takes them. */
+    private val failures = ConcurrentLinkedQueue<String>()
+
+    /** The oldest share that failed after [canShare] said yes, or empty: DecoderHostAndroid polls it to tell the UI. */
     @JvmStatic
-    fun share(context: Context, path: String, title: String) {
+    fun takeFailure(): String = failures.poll() ?: ""
+
+    /**
+     * Offer the recording at [path] to another app under [title]; nothing outside the roots is ever offered.
+     *
+     * @return whether the chooser started. A share that cannot (the file went, the provider refuses the path, nothing
+     *     can take it) is queued for [takeFailure], since the host hands it over without waiting.
+     */
+    @JvmStatic
+    fun share(context: Context, path: String, title: String): Boolean {
         try {
-            val file = sharable(path, rootFolders(context)) ?: return
+            val file = sharable(path, rootFolders(context)) ?: throw IllegalArgumentException("not a call recording")
             val uri = FileProvider.getUriForFile(context, context.packageName + AUTHORITY_SUFFIX, file)
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "audio/wav"
@@ -59,8 +72,11 @@ object RecordingShare {
             context.startActivity(Intent.createChooser(send, title).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             })
+            return true
         } catch (e: Exception) {
             Log.w(TAG, "could not share a call recording", e)
+            failures.add(path)
+            return false
         }
     }
 

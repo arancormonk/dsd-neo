@@ -21,6 +21,7 @@
 #include <QVariantMap>
 #include <QVector>
 #include <QtGlobal>
+#include <memory>
 #include <stdint.h>
 
 #include "decoder_host.h"
@@ -271,8 +272,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * @brief Export or save on the transfer worker thread, never the GUI thread (#708).
      *
      * The worker skips the files gone and counts the rest, then hands a content:// document to RecordingExport.
-     * Another reference (a file URL) takes the base host's single-file copy there, and no ZIP. Progress is polled by
-     * refresh(); the end comes back to the GUI thread queued.
+     * Another reference (a file URL) takes the base host's single-file copy there, and no ZIP; that copy cannot be
+     * cancelled (cancelRecordingTransfer() reaches RecordingExport only), which is acceptable because the system
+     * pickers hand out content:// documents. Progress is polled by refresh(); the end comes back to the GUI thread
+     * queued.
      */
     bool beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
                                 bool zip) override;
@@ -287,12 +290,29 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void refreshPlayback();
     /** @brief Publish the running transfer's progress (#708). */
     void refreshRecordingTransfer();
-    /** @brief The transfer worker's job: count, write, and queue the end back to the GUI thread. */
-    void runRecordingTransfer(qint64 id, const QStringList& paths, const QStringList& names, const QString& reference,
-                              bool zip);
+    /** @brief Emit recordingShareFailed() for each share RecordingShare could not hand over (#708). */
+    void refreshRecordingShares();
+    /** @brief How a transfer job reaches its host; defined in decoder_host_android_recordings.cpp. */
+    struct TransferLink;
+    static std::shared_ptr<TransferLink> newTransferLink(DecoderHostAndroid* host);
+    /** @brief The one-thread pool transfers run on. */
+    static std::unique_ptr<QThreadPool> newTransferWorker();
+    /**
+     * @brief The transfer worker's job: count, write, and queue the end back to the GUI thread.
+     *
+     * Static, and through @p link only: a job the destructor stopped waiting for never touches the host.
+     */
+    static void runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
+                                     const QStringList& names, const QString& reference, bool zip);
     void noteRecordingTransferTotal(qint64 id, qint64 total);
     void endRecordingTransfer(qint64 id, int result, const QStringList& missing);
-    /** @brief At destruction: cancel the running transfer and wait for the worker, and stop the player. */
+    /**
+     * @brief At destruction: stop the running transfer (the teardown abort, then its cancel), wait for the worker a
+     * bounded time, and stop the player.
+     *
+     * A write blocked on a provider's pipe ignores both; after the bound the worker is left to finish on its own
+     * (logged), cut off from this host.
+     */
     void closeRecordingWork();
 
     /** @brief Records a start attempt in the persistent diagnostics, with the platform's context. */
@@ -353,6 +373,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static void platformCancelRecordingTransfer(qint64 id);
     /** @brief RecordingShare.canShare(), then RecordingShare.share() on the Android main thread, not waited for. */
     static bool platformShareRecording(const QString& path, const QString& title);
+    /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
+    static QString platformTakeRecordingShareFailure();
     /**
      * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
      * handed over, or empty.
@@ -458,8 +480,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int m_playback_generation = 0;
     qint64 m_transfer_id = 0;
     qint64 m_transfer_total = -1;
+    // The transfer jobs' way back to this host; cleared before it goes.
+    std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
     // One transfer at a time, off the GUI thread. Last, so it is destroyed first.
-    QThreadPool m_transfer_worker;
+    std::unique_ptr<QThreadPool> m_transfer_worker = newTransferWorker();
 };
 
 } // namespace dsd_android

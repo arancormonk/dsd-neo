@@ -43,8 +43,9 @@ object RecordingExport {
     /**
      * Entries are DEFLATED at level 0: stored blocks that still stream with data descriptors (STORED would need each
      * entry's CRC and size before its bytes). Measured on the fixture recordings (#708), BEST_SPEED shrinks 8 kHz
-     * digital voice by 13% and 48 kHz NFM by 23% at about sixty times the CPU time, which costs more than it saves
-     * unless the document takes under about 3 MB/s.
+     * digital voice by 13% and 48 kHz NFM by 23% at about sixty times the CPU time. It pays only for a document that
+     * takes bytes slower than about 13% of the deflate rate: about 9 MB/s at the measuring desktop's 66 MB/s, less on
+     * a phone, while documents are written to local storage far faster.
      */
     private const val LEVEL = Deflater.NO_COMPRESSION
 
@@ -149,6 +150,10 @@ object RecordingExport {
             Log.w(TAG, "could not write call recordings into a document", e)
             write.fail(e)
             if (transfer.signal.isCanceled) CANCELLED else FAILED
+        } catch (e: Throwable) {
+            // An Error still closes the document and leaves the transfers in flight, then goes on up.
+            write.fail(e)
+            throw e
         }
     }
 
@@ -229,8 +234,9 @@ object RecordingExport {
             failed = true
             try {
                 zip.close()
-            } catch (_: IOException) {
-                // Already failing; the close only releases the Deflater.
+            } catch (closing: Throwable) {
+                // Already failing; the close only releases the Deflater. The first failure is the one reported.
+                e.addSuppressed(closing)
             }
             throw e
         }

@@ -10,13 +10,16 @@
 #include <QFileInfo>
 #include <QLatin1String>
 #include <QList>
-#include <QMetaObject>
+#include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
 #include <Qt>
 #include <QtGlobal>
 #include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include "decoder_host.h"
 #include "decoder_host_android.h"
 
@@ -25,6 +28,16 @@ namespace {
 
 /* RecordingExport tells transfers apart by id, process-wide, so a host made after another never reuses one. */
 std::atomic<qint64> g_next_transfer_id{0};
+
+/* How long a host going away waits for its transfer to stop. */
+constexpr int kTransferStopWaitMs = 2000;
+
+/* Workers a host left running a blocked job: reachable for the rest of the process, never deleted (that would wait). */
+QList<QThreadPool*>&
+abandoned_transfer_workers() {
+    static auto* workers = new QList<QThreadPool*>();
+    return *workers;
+}
 
 } // namespace
 
@@ -112,6 +125,32 @@ DecoderHostAndroid::refreshPlayback() {
     publishPlayback(path, state, position, length, QString());
 }
 
+/*
+ * A transfer job holds this, not the host: the destructor clears host after its bounded wait, so a job it stopped
+ * waiting for (blocked in a provider's write) posts nothing more and never touches the host.
+ */
+struct DecoderHostAndroid::TransferLink {
+    std::mutex mutex;
+    std::condition_variable idle;
+    DecoderHostAndroid* host = nullptr;
+    // Jobs inside a call on the host (the base host's file copy), which the destructor waits out.
+    int inHost = 0;
+};
+
+std::shared_ptr<DecoderHostAndroid::TransferLink>
+DecoderHostAndroid::newTransferLink(DecoderHostAndroid* host) {
+    auto link = std::make_shared<TransferLink>();
+    link->host = host;
+    return link;
+}
+
+std::unique_ptr<QThreadPool>
+DecoderHostAndroid::newTransferWorker() {
+    auto worker = std::make_unique<QThreadPool>();
+    worker->setMaxThreadCount(1);
+    return worker;
+}
+
 bool
 DecoderHostAndroid::beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
                                            bool zip) {
@@ -121,16 +160,23 @@ DecoderHostAndroid::beginRecordingTransfer(const QStringList& paths, const QStri
     const qint64 id = ++g_next_transfer_id;
     m_transfer_id = id;
     m_transfer_total = -1;
-    m_transfer_worker.setMaxThreadCount(1);
-    m_transfer_worker.start(
-        [this, id, paths, names, reference, zip]() { runRecordingTransfer(id, paths, names, reference, zip); });
+    m_transfer_worker->start([link = m_transfer_link, id, paths, names, reference, zip]() {
+        runRecordingTransfer(link, id, paths, names, reference, zip);
+    });
     return true;
 }
 
 void
-DecoderHostAndroid::runRecordingTransfer(qint64 id, const QStringList& paths, const QStringList& names,
-                                         const QString& reference, bool zip) {
-    // The worker thread: no QObject state is touched here, only queued back.
+DecoderHostAndroid::runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
+                                         const QStringList& names, const QString& reference, bool zip) {
+    // The worker thread: no QObject state is touched here, only queued back through the link.
+    const auto post = [&link](const auto& call) {
+        const std::lock_guard<std::mutex> lock(link->mutex);
+        DecoderHostAndroid* host = link->host;
+        if (host != nullptr) {
+            QMetaObject::invokeMethod(host, [host, call]() { call(host); }, Qt::QueuedConnection);
+        }
+    };
     QStringList present;
     QStringList presentNames;
     QStringList missing;
@@ -147,8 +193,7 @@ DecoderHostAndroid::runRecordingTransfer(qint64 id, const QStringList& paths, co
         }
         total += file.size();
     }
-    QMetaObject::invokeMethod(
-        this, [this, id, total]() { noteRecordingTransferTotal(id, total); }, Qt::QueuedConnection);
+    post([id, total](DecoderHostAndroid* host) { host->noteRecordingTransferTotal(id, total); });
 
     int result = TransferMissing;
     if (!present.isEmpty()) {
@@ -159,13 +204,23 @@ DecoderHostAndroid::runRecordingTransfer(qint64 id, const QStringList& paths, co
             result = ok && code >= TransferDone && code <= TransferMissing ? code : TransferFailed;
             missing += answer.mid(1);
         } else if (!zip) {
-            result = copyFileToDocument(present.first(), reference) ? TransferDone : TransferFailed;
+            result = TransferFailed;
+            std::unique_lock<std::mutex> lock(link->mutex);
+            DecoderHostAndroid* host = link->host;
+            if (host != nullptr) {
+                ++link->inHost;
+                lock.unlock();
+                const bool saved = host->copyFileToDocument(present.first(), reference);
+                lock.lock();
+                --link->inHost;
+                link->idle.notify_all();
+                result = saved ? TransferDone : TransferFailed;
+            }
         } else {
             result = TransferFailed; // a ZIP goes only into a platform document
         }
     }
-    QMetaObject::invokeMethod(
-        this, [this, id, result, missing]() { endRecordingTransfer(id, result, missing); }, Qt::QueuedConnection);
+    post([id, result, missing](DecoderHostAndroid* host) { host->endRecordingTransfer(id, result, missing); });
 }
 
 void
@@ -210,8 +265,25 @@ DecoderHostAndroid::cancelRecordingTransfer() {
 
 void
 DecoderHostAndroid::closeRecordingWork() {
-    cancelRecordingTransfer();
-    m_transfer_worker.waitForDone();
+    if (m_transfer_id != 0) {
+        // As ~BackupModel: the provider calls in flight are cancelled and no document transfer starts again, then this
+        // transfer is cancelled; each stops at its next chunk.
+        abortDocumentTransfers();
+        cancelRecordingTransfer();
+    }
+    if (!m_transfer_worker->waitForDone(kTransferStopWaitMs)) {
+        // A write blocked on a provider's pipe ignores both. Deleting the pool would wait for it, so the pool is left
+        // to finish that job (reachable, never deleted), and the cleared link keeps the job away from this host.
+        hostDiagnostic(QStringLiteral("A call recording export did not stop within %1 ms; the app closes without it")
+                           .arg(kTransferStopWaitMs));
+        abandoned_transfer_workers().append(m_transfer_worker.release());
+    }
+    {
+        // Out of a call on this host (the base copy stops at its next chunk once aborted), and then cut off.
+        std::unique_lock<std::mutex> lock(m_transfer_link->mutex);
+        m_transfer_link->idle.wait(lock, [this]() { return m_transfer_link->inHost == 0; });
+        m_transfer_link->host = nullptr;
+    }
     if (m_playback_generation != 0) {
         platformStopPlayback();
         m_playback_generation = 0;
@@ -221,6 +293,18 @@ DecoderHostAndroid::closeRecordingWork() {
 bool
 DecoderHostAndroid::shareRecordingFile(const QString& path, const QString& title) {
     return platformShareRecording(path, title);
+}
+
+void
+DecoderHostAndroid::refreshRecordingShares() {
+    // Bounded: a few per tick at most, so a platform that keeps answering cannot hold the tick.
+    for (int i = 0; i < 8; ++i) {
+        const QString path = platformTakeRecordingShareFailure();
+        if (path.isEmpty()) {
+            return;
+        }
+        Q_EMIT recordingShareFailed(path);
+    }
 }
 
 } // namespace dsd_android

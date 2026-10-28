@@ -5,6 +5,7 @@
 
 package io.github.arancormonk.dsdneo
 
+import java.io.File
 import java.io.FileNotFoundException
 
 /**
@@ -29,7 +30,7 @@ class RecordingPlayer(
 ) {
     /** One recording's player; it reports back through [onPrepared], [onCompleted] and [onFailed]. */
     interface Player {
-        /** Open [path] and prepare it, asynchronously; FileNotFoundException when it is gone. */
+        /** Open [path] and prepare it, asynchronously; FileNotFoundException when it cannot be opened. */
         fun prepare(path: String)
 
         fun start()
@@ -117,7 +118,8 @@ class RecordingPlayer(
         try {
             next.prepare(path)
         } catch (_: FileNotFoundException) {
-            fail(ERROR_MISSING)
+            // Also thrown for a file there that cannot be opened (no access, a folder): only one gone is missing.
+            fail(if (File(path).exists()) ERROR_FAILED else ERROR_MISSING)
         } catch (_: Exception) {
             fail(ERROR_FAILED)
         }

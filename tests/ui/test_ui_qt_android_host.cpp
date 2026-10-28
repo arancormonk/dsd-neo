@@ -71,32 +71,40 @@ namespace {
 /* The platform's call recording transport (#708): RecordingShare, RecordingPlayback and RecordingExport as the test
  * arranged them. The transfer runs on the host's worker thread; a held one waits for the test or its own cancel. */
 struct PlatformRecordings {
+    // The transfer: its id, progress and cancel; the worker's signals to the test (entered, returned) and the test's
+    // release of a held call.
+    std::atomic<qint64> transferId{0};
+    std::atomic<qint64> progress{-1};
+    std::atomic<qint64> cancelled{0};
+    QSemaphore entered;
+    QSemaphore released;
+    QSemaphore returned;
+    // Playback and roots, read and written on the GUI thread only.
     QStringList roots;
-    int plays = 0;
-    int nextGeneration = 0;
     QString played;
     QStringList commands;
     QString status;
-    int statusReads = 0;
-    // Guards what the worker writes and the test reads: paths through answer (std::mutex, which TSan sees).
-    std::mutex mutex;
-    std::atomic<int> transfers{0};
-    std::atomic<qint64> transferId{0};
+    // What the transfer saw, and its answer: guarded by mutex (a std::mutex, which TSan sees).
     QStringList paths;
     QStringList names;
     QString reference;
-    bool zip = false;
-    bool onWorker = false;
     QStringList answer = {QStringLiteral("0")};
-    std::atomic<bool> hold{false};
-    QSemaphore entered;
-    QSemaphore released;
-    std::atomic<qint64> progress{-1};
-    std::atomic<qint64> cancelled{0};
-    int shares = 0;
+    // Shares.
     QString sharedPath;
     QString sharedTitle;
+    QStringList shareFailures;
+    std::mutex mutex;
+    int plays = 0;
+    int nextGeneration = 0;
+    int statusReads = 0;
+    std::atomic<int> transfers{0};
+    int shares = 0;
+    bool zip = false;
+    bool onWorker = false;
     bool shareAnswer = true;
+    std::atomic<bool> hold{false};
+    // A held call that ignores its cancel, as a write blocked on a provider's pipe does.
+    std::atomic<bool> ignoresCancel{false};
 };
 } // namespace
 
@@ -138,6 +146,8 @@ reset_recordings() {
     r.cancelled = 0;
     r.shares = 0;
     r.shareAnswer = true;
+    r.shareFailures.clear();
+    r.ignoresCancel = false;
 }
 
 static bool running;
@@ -414,9 +424,16 @@ DecoderHostAndroid::platformTransferRecordings(qint64 id, const QStringList& pat
     ++r.transfers;
     r.entered.release();
     // At most about five seconds, so a host that never cancels fails its checks instead of hanging the test.
-    for (int waits = 0; r.hold && r.cancelled.load() != id && waits < 1000 && !r.released.tryAcquire(1, 5); ++waits) {}
-    const std::lock_guard<std::mutex> lock(r.mutex);
-    return r.answer;
+    for (int waits = 0;
+         r.hold && (r.ignoresCancel || r.cancelled.load() != id) && waits < 1000 && !r.released.tryAcquire(1, 5);
+         ++waits) {}
+    QStringList answer;
+    {
+        const std::lock_guard<std::mutex> lock(r.mutex);
+        answer = r.answer;
+    }
+    r.returned.release();
+    return answer;
 }
 
 qint64
@@ -436,6 +453,12 @@ DecoderHostAndroid::platformShareRecording(const QString& path, const QString& t
     r.sharedPath = path;
     r.sharedTitle = title;
     return r.shareAnswer;
+}
+
+QString
+DecoderHostAndroid::platformTakeRecordingShareFailure() {
+    QStringList& failures = recordings().shareFailures;
+    return failures.isEmpty() ? QString() : failures.takeFirst();
 }
 } // namespace dsd_android
 
@@ -953,7 +976,13 @@ check_recording_transfers() {
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "a ZIP to a file ends");
     check(finished.value(0).value(1) == DecoderHost::TransferFailed, "a ZIP goes only into a platform document");
 
+    // Earlier transfers released these without a test waiting on them.
+    const auto drain = [&r]() {
+        (void)r.entered.tryAcquire(r.entered.available());
+        (void)r.returned.tryAcquire(r.returned.available());
+    };
     // A host that goes away mid-transfer cancels it and waits for its worker.
+    drain();
     {
         DecoderHostAndroid leaving;
         r.hold = true;
@@ -963,6 +992,24 @@ check_recording_transfers() {
         check(r.entered.tryAcquire(1, 5000), "the leaving host's export runs");
     }
     check(r.cancelled.load() == r.transferId.load(), "a host destroyed mid-transfer cancels it first");
+    check(r.returned.tryAcquire(1, 5000), "and its job returned before the host was gone");
+
+    drain();
+    // A job blocked where a cancel cannot reach (a provider's pipe): the host waits a bounded time, says so, and goes;
+    // the job finishes later and touches nothing of it.
+    {
+        hostDiagnostics = 0;
+        r.ignoresCancel = true;
+        DecoderHostAndroid stuck;
+        stuck.exportRecordings({{"selection", 13}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
+                               document);
+        check(r.entered.tryAcquire(1, 5000), "the stuck host's export runs");
+    }
+    check(hostDiagnostics == 1 && lastHostDiagnostic.contains(QStringLiteral("did not stop")),
+          "a host whose transfer would not stop goes after its bound, and logs it");
+    check(r.returned.tryAcquire(1, 10000), "the abandoned job returns on its own");
+    QCoreApplication::processEvents();
+    r.ignoresCancel = false;
     r.hold = false;
 
     // After the teardown abort nothing begins.
@@ -994,6 +1041,16 @@ check_recording_share() {
     check(!host.shareRecording(dir.filePath(QStringLiteral("other.wav")), QStringLiteral("x"))
               && recordings().shares == 2,
           "a path the store does not manage never reaches the platform");
+
+    // A share the platform took can still fail on its way; the next refresh reports it.
+    QStringList failed;
+    QObject::connect(&host, &dsd_qt::DecoderHost::recordingShareFailed,
+                     [&failed](const QString& path) { failed.append(path); });
+    recordings().shareFailures = {a, dir.filePath(QStringLiteral("b.wav"))};
+    host.refresh();
+    check(failed == QStringList({a, dir.filePath(QStringLiteral("b.wav"))}), "each late share failure is reported");
+    host.refresh();
+    check(failed.size() == 2, "once");
 }
 
 static QString

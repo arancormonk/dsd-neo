@@ -155,7 +155,7 @@ object DocumentCopies {
         }
         try {
             return DocumentWrite(resolver, uri, signal, openForReplace(resolver, uri, signal))
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             end(signal)
             throw e
         }
@@ -183,11 +183,14 @@ object DocumentCopies {
 
         private var ended = false
 
-        /** Run [write] on [output], which answers the bytes it wrote, then [finish]; a failure is [fail]ed again. */
+        /**
+         * Run [write] on [output], which answers the bytes it wrote, then [finish]. Any failure, an Error included, is
+         * [fail]ed (so the descriptor closes and the signal leaves the transfers in flight) and rethrown.
+         */
         fun complete(write: (OutputStream) -> Long) {
             val length = try {
                 write(output)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 fail(e)
                 throw e
             }
@@ -200,7 +203,7 @@ object DocumentCopies {
                 output.flush()
                 settle(document, length)
                 document.close()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 fail(e)
                 throw e
             }
@@ -209,7 +212,7 @@ object DocumentCopies {
         }
 
         /** Close the document with an error and delete it, best effort; a no-op once it ended. */
-        fun fail(cause: Exception) {
+        fun fail(cause: Throwable) {
             if (ended) {
                 return
             }

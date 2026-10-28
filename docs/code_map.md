@@ -7996,12 +7996,15 @@ Qt Quick frontend (`src/ui/qt`):
     `beginSession(kind, uid, name)` before `DecoderHost::start()`, which makes the folder and marks it in use (waiting
     for a compaction of it in progress, never for the journals), and `endSession()` when the start did not happen.
     `recording_store_follow_host()` (wired in `qt_ui.cpp`) hands the store every host report
-    (`hostSessionReport(DecoderHost::sessionStateKnown(), sessionActive())`, at load and on `sessionStateChanged()` /
-    `sessionStateKnownChanged()`). The store starts holding every journal: Android knows its state only after its
-    first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder that kept running while the
-    UI was recreated reads as Idle until then. A first known state with no session, or a session ending, frees every
-    folder; a session that turns active with no `beginSession()` before it (that one) holds every folder until it ends;
-    an Idle report between a start's mark and its Starting changes nothing.
+    (`hostSessionReport(DecoderHost::sessionStateKnown(), sessionActive(), sessionState() == Running)`, at load and on
+    `sessionStateChanged()` / `sessionStateKnownChanged()`). The store starts holding every journal: Android knows its
+    state only after its first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder that
+    kept running while the UI was recreated reads as Idle until then. A first known state with no session, or a session
+    ending after the host saw it Running, frees every folder; a session that ends without ever running keeps its folders
+    out of compaction for the rest of the process (`m_unproven`), until a later session runs and ends (one decoder at a
+    time, starts taken in order): Android's start grace can show a start Failed while its intent still waits, and the
+    engine then opens that journal. A session that turns active with no `beginSession()` before it (that one) holds
+    every folder until it ends; an Idle report between a start's mark and its Starting changes nothing.
   - Session argv and preferences (`session_args.{h,cpp}`, `scan_list_starter.cpp`, `app_prefs.{h,cpp}`): AppPrefs
     `recordCalls`, `recordUnknownOnly` and `recordingLimitMb` (keys `recording/*`, portable; the limit one of
     `recordingLimitChoices`, 1000 by default) map to `SessionArgPrefs`; the starter puts the folder `beginSession()`
@@ -8066,14 +8069,20 @@ Qt Quick frontend (`src/ui/qt`):
     `CancellationSignal` (`cancelRecordingTransfer()`), distinct from the teardown abort. A ZIP's entries are DEFLATED
     at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
     streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
-    on the refresh tick; the end comes back queued. Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
-    whose real path is inside a root, folder by folder), then the chooser on the Android main thread through
-    `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two folders only), read
-    grant only. The store compacts a journal only while the session reads inactive: the engine's run opens and closes
-    the journal inside `nativeRun()`, the service reports IDLE after it returns, and a lifecycle record that cannot be
-    read while the engine runs reads RUNNING, not IDLE. Tests: `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`,
+    on the refresh tick; the end comes back queued. A host going away aborts the document transfers, cancels its
+    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe) it logs, leaves the
+    pool to finish (never deleted) and cuts the job off from itself (`TransferLink`); a single save to a file URL takes
+    the base copy, which no cancel reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a
+    regular `.wav`, not a link, whose real path is inside a root, folder by folder), then the chooser on the Android
+    main thread through `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two
+    folders only), read grant only; a share that fails there is queued (`RecordingShare.takeFailure()`) and each refresh
+    emits `DecoderHost::recordingShareFailed(path)`. A player open failure is "missing" only when the file does not
+    exist. The store compacts a journal only while the session reads inactive: the engine's run opens and closes the
+    journal inside `nativeRun()`, the service reports IDLE after it returns, and a lifecycle record that cannot be read
+    while the engine runs reads RUNNING, not IDLE. Tests: `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`,
     `ANDROID_RECORDING_EXPORT_JVM`, `ANDROID_RECORDING_SHARE_JVM` (also the provider declaration and the codes that
-    cross JNI).
+    cross JNI); they run wherever ctest runs the JVM suites, skipping the FIFO and symbolic-link cases where the host
+    cannot make them.
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
     reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
     true and a session may start; only after that does it read each folder whole (one directory listing, the journal
@@ -8092,11 +8101,11 @@ Qt Quick frontend (`src/ui/qt`):
     unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
     journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
     `publish` per live recording, the cursor then at its end) once it holds more than twice as many lines as live
-    recordings, only while no session uses the folder, and only when nothing but a torn line lies past the cursor; the
-    rewrite's owner-only mode is best-effort (FUSE-backed storage may refuse it). History reads
-    (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History read in before each slice of 128
-    records of a whole-folder read, each recheck and each delete, and sums (usage, limit, compaction) are taken on
-    shared copies outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
+    recordings, only while no session uses the folder (nor one that never ran, above), and only when nothing but a torn
+    line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage may refuse it). History
+    reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History read in before each slice
+    of 128 records of a whole-folder read, each recheck and each delete, and sums (usage, limit, compaction) are taken
+    on shared copies outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
     `recordingFragmentsChanged()`, `limitReached()`), so a paused GUI thread never collects more than one.
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player

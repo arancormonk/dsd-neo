@@ -4,6 +4,7 @@ package io.github.arancormonk.dsdneo
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.content.FileProvider
 import java.io.File
 import java.nio.file.Files
 
@@ -34,7 +35,8 @@ private fun rootsAreSharedStorageThenInternal() {
     }
     // Shared storage away: its root is still named, at the path Android gives the app there.
     val away = RecordingShare.roots(App(null)).toList()
-    check(away == listOf("/storage/emulated/0/Android/data/io.github.arancormonk.dsdneo/files/Call recordings", roots[1])) {
+    val awayPath = File("/storage/emulated/0", "Android/data/io.github.arancormonk.dsdneo/files/Call recordings").path
+    check(away == listOf(awayPath, roots[1])) {
         "a root whose storage is away is still named: $away"
     }
 }
@@ -62,27 +64,43 @@ private fun onlyRecordingsInsideARootAreShared() {
         check(RecordingShare.sharable(path, roots) == null) { "$what is not shared: $path" }
     }
 
-    // A link inside a root, to a file outside it or inside it, is never followed.
+    // A link inside a root, to a file outside it or inside it, is never followed. Where this host cannot make links
+    // (Windows without the privilege) these cases are skipped; Android, like Linux and macOS, makes them.
     val secret = recording(File(scratch, "internal/files"), "secret.wav")
     val outward = File(roots[0], "Explore/outward.wav")
-    Files.createSymbolicLink(outward.toPath(), secret.toPath())
+    if (!link(outward, secret)) {
+        println("SKIP: symbolic links cannot be made here; the link cases did not run")
+        return
+    }
     check(RecordingShare.sharable(outward.path, roots) == null) { "a link to a file outside the roots is not shared" }
     val inward = File(roots[0], "Explore/inward.wav")
-    Files.createSymbolicLink(inward.toPath(), internal.toPath())
+    check(link(inward, internal)) { "a second link" }
     check(RecordingShare.sharable(inward.path, roots) == null) { "a link is not shared even when it points inside" }
     // A folder inside a root that links out: the real path is outside, so nothing under it is shared.
     val linkedFolder = File(roots[0], "Linked")
-    Files.createSymbolicLink(linkedFolder.toPath(), File(scratch, "internal/files").toPath())
+    check(link(linkedFolder, File(scratch, "internal/files"))) { "a folder link" }
     check(RecordingShare.sharable(File(linkedFolder, "secret.wav").path, roots) == null) {
         "a recording reached through a linked folder outside the roots is not shared"
     }
+}
+
+/** A symbolic link at [at] to [target]; false where this host cannot make one. */
+private fun link(at: File, target: File): Boolean = try {
+    Files.createSymbolicLink(at.toPath(), target.toPath())
+    true
+} catch (_: UnsupportedOperationException) {
+    false
+} catch (_: java.io.IOException) {
+    false
+} catch (_: SecurityException) {
+    false
 }
 
 private fun aShareOffersOneRecordingReadOnly() {
     val app = App(sharedFiles)
     val roots = RecordingShare.roots(app).map(::File)
     val file = recording(roots[0], "Talkgroups (abcd1234)/share.wav")
-    RecordingShare.share(app, file.path, "Call recording")
+    check(RecordingShare.share(app, file.path, "Call recording")) { "a share answers that its chooser started" }
     check(app.started.size == 1) { "a share starts one chooser" }
     val chooser = app.started[0]
     check(chooser.action == Intent.ACTION_CHOOSER) { "the user picks the app" }
@@ -90,7 +108,7 @@ private fun aShareOffersOneRecordingReadOnly() {
     val send = chooser.extras[Intent.EXTRA_INTENT] as Intent
     val uri = send.extras[Intent.EXTRA_STREAM] as Uri
     check(send.action == Intent.ACTION_SEND && send.type == "audio/wav") { "one WAV is sent" }
-    check(uri.toString() == "content://io.github.arancormonk.dsdneo.recordings${file.path}") {
+    check(uri.toString() == "content://io.github.arancormonk.dsdneo.recordings${file.canonicalFile.path}") {
         "through the recordings provider: $uri"
     }
     check(send.clipData?.uri == uri) { "the grant covers the clip" }
@@ -98,8 +116,46 @@ private fun aShareOffersOneRecordingReadOnly() {
     check(send.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION == 0 &&
         chooser.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION == 0) { "write access never is" }
 
-    RecordingShare.share(app, recording(File(scratch, "internal/files"), "prefs.wav").path, "Call recording")
+    check(RecordingShare.takeFailure().isEmpty()) { "a share that started is no failure" }
+    val outside = recording(File(scratch, "internal/files"), "prefs.wav").path
+    check(!RecordingShare.share(app, outside, "Call recording")) { "a file outside the roots is refused" }
     check(app.started.size == 1) { "a file outside the roots starts nothing" }
+    check(RecordingShare.takeFailure() == outside && RecordingShare.takeFailure().isEmpty()) {
+        "and the refusal waits once for the host to take it"
+    }
+}
+
+/** #708: a share the host handed over after canShare() said yes can still fail; the host learns it from takeFailure(). */
+private fun aShareThatFailsLaterIsReported() {
+    val app = App(sharedFiles)
+    val roots = RecordingShare.roots(app).map(::File)
+    val gone = recording(roots[0], "Explore/gone-later.wav")
+    check(RecordingShare.canShare(app, gone.path)) { "it could be shared when the host asked" }
+    gone.delete()
+    check(!RecordingShare.share(app, gone.path, "Call recording") && RecordingShare.takeFailure() == gone.path) {
+        "a recording gone by the time the chooser would start is a failure the host learns"
+    }
+
+    val refused = recording(roots[0], "Explore/refused.wav")
+    FileProvider.refuses = true
+    try {
+        check(!RecordingShare.share(app, refused.path, "Call recording")) { "a provider that refuses the path fails" }
+    } finally {
+        FileProvider.refuses = false
+    }
+    check(RecordingShare.takeFailure() == refused.path) { "and the host learns it" }
+
+    val nobody = object : Context() {
+        override val filesDir = app.filesDir
+
+        override fun getExternalFilesDir(type: String?): File = sharedFiles
+
+        override fun startActivity(intent: Intent) = throw IllegalStateException("No Activity found to handle Intent")
+    }
+    check(!RecordingShare.share(nobody, refused.path, "Call recording") && RecordingShare.takeFailure() == refused.path) {
+        "a chooser that cannot start is a failure the host learns"
+    }
+    check(RecordingShare.takeFailure().isEmpty()) { "each failure once" }
 }
 
 fun main() {
@@ -107,6 +163,7 @@ fun main() {
         rootsAreSharedStorageThenInternal()
         onlyRecordingsInsideARootAreShared()
         aShareOffersOneRecordingReadOnly()
+        aShareThatFailsLaterIsReported()
     } finally {
         scratch.deleteRecursively()
     }

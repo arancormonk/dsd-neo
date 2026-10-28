@@ -84,6 +84,19 @@ private fun recordings(vararg sizes: Int): Pair<Array<String>, Array<String>> {
 
 private fun result(answer: Array<String>) = answer[0].toInt()
 
+/** A FIFO in the scratch folder, or null where this host has no mkfifo (Windows). */
+private fun fifo(): File? {
+    if (File.separatorChar != '/') {
+        return null
+    }
+    val fifo = File(scratch, "feed${++serial}.wav")
+    return try {
+        if (ProcessBuilder("mkfifo", fifo.path).start().waitFor() == 0) fifo else null
+    } catch (_: IOException) {
+        null
+    }
+}
+
 private fun checkZipHolds(document: File, paths: Array<String>, names: Array<String>, what: String) {
     ZipFile(document).use { zip ->
         val entries = zip.entries().toList()
@@ -230,29 +243,33 @@ private fun cancellingOneExportLeavesTheNextAlone() {
     check(provider.calls.filter { it.endsWith(held) } == listOf("open wt $held")) { "a cancelled open is not retried in w" }
     check(held !in provider.deleted) { "a document never opened is not deleted" }
 
-    // Cancelled between chunks: the recording is a FIFO the test feeds, so the export waits mid-entry.
-    val fifo = File(scratch, "feed${++serial}.wav")
-    check(ProcessBuilder("mkfifo", fifo.path).start().waitFor() == 0) { "mkfifo" }
-    val midway = provider.add()
-    val midwayId = ++nextId
-    var midwayAnswer = emptyArray<String>()
-    val copying = Thread {
-        midwayAnswer = RecordingExport.transfer(provider, midwayId, arrayOf(fifo.path), arrayOf("feed.wav"), midway, true)
-    }
-    copying.start()
-    FileOutputStream(fifo).use { feed ->
-        feed.write(bytes(1000))
-        feed.flush()
-        var waits = 0
-        while (RecordingExport.progress(midwayId) < 1000 && ++waits < 2_500) Thread.sleep(2)
-        check(RecordingExport.progress(midwayId) == 1000L) { "the export reports the bytes it copied" }
-        RecordingExport.cancel(midwayId)
-        feed.write(bytes(10))
-    }
-    copying.join(5_000)
-    check(!copying.isAlive && result(midwayAnswer) == RecordingExport.CANCELLED) { "a cancel between chunks cancels" }
-    check(provider.descriptors.getValue(midway).closedWithError != null && midway in provider.deleted) {
-        "an export cancelled once open is closed with an error and deleted"
+    // Cancelled between chunks: the recording is a FIFO the test feeds, so the export waits mid-entry. Only where the
+    // host makes FIFOs (Linux, macOS; Android's own storage does too); Windows skips this case.
+    val fifo = fifo()
+    if (fifo == null) {
+        println("SKIP: no mkfifo here; the cancel between chunks did not run")
+    } else {
+        val midway = provider.add()
+        val midwayId = ++nextId
+        var midwayAnswer = emptyArray<String>()
+        val copying = Thread {
+            midwayAnswer = RecordingExport.transfer(provider, midwayId, arrayOf(fifo.path), arrayOf("feed.wav"), midway, true)
+        }
+        copying.start()
+        FileOutputStream(fifo).use { feed ->
+            feed.write(bytes(1000))
+            feed.flush()
+            var waits = 0
+            while (RecordingExport.progress(midwayId) < 1000 && ++waits < 2_500) Thread.sleep(2)
+            check(RecordingExport.progress(midwayId) == 1000L) { "the export reports the bytes it copied" }
+            RecordingExport.cancel(midwayId)
+            feed.write(bytes(10))
+        }
+        copying.join(5_000)
+        check(!copying.isAlive && result(midwayAnswer) == RecordingExport.CANCELLED) { "a cancel between chunks cancels" }
+        check(provider.descriptors.getValue(midway).closedWithError != null && midway in provider.deleted) {
+            "an export cancelled once open is closed with an error and deleted"
+        }
     }
 
     // The next export is its own: no cancel carries over, unlike the teardown abort.
@@ -345,6 +362,38 @@ private fun moreThan65535EntriesWriteZip64() {
     check(zip64.getInt(56) == 0x07064b50) { "with its locator" }
 }
 
+/** An Error (not an Exception) still fails the document: its descriptor closes and its signal leaves the transfers. */
+private fun anErrorStillFailsTheDocument() {
+    val provider = Provider()
+    val uri = provider.add()
+    val injected = AssertionError("injected")
+    val write = DocumentCopies.beginWrite(provider, uri) ?: error("the document opens")
+    val thrown = try {
+        write.complete { throw injected }
+        null
+    } catch (e: Throwable) {
+        e
+    }
+    check(thrown === injected) { "the Error goes on up as it was: $thrown" }
+    check(provider.descriptors.getValue(uri).closedWithError != null && provider.deleted == listOf(uri)) {
+        "the document is closed with an error and deleted"
+    }
+    check(DocumentCopies.transfersInFlight() == 0) { "and its signal is no longer in flight" }
+
+    // In the middle of a ZIP: the same Error comes out, and the document's stream is never closed.
+    val (paths, names) = recordings(100, 100)
+    val sink = ShortSink(Long.MAX_VALUE)
+    val zipped = try {
+        RecordingExport.writeZip(sink, paths.toList(), names.toList(), noSteps, { path ->
+            if (path == paths[1]) throw injected else RecordingExport.openRecording(path)
+        }, mutableListOf())
+        null
+    } catch (e: Throwable) {
+        e
+    }
+    check(zipped === injected && !sink.closed) { "an Error mid-ZIP comes out unchanged, the stream left open: $zipped" }
+}
+
 /** Last: the teardown abort is sticky for the rest of the process. */
 private fun anAbortStopsExportsForGood() {
     val provider = Provider()
@@ -369,6 +418,7 @@ fun main() {
         aSaveCopiesOneRecordingAsItIs()
         repeatedNamesStayApart()
         moreThan65535EntriesWriteZip64()
+        anErrorStillFailsTheDocument()
         anAbortStopsExportsForGood()
     } finally {
         scratch.deleteRecursively()
