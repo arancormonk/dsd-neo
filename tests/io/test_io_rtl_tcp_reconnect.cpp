@@ -1072,8 +1072,9 @@ test_latest_effective_settings_replayed(void) {
     assert(rtl_device_set_frequency(r.dev, 854000000U) == 0);
     assert(rtl_device_set_xtal_freq(r.dev, 28800300U, 0U) == 0);
     assert(rtl_device_set_xtal_freq(r.dev, 0U, 28800400U) == 0);
-    uint32_t settings_before = 0U;
-    assert(rtl_device_capture_settings_generation(r.dev, &settings_before) == 1);
+    uint32_t settings_generation = 0U;
+    /* Nothing recorded is ever skipped on rtl_tcp (#782 gate r4 K2): the replay is the only writer here. */
+    assert(rtl_device_capture_settings_generation(r.dev, &settings_generation) == 0);
     rig_start(r);
     lose_connection(r);
     wait_generation(r, 2U);
@@ -1081,10 +1082,7 @@ test_latest_effective_settings_replayed(void) {
         return m.freq == 854000000U && m.rate == 960000U && m.ppm == 0 && m.bias == 0 && m.gain_manual == 1
                && m.gain == 280 && m.reg19 == 0x05;
     });
-    /* The new server was set up from the record behind the stream: a retune writes what it recorded again (#782). */
-    uint32_t settings_after = 0U;
-    assert(rtl_device_capture_settings_generation(r.dev, &settings_after) == 1);
-    assert(settings_after != settings_before);
+    assert(rtl_device_capture_settings_generation(r.dev, &settings_generation) == 0);
     assert(server_params(1, 0x01).size() == 1U);
     const std::vector<uint32_t> rtl_xtal{28800300U};
     const std::vector<uint32_t> tuner_xtal{28800400U};
@@ -1093,88 +1091,58 @@ test_latest_effective_settings_replayed(void) {
     rig_close(r);
 }
 
-/* hops_write_only_changes (#782 D3): the stream's hops on an rtl_tcp server send the frequency alone while the rate
- * stays (no 0x02), each restarting the throughput watchdog's grace as the rate write used to, and the first hop after a
- * reconnect, whose replay the stream did not make, sends the rate again. */
+/* hops_write_every_setting (#782 gate r4 K2): rtl_tcp has no acknowledgement from the hardware, so the stream cannot
+ * know a write took (a server that refuses a gain still has it recorded as sent). Its writes are never skipped: behind
+ * any tuner the header names, every same-rate hop sends the rate right after its frequency, and every repeated gain
+ * request is sent again, as before D3. Each hop still restarts the throughput watchdog's grace, and so does each hop
+ * after a reconnect. */
 void
-test_hops_write_only_changes(void) {
-    server_reset(default_script());
-    const auto r_owner = std::make_unique<dev_rig>();
-    dev_rig& r = *r_owner;
-    rig_open(r, 0, 0);
-    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
-    assert(opts != nullptr);
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:127.0.0.1:%d", g_srv.port);
-    /* The start's programming before the reader runs, as a stream's open does. */
-    rtl_stream_test_capture_result out{};
-    assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
-    assert(out.rc == 0);
-    rig_start(r);
-    (void)sync_server(r.dev, 0);
-    const size_t rates = server_params(0, 0x02).size();
-    const size_t freqs = server_params(0, 0x01).size();
-    assert(rates == 1U);
-    const uint32_t hops[] = {851262500U, 852037500U, 853087500U};
-    for (uint32_t center : hops) {
-        rtl_device_test_tcp_state before{};
-        rtl_device_test_tcp_state_get(r.dev, &before);
-        dsd_sleep_ms(2U);
-        assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, center, 0, &out) == 0);
-        assert(out.rc == 0);
-        rtl_device_test_tcp_state after{};
-        rtl_device_test_tcp_state_get(r.dev, &after);
-        assert(after.watchdog_grace_from_ns > before.watchdog_grace_from_ns);
-    }
-    (void)sync_server(r.dev, 0);
-    assert(server_params(0, 0x02).size() == rates);
-    assert(server_params(0, 0x01).size() == freqs + 3U);
-
-    lose_connection(r);
-    wait_generation(r, 2U);
-    (void)sync_server(r.dev, 1);
-    const size_t replayed_rates = server_params(1, 0x02).size();
-    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[0], 0, &out) == 0);
-    assert(out.rc == 0);
-    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[1], 0, &out) == 0);
-    assert(out.rc == 0);
-    (void)sync_server(r.dev, 1);
-    assert(server_params(1, 0x02).size() == replayed_rates + 1U);
-    /* The reader stops before the session puts the stream's state back. */
-    (void)rtl_device_stop_async(r.dev);
-    rtl_stream_test_capture_session_end();
-    free(opts);
-    rig_close(r);
-}
-
-/* fc2580_hops_write_rate (#782 gate r3 J1): an FC2580 resets its channel filter on every tune, and rtl_tcp takes no
- * bandwidth command from this backend; the server's rate write (rtlsdr_set_sample_rate() sets the tuner filter) is
- * what puts it back. Behind a server whose header names an FC2580, or a tuner this build does not know, every hop
- * sends the rate after the frequency, as every hop did before D3. */
-void
-test_fc2580_hops_write_rate(void) {
-    for (uint32_t tuner : {4U, 0U}) {
+test_hops_write_every_setting(void) {
+    /* R820T, E4000, FC0012, FC0013, R828D (whose local USB writes are skipped), FC2580 and a tuner this build does not
+     * know. */
+    for (uint32_t tuner : {5U, 1U, 2U, 3U, 6U, 4U, 0U}) {
         conn_script sc = default_script();
         sc.tuner_type = tuner;
         server_reset(sc);
         const auto r_owner = std::make_unique<dev_rig>();
         dev_rig& r = *r_owner;
         rig_open(r, 0, 0);
+        uint32_t generation = 0U;
+        assert(rtl_device_capture_settings_generation(r.dev, &generation) == 0);
+        assert(rtl_device_capture_retune_resets(r.dev) == 0U);
         dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
         assert(opts != nullptr);
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:127.0.0.1:%d", g_srv.port);
+        /* The start's programming before the reader runs, as a stream's open does. */
         rtl_stream_test_capture_result out{};
         assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
         assert(out.rc == 0);
         rig_start(r);
+        assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 0U, 300, &out) == 0);
+        assert(out.rc == 0);
         (void)sync_server(r.dev, 0);
         const size_t rates = server_params(0, 0x02).size();
+        const size_t freqs = server_params(0, 0x01).size();
+        const size_t gains = server_params(0, 0x04).size();
+        assert(rates == 1U && gains >= 1U);
         const uint32_t hops[] = {851262500U, 852037500U, 853087500U};
         for (uint32_t center : hops) {
+            rtl_device_test_tcp_state before{};
+            rtl_device_test_tcp_state_get(r.dev, &before);
+            dsd_sleep_ms(2U);
             assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, center, 0, &out) == 0);
+            assert(out.rc == 0);
+            rtl_device_test_tcp_state after{};
+            rtl_device_test_tcp_state_get(r.dev, &after);
+            assert(after.watchdog_grace_from_ns > before.watchdog_grace_from_ns);
+            /* The same gain again, as a scan target's profile asks on each hop. */
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 0U, 300, &out) == 0);
             assert(out.rc == 0);
         }
         (void)sync_server(r.dev, 0);
+        assert(server_params(0, 0x01).size() == freqs + 3U);
         assert(server_params(0, 0x02).size() == rates + 3U);
+        assert(server_params(0, 0x04).size() == gains + 3U);
         /* Each rate went out right after its hop's frequency. */
         const server_conn c = server_conn_get(0);
         size_t hop_freqs = 0U;
@@ -1185,6 +1153,21 @@ test_fc2580_hops_write_rate(void) {
             }
         }
         assert(hop_freqs >= 3U);
+
+        if (tuner == 5U) {
+            /* A reconnect's replay changes nothing: each hop after it sends the rate again too. */
+            lose_connection(r);
+            wait_generation(r, 2U);
+            (void)sync_server(r.dev, 1);
+            const size_t replayed_rates = server_params(1, 0x02).size();
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[0], 0, &out) == 0);
+            assert(out.rc == 0);
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[1], 0, &out) == 0);
+            assert(out.rc == 0);
+            (void)sync_server(r.dev, 1);
+            assert(server_params(1, 0x02).size() == replayed_rates + 2U);
+        }
+        /* The reader stops before the session puts the stream's state back. */
         (void)rtl_device_stop_async(r.dev);
         rtl_stream_test_capture_session_end();
         free(opts);
@@ -2365,8 +2348,7 @@ const named_test kTests[] = {
     {"stop_during_silent_header", test_stop_during_silent_header},
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
-    {"hops_write_only_changes", test_hops_write_only_changes},
-    {"fc2580_hops_write_rate", test_fc2580_hops_write_rate},
+    {"hops_write_every_setting", test_hops_write_every_setting},
     {"replay_failure_not_published", test_replay_failure_not_published},
     {"concurrent_partial_writes_never_interleave", test_concurrent_partial_writes_never_interleave},
     {"old_sender_does_not_touch_replacement", test_old_sender_does_not_touch_replacement},

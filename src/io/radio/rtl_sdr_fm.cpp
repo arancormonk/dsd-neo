@@ -608,8 +608,8 @@ load_dongle_rate(void) {
  * read back here, the gain dongle_note_gain() recorded.
  *
  * An entry describes the device only while it is the open one and the device's generation is the one the entry was
- * written under (rtl_device_capture_settings_generation(): a USB recovery or an rtl_tcp reconnect moves it); a device
- * whose writes may not be skipped records nothing. A failed or partial write, a PPM or offset tuning change, and a
+ * written under (rtl_device_capture_settings_generation(): a USB recovery moves it); a device whose writes may not be
+ * skipped (rtl_tcp, which has no acknowledgement of a write, and SoapySDR) records nothing. A failed or partial write, a PPM or offset tuning change, and a
  * device opened or closed forget the entries it may have changed, so the next hop writes them again. Used by the thread
  * that drives the device: the decoder at open, the controller on a retune (the demod parked behind the reconfigure
  * gate), the demod's autogain between blocks, an external landing under the gate.

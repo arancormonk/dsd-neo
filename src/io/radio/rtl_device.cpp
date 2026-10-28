@@ -518,8 +518,7 @@ struct rtl_device {
     std::atomic<uint64_t> progress{0U};
     int thread_started = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
-    /* Moves before a USB recovery reopens the dongle and before an rtl_tcp reconnect replays the server's settings:
-       rtl_device_capture_settings_generation(). */
+    /* Moves before a USB recovery reopens the dongle: rtl_device_capture_settings_generation(). */
     std::atomic<uint32_t> capture_settings_generation{0U};
     std::atomic<int> capture_reconfigure_hold{0};
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
@@ -623,9 +622,6 @@ struct rtl_device {
     struct rtl_tcp_conn* tcp_handoff_conn = nullptr;
     uint64_t tcp_generation = 0U;
     std::atomic<int> tcp_connected{0};
-    /* The tuner the server's header named (RTLSDR_TUNER_*), at the first connection and at each reconnect:
-       rtl_device_capture_retune_resets(). */
-    std::atomic<int> tcp_tuner_type{RTLSDR_TUNER_UNKNOWN};
     int tcp_handoff = 0;
     int tcp_admission_closed = 0;
     /* A retune went out: the reader drops what it buffered for the old frequency (rtl_tcp_drop_buffered_for_retune()),
@@ -6278,8 +6274,6 @@ rtl_device_tcp_publish_handoff(struct rtl_device* dev, char* why, size_t why_siz
         }
         return -EINVAL;
     }
-    /* A new server connection, set up from the record: the next retune writes what it recorded again. */
-    dev->capture_settings_generation.fetch_add(1U, std::memory_order_acq_rel);
     int rc = rtl_tcp_send_replay(dev, conn);
     rtl_tcp_lock(dev);
     rc = rtl_tcp_settle_handoff_locked(dev, conn, rc);
@@ -6494,14 +6488,8 @@ rtl_tcp_reconnect_attempt(struct rtl_device* s, struct rtl_tcp_loop_state* st, i
         return 0;
     }
     rtl_tcp_prepare_socket(sock);
-    uint32_t tuner_type = 0U;
-    const rtl_tcp_header_result hr =
-        rtl_tcp_read_header(sock, kRtlTcpHeaderMs, rtl_tcp_cancelled, s, &tuner_type, nullptr);
+    const rtl_tcp_header_result hr = rtl_tcp_read_header(sock, kRtlTcpHeaderMs, rtl_tcp_cancelled, s, nullptr, nullptr);
     struct rtl_tcp_conn* conn = (hr == RTL_TCP_HEADER_SUCCESS) ? rtl_tcp_conn_new(sock) : nullptr;
-    if (conn) {
-        /* Before the hand-off moves the generation: a hop recorded under the old one rewrites what this tuner needs. */
-        s->tcp_tuner_type.store((int)tuner_type, std::memory_order_release);
-    }
     if (!conn) {
         dsd_socket_close(sock);
         if (hr == RTL_TCP_HEADER_CANCELLED) {
@@ -9000,7 +8988,6 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     }
     conn->generation = ++dev->tcp_generation;
     dev->tcp_conn = conn;
-    dev->tcp_tuner_type.store((int)tuner_type, std::memory_order_release);
     dev->tcp_connected.store(1, std::memory_order_release);
     DSD_FPRINTF(stderr, "rtl_tcp: Connected to %s:%d (tuner %s, %u gains)\n", host, port,
                 rtl_tuner_type_name((int)tuner_type), (unsigned)gain_count);
@@ -10197,11 +10184,18 @@ rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* o
         return 0;
     }
     *out_generation = dev->capture_settings_generation.load(std::memory_order_acquire);
-    /* SoapySDR keeps every write, whatever its driver. A driver's tune can move what the stream recorded (SoapySDRPlay3's
+    /* Only a local USB dongle skips a write: librtlsdr returns each control transfer's result, so what the stream
+       records took, and the per-tuner audit below says what a tune undoes.
+
+       rtl_tcp keeps every write, whatever tuner its header names (#782 gate r4 K2). Its commands carry no
+       acknowledgement: a gain the server or its dongle refused would be recorded as applied, and every later hop would
+       skip it, where main wrote it again on each. A server may also run another librtlsdr than the one audited.
+
+       SoapySDR keeps every write, whatever its driver. A driver's tune can move what the stream recorded (SoapySDRPlay3's
        LNA-state range follows the band, so the same aggregate gain maps to other stages after a band change), the
        profile matcher cannot tell a reviewed driver from one that merely shares a keyword, and no SoapySDR hardware is
        at hand to check one on: the rewrite main always did is kept. */
-    return (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) ? 1 : 0;
+    return (dev->backend == RTL_BACKEND_USB) ? 1 : 0;
 }
 
 /*
@@ -10225,45 +10219,37 @@ rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* o
  *   its gain bits [4:0]; fc0013_set_bw() does nothing; the gain mode (0x0d) is not touched. Keeps all three.
  * - FC2580: fc2580_set_freq() sets the channel filter for the band on every tune (7.8 MHz UHF, 6.8 MHz VHF, 1.53 MHz
  *   L-band) through fc2580_set_filter(); only fc2580_set_bw() (1.53 MHz) puts it back. Its gain controls do nothing.
- *   Resets the bandwidth. An rtl_tcp server takes no bandwidth command from this backend, and there the server's own
- *   rtlsdr_set_sample_rate() is what restores the filter: through rtl_tcp it resets the rate.
+ *   Resets the bandwidth.
  * - R820T and R828D: r82xx_set_freq() writes the mux and tracking filter (0x08, 0x09, 0x10, 0x17, 0x1a, 0x1b), the PLL
  *   (0x10-0x14, 0x1a) and, on an R828D or an RTL-SDR Blog V4/V4L, the input select bits of 0x05 (0x20, 0x40, 0x60) and
  *   0x06 (0x08). The IF filter (0x0a, 0x0b) is set only by r82xx_set_bandwidth() and at init, the gains (0x05 bits
  *   [4:0], 0x07 bits [4:0], 0x0c) only by r82xx_set_gain(). Keeps all three.
  *
- * A tuner this build does not know resets all three, as main always rewrote them.
+ * A tuner this build does not know resets all three, as main always rewrote them. The audit covers a local USB dongle
+ * only: rtl_tcp skips no write at all (rtl_device_capture_settings_generation()).
  */
 static unsigned
-rtl_capture_retune_resets_for_tuner(int tuner_type, int through_rtl_tcp) {
+rtl_capture_retune_resets_for_tuner(int tuner_type) {
     switch (tuner_type) {
         case RTLSDR_TUNER_E4000:
         case RTLSDR_TUNER_FC0012:
         case RTLSDR_TUNER_FC0013:
         case RTLSDR_TUNER_R820T:
         case RTLSDR_TUNER_R828D: return 0U;
-        case RTLSDR_TUNER_FC2580:
-            return through_rtl_tcp ? (unsigned)(RTL_CAPTURE_SETTING_RATE | RTL_CAPTURE_SETTING_BANDWIDTH)
-                                   : (unsigned)RTL_CAPTURE_SETTING_BANDWIDTH;
+        case RTLSDR_TUNER_FC2580: return (unsigned)RTL_CAPTURE_SETTING_BANDWIDTH;
         default: return (unsigned)(RTL_CAPTURE_SETTING_RATE | RTL_CAPTURE_SETTING_BANDWIDTH | RTL_CAPTURE_SETTING_GAIN);
     }
 }
 
 unsigned
 rtl_device_capture_retune_resets(const struct rtl_device* dev) {
-    if (!dev) {
-        return 0U;
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_capture_retune_resets_for_tuner(dev->tcp_tuner_type.load(std::memory_order_acquire), 1);
-    }
-    if (dev->backend != RTL_BACKEND_USB) {
+    if (!dev || dev->backend != RTL_BACKEND_USB) {
         return 0U;
     }
     rtl_usb_ctrl_lock(dev);
     const int tuner_type = dev->dev ? rtl_usb_ctl_get_tuner_type(dev->dev) : RTLSDR_TUNER_UNKNOWN;
     rtl_usb_ctrl_unlock(dev);
-    return rtl_capture_retune_resets_for_tuner(tuner_type, 0);
+    return rtl_capture_retune_resets_for_tuner(tuner_type);
 }
 
 static int

@@ -18,6 +18,9 @@
  * - a SoapySDR device keeps every write, whatever its driver;
  * - a tuner whose tune undoes a setting has it written again on every hop: an FC2580 its bandwidth, a tuner this build
  *   does not know everything (gate r3 J1).
+ *
+ * The record is a local USB dongle's alone: an rtl_tcp server keeps every write behind any tuner (gate r4 K2), which
+ * IO_RTL_TCP_RECONNECT's hops_write_every_setting pins against its fake server.
  */
 
 #include <assert.h>

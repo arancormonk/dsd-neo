@@ -300,14 +300,16 @@ int rtl_device_get_sample_rate(struct rtl_device* dev);
 /**
  * @brief Whether a retune may leave a capture setting @p dev already holds unwritten (issue #782 D3).
  *
- * The backends that keep their sample rate, tuner bandwidth and gain across a retune answer 1: a USB RTL-SDR and an
- * rtl_tcp server. A SoapySDR device answers 0 for every driver (a driver's tune can move what was recorded, and none
- * was checked on hardware), an Airspy skips a same-value write itself, and an I/Q replay has nothing to program.
+ * Only a USB RTL-SDR answers 1: librtlsdr reports each write's result from the dongle, and the per-tuner audit says
+ * which settings its tune keeps (rtl_device_capture_retune_resets()). An rtl_tcp server answers 0 (issue #782 gate r4
+ * K2): its protocol has no acknowledgement, so a write the server or its dongle refused (a gain it could not set)
+ * would be recorded as taken and skipped on every later hop; every hop writes every setting, as before D3. A
+ * SoapySDR device answers 0 for every driver (a driver's tune can move what was recorded, and none was checked on
+ * hardware), an Airspy skips a same-value write itself, and an I/Q replay has nothing to program.
  *
  * @param dev RTL-SDR device handle.
- * @param out_generation Receives a count that moves each time the device's settings were put back without the
- * caller: a USB recovery's reopen and replay, an rtl_tcp reconnect's replay. What the caller recorded under an
- * older count no longer describes the device.
+ * @param out_generation Receives a count that moves each time a USB recovery reopened the dongle and put its settings
+ * back without the caller. What the caller recorded under an older count no longer describes the device.
  * @return 1 when the caller may skip a write that matches what it recorded, else 0.
  */
 int rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* out_generation);
@@ -323,9 +325,9 @@ enum {
  * @brief The capture settings a frequency write on @p dev undoes (issue #782 gate r3 J1).
  *
  * A caller that skips a matching write (rtl_device_capture_settings_generation()) writes these again after every
- * frequency write. An FC2580 tuner resets its channel filter on every tune, which only a bandwidth write restores on
- * USB and only a sample-rate write restores through an rtl_tcp server; a tuner this build does not know resets
- * everything. The other RTL-SDR tuners keep all three (the per-tuner audit is at the definition).
+ * frequency write. An FC2580 tuner resets its channel filter on every tune, which only a bandwidth write restores; a
+ * tuner this build does not know resets everything. The other RTL-SDR tuners keep all three (the per-tuner audit is
+ * at the definition). Only a USB RTL-SDR skips writes, so every other backend, rtl_tcp included, answers 0.
  *
  * @param dev RTL-SDR device handle.
  * @return A mask of RTL_CAPTURE_SETTING_* bits; 0 for a device whose writes are never skipped.
