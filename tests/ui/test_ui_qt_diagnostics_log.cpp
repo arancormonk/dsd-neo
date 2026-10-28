@@ -1958,34 +1958,38 @@ everyExemptionYieldsToArgumentEcho() {
         QStringLiteral("-197"), QStringLiteral("-512"), QStringLiteral("-925"),
         QStringLiteral("-19"),  QStringLiteral("-25"),
     };
-    const QStringList syncKeyLabels = {QStringLiteral("-P25p1"), QStringLiteral("-P25p2"), QStringLiteral("-YSF"),
-                                       QStringLiteral("-TETRA")};
+    const QStringList syncKeyLabels = {
+        QStringLiteral("-P25p1"),
+        QStringLiteral("-P25p2"),
+        QStringLiteral("-YSF"),
+        QStringLiteral("-TETRA"),
+    };
 
     struct Kind {
         const char* name;
+        QString body;              // %1 the marker, %2 the key form
         dsd_neo_log_level_t level; // the runtime log's level for a decoder record
         bool stderrSource;         // false: through the runtime log
-        QString body;              // %1 the marker, %2 the key form
         bool token;                // the marker stands in a quoted name: one token, quoted by the template
     };
 
     const Kind kinds[] = {
-        {"libusb error code", LOG_LEVEL_ERROR, false, QStringLiteral("libusb: error [op_open] %1 %2"), false},
-        {"libusb error code after text", LOG_LEVEL_ERROR, false, QStringLiteral("libusb: error [op_open] failed %1 %2"),
+        {"libusb error code", QStringLiteral("libusb: error [op_open] %1 %2"), LOG_LEVEL_ERROR, false, false},
+        {"libusb error code after text", QStringLiteral("libusb: error [op_open] failed %1 %2"), LOG_LEVEL_ERROR, false,
          false},
-        {"libusb warning code", LOG_LEVEL_WARN, false, QStringLiteral("libusb: warning [do_close] %1 %2"), false},
-        {"libusb errno", LOG_LEVEL_ERROR, false, QStringLiteral("libusb: error [op_open] %1 %2 failed, errno=13"),
+        {"libusb warning code", QStringLiteral("libusb: warning [do_close] %1 %2"), LOG_LEVEL_WARN, false, false},
+        {"libusb errno", QStringLiteral("libusb: error [op_open] %1 %2 failed, errno=13"), LOG_LEVEL_ERROR, false,
          false},
-        {"producer line's quoted name", LOG_LEVEL_WARN, false,
+        {"producer line's quoted name",
          QStringLiteral("WARNING: Trunk scan target '%1': --squelch-db %2 cannot gate digital acquisition without a "
                         "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
                         "stamps."),
-         true},
-        {"measurement fragment", LOG_LEVEL_INFO, false, QStringLiteral("%1 Offset: %2;"), false},
-        {"measurement fragment with context", LOG_LEVEL_INFO, false, QStringLiteral("%1 TX Offset: %2; Spacing: 100"),
+         LOG_LEVEL_WARN, false, true},
+        {"measurement fragment", QStringLiteral("%1 Offset: %2;"), LOG_LEVEL_INFO, false, false},
+        {"measurement fragment with context", QStringLiteral("%1 TX Offset: %2; Spacing: 100"), LOG_LEVEL_INFO, false,
          false},
-        {"measurement line's name", LOG_LEVEL_INFO, true,
-         QStringLiteral("SoapySDR: adjusted gain %1 from %2.00 dB to -10.00 dB."), false},
+        {"measurement line's name", QStringLiteral("SoapySDR: adjusted gain %1 from %2.00 dB to -10.00 dB."),
+         LOG_LEVEL_INFO, true, false},
     };
 
     auto& log = DiagnosticsLog::instance();
@@ -2023,7 +2027,7 @@ everyExemptionYieldsToArgumentEcho() {
         }
     }
     // A sync label that reads as a key option, exempt only as the decoder prints it.
-    const Kind sync{"sync label", LOG_LEVEL_INFO, true, QString(), false};
+    const Kind sync{"sync label", QString(), LOG_LEVEL_INFO, true, false};
     for (const auto& marker : markers) {
         for (const auto& label : syncKeyLabels) {
             expectDropped(sync, marker + QStringLiteral(" 12:34:56 Sync: ") + label + QStringLiteral(" mod: GFSK"));
