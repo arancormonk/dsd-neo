@@ -880,7 +880,8 @@ Notes:
 - Source labels prefer this list, then fall back to the active group list's **exact-row** label. A CSV alias
   therefore wins over an OTA talker alias learned for the same RID as the `SName:` label; the OTA alias text itself
   is kept unchanged. Source `Mode:` shows the winning row's mode when that row has policy columns and a non-empty
-  `mode`; otherwise it comes from a group-list exact row, as for a plain list.
+  `mode`; otherwise it comes from a group-list exact row, as for a plain list. A radio that neither list names has
+  no source label, so neither `SName:` nor its `Mode:` is shown, even when an unnamed row decides its policy.
 - Import replaces the current list. A missing or unreadable file, a read error, or an allocation failure fails
   the import and keeps the current list. All entry points accept zero usable rows as a loaded empty list.
   At engine startup a source-list load failure logs a warning and decoding continues without imported aliases.

@@ -271,11 +271,23 @@ test_radio_policy_header(void) {
     assert(dsd_source_policy_loaded(dst));
     expect_policy(dst, 200, "A", 1, 0, 1);
     expect_policy(dst, 400, "A", 0, 0, 0);
+    /* A pattern row survives the snapshot: its text and the store's pattern fast-path count. */
+    import_text(state, "id,name,mode\n2*,Fire,B\n");
+    assert(dsd_source_alias_copy_snapshot(dst, state) == 0);
+    label(dst, 2000124, "Fire");
+    expect_policy(dst, 2000124, "B", 0, 0, 0);
+    assert(policy(dst, 3000000).matched == 0);
     /* The header's column 3 opts in, case-insensitive and trimmed; a column out of order ends the policy prefix. */
     import_text(state, "ID,Name, MODE ,record,audio\n700,Order,A,off,off\n7xx,Pattern,B\n");
     assert(dsd_source_policy_loaded(state));
     expect_policy(state, 700, "A", 1, 1, 1);
     expect_policy(state, 701, "B", 0, 0, 0);
+    /* A CRLF-terminated header still opts in, and its last column still matches. */
+    import_text(state, "id,name,mode\r\n900,,B\r\n");
+    assert(dsd_source_policy_loaded(state));
+    expect_policy(state, 900, "B", 0, 0, 0);
+    import_text(state, "id,name,mode,audio\r\n901,Muted,A,off\r\n");
+    expect_policy(state, 901, "A", 0, 0, 0);
     import_text(state, "id,name,mode,audio,stream\n800,Prefix,A,on,off\n801,Prefix,A,off,on\n");
     expect_policy(state, 800, "A", 1, 1, 1); /* stream sits where record belongs: it is not read */
     expect_policy(state, 801, "A", 0, 0, 0); /* audio, before the break, is */
@@ -409,13 +421,47 @@ test_source_mode_from_radio_policy(void) {
     assert(dsd_source_label_lookup(state, 1201, mode, sizeof(mode), name, sizeof(name)));
     assert(strcmp(name, "Group row") == 0 && strcmp(mode, "B") == 0);
     assert(dsd_source_label_lookup(state, 1299, mode, sizeof(mode), name, sizeof(name)) == 0);
+    /* An unnamed policy row with no group row names nothing: no label, and its mode is not shown on its own. */
     import_text(state, "id,name,mode\n12xx,,DE\n");
-    assert(dsd_source_label_lookup(state, 1299, mode, sizeof(mode), name, sizeof(name)));
-    assert(strcmp(name, "") == 0 && strcmp(mode, "DE") == 0);
+    DSD_MEMSET(name, 'Z', sizeof(name));
+    DSD_MEMSET(mode, 'Z', sizeof(mode));
+    assert(dsd_source_label_lookup(state, 1299, mode, sizeof(mode), name, sizeof(name)) == 0);
+    assert(strcmp(name, "") == 0 && strcmp(mode, "") == 0);
+    expect_policy(state, 1299, "DE", 0, 0, 0); /* the row still decides policy */
     /* A policy row with an empty mode states no mode: the group list's stands. */
     import_text(state, "id,name,mode\n1201,Radio,\n");
     assert(dsd_source_label_lookup(state, 1201, mode, sizeof(mode), name, sizeof(name)));
     assert(strcmp(name, "Radio") == 0 && strcmp(mode, "A") == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* Regression: an unnamed `B` policy row and no group row gave lookup 1 with an empty name, so callers printed
+ * `SRC: []` and the event log `SName: ; Mode: B`. With no name there is no label at all. */
+static void
+test_unnamed_policy_row_is_no_label(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    import_text(state, "id,name,mode\n1234,,B\n");
+    char name[50], mode[8];
+    DSD_MEMSET(name, 'Z', sizeof(name));
+    DSD_MEMSET(mode, 'Z', sizeof(mode));
+    assert(dsd_source_label_lookup(state, 1234, mode, sizeof(mode), name, sizeof(name)) == 0);
+    assert(name[0] == '\0' && mode[0] == '\0');
+    assert(dsd_source_label_lookup(state, 1234, NULL, 0, name, sizeof(name)) == 0);
+    assert(dsd_source_label_lookup(state, 1234, mode, sizeof(mode), NULL, 0) == 0 && mode[0] == '\0');
+    expect_policy(state, 1234, "B", 0, 0, 0);
+    /* The same holds for an unnamed group-list exact row. */
+    dsd_tg_policy_entry e;
+    assert(dsd_tg_policy_make_exact_entry(1234, "B", "", DSD_TG_POLICY_SOURCE_IMPORTED, &e) == 0);
+    assert(dsd_tg_policy_append_exact(state, &e) == 0);
+    assert(dsd_source_label_lookup(state, 1234, mode, sizeof(mode), name, sizeof(name)) == 0);
+    assert(name[0] == '\0' && mode[0] == '\0');
+    /* A name from either list makes it a label again, with the radio row's mode. */
+    import_text(state, "id,name,mode\n1234,,B\n12*,Named,A\n");
+    assert(dsd_source_label_lookup(state, 1234, NULL, 0, NULL, 0) == 1);
+    assert(dsd_source_label_lookup(state, 1234, mode, sizeof(mode), name, sizeof(name)) == 1);
+    assert(strcmp(name, "Named") == 0 && strcmp(mode, "B") == 0);
     dsd_state_ext_free_all(state);
     free(state);
 }
@@ -446,6 +492,7 @@ main(void) {
     test_store_validates_patterns();
     test_label_uses_most_specific_named_row();
     test_source_mode_from_radio_policy();
+    test_unnamed_policy_row_is_no_label();
     test_store_id();
     return 0;
 }

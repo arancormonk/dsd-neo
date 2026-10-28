@@ -7441,6 +7441,21 @@ test_source_alias_collision(int protocol) {
            == 1);
     watchdog_event_current(opts, state, 0);
     assert(strstr(item->event_string, "SName: Talkgroup 1201; Mode: A;"));
+    /* An unnamed radio policy row is no source label: no empty SName, and its mode is not shown on its own. */
+    char policy_path[DSD_TEST_PATH_MAX];
+    fd = dsd_test_mkstemp(policy_path, sizeof(policy_path), "alias-collision-policy");
+    assert(fd >= 0 && dsd_close(fd) == 0);
+    assert(write_alias_file(policy_path, "id,name,mode\n1203,,B\n1204,Named,DE\n") == 0);
+    assert(csvSrcImportPath(policy_path, state) == 0 && remove(policy_path) == 0);
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 9999, 1203, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    assert(item->s_name[0] == '\0' && item->s_mode[0] == '\0');
+    assert(!strstr(item->event_string, "SName:") && !strstr(item->event_string, "Mode:"));
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 9999, 1204, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    assert(strstr(item->event_string, "SName: Named; Mode: DE;"));
     dsd_state_ext_free_all(state);
     free(history);
     free(state);

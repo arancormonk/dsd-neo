@@ -327,16 +327,21 @@ dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t 
         alias_find(s, id, s->policy_count ? &winner : NULL, &named);
     }
     const int radio_mode = winner && winner->has_policy && winner->mode[0] != '\0';
-    if (named && name && name_sz) {
-        DSD_SNPRINTF(name, name_sz, "%s", named->name);
-    }
-    if (radio_mode && mode && mode_sz) {
-        DSD_SNPRINTF(mode, mode_sz, "%s", winner->mode);
-    }
     /* The group list's exact row supplies whatever the radio list did not: the name, the mode, or both. */
-    const int group = dsd_tg_policy_lookup_label(state, id, radio_mode ? NULL : mode, radio_mode ? 0 : mode_sz,
-                                                 named ? NULL : name, named ? 0 : name_sz);
-    return named || radio_mode || group;
+    char group_mode[sizeof(winner->mode)] = {0};
+    char group_name[DSD_SOURCE_ALIAS_NAME_MAX] = {0};
+    (void)dsd_tg_policy_lookup_label(state, id, group_mode, sizeof(group_mode), group_name, sizeof(group_name));
+    const char* label = named ? named->name : group_name;
+    if (label[0] == '\0') {
+        return 0; /* no name, no label: an unnamed row's mode is never shown on its own */
+    }
+    if (name && name_sz) {
+        DSD_SNPRINTF(name, name_sz, "%s", label);
+    }
+    if (mode && mode_sz) {
+        DSD_SNPRINTF(mode, mode_sz, "%s", radio_mode ? winner->mode : group_mode);
+    }
+    return 1;
 }
 
 int

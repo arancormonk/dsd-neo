@@ -67,7 +67,8 @@ int dsd_source_alias_lookup(const dsd_state* state, uint32_t id, char* name, siz
  * store has no policy rows, no row matches, or the winning row has no policy. out may be NULL. */
 int dsd_source_policy_lookup(const dsd_state* state, uint32_t id, dsd_source_policy_match* out);
 /* Name: the radio list's name, else the group list's exact label. Mode: the winning radio row's mode when that row
- * has policy and a non-empty mode, else the group list's exact mode. Returns 1 when either list supplied a row. */
+ * has policy and a non-empty mode, else the group list's exact mode. Returns 1 only with a non-empty name; with no
+ * name it returns 0 and leaves both outputs empty, so an unnamed row's mode is never shown as a label. */
 int dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                             size_t name_sz);
 /* Deep copy or reuse matching clone. Failure preserves an owned destination store;
