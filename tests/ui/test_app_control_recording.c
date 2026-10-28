@@ -18,10 +18,10 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/engine/analog_call.h>
@@ -1440,6 +1440,10 @@ static int
 test_unknown_only_set_refused_during_signal_search(void) {
     rig r;
     int rc = rig_open(&r, "dsdneo_rec_unknown_only_search");
+    if (rc != 0) {
+        rig_close(&r);
+        return rc;
+    }
     g_signal_search_active = 1;
     (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 1);
     (void)drain(&r);

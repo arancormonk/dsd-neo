@@ -38,6 +38,7 @@
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "radio_reference_model.h"
+#include "recording_status.h"
 #include "recording_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
@@ -261,6 +262,10 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
     controller->setCommandBridge(commands);
     controller->setP25Network(network); // WP-F2
+    // Issue #708: what call recording is doing, and why a recording switch was refused.
+    auto* recordingStatus = new RecordingStatus(&engine);
+    controller->setRecordingStatus(recordingStatus);
+    commands->setRecordingStatus(recordingStatus);
     wire_attachment(host, controller, prefs, systems, scanLists);
 
     prune_missing_csv_paths(importedFiles, systems, scanLists);
@@ -296,6 +301,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("recordings"), recordings);
+    context->setContextProperty(QStringLiteral("recordingStatus"), recordingStatus);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);

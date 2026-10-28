@@ -1090,7 +1090,8 @@ suite runs under this compiler.
   recording transition's, whatever else in the config failed or needs a restart;
   `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command reads
   PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
-  `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below). Tests: `APP_CONTROL_RECORDING` (every command
+  `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below); `journal_named` is
+  whether the run names one at all (the Qt app names one exactly when it has a folder to record into). Tests: `APP_CONTROL_RECORDING` (every command
   case through the queue and through config applies, the transition table (every from-mode to every to-mode, folder,
   static and raw changes, each open failing), each writer's short write and close failure behind the seams in
   `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen
@@ -1906,7 +1907,9 @@ suite runs under this compiler.
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
     error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
     pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an option
-    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same
+    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. A frontend reading options a user typed
+    walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
+    `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads)
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -8004,25 +8007,42 @@ Qt Quick frontend (`src/ui/qt`):
     `recordingLimitChoices`, 1000 by default) map to `SessionArgPrefs`; the starter puts the folder `beginSession()`
     returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after `-t`/`-F` and before the
     extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra `-P` records into a managed
-    folder), then `-P` and `--record-unknown-only` as the preferences say; no folder (no root available, or a
-    validation-only build) names no recording at all. A scan list passes it through its tuner build, once. The caller
-    says what a start is (`SessionArgsBuilder::start(system, host, kind)`: "saved", "explore", "search"), since an edited
-    Explore map can carry a saved system's uid. Extra options naming `-7`, `--wav-journal` or
-    `--rdio-api-delete-after-upload` refuse the start (`SessionArgsError::CallRecordingOption`), and `-w` does while
-    Record calls is on (`CallRecordingStaticWav`); `session_args_recording_extra_error()` reads a token after a short
-    option that takes a value as that value, and a number after a long option as its value (decided limit: a flag-only
-    long option followed by a bare `-7 <folder>` is not caught). `qt_ui.cpp` hands the store `recordingLimitMb` before
-    `start()` and on every change. Live changes: `CommandBridge::setRecordCalls()` (WAV start/stop) and
-    `setRecordUnknownOnly()`, confirmed through `recording_view`.
+    folder), then `-P` when Record calls is on, with `--record-unknown-only` only beside it (unknown-only travels with
+    Record calls, so a disabled switch never filters the user's own `-w`, extra `-P` or MBE capture); no folder (no root
+    available, or a validation-only build) names no recording at all. A scan list passes it through its tuner build,
+    once; a draft list asks for no folder. The caller says what a start is (`SessionArgsBuilder::start(system, host,
+    kind)`: "saved", "explore", "search"), since an edited Explore map can carry a saved system's uid. Extra options
+    naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse the start
+    (`SessionArgsError::CallRecordingOption`), `-w` does while Record calls is on (`CallRecordingStaticWav`), and an
+    extra `-P` does when the store had no folder to give (`CallRecordingNoStorage`, `SessionArgPrefs::
+    recordingUnavailable`: it would record outside the app's storage); `CallRecordingOption` and
+    `CallRecordingNoStorage` share the start screen's "call-recording-option" category. `session_args_recording_extra_error()` walks the tokens as the
+    decoder walks its argv, by the parser's own arity (`dsd_cli_long_option_arity()`, from the tables
+    `dsd_cli_compact_args()` steps by, and `dsd_cli_short_option_takes_value()`, from the getopt string
+    `dsd_cli_short_options()` the parser reads), so an option's value is never taken for an option and an option never
+    for a value. A target CSV's options cell refuses every recording switch already (`dsd_scan_options_parse()` has
+    none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and on every change.
+  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or WAV stop
+    then unknown-only off; it sends nothing, and says why in `RecordingStatus::refusal`, when the session names no
+    recording journal ("storage-unavailable": no folder to record into) or records to a static WAV of its extra options
+    ("static-wav": a start would close the user's file); the preference applies at the next start.
+    `setRecordUnknownOnly()` is sent only while the session records each call (a start still applying counts) and is
+    otherwise inert: it travels with the next Record calls on. `RecordingStatus` (`recording_status.{h,cpp}`, context
+    property `recordingStatus`, refreshed every UI tick by `UiController`) reads `recording_view` for QML: per-call,
+    slot files, unknown-only, static WAV, `storageNamed`, journal, the last command and its state ("pending" is
+    Settings' "Applying..."), failures by kind and the last one, and the bridge's refusal.
   - Host surface (`DecoderHost`): playback (`playbackSupported`, `playRecording(path)`, pause/resume/seek/stop, the
     `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
     and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
     reference and ends in exactly one `recordingTransferFinished(selection, result, missing)`, a refusal included; one
     at a time; `recordingTransfer*` progress) and share (`shareRecording()`, indexed recordings only). The base host
     has no player and no zip, and saves one file synchronously through `copyFileToDocument()`; a platform overrides
-    `beginPlayback()`, `beginRecordingTransfer()` and `shareRecordingFile()` and reports through `publishPlayback()`,
-    `publishRecordingTransferProgress()` and `finishRecordingTransfer()`. A play, export or share that finds a file gone
-    emits `recordingFilesMissing(paths)`. `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing
+    `beginPlayback()`, `stopPlayback()` (calling the base), the other playback controls, `beginRecordingTransfer()` and
+    `shareRecordingFile()` and reports through `publishPlayback()`, `publishRecordingTransferProgress()` and
+    `finishRecordingTransfer()`. `playRecording()` routes through those virtuals: a missing file or a host with no player
+    stops what plays first, so the store's hold on a file ends only once nothing plays it. A transfer stats no file on
+    the GUI thread: the platform skips the files gone, publishes the total it really writes and reports the gone ones
+    at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`. `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing
     (`setPlayingPath()` from Preparing to the end), releases each transfer's selection when it finishes, rechecks the
     missing files (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`).
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
@@ -8081,7 +8101,9 @@ Qt Quick frontend (`src/ui/qt`):
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
-    bridge and queue), the host surface in `UI_QT_RECORDING_STORE`, the preferences in `UI_QT_PERSISTENCE`.
+    bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in
+    `UI_QT_RECORDING_STORE`, the preferences in `UI_QT_PERSISTENCE`, the arity helpers in `RUNTIME_CLI_COMPACT`, the
+    options cell in `RUNTIME_SCAN_OPTIONS`.
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
   carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
   `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,

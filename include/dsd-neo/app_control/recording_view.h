@@ -57,6 +57,9 @@ typedef struct {
     uint8_t slot_files;    /**< per-call slot files open now: bit 0 slot 1, bit 1 slot 2 */
     uint8_t unknown_only;  /**< 1 while only unknown talkgroups record (opts->record_unknown_only) */
     uint8_t journal_state; /**< DSD_APP_RECORDING_JOURNAL_* */
+    /** 1 when the run names a recording journal (--wav-journal), however its open went: the Qt app names one exactly
+     *  when it has a folder of its own to record into, so 0 there means no storage for call recordings */
+    uint8_t journal_named;
     uint8_t command_state; /**< DSD_APP_RECORDING_COMMAND_* */
     int32_t command_id;    /**< the dsd_app_command_id @c command_state is about; 0 for NONE */
     uint32_t failures[DSD_WAV_RECORDING_ERROR_KINDS]; /**< this decoder run's failures by dsd_wav_recording_error */

@@ -34,6 +34,7 @@
 #pragma GCC diagnostic pop
 #endif
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -51,6 +52,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include "decode_mode_flag.h"
 #include "decryption_profile_provider.h"
+#include "recording_status.h"
 #include "session_args.h"
 
 namespace dsd_qt {
@@ -225,15 +227,56 @@ CommandBridge::setRelaxedCrc(bool on) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_AGGR_SYNC_TOGGLE, on ? 1 : 0));
 }
 
-bool
-// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
-CommandBridge::setRecordCalls(bool on) const {
-    return accepted(dsd_app_command_submit(on ? DSD_APP_CMD_WAV_START : DSD_APP_CMD_WAV_STOP, nullptr, 0));
+void
+CommandBridge::noteRecording(const QString& refusal) const {
+    if (m_recordingStatus != nullptr) {
+        m_recordingStatus->noteRefusal(refusal);
+    }
 }
 
 bool
-// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
+CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
+    dsd_app_recording_view view{};
+    if (dsd_app_recording_view_get(&view) != 1) {
+        return false; // no decoder run has published its recording yet
+    }
+    if (on) {
+        // Never record-on into a session the app gave no folder: it would record outside the app's storage.
+        if (view.journal_named == 0U) {
+            noteRecording(QStringLiteral("storage-unavailable"));
+            return false;
+        }
+        // Nor into one recording to a static WAV of the user's: starting per-call recording would close it.
+        if (view.mode == DSD_APP_RECORDING_MODE_STATIC) {
+            noteRecording(QStringLiteral("static-wav"));
+            return false;
+        }
+    }
+    // Unknown-only first, so the first call recorded already follows it; off again after a stop.
+    const bool sent = on ? accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
+                               && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0))
+                         : accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_STOP, nullptr, 0))
+                               && accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0));
+    if (sent) {
+        noteRecording(QString());
+    }
+    return sent;
+}
+
+bool
 CommandBridge::setRecordUnknownOnly(bool on) const {
+    dsd_app_recording_view view{};
+    if (dsd_app_recording_view_get(&view) != 1) {
+        return false;
+    }
+    // Whether the session records each call, a start or stop still applying counted as done.
+    const bool pending = view.command_state == DSD_APP_RECORDING_COMMAND_PENDING;
+    const bool recording = pending && view.command_id == DSD_APP_CMD_WAV_START  ? true
+                           : pending && view.command_id == DSD_APP_CMD_WAV_STOP ? false
+                                                                                : view.per_call != 0U;
+    if (!recording) {
+        return true;
+    }
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, on ? 1 : 0));
 }
 

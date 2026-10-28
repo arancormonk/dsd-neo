@@ -308,7 +308,13 @@ class DecoderHost : public QObject {
         return m_playbackError;
     }
 
-    /** @brief Play the call recording at @p path from its start, replacing the one playing. */
+    /**
+     * @brief Play the call recording at @p path from its start, replacing the one playing.
+     *
+     * Not virtual: it routes through the virtuals a platform overrides. A file that is gone, or a host with no player,
+     * first stops what plays (stopPlayback()) and then fails; a file that is there is published Preparing and handed
+     * to beginPlayback(), which replaces what plays.
+     */
     Q_INVOKABLE void playRecording(const QString& path);
 
     Q_INVOKABLE virtual void
@@ -758,8 +764,10 @@ class DecoderHost : public QObject {
 
     /**
      * @brief Begin writing @p paths into @p reference: one zip with entries named @p names when @p zip, else the one
-     * file as it is. The host reports progress through publishRecordingTransferProgress() and its end, once, through
-     * finishRecordingTransfer(), on the GUI thread.
+     * file as it is. Nothing has looked at the files yet: the host skips the ones gone (all gone: TransferMissing),
+     * publishes the total of the ones it writes through publishRecordingTransferProgress() (it starts as the
+     * selection's), and reports its end once, with the files it found gone, through finishRecordingTransfer(), on the
+     * GUI thread.
      *
      * The base host saves a single file synchronously through copyFileToDocument(), and has no zip.
      * @return false when it could not begin (finished as TransferFailed).
@@ -779,7 +787,7 @@ class DecoderHost : public QObject {
     void publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error);
     void publishRecordingTransferProgress(qint64 bytes, qint64 totalBytes);
     /** @brief The running transfer ended with @p result (a RecordingTransferResult); @p missing of its files were
-     * gone (reported to the store too). */
+     * gone (reported to the store, and counted in recordingTransferFinished()). */
     void finishRecordingTransfer(int result, const QStringList& missing);
     /** @brief Tell the recording store these call recordings were found gone. */
     void reportRecordingsMissing(const QStringList& paths);
@@ -803,8 +811,6 @@ class DecoderHost : public QObject {
     QString m_playbackError;
     /* The running transfer's selection, -1 with none. */
     int m_transferSelection = -1;
-    /* Files the running transfer's selection named that were gone before it began. */
-    int m_transferMissing = 0;
     qint64 m_transferBytes = 0;
     qint64 m_transferTotalBytes = 0;
     std::function<bool(const QString&)> m_recordingIndexed;

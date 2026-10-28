@@ -704,11 +704,13 @@ class CommandRecorder : public QObject {
         return m_relaxed_crc_requests;
     }
 
-    /* Issue #708: Record calls and unknown-only applied to a running session, each request as {kind, on}. */
+    /* Issue #708: Record calls and unknown-only applied to a running session, each request as {kind, on} (and
+     * unknownOnly for Record calls). */
     Q_INVOKABLE bool
-    setRecordCalls(bool on) {
-        m_recording_requests.append(
-            QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")}, {QStringLiteral("on"), on}});
+    setRecordCalls(bool on, bool unknownOnly) {
+        m_recording_requests.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")},
+                                                {QStringLiteral("on"), on},
+                                                {QStringLiteral("unknownOnly"), unknownOnly}});
         return m_recording_accepted;
     }
 
@@ -1888,6 +1890,14 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief Set one recordingStatus reading (issue #708), as setMetric() does for metrics. */
+    Q_INVOKABLE void
+    setRecordingStatus(const QString& key, const QVariant& value) {
+        if (m_recording_readings != nullptr) {
+            m_recording_readings->insert(key, value);
+        }
+    }
+
     /**
      * @brief Set one radioReference key, so a case can flip a stubbed reading.
      *
@@ -2964,6 +2974,28 @@ class Setup : public QObject {
         }
         ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
 
+        /* Issue #708: RecordingStatus at rest, a decoder run that records nothing and has storage; a case sets the
+         * readings it needs (an applying switch, a refusal, failures). */
+        QVariantMap recording;
+        recording[QStringLiteral("published")] = true;
+        recording[QStringLiteral("perCall")] = false;
+        recording[QStringLiteral("slotFiles")] = 0;
+        recording[QStringLiteral("unknownOnly")] = false;
+        recording[QStringLiteral("staticWav")] = false;
+        recording[QStringLiteral("storageNamed")] = true;
+        recording[QStringLiteral("journal")] = QStringLiteral("on");
+        recording[QStringLiteral("command")] = QString();
+        recording[QStringLiteral("commandState")] = QStringLiteral("none");
+        recording[QStringLiteral("failures")] = 0;
+        recording[QStringLiteral("failureCounts")] = QVariantMap();
+        recording[QStringLiteral("lastError")] = QString();
+        recording[QStringLiteral("refusal")] = QString();
+        m_recording_readings = new ReadingMap(engine);
+        for (auto it = recording.cbegin(); it != recording.cend(); ++it) {
+            m_recording_readings->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("recordingStatus"), m_recording_readings);
+
         /* Every property key the RadioReference screen reads, at rest. `available`
          * is false so an ungated entry point shows up as a visible row rather
          * than passing silently: an unregistered context property would raise a
@@ -3084,6 +3116,8 @@ class Setup : public QObject {
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
     ReadingMap* m_metric_readings = nullptr;
     ReadingMap* m_host_readings = nullptr;
+    /* Issue #708: the `recordingStatus` QML reads. */
+    ReadingMap* m_recording_readings = nullptr;
     QVariantMap m_metrics;
     QVariantMap m_prefs;
     QVariantMap m_host;

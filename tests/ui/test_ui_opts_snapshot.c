@@ -119,6 +119,12 @@ test_publish_carries_the_recording_view(void) {
     assert(view.command_state == DSD_APP_RECORDING_COMMAND_NONE && view.command_id == 0);
     assert(view.unknown_only == 0 && view.journal_state == DSD_APP_RECORDING_JOURNAL_NONE);
     assert(view.last_error == DSD_WAV_RECORDING_ERROR_NONE);
+    assert(view.journal_named == 0);
+    /* A run that names a journal says so, before the journal opens: the app's sign that it has a folder. */
+    DSD_SNPRINTF(opts.wav_journal_file, sizeof opts.wav_journal_file, "%s", "/recordings/recordings.jsonl");
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_recording_view_get(&view) == 1 && view.journal_named == 1);
+    assert(view.journal_state == DSD_APP_RECORDING_JOURNAL_NONE);
 
     /* Not a recording command: no state. */
     dsd_app_recording_command_submitted(DSD_APP_CMD_TOGGLE_MUTE);

@@ -68,6 +68,28 @@ int dsd_cli_compact_args(int argc, char** argv);
  */
 int dsd_cli_option_takes_free_value(const char* arg);
 
+/** @brief How the parser reads a long option's value (dsd_cli_long_option_arity()). */
+typedef enum {
+    DSD_CLI_LONG_UNKNOWN = 0,         /**< not a long option the parser knows */
+    DSD_CLI_LONG_ALONE = 1,           /**< takes no separate value: a switch, or its "--name=value" form */
+    DSD_CLI_LONG_NEXT = 2,            /**< takes the next argument, whatever it is */
+    DSD_CLI_LONG_NEXT_NON_OPTION = 3, /**< takes the next argument unless that starts with '-' */
+} dsd_cli_long_arity;
+
+/**
+ * @brief How the parser reads the long option @p arg, from the same tables dsd_cli_compact_args() steps by.
+ *
+ * A frontend that builds an argv around options a user typed walks them with this and
+ * dsd_cli_short_option_takes_value(), so it reads each token as an option or as a value exactly as the decoder will.
+ */
+dsd_cli_long_arity dsd_cli_long_option_arity(const char* arg);
+
+/** @brief The getopt option string the parser reads short options with. */
+const char* dsd_cli_short_options(void);
+
+/** @brief Nonzero when the short option @p letter takes a value (attached, or else the next argument). */
+int dsd_cli_short_option_takes_value(char letter);
+
 /** @brief Print the CLI usage/help text. */
 void dsd_cli_usage(void);
 

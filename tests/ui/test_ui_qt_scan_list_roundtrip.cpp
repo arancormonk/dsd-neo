@@ -264,7 +264,7 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
 }
 
 /* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, names
- * it in the argv, and frees it when the start did not happen. */
+ * it in the argv, and frees it when the start did not happen; a draft asks for none. */
 static void
 checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
     struct Sessions : RecordingSessions {
@@ -321,6 +321,13 @@ checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
     host.accept = false;
     check(!starter.start(list, &host).value("started").toBool());
     check(sessions.calls == QStringList({begin, QStringLiteral("start"), QStringLiteral("end")}));
+    // A draft cannot start: no folder is made for it.
+    sessions.calls.clear();
+    host.accept = true;
+    QVariantMap draft = list;
+    draft.insert(QStringLiteral("isDraft"), true);
+    const auto refused = starter.start(draft, &host);
+    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && sessions.calls.isEmpty());
     starter.setRecordingSessions(nullptr);
 }
 

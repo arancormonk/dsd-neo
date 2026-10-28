@@ -1338,6 +1338,22 @@ class ServedHost : public dsd_qt::DecoderHost {
         finishRecordingTransfer(result, missing);
     }
 
+    void
+    progress(qint64 bytes, qint64 total) {
+        publishRecordingTransferProgress(bytes, total);
+    }
+
+    /* What played when the player was stopped, and whether its file was still there then. */
+    QStringList stoppedPaths;
+    QList<bool> stoppedFileThere;
+
+    void
+    stopPlayback() override {
+        stoppedPaths.append(playbackPath());
+        stoppedFileThere.append(QFileInfo::exists(playbackPath()));
+        DecoderHost::stopPlayback();
+    }
+
   protected:
     void
     beginPlayback(const QString& path) override {
@@ -1401,14 +1417,29 @@ test_host_surface(void) {
     expect("stopped", host.playbackState() == dsd_qt::DecoderHost::PlaybackStopped && host.playbackPath().isEmpty());
     expect("and deleted once it stops", waitGone(path(1)));
 
-    // A file gone behind the store's back: the play fails as missing, and the store looks again.
+    // A file gone behind the store's back, played while another plays: the player stops first (the store holding
+    // that file until then), the play fails as missing, and the store looks again.
+    record(folder, id(8), QStringLiteral("h8.wav"), 1754714008, 908);
+    s.pass();
+    host.playRecording(path(8));
+    host.playing(path(8));
+    s.store.deleteRecording(id(8));
+    s.pass();
+    expect("another file plays, its delete waiting", QFileInfo::exists(path(8)) && s.store.deletesWaiting() == 1);
+    host.stoppedPaths.clear();
+    host.stoppedFileThere.clear();
     QFile::remove(path(2));
     host.playRecording(path(2));
+    expect("the player stops the one playing first, its file still held",
+           host.stoppedPaths == QStringList{path(8)} && host.stoppedFileThere == QList<bool>{true});
     expect("a missing file fails as missing, never reaching the player",
            host.playbackState() == dsd_qt::DecoderHost::PlaybackFailed
-               && host.playbackError() == QStringLiteral("missing") && host.played.size() == 1);
+               && host.playbackError() == QStringLiteral("missing") && host.played.size() == 2
+               && host.playbackPath() == path(2));
     s.pass();
-    expect("and leaves the index", !s.store.isIndexedPath(path(2)) && s.store.recordingCount() == 2);
+    expect("and leaves the index", !s.store.isIndexedPath(path(2)));
+    expect("the stopped file's delete runs once nothing plays it", waitGone(path(8)));
+    expect("two recordings are left", s.store.recordingCount() == 2);
 
     // A save copies one recording and releases its selection; a delete asked meanwhile waits for it.
     const QString dest = roots.dir.path() + QStringLiteral("/saved.wav");
@@ -1431,6 +1462,11 @@ test_host_surface(void) {
     const QVariantMap again = s.store.selectRecordings({id(4)});
     expect("an export begins", host.exportRecordings(all, QStringLiteral("content://picked/zip"))
                                    && host.recordingTransferActive() && host.transferred.size() == 2);
+    expect("its total starts as the selection's",
+           host.recordingTransferTotalBytes() == all.value("bytes").toLongLong());
+    host.progress(500, 1000);
+    expect("and is the one the platform publishes",
+           host.recordingTransferBytes() == 500 && host.recordingTransferTotalBytes() == 1000);
     expect("a second is refused", !host.saveRecording(again, QStringLiteral("content://picked/one")));
     s.pass();
     expect("as busy, with its own selection",
@@ -1447,6 +1483,20 @@ test_host_surface(void) {
                && finished.at(1).at(2).toInt() == 1 && !host.recordingTransferActive());
     expect("which leaves the index", !s.store.isIndexedPath(path(5)));
     expect("and lets the waiting delete run", waitGone(path(4)));
+
+    // A save whose file is already gone: the host is handed it unlooked (no stat on the GUI thread), and the save
+    // finds it gone on its own path, finishes as missing and has the store look again.
+    record(folder, id(9), QStringLiteral("h9.wav"), 1754714009, 909);
+    s.pass();
+    finished.clear();
+    const QVariantMap gone = s.store.selectRecordings({id(9)});
+    QFile::remove(path(9));
+    expect("the save begins", host.saveRecording(gone, QUrl::fromLocalFile(dest).toString()));
+    s.pass();
+    expect("and finishes as missing, counting it",
+           finished.count() == 1 && finished.at(0).at(1).toInt() == dsd_qt::DecoderHost::TransferMissing
+               && finished.at(0).at(2).toInt() == 1);
+    expect("which leaves the index", !s.store.isIndexedPath(path(9)));
 
     // A host with no zip refuses an export, and the selection is still released.
     host.zipTransfers = false;

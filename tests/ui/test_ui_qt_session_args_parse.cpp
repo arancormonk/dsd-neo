@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QList>
 #include <QMap>
+#include <QObject>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -24,14 +25,17 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <cstdio>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/recording_view.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/runtime/cli.h>
 #include <memory>
 #include <utility>
@@ -41,6 +45,7 @@
 #include "command_bridge.h"
 #include "decoder_host.h"
 #include "recording_sessions.h"
+#include "recording_status.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
@@ -220,49 +225,153 @@ test_scan_list(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(false);
 }
 
+/* A session the app starts, parsed, with the frontend runtime up on it as a decoder run has it. */
+struct LiveSession {
+    Decoder decoder;
+
+    LiveSession(dsd_qt::AppPrefs& prefs, Sessions& sessions, bool* ok) {
+        dsd_qt::SessionArgsBuilder builder(&prefs);
+        builder.setRecordingSessions(&sessions);
+        Host host;
+        const QVariantMap system{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                                 {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+        *ok = builder.start(system, &host, QStringLiteral("explore")).value("started").toBool()
+              && parse(host.argv, decoder);
+        dsd_app_frontend_runtime_start(decoder.opts.get(), decoder.state.get());
+    }
+
+    ~LiveSession() {
+        dsd_app_frontend_runtime_stop();
+        decoder.opts->wav_out_f = close_wav_file(decoder.opts->wav_out_f);
+        decoder.opts->wav_out_fR = close_wav_file(decoder.opts->wav_out_fR);
+    }
+
+    LiveSession(const LiveSession&) = delete;
+    LiveSession& operator=(const LiveSession&) = delete;
+
+    int
+    drain() {
+        return dsd_app_drain_cmds(decoder.opts.get(), decoder.state.get());
+    }
+};
+
 /* Settings applies Record calls and unknown-only to a running session (D8): through the real bridge and queue, the
- * slot files open in the folder the session was started with, and close again. */
+ * slot files open in the folder the session was started with, and close again; RecordingStatus shows each switch
+ * applying, then applied. Unknown-only travels with Record calls. */
 void
 test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
-    dsd_qt::SessionArgsBuilder builder(&prefs);
-    builder.setRecordingSessions(&sessions);
-    Host host;
-    const QVariantMap system{{QStringLiteral("sourceType"), QStringLiteral("usb")},
-                             {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
-    expect("a session without Record calls starts",
-           builder.start(system, &host, QStringLiteral("explore")).value("started").toBool());
-    Decoder decoder;
-    expect("its argv parses", parse(host.argv, decoder));
-    expectRecording("it records nothing yet", decoder, sessions.folder, false, false);
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    expect("a session without Record calls starts and parses", started);
+    expectRecording("it records nothing yet", live.decoder, sessions.folder, false, false);
     expect("and its folder holds no recording", slotFilesIn(sessions.folder) == 0);
+    dsd_opts* opts = live.decoder.opts.get();
 
-    dsd_opts* opts = decoder.opts.get();
-    dsd_state* state = decoder.state.get();
-    dsd_app_frontend_runtime_start(opts, state);
-    const dsd_qt::CommandBridge bridge;
-    dsd_app_recording_view view{};
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    status.refresh();
+    expect("the status has the session's view", status.published() && !status.perCall() && status.storageNamed()
+                                                    && !status.staticWav() && status.commandState() == "none");
 
-    expect("Record calls on is queued", bridge.setRecordCalls(true));
-    expect("and applied", dsd_app_drain_cmds(opts, state) == 1);
-    (void)dsd_app_recording_view_get(&view);
-    expect("the session now records each call", opts->dmr_stereo_wav == 1 && opts->wav_out_f != nullptr
-                                                    && view.per_call == 1
-                                                    && view.command_state == DSD_APP_RECORDING_COMMAND_APPLIED);
+    expect("unknown-only while Record calls is off sends nothing", bridge.setRecordUnknownOnly(true));
+    expect("nothing queued", live.drain() == 0 && opts->record_unknown_only == 0);
+
+    expect("Record calls on, unknown-only on, is queued", bridge.setRecordCalls(true, true));
+    status.refresh();
+    expect("and shows applying", status.commandState() == "pending" && status.command() == "start");
+    expect("unknown-only, then the start, apply", live.drain() == 2);
+    status.refresh();
+    expect("the session now records each call, unknown talkgroups only",
+           opts->dmr_stereo_wav == 1 && opts->wav_out_f != nullptr && opts->record_unknown_only == 1 && status.perCall()
+               && status.unknownOnly() && status.commandState() == "applied" && status.refusal().isEmpty());
     expect("into the session's folder", slotFilesIn(sessions.folder) > 0);
 
-    expect("unknown-only on is queued", bridge.setRecordUnknownOnly(true));
-    expect("and applied", dsd_app_drain_cmds(opts, state) == 1);
-    (void)dsd_app_recording_view_get(&view);
-    expect("only unknown talkgroups record now", opts->record_unknown_only == 1 && view.unknown_only == 1);
+    expect("unknown-only off while recording is queued", bridge.setRecordUnknownOnly(false));
+    expect("and applied", live.drain() == 1 && opts->record_unknown_only == 0);
 
-    expect("unknown-only off is queued", bridge.setRecordUnknownOnly(false));
-    expect("Record calls off is queued", bridge.setRecordCalls(false));
-    expect("both apply", dsd_app_drain_cmds(opts, state) == 2);
-    (void)dsd_app_recording_view_get(&view);
+    expect("Record calls off is queued", bridge.setRecordCalls(false, true));
+    expect("the stop and unknown-only off apply", live.drain() == 2);
+    status.refresh();
     expect("the session stops recording", opts->record_unknown_only == 0 && opts->dmr_stereo_wav == 0
                                               && opts->wav_out_f == nullptr && opts->wav_out_fR == nullptr
-                                              && view.per_call == 0);
-    dsd_app_frontend_runtime_stop();
+                                              && !status.perCall() && !status.unknownOnly());
+}
+
+/* A session started with no storage for call recordings names no folder: Record calls on is refused there, nothing is
+ * sent, and the status says why. */
+void
+test_live_without_storage(dsd_qt::AppPrefs& prefs) {
+    Sessions none; // no folder: no storage available
+    bool started = false;
+    LiveSession live(prefs, none, &started);
+    expect("a session with no storage starts", started && live.decoder.opts->wav_journal_file[0] == '\0');
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
+    status.refresh();
+    expect("nothing is sent", live.drain() == 0 && live.decoder.opts->dmr_stereo_wav == 0);
+    expect("and the status says storage is unavailable", status.refusal() == QStringLiteral("storage-unavailable")
+                                                             && !status.storageNamed()
+                                                             && status.commandState() != "pending");
+}
+
+/* A session whose extra options record to one static WAV (Record calls off at its start): turning Record calls on is
+ * refused, so the user's file is not closed under them, and it applies at the next start. */
+void
+test_live_beside_a_static_wav(dsd_qt::AppPrefs& prefs, Sessions& sessions, const QString& staticWav) {
+    prefs.setExtraArgs(QStringLiteral("-w ") + staticWav);
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    prefs.setExtraArgs(QString());
+    expect("a session recording to a static WAV starts", started && live.decoder.opts->static_wav_file == 1);
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
+    status.refresh();
+    expect("nothing is sent and the static WAV stays open",
+           live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
+    expect("the status says why", status.refusal() == QStringLiteral("static-wav") && status.staticWav());
+}
+
+/* RecordingStatus reads the view as QML gets it: names for the states and failure kinds, one change signal per move. */
+void
+test_status_readings(void) {
+    dsd_qt::RecordingStatus status;
+    int changes = 0;
+    QObject::connect(&status, &dsd_qt::RecordingStatus::changed, &status, [&changes]() { ++changes; });
+    expect("nothing published yet", !status.published() && status.commandState() == "none" && status.journal() == "none"
+                                        && status.failures() == 0 && status.lastError().isEmpty()
+                                        && status.command().isEmpty());
+    dsd_app_recording_view view{};
+    view.published = 1;
+    view.mode = DSD_APP_RECORDING_MODE_STATIC;
+    view.journal_state = DSD_APP_RECORDING_JOURNAL_FAILED;
+    view.journal_named = 1;
+    view.failures[DSD_WAV_RECORDING_ERROR_WRITE] = 2U;
+    view.failures[DSD_WAV_RECORDING_ERROR_PUBLISH] = 1U;
+    view.last_error = DSD_WAV_RECORDING_ERROR_PUBLISH;
+    view.command_state = DSD_APP_RECORDING_COMMAND_REFUSED;
+    view.command_id = DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET;
+    status.apply(view);
+    const QVariantMap counts = status.failureCounts();
+    expect("each reading named", status.published() && status.staticWav() && !status.perCall() && status.storageNamed()
+                                     && status.journal() == "failed" && status.commandState() == "refused"
+                                     && status.command() == "unknownOnly" && status.failures() == 3
+                                     && status.lastError() == "publish");
+    expect("failures by kind", counts.size() == 4 && counts.value("write").toInt() == 2
+                                   && counts.value("publish").toInt() == 1 && counts.value("open").toInt() == 0);
+    status.apply(view);
+    expect("one change for one move", changes == 1);
+    view.command_state = DSD_APP_RECORDING_COMMAND_DROPPED;
+    view.command_id = DSD_APP_CMD_WAV_STOP;
+    status.apply(view);
+    status.noteRefusal(QStringLiteral("static-wav"));
+    status.noteRefusal(QStringLiteral("static-wav"));
+    expect("each move signalled once", changes == 3 && status.commandState() == "dropped" && status.command() == "stop"
+                                           && status.refusal() == "static-wav");
 }
 
 } // namespace
@@ -284,7 +393,10 @@ main(int argc, char** argv) {
         test_saved_system(prefs, sessions);
         test_explore(prefs, sessions);
         test_scan_list(prefs, sessions);
+        test_status_readings();
         test_live_commands(prefs, sessions);
+        test_live_without_storage(prefs);
+        test_live_beside_a_static_wav(prefs, sessions, dir.filePath(QStringLiteral("static.wav")));
     }
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

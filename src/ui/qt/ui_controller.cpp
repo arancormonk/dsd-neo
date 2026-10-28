@@ -30,6 +30,7 @@
 #include "decoder_host.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "recording_status.h"
 #include "talkgroup_list_model.h"
 
 namespace dsd_qt {
@@ -224,6 +225,9 @@ UiController::tick() {
 
     if (m_diagnostics) {
         m_diagnostics->refresh();
+    }
+    if (m_recordingStatus != nullptr) {
+        m_recordingStatus->refresh();
     }
     /* Host state is not published through the redraw flag: a stopped engine raises
      * nothing, and "stopped" is exactly what the UI must notice. */

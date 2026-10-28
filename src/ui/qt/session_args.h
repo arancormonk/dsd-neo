@@ -51,6 +51,9 @@ struct SessionArgPrefs {
     bool recordCalls = false;
     bool recordUnknownOnly = false;
     QString recordingFolder;
+    /* The store was asked for a folder and had none (no storage available): an extra -P is refused, since it would
+       record outside any folder the app manages. False for a validation-only build, which asks for none. */
+    bool recordingUnavailable = false;
 };
 
 /** @brief The app-wide defaults @p prefs holds, as a session starts with them; the struct's defaults for nullptr. The
@@ -92,24 +95,26 @@ enum class SessionArgsError {
        --rdio-api-delete-after-upload): the app owns the folder, the journal and the deletion. */
     CallRecordingOption,
     /* Issue #708: a static WAV (-w) among the extra options while Record calls is on; the two cannot run together. */
-    CallRecordingStaticWav
+    CallRecordingStaticWav,
+    /* Issue #708: a per-call -P among the extra options while no storage is available for call recordings. */
+    CallRecordingNoStorage
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::CallRecordingStaticWav;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::CallRecordingNoStorage;
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
  *
  * The app chooses the folder and journal (-7, --wav-journal) and deletes recordings itself (its storage limit, never
  * --rdio-api-delete-after-upload, so no file vanishes under playback or an export), in either option form ("-7dir",
- * "--wav-journal=file"); a static WAV (-w) is refused only while @p recordCalls is on. A token is read as the parser
- * reads it: after a short option that takes a value it is that value ("-c -7"), and a number after a long option is
- * its value ("--input-level-warn-db -7"). Decided limit: which long options take a value is the parser's table, so a
- * bare "-7 <folder>" after a flag-only long option reads as that option's number and is not refused.
+ * "--wav-journal=file"); a static WAV (-w) is refused only while @p recordCalls is on, and a per-call -P while
+ * @p noStorage (no folder to record into: it would record outside the app's storage). Tokens are walked as the
+ * decoder walks its argv (dsd_cli_long_option_arity(), dsd_cli_short_option_takes_value()): the value of an option is
+ * never read as an option ("-c -7", "--input-level-warn-db -7"), and an option is never read as a value.
  */
-SessionArgsError session_args_recording_extra_error(const QString& tokens, bool recordCalls);
+SessionArgsError session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool noStorage = false);
 
 /** Every Unicode space (QChar::isSpace(): NBSP and the rest included), '-' and ':' grouping removed, then a leading
  * 0x or 0X stripped, uppercase hex. Only for hex material (session_args_key_type_hex() types and the profile model's
@@ -215,7 +220,7 @@ class SessionArgsBuilder : public QObject {
 
   private:
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,
-                          const QString& recordingFolder = QString()) const;
+                          const QString& recordingFolder = QString(), bool recordingUnavailable = false) const;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;

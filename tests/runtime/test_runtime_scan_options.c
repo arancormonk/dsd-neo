@@ -908,8 +908,29 @@ check_tone_summary(void) {
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
 }
 
+/* Issue #708: a target CSV's options cell cannot carry call recording into a scan session: the app owns the folder,
+   the journal and deletion, and records per call by Record calls alone. Every class of row refuses them. */
+static void
+check_recording_switches_refused(void) {
+    static const char* const switches[] = {
+        "-7 /elsewhere", "-7/elsewhere", "--wav-journal /x/j.jsonl",       "--wav-journal=/x/j.jsonl",
+        "-w out.wav",    "-P",           "--rdio-api-delete-after-upload", "--record-unknown-only",
+    };
+    for (size_t i = 0; i < sizeof switches / sizeof switches[0]; i++) {
+        for (unsigned int mode = DSD_SCAN_MODE_INHERIT; mode <= DSD_SCAN_MODE_LAST; mode++) {
+            for (int conventional = 0; conventional <= 1; conventional++) {
+                dsd_scan_options parsed = {0};
+                char error[192] = {0};
+                assert(dsd_scan_options_parse(switches[i], mode, conventional, &parsed, error, sizeof(error)) != 0);
+                DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+            }
+        }
+    }
+}
+
 int
 main(void) {
+    check_recording_switches_refused();
     check_tone_options();
     check_tone_summary();
     check_tone_list_split();

@@ -13,6 +13,7 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>

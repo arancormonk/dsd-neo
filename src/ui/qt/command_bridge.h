@@ -26,6 +26,7 @@ class QTemporaryFile;
 
 namespace dsd_qt {
 class DecryptionProfileProvider;
+class RecordingStatus;
 
 class CommandBridge : public QObject {
     Q_OBJECT
@@ -129,15 +130,29 @@ class CommandBridge : public QObject {
     /** @brief Set Relaxed CRC (-F) on or off: the configured value, beneath a scan row's own while one is on air. */
     Q_INVOKABLE bool setRelaxedCrc(bool on) const;
     /**
-     * @brief Start or stop recording each call in the running session (issue #708, D8): WAV start or stop, which
-     * records into the folder the session was started with.
+     * @brief Start or stop recording each call in the running session (issue #708, D8), into the folder the session
+     * was started with. On sends @p unknownOnly first and then WAV start; off sends WAV stop and unknown-only off,
+     * which travels with Record calls (an off switch filters no recording of the user's own options).
      *
-     * Queued like every command; the decoder holds it while a carrier loop of its own runs and refuses it during
-     * Signal search, and its recording view (<dsd-neo/app_control/recording_view.h>) says when it applied.
+     * Refused without sending anything, and said in RecordingStatus::refusal(), when the session has no folder to
+     * record into ("storage-unavailable") or records to one static WAV from its extra options ("static-wav"); the
+     * preference then applies at the next start. Queued like every command; the decoder holds it while a carrier loop
+     * of its own runs and refuses it during Signal search, which RecordingStatus shows.
      */
-    Q_INVOKABLE bool setRecordCalls(bool on) const;
-    /** @brief Record only calls no talkgroup row knows, or every call (issue #708); held and refused as above. */
+    Q_INVOKABLE bool setRecordCalls(bool on, bool unknownOnly) const;
+    /**
+     * @brief Record only calls no talkgroup row knows, or every call (issue #708). Sent only while the session records
+     * each call (or a Record calls on is still applying); otherwise nothing is sent and it answers true: the switch
+     * travels with the next Record calls on.
+     */
     Q_INVOKABLE bool setRecordUnknownOnly(bool on) const;
+
+    /** @brief Where a refused recording switch says why; nullptr: nowhere. */
+    void
+    setRecordingStatus(RecordingStatus* status) {
+        m_recordingStatus = status;
+    }
+
     Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
 
     /** @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added. */
@@ -340,7 +355,11 @@ class CommandBridge : public QObject {
 
   private:
     QString submitDecryption(const QVariantMap& fields, int scope, const QVariantMap& context);
+    /* Why a recording switch was refused, or (empty) that it was sent. */
+    void noteRecording(const QString& refusal) const;
+
     DecryptionProfileProvider* m_profiles = nullptr;
+    RecordingStatus* m_recordingStatus = nullptr;
     quint64 m_pendingKeyRequest = 0;
     quint64 m_pendingKeySession = 0;
     QList<QSharedPointer<QTemporaryFile>> m_selectionFiles;

@@ -40,7 +40,6 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -3674,10 +3673,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     int cli_dmr_mono_override_seen = 0;
     int cli_source_monitor_seen = 0;
-    while ((c = getopt(argc, argv,
-                       ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
-                       "89:Ek:I:J:O^Nj"))
-           != -1) {
+    while ((c = getopt(argc, argv, dsd_cli_short_options())) != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }
     if (cli_dmr_mono_override_seen) {

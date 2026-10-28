@@ -43,9 +43,11 @@ class ScanListStarter : public QObject {
   private:
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
-    /* @p recordingFolder: the folder the session records into (SessionArgPrefs::recordingFolder); empty for none. */
-    QVariantMap prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder = QString()) const;
-    QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder) const;
+    /* @p recordingFolder / @p recordingUnavailable: SessionArgPrefs::recordingFolder / recordingUnavailable. */
+    QVariantMap prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder = QString(),
+                        bool recordingUnavailable = false) const;
+    QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
+                           bool recordingUnavailable) const;
     std::function<bool(const QString&)> m_targetFileLookup;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;

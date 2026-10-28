@@ -48,6 +48,7 @@ target_sources(
         qt_ui.cpp
         radio_reference_model.cpp
         recording_journal.cpp
+        recording_status.cpp
         recording_store.cpp
         site_groups.cpp # WP-D4
         saved_systems_model.cpp

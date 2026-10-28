@@ -640,6 +640,53 @@ test_compaction_leaves_aliases_in_the_tail(void) {
     return rc;
 }
 
+/* Issue #708: a frontend walks options a user typed by the parser's own arity, the tables compaction steps by. */
+static int
+test_option_arity_matches_the_parser(void) {
+    int rc = 0;
+
+    struct {
+        const char* arg;
+        dsd_cli_long_arity arity;
+    } const longs[] = {
+        {"--record-unknown-only", DSD_CLI_LONG_ALONE},
+        {"--rdio-api-delete-after-upload", DSD_CLI_LONG_ALONE},
+        {"--frontend=none", DSD_CLI_LONG_ALONE},
+        {"--wav-journal", DSD_CLI_LONG_NEXT},
+        {"--input-level-warn-db", DSD_CLI_LONG_NEXT},
+        {"--iq-replay", DSD_CLI_LONG_NEXT},
+        {"--api-token", DSD_CLI_LONG_NEXT},
+        {"--config", DSD_CLI_LONG_NEXT_NON_OPTION},
+        {"--no-such-option", DSD_CLI_LONG_UNKNOWN},
+    };
+
+    for (size_t i = 0; i < sizeof longs / sizeof longs[0]; i++) {
+        if (dsd_cli_long_option_arity(longs[i].arg) != longs[i].arity) {
+            DSD_FPRINTF(stderr, "FAIL: %s reads as arity %d\n", longs[i].arg,
+                        (int)dsd_cli_long_option_arity(longs[i].arg));
+            rc = 1;
+        }
+    }
+    if (dsd_cli_long_option_arity(NULL) != DSD_CLI_LONG_UNKNOWN) {
+        DSD_FPRINTF(stderr, "FAIL: NULL has an arity\n");
+        rc = 1;
+    }
+    const char takes[] = "7wPcoiF";
+    const int want[] = {1, 1, 0, 1, 1, 1, 0};
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        if (dsd_cli_short_option_takes_value(takes[i]) != want[i]) {
+            DSD_FPRINTF(stderr, "FAIL: -%c value %d\n", takes[i], dsd_cli_short_option_takes_value(takes[i]));
+            rc = 1;
+        }
+    }
+    if (dsd_cli_short_option_takes_value(':') || dsd_cli_short_option_takes_value('\0')
+        || dsd_cli_short_options()[0] != ':') {
+        DSD_FPRINTF(stderr, "FAIL: the option string's own markers read as options\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -670,5 +717,6 @@ main(void) {
     rc |= test_scan_voice_long_opts_are_removed();
     rc |= test_scan_max_visit_long_opts_are_removed();
     rc |= test_am_bandwidth_long_opts_are_removed();
+    rc |= test_option_arity_matches_the_parser();
     return rc;
 }

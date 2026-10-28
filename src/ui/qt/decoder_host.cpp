@@ -274,12 +274,16 @@ DecoderHost::playRecording(const QString& path) {
     if (path.isEmpty()) {
         return;
     }
+    // A play that fails still replaces the recording playing: the player stops (stopPlayback(), which a platform
+    // overrides) before the failure is published, so the store lets go of a file only once nothing plays it.
     if (!QFileInfo(path).isFile()) {
+        stopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("missing"));
         reportRecordingsMissing({path});
         return;
     }
     if (!playbackSupported()) {
+        stopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
         return;
     }
@@ -345,29 +349,13 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
         announceTransferEnd(id, TransferFailed, 0);
         return false;
     }
-    QStringList present;
-    QStringList presentNames;
-    QStringList missing;
-    for (qsizetype i = 0; i < paths.size(); ++i) {
-        if (QFileInfo(paths.at(i)).isFile()) {
-            present.append(paths.at(i));
-            presentNames.append(names.value(i));
-        } else {
-            missing.append(paths.at(i));
-        }
-    }
-    reportRecordingsMissing(missing);
-    if (present.isEmpty()) {
-        announceTransferEnd(id, TransferMissing, static_cast<int>(missing.size()));
-        return false;
-    }
+    // No file is looked at here, on the GUI thread (an export may name tens of thousands): the transfer finds the ones
+    // gone on its own thread, reports them at its end and publishes the total it really has.
     m_transferSelection = id;
-    // Files found gone now count with the ones the transfer finds gone.
-    m_transferMissing = static_cast<int>(missing.size());
     m_transferBytes = 0;
     m_transferTotalBytes = selection.value(QStringLiteral("bytes")).toLongLong();
     Q_EMIT recordingTransferChanged();
-    if (!beginRecordingTransfer(present, presentNames, reference, zip)) {
+    if (!beginRecordingTransfer(paths, zip ? names : QStringList(), reference, zip)) {
         finishRecordingTransfer(TransferFailed, {});
         return false;
     }
@@ -381,9 +369,16 @@ DecoderHost::beginRecordingTransfer(const QStringList& paths, const QStringList&
     if (zip || paths.size() != 1) {
         return false;
     }
+    const QFileInfo file(paths.first());
+    if (!file.isFile()) {
+        publishRecordingTransferProgress(0, 0);
+        finishRecordingTransfer(TransferMissing, paths);
+        return true;
+    }
+    publishRecordingTransferProgress(0, file.size());
     const bool saved = copyFileToDocument(paths.first(), reference);
     if (saved) {
-        publishRecordingTransferProgress(m_transferTotalBytes, m_transferTotalBytes);
+        publishRecordingTransferProgress(file.size(), file.size());
     }
     finishRecordingTransfer(saved ? TransferDone : TransferFailed, {});
     return true;
@@ -406,9 +401,8 @@ DecoderHost::finishRecordingTransfer(int result, const QStringList& missing) {
     }
     reportRecordingsMissing(missing);
     const int selection = m_transferSelection;
-    const int gone = m_transferMissing + static_cast<int>(missing.size());
+    const int gone = static_cast<int>(missing.size());
     m_transferSelection = -1;
-    m_transferMissing = 0;
     m_transferBytes = 0;
     m_transferTotalBytes = 0;
     Q_EMIT recordingTransferChanged();
