@@ -63,8 +63,9 @@ dsd_test_install_radio_rows(dsd_state* state, const dsd_test_radio_row* rows, si
 /* One policy row for radio @p id. */
 static inline int
 dsd_test_install_radio_policy(dsd_state* state, uint32_t id, const char* mode, int audio, int record, int stream) {
-    const dsd_test_radio_row row = {id, mode, (uint8_t)(audio != 0), (uint8_t)(record != 0), (uint8_t)(stream != 0),
-                                    ""};
+    const dsd_test_radio_row row = {
+        id, mode, (uint8_t)(audio != 0), (uint8_t)(record != 0), (uint8_t)(stream != 0), "",
+    };
     return dsd_test_install_radio_rows(state, &row, 1);
 }
 

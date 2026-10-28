@@ -33,7 +33,7 @@ extern "C" {
 
 enum {
     DSD_ID_PATTERN_TEXT_MAX = 16, /**< Canonical text capacity: at most 15 characters plus the terminator. */
-    DSD_ID_DECIMAL_MAX = 11       /**< A uint32_t ID in decimal: at most 10 digits plus the terminator. */
+    DSD_ID_DECIMAL_MAX = 11,      /**< A uint32_t ID in decimal: at most 10 digits plus the terminator. */
 };
 
 /** A parsed digit pattern. A zeroed value is the empty pattern, which matches nothing. */
