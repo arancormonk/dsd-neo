@@ -454,6 +454,37 @@ struct MeasurementPatterns {
 };
 
 /**
+ * @brief The capture pattern for a numeric conversion (@p conversion, with its @p flags, @p precision and @p length);
+ * empty when the templates do not accept it.
+ */
+QString
+numericFieldPattern(QChar conversion, const QString& flags, const QString& precision, const QString& length,
+                    const char* signedField) {
+    const QString sign = flags.contains(QLatin1Char('+')) ? QStringLiteral("[-+]") : QStringLiteral("-?");
+    switch (conversion.unicode()) {
+        case u'f': {
+            const QString digits = precision.isEmpty() ? QStringLiteral("6") : precision;
+            const QString fraction = digits.toInt() > 0 ? QStringLiteral("\\.[0-9]{%1}").arg(digits) : QString();
+            return QStringLiteral("(") + sign + QStringLiteral("[0-9]{1,6}") + fraction + QStringLiteral(")");
+        }
+        case u'g':
+            return QStringLiteral("(") + sign + QStringLiteral("[0-9]{1,7}(?:\\.[0-9]{1,6})?(?:e[-+][0-9]{2,3})?)");
+        case u'u': return QStringLiteral("([0-9]{1,10})");
+        case u'X':
+        case u'x': return QStringLiteral("([0-9A-Fa-f]{1,16})");
+        default: break;
+    }
+    if (flags.contains(QLatin1Char('+'))) {
+        return {}; // No producer prints a signed integer with "%+d"; one that does needs its own pattern.
+    }
+    if (signedField != nullptr) {
+        return QStringLiteral("(") + QString::fromLatin1(signedField) + QStringLiteral(")");
+    }
+    return length.isEmpty() ? QStringLiteral("(") + QLatin1String(kSignedField) + QStringLiteral(")")
+                            : QStringLiteral("(-?[0-9]{1,19})");
+}
+
+/**
  * @brief The pattern for the measurement template conversion that starts at @p at in @p format, and where it ends
  * (@p end); empty when it is not one the templates accept. @p numeric says whether it is a field the match removes.
  */
@@ -466,44 +497,17 @@ measurementConversion(const QString& format, qsizetype at, const char* signedFie
         return {};
     }
     *end = match.capturedEnd();
-    *numeric = true;
     const QChar conversion = match.captured(5).at(0);
+    *numeric = conversion != QLatin1Char('%') && conversion != QLatin1Char('s');
+    if (!*numeric) {
+        return conversion == QLatin1Char('%') ? QStringLiteral("%") : QStringLiteral("(?:.{0,64}?)");
+    }
+    const QString flags = match.captured(1);
+    const QString field = numericFieldPattern(conversion, flags, match.captured(3), match.captured(4), signedField);
     // A width pads with spaces unless it is a zero fill or left-justified.
-    const bool padded = !match.captured(2).isEmpty() && !match.captured(1).contains(QLatin1Char('0'))
-                        && !match.captured(1).contains(QLatin1Char('-'));
-    const QString pad = padded ? QStringLiteral(" *") : QString();
-    const QString sign = match.captured(1).contains(QLatin1Char('+')) ? QStringLiteral("[-+]") : QStringLiteral("-?");
-    if (conversion == QLatin1Char('%')) {
-        *numeric = false;
-        return QStringLiteral("%");
-    }
-    if (conversion == QLatin1Char('s')) {
-        *numeric = false;
-        return QStringLiteral("(?:.{0,64}?)");
-    }
-    if (conversion == QLatin1Char('f')) {
-        const QString precision = match.captured(3).isEmpty() ? QStringLiteral("6") : match.captured(3);
-        return pad + QStringLiteral("(") + sign + QStringLiteral("[0-9]{1,6}")
-               + (precision.toInt() > 0 ? QStringLiteral("\\.[0-9]{%1}").arg(precision) : QString())
-               + QStringLiteral(")");
-    }
-    if (conversion == QLatin1Char('g')) {
-        return pad + QStringLiteral("(") + sign + QStringLiteral("[0-9]{1,7}(?:\\.[0-9]{1,6})?(?:e[-+][0-9]{2,3})?)");
-    }
-    if (conversion == QLatin1Char('u')) {
-        return pad + QStringLiteral("([0-9]{1,10})");
-    }
-    if (conversion == QLatin1Char('X') || conversion == QLatin1Char('x')) {
-        return pad + QStringLiteral("([0-9A-Fa-f]{1,16})");
-    }
-    if (match.captured(1).contains(QLatin1Char('+'))) {
-        return {}; // No producer prints a signed integer with "%+d"; one that does needs its own pattern.
-    }
-    QString field = QString::fromLatin1(signedField != nullptr ? signedField : kSignedField);
-    if (signedField == nullptr && !match.captured(4).isEmpty()) {
-        field = QStringLiteral("-?[0-9]{1,19}");
-    }
-    return pad + QStringLiteral("(") + field + QStringLiteral(")");
+    const bool padded =
+        !match.captured(2).isEmpty() && !flags.contains(QLatin1Char('0')) && !flags.contains(QLatin1Char('-'));
+    return (field.isEmpty() || !padded) ? field : QStringLiteral(" *") + field;
 }
 
 /** @brief The measurement templates, built; an entry the rules above refuse is left out and counted. */
