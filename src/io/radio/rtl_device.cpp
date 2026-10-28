@@ -433,6 +433,9 @@ struct rtl_device {
      * owns_preopened_fd is set. Written at open, before any reader or monitor starts. */
     int preopened_fd = -1;
     uint32_t preopened_generation = 0U;
+    /* The last stall recovery reopened that descriptor without a reset (the kernel refused it), so a stall that
+     * persists says so (rtl_usb_recovery_refusal()). Written by the swap, read by the progress monitor. */
+    std::atomic<int> reopened_without_reset{0};
     dsd_thread_t thread{};
     struct input_ring_state* input_ring = nullptr;
     struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
@@ -3563,6 +3566,12 @@ rtl_device_end_for_receiver(struct rtl_device* s, int native_code, uint64_t verd
  * recovery restarted, before that recovery finished, is the recovery's to report. */
 static void
 rtl_usb_reader_end_session(struct rtl_device* s, int rc) {
+    /* A dongle behind an Android descriptor whose reader gave up owes a reset before its next open, as a stalled one
+     * does (#782): the Listen notice promises Reconnect resets it, and the worst it costs is one reset that was not
+     * needed. An unplug's detach drops it again on the host. */
+    if (s->owns_preopened_fd) {
+        rtl_usb_reset_owed_set(s->preopened_fd);
+    }
     char cause[96];
     DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the USB %s; the stream stops (rc=%d)",
                  rc == -1 ? "device was lost" : "reader stopped unexpectedly", rc);
@@ -3841,10 +3850,11 @@ rtl_usb_recovery_refusal(const struct rtl_device* s, const rtl_recovery_budget* 
     }
     /* One recovery per stall: a reader restarted by the last one that delivered nothing since is not a new stall. */
     if (b->rearmed && w->progress == b->baseline) {
-        DSD_SNPRINTF(cause, cause_size,
-                     "RTL-SDR: the receiver sent no samples for %llu"
-                     " ms, none since it was reset and reopened; the stream stops",
-                     (unsigned long long)w->silence_ms);
+        DSD_SNPRINTF(cause, cause_size, "RTL-SDR: the receiver sent no samples for %llu ms, none since it was %s",
+                     (unsigned long long)w->silence_ms,
+                     s->reopened_without_reset.load(std::memory_order_acquire)
+                         ? "reopened (its USB reset was refused); the stream stops"
+                         : "reset and reopened; the stream stops");
         return cause;
     }
     if (b->requested && now_ms - b->requested_ms < rtl_recovery_cooldown_ms()) {
@@ -3963,6 +3973,12 @@ rtl_usb_progress_monitor(void* arg) {
     rtl_recovery_budget budget{};
     budget.rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
     rtl_usb_owed_watch owed{};
+    /* An obligation the descriptor came with, whose reset at open was refused, is cleared by this session's first
+     * samples as one this monitor set would be. */
+    if (s->owns_preopened_fd && rtl_device_preopened_fd_reset_owed() == s->preopened_fd) {
+        owed.set = 1;
+        owed.progress = watch.progress;
+    }
     while (rtl_monitor_running(s)) {
         rtl_monitor_wait(s);
         if (!rtl_monitor_running(s)) {
@@ -11056,10 +11072,12 @@ rtl_usb_fd_reset_and_reopen(struct rtl_device* dev, rtlsdr_dev_t** out, char* wh
         DSD_SNPRINTF(why, why_size, "%s", "the app released the receiver's USB connection");
         return -ENODEV;
     }
-    if (rtl_usb_fd_reset(fd, "to recover it") == RTL_USB_FD_RESET_DEAD) {
+    const rtl_usb_fd_reset_result reset = rtl_usb_fd_reset(fd, "to recover it");
+    if (reset == RTL_USB_FD_RESET_DEAD) {
         DSD_SNPRINTF(why, why_size, "%s", "the USB reset left the receiver's descriptor unusable");
         return -ENODEV;
     }
+    dev->reopened_without_reset.store(reset == RTL_USB_FD_RESET_REFUSED ? 1 : 0, std::memory_order_release);
     if (rtl_usb_stop_latched(dev)) {
         return -ECANCELED;
     }

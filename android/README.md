@@ -892,16 +892,24 @@ libusb's own error and warning lines reach the diagnostics through its log callb
 A stalled RTL-SDR owes a USB reset before its next open (#782): reopening the same
 dongle does not clear a wedged bulk stream, and `USBDEVFS_RESET` on the app's own
 descriptor does. The engine sets the obligation for the descriptor it holds when
-the stall is detected (before the grace, so a Stop then keeps it) and clears it once
-samples arrive after that or a reset succeeds (`nativeUsbResetOwed()`). The broker
-records it on the physical attachment (`UsbResetObligations.kt`: device name and
-attach epoch, with VID:PID and serial) after each run, and before it lets a
-connection go, and hands it with the next descriptor of that attachment; the open
-resets first. A refused reset keeps it; a detach drops it. Selecting another
-receiver never applies one attachment's to another. The obligations are kept in
-app-private storage (`noBackupFilesDir/usb-reset-owed`): at process start an entry
-whose device is no longer attached is dropped, and one still attached is honoured on
-its first open (the worst a stale one costs is one reset that was not needed).
+the stall is detected (before the grace, so a Stop then keeps it), or when its
+reader gives up by itself, and clears it once samples arrive after that (also in a
+session whose descriptor came owing one and was refused its reset) or a reset
+succeeds (`nativeUsbResetOwed()`). So every "stopped sending samples" ending of an
+RTL-SDR leaves it owing the reset its notice promises. The broker records it on the
+physical attachment (`UsbResetObligations.kt`: the device name, with VID:PID and
+serial; a device keeps its name while it stays attached, so only a detach ends the
+attachment) after each run, and before it lets a connection go, and hands it with
+the next descriptor of that attachment; the open resets first. A refused reset keeps
+it; a detach drops it. Selecting another receiver never applies one attachment's to
+another. The obligations are kept in app-private storage
+(`noBackupFilesDir/usb-reset-owed`), read and written on a storage thread of their
+own, in order, never on the main thread; the record in memory is authoritative. The
+read starts at process start, and the first open applies it (waiting up to 1 s for
+the read if it has not finished) before it publishes a descriptor; nothing is
+written before it was applied. An entry whose device is no longer attached is
+dropped then, and one still attached is honoured on its first open (the worst a
+stale one costs is one reset that was not needed).
 
 `ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
 `UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.

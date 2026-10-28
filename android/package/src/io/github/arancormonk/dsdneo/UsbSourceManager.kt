@@ -20,6 +20,12 @@ import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import org.json.JSONObject
 
 /**
@@ -64,6 +70,8 @@ object UsbSourceManager {
 
     /** Where the attachments that owe a USB reset are kept across processes, in app-private storage (#782). */
     private const val RESET_OBLIGATIONS_FILE = "usb-reset-owed"
+    /** How long an open waits for the stored obligations' read, started at process start, before it goes without. */
+    private const val RESET_OBLIGATIONS_LOAD_WAIT_MS = 1000L
 
     private val lock = Any()
     private var connection: UsbDeviceConnection? = null
@@ -99,9 +107,26 @@ object UsbSourceManager {
     private var connectedEpoch = 0L
     private var sessionsTaken = 0
 
-    /** The attachments that owe a USB reset before their next open (#782); read from storage once per process. */
+    /**
+     * The attachments that owe a USB reset before their next open (#782). The record here is authoritative; storage
+     * follows it. It is read from storage once per process ([resetObligationsLoad]) and applied before the first open
+     * publishes a descriptor; nothing is written back before then, so a write can never drop what was stored.
+     */
     private val resetObligations = UsbResetObligations()
+    private var resetObligationsLoad: FutureTask<String>? = null
     private var resetObligationsLoaded = false
+
+    /**
+     * Runs the obligations' file reads and writes, in order, off the main thread (#782). One thread, so each write
+     * lands after the one before it; the main thread only hands it the encoded record. A test runs them inline.
+     */
+    @Volatile
+    internal var storageExecutor: Executor? = null
+    private val defaultStorageExecutor: Executor by lazy {
+        Executors.newSingleThreadExecutor { work -> Thread(work, "dsd-neo-usb-store").apply { isDaemon = true } }
+    }
+
+    private fun storage(): Executor = storageExecutor ?: defaultStorageExecutor
 
     private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
@@ -207,7 +232,7 @@ object UsbSourceManager {
         val app = context.applicationContext
         synchronized(lock) { attachmentContext = app }
         ensureReceiver(app)
-        loadResetObligations()
+        startLoadingResetObligations(app)
     }
 
     /** An attach edge, from the broadcast or the Activity's launch intent; main thread. */
@@ -226,7 +251,6 @@ object UsbSourceManager {
             if (UsbAttachmentTracker.report(identity(device), current)) {
                 attaches += 1
                 attachEpochs[device.deviceName] = attaches
-                resetObligations.attached(device.deviceName, attaches)
                 if (requests.attachReplacesDiagnostic(sourceOf(device), serial, connection != null)) {
                     // Cold Activity startup may precede native library initialization.
                     status = "${describe(device)} attached"
@@ -573,16 +597,16 @@ object UsbSourceManager {
 
         if (!manager.deviceList.containsKey(device.deviceName)) { opened.close(); return }
         val serial = serialOf(device)
-        loadResetObligations()
-        var resetFirst = false
+        applyResetObligations()
+        var reset = ResetCheck(owes = false, dropped = false)
         val rc = synchronized(lock) {
             if (sourceOf(device) != requests.requestedSource || device.deviceName != requests.device ||
                 !requests.satisfiedBy(sourceOf(device), serial)) {
                 DsdNative.STATUS_ERROR
             } else {
                 val epoch = attachEpochs[device.deviceName] ?: 0L
-                resetFirst = owesReset(device, epoch, serial)
-                val result = publish(sourceOf(device), fd, resetFirst)
+                reset = owesReset(device, serial)
+                val result = publish(sourceOf(device), fd, reset.owes)
                 if (result == DsdNative.STATUS_OK) {
                     connection = opened
                     attachedName = device.deviceName
@@ -604,7 +628,7 @@ object UsbSourceManager {
             setStatus("Engine rejected the descriptor ($rc)", "open_failed")
             return
         }
-        if (resetFirst) noteResetFirst(describe(device))
+        noteResetCheck(reset, describe(device))
         setStatus("Ready: ${describe(device)}")
     }
 
@@ -619,16 +643,23 @@ object UsbSourceManager {
             DsdNative.nativeSetUsbFd(fd, resetFirst)
         }
 
-    /**
-     * Whether [device], at attach [epoch] and with [serial], owes a USB reset before it is opened; under [lock]. Only
-     * an RTL-SDR's open can reset it.
-     */
-    private fun owesReset(device: UsbDevice, epoch: Long, serial: String): Boolean =
-        sourceOf(device) == UsbReceiverKind.RTL &&
-            resetObligations.owes(device.deviceName, epoch, device.vendorId, device.productId, serial)
+    /** Whether an open's descriptor goes with a reset, and whether the check dropped an entry for another device. */
+    private class ResetCheck(val owes: Boolean, val dropped: Boolean)
 
-    private fun noteResetFirst(label: String) {
-        DsdNative.nativeHostDiagnostic("usb: $label owes a USB reset; the engine resets it before opening it")
+    /** Whether [device], with [serial], owes a USB reset before it is opened; under [lock]. Only an RTL-SDR's open can reset it. */
+    private fun owesReset(device: UsbDevice, serial: String): ResetCheck {
+        if (sourceOf(device) != UsbReceiverKind.RTL) return ResetCheck(owes = false, dropped = false)
+        val before = resetObligations.entries.size
+        val owes = resetObligations.owes(device.deviceName, device.vendorId, device.productId, serial)
+        return ResetCheck(owes, dropped = resetObligations.entries.size != before)
+    }
+
+    /** After the publish: says when the descriptor went with a reset, and stores a drop the check made. */
+    private fun noteResetCheck(check: ResetCheck, label: String) {
+        if (check.owes) {
+            DsdNative.nativeHostDiagnostic("usb: $label owes a USB reset; the engine resets it before opening it")
+        }
+        if (check.dropped) saveResetObligations()
     }
 
     /**
@@ -644,7 +675,7 @@ object UsbSourceManager {
             if (open == null || connectedSource != UsbReceiverKind.RTL) return
             val owes = owedFd >= 0 && owedFd == open.fileDescriptor
             val attachment = UsbResetObligations.Attachment(
-                attachedName.orEmpty(), connectedEpoch, connectedVendorId, connectedProductId, connectedSerial
+                attachedName.orEmpty(), connectedVendorId, connectedProductId, connectedSerial
             )
             Triple(resetObligations.record(attachment, owes), owes, connectedLabel)
         }
@@ -663,22 +694,55 @@ object UsbSourceManager {
     }
 
     /**
-     * Reads the stored obligations once per process, keeping only those whose device is attached now with the same
-     * VID:PID (#782). Main thread; the file and the bus listing are read outside [lock].
+     * At process start (#782): reads the stored obligations on the storage thread, then applies them on the main
+     * thread ([applyResetObligations]). Once per process.
      */
-    private fun loadResetObligations() {
-        val app = synchronized(lock) { if (resetObligationsLoaded) null else attachmentContext } ?: return
-        val manager = app.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return
-        val text = try {
-            obligationsFile(app).takeIf { it.isFile }?.readText() ?: ""
-        } catch (e: IOException) {
-            Log.w(TAG, "usb: could not read the stored USB reset obligations", e)
-            ""
+    private fun startLoadingResetObligations(context: Context) {
+        val file = obligationsFile(context)
+        val load = synchronized(lock) {
+            if (resetObligationsLoad != null) return
+            FutureTask { readResetObligations(file) }.also { resetObligationsLoad = it }
         }
+        storage().execute {
+            load.run()
+            onMain { applyResetObligations() }
+        }
+    }
+
+    private fun readResetObligations(file: File): String = try {
+        if (file.isFile) file.readText() else ""
+    } catch (e: IOException) {
+        Log.w(TAG, "usb: could not read the stored USB reset obligations", e)
+        ""
+    }
+
+    /**
+     * Applies the stored obligations, keeping those whose device is attached now with the same VID:PID (#782). Main
+     * thread, once. The storage thread posts it when its read is done, and an open calls it first, so the first
+     * descriptor published is handed with what storage held: should the read still be running, the open waits for it
+     * (at most [RESET_OBLIGATIONS_LOAD_WAIT_MS]; past that it goes without, and the posted apply applies it later).
+     */
+    private fun applyResetObligations() {
+        val load = synchronized(lock) { if (resetObligationsLoaded) null else resetObligationsLoad } ?: return
+        val text = try {
+            load.get(RESET_OBLIGATIONS_LOAD_WAIT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            Log.w(TAG, "usb: the stored USB reset obligations are not read yet; opening without them")
+            return
+        } catch (_: ExecutionException) {
+            ""
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return
+        }
+        val app = synchronized(lock) { attachmentContext } ?: return
+        val manager = app.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return
+        // The listing is a binder call: outside the lock.
         val attached = manager.deviceList.values.associate { it.deviceName to (it.vendorId to it.productId) }
         val (dropped, entries) = synchronized(lock) {
+            if (resetObligationsLoaded) return
             resetObligationsLoaded = true
-            resetObligations.restore(text, attached) { attachEpochs[it] ?: 0L } to resetObligations.entries
+            resetObligations.restore(text, attached) to resetObligations.entries
         }
         for (entry in entries) {
             DsdNative.nativeHostDiagnostic("usb: ${entry.name} still owes a USB reset from an earlier process")
@@ -686,17 +750,25 @@ object UsbSourceManager {
         if (dropped) saveResetObligations()
     }
 
-    /** Writes the obligations to app-private storage: a temporary file renamed over the old one. */
+    /**
+     * Stores the obligations: the record is encoded here, on the main thread, and written on the storage thread (a
+     * temporary file renamed over the old one), in the order the changes were made. Nothing is written before the
+     * stored record was applied.
+     */
     private fun saveResetObligations() {
-        val app = synchronized(lock) { attachmentContext } ?: return
-        val text = synchronized(lock) { resetObligations.encode() }
-        val file = obligationsFile(app)
-        val temporary = File(file.parentFile, "${file.name}.tmp")
-        try {
-            temporary.writeText(text)
-            if (!temporary.renameTo(file)) throw IOException("rename to ${file.name} failed")
-        } catch (e: IOException) {
-            Log.w(TAG, "usb: could not store the USB reset obligations", e)
+        val (app, text) = synchronized(lock) {
+            if (!resetObligationsLoaded) return
+            attachmentContext to resetObligations.encode()
+        }
+        val file = obligationsFile(app ?: return)
+        storage().execute {
+            val temporary = File(file.parentFile, "${file.name}.tmp")
+            try {
+                temporary.writeText(text)
+                if (!temporary.renameTo(file)) throw IOException("rename to ${file.name} failed")
+            } catch (e: IOException) {
+                Log.w(TAG, "usb: could not store the USB reset obligations", e)
+            }
         }
     }
 
@@ -794,11 +866,12 @@ object UsbSourceManager {
             }
         }
         val fd = opened.fileDescriptor
-        var resetFirst = false
+        applyResetObligations()
+        var reset = ResetCheck(owes = false, dropped = false)
         val installed = fd >= 0 && synchronized(lock) {
             // The obligation the session just ended left travels to the new descriptor (#782).
-            resetFirst = owesReset(device, held.epoch, held.serial)
-            val rc = publish(source, fd, resetFirst)
+            reset = owesReset(device, held.serial)
+            val rc = publish(source, fd, reset.owes)
             if (rc == DsdNative.STATUS_OK) {
                 connection = opened
                 attachedName = device.deviceName
@@ -820,7 +893,7 @@ object UsbSourceManager {
             return UsbSessionTake.failed(UsbSessionTake.USB_OPEN_FAILED, "usb: no usable descriptor for $label")
         }
         val id = synchronized(lock) { connectionId }
-        if (resetFirst) noteResetFirst(held.label)
+        noteResetCheck(reset, held.label)
         DsdNative.nativeHostDiagnostic("usb: the session takes $label (connection $id, reopened)")
         return UsbSessionTake(device = device.deviceName, epoch = held.epoch, connection = id)
     }

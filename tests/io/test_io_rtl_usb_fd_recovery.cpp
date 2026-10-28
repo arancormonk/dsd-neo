@@ -273,13 +273,14 @@ struct rig {
     posts posted;
 };
 
+/* @p reset_first: the host publishes the descriptor owing a reset. */
 void
-rig_open(rig& r) {
+rig_open(rig& r, int reset_first = 0) {
     r.ring = std::make_unique<input_ring_state>();
     assert(input_ring_init(r.ring.get(), 1U << 18) == 0);
     dongle_init(r.dongle.get());
     rtl_device_test_usb_dongle_install(r.dongle.get());
-    rtl_device_set_preopened_fd(kFd);
+    rtl_device_publish_preopened_fd(kFd, reset_first);
     r.dev = rtl_device_create(0, r.ring.get());
     assert(r.dev != nullptr);
     assert(rtl_device_usb_recovery_eligible(r.dev) == 1);
@@ -527,6 +528,64 @@ test_swap_reset_refused(void) {
     rig_close(r);
 }
 
+/* Refused, and the stall persists: the reopened reader sends nothing, so the session ends, and the ending says the
+ * dongle was reopened without its reset, not that it was reset. */
+void
+test_swap_reset_refused_stall_persists(void) {
+    seams_reset();
+    g_reset_answer.store(-EBUSY);
+    (void)log_take();
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    (void)wait_posted(r, 1);
+    char why[256] = {};
+    assert(play_controller(r, why, sizeof why) == 0);
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    expect_receiver_ending(-ETIMEDOUT);
+    const std::string log = log_take();
+    assert(log_has(log, " ms, none since it was reopened (its USB reset was refused); the stream stops"));
+    assert(log.find("none since it was reset and reopened") == std::string::npos);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    rig_close(r);
+}
+
+/* Important 1 of the #782 review: a descriptor published owing a reset whose reset at open was refused keeps the
+ * obligation only until the session's first samples, which show it streams without one. */
+void
+test_published_obligation_cleared_by_samples(void) {
+    seams_reset();
+    g_reset_answer.store(-EACCES);
+    rig r;
+    rig_open(r, 1);
+    assert(g_resets.load() == 1);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_preopened_fd_reset_owed() != -1; waited += 10U) {
+        deliver(r, 1, 0U);
+        dsd_sleep_ms(10U);
+    }
+    assert(rtl_device_preopened_fd_reset_owed() == -1);
+    expect_running();
+    rig_close(r);
+}
+
+/* A reader that returns by itself (transfer errors, not a stop) ends the session as #774's "failed", whose notice says
+ * Reconnect resets the RTL-SDR: the descriptor owes that reset. */
+void
+test_reader_return_owes_reset(void) {
+    seams_reset();
+    rig r;
+    rig_open(r);
+    deliver(r, 3, 10U);
+    assert(rtl_device_preopened_fd_reset_owed() == -1);
+    rtl_device_test_usb_stream_return(-1);
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    expect_receiver_ending(-1);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    assert(r.posted.count.load() == 0 && g_resets.load() == 0);
+    rig_close(r);
+}
+
 /* Dead: the reset left the descriptor unusable. Nothing is opened from it again, the recovery fails and the session
  * ends for the receiver, with the obligation kept (the host's detach drops it); the device hands its descriptor back
  * on close though it holds no handle. */
@@ -683,10 +742,12 @@ test_grace_samples_resume(void) {
         dsd_sleep_ms(1);
     }
     assert(rtl_device_preopened_fd_reset_owed() == -1);
-    dsd_sleep_ms(kGraceMs);
     assert(r.posted.count.load() == 0 && g_resets.load() == 0);
     expect_running();
+    /* The next silence is a new stall: a new verdict and grace, nothing posted before its grace ran. */
     (void)wait_in_grace(graces + 2U);
+    assert(r.posted.count.load() == 0);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
     (void)wait_posted(r, 1);
     rig_close(r);
 }
@@ -785,6 +846,9 @@ main(void) {
     test_unidentified_descriptor_not_recovered();
     test_swap_order();
     test_swap_reset_refused();
+    test_swap_reset_refused_stall_persists();
+    test_published_obligation_cleared_by_samples();
+    test_reader_return_owes_reset();
     test_swap_descriptor_dead();
     test_swap_reopen_fails();
     test_swap_identity_mismatch();

@@ -2052,11 +2052,12 @@ Stall recovery (`-i rtl`)
   of permission or a usable driver, as described in [the code map](code_map.md). The build needs libusb-1.0 (configure prints `libusb for RTL-SDR stall recovery: ON`). Otherwise the open logs
   `RTL-SDR: stall recovery is off for this receiver: <reason>` (for example `another device has the same serial (set a
   unique one with rtl_eeprom)`: many dongles ship with serial `00000001`; `rtl_eeprom -d <index> -s <serial>` gives
-  each its own) and a stall ends the session as before. The Android app recovers a stalled RTL-SDR in place
-  too, through its own USB descriptor (`USBDEVFS_RESET` on it, then a reopen of the same descriptor), after a 2 s grace
-  that lets a detach own an unplug; when that ends the session, Reconnect resets the dongle before it opens it (see
-  `android/README.md`). On Windows a WinUSB reset may not
-  be a full port reset; whether it worked is judged by the samples that follow.
+  each its own) and a stall ends the session as before. The Android app recovers a stalled RTL-SDR in place too,
+  through its own USB descriptor (`USBDEVFS_RESET` on it, then a reopen of the same descriptor), after a 2 s grace that
+  lets a detach own an unplug; when that ends the session, Reconnect resets the dongle before it opens it (see
+  `android/README.md`). When Android refuses that reset, the dongle is reopened without one, and a stall that persists
+  ends with `... none since it was reopened (its USB reset was refused); the stream stops`. On Windows a WinUSB reset
+  may not be a full port reset; whether it worked is judged by the samples that follow.
 - While the dongle is being reset, a frequency, gain, PPM or bias-tee change from a frontend or the control API is refused
   with `Failed: the RTL-SDR is being reset; try again in a moment` and changes nothing; every other command (menus, an
   input switch, quit) applies as soon as it is queued.

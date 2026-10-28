@@ -13,6 +13,7 @@ import android.os.SystemClock
 import java.io.File
 import java.net.URLClassLoader
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
@@ -32,7 +33,7 @@ private fun airspy(name: String = AIRSPY_A, serial: String = SERIAL) = UsbDevice
 
 // One per case: the manager registers its receiver once, on the first context it sees. [storage] is the app-private
 // directory, one a "previous process" wrote to; [present] is on the bus, permitted, before the process starts.
-private class Rig(storage: File? = null, present: List<UsbDevice> = emptyList()) {
+private class Rig(storage: File? = null, present: List<UsbDevice> = emptyList(), storageExecutor: Executor? = null) {
     val context = Context()
     val usb: UsbManager get() = context.usb
 
@@ -40,6 +41,8 @@ private class Rig(storage: File? = null, present: List<UsbDevice> = emptyList())
         // This thread is the main thread: broadcasts and the service's start run here, and the Qt thread's requests
         // wait in Handler.pending until drain().
         Looper.mainThread = Thread.currentThread()
+        // The obligations' storage thread runs its reads and writes inline, so each case sees them at once.
+        UsbSourceManager.storageExecutor = storageExecutor ?: Executor { it.run() }
         storage?.let { context.noBackupFilesDir = it }
         for (device in present) {
             usb.plug(device)
@@ -684,12 +687,19 @@ private fun aRefusedResetIsAskedAgain() {
     rig.take()
     DsdNative.resetOwed = rig.usb.opened.single().fileDescriptor
     rig.take()
+    check(stored(rig).isNotEmpty()) { "handing the reset to the engine does not consume it; only the engine's answer does" }
     // The engine's open was refused the reset: the obligation stays bound to the descriptor it took.
     check(DsdNative.resetOwed == rig.usb.opened.last().fileDescriptor)
     UsbSourceManager.noteSessionEnded()
     check(stored(rig).isNotEmpty()) { "still owed" }
     rig.take()
     check(DsdNative.publishedResetFirst.takeLast(2) == listOf(true, true)) { "asked again: ${DsdNative.publishedResetFirst}" }
+    // That session streamed: its samples cleared the obligation in the engine, and the broker drops the stored entry.
+    DsdNative.resetOwed = -1
+    UsbSourceManager.noteSessionEnded()
+    check(stored(rig) == "") { "samples after a refused reset clear it: ${stored(rig)}" }
+    rig.take()
+    check(!DsdNative.publishedResetFirst.last()) { "and the next open resets nothing" }
 }
 
 // #782: a detach takes the obligation with it; the device comes back as a new enumeration that owes nothing.
@@ -754,6 +764,42 @@ private fun secondProcessHonoursA() {
     check(DsdNative.publishedResetFirst.last() == false) { "B, plugged in again, opens without one" }
 }
 
+// #782: the stored obligations are read and written on a storage thread, never the main thread, in order; the first
+// open still sees what was stored, waiting for the read when it has not finished.
+private fun storageRunsOffTheMainThread() {
+    val dir = java.nio.file.Files.createTempDirectory("dsd-usb-storage").toFile()
+    File(dir, "usb-reset-owed").writeText("$RTL_A\t${0x0bda}\t${0x2838}\t00000001\n")
+    val main = Thread.currentThread()
+    val onMain = java.util.concurrent.atomic.AtomicInteger()
+    val ran = java.util.concurrent.atomic.AtomicInteger()
+    val release = CountDownLatch(1)
+    val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // The first task, the read, is held until the open asks for it.
+    UsbSourceManager.storageExecutor = Executor { task ->
+        val first = ran.get() == 0
+        worker.execute {
+            if (first) release.await(5, TimeUnit.SECONDS)
+            if (Thread.currentThread() === main) onMain.incrementAndGet()
+            task.run()
+            ran.incrementAndGet()
+        }
+    }
+    val rig = Rig(storage = dir, present = listOf(rtl()), storageExecutor = UsbSourceManager.storageExecutor)
+    check(ran.get() == 0) { "the read waits on the storage thread" }
+    release.countDown()
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
+    check(DsdNative.publishedResetFirst.toList() == listOf(true)) { "the first open saw the stored obligation" }
+    rig.take()
+    DsdNative.resetOwed = -1
+    UsbSourceManager.noteSessionEnded()
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    while (stored(rig).isNotEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+    check(stored(rig) == "") { "the cleared record is written: ${stored(rig)}" }
+    check(onMain.get() == 0 && ran.get() >= 2) { "every read and write ran off the main thread: ${ran.get()}" }
+    rig.drain()
+    worker.shutdown()
+}
+
 /** Runs [case] as a new process would: in a class loader of its own, so every object starts afresh. */
 private fun inNewProcess(case: String) {
     val classpath = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).toURI().toURL() }
@@ -807,6 +853,7 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "reset_owed_refused" to ::aRefusedResetIsAskedAgain,
     "reset_owed_detach" to ::aDetachDropsTheObligation,
     "reset_owed_process" to ::aNewProcessHonoursWhatIsStillAttached,
+    "reset_owed_storage_thread" to ::storageRunsOffTheMainThread,
 )
 
 // Run only inside reset_owed_process, each as its own process.
