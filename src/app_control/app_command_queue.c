@@ -4237,6 +4237,7 @@ static const int k_ui_cmd_action_ids[] = {
 
 static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
+    DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
     /* Also an action: no payload flips Relaxed CRC, an int32_t sets it (ui_cmd_payload_is_valid()). */
     DSD_APP_CMD_AGGR_SYNC_TOGGLE,
     DSD_APP_CMD_FORCE_KEY_SET,
@@ -4482,6 +4483,7 @@ struct ui_cmd_payload_min_size_rule {
 
 static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules[] = {
     {DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, sizeof(uint64_t)},
     {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
     {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
@@ -6370,10 +6372,11 @@ tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generatio
 static int
 tg_row_fields_valid(const dsd_app_tg_row_payload* p) {
     const uint32_t all = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_PREEMPT
-                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
+                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS | DSD_APP_TG_FIELD_RECORD;
     return !(!p->fields || (p->fields & ~all)
              || ((p->fields & DSD_APP_TG_FIELD_LISTEN) && p->listen != 0 && p->listen != 1)
-             || ((p->fields & DSD_APP_TG_FIELD_PREEMPT) && p->preempt != 0 && p->preempt != 1));
+             || ((p->fields & DSD_APP_TG_FIELD_PREEMPT) && p->preempt != 0 && p->preempt != 1)
+             || ((p->fields & DSD_APP_TG_FIELD_RECORD) && p->record > 1));
 }
 
 static int
@@ -6404,9 +6407,13 @@ apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     if (p.fields & DSD_APP_TG_FIELD_TAGS) {
         mask |= DSD_TG_POLICY_FIELD_TAGS;
     }
+    if (p.fields & DSD_APP_TG_FIELD_RECORD) {
+        mask |= DSD_TG_POLICY_FIELD_RECORD; /* the policy applies it after a mode change in this edit */
+    }
     DSD_SNPRINTF(values.mode, sizeof values.mode, "%s", p.listen ? "A" : "B");
     values.priority = p.priority;
     values.preempt = (uint8_t)p.preempt;
+    values.record = p.record;
     DSD_MEMCPY(values.name, p.name, sizeof values.name);
     DSD_MEMCPY(values.tags, p.tags, sizeof values.tags);
     const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
@@ -7148,6 +7155,20 @@ ui_cmd_handle_wav_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     return ui_cmd_handle_wav_start(opts, state, c);
 }
 
+/* Record only unknown talkgroups (issue #708): the talkgroup policy reads the switch on every record decision, so it
+   holds from the next frame; a P25 Phase 2 call's queued frames take the new verdict before the tick guard is free
+   (command_changes_call_verdict()). */
+static int
+ui_cmd_handle_record_unknown_only_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t on = 0;
+    if (!ui_cmd_parse_i32_payload(c, &on) || (on != 0 && on != 1)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    opts->record_unknown_only = on;
+    ui_set_toast(state, 3, "Applied: Record unknown talkgroups only -> %s", on ? "On" : "Off");
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 /* Stop replay: a playback (a WAV or raw file, a symbol file) ends with a switch to the configured Pulse input (issue
    #634). The terminal reads its keys from stdin, so there is no switch to stdin. A Pulse input that does not open
    leaves the playback running, as any failed switch leaves the input it had. */
@@ -7174,10 +7195,14 @@ ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_a
 static int
 apply_cmd_capture_playback(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
-        {DSD_APP_CMD_SYMCAP_SAVE, ui_cmd_handle_symcap_save},     {DSD_APP_CMD_SYMCAP_STOP, ui_cmd_handle_symcap_stop},
-        {DSD_APP_CMD_REPLAY_LAST, ui_cmd_handle_replay_last},     {DSD_APP_CMD_WAV_START, ui_cmd_handle_wav_start},
-        {DSD_APP_CMD_WAV_STOP, ui_cmd_handle_wav_stop},           {DSD_APP_CMD_WAV_TOGGLE, ui_cmd_handle_wav_toggle},
+        {DSD_APP_CMD_SYMCAP_SAVE, ui_cmd_handle_symcap_save},
+        {DSD_APP_CMD_SYMCAP_STOP, ui_cmd_handle_symcap_stop},
+        {DSD_APP_CMD_REPLAY_LAST, ui_cmd_handle_replay_last},
+        {DSD_APP_CMD_WAV_START, ui_cmd_handle_wav_start},
+        {DSD_APP_CMD_WAV_STOP, ui_cmd_handle_wav_stop},
+        {DSD_APP_CMD_WAV_TOGGLE, ui_cmd_handle_wav_toggle},
         {DSD_APP_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback},
+        {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, ui_cmd_handle_record_unknown_only_set},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -8527,15 +8552,16 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
 }
 
-/* A command that can change what an active call may play: the talkgroup policy store, the hold or the allow list, or
-   the configured receive policy (issue #637), whose boundary ends calls, drains the playout and rotates the per-call
-   WAVs as the watchdog's release does. */
+/* A command that can change what an active call may play or record: the talkgroup policy store, the hold, the allow
+   list, the unknown-talkgroups-only record switch (issue #708), or the configured receive policy (issue #637), whose
+   boundary ends calls, drains the playout and rotates the per-call WAVs as the watchdog's release does. */
 static int
 command_changes_call_verdict(const struct dsd_app_command* c) {
     return command_writes_policy_store(c)
            || (c
                && (c->id == DSD_APP_CMD_TG_HOLD_TOGGLE || c->id == DSD_APP_CMD_TG_HOLD_SET
-                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE || c->id == DSD_APP_CMD_RECEIVE_SET));
+                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE || c->id == DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET
+                   || c->id == DSD_APP_CMD_RECEIVE_SET));
 }
 
 /* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, a slot switch (with the
@@ -8809,6 +8835,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_WAV_TOGGLE,
     DSD_APP_CMD_WAV_STATIC_OPEN,
     DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
     DSD_APP_CMD_DSP_OUT_SET,
     DSD_APP_CMD_SYMCAP_SAVE,
     DSD_APP_CMD_SYMCAP_STOP,

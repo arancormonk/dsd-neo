@@ -1749,6 +1749,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             rdio_api_delete_after_upload_cli = 1;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
+            record_unknown_only_cli = 1;                                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
             opts->dmr_debug_burst = 1;                                                                                 \
             continue;                                                                                                  \
@@ -2346,6 +2350,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         opts->rdio_api_delete_after_upload = 1;                                                                        \
         LOG_INFO("NOTICE: Rdio API delete-after-upload enabled\n");                                                    \
     }                                                                                                                  \
+    if (record_unknown_only_cli) {                                                                                     \
+        opts->record_unknown_only = 1;                                                                                 \
+        LOG_INFO("NOTICE: Recording only talkgroups not in the talkgroup list\n");                                     \
+    }                                                                                                                  \
                                                                                                                        \
     if (dmr_baofeng_pc5_cli) {                                                                                         \
         if (baofeng_ap_pc5_keystream_creation(state, dmr_baofeng_pc5_cli, opts->show_keys) != 0) {                     \
@@ -2564,6 +2572,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_upload_timeout_cli = NULL;
     const char* rdio_upload_retries_cli = NULL;
     int rdio_api_delete_after_upload_cli = 0;
+    int record_unknown_only_cli = 0;
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;

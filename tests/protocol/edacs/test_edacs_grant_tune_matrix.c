@@ -1688,7 +1688,8 @@ edacs_run_analog_loop_helper_cases(void) {
 
 /* Analog voice never passes the vocoder output gates, so EDACS applies the
  * talkgroup policy at its own output: a blocked call is neither played nor
- * recorded, an allowed one is both. */
+ * recorded, an allowed one is both. Recording only unknown talkgroups (issue
+ * #708), a listed one plays but is not recorded and an unlisted one is both. */
 static int
 test_edacs_analog_media_honors_talkgroup_policy(void) {
     static dsd_opts opts;
@@ -1702,13 +1703,18 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
         analog3[i] = (short)(33 + i);
     }
     int rc = 0;
-    for (int blocked = 1; blocked >= 0; --blocked) {
+    /* 0 a blocked row, 1 a listed row recording only unknown talkgroups, 2 no row recording only unknown talkgroups,
+       3 no row. */
+    for (int policy = 0; policy < 4; ++policy) {
+        const int blocked = policy == 0;
+        const int recorded = policy >= 2;
         edacs_reset_audio_hook_state();
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.audio_out = 1;
         opts.audio_out_type = 8;
         opts.slot1_on = 1;
+        opts.record_unknown_only = policy == 1 || policy == 2;
         edacs_install_udp_output_hooks();
         const dsd_call_observation call = {.protocol = DSD_SYNC_EDACS_POS,
                                            .slot = 0U,
@@ -1721,6 +1727,9 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
         if (blocked) {
             rc |= edacs_expect(dsd_tg_policy_set_mode(&state, 321, 321, "B") == 0, "analog-policy", "row",
                                "blocked the analog talkgroup");
+        } else if (policy == 1) {
+            rc |= edacs_expect(dsd_tg_policy_set_mode(&state, 321, 321, "A") == 0, "analog-policy", "row",
+                               "listed the analog talkgroup");
         }
         edacs_emit_analog_audio(&opts, &state, analog1, analog2, analog3, 1);
         rc |= edacs_expect(g_udp_blast_count == (blocked ? 0 : 3), "analog-policy", "audio",
@@ -1751,8 +1760,8 @@ test_edacs_analog_media_honors_talkgroup_policy(void) {
             if (written != NULL) {
                 sf_close(written);
             }
-            rc |= edacs_expect((written != NULL && info.frames > 0) == !blocked, "analog-policy", "wav",
-                               blocked ? "blocked analog call is not recorded" : "allowed analog call records");
+            rc |= edacs_expect((written != NULL && info.frames > 0) == recorded, "analog-policy", "wav",
+                               recorded ? "allowed analog call records" : "analog call kept out of the recording");
         }
         (void)remove(wav_path);
         dsd_state_ext_free_all(&state);

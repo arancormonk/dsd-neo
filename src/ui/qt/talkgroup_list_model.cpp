@@ -69,6 +69,7 @@ TalkgroupListModel::data(const QModelIndex& index, int role) const {
         case PreemptRole: return row.preempt;
         case PolicyIndexRole: return row.policyIndex;
         case TemporaryAvoidCountRole: return QVariant::fromValue(row.temporaryAvoidCount);
+        case RecordRole: return row.record;
         default: return {};
     }
 }
@@ -85,7 +86,8 @@ TalkgroupListModel::roleNames() const {
             {PriorityRole, "priority"},
             {PreemptRole, "preempt"},
             {PolicyIndexRole, "policyIndex"},
-            {TemporaryAvoidCountRole, "temporaryAvoidCount"}};
+            {TemporaryAvoidCountRole, "temporaryAvoidCount"},
+            {RecordRole, "record"}};
 }
 
 void
@@ -192,7 +194,7 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
         }
         rows.push_back({entry.id_start, entry.id_end, QString::fromUtf8(entry.name), QString::fromUtf8(entry.tags),
                         strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0, true, entry.priority,
-                        entry.preempt != 0, static_cast<int>(i)});
+                        entry.preempt != 0, entry.record != 0, static_cast<int>(i)});
         if (!rows.back().tags.isEmpty()) {
             categoryTags.insert(rows.back().tags);
         }
@@ -259,7 +261,8 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
                                             [](uint32_t id, const Span& span) { return id < span.start; });
         const bool covered = after != spans.cbegin() && std::prev(after)->reach >= tg;
         if (!covered) {
-            rows.push_back({tg, tg, {}, {}, !allowListedOnly, false});
+            /* A heard talkgroup has no row: it records whenever it would be tuned, as a row added for it would. */
+            rows.push_back({tg, tg, {}, {}, !allowListedOnly, false, 0, false, !allowListedOnly});
         }
     }
 }
@@ -279,7 +282,8 @@ TalkgroupListModel::replaceRows(QVector<Row> rows) {
             Row& old = m_rows[i];
             if (old.name != row.name || old.tags != row.tags || old.listening != row.listening
                 || old.listed != row.listed || old.priority != row.priority || old.preempt != row.preempt
-                || old.policyIndex != row.policyIndex || old.temporaryAvoidCount != row.temporaryAvoidCount) {
+                || old.record != row.record || old.policyIndex != row.policyIndex
+                || old.temporaryAvoidCount != row.temporaryAvoidCount) {
                 old = std::move(rows[i]);
                 Q_EMIT dataChanged(index(i, 0), index(i, 0));
             }

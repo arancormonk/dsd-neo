@@ -899,6 +899,7 @@ static const api_command_desc k_commands[] = {
 
     API_STR("wav_static_open", DSD_APP_CMD_WAV_STATIC_OPEN, 1023, "{value:path, <=1023 bytes}"),
     API_STR("wav_raw_open", DSD_APP_CMD_WAV_RAW_OPEN, 1023, "{value:path, <=1023 bytes}"),
+    API_I32_RANGE("record_unknown_only_set", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0, 1, "{value:0|1}"),
     API_STR("dsp_out_set", DSD_APP_CMD_DSP_OUT_SET, 255, "{value:filename, <=255 bytes}"),
     API_STR("symcap_open", DSD_APP_CMD_SYMCAP_OPEN, 1023, "{value:path, <=1023 bytes}"),
     API_STR("symbol_in_open", DSD_APP_CMD_SYMBOL_IN_OPEN, 1023, "{value:path, <=1023 bytes}"),

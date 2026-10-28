@@ -8,10 +8,10 @@
  * @brief What call recording is doing, for every frontend alike (issue #708).
  *
  * The decoder publishes this view with each options snapshot: the recording mode, whether the recording command a
- * frontend submitted last has been applied (WAV commands wait while a decoder holds a carrier in a loop of its own,
- * and are refused while Signal search runs), and what failed this decoder run. A frontend shows "applying" while
- * @c command_state is PENDING and the outcome after, and says that call recordings are failing when a count moves,
- * instead of the files just not appearing.
+ * frontend submitted last has been applied (WAV commands and the unknown-only switch wait while a decoder holds a
+ * carrier in a loop of its own, and are refused while Signal search runs), and what failed this decoder run. A frontend
+ * shows "applying" while @c command_state is PENDING and the outcome after, and says that call recordings are failing
+ * when a count moves, instead of the files just not appearing.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_RECORDING_VIEW_H_
@@ -31,7 +31,8 @@ enum {
     DSD_APP_RECORDING_MODE_PER_CALL = 2, /**< per-call WAVs (-P) */
 };
 
-/** The last recording command a frontend submitted (WAV start, stop, toggle, static open); values are stable. */
+/** The last recording command a frontend submitted (WAV start, stop, toggle, static open, unknown-only set); values are
+ *  stable. */
 enum {
     DSD_APP_RECORDING_COMMAND_NONE = 0,    /**< none submitted in this process */
     DSD_APP_RECORDING_COMMAND_PENDING = 1, /**< submitted, not applied yet */
@@ -53,7 +54,7 @@ typedef struct {
     uint8_t mode;          /**< DSD_APP_RECORDING_MODE_* */
     uint8_t per_call;      /**< 1 when @c mode is PER_CALL: per-call recording is on */
     uint8_t slot_files;    /**< per-call slot files open now: bit 0 slot 1, bit 1 slot 2 */
-    uint8_t unknown_only;  /**< reserved for the unknown-talkgroups-only rule: always 0 so far */
+    uint8_t unknown_only;  /**< 1 while only unknown talkgroups record (opts->record_unknown_only) */
     uint8_t journal_state; /**< DSD_APP_RECORDING_JOURNAL_* */
     uint8_t command_state; /**< DSD_APP_RECORDING_COMMAND_* */
     int32_t command_id;    /**< the dsd_app_command_id @c command_state is about; 0 for NONE */

@@ -365,6 +365,7 @@ dsd_p25p2_call_policy_key(const dsd_opts* opts, const dsd_state* state, const ds
     key->second = (int64_t)dsd_decode_time();
     key->tg_hold = state->tg_hold;
     key->allow_list = (opts && opts->trunk_use_allow_list == 1) ? 1U : 0U;
+    key->record_unknown_only = (opts && opts->record_unknown_only != 0) ? 1U : 0U;
     key->ota_target = (call->ota_target_id <= UINT32_MAX) ? (uint32_t)call->ota_target_id : 0U;
     key->source = (call->ota_source_id <= UINT32_MAX) ? (uint32_t)call->ota_source_id : 0U;
     key->kind = (uint8_t)call->kind;

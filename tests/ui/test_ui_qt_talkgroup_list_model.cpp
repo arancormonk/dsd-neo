@@ -263,12 +263,15 @@ test_edit_fields_and_version() {
     const QString context = model.property("policyContext").toString();
     const unsigned int generation = model.property("policyGeneration").toUInt();
     expect("context is a lossless decimal string", !context.isEmpty() && context != "0");
+    expect("a listening row records", model.data(find(model, 42), model.roleNames().key("record", -1)).toBool());
     dsd_tg_policy_entry values = {};
     values.priority = 50;
     values.preempt = 1;
-    expect("edit priority and preempt",
+    values.record = 0;
+    expect("edit priority, preempt and record",
            dsd_tg_policy_set_fields(fixture.state, 42, 42, &values,
-                                    DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT)
+                                    DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
+                                        | DSD_TG_POLICY_FIELD_RECORD)
                == 0);
     int changes = 0;
     QObject::connect(&model, &QAbstractItemModel::dataChanged, &model, [&]() { ++changes; });
@@ -276,6 +279,7 @@ test_edit_fields_and_version() {
     const auto roles = model.roleNames();
     expect("priority copied", model.data(find(model, 42), roles.key("priority", -1)).toInt() == 50);
     expect("preempt copied", model.data(find(model, 42), roles.key("preempt", -1)).toBool());
+    expect("record copied (issue #708)", !model.data(find(model, 42), roles.key("record", -1)).toBool());
     expect("field edit notifies", changes == 1);
     expect("version advances", model.property("policyContext").toString() == context
                                    && model.property("policyGeneration").toUInt() != generation);

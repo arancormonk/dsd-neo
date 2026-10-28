@@ -163,6 +163,7 @@ struct dsd_opts {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
+    int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
     int serial_baud;
     int serial_fd;
     int resume;

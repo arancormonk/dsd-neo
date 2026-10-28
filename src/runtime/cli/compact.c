@@ -71,7 +71,7 @@ static const char* const k_skip_exact_no_arg[] = {
     "--scan-voice-only",    "--no-tone-filter",
     "--no-slot-filter",     "--no-dcc-filter",
     "--no-ran-filter",      "--no-nac-filter",
-    "--no-service-names",
+    "--no-service-names",   "--record-unknown-only",
 };
 
 static const char* const k_skip_exact_next_any[] = {

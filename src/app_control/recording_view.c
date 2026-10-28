@@ -48,7 +48,7 @@ ensure_mu_init(void) {
 int
 dsd_app_recording_command_tracked(int cmd_id) {
     return cmd_id == DSD_APP_CMD_WAV_START || cmd_id == DSD_APP_CMD_WAV_STOP || cmd_id == DSD_APP_CMD_WAV_TOGGLE
-           || cmd_id == DSD_APP_CMD_WAV_STATIC_OPEN;
+           || cmd_id == DSD_APP_CMD_WAV_STATIC_OPEN || cmd_id == DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET;
 }
 
 void
@@ -108,7 +108,7 @@ dsd_app_recording_view_publish(const dsd_opts* opts) {
     if (view.per_call) {
         view.slot_files = (uint8_t)((opts->wav_out_f != NULL ? 1U : 0U) | (opts->wav_out_fR != NULL ? 2U : 0U));
     }
-    view.unknown_only = 0;
+    view.unknown_only = opts->record_unknown_only ? 1U : 0U;
     switch (dsd_wav_journal_state_get()) {
         case DSD_WAV_JOURNAL_ON: view.journal_state = DSD_APP_RECORDING_JOURNAL_ON; break;
         case DSD_WAV_JOURNAL_FAILED: view.journal_state = DSD_APP_RECORDING_JOURNAL_FAILED; break;

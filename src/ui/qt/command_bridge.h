@@ -102,7 +102,8 @@ class CommandBridge : public QObject {
     ~CommandBridge() override;
 
     // WP-D1: callers capture the model version when opening an edit sheet.
-    /** Changed fields only: name, listening, priority, preempt. One map is one atomic edit. */
+    /** Changed fields only: name, listening, priority, preempt, record. One map is one atomic edit; the decoder applies
+     *  record after listening, and a row that does not listen records nothing. */
     Q_INVOKABLE bool setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, const QString& context,
                                         unsigned int generation, const QVariantMap& changes) const;
     Q_INVOKABLE bool renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,

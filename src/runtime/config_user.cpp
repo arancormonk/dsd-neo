@@ -226,6 +226,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_upload_timeout_ms = 5000;
     cfg->rdio_upload_retries = 1;
     cfg->rdio_api_delete_after_upload = 0;
+    cfg->unknown_talkgroups_only = 0;
 
     // DSP defaults (match runtime defaults)
     cfg->iq_balance = 0;
@@ -1197,6 +1198,7 @@ render_recording_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->raw_wav_path[0]) {
         DSD_FPRINTF(out, "raw_wav = \"%s\"\n", cfg->raw_wav_path);
     }
+    DSD_FPRINTF(out, "unknown_talkgroups_only = %s\n", ini_bool(cfg->unknown_talkgroups_only));
     DSD_FPRINTF(out, "rdio_mode = \"%s\"\n", dsd_rdio_mode_to_string(cfg->rdio_mode));
     if (cfg->rdio_system_id > 0) {
         DSD_FPRINTF(out, "rdio_system_id = %d\n", cfg->rdio_system_id);
@@ -1812,6 +1814,7 @@ apply_recording_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->rdio_upload_timeout_ms = cfg->rdio_upload_timeout_ms;
     opts->rdio_upload_retries = cfg->rdio_upload_retries;
     opts->rdio_api_delete_after_upload = cfg->rdio_api_delete_after_upload;
+    opts->record_unknown_only = cfg->unknown_talkgroups_only ? 1 : 0;
 
     if (cfg->rdio_api_url[0]) {
         DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", cfg->rdio_api_url);
@@ -2172,6 +2175,7 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rdio_upload_timeout_ms = opts->rdio_upload_timeout_ms;
     cfg->rdio_upload_retries = opts->rdio_upload_retries;
     cfg->rdio_api_delete_after_upload = opts->rdio_api_delete_after_upload ? 1 : 0;
+    cfg->unknown_talkgroups_only = opts->record_unknown_only ? 1 : 0;
 }
 
 static void

@@ -1032,6 +1032,18 @@ main(int argc, char** argv) {
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_at(&state, 0, &entry));
     check(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Renamed");
+    // Issue #708: Record goes with Listening in one edit, applied after it; it takes a bool only.
+    refreshVersion();
+    check(!bridge.setTalkgroupPolicy(42, 42, version, generation, {{"record", 0}}));
+    check(bridge.setTalkgroupPolicy(42, 42, version, generation, {{"listening", true}, {"record", false}}));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(QString::fromUtf8(entry.mode) == "A" && entry.audio == 1 && entry.record == 0);
+    refreshVersion();
+    check(bridge.setTalkgroupPolicy(42, 42, version, generation, {{"record", true}}));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(entry.record == 1 && entry.priority == 50 && QString::fromUtf8(entry.name) == "Renamed");
     refreshVersion();
     check(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
     check(dsd_app_drain_cmds(&opts, &state) == 1);

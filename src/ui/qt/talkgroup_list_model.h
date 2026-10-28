@@ -65,6 +65,7 @@ class TalkgroupListModel : public QAbstractListModel {
         PreemptRole,
         PolicyIndexRole,
         TemporaryAvoidCountRole,
+        RecordRole, /**< The row's record flag (issue #708): off while not listening, as the decoder keeps it. */
     };
 
     explicit TalkgroupListModel(QAbstractItemModel* history, QObject* parent = nullptr);
@@ -156,6 +157,7 @@ class TalkgroupListModel : public QAbstractListModel {
         bool listed = false;
         int priority = 0;
         bool preempt = false;
+        bool record = false;
         int policyIndex = -1;
         qulonglong temporaryAvoidCount = 0;
 

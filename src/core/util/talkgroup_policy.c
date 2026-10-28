@@ -963,6 +963,9 @@ tg_policy_other_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask)
     if ((mask & DSD_TG_POLICY_FIELD_PREEMPT) && values->preempt > 1) {
         return 1;
     }
+    if ((mask & DSD_TG_POLICY_FIELD_RECORD) && values->record > 1) {
+        return 1;
+    }
     if ((mask & DSD_TG_POLICY_FIELD_NAME) && !memchr(values->name, 0, sizeof values->name)) {
         return 1;
     }
@@ -986,13 +989,18 @@ tg_policy_apply_fields(dsd_tg_policy_entry* entry, const dsd_tg_policy_entry* va
     if (mask & DSD_TG_POLICY_FIELD_TAGS) {
         tg_policy_safe_copy(entry->tags, sizeof entry->tags, values->tags);
     }
+    if (mask & DSD_TG_POLICY_FIELD_RECORD) {
+        /* After the mode, which re-derives record; a row that blocks or plays no audio still records nothing. */
+        entry->record = values->record;
+        tg_policy_normalize_entry(entry);
+    }
 }
 
 int
 dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, const dsd_tg_policy_entry* values,
                          uint32_t mask) {
     const uint32_t all = DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
-                         | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS;
+                         | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_RECORD;
     if (!state || !values || id_start > id_end || !mask || (mask & ~all)
         || tg_policy_listen_fields_invalid(values, mask) || tg_policy_other_fields_invalid(values, mask)) {
         return 1;
@@ -1494,9 +1502,24 @@ tg_policy_apply_explicit_media_blocks(dsd_tg_policy_decision* out, int explicit_
     }
 }
 
+/* Record only unknown talkgroups (opts->record_unknown_only, issue #708): a call a talkgroup row knows records as if
+ * the row said record=off. A learned radio alias names a radio, so it never makes a call known. */
+static int
+tg_policy_record_unknown_only(const dsd_opts* opts) {
+    return opts && opts->record_unknown_only != 0;
+}
+
+/* Whether a non-alias exact row names @p id: what makes a private call's endpoint known to the unknown-only rule. */
+static int
+tg_policy_private_endpoint_known(const dsd_state* state, uint32_t id) {
+    dsd_tg_policy_lookup lookup;
+    return tg_policy_lookup_exact_in_ctx_kind(tg_policy_ctx_get_const(state), id, 0, &lookup);
+}
+
 static void DSD_ATTR_USED
-tg_policy_group_apply_lookup(const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out, int* mode_blocking,
-                             int* explicit_audio_block, int* explicit_record_block, int* explicit_stream_block) {
+tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out,
+                             int* mode_blocking, int* explicit_audio_block, int* explicit_record_block,
+                             int* explicit_stream_block) {
     dsd_tg_policy_lookup lookup;
     int local_mode_blocking = 0;
     int local_audio_block = 0;
@@ -1508,7 +1531,8 @@ tg_policy_group_apply_lookup(const dsd_state* state, uint32_t tg, dsd_tg_policy_
         tg_policy_decision_apply_entry(out, &lookup.entry, lookup.match);
         local_mode_blocking = tg_policy_mode_is_blocking(lookup.entry.mode);
         local_audio_block = (!local_mode_blocking && lookup.entry.audio == 0u);
-        local_record_block = (!local_mode_blocking && lookup.entry.audio != 0u && lookup.entry.record == 0u);
+        local_record_block = (!local_mode_blocking && lookup.entry.audio != 0u
+                              && (lookup.entry.record == 0u || tg_policy_record_unknown_only(opts)));
         local_stream_block = (!local_mode_blocking && lookup.entry.audio != 0u && lookup.entry.stream == 0u);
     }
 
@@ -1662,7 +1686,7 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     }
     tg_policy_init_decision(out, tg, src, encrypted, data_call);
 
-    tg_policy_group_apply_lookup(state, tg, out, &mode_blocking, &explicit_audio_block, &explicit_record_block,
+    tg_policy_group_apply_lookup(opts, state, tg, out, &mode_blocking, &explicit_audio_block, &explicit_record_block,
                                  &explicit_stream_block);
     tg_policy_group_set_hold_state(state, tg, out, &hold_mismatch);
     tg_policy_apply_group_tune_blocks(opts, encrypted, data_call, out);
@@ -1753,7 +1777,13 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_HOLD);
     }
     if (!mode_blocking && !hold_mismatch && chosen) {
-        tg_policy_apply_explicit_media_blocks(out, chosen->audio == 0u, chosen->audio != 0u && chosen->record == 0u,
+        /* Either endpoint known makes the call known, each looked up on its own: the row chosen above may be the
+           other endpoint's learned alias. */
+        const int known =
+            tg_policy_record_unknown_only(opts)
+            && (tg_policy_private_endpoint_known(state, src) || tg_policy_private_endpoint_known(state, dst));
+        tg_policy_apply_explicit_media_blocks(out, chosen->audio == 0u,
+                                              chosen->audio != 0u && (chosen->record == 0u || known),
                                               chosen->audio != 0u && chosen->stream == 0u);
     }
 

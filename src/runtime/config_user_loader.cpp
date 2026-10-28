@@ -651,6 +651,11 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
         copy_path_expanded(cfg->static_wav_path, sizeof cfg->static_wav_path, val);
     } else if (strcmp(key_lc, "raw_wav") == 0) {
         copy_path_expanded(cfg->raw_wav_path, sizeof cfg->raw_wav_path, val);
+    } else if (strcmp(key_lc, "unknown_talkgroups_only") == 0) {
+        int b = 0;
+        if (user_config_parse_bool_value(val, &b) == 0) {
+            cfg->unknown_talkgroups_only = b;
+        }
     } else {
         return 0;
     }

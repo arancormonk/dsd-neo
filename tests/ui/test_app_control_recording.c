@@ -1319,6 +1319,100 @@ test_invalid_recording_command_reads_as_failed(void) {
     return rc;
 }
 
+#ifdef DSD_TEST_WRAP_SIGNAL_SEARCH
+/* Signal search, as the queue sees it: the link wraps the engine's answer so a case can run with a search active. */
+static int g_signal_search_active;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_engine_signal_search_active(const dsd_state* state);
+int __wrap_dsd_engine_signal_search_active(const dsd_state* state);
+
+int
+__wrap_dsd_engine_signal_search_active(const dsd_state* state) {
+    return g_signal_search_active || __real_dsd_engine_signal_search_active(state);
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#endif
+
+/* Record only unknown talkgroups (issue #708): the switch is a recording command, pending until the view that shows it
+   applied; a value other than 0 or 1 fails and changes nothing; a config's [recording] sets it too. */
+static int
+test_unknown_only_set_applies_and_reports(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_unknown_only");
+    rc |= expect_int("unknown-only queued", dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("unknown-only pends", v.command_state, DSD_APP_RECORDING_COMMAND_PENDING);
+    rc |= expect_int("pending unknown-only named", v.command_id, DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET);
+    rc |= expect_int("not applied before the drain", r.opts->record_unknown_only, 0);
+    rc |= expect_int("unknown-only drained", drain(&r), 1);
+    v = view_now();
+    rc |= expect_int("unknown-only applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("the switch is on", r.opts->record_unknown_only, 1);
+    rc |= expect_int("the view shows it", v.unknown_only, 1);
+    rc |= expect_int("recording itself stays off", v.mode, DSD_APP_RECORDING_MODE_OFF);
+
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 2);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_int("a value out of range fails", v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+    rc |= expect_int("and changes nothing", r.opts->record_unknown_only, 1);
+    rc |= expect_int("the view still shows it", v.unknown_only, 1);
+
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_int("off applied", v.command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("the switch is off", r.opts->record_unknown_only, 0);
+    rc |= expect_int("the view shows it off", v.unknown_only, 0);
+
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.unknown_talkgroups_only = 1;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
+    rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config drained", drain(&r), 1);
+    rc |= expect_int("a config's [recording] sets the switch", r.opts->record_unknown_only, 1);
+    rc |= expect_int("and the view shows it", view_now().unknown_only, 1);
+    rig_close(&r);
+    return rc;
+}
+
+#ifdef DSD_TEST_WRAP_SIGNAL_SEARCH
+/* While Signal search runs, the unknown-only switch is refused like the WAV commands, with the search's notice, and
+   changes nothing; once the search stops it applies. */
+static int
+test_unknown_only_set_refused_during_signal_search(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_unknown_only_search");
+    g_signal_search_active = 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 1);
+    (void)drain(&r);
+    dsd_app_recording_view v = view_now();
+    rc |= expect_int("unknown-only refused during signal search", v.command_state, DSD_APP_RECORDING_COMMAND_REFUSED);
+    rc |= expect_int("refused unknown-only named", v.command_id, DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET);
+    rc |= expect_int("the switch stays off", r.opts->record_unknown_only, 0);
+    rc |= expect_true("the search's notice", strstr(r.state->ui_msg, "Stop Signal search") != NULL);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_int("a WAV start is refused the same way", v.command_state, DSD_APP_RECORDING_COMMAND_REFUSED);
+    rc |= expect_int("and records nothing", r.opts->dmr_stereo_wav, 0);
+    rc |= expect_int("nothing opened", count_dir(r.dir).files, 0);
+    g_signal_search_active = 0;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 1);
+    (void)drain(&r);
+    rc |= expect_int("applied once the search stops", view_now().command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    rc |= expect_int("the switch is on", r.opts->record_unknown_only, 1);
+    rig_close(&r);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_log_lines, NULL);
@@ -1352,6 +1446,10 @@ main(void) {
     rc |= test_recording_transition_table();
     rc |= test_config_per_call_failures_change_nothing();
     rc |= test_raw_open_leaves_a_static_wav_without_a_file();
+    rc |= test_unknown_only_set_applies_and_reports();
+#ifdef DSD_TEST_WRAP_SIGNAL_SEARCH
+    rc |= test_unknown_only_set_refused_during_signal_search();
+#endif
     if (rc == 0) {
         printf("APP_CONTROL_RECORDING: OK\n");
     }

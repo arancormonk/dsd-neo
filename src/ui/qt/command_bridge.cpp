@@ -73,7 +73,7 @@ CommandBridge::~CommandBridge() = default;
 namespace {
 bool
 submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                   const QString& name, bool listen, int priority, bool preempt, uint32_t fields) {
+                   const QString& name, bool listen, int priority, bool preempt, uint32_t fields, bool record = false) {
     bool ok = false;
     dsd_app_tg_row_payload p = {};
     p.policy_context = context.toULongLong(&ok);
@@ -89,6 +89,7 @@ submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context,
     p.listen = listen;
     p.priority = priority;
     p.preempt = preempt;
+    p.record = record ? 1U : 0U;
     DSD_MEMCPY(p.name, utf8.constData(), static_cast<size_t>(utf8.size()));
     return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &p, sizeof p));
 }
@@ -105,6 +106,8 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
             fields |= DSD_APP_TG_FIELD_LISTEN;
         } else if (it.key() == QStringLiteral("preempt") && it.value().typeId() == QMetaType::Bool) {
             fields |= DSD_APP_TG_FIELD_PREEMPT;
+        } else if (it.key() == QStringLiteral("record") && it.value().typeId() == QMetaType::Bool) {
+            fields |= DSD_APP_TG_FIELD_RECORD;
         } else if (it.key() == QStringLiteral("priority")) {
             bool ok = false;
             const double priority = it.value().toDouble(&ok);
@@ -119,10 +122,10 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
     if (!fields) {
         return false;
     }
-    return submitTalkgroupRow(idStart, idEnd, context, generation, changes.value(QStringLiteral("name")).toString(),
-                              changes.value(QStringLiteral("listening")).toBool(),
-                              changes.value(QStringLiteral("priority")).toInt(),
-                              changes.value(QStringLiteral("preempt")).toBool(), fields);
+    return submitTalkgroupRow(
+        idStart, idEnd, context, generation, changes.value(QStringLiteral("name")).toString(),
+        changes.value(QStringLiteral("listening")).toBool(), changes.value(QStringLiteral("priority")).toInt(),
+        changes.value(QStringLiteral("preempt")).toBool(), fields, changes.value(QStringLiteral("record")).toBool());
 }
 
 bool

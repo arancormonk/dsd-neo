@@ -254,6 +254,84 @@ test_radioreference_config_roundtrip(void) {
     return rc;
 }
 
+/* Issue #708: [recording] unknown_talkgroups_only loads, reaches opts->record_unknown_only, and saves back; a
+   [recording] without it records every talkgroup again. */
+static int
+test_recording_unknown_talkgroups_only_roundtrip(void) {
+    static const char* ini = "[recording]\n"
+                             "unknown_talkgroups_only = true\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    int rc = 0;
+    if (!cfg.has_recording || cfg.unknown_talkgroups_only != 1) {
+        DSD_FPRINTF(stderr, "FAIL: unknown_talkgroups_only did not load (%d)\n", cfg.unknown_talkgroups_only);
+        rc |= 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.record_unknown_only != 1) {
+        DSD_FPRINTF(stderr, "FAIL: unknown_talkgroups_only did not reach dsd_opts\n");
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.unknown_talkgroups_only != 1) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped unknown_talkgroups_only\n");
+        rc |= 1;
+    }
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("unknown_talkgroups_only saved", rendered, "unknown_talkgroups_only = true\n");
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig reloaded;
+    const int reload_rc = dsd_user_config_load(path, &reloaded);
+    (void)remove(path);
+    if (reload_rc != 0 || reloaded.unknown_talkgroups_only != 1) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load unknown_talkgroups_only back\n");
+        rc |= 1;
+    }
+
+    static const char* without = "[recording]\n"
+                                 "per_call_wav = true\n";
+    if (write_temp_config(without, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int without_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (without_rc != 0 || cfg.unknown_talkgroups_only != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a [recording] without the key did not default it off\n");
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.record_unknown_only != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a [recording] without the key left the rule on\n");
+        rc |= 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("unknown_talkgroups_only saved off", rendered, "unknown_talkgroups_only = false\n");
+    return rc;
+}
+
 /* [input] rtl_bw_khz = 72 (TETRA's DSP bandwidth) loads, reaches the RTL spec the config builds, runs once that spec is
    read (as the input opens), and saves back; a value that is no selectable bandwidth runs, and saves, as the 48 kHz
    default. */
@@ -5010,6 +5088,7 @@ main(void) {
     rc |= test_receive_defaults_and_row_inheritance();
     rc |= test_receive_boundary_waits_for_resume();
     rc |= test_rtl_bw_khz_72_round_trip();
+    rc |= test_recording_unknown_talkgroups_only_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();

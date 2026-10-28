@@ -712,6 +712,10 @@ Important behavior:
 - `audio=off` forces `record=off` and `stream=off`.
 - `mode=B`/`DE` forces media fields off regardless of optional values.
 - `record` covers every recording: the per-call WAV (`-P`), the static WAV (`-w`) and MBE capture (`-d`).
+- `--record-unknown-only` (INI `[recording] unknown_talkgroups_only`) records only talkgroups the list does not know:
+  a call that an exact or range row matches records as if that row said `record=off`, and a private call does when
+  either radio has an exact row. Learned radio-ID aliases and mode `D` rows do not make a call known. A matching Hold
+  still records, as it does past `record=off`; tuning and playback are unchanged.
 - Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
   matched by them; use the M17 CAN filter to select M17 traffic.
 - Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges plus voice talkgroups heard this
@@ -724,6 +728,9 @@ Important behavior:
 - A listening edit preserves a row's name, category, priority and preemption setting, but resets its media flags
   from the selected mode. The monitor's **Lock out** uses the same name-preserving block path. **Skip** leaves the
   call without editing the list.
+- A row's **Record** setting is its `record` column. A row that is not tuned (`B`) records nothing and the file cannot
+  say otherwise, so turning **Listening** off and on again sets `record=on`: set Record again in the same edit if the
+  row should stay off. An edit that changes both applies Listening first, then Record.
 - When a group file is configured, edits atomically rewrite that file in table order, preserving ranges and
   modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
   when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its

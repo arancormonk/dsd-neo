@@ -226,6 +226,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_upload_timeout_ms = 5000;
     opts->rdio_upload_retries = 1;
     opts->rdio_api_delete_after_upload = 0;
+    opts->record_unknown_only = 0;
     opts->rdio_api_key[0] = 0;
     DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "http://127.0.0.1:3000");
     opts->serial_baud = 115200;

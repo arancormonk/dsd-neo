@@ -1786,6 +1786,40 @@ test_live_policy_leaves_recordability(void) {
     return rc;
 }
 
+/* Recording only unknown talkgroups (issue #708) is part of what a verdict reads: the decode gate's decision on a
+   listed talkgroup turns unrecordable with the switch, keyed on it, and a call's current verdict cached while it was
+   off is taken again once it is on, within the same decode second, with no burst in between. */
+static int
+test_unknown_only_moves_the_verdict(void) {
+    int rc = 0;
+    setup(0, 2);
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+    rc |= expect_int("listed talkgroup", dsd_tg_policy_set_mode(&g_state, 100U, 100U, "A"), 0);
+    seed_call(&g_state, 0U, 100U, 1000U);
+    g_state.p25_p2_audio_allowed[1] = 0;
+    for (int on = 0; on <= 1; on++) {
+        g_opts.record_unknown_only = on;
+        dsd_p25p2_burst_decision decision;
+        int valid = 0;
+        rc |= expect_int("the gate plays the listed call",
+                         dsd_p25p2_decode_audio_allowed_verdict(&g_opts, &g_state, 0, 0x80, &decision, &valid), 1);
+        rc |= expect_int("and hands back its decision", valid, 1);
+        rc |= expect_int(on ? "a listed call is unrecordable with the switch on" : "and recordable with it off",
+                         decision.verdict.recordable, !on);
+        rc |= expect_int("the decision's key carries the switch", decision.key.record_unknown_only, on);
+    }
+
+    g_opts.record_unknown_only = 0;
+    burst(0, 0, DSD_P25P2_BURST_4V, 1000);
+    rc |= expect_int("the cached verdict records", g_state.p25p2_playout.slot[0].live_verdict.recordable, 1);
+    g_opts.record_unknown_only = 1;
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("the switch retakes the cached verdict", g_state.p25p2_playout.slot[0].live_verdict.recordable, 0);
+    rc |= expect_int("the retaken key carries it", g_state.p25p2_playout.slot[0].live_key.record_unknown_only, 1);
+    rc |= expect_int("the call still plays", g_block_count > 0, 1);
+    return rc;
+}
+
 enum { RAISED_ALERTS = 400 };
 
 static DSD_THREAD_RETURN_TYPE
@@ -1989,6 +2023,7 @@ main(void) {
     rc |= test_alert_after_trailing_removed_entries();
     rc |= test_alert_overflow_keeps_order();
     rc |= test_live_policy_leaves_recordability();
+    rc |= test_unknown_only_moves_the_verdict();
 #if defined(DSD_TEST_WRAP_CALL_STATE)
     rc |= test_verdict_taken_as_the_call_ends();
     rc |= test_gate_key_matches_its_decision();

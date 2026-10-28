@@ -1088,7 +1088,7 @@ suite runs under this compiler.
   recording commands as it admits them and as they leave it (applied, failed, refused while Signal search runs,
   dropped); `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command
   reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
-  `unknown_only` is reserved (always 0); `journal_state` is the recording journal's (below). Tests: `APP_CONTROL_RECORDING` (every command
+  `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below). Tests: `APP_CONTROL_RECORDING` (every command
   case through the queue and through config applies, the transition table (every from-mode to every to-mode, folder,
   static and raw changes, each open failing), each writer's short write and close failure behind the seams in
   `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen
@@ -1352,6 +1352,20 @@ suite runs under this compiler.
   consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
   the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
   label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target.
+- Invariant (record only unknown talkgroups, issue #708: `opts->record_unknown_only`, `--record-unknown-only`, INI
+  `[recording] unknown_talkgroups_only`, `DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET`): the group and private evaluators turn
+  it into the explicit record block a row's `record=off` takes (`record_allowed` 0, `DSD_TG_POLICY_BLOCK_RECORD`), so
+  every record gate, MBE capture and the P25 Phase 2 verdict (its `dsd_p25p2_policy_key` carries the switch) follow it
+  with today's precedence: a matching Hold still records, avoids and skips block, tuning and playback are untouched. A
+  group call is known when a non-alias row (exact or range) matches the talkgroup the record decision judges (P25: the
+  policy target); a private call when either radio has an exact non-alias row, each looked up on its own (the private
+  evaluator's chosen row can be the other radio's learned alias). The command is a recording command: it waits while a
+  decoder holds a carrier, is refused during Signal search, retakes the P25 Phase 2 verdicts under the tick guard
+  (`command_changes_call_verdict()`), and the recording view reports it. A row's own Record is
+  `DSD_APP_TG_FIELD_RECORD` / `DSD_TG_POLICY_FIELD_RECORD`, applied after a mode change in the same edit; a row that
+  blocks or plays no audio keeps record off (D11: Listening off then on sets it on again). Tests:
+  `CORE_TALKGROUP_POLICY`, `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_MBE_TRANSFORM_CONTEXT`,
+  `CORE_MBE_FILE_IO`, `EDACS_GRANT_TUNE_MATRIX`, `TETRA_VOICE_PIPELINE`, `APP_CONTROL_RECORDING`, `APP_COMMAND_QUEUE`.
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the

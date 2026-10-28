@@ -316,12 +316,14 @@ enum {
     DSD_TG_POLICY_FIELD_PRIORITY = 1U << 1,
     DSD_TG_POLICY_FIELD_PREEMPT = 1U << 2,
     DSD_TG_POLICY_FIELD_NAME = 1U << 3,
-    DSD_TG_POLICY_FIELD_TAGS = 1U << 4
+    DSD_TG_POLICY_FIELD_TAGS = 1U << 4,
+    DSD_TG_POLICY_FIELD_RECORD = 1U << 5
 };
 
 /** Edit the first talkgroup (non-alias) row with these bounds, or append an exact/range row (default A).
- * Selected values come from entry.mode (A/B), priority (0..100), preempt (0/1), name and tags.
- * Unselected metadata is preserved; changing mode derives media flags.
+ * Selected values come from entry.mode (A/B), priority (0..100), preempt (0/1), name, tags and record (0/1).
+ * Unselected metadata is preserved; changing mode derives media flags. Record is applied after a mode change in the
+ * same edit, and a row that blocks or plays no audio keeps record off whatever was asked (issue #708).
  * Learned alias rows (source RUNTIME_ALIAS or mode D) are never edited as such: an exact ID held only by one
  * takes it over as a fresh talkgroup row, as dsd_tg_policy_set_mode() does.
  * Returns 0 applied, 1 invalid fields/bounds, -1 allocation failure. */

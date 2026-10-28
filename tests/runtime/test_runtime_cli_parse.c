@@ -4285,6 +4285,54 @@ test_wav_journal_long_option_parse(void) {
     return test_rc;
 }
 
+/* Issue #708: --record-unknown-only sets the unknown-talkgroups-only record rule; it is off by default. */
+static int
+test_record_unknown_only_long_option_parse(void) {
+    int test_rc = 0;
+    for (int with_flag = 0; with_flag <= 1; with_flag++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char arg0[] = "dsd-neo";
+        char arg1[] = "-P";
+        char arg2[] = "--record-unknown-only";
+        char* argv[] = {arg0, arg1, arg2, NULL};
+        const int argc = with_flag ? 3 : 2;
+        argv[argc] = NULL;
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "record-unknown-only: expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc,
+                        exit_rc);
+            test_rc = 1;
+        } else {
+            if (opts->record_unknown_only != with_flag) {
+                DSD_FPRINTF(stderr, "record-unknown-only %d: record_unknown_only=%d\n", with_flag,
+                            opts->record_unknown_only);
+                test_rc = 1;
+            }
+            /* The long option is consumed; -P stays for the short-option pass. */
+            if (opts->dmr_stereo_wav != 1 || argc_effective != 2) {
+                DSD_FPRINTF(stderr, "record-unknown-only %d: -P %d, argc_effective=%d\n", with_flag,
+                            opts->dmr_stereo_wav, argc_effective);
+                test_rc = 1;
+            }
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
 static int
 test_p25_sm_log_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -10933,6 +10981,7 @@ main(void) {
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
     rc |= test_wav_journal_long_option_parse();
+    rc |= test_record_unknown_only_long_option_parse();
     rc |= test_p25_sm_log_long_option_parse();
     rc |= test_dmr_debug_burst_long_option_parse();
     rc |= test_show_keys_long_option_parse();

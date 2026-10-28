@@ -649,6 +649,37 @@ close_static_wav(fixture* f, const char* path) {
     return frames;
 }
 
+/* Recording only unknown talkgroups (issue #708): a listed talkgroup plays and is not recorded, as if its row said
+   record=off; an unlisted one plays and is recorded. */
+static void
+test_record_unknown_only_gate(void) {
+    for (int listed = 0; listed <= 1; listed++) {
+        fixture f;
+        expect(fixture_open(&f) == 0, "unknown-only: fixture");
+        char wav_path[DSD_TEST_PATH_MAX];
+        expect(open_static_wav(&f, wav_path, sizeof(wav_path)) == 0, "unknown-only: WAV open");
+        f.opts->record_unknown_only = 1;
+        if (listed) {
+            expect(dsd_tg_policy_set_mode(f.state, 500U, 500U, "A") == 0, "unknown-only: listed row");
+        }
+        dsd_call_observation call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        call.protocol = DSD_SYNC_TETRA_NDB_POS;
+        call.slot = 0;
+        call.kind = DSD_CALL_KIND_GROUP_VOICE;
+        call.ota_target_id = 500U;
+        call.policy_target_id = 500U;
+        call.observed_m = 1.0;
+        expect(dsd_call_state_observe(f.state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1, "unknown-only: call active");
+        follow_group(&f, 500, 0x0F);
+        expect(played_by_burst(&f) == 2 * FRAME, "unknown-only: the call plays");
+        const long frames = close_static_wav(&f, wav_path);
+        expect(listed ? frames == 0 : frames > 0,
+               listed ? "unknown-only: a listed talkgroup is not recorded" : "unknown-only: an unlisted one is");
+        fixture_close(&f);
+    }
+}
+
 /* Check that the @p count samples from sample @p from are samples @p first.. of decode @p frame (a good frame of
    @p bits). */
 static void
@@ -1353,6 +1384,7 @@ main(void) {
     test_reduced_key_speech();
     test_talkgroup_gate();
     test_record_gate();
+    test_record_unknown_only_gate();
     test_call_boundary_resets_speech();
     test_talker_change_resets_speech();
     test_grant_after_cease_resets_speech();

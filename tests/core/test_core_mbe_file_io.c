@@ -1910,6 +1910,29 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
     return rc;
 }
 
+/* The talkgroup policies a recording test replays its call (talkgroup 1234) under, in order: two that block recording,
+ * then two that record. --record-unknown-only (issue #708) blocks a talkgroup with a row and records one without. */
+enum {
+    RECORD_POLICY_MODE_B,
+    RECORD_POLICY_KNOWN_UNKNOWN_ONLY,
+    RECORD_POLICY_UNKNOWN_UNKNOWN_ONLY,
+    RECORD_POLICY_NO_ROW,
+    RECORD_POLICY_CASES
+};
+
+static int
+apply_record_policy(dsd_opts* opts, dsd_state* state, int policy) {
+    opts->record_unknown_only =
+        policy == RECORD_POLICY_KNOWN_UNKNOWN_ONLY || policy == RECORD_POLICY_UNKNOWN_UNKNOWN_ONLY;
+    if (policy == RECORD_POLICY_MODE_B) {
+        return expect_int("record policy blocked row", dsd_tg_policy_set_mode(state, 1234, 1234, "B"), 0);
+    }
+    if (policy == RECORD_POLICY_KNOWN_UNKNOWN_ONLY) {
+        return expect_int("record policy listed row", dsd_tg_policy_set_mode(state, 1234, 1234, "A"), 0);
+    }
+    return 0;
+}
+
 /* SDRTrunk JSON playback writes its static and per-call WAVs itself; both
  * honour the replayed call's talkgroup policy, as live decode does. */
 static int
@@ -1922,7 +1945,8 @@ test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
     static Event_History_I history[2];
     int rc = 0;
     for (int per_call = 0; per_call <= 1; ++per_call) {
-        for (int blocked = 1; blocked >= 0; --blocked) {
+        for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
+            const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
             DSD_MEMSET(&opts, 0, sizeof opts);
             DSD_MEMSET(&state, 0, sizeof state);
             DSD_MEMSET(history, 0, sizeof history);
@@ -1950,9 +1974,7 @@ test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
             } else {
                 opts.static_wav_file = 1;
             }
-            if (blocked) {
-                rc |= expect_int("sdrtrunk wav blocked row", dsd_tg_policy_set_mode(&state, 1234, 1234, "B"), 0);
-            }
+            rc |= apply_record_policy(&opts, &state, policy);
 
             rc |= run_sdrtrunk_json(json, &opts, &state);
             sf_close(opts.wav_out_f);
@@ -1985,7 +2007,8 @@ test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy(void) {
     static dsd_state state;
     static Event_History_I history[2];
     int rc = 0;
-    for (int blocked = 1; blocked >= 0; --blocked) {
+    for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
+        const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
         DSD_MEMSET(history, 0, sizeof history);
@@ -1997,9 +2020,7 @@ test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy(void) {
             return 1;
         }
         opts.mbe_out_f = out;
-        if (blocked) {
-            rc |= expect_int("sdrtrunk capture blocked row", dsd_tg_policy_set_mode(&state, 1234, 1234, "B"), 0);
-        }
+        rc |= apply_record_policy(&opts, &state, policy);
         rc |= run_sdrtrunk_json(json, &opts, &state);
         (void)fflush(out);
         (void)fseek(out, 0, SEEK_END);

@@ -7695,6 +7695,18 @@ else()
         PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
     )
 endif()
+# The Signal search refusal case wraps the engine's answer, so it exists only where GNU ld --wrap links, like the
+# other wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_app_control_recording
+        PRIVATE DSD_TEST_WRAP_SIGNAL_SEARCH=1
+    )
+    target_link_options(
+        dsd-neo_test_app_control_recording
+        PRIVATE "LINKER:--wrap=dsd_engine_signal_search_active"
+    )
+endif()
 add_test(NAME APP_CONTROL_RECORDING COMMAND dsd-neo_test_app_control_recording)
 
 # Issue #708: the recording journal through the real queue, event layer, writers and trunk scan coordinator (compiled

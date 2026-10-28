@@ -117,6 +117,7 @@ dsd_cli_usage_section_io(void) {
     printf("                 (Per Call works with everything now and doesn't require terminal frontend!)\n");
     printf("                 (Also records conventional NFM transmissions, named by their service.)\n");
     printf("      --wav-journal <file>  Append a JSON line for each per-call WAV published, discarded or failed\n");
+    printf("      --record-unknown-only  Record only calls whose talkgroup has no row in the group list (-G)\n");
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");

@@ -433,6 +433,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `inv_m17_toggle` | – |
 | `wav_static_open` | `{value:path, <=1023 bytes}` |
 | `wav_raw_open` | `{value:path, <=1023 bytes}` |
+| `record_unknown_only_set` | `{value:0\|1}` |
 | `dsp_out_set` | `{value:filename, <=255 bytes}` |
 | `symcap_open` | `{value:path, <=1023 bytes}` |
 | `symbol_in_open` | `{value:path, <=1023 bytes}` |

@@ -678,6 +678,7 @@ typedef struct dsdneoUserConfig {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; /* bool */
+    int unknown_talkgroups_only;      /* bool: record only talkgroups without a row (opts->record_unknown_only) */
 
     /* [dsp] */
     int has_dsp;
