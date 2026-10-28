@@ -789,6 +789,39 @@ platformLinesReportedOnlyWhenDurable() {
         log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
         check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "unsynced lines were reported durable");
     }
+    // #782 gate r2 H4: another flush (a session attempt's) takes the platform lines between the publish and the
+    // report. When its write or sync fails, the lines never became durable, whatever a later flush with nothing left
+    // to write says.
+    for (const auto fault : {DiagnosticsLog::IoFault::Write, DiagnosticsLog::IoFault::Sync}) {
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        log.setIoFaultForTest(fault);
+        log.noteSessionAttempt(QStringLiteral("rtl"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+        check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1,
+              "lines another flush failed to write or sync were reported durable");
+        // Nor does a later report: the batch that held them is gone.
+        log.submit("host", "info", "a later record");
+        check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "lost lines were reported later");
+    }
+    {
+        // The other flush wrote and synced them: they are durable, and a later failure elsewhere does not undo that.
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        log.noteSessionAttempt(QStringLiteral("rtl"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Write);
+        log.submit("host", "info", "lost after the lines");
+        check(!log.flush(), "the later write failed");
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+        check(log.reportWhenDurable(0, durableLogged) && g_durableCalls == 2 && g_durableOnDisk,
+              "lines another flush made durable were not reported");
+    }
 }
 
 static void

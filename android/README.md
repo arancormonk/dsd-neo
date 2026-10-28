@@ -1462,8 +1462,9 @@ model, app version. Android 11 and later add up to three `exit:` lines from
 pid, reason (`CRASH_NATIVE`, `LOW_MEMORY`, `ANR`, `SIGNALED`, ...), importance,
 PSS and Android's description. Each exit is logged once: a launch skips the ones
 an earlier launch logged (their time and pid are kept in
-`noBackupFilesDir/exit-facts-logged`, written only once the lines are synced to
-the host store, so a launch that dies first does not lose them), so the host
+`noBackupFilesDir/exit-facts-logged`, written only once the write that carried
+the lines and a sync of the host store both succeeded, whichever flush ran them,
+so a launch that dies first or a store that failed does not lose them), so the host
 store does not fill with the same history. Each new
 segment starts again with the current `process:` and `session starting:` lines.
 The screen, Copy and Share keep the previous run's and this run's `process:` and

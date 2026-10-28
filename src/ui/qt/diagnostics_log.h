@@ -122,8 +122,9 @@ class DiagnosticsLog {
     bool flush(int timeoutMs = -1);
     // flush(), with what became of it.
     FlushOutcome flushOutcome(int timeoutMs = -1);
-    // flush(), then @p logged once everything submitted before the call is durable; not when the flush failed or timed
-    // out. Whether it was called.
+    // flush(), then @p logged once the platform lines noteProcess() queued are durable in the host log: the writer step
+    // that took them wrote them and a sync covered them with no host failure between, whichever flush or drain ran it.
+    // Not when they were lost, or are still on their way when the flush returns or times out. Whether it was called.
     bool reportWhenDurable(int timeoutMs, PlatformLinesLogged logged);
     // Records the process line (also the head of every later segment). Once per instance.
     void noteProcess(const QString& facts, const QStringList& followingLines = {});
@@ -203,9 +204,22 @@ class DiagnosticsLog {
         // After a failed sync, the next attempt waits until here rather than retrying at once.
         quint64 syncRetryAt = 0;
         bool ioFailed = false;
+        // Every failure counted, which a flush's verdict does not reset: what the platform lines' write is judged by.
+        quint64 failures = 0;
         bool rotationFailureNoted = false;
         IoStats stats;
+
+        void
+        fail() {
+            ioFailed = true;
+            ++failures;
+        }
     };
+
+    // Where the platform's lines (noteProcess()'s following lines; Android's exit records) are on their way to the
+    // host log: queued, taken by a writer step, then durable once that step's write and a later sync of the host log
+    // succeed with no host failure between, or lost when either fails or Clear drops them first (#782 gate r2 H4).
+    enum class PlatformLines { None, Queued, Taken, Durable, Lost };
 
     void load();
     void cleanDirectory() const;
@@ -227,6 +241,7 @@ class DiagnosticsLog {
     enum class Pin { None, Process, Session };
 
     void enqueue(const QByteArray& record, bool host, Pin pin = Pin::None);
+    void enqueueLocked(const QByteArray& record, bool host, Pin pin = Pin::None);
     void ringNote(const QString& line, bool host = false);
     quint64 pushRingLocked(const QString& line);
     void appendRingLocked(const QString& line, Pin pin = Pin::None);
@@ -242,10 +257,14 @@ class DiagnosticsLog {
         bool clear = false;
         bool window = false;
         bool flushing = false;
+        // The batch holds the platform lines.
+        bool platformLines = false;
     };
 
     void step(std::unique_lock<std::mutex>& lock, bool forceSync);
-    bool writeStep(const StepWork& work, bool forceSync);
+    // The step's I/O; @p platform is set to Durable or Lost once the platform lines' write is settled.
+    bool writeStep(const StepWork& work, bool forceSync, PlatformLines* platform);
+    PlatformLines settlePlatformLines(const StepWork& work, quint64 failuresBefore, bool clearedBefore);
     // writeStep()'s sync of @p segments when one is due, and a flush's verdict on the step (which clears the failures
     // it reports).
     bool syncIfDue(Segments& segments, const StepWork& work, bool forceSync) const;
@@ -299,6 +318,7 @@ class DiagnosticsLog {
     int m_pinned = 0;
     bool m_processNoted = false;
     QByteArray m_previousProcessLine;
+    PlatformLines m_platform = PlatformLines::None;
 
     // Writer state: touched only by the writer step, which runs on one thread at a time.
     std::mutex m_stepMutex;
@@ -306,6 +326,9 @@ class DiagnosticsLog {
     Segments m_host;
     QByteArray m_header;
     IoFault m_fault = IoFault::None;
+    // The platform lines are written to the host log and wait for its sync; the host failure count when they were.
+    bool m_platformUnsynced = false;
+    quint64 m_platformFailures = 0;
 
     mutable std::mutex m_statsMutex;
 

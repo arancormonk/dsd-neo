@@ -8132,7 +8132,13 @@ Qt Quick frontend (`src/ui/qt`):
   byte-identical to the Kotlin tests' (`run_jvm_tests.py` compares the two).
 
   `installTap()` records the run's `process:` line (pid, OS, app version, plus Android's boot count, device and recent
-  `exit:` lines from the platform facts provider). Each new segment starts with that line and the current
+  `exit:` lines from the platform facts provider). Those following lines are reported to the platform
+  (`PlatformLinesLogged`, which Android uses to mark its exit records logged) only once they are durable in the host
+  log: `noteProcess()` queues them with a state (`PlatformLines`), the writer step that takes them settles it as
+  durable when its write and a later host-log sync both succeed with no host failure counted between
+  (`Segments::failures`, which a flush's verdict does not reset), and as lost when either fails or Clear drops them; so
+  another flush (a session attempt's) that takes and loses them before `reportWhenDurable()` runs leaves them unmarked,
+  and the next start logs them again. Each new segment starts with that line and the current
   `session starting:` line, including the first segment after Clear (which forgets the cleared session's line). The
   ring keeps the previous run's divider and identity and this run's process line and current session line pinned at
   its front through eviction (`appendRingLocked()`); a session line a newer one replaces is released and evicted first.

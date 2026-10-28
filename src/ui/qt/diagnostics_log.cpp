@@ -616,8 +616,14 @@ DiagnosticsLog::notePlatformLinesDurable() {
 
 bool
 DiagnosticsLog::reportWhenDurable(int timeoutMs, PlatformLinesLogged logged) {
-    if (!flush(timeoutMs)) {
-        return false;
+    // The flush only makes the writer settle them: its own verdict covers everything written since the last one, and a
+    // failure an earlier flush already reported (it took the lines and lost them) is not in it (#782 gate r2 H4).
+    (void)flush(timeoutMs);
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (m_platform != PlatformLines::Durable) {
+            return false;
+        }
     }
     logged();
     return true;
@@ -980,6 +986,11 @@ void
 DiagnosticsLog::enqueue(const QByteArray& record, bool host, Pin pin) {
     // Queue lock orders concurrent submit operations, but no I/O holds it.
     std::lock_guard<std::mutex> queueLock(m_queueMutex);
+    enqueueLocked(record, host, pin);
+}
+
+void
+DiagnosticsLog::enqueueLocked(const QByteArray& record, bool host, Pin pin) {
     {
         const QString line = QString::fromUtf8(record);
         std::lock_guard<std::mutex> ringLock(m_ringMutex);
@@ -996,6 +1007,10 @@ DiagnosticsLog::enqueue(const QByteArray& record, bool host, Pin pin) {
     if (host) {
         if (m_hostQueue.size() >= static_cast<size_t>(kHostRingLimit)) {
             m_hostQueue.pop_front();
+            // The platform lines sit at the front of the host queue from the publish on: one may be the dropped record.
+            if (m_platform == PlatformLines::Queued) {
+                m_platform = PlatformLines::Lost;
+            }
         }
         m_hostQueue.push_back(record + '\n');
     }
@@ -1199,8 +1214,13 @@ DiagnosticsLog::noteProcess(const QString& facts, const QStringList& followingLi
         previous = m_previousProcessLine;
     }
     enqueue(record, true, Pin::Process);
-    for (const auto& line : followingLines) {
-        submit(QStringLiteral("process"), QStringLiteral("info"), line);
+    if (!followingLines.isEmpty()) {
+        // Queued together with their state, so the writer step that takes them knows it carries them.
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        for (const auto& line : followingLines) {
+            enqueueLocked(formatRecord(QStringLiteral("process"), QStringLiteral("info"), line), true);
+        }
+        m_platform = PlatformLines::Queued;
     }
     // A fact about the log, not a cause: the boot counter moved between the previous run's process line and this one.
     const qint64 before = bootOf(previous);
@@ -1281,6 +1301,9 @@ DiagnosticsLog::clear() {
     m_queue.clear();
     m_hostQueue.clear();
     m_clearPending = true;
+    if (m_platform == PlatformLines::Queued) {
+        m_platform = PlatformLines::Lost;
+    }
     // The cleared session's marker must not come back as a later segment's header.
     m_sessionLine.clear();
     m_ring.clear();
@@ -1389,7 +1412,7 @@ DiagnosticsLog::closeCurrent(Segments& segments) {
     // Bytes still unsynced in a file being given up on are past syncing: the failure, not a retry, is what the next
     // flush reports. Without this, a dirty count with no file kept the writer due forever.
     if (segments.dirtyBytes > 0) {
-        segments.ioFailed = true;
+        segments.fail();
         segments.dirtyBytes = 0;
     }
     segments.file.reset();
@@ -1409,7 +1432,7 @@ DiagnosticsLog::openCurrent(Segments& segments) {
     // Unbuffered: a sync must cover every byte written, with nothing left in a userspace buffer.
     if (m_fault == IoFault::SyncAndOpen
         || !file->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Unbuffered)) {
-        segments.ioFailed = true;
+        segments.fail();
         return;
     }
     segments.fileSize = file->size();
@@ -1426,7 +1449,7 @@ DiagnosticsLog::appendBytes(Segments& segments, const QByteArray& bytes) const {
     }
     if (m_fault == IoFault::Write || segments.file->write(bytes) != bytes.size()) {
         // Reopened (and any partial record trimmed) on the next append.
-        segments.ioFailed = true;
+        segments.fail();
         closeCurrent(segments);
         return false;
     }
@@ -1445,7 +1468,7 @@ DiagnosticsLog::syncCurrent(Segments& segments) const {
     }
     // On Windows QFile's handle() is a C runtime descriptor over the file, so this is _commit(), a real flush to disk.
     if (m_fault == IoFault::Sync || m_fault == IoFault::SyncAndOpen || dsd_fsync(segments.file->handle()) != 0) {
-        segments.ioFailed = true;
+        segments.fail();
         // Retried after an interval, never in a loop: a store that keeps failing must not spin the writer.
         segments.syncRetryAt = nowMs() + kSyncIntervalMs;
         std::lock_guard<std::mutex> lock(m_statsMutex);
@@ -1515,7 +1538,7 @@ DiagnosticsLog::clearFiles(Segments& segments) const {
     segments.dirtyBytes = 0;
     if (!ok) {
         // A clear that did not reach the disk is not durable, and the next flush says so.
-        segments.ioFailed = true;
+        segments.fail();
     }
     return ok;
 }
@@ -1573,6 +1596,10 @@ DiagnosticsLog::step(std::unique_lock<std::mutex>& lock, bool forceSync) {
     m_clearPending = false;
     const quint64 through = m_flushRequested;
     work.flushing = through > m_flushDone;
+    if (m_platform == PlatformLines::Queued) {
+        work.platformLines = true;
+        m_platform = PlatformLines::Taken;
+    }
     work.now = nowMs();
     work.window = inStartupWindow(work.now);
     m_lastDrain = work.now;
@@ -1582,8 +1609,12 @@ DiagnosticsLog::step(std::unique_lock<std::mutex>& lock, bool forceSync) {
         }
     }
     lock.unlock();
-    const bool ok = writeStep(work, forceSync);
+    PlatformLines platform = PlatformLines::None;
+    const bool ok = writeStep(work, forceSync, &platform);
     lock.lock();
+    if (platform != PlatformLines::None && m_platform == PlatformLines::Taken) {
+        m_platform = platform;
+    }
     if (work.flushing && through > m_flushDone) {
         completeFlushes(through, ok);
     }
@@ -1609,10 +1640,36 @@ DiagnosticsLog::takeFlushResult(bool ok) {
     return ok;
 }
 
+DiagnosticsLog::PlatformLines
+DiagnosticsLog::settlePlatformLines(const StepWork& work, quint64 failuresBefore, bool clearedBefore) {
+    if (work.platformLines) {
+        // This step's host write holds them: any host failure from its start on can have lost them.
+        m_platformUnsynced = true;
+        m_platformFailures = failuresBefore;
+    } else if (clearedBefore && m_platformUnsynced) {
+        // Clear dropped them unsynced.
+        m_platformUnsynced = false;
+        return PlatformLines::Lost;
+    }
+    if (!m_platformUnsynced) {
+        return PlatformLines::None;
+    }
+    if (m_host.failures != m_platformFailures) {
+        m_platformUnsynced = false;
+        return PlatformLines::Lost;
+    }
+    if (m_host.dirtyBytes == 0) {
+        m_platformUnsynced = false;
+        return PlatformLines::Durable;
+    }
+    return PlatformLines::None;
+}
+
 bool
-DiagnosticsLog::writeStep(const StepWork& work, bool forceSync) {
+DiagnosticsLog::writeStep(const StepWork& work, bool forceSync, PlatformLines* platform) {
     std::lock_guard<std::mutex> stepLock(m_stepMutex);
     m_header = work.header;
+    const quint64 hostFailuresBefore = m_host.failures;
     bool ok = true;
     if (work.clear) {
         ok = clearFiles(m_tail);
@@ -1626,6 +1683,7 @@ DiagnosticsLog::writeStep(const StepWork& work, bool forceSync) {
     }
     ok = syncIfDue(m_tail, work, forceSync) && ok;
     ok = syncIfDue(m_host, work, forceSync) && ok;
+    *platform = settlePlatformLines(work, hostFailuresBefore, work.clear);
     return work.flushing ? takeFlushResult(ok) : ok;
 }
 
