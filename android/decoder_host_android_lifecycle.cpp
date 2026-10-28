@@ -412,7 +412,8 @@ DecoderHostAndroid::start(const QStringList& argv) {
     /* #782: before the service state is read, so no earlier attempt (one whose grace ran out, or one a host before
      * this one asked for) can be taken by the service once this one is asked for, whatever the read says. Only from a
      * settled screen: a start that reaches here while one is on its way (an entry point no guard covers) must not
-     * cancel that one, as it would be refused for it below. */
+     * cancel that one before the service state is read, as it can be refused for it below; accepted, it supersedes
+     * that one then. */
     const bool settled = m_published_phase == kSessionIdle || m_published_phase == kSessionFailed;
     if (settled) {
         (void)platformRetireAttempts(attempt - 1);
@@ -433,6 +434,11 @@ DecoderHostAndroid::start(const QStringList& argv) {
         clearAttemptFailure();
         setAttemptFailure(kAttemptPreviousStopping, QStringLiteral("A previous session is still stopping"));
         return false;
+    }
+    /* Accepted while one was on its way: the service reads IDLE, so that one's START is not delivered yet. This one
+     * supersedes it, or it would run under a host that follows this one, and this one would be refused for it. */
+    if (!settled) {
+        (void)platformRetireAttempts(attempt - 1);
     }
     m_attempt = attempt;
     clearAttemptFailure();

@@ -844,6 +844,7 @@ Window {
         if (!sys || !sys.sourceType)
             return;
         var remember = !options || options.remember !== false;
+        var previousSource = attemptedSource;
         attemptedSource = {
             kind: scan ? "scan" : row < 0 ? "explore" : "saved",
             uid: sys.uid || "",
@@ -905,8 +906,15 @@ Window {
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
         if (!(built.started)) {
-            if (decoderHost.failureText.length === 0)
-                mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name);
+            // A host that refuses with nothing to publish over a run on screen
+            // (starting or running) leaves that run as it was: its source stays
+            // the one a failure names and Retry starts, and no card is put over it.
+            if (decoderHost.failureText.length === 0) {
+                if (decoderHost.sessionState === 1 || decoderHost.sessionState === 2)
+                    attemptedSource = previousSource;
+                else
+                    mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name);
+            }
             return;
         }
         mainRoot.exploring = (row < 0) && !sys.signalSearch;

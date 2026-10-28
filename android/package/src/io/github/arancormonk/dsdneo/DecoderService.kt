@@ -1191,9 +1191,10 @@ class DecoderService : Service() {
         }
 
         /**
-         * Called from the Qt host (DecoderHostAndroid) to start decoding. [attempt] is the host's id for this start,
-         * which retires every earlier attempt first ([retireAttempts]), so none of them can run once this one is asked
-         * for.
+         * Called from the Qt host (DecoderHostAndroid) to start decoding. [attempt] is the host's id for this start.
+         * The host retires every earlier attempt first ([retireAttempts]), so none of them can run once this one is
+         * asked for: before it reads the service state from a published Idle or Failed phase, otherwise once that read
+         * accepted the start (the service is IDLE, so an earlier START is not delivered yet).
          */
         @JvmStatic
         fun startDecoder(context: Context, args: Array<String>, attempt: Long = 0L) {

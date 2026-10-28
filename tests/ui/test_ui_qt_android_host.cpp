@@ -1300,6 +1300,46 @@ check_refused_start_leaves_the_run_on_screen() {
     retained_record() = QJsonObject();
 }
 
+/* Re-review N1: a start accepted while one is on its way (published Starting, its START not delivered yet, so the
+ * service still reads IDLE) supersedes that one once the service state accepted it, never before. Otherwise both
+ * STARTs arrive, the first runs, and this one's grace expires as undelivered under a host that follows it. */
+static void
+check_accepted_start_supersedes_the_one_on_its_way() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    serviceStops = 0;
+    serviceTookAttempt = false;
+    nowMs = 600000;
+    retained_record() = {{"sessionId", 140}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    nowMs = 600250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting, "it is on its way, its START not delivered");
+    retirements.clear();
+    const int reads = lifecycleReads;
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
+          "a start while one is on its way is accepted while the service is idle");
+    const uint64_t second = lastStartAttempt;
+    check(second > first && retirements == QList<uint64_t>{second - 1},
+          "an accepted start supersedes the one on its way");
+    check(lifecycleReadsAtRetire > reads, "once the service state accepted it");
+    retained_record() = {
+        {"sessionId", 141}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+    running = true;
+    nowMs = 600500;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running && host.inputFailureKind() == 0,
+          "the superseding start is the one followed");
+    running = false;
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1317,6 +1357,7 @@ main(int argc, char** argv) {
     check_attempt_identity();
     check_dismissed_undelivered_start_winds_down();
     check_refused_start_leaves_the_run_on_screen();
+    check_accepted_start_supersedes_the_one_on_its_way();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

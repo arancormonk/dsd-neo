@@ -421,6 +421,29 @@ Item {
             compare(findChild(home(), "dongleDetailsPanel").visible, false);
         }
 
+        // Re-review N1: a start the host refuses over a run on screen with
+        // nothing to publish (an entry point no guard covers) leaves that run
+        // as it was. When the run then fails, the card names the run, not the
+        // refused target, and Reconnect resumes the run.
+        function test_refused_start_leaves_the_run_on_screen() {
+            var uid = startTarget("saved", "usb");
+            var other = addSaved("City DMR", "usb");
+            testContext.setScanTestAcceptStart(false);
+            app.startWithMap(savedSystems.get(other), other, false);
+            compare(decoderHost.sessionState, 1, "the run on screen is still starting");
+            compare(app.startError, "");
+            compare(app.attemptedSource.uid, uid);
+            verify(!app.showFailure, "no card over the run on screen");
+            failByReceiver("usb");
+            tryCompare(card(), "visible", true);
+            compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Tap Reconnect to reset it and start again.");
+            testContext.setScanTestAcceptStart(true);
+            tap(findChild(card(), "failureRetry"));
+            tryCompare(app, "awaitingUsbAccess", true);
+            connect("usb");
+            verifySameSession("saved", uid);
+        }
+
         // #782: a failed, refused or undelivered start says what happened.
         // The host publishes the failure kind (kinds 8 and up are the
         // attempt's own); the card words it, never the generic line.
