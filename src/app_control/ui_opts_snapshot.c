@@ -79,3 +79,17 @@ dsd_app_get_latest_opts_snapshot(void) {
     dsd_mutex_unlock(&g_opts_mu);
     return &g_consume_opts;
 }
+
+void
+dsd_app_opts_snapshot_history_meta(dsd_app_history_tap_meta* meta) {
+    if (meta == NULL) {
+        return;
+    }
+    ensure_opts_mu_init();
+    dsd_mutex_lock(&g_opts_mu);
+    /* g_pub_opts only: the consumer's copy and its sequence stay the frontend's own. */
+    meta->opts_published = g_have_opts;
+    meta->scanner_mode = g_have_opts ? g_pub_opts.scanner_mode : 0;
+    meta->trunk_scan_enabled = g_have_opts ? g_pub_opts.trunk_scan_enabled : 0;
+    dsd_mutex_unlock(&g_opts_mu);
+}

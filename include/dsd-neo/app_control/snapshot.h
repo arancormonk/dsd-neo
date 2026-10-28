@@ -16,6 +16,8 @@
  * thread in the process may call them; a second concurrent reader observes a buffer
  * mid-overwrite. Frontends must funnel every snapshot read through one polling
  * thread (the terminal UI uses its async thread; a GUI uses its main/UI thread).
+ * A thread that must read the history rings besides that one copies them through
+ * <dsd-neo/app_control/history_tap.h> instead.
  *
  * Lifetime: the returned pointers stay valid until the next call from the same
  * consumer thread. Both return NULL until the first publish.

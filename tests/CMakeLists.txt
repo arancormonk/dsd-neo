@@ -1168,6 +1168,31 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/snapshot.h
   C
 )
+# Issue #708: the History tap and the recording journal's token, both read by the Qt app.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_history_tap
+  HEADERS_PUBLIC_APP_CONTROL_HISTORY_TAP
+  dsd-neo/app_control/history_tap.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_history_tap_cxx
+  HEADERS_PUBLIC_APP_CONTROL_HISTORY_TAP_CXX
+  dsd-neo/app_control/history_tap.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_wav_journal
+  HEADERS_PUBLIC_CORE_WAV_JOURNAL
+  dsd-neo/core/wav_journal.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_wav_journal_cxx
+  HEADERS_PUBLIC_CORE_WAV_JOURNAL_CXX
+  dsd-neo/core/wav_journal.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_frontend_types
   HEADERS_PUBLIC_CORE_FRONTEND_TYPES
@@ -4818,6 +4843,50 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_SNAPSHOT_EVENT_HISTORY
     COMMAND dsd-neo_test_app_control_snapshot_event_history
+)
+
+# Issue #708: the History tap, the second reader of the published history, against a racing publisher and the single
+# consumer (run it under the tsan preset too).
+add_executable(
+    dsd-neo_test_app_control_history_tap
+    ui/test_app_control_history_tap.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/history_tap.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
+        dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_HISTORY_TAP
+    COMMAND dsd-neo_test_app_control_history_tap
 )
 
 add_executable(

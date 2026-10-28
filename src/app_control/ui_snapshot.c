@@ -394,6 +394,31 @@ dsd_app_get_latest_snapshot(void) {
     return &g_consume;
 }
 
+int
+dsd_app_snapshot_history_ring_copy(int slot, Event_History_I* out, dsd_app_history_tap_cursor* cursor) {
+    if (out == NULL || cursor == NULL || slot < 0 || slot > 1) {
+        return -1;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    /* g_pub_eh only: the consumer's buffers and its per-slot sequence stay the frontend's own. */
+    if (!g_have || g_pub.event_history_s == NULL) {
+        dsd_mutex_unlock(&g_mu);
+        return 0;
+    }
+    const Event_History_I* ring = &g_pub_eh[slot];
+    if (cursor->read && cursor->instance == ring->instance && cursor->commit_rev == ring->commit_rev) {
+        dsd_mutex_unlock(&g_mu);
+        return 0;
+    }
+    DSD_MEMCPY(out, ring, sizeof(*out));
+    cursor->instance = ring->instance;
+    cursor->commit_rev = ring->commit_rev;
+    cursor->read = 1;
+    dsd_mutex_unlock(&g_mu);
+    return 1;
+}
+
 void
 dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out) {
     dsd_scan_mode_configured(opts, state, out);

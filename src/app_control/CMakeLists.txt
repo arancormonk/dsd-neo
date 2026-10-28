@@ -42,6 +42,7 @@ target_sources(
         tetra_view.c
         telemetry_hooks_install.c
         telemetry_observers.c
+        history_tap.c
         ui_history.c
         ui_opts_snapshot.c
         ui_snapshot.c

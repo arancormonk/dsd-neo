@@ -1319,6 +1319,41 @@ test_error_failed_and_rdio_shapes(void) {
     return rc;
 }
 
+/* The process token the app reads (dsd_wav_temp_token(), its text form) is the one the temp names and journal ids
+   carry: the app tells this process's temp files, which may still be open, from the ones an earlier process left. */
+static int
+test_temp_token_is_the_names_token(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_token");
+    char text[DSD_WAV_TEMP_TOKEN_TEXT_SIZE];
+    rc |= expect_int("the text form fits its size", dsd_wav_temp_token_text(text, sizeof text), 0);
+    char hex[24];
+    hex64(dsd_wav_temp_token(), hex, sizeof hex);
+    rc |= expect_str("16 uppercase hex digits of the token", text, hex);
+    hex64(dsd_wav_temp_token(), hex, sizeof hex);
+    rc |= expect_str("drawn once: the same token again", text, hex);
+    char small[DSD_WAV_TEMP_TOKEN_TEXT_SIZE - 1U];
+    small[0] = 'x';
+    rc |= expect_int("a buffer one short is refused", dsd_wav_temp_token_text(small, sizeof small), -1);
+    rc |= expect_str("and left empty", small, "");
+    rc |= expect_int("no buffer is refused", dsd_wav_temp_token_text(NULL, 64U), -1);
+
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char want[DSD_WAV_TEMP_TOKEN_TEXT_SIZE + 2U];
+    DSD_SNPRINTF(want, sizeof want, "_%s_", text);
+    rc |= expect_true("the temp name carries the token", strstr(r.opts->wav_out_file, want) != NULL);
+    clock_at(k_t0 + 100);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 100U, 77U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 3);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    DSD_SNPRINTF(want, sizeof want, "%s-", text);
+    rc |= expect_true("the journal id starts with the token", pub && strncmp(field_s(pub, "id"), want, 17) == 0);
+    rig_close(&r);
+    return rc;
+}
+
 /* The `file` and folder forms, with POSIX and Windows rules on any host: a file in the journal's folder or below it is
    named '/'-separated relative to it, one elsewhere by its folder; a file in a root keeps the root as its folder. */
 static int
@@ -1393,6 +1428,7 @@ main(void) {
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
     rc |= test_path_forms();
+    rc |= test_temp_token_is_the_names_token();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

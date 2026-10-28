@@ -1139,7 +1139,9 @@ suite runs under this compiler.
     - `type` (string): `publish`, `link`, `unlink`, `discard` or `error`.
     - `t` (number): decode-clock Unix seconds when the record was written.
     - `id` (string or null): `<16 uppercase hex token>-<decimal sequence>`, one per segment, unique per process (the
-      token is drawn once per process), null for a name `open_wav_file()` did not make.
+      token is drawn once per process), null for a name `open_wav_file()` did not make. `dsd_wav_temp_token()` and
+      `dsd_wav_temp_token_text()` (`<dsd-neo/core/wav_journal.h>`) give a reader the live process's token, so it can
+      tell this process's temp files, which may still be open, from the ones an earlier process left.
 
     `publish` (a recording was published under its final name):
     - `file` (string): the final name relative to the journal's folder, `/`-separated on every platform, when it lies
@@ -1176,7 +1178,7 @@ suite runs under this compiler.
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
-  path forms), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT`
+  path forms, the process token), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT`
   (close-on-exec, `dsd_path_canonical()`),
   `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
@@ -2261,8 +2263,13 @@ suite runs under this compiler.
     owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
     final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned
     calls keep theirs. An embedding host clears a cancel that landed after the last shutdown with
-    `dsd_rdio_upload_cancel_reset()` when it configures the next run. Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint,
-    cancel before and during the drain), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
+    `dsd_rdio_upload_cancel_reset()` when it configures the next run. `dsd_rdio_upload_holds()` (issue #708) tells the
+    app's recording store whether a queued job, or the one in flight until its upload and the delete after it are over,
+    names a file: by its final path component (without case on Windows), so another spelling of the folder still
+    matches, under the queue's mutex, which for that reason lives for the process (the worker's condition variable is
+    still created and destroyed with the worker). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
+    during the drain, holds with a blocked uploader through 140 later publications, release after the delete),
+    `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -2521,6 +2528,17 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     reports a `result_gap` when more completed than the history held)
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
+  - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the
+    published history rings for a thread that keeps reading while the frontend's polling thread is paused (the Qt
+    app's background History capture). `dsd_app_history_tap_copy()` copies one slot's `g_pub` ring into the caller's
+    buffer when its `(instance, commit_rev)` differs from the caller's cursor (a cursor that has read nothing copies;
+    a staged-row render alone does not), and fills the options History attribution reads (`scanner_mode`,
+    `trunk_scan_enabled`, and whether options were published) from the published options. The options are read under
+    `ui_opts_snapshot.c`'s lock, then the ring under `ui_snapshot.c`'s `g_mu`, never nested: one memcpy each, no
+    allocation and no I/O under either, and neither touches the single consumer's buffers or sequences. A ring is
+    3.75 MB per slot: one copy holds `g_mu` about 60 us (the publisher's own copy of a changed slot takes as long), a
+    read that finds nothing new 0.06 us (`-O2`, x86-64). Tests: `APP_CONTROL_HISTORY_TAP` (cursor rules, options
+    fields, consumer independence, a publisher racing two taps and the consumer; run it under tsan too).
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.

@@ -17,9 +17,33 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_WAV_JOURNAL_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_WAV_JOURNAL_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** Bytes dsd_wav_temp_token_text() needs: 16 hex digits and the NUL. */
+#define DSD_WAV_TEMP_TOKEN_TEXT_SIZE 17U
+
+/**
+ * @brief This process's per-call WAV token: 64 random bits drawn once per process, at the first per-call open or the
+ * first call here, whichever comes first. Any thread.
+ *
+ * Every temp name (`TEMP_<date>_<time>_<token>_<seq>`) and every journal id (`<token>-<seq>`) this process makes
+ * carries it, so a temp file with this token may still be open for writing, and one with another token was left by an
+ * earlier process.
+ */
+uint64_t dsd_wav_temp_token(void);
+
+/**
+ * @brief The token as temp names and journal ids spell it: 16 uppercase hex digits.
+ *
+ * Returns 0, or -1 when @p out is NULL or @p out_size is below DSD_WAV_TEMP_TOKEN_TEXT_SIZE (@p out, when there is
+ * one, is then "").
+ */
+int dsd_wav_temp_token_text(char* out, size_t out_size);
 
 /** The journal's state; values are stable (the recording view carries them). */
 typedef enum {

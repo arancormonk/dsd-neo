@@ -39,6 +39,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -896,6 +897,25 @@ wav_temp_token(void) {
         }
     }
     return s_wav_temp_token;
+}
+
+uint64_t
+dsd_wav_temp_token(void) {
+    return wav_temp_token();
+}
+
+int
+dsd_wav_temp_token_text(char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    if (out_size < DSD_WAV_TEMP_TOKEN_TEXT_SIZE) {
+        return -1;
+    }
+    /* open_wav_file()'s spelling of the token. */
+    (void)DSD_SNPRINTF(out, out_size, "%016llX", (unsigned long long)wav_temp_token());
+    return 0;
 }
 
 static long wav_file_get_size_or_negative(const char* filename);

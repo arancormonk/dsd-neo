@@ -83,6 +83,19 @@ int dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_s
 time_t dsd_rdio_recording_start(const Event_History* event, time_t opened);
 
 /**
+ * Whether the rdio API upload queue still owns the per-call WAV at @p path: a job naming it is queued or in flight (from
+ * the moment the worker takes it until its upload, and the delete after a successful one, are over). Issue #708: the
+ * app's recording store never deletes such a file.
+ *
+ * Read under the queue's own lock, with no I/O, from any thread at any time. A job names the file when its WAV's final
+ * path component is @p path's (without case on Windows); folders are not compared, since one folder can be reached by
+ * several paths, so a file of the same name in another folder reads as held too, which only delays its deletion. A
+ * session that ended dropped its queue (dsd_rdio_upload_shutdown()), so nothing is held after it. Always 0 in builds
+ * without libcurl, and for a NULL or empty @p path or one ending in a separator.
+ */
+int dsd_rdio_upload_holds(const char* path);
+
+/**
  * Drain queued rdio API uploads and stop the background worker.
  *
  * Intended for process shutdown after final call files are closed/renamed.

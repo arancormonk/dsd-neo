@@ -2302,6 +2302,153 @@ test_api_drain_uploads_every_job_after_cancel_clears(void) {
 #endif
 }
 
+// Issue #708: the app's recording store never deletes a WAV the upload queue still owns. Against a blocked uploader,
+// the file in flight and every queued one are held through more than a full queue of later publications, the ones the
+// full queue refused are not, and after the session's shutdown nothing is.
+#define RDIO_HOLDS_LATER 140
+
+static int
+test_api_upload_holds_queued_and_in_flight_files(void) {
+    int rc = 0;
+    if (dsd_rdio_upload_holds(NULL) != 0 || dsd_rdio_upload_holds("") != 0 || dsd_rdio_upload_holds("/") != 0) {
+        DSD_FPRINTF(stderr, "holds: no file name held\n");
+        rc = 1;
+    }
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    if (dsd_rdio_upload_holds("/tmp/call.wav") != 0) {
+        DSD_FPRINTF(stderr, "holds: nothing is held without an upload queue\n");
+        rc = 1;
+    }
+    return rc;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    static char wav[RDIO_HOLDS_LATER + 1][DSD_TEST_PATH_MAX];
+    static int queued[RDIO_HOLDS_LATER + 1];
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    if (!opts || !hist || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0
+        || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_holds")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    // One attempt that outlasts the test: the worker stays inside the first upload until the cancel aborts it.
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+
+    int count = 0;
+    for (int i = 0; i <= RDIO_HOLDS_LATER && rc == 0; i++) {
+        char leaf[64];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "call_hold_%03d.wav", i);
+        if (dsd_test_path_join(wav[i], sizeof(wav[i]), dir, leaf) != 0 || write_pcm16_mono_wav(wav[i], 8000, 1) != 0) {
+            rc = 1;
+            break;
+        }
+        count = i + 1;
+        queued[i] = 0;
+        (void)dsd_rdio_export_call_ex(opts, hist, wav[i], 0, &queued[i]);
+        // The worker takes the first job before the rest are published: its connection waits in the stalled backlog.
+        if (i == 0 && (!queued[0] || rdio_test_wait_for_connection(stalled, 5000U) <= 0)) {
+            DSD_FPRINTF(stderr, "holds: the first upload never started\n");
+            rc = 1;
+        }
+    }
+
+    int held_count = 0;
+    for (int i = 0; i < count; i++) {
+        const int held = dsd_rdio_upload_holds(wav[i]);
+        held_count += held;
+        if (held != queued[i]) {
+            DSD_FPRINTF(stderr, "holds: publication %d held %d, queued %d\n", i, held, queued[i]);
+            rc = 1;
+        }
+    }
+    // The one in flight and a full queue behind it; the full queue refused every later one.
+    if (count == RDIO_HOLDS_LATER + 1 && (held_count != 129 || !queued[0] || !queued[128] || queued[129])) {
+        DSD_FPRINTF(stderr, "holds: %d of %d held, want the one in flight and 128 queued\n", held_count, count);
+        rc = 1;
+    }
+    char other[DSD_TEST_PATH_MAX];
+    char unpublished[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(other, sizeof(other), "/elsewhere/./sub", "call_hold_000.wav") != 0
+        || dsd_test_path_join(unpublished, sizeof(unpublished), dir, "call_hold_999.wav") != 0
+        || dsd_rdio_upload_holds(other) != 1 || dsd_rdio_upload_holds("call_hold_005.wav") != 1
+        || dsd_rdio_upload_holds(unpublished) != 0) {
+        DSD_FPRINTF(stderr, "holds: a job names its file by its file name, whatever the folder's spelling\n");
+        rc = 1;
+    }
+
+    // The user's Stop: the session's queue is dropped with it, and its files are kept and no longer held.
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    for (int i = 0; i < count; i++) {
+        if (dsd_rdio_upload_holds(wav[i]) != 0 || !file_exists(wav[i])) {
+            DSD_FPRINTF(stderr, "holds: publication %d after the session ended: held or deleted\n", i);
+            rc = 1;
+        }
+        char json[DSD_TEST_PATH_MAX];
+        DSD_SNPRINTF(json, sizeof(json), "%.*s.json", (int)(strlen(wav[i]) - 4U), wav[i]);
+        (void)remove(wav[i]);
+        (void)remove(json);
+    }
+    remove_empty_dir(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// A successful upload releases its file only after the delete that follows it: by the time it is no longer held, it is
+// gone, so the store never sees an unheld file the worker is about to delete.
+static int
+test_api_upload_holds_until_the_delete_is_over(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts || rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    rdio_cancel_jobs jobs;
+    int rc = rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_holds_delete", 1, opts);
+    if (rc == 0 && dsd_rdio_upload_holds(jobs.wav[0]) != 1 && file_exists(jobs.wav[0])) {
+        DSD_FPRINTF(stderr, "holds: a queued upload's file is not held\n");
+        rc = 1;
+    }
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    while (rc == 0 && dsd_rdio_upload_holds(jobs.wav[0]) != 0) {
+        if (dsd_realtime_mono_ms() - t0 > 5000U) {
+            DSD_FPRINTF(stderr, "holds: the uploaded file was never released\n");
+            rc = 1;
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
+    if (rc == 0 && file_exists(jobs.wav[0])) {
+        DSD_FPRINTF(stderr, "holds: the file was released before the delete after its upload\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        rc = 1;
+    }
+    rdio_cancel_jobs_remove(&jobs);
+    dsd_socket_cleanup();
+    free(opts);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2328,5 +2475,7 @@ main(void) {
     rc |= test_api_cancel_during_drain_returns_promptly();
     rc |= test_api_cancel_covers_uploads_queued_after_it();
     rc |= test_api_drain_uploads_every_job_after_cancel_clears();
+    rc |= test_api_upload_holds_queued_and_in_flight_files();
+    rc |= test_api_upload_holds_until_the_delete_is_over();
     return rc;
 }
