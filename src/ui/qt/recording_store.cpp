@@ -1664,7 +1664,7 @@ RecordingStore::lowSpace() const {
 
 int
 RecordingStore::removedByLimit() const {
-    return m_summary.removedByLimit;
+    return m_summary.removedByLimit - m_removedByLimitSeen;
 }
 
 int
@@ -1674,12 +1674,22 @@ RecordingStore::deletesWaiting() const {
 
 int
 RecordingStore::deleteFailures() const {
-    return m_summary.deleteFailures;
+    return m_summary.deleteFailures - m_deleteFailuresSeen;
 }
 
 QString
 RecordingStore::lastDeleteError() const {
-    return m_summary.lastDeleteError;
+    return deleteFailures() > 0 ? m_summary.lastDeleteError : QString();
+}
+
+void
+RecordingStore::acknowledgeNotices() {
+    if (removedByLimit() == 0 && deleteFailures() == 0) {
+        return;
+    }
+    m_removedByLimitSeen = m_summary.removedByLimit;
+    m_deleteFailuresSeen = m_summary.deleteFailures;
+    Q_EMIT changed();
 }
 
 int

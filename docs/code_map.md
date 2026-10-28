@@ -8058,19 +8058,24 @@ Qt Quick frontend (`src/ui/qt`):
   - UI (QML, spec 3.9). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only
     unknown talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
-    them come from `recordingStatus` while a session is on (Applying..., refused during Signal search, a refusal that
-    applies at the next start, recording failures, a failed journal) and from the store (storage away, low space while
-    recording, recordings the limit removed); Storage limit (a ChoiceSheet of `recordingLimitChoices`) and Manage call
-    recordings (usage, or "Counting recordings..." until `indexed`). `CallRecordingsScreen.qml` (Main's
+    them come from `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next
+    start, a submit the queue would not take or a dropped command, recording failures, a failed journal); Storage
+    limit (a ChoiceSheet of `recordingLimitChoices`), then the store's lines (storage away, low space while recording,
+    recordings the limit removed, failed deletes), then Manage call recordings (usage, or "Counting recordings..."
+    until `indexed`). The limit's removals and failed deletes count until the Call recordings screen shows them: it
+    takes them and calls `RecordingStore::acknowledgeNotices()`, which starts both counts again.
+    `CallRecordingsScreen.qml` (Main's
     `callRecordingsOpen` layer): one row per owner with recordings, Unfinished recordings, Export as zip by date preset
-    (the selection first, then the picker; a dismissed picker releases it), progress with Cancel, the result of its own
-    selection only, deletes with confirmations, `deleteFailures`/`lastDeleteError` and `deletesWaiting`.
+    (the selection first, then the picker; a dismissed picker releases it; the owner's name made file-safe by the
+    store's folder rule), progress with Cancel, the result of its own selection only, deletes with confirmations, and
+    the limit's removals and failed deletes since the screen opened, and `deletesWaiting`.
     `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording` is true (History,
     Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows its row by uid
     (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold: play/pause,
-    position and seek, the parts with Play all (the host keeps no queue: a part that stopped at its end, path kept and
-    position at its length, plays the next; a stop clears the path and ends it), Share (`recordingShareFailed()` worded
-    there), Save to file and Delete. A part the host reports "missing" leaves the block at once; closing the sheet
+    position and seek, the parts (the one shown kept on its recording by path) with a Play all parts action (the host
+    keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a stop clears
+    the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part the host
+    reports "missing" leaves the block at once; closing the sheet
     stops what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record
     switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only
     where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History

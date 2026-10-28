@@ -698,7 +698,31 @@ function recordingUsageText(usedBytes, limitMb, count) {
     return used + " · " + counted
 }
 
+// A name made safe inside a file name, by the rule the recording store names
+// folders with (recording_sanitize_name()): path separators, the characters
+// Windows refuses and control characters become "_", and the ends lose dots and
+// spaces.
+function fileNameText(name) {
+    return String(name || "").replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "")
+}
+
 // A player position or length in milliseconds as "m:ss".
 function playbackTimeText(ms) {
     return fmtDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)))
+}
+
+// Issue #708: the store notices Settings and the Call recordings screen share.
+function recordingStorageAwayText() {
+    return qsTr("Storage for call recordings isn't available right now. Saved recordings are kept.")
+}
+
+function removedByLimitText(count) {
+    return count === 1 ? qsTr("The storage limit removed the oldest recording.")
+                       : qsTr("The storage limit removed the %1 oldest recordings.").arg(countText(count))
+}
+
+function deleteFailuresText(count, reason) {
+    var text = count === 1 ? qsTr("1 recording couldn't be deleted.")
+                           : qsTr("%1 recordings couldn't be deleted.").arg(countText(count))
+    return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
 }

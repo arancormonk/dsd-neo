@@ -89,6 +89,13 @@ Item {
             compare(item("recordingHeader").text, "Call recording");
             compare(item("recordingTime").text, "0:00 / 0:12");
             verify(!item("recordingStatus").visible, "a recording at rest says nothing more");
+            verify(!item("recordingProblem").visible);
+            // The bar sits with the time it shows, not apart under the row.
+            var time = item("recordingTime").mapToItem(sheet(), 0, 0);
+            var bar = item("recordingSeekBar");
+            var track = bar.mapToItem(sheet(), 0, bar.height / 2);
+            verify(track.y - (time.y + item("recordingTime").height) < 16, "the track is just under the time");
+            verify(bar.height >= 48, "and keeps a full touch area");
             verify(item("recordingHeader").mapToItem(sheet(), 0, 0).y < item("historyHoldButton").mapToItem(sheet(), 0, 0).y, "the block sits above Hold");
             compare(item("recordingPlayButton").accessibleName, "Play recording");
 
@@ -164,7 +171,9 @@ Item {
             tap("recordingPlayButton");
             testContext.publishPlayback(pathA, 4, 0, 0, data.error);
             verify(item("historyRecording").visible);
-            compare(item("recordingStatus").text, data.text);
+            compare(item("recordingProblem").text, data.text, "a sentence, under the player");
+            verify(!item("recordingStatus").visible, "nothing crammed beside the time");
+            compare(item("recordingProblem").width, item("historyRecording").width);
             tap("recordingPlayButton");
             compare(lastHostCall().name, "playRecording", "a play that failed can be tried again");
         }
@@ -188,14 +197,14 @@ Item {
         function test_storage_away() {
             openWith([rec("t-1", pathA, 12000, {available: false})]);
             testContext.setHostReading("shareSupported", true);
-            compare(item("recordingStatus").text, "The storage this recording is on isn't available right now.");
+            compare(item("recordingProblem").text, "The storage this recording is on isn't available right now.");
             verify(!item("recordingPlayButton").enabled);
             verify(!item("recordingShare").enabled && !item("recordingSave").enabled && !item("recordingDelete").enabled);
         }
 
         function test_cut_short() {
             openWith([rec("t-1", pathA, 12000, {failed: true})]);
-            compare(item("recordingStatus").text, "Saving stopped early, so the end may be missing.");
+            compare(item("recordingProblem").text, "Saving stopped early, so the end may be missing.");
         }
 
         function test_parts_and_play_all() {
@@ -206,9 +215,13 @@ Item {
             verify(item("recordingPart0").checked);
             compare(item("recordingDelete").text, "Delete part 1");
 
+            var player = item("historyRecording");
+            verify(!item("recordingPlayAll").checkable, "Play all is an action, not a fourth part");
+            compare(item("recordingPlayAll").text, "Play all parts");
+            verify(item("recordingPlayAll").mapToItem(sheet(), 0, 0).y > item("recordingPart2").mapToItem(sheet(), 0, 0).y, "under the parts");
             tap("recordingPlayAll");
             compare(lastHostCall().path, pathA);
-            verify(item("recordingPlayAll").checked);
+            verify(player.playAll);
             testContext.publishPlayback(pathA, 2, 6000, 12000, "");
             testContext.publishPlayback(pathA, 0, 12000, 12000, "");
             compare(lastHostCall().name, "playRecording", "the end of a part plays the next one");
@@ -222,25 +235,56 @@ Item {
             testContext.publishPlayback(pathC, 0, 4000, 4000, "");
             var played = hostCallNames().filter(function (name) { return name === "playRecording"; }).length;
             compare(played, 3, "the last part ends Play all");
-            verify(!item("recordingPlayAll").checked);
+            verify(!player.playAll);
+            var checked = [0, 1, 2].filter(function (i) { return item("recordingPart" + i).checked; });
+            compare(checked, [2], "one chip shows the part");
         }
 
         function test_stop_ends_play_all() {
             openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
             tap("recordingPlayAll");
+            var player = item("historyRecording");
             testContext.publishPlayback(pathA, 2, 2000, 12000, "");
             decoderHost.stopPlayback();
-            verify(!item("recordingPlayAll").checked, "a stop ends Play all");
+            verify(!player.playAll, "a stop ends Play all");
             var played = hostCallNames().filter(function (name) { return name === "playRecording"; }).length;
             compare(played, 1, "nothing plays after it");
 
             // A part chosen by hand plays alone.
             tap("recordingPart1");
             compare(lastHostCall().path, pathB);
-            verify(!item("recordingPlayAll").checked);
+            verify(!player.playAll);
             testContext.publishPlayback(pathB, 0, 8000, 8000, "");
             compare(lastHostCall().name, "playRecording");
             compare(lastHostCall().path, pathB, "and stops at its end");
+        }
+
+        // The part shown stays on its recording when another one leaves, and every label names it by where it is now.
+        function test_part_selection_follows_its_recording() {
+            var uid = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000), rec("t-3", pathC, 4000)]);
+            tap("recordingPart1");
+            compare(lastHostCall().path, pathB);
+            // The first part leaves (deleted elsewhere): the one shown is still B, part 1 now.
+            verify(callHistory.setRowRecordings(uid, [rec("t-2", pathB, 8000), rec("t-3", pathC, 4000)]));
+            verify(item("recordingPart0").checked && !item("recordingPart1").checked, "the selection stays on its recording");
+            compare(item("recordingPart0").text, "Part 1 · 0:08");
+            compare(item("recordingDelete").text, "Delete part 1");
+            verify(item("historyRecording").loaded, "and it is still the one open");
+            tap("recordingDelete");
+            var confirm = findChild(sheet(), "recordingDeleteConfirm");
+            compare(findChild(confirm, "confirmMessage").text, "Part 1 is deleted from this phone. The other parts and the call stay in History.");
+            findChild(confirm, "confirmActionButton").activate();
+            compare(recordings.calls()[recordings.calls().length - 1].id, "t-2", "and it is the one deleted");
+        }
+        function test_part_selection_when_its_recording_goes_missing() {
+            openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000), rec("t-3", pathC, 4000)]);
+            tap("recordingPart2");
+            testContext.publishPlayback(pathC, 4, 0, 0, "missing");
+            compare(item("recordingHeader").text, "Call recording · 2 parts");
+            var checked = [0, 1].filter(function (i) { return item("recordingPart" + i).checked; });
+            compare(checked, [1], "the last part left is shown");
+            compare(item("recordingDelete").text, "Delete part 2", "no label names a part that is gone");
+            compare(item("historyRecording").part.path, pathB);
         }
 
         // A recording journaled, or a fragment folded into the call, shows while the sheet is open.

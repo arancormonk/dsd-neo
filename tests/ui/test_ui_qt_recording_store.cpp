@@ -850,15 +850,22 @@ test_retention(void) {
                && !QFileInfo::exists(folder + QStringLiteral("/c2.wav"))
                && QFileInfo::exists(folder + QStringLiteral("/c3.wav")) && s.store.usedBytes() == 900000);
     expect("and say so", s.store.removedByLimit() == 3 && reached.count() == 1 && reached.at(0).at(0).toInt() == 3);
+    // Seen on the Call recordings screen, the count starts again; a second look changes nothing.
+    QSignalSpy noticed(&s.store, &RecordingStore::changed);
+    s.store.acknowledgeNotices();
+    expect("acknowledged, nothing removed is shown", s.store.removedByLimit() == 0 && noticed.count() == 1);
+    s.store.acknowledgeNotices();
+    expect("acknowledged twice, no change", noticed.count() == 1);
 
     record(folder, QStringLiteral("0000000000000011-20"), QStringLiteral("small.wav"), 1754708000, 200, 40000);
     s.pass();
-    expect("between 95% and the limit nothing goes", s.store.usedBytes() == 940000 && s.store.removedByLimit() == 3);
+    expect("between 95% and the limit nothing goes", s.store.usedBytes() == 940000 && s.store.removedByLimit() == 0);
     record(folder, QStringLiteral("0000000000000011-21"), QStringLiteral("more.wav"), 1754708010, 201, 70000);
     s.pass();
     expect("past the limit again, after a publish, the next oldest goes",
            s.store.usedBytes() == 910000 && !QFileInfo::exists(folder + QStringLiteral("/c3.wav"))
-               && QFileInfo::exists(folder + QStringLiteral("/c0.wav")) && s.store.removedByLimit() == 4);
+               && QFileInfo::exists(folder + QStringLiteral("/c0.wav")) && s.store.removedByLimit() == 1
+               && reached.count() == 2);
     s.store.releaseSelection(held.value("selection").toInt());
 }
 
@@ -1274,6 +1281,15 @@ test_delete_failures_are_reported(void) {
            s.store.deleteFailures() == 4 && g_storeWarnings.load() == warnings + 2
                && QFileInfo::exists(folder + QStringLiteral("/big1.wav"))
                && !QFileInfo::exists(folder + QStringLiteral("/big2.wav")) && s.store.removedByLimit() == 1);
+
+    // Seen, the failures and their reason count from zero again; the next one shows with its own reason.
+    s.store.acknowledgeNotices();
+    expect("acknowledged, no failure is shown",
+           s.store.deleteFailures() == 0 && s.store.lastDeleteError().isEmpty() && s.store.removedByLimit() == 0);
+    s.store.deleteRecording(QStringLiteral("0000000000000077-1"));
+    s.pass();
+    expect("a later failure shows on its own",
+           s.store.deleteFailures() == 1 && s.store.lastDeleteError() == QStringLiteral("Permission denied"));
 }
 
 /* Issue #708, M5: an exit during a long first read does not wait for the rest of it. */

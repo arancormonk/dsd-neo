@@ -58,6 +58,8 @@ Item {
             testContext.setPrefs("recordCalls", false);
             screen().notice = "";
             screen().exportSelection = 0;
+            screen().removedShown = 0;
+            screen().failuresShown = 0;
         }
         function cleanup() {
             for (var name of ["callRecordingsFolderMenu", "callRecordingsRange", "callRecordingsDeleteConfirm"])
@@ -85,7 +87,7 @@ Item {
             verify(!item("callRecordingsEmpty").visible);
             compare(item("callRecordingsUsage").text, "210 MB of 1 GB · 843 recordings");
             compare(item("callRecordingsFolder0").title, "County P25");
-            var now = new Date();
+            var now = new Date(savedSystems.realtimeNowMs());
             var format = function (stamp) {
                 var date = new Date(stamp * 1000);
                 return Qt.formatDate(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
@@ -97,7 +99,7 @@ Item {
             recordings.unfinishedCount = 2;
             recordings.unfinishedBytes = 4100000;
             verify(item("callRecordingsUnfinished").visible);
-            compare(item("callRecordingsUnfinished").subtitle, "2 recordings · 4.1 MB · left by a run that ended early");
+            compare(item("callRecordingsUnfinished").subtitle, "2 recordings · 4.1 MB · left when listening stopped unexpectedly");
         }
 
         function test_storage_away() {
@@ -243,9 +245,16 @@ Item {
             compare(menu.actions[menu.actions.length - 1].text, "Delete all from Explore");
             menu.cancel();
 
+            // Like a folder row, it opens its actions rather than a confirmation.
             item("callRecordingsUnfinished").activate();
+            compare(menu.title, "Unfinished recordings");
+            compare(menu.actions.length, 1);
+            compare(menu.actions[0].text, "Delete unfinished");
+            verify(menu.actions[0].destructive);
+            menuAction("unfinishedActionDelete");
             var confirm = item("callRecordingsDeleteConfirm");
             compare(confirm.title, "Delete unfinished recordings?");
+            compare(findChild(confirm, "confirmMessage").text, "They were left when listening stopped unexpectedly, and may be cut short.");
             compare(findChild(confirm, "confirmActionButton").text, "Delete unfinished");
             findChild(confirm, "confirmActionButton").activate();
             compare(lastStoreCall().name, "deleteUnfinished");
@@ -261,21 +270,60 @@ Item {
             compare(lastStoreCall().name, "deleteAll");
         }
 
-        function test_delete_failures_and_waiting() {
+        // The store's failed deletes and the limit's removals show here and are acknowledged as they show, so Settings
+        // stops repeating them; each visit starts from what is new.
+        function test_delete_failures_and_limit_notices() {
             fill();
             verify(!item("callRecordingsDeleteFailures").visible);
-            verify(!item("callRecordingsDeletesWaiting").visible);
+            verify(!item("callRecordingsRemovedByLimit").visible);
             recordings.deleteFailures = 1;
             recordings.lastDeleteError = "Permission denied";
+            tryCompare(recordings, "deleteFailures", 0);
+            compare(lastStoreCall().name, "acknowledgeNotices");
             verify(item("callRecordingsDeleteFailures").visible);
             compare(item("callRecordingsDeleteFailures").text, "1 recording couldn't be deleted. The phone said: Permission denied");
-            recordings.deleteFailures = 4;
-            recordings.lastDeleteError = "";
-            compare(item("callRecordingsDeleteFailures").text, "4 recordings couldn't be deleted.");
+            recordings.deleteFailures = 3;
+            recordings.lastDeleteError = "Read-only file system";
+            tryCompare(recordings, "deleteFailures", 0);
+            compare(item("callRecordingsDeleteFailures").text, "4 recordings couldn't be deleted. The phone said: Read-only file system");
+            recordings.removedByLimit = 2;
+            tryCompare(recordings, "removedByLimit", 0);
+            compare(item("callRecordingsRemovedByLimit").text, "The storage limit removed the 2 oldest recordings.");
+
+            // Away, nothing is taken; the next visit shows only what came since.
+            screen().visible = false;
+            recordings.removedByLimit = 1;
+            wait(20);
+            compare(recordings.removedByLimit, 1, "not acknowledged unseen");
+            screen().visible = true;
+            compare(recordings.removedByLimit, 0);
+            compare(item("callRecordingsRemovedByLimit").text, "The storage limit removed the oldest recording.");
+            verify(!item("callRecordingsDeleteFailures").visible);
+        }
+
+        function test_deletes_waiting() {
+            fill();
+            verify(!item("callRecordingsDeletesWaiting").visible);
             recordings.deletesWaiting = 1;
             compare(item("callRecordingsDeletesWaiting").text, "1 recording is deleted once it stops playing, uploading or exporting.");
             recordings.deletesWaiting = 3;
             compare(item("callRecordingsDeletesWaiting").text, "3 recordings are deleted once they stop playing, uploading or exporting.");
+        }
+
+        function test_export_file_name_is_safe() {
+            recordings.folders = [{uid: "u9", kind: "saved", name: "Fire/EMS: \"North\" <1>", count: 2, bytes: 2000, first: 1761300000, last: 1761300000, available: true}];
+            recordings.recordingCount = 2;
+            recordings.setSelection(2, 2000, ["/r/a.wav"]);
+            screen().beginExport(recordings.folders[0], "all");
+            var name = findChild(screen(), "callRecordingsExportPicker").selectedFile.toString();
+            verify(name.indexOf("Fire_EMS_ _North_ _1_") >= 0, name);
+            verify(name.indexOf("/Fire") < 0 && name.indexOf(":") < 0 || name.indexOf("file:") === 0, "no separator from the name: " + name);
+            screen().exportPickCancelled();
+        }
+
+        function test_storage_away_wording_matches_settings() {
+            recordings.available = false;
+            compare(item("callRecordingsAway").text, "Storage for call recordings isn't available right now. Saved recordings are kept.");
         }
 
         function test_back() {

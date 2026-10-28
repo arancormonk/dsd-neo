@@ -794,6 +794,7 @@ Item {
         }
         ListView {
             id: recentList
+            objectName: "homeRecentList"
             anchors.top: recentTitle.bottom
             anchors.left: parent.left
             anchors.right: parent.right

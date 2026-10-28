@@ -26,7 +26,11 @@ Column {
     // Where the delete confirmation opens: the sheet, so it dims the whole screen.
     property Item dialogParent: null
 
+    // The part shown, kept on its recording by path: a part that leaves (deleted,
+    // or found missing) moves no other part's selection, and the index every label
+    // uses is always one that exists.
     property int current: 0
+    property string currentPath: ""
     property bool playAll: false
     // What the last share, save or delete came to; empty when there is nothing to say.
     property string notice: ""
@@ -59,15 +63,22 @@ Column {
     function partLabel(index) {
         return qsTr("Part %1 · %2").arg(index + 1).arg(Util.playbackTimeText(parts[index].durationMs));
     }
+    // A short state, beside the time.
     function statusText() {
-        if (!part)
+        if (!part || storageAway)
             return "";
-        if (storageAway)
-            return qsTr("The storage this recording is on isn't available right now.");
         if (playState === 1)
             return qsTr("Opening…");
         if (playState === 3)
             return qsTr("Paused");
+        return "";
+    }
+    // Why it cannot play, or what is wrong with it: a sentence, under the player.
+    function problemText() {
+        if (!part)
+            return "";
+        if (storageAway)
+            return qsTr("The storage this recording is on isn't available right now.");
         if (playState === 4) {
             var error = decoderHost.playbackError;
             return error === "unavailable" ? qsTr("Can't play right now. Another app has the audio, such as a phone call.")
@@ -94,14 +105,18 @@ Column {
         }
         decoderHost.playRecording(part.path);
     }
+    function select(index) {
+        current = Math.max(0, Math.min(index, parts.length - 1));
+        currentPath = parts.length > 0 ? parts[current].path : "";
+    }
     function playPart(index) {
         playAll = false;
-        current = index;
+        select(index);
         notice = "";
-        decoderHost.playRecording(parts[index].path);
+        decoderHost.playRecording(parts[current].path);
     }
     function startPlayAll() {
-        current = 0;
+        select(0);
         notice = "";
         playAll = true;
         decoderHost.playRecording(parts[0].path);
@@ -116,7 +131,7 @@ Column {
             return;
         var atEnd = decoderHost.playbackState === 0 && decoderHost.playbackPath === part.path && decoderHost.playbackDurationMs > 0 && decoderHost.playbackPositionMs >= decoderHost.playbackDurationMs;
         if (atEnd && current + 1 < parts.length) {
-            current = current + 1;
+            select(current + 1);
             decoderHost.playRecording(parts[current].path);
             return;
         }
@@ -134,6 +149,7 @@ Column {
     }
     function reset() {
         current = 0;
+        currentPath = "";
         playAll = false;
         notice = "";
         noticeProblem = false;
@@ -205,14 +221,18 @@ Column {
         if (decoderHost.playbackPath === target.path && decoderHost.playbackState !== 0)
             decoderHost.stopPlayback();
         playAll = false;
-        current = 0;
         recordings.deleteRecording(target.id);
         say("", false);
     }
 
-    onRecordingListChanged: {
-        if (current >= parts.length)
-            current = Math.max(0, parts.length - 1);
+    onPartsChanged: {
+        for (var i = 0; i < parts.length; i++) {
+            if (parts[i].path === currentPath) {
+                current = i;
+                return;
+            }
+        }
+        select(current);
     }
 
     Connections {
@@ -279,6 +299,111 @@ Column {
                 Accessible.name: qsTr("%1 of %2").arg(Util.playbackTimeText(player.positionMs)).arg(Util.playbackTimeText(player.durationMs))
             }
 
+            // The position under the time, and a seek by tap or drag while the
+            // recording is open. The bar takes a short slot; its touch area is the
+            // full 48 px, centred on the track.
+            Item {
+                width: parent.width
+                height: 20
+
+                Item {
+                    id: seekBar
+                    objectName: "recordingSeekBar"
+
+                    readonly property bool seekable: player.loaded && (player.playState === 2 || player.playState === 3) && player.durationMs > 0
+                    property bool dragging: false
+                    property real dragMs: 0
+                    readonly property real fraction: player.durationMs > 0 ? Math.max(0, Math.min(1, player.positionMs / player.durationMs)) : 0
+
+                    width: parent.width
+                    height: Theme.minimumTouchSize
+                    y: (parent.height - height) / 2
+                    enabled: seekable
+                    activeFocusOnTab: Navigation.allows(seekBar) && seekable
+                    Accessible.role: Accessible.Slider
+                    Accessible.name: qsTr("Position")
+                    Accessible.description: qsTr("%1 of %2").arg(Util.playbackTimeText(player.positionMs)).arg(Util.playbackTimeText(player.durationMs))
+                    readonly property real value: player.positionMs / 1000
+                    readonly property real minimumValue: 0
+                    readonly property real maximumValue: player.durationMs / 1000
+                    readonly property bool navigationAllowed: Navigation.allows(seekBar)
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.onIncreaseAction: nudge(5000)
+                    Accessible.onDecreaseAction: nudge(-5000)
+                    Keys.onRightPressed: nudge(5000)
+                    Keys.onLeftPressed: nudge(-5000)
+                    FocusFrame {}
+
+                    function msAt(x) {
+                        return Math.round(Math.max(0, Math.min(1, x / Math.max(1, track.width))) * player.durationMs);
+                    }
+                    function seekTo(ms) {
+                        if (seekable && Navigation.allows(seekBar))
+                            decoderHost.seekPlayback(Math.max(0, Math.min(player.durationMs, ms)));
+                    }
+                    function nudge(delta) {
+                        seekTo(player.positionMs + delta);
+                    }
+
+                    Rectangle {
+                        id: track
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 4
+                        radius: 2
+                        color: Theme.toggleOffTrack
+                        opacity: seekBar.seekable ? 1 : 0.6
+
+                        Rectangle {
+                            width: parent.width * seekBar.fraction
+                            height: parent.height
+                            radius: 2
+                            color: Theme.cyan
+                        }
+                    }
+
+                    Rectangle {
+                        visible: seekBar.seekable
+                        x: Math.round(track.width * seekBar.fraction - width / 2)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14
+                        height: 14
+                        radius: 7
+                        color: Theme.cyan
+                        border.width: 2
+                        border.color: Theme.panel
+                    }
+
+                    TapHandler {
+                        enabled: seekBar.seekable
+                        onTapped: function (eventPoint) {
+                            seekBar.seekTo(seekBar.msAt(eventPoint.position.x));
+                        }
+                    }
+                    DragHandler {
+                        id: drag
+                        enabled: seekBar.seekable
+                        target: null
+                        xAxis.enabled: true
+                        yAxis.enabled: false
+                        onActiveChanged: {
+                            if (active) {
+                                seekBar.dragMs = seekBar.msAt(centroid.position.x);
+                                seekBar.dragging = true;
+                            } else if (seekBar.dragging) {
+                                seekBar.dragging = false;
+                                seekBar.seekTo(seekBar.dragMs);
+                            }
+                        }
+                        onCentroidChanged: {
+                            if (active)
+                                seekBar.dragMs = seekBar.msAt(centroid.position.x);
+                        }
+                    }
+                }
+            }
+
             Text {
                 objectName: "recordingStatus"
                 width: parent.width
@@ -287,111 +412,28 @@ Column {
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(12)
-                color: player.playState === 4 || player.storageAway ? Theme.alert : Theme.textSubdued
-                Accessible.role: player.playState === 4 ? Accessible.AlertMessage : Accessible.StaticText
+                color: Theme.textSubdued
+                Accessible.role: Accessible.StaticText
                 Accessible.name: text
             }
         }
     }
 
-    // The position, and a seek by tap or drag while the recording is open.
-    Item {
-        id: seekBar
-        objectName: "recordingSeekBar"
-
-        readonly property bool seekable: player.loaded && (player.playState === 2 || player.playState === 3) && player.durationMs > 0
-        property bool dragging: false
-        property real dragMs: 0
-        readonly property real fraction: player.durationMs > 0 ? Math.max(0, Math.min(1, player.positionMs / player.durationMs)) : 0
-
+    Text {
+        objectName: "recordingProblem"
         width: parent.width
-        height: Theme.minimumTouchSize
-        enabled: seekable
-        activeFocusOnTab: Navigation.allows(seekBar) && seekable
-        Accessible.role: Accessible.Slider
-        Accessible.name: qsTr("Position")
-        Accessible.description: qsTr("%1 of %2").arg(Util.playbackTimeText(player.positionMs)).arg(Util.playbackTimeText(player.durationMs))
-        readonly property real value: player.positionMs / 1000
-        readonly property real minimumValue: 0
-        readonly property real maximumValue: player.durationMs / 1000
-        readonly property bool navigationAllowed: Navigation.allows(seekBar)
-        Accessible.ignored: !navigationAllowed || !visible
-        Accessible.onIncreaseAction: nudge(5000)
-        Accessible.onDecreaseAction: nudge(-5000)
-        Keys.onRightPressed: nudge(5000)
-        Keys.onLeftPressed: nudge(-5000)
-        FocusFrame {}
-
-        function msAt(x) {
-            return Math.round(Math.max(0, Math.min(1, x / Math.max(1, track.width))) * player.durationMs);
-        }
-        function seekTo(ms) {
-            if (seekable && Navigation.allows(seekBar))
-                decoderHost.seekPlayback(Math.max(0, Math.min(player.durationMs, ms)));
-        }
-        function nudge(delta) {
-            seekTo(player.positionMs + delta);
-        }
-
-        Rectangle {
-            id: track
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            height: 4
-            radius: 2
-            color: Theme.toggleOffTrack
-            opacity: seekBar.seekable ? 1 : 0.6
-
-            Rectangle {
-                width: parent.width * seekBar.fraction
-                height: parent.height
-                radius: 2
-                color: Theme.cyan
-            }
-        }
-
-        Rectangle {
-            visible: seekBar.seekable
-            x: Math.round(track.width * seekBar.fraction - width / 2)
-            anchors.verticalCenter: parent.verticalCenter
-            width: 14
-            height: 14
-            radius: 7
-            color: Theme.cyan
-            border.width: 2
-            border.color: Theme.panel
-        }
-
-        TapHandler {
-            enabled: seekBar.seekable
-            onTapped: function (eventPoint) {
-                seekBar.seekTo(seekBar.msAt(eventPoint.position.x));
-            }
-        }
-        DragHandler {
-            id: drag
-            enabled: seekBar.seekable
-            target: null
-            xAxis.enabled: true
-            yAxis.enabled: false
-            onActiveChanged: {
-                if (active) {
-                    seekBar.dragMs = seekBar.msAt(centroid.position.x);
-                    seekBar.dragging = true;
-                } else if (seekBar.dragging) {
-                    seekBar.dragging = false;
-                    seekBar.seekTo(seekBar.dragMs);
-                }
-            }
-            onCentroidChanged: {
-                if (active)
-                    seekBar.dragMs = seekBar.msAt(centroid.position.x);
-            }
-        }
+        visible: text.length > 0
+        text: player.problemText()
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: player.playState === 4 || player.storageAway ? Theme.alert : Theme.textSecondary
+        Accessible.role: player.playState === 4 || player.storageAway ? Accessible.AlertMessage : Accessible.StaticText
+        Accessible.name: text
     }
 
-    // A call heard in pieces: each part, and Play all.
+    // A call heard in pieces: a chip per part, the one shown checked, and Play all
+    // as an action of its own under them.
     Flow {
         width: parent.width
         spacing: 8
@@ -409,14 +451,15 @@ Column {
             }
         }
 
-        OutlineButton {
-            objectName: "recordingPlayAll"
-            text: qsTr("Play all")
-            checkable: true
-            checked: player.playAll
-            enabled: !player.storageAway
-            onClicked: player.startPlayAll()
-        }
+    }
+
+    OutlineButton {
+        objectName: "recordingPlayAll"
+        width: parent.width
+        visible: player.parts.length > 1
+        text: qsTr("Play all parts")
+        enabled: !player.storageAway
+        onClicked: player.startPlayAll()
     }
 
     Row {

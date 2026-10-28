@@ -25,6 +25,14 @@ Item {
     property bool noticeProblem: false
     // What the open folder menu, the date choice and the delete confirmation are about.
     property var subject: null
+    // What the storage limit removed and which deletes failed, taken from the store
+    // while this screen shows them; taking them acknowledges them, so Settings stops
+    // repeating what the user has seen here.
+    property int removedShown: 0
+    property int failuresShown: 0
+    property string failureReason: ""
+    readonly property int unseenRemoved: recordings.removedByLimit
+    readonly property int unseenFailures: recordings.deleteFailures
 
     readonly property var folders: {
         var list = [];
@@ -43,13 +51,36 @@ Item {
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
     // The layer clears input during activation; take focus after its bindings settle.
-    onVisibleChanged: if (visible) Qt.callLater(function () {
-        if (screen.visible && Navigation.allows(screen))
-            screen.forceActiveFocus();
-    })
+    onVisibleChanged: {
+        if (!visible)
+            return;
+        removedShown = 0;
+        failuresShown = 0;
+        failureReason = "";
+        takeNotices();
+        Qt.callLater(function () {
+            if (screen.visible && Navigation.allows(screen))
+                screen.forceActiveFocus();
+        });
+    }
+    // Later, not inside the store's change: taking them changes the same readings.
+    Component.onCompleted: Qt.callLater(takeNotices)
+    onUnseenRemovedChanged: Qt.callLater(takeNotices)
+    onUnseenFailuresChanged: Qt.callLater(takeNotices)
+
+    function takeNotices() {
+        if (!visible || (unseenRemoved <= 0 && unseenFailures <= 0))
+            return;
+        removedShown += Math.max(0, unseenRemoved);
+        if (unseenFailures > 0) {
+            failuresShown += unseenFailures;
+            failureReason = recordings.lastDeleteError;
+        }
+        recordings.acknowledgeNotices();
+    }
 
     function spanText(folder) {
-        var now = new Date();
+        var now = new Date(savedSystems.realtimeNowMs());
         var format = function (stamp) {
             var date = new Date(stamp * 1000);
             return Qt.formatDate(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
@@ -82,11 +113,19 @@ Item {
         folderMenu.actions = items;
         folderMenu.open();
     }
+    function openUnfinished() {
+        subject = null;
+        folderMenu.title = qsTr("Unfinished recordings");
+        folderMenu.actions = [{text: qsTr("Delete unfinished"), key: "deleteUnfinished", destructive: true, objectName: "unfinishedActionDelete"}];
+        folderMenu.open();
+    }
     function folderAction(key) {
         if (key === "export")
             chooseRange(subject);
         else if (key === "delete")
             askDelete("folder", subject);
+        else if (key === "deleteUnfinished")
+            askDelete("unfinished", null);
     }
     // Pick a date range for @p folder, or for every recording when it is null.
     function chooseRange(folder) {
@@ -105,9 +144,10 @@ Item {
         }
         exportSelection = selection.selection;
         exportSelectionMap = selection;
-        var stamp = Qt.formatDate(new Date(), "yyyy-MM-dd");
+        var stamp = Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
         say("", false);
-        exportPicker.selectedFile = (folder ? qsTr("Call recordings %1 %2").arg(folder.name).arg(stamp) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
+        var owner = folder ? Util.fileNameText(folder.name) : "";
+        exportPicker.selectedFile = (owner.length > 0 ? qsTr("Call recordings %1 %2").arg(owner).arg(stamp) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
         exportPicker.open();
     }
     function exportPicked(reference) {
@@ -154,7 +194,7 @@ Item {
             confirmDelete.message = folder.count === 1 ? qsTr("1 recording is deleted from this phone. The calls stay in History.") : qsTr("%1 recordings are deleted from this phone. The calls stay in History.").arg(Util.countText(folder.count));
         } else if (kind === "unfinished") {
             confirmDelete.title = qsTr("Delete unfinished recordings?");
-            confirmDelete.message = qsTr("These were left by a run that ended before it could finish them.");
+            confirmDelete.message = qsTr("They were left when listening stopped unexpectedly, and may be cut short.");
         } else {
             var total = recordings.recordingCount + recordings.unfinishedCount;
             confirmDelete.title = qsTr("Delete all call recordings?");
@@ -251,7 +291,7 @@ Item {
                 objectName: "callRecordingsAway"
                 width: parent.width
                 visible: !recordings.available
-                text: qsTr("Storage for call recordings isn't available right now. Saved recordings are kept and come back with it.")
+                text: Util.recordingStorageAwayText()
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
@@ -292,6 +332,9 @@ Item {
                         color: Theme.toggleOffTrack
                         Accessible.role: Accessible.ProgressBar
                         Accessible.name: qsTr("Export progress")
+                        readonly property real value: decoderHost.recordingTransferBytes
+                        readonly property real minimumValue: 0
+                        readonly property real maximumValue: Math.max(0, decoderHost.recordingTransferTotalBytes)
 
                         Rectangle {
                             width: decoderHost.recordingTransferTotalBytes > 0 ? parent.width * Math.min(1, decoderHost.recordingTransferBytes / decoderHost.recordingTransferTotalBytes) : 0
@@ -323,12 +366,25 @@ Item {
                 Accessible.name: text
             }
 
-            // Deletes the store could not do, and the ones waiting for a hold.
+            // What the limit removed and the deletes the store could not do, since this
+            // screen opened (taken from the store, see takeNotices()), and the ones
+            // waiting for a hold.
+            Text {
+                objectName: "callRecordingsRemovedByLimit"
+                width: parent.width
+                visible: screen.removedShown > 0
+                text: Util.removedByLimitText(screen.removedShown)
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSecondary
+            }
+
             Text {
                 objectName: "callRecordingsDeleteFailures"
                 width: parent.width
-                visible: recordings.deleteFailures > 0
-                text: (recordings.deleteFailures === 1 ? qsTr("1 recording couldn't be deleted.") : qsTr("%1 recordings couldn't be deleted.").arg(Util.countText(recordings.deleteFailures))) + (recordings.lastDeleteError.length > 0 ? " " + qsTr("The phone said: %1").arg(recordings.lastDeleteError) : "")
+                visible: screen.failuresShown > 0
+                text: Util.deleteFailuresText(screen.failuresShown, screen.failureReason)
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
@@ -377,8 +433,8 @@ Item {
                         objectName: "callRecordingsUnfinished"
                         visible: recordings.unfinishedCount > 0
                         title: qsTr("Unfinished recordings")
-                        subtitle: (recordings.unfinishedCount === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(Util.countText(recordings.unfinishedCount))) + " · " + Util.sizeText(recordings.unfinishedBytes) + " · " + qsTr("left by a run that ended early")
-                        onTapped: screen.askDelete("unfinished", null)
+                        subtitle: (recordings.unfinishedCount === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(Util.countText(recordings.unfinishedCount))) + " · " + Util.sizeText(recordings.unfinishedBytes) + " · " + qsTr("left when listening stopped unexpectedly")
+                        onTapped: screen.openUnfinished()
                     }
                 }
             }

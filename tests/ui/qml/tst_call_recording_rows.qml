@@ -16,6 +16,16 @@ Item {
         anchors.fill: parent
         source: uiDir + "/HistoryScreen.qml"
     }
+    // Home's recent calls show in the supporting pane of a wide window.
+    Loader {
+        id: home
+        width: 1000
+        height: 900
+        active: false
+        visible: active
+        source: uiDir + "/HomeScreen.qml"
+    }
+
     TestCase {
         name: "CallRecordingRows"
         when: windowShown
@@ -67,8 +77,9 @@ Item {
             compare(mark.x + glyph(shown[1]).width + 8, time.x, "the glyph sits just before the time");
             verify(mark.y > 0 && mark.y + glyph(shown[1]).height < shown[1].height);
             var encMark = glyph(shown[0]).mapToItem(shown[0], 0, 0);
-            verify(!findChild(shown[0], "callRowTime").visible, "an encrypted row shows ENC instead of the time");
-            verify(encMark.x + glyph(shown[0]).width + 8 <= shown[0].width - 18 - 20, "and the glyph sits before it");
+            var enc = findChild(shown[0], "rowEncTag");
+            verify(enc.visible && !findChild(shown[0], "callRowTime").visible, "an encrypted row shows ENC instead of the time");
+            compare(encMark.x + glyph(shown[0]).width + 8, enc.mapToItem(shown[0], 0, 0).x, "and the glyph sits just before it");
 
             // A recording deleted elsewhere takes the glyph with it.
             verify(callHistory.setRowRecordings(uid, []));
@@ -83,6 +94,33 @@ Item {
             var tag = findChild(row, "rowEmergencyTag");
             verify(tag.visible && glyph(row).visible);
             verify(tag.x + tag.width <= glyph(row).x, "EMERGENCY, then the glyph, then the time");
+        }
+
+        function test_home_recent_calls() {
+            callHistory.push("TODAY");
+            var uid = callHistory.pushWithRecordings([rec("h")]);
+            home.active = true;
+            waitForRendering(home.item);
+            var list = findChild(home.item, "homeRecentList");
+            verify(list !== null && list.visible);
+            var found = [];
+            for (var child of list.contentItem.children) {
+                if (child.hasOwnProperty("hasRecording") && child.visible)
+                    found.push(child);
+            }
+            found.sort(function (a, b) { return a.y - b.y; });
+            compare(found.length, 2);
+            verify(glyph(found[0]).visible, "the recorded call carries the glyph");
+            verify(!glyph(found[1]).visible);
+            compare(found[0].Accessible.name, found[0].accessibleName + ", has a recording");
+            // Its detail sheet follows the row, recordings and all.
+            found[0].activate();
+            var sheet = findChild(home.item, "homeRecentDetailSheet");
+            verify(sheet.visible);
+            compare(sheet.rowRecordings.length, 1);
+            verify(findChild(sheet, "historyRecording").visible);
+            sheet.visible = false;
+            home.active = false;
         }
 
         function test_save_failing_notice() {

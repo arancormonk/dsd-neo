@@ -125,6 +125,7 @@ Item {
             compare(sheet.priorityValue, 50);
             mouseClick(findChild(sheet, "priorityPreset0"));
             verify(!findChild(sheet, "preemptToggle").enabled);
+            verify(findChild(sheet, "preemptToggle").opacity < 1.0, "a toggle that cannot change looks disabled");
             mouseClick(findChild(sheet, "priorityMinus"));
             compare(sheet.priorityValue, 0);
             mouseClick(findChild(sheet, "priorityPreset100"));
@@ -206,8 +207,10 @@ Item {
             verify(record.enabled);
             compare(hint.text, "Saves this talkgroup's calls when call recording is on.");
             verify(record.mapToItem(sheet, 0, 0).y > listen.mapToItem(sheet, 0, 0).y, "under Listening");
+            compare(record.opacity, 1.0);
             mouseClick(listen);
             verify(!record.checked && !record.enabled, "not tuned records nothing");
+            verify(record.opacity < 1.0, "and looks it");
             compare(hint.text, "Off while not tuned. Tuning it again turns Record back on.");
             mouseClick(listen);
             verify(record.checked && record.enabled, "tuned again records again");

@@ -104,6 +104,7 @@ Item {
 
         EncTag {
             id: encTag
+            objectName: "rowEncTag"
             visible: row.enc
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter

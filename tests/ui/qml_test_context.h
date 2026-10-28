@@ -1983,6 +1983,15 @@ class RecordingsFake : public QQmlPropertyMap {
         note(QStringLiteral("recheckRecordings"), {{QStringLiteral("ids"), ids}});
     }
 
+    /** @brief RecordingStore::acknowledgeNotices(): the counts the notices show start again. */
+    Q_INVOKABLE void
+    acknowledgeNotices() {
+        note(QStringLiteral("acknowledgeNotices"), {});
+        insert(QStringLiteral("removedByLimit"), 0);
+        insert(QStringLiteral("deleteFailures"), 0);
+        insert(QStringLiteral("lastDeleteError"), QString());
+    }
+
     /** @brief What the next selections resolve to. */
     Q_INVOKABLE void
     setSelection(int count, qint64 bytes, const QStringList& paths) {

@@ -174,14 +174,21 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Free bytes where new recordings go; -1 when unknown. */
     qint64 freeBytes() const;
     bool lowSpace() const;
-    /** @brief Recordings the storage limit removed since the app started. */
+    /** @brief Recordings the storage limit removed since the app started, or since acknowledgeNotices(). */
     int removedByLimit() const;
     /** @brief Deletions asked for and waiting for a file's hold to end (an upload, the player, an export). */
     int deletesWaiting() const;
-    /** @brief Recordings the store failed to remove (asked for or by the limit) since the app started. */
+    /** @brief Recordings the store failed to remove (asked for or by the limit) since the app started, or since
+     * acknowledgeNotices(). */
     int deleteFailures() const;
-    /** @brief Why the last of them failed (the system's text); empty when none did. */
+    /** @brief Why the last of them failed (the system's text); empty when none did since the acknowledgement. */
     QString lastDeleteError() const;
+    /**
+     * @brief The user has seen what the storage limit removed and which deletes failed: removedByLimit() and
+     * deleteFailures() count from zero again (the Call recordings screen calls this as it shows them). GUI thread;
+     * limitReached() is unaffected.
+     */
+    Q_INVOKABLE void acknowledgeNotices();
 
     /**
      * @brief The storage limit in MB (kBytesPerMb); 0 is no limit.
@@ -442,6 +449,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     Summary m_outbox;
     QSet<QString> m_outFragments;
     bool m_deliveryQueued = false;
+
+    /* GUI thread: the totals acknowledgeNotices() took, which the notice readings count from. */
+    int m_removedByLimitSeen = 0;
+    int m_deleteFailuresSeen = 0;
 
     /* Worker thread only. */
     QString m_liveToken;
