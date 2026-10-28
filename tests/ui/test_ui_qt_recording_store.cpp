@@ -130,7 +130,7 @@ struct Store {
     /* The host is known and idle unless a test says otherwise (hostSessionReport() before start()). */
     explicit Store(const QStringList& roots, bool startNow = true) {
         store.setRoots(roots);
-        store.hostSessionReport(true, false);
+        store.hostSessionReport(true, false, false);
         store.setTimingForTest(3600000, 3600000);
         store.setUploadHoldsForTest([this](const QString& path) {
             return uploadingSet.load() && uploading.contains(QFileInfo(path).fileName());
@@ -512,7 +512,7 @@ test_compaction(void) {
     }
     {
         Store s(roots.list(), false);
-        s.store.hostSessionReport(true, true); // a session no starter here began: its folder is not known
+        s.store.hostSessionReport(true, true, true); // a session no starter here began: its folder is not known
         s.start();
         expect("a new store reads the rewrite", s.store.recordingCount() == 3
                                                     && s.store.hasRecordingForFragments({fragment(50)})
@@ -525,10 +525,52 @@ test_compaction(void) {
         s.store.endSession();
         s.pass();
         expect("a starter's endSession() does not free it", s.store.compactionsForTest() == 0);
-        s.store.hostSessionReport(true, false);
+        s.store.hostSessionReport(true, false, false);
         s.pass();
         expect("until it ends", s.store.compactionsForTest() == 1 && read_all(journal_of(folder)).count('\n') == 1);
     }
+}
+
+/* A session that never ran may still reach the decoder: Android's start grace can show a start Failed while its intent
+ * waits on a busy main thread, and the engine then opens that folder's journal. Such a folder is compacted only after
+ * the host has seen a session running and then inactive. */
+void
+test_compaction_waits_for_a_run(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000EE-1"), QStringLiteral("keep.wav"), 1754704000, 60);
+    record(folder, QStringLiteral("00000000000000EE-2"), QStringLiteral("gone1.wav"), 1754704010, 61);
+    record(folder, QStringLiteral("00000000000000EE-3"), QStringLiteral("gone2.wav"), 1754704020, 62);
+    s.pass();
+    s.store.deleteRecordings({QStringLiteral("00000000000000EE-2"), QStringLiteral("00000000000000EE-3")});
+    s.pass();
+    s.store.hostSessionReport(true, true, false); // Starting
+    s.pass();
+    s.store.hostSessionReport(true, false, false); // the start grace gave up: Failed
+    s.pass();
+    expect("a session that ended without running leaves its journal alone", s.store.compactionsForTest() == 0);
+    s.store.hostSessionReport(true, true, false); // the late intent: Starting
+    s.store.hostSessionReport(true, true, true);  // Running
+    s.pass();
+    expect("nor while the late session runs", s.store.compactionsForTest() == 0);
+    s.store.hostSessionReport(true, false, false); // Idle
+    s.pass();
+    expect("once a session ran and ended, the folder is compacted",
+           s.store.compactionsForTest() == 1 && read_all(journal_of(folder)).count('\n') == 1);
+
+    // The next start fails before it runs too: its folder stays held, pass after pass.
+    const QString again = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(again, QStringLiteral("00000000000000EE-4"), QStringLiteral("x.wav"), 1754704030, 63);
+    record(again, QStringLiteral("00000000000000EE-5"), QStringLiteral("y.wav"), 1754704040, 64);
+    s.pass();
+    s.store.deleteRecordings({QStringLiteral("00000000000000EE-4"), QStringLiteral("00000000000000EE-5")});
+    s.store.hostSessionReport(true, true, false);
+    s.store.hostSessionReport(true, false, false);
+    s.pass();
+    expect("a failed start keeps the folder held across later passes", s.store.compactionsForTest() == 1);
+    s.pass();
+    expect("still held", s.store.compactionsForTest() == 1);
 }
 
 /* Storage that is away is not storage that was emptied: what an unavailable root held stays indexed and untouched,
@@ -1066,7 +1108,7 @@ test_start_does_not_wait_for_journals(void) {
     RecordingStore store;
     store.setRoots(roots.list());
     store.setTimingForTest(3600000, 3600000);
-    store.hostSessionReport(true, false);
+    store.hostSessionReport(true, false, false);
     store.setFolderLoadHookForTest([&release, &reads](const QString&) {
         reads++;
         while (!release.load()) {
@@ -1115,7 +1157,7 @@ test_folder_gone_before_its_read(void) {
         RecordingStore store;
         store.setRoots(roots.list());
         store.setTimingForTest(3600000, 3600000);
-        store.hostSessionReport(true, false);
+        store.hostSessionReport(true, false, false);
         store.setFolderLoadHookForTest([&](const QString& path) {
             {
                 const std::lock_guard<std::mutex> lock(heldMutex);
@@ -1557,6 +1599,7 @@ main(int argc, char** argv) {
     test_journal_from_the_writer();
     test_recording_roles_from_the_store();
     test_compaction();
+    test_compaction_waits_for_a_run();
     test_roots_unavailable_vs_deleted();
     test_changes_behind_the_store();
     test_folders_follow_their_owner();

@@ -286,7 +286,7 @@ RecordingStore::start() {
 }
 
 void
-RecordingStore::hostSessionReport(bool known, bool active) {
+RecordingStore::hostSessionReport(bool known, bool active, bool running) {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         if (!known) {
@@ -299,6 +299,7 @@ RecordingStore::hostSessionReport(bool known, bool active) {
                 m_allActive = true; // a session no starter began here: its folder is not known
             }
             m_hostActive = true;
+            m_sawRunning = m_sawRunning || running;
             return;
         }
         const bool ended = m_hostActive;
@@ -307,8 +308,16 @@ RecordingStore::hostSessionReport(bool known, bool active) {
             return; // idle again (a start clearing an old failure): the marks a starter just made stay
         }
         if (ended) {
+            // One decoder runs at a time and takes its starts in order: once a session ran and ended, no earlier start
+            // is still on its way. A session that never ran may still be (a start the host gave up on too early).
+            if (m_sawRunning) {
+                m_unproven.clear();
+            } else {
+                m_unproven.unite(m_active);
+            }
             m_active.clear();
             m_starterBegan = false;
+            m_sawRunning = false;
         }
         // A first known state frees only what was held for not knowing it: a start may have marked its folder before
         // the host's first poll (Android polls inside start()), and that session is about to open the journal.
@@ -321,7 +330,10 @@ RecordingStore::hostSessionReport(bool known, bool active) {
 
 void
 recording_store_follow_host(RecordingStore* store, DecoderHost* host) {
-    const auto report = [store, host]() { store->hostSessionReport(host->sessionStateKnown(), host->sessionActive()); };
+    const auto report = [store, host]() {
+        store->hostSessionReport(host->sessionStateKnown(), host->sessionActive(),
+                                 host->sessionState() == DecoderHost::Running);
+    };
     report();
     QObject::connect(host, &DecoderHost::sessionStateChanged, store, report);
     QObject::connect(host, &DecoderHost::sessionStateKnownChanged, store, report);
@@ -1129,8 +1141,9 @@ RecordingStore::compactFolders() {
         entries.clear();
         const std::lock_guard<std::mutex> lock(m_mutex);
         for (auto it = m_folders.cbegin(); it != m_folders.cend(); ++it) {
-            if (it->loaded && m_rootAvailable.value(it->root) && !m_active.contains(it.key()) && !m_allActive
-                && it->lines > 0 && it->lines != it->compactFailedAt && it->lines > 2 * live.value(it.key())) {
+            if (it->loaded && m_rootAvailable.value(it->root) && !m_active.contains(it.key())
+                && !m_unproven.contains(it.key()) && !m_allActive && it->lines > 0 && it->lines != it->compactFailedAt
+                && it->lines > 2 * live.value(it.key())) {
                 candidates.append(it.key());
             }
         }
@@ -1147,7 +1160,7 @@ RecordingStore::compactFolder(const QString& path) {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         // A session that starts now waits in beginSession() until this compaction is over.
-        if (m_allActive || m_active.contains(path) || !m_folders.contains(path)) {
+        if (m_allActive || m_active.contains(path) || m_unproven.contains(path) || !m_folders.contains(path)) {
             return false;
         }
         m_compacting = path;

@@ -141,14 +141,18 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void start();
 
     /**
-     * @brief What the host knows of its session: whether it knows yet (@p known) and whether one is active.
+     * @brief What the host knows of its session: whether it knows yet (@p known), whether one is active and whether
+     * it is running (@p running, DecoderHost::Running).
      *
      * Until the host first reports a known state, every journal is held (a session may be running that no starter
      * began here: the decoder kept going while the UI was recreated); a first known state with none running ends that
      * hold, and keeps a folder a start already marked. A session that turns active without a beginSession() before it
-     * holds every journal too. A session that ends frees every folder. recording_store_follow_host() calls this.
+     * holds every journal too. A session that ends after the host saw it running frees every folder, those of earlier
+     * sessions that never ran included. One that ends without ever running keeps its folders uncompacted for the rest
+     * of this process: its start may still reach the decoder late (Android's start grace can give up on an intent the
+     * service has not handled yet). recording_store_follow_host() calls this.
      */
-    void hostSessionReport(bool known, bool active);
+    void hostSessionReport(bool known, bool active, bool running);
 
     QString beginSession(const QString& kind, const QString& uid, const QString& name) override;
     void endSession() override;
@@ -402,6 +406,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool m_hostActive = false;
     /* A starter's beginSession() came before the session the host reports. */
     bool m_starterBegan = false;
+    /* The host has seen the active session running. */
+    bool m_sawRunning = false;
+    /* Folders of sessions that ended without ever running: never compacted until a later session ran and ended. */
+    QSet<QString> m_unproven;
     QString m_compacting;
     QHash<QString, int> m_holds;
     QHash<int, QStringList> m_selections;
