@@ -225,8 +225,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     qint64 rebuildNsForTest() const;
     /** @brief Replace the file removal (worker thread; false with the reason in @p error); before start(). */
     void setRemoveForTest(std::function<bool(const QString& path, QString* error)> remove);
-    /** @brief Call @p hook on the worker before each folder's journal is read; before start(). Test hook. */
-    void setFolderLoadHookForTest(std::function<void()> hook);
+    /** @brief Call @p hook on the worker after each folder.json read, before the folder's files and journal; before
+     * start(). Test hook. */
+    void setFolderLoadHookForTest(std::function<void(const QString& folder)> hook);
 #endif
 
   Q_SIGNALS:
@@ -427,7 +428,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     qint64 m_freeBytes = -1;
     bool m_lowSpace = false;
     std::function<bool(const QString&, QString*)> m_remove;
-    std::function<void()> m_folderLoadHook;
+    std::function<void(const QString&)> m_folderLoadHook;
     int m_removedByLimit = 0;
     int m_deleteFailures = 0;
     QString m_lastDeleteError;

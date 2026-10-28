@@ -51,6 +51,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +96,7 @@ expect(const char* what, bool ok) {
 
 constexpr QLatin1String kUidA("1a2b3c4d-0000-4000-8000-00000000000a");
 constexpr QLatin1String kUidB("1a2b3c4d-0000-4000-8000-00000000000b");
+constexpr QLatin1String kUidC("5e6f7a8b-0000-4000-8000-00000000000c");
 const quint64 kRing = 0x00C0FFEE12345678ULL;
 
 /* Two roots under one disposable folder, as the Android host gives them: external first, internal second. */
@@ -1000,12 +1002,13 @@ test_session_running_at_ui_load(void) {
         const QString folder = compactable_folder(roots);
         PolledHost host;
         host.poll(dsd_qt::DecoderHost::Idle);
+        // The first read waits for the start, so the folder is marked before any compaction could look at it. Declared
+        // before the store, so it outlives the worker.
+        std::atomic<bool> begun{false};
         RecordingStore store;
         store.setRoots(roots.list());
         store.setTimingForTest(3600000, 3600000);
-        // The first read waits for the start, so the folder is marked before any compaction could look at it.
-        std::atomic<bool> begun{false};
-        store.setFolderLoadHookForTest([&begun]() {
+        store.setFolderLoadHookForTest([&begun](const QString&) {
             while (!begun.load()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
@@ -1062,7 +1065,7 @@ test_start_does_not_wait_for_journals(void) {
     store.setRoots(roots.list());
     store.setTimingForTest(3600000, 3600000);
     store.hostSessionReport(true, false);
-    store.setFolderLoadHookForTest([&release, &reads]() {
+    store.setFolderLoadHookForTest([&release, &reads](const QString&) {
         reads++;
         while (!release.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1079,7 +1082,73 @@ test_start_does_not_wait_for_journals(void) {
     store.waitForPassForTest();
     QCoreApplication::processEvents();
     expect("then it is", store.hasRecordingForFragments({fragment(500)}) && store.indexed());
+    // The worker read folder.json ("County") before the start relabelled it; the newer label stands.
+    expect("the start's relabel survives the read that began before it",
+           store.folders().value(0).toMap().value("name").toString() == QStringLiteral("Renamed")
+               && read_all(folder + QStringLiteral("/folder.json")).contains("Renamed"));
     store.endSession();
+}
+
+/* Issue #708, N1: a folder removed from a computer between the folder table's read and its own (folder.json gone)
+ * leaves the table. A session start is not handed it (the owner gets a new folder), and without one the worker drops
+ * it when it gets there; either way the store reaches `indexed`. */
+void
+test_folder_gone_before_its_read(void) {
+    for (const bool withSession : {true, false}) {
+        Roots roots;
+        const QString first = QDir::cleanPath(compactable_folder(roots));
+        const QString second = QDir::cleanPath(roots.external + QStringLiteral("/Metro (5e6f7a8b)"));
+        QDir().mkpath(second);
+        QFile json(second + QStringLiteral("/folder.json"));
+        if (!json.open(QIODevice::WriteOnly)
+            || json.write(
+                   QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"Metro\"}\n").arg(kUidC).toUtf8())
+                   < 0) {
+            g_failures++;
+        }
+        json.close();
+        std::atomic<bool> release{false};
+        std::mutex heldMutex;
+        QString held;
+        RecordingStore store;
+        store.setRoots(roots.list());
+        store.setTimingForTest(3600000, 3600000);
+        store.hostSessionReport(true, false);
+        store.setFolderLoadHookForTest([&](const QString& path) {
+            {
+                const std::lock_guard<std::mutex> lock(heldMutex);
+                if (!held.isEmpty()) {
+                    return;
+                }
+                held = path;
+            }
+            while (!release.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+        store.start();
+        QString heldPath;
+        while (heldPath.isEmpty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const std::lock_guard<std::mutex> lock(heldMutex);
+            heldPath = held;
+        }
+        // The worker holds at one folder's read; the other is tabled, not read, and loses its folder.json.
+        const QString other = heldPath == first ? second : first;
+        const QString otherUid = other == second ? QString(kUidC) : QString(kUidA);
+        expect("the folder.json is removed", QFile::remove(other + QStringLiteral("/folder.json")));
+        if (withSession) {
+            const QString given = store.beginSession(QStringLiteral("saved"), otherUid, QStringLiteral("Again"));
+            expect("a session is not handed a folder whose folder.json is gone", !given.isEmpty() && given != other);
+            store.endSession();
+        }
+        release = true;
+        store.waitForPassForTest();
+        QCoreApplication::processEvents();
+        expect("the store still finishes its first read", store.indexed());
+        expect("and the folder is out of the table",
+               !store.folderPathsForTest().contains(other) && store.folderPathsForTest().contains(heldPath));
+    }
 }
 
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
@@ -1179,7 +1248,7 @@ test_stop_during_the_first_read(void) {
     std::atomic<int> reads{0};
     auto store = std::make_unique<RecordingStore>();
     store->setRoots(roots.list());
-    store->setFolderLoadHookForTest([&reads]() {
+    store->setFolderLoadHookForTest([&reads](const QString&) {
         reads++;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     });
@@ -1239,6 +1308,7 @@ main(int argc, char** argv) {
     test_export_selection();
     test_session_running_at_ui_load();
     test_start_does_not_wait_for_journals();
+    test_folder_gone_before_its_read();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();

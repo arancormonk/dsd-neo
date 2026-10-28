@@ -8002,10 +8002,13 @@ Qt Quick frontend (`src/ui/qt`):
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
     reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
     true and a session may start; only after that does it read each folder whole (one directory listing, the journal
-    from its start; `indexed` once all are), the History roles following as their records arrive. It checks for exit
-    between folders and between slices. Later passes wake every second while a folder is in use, else on request or once
-    a minute, and tail each journal from its byte cursor, complete lines
-    only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name inside the folder). A
+    from its start; `indexed` once all are), the History roles following as their records arrive. A tabled folder
+    whose folder.json is gone by the time it is read leaves the table; a start is never handed a folder whose
+    folder.json no longer names its owner (one not read yet leaves the table there and then); a start's relabel made
+    while the worker reads the folder stands. It checks for exit between folders and between slices. Later passes wake
+    every second while a folder is in use, else on request or once a minute, and tail each journal from its byte
+    cursor, complete lines only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name
+    inside the folder). A
     journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
     index. The index keeps {id -> path, start, duration, fragment, folder, flags, size}: a `publish` of a file that is
     not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment

@@ -515,9 +515,6 @@ RecordingStore::loadPendingFolders(Pass* pass) {
         if (stopping()) {
             return;
         }
-        if (m_folderLoadHook) {
-            m_folderLoadHook();
-        }
         loadFolder(path, root, false, pass);
     }
 }
@@ -526,18 +523,19 @@ void
 RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pass) {
     Folder folder;
     if (!read_folder_json(path, &folder.uid, &folder.kind, &folder.name)) {
-        // Not a folder the app made, or not any more (removed from a computer while its root is there): nothing in it
-        // is managed.
-        if (replace) {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            removeFolderEntriesLocked(path, pass);
-            m_folders.remove(path);
-            pass->dirty = true;
-        }
+        // Not a folder the app made, or not any more (removed from a computer while its root is there, perhaps
+        // between the folder table's read and this one): nothing in it is managed, and no session is given it.
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        removeFolderEntriesLocked(path, pass);
+        m_folders.remove(path);
+        pass->dirty = true;
         return;
     }
     folder.path = path;
     folder.root = root;
+    if (m_folderLoadHook) {
+        m_folderLoadHook(path);
+    }
 
     // One listing serves every publish whose file sits in the folder itself, which is all of them in a folder the app
     // made; a name in a subfolder gets its own stat below.
@@ -586,6 +584,14 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
         folder.offset = consumed;
         folder.lines = lines;
         folder.loaded = true;
+        // The owner as the table holds it now: a session start may have relabelled the folder since folder.json was
+        // read above, and the newer label wins.
+        const auto table = m_folders.constFind(path);
+        if (table != m_folders.cend()) {
+            folder.uid = table->uid;
+            folder.kind = table->kind;
+            folder.name = table->name;
+        }
         m_folders.insert(path, folder);
         // Grown once here, not rehashed under the lock slice by slice.
         m_entries.reserve(m_entries.size() + records.size() + unfinished.size());
@@ -1363,13 +1369,31 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
     // The owner's folder in the first available root that has one: a rename keeps it, and a clash of the short
     // uid in the name never merges two owners.
     const Folder* best = nullptr;
+    QStringList gone;
     for (const Folder& folder : std::as_const(m_folders)) {
-        if (folder.uid == uid && m_rootAvailable.value(folder.root)
-            && (best == nullptr || folder.root < best->root
-                || (folder.root == best->root && folder.path < best->path))) {
-            best = &folder;
+        if (folder.uid != uid || !m_rootAvailable.value(folder.root)
+            || (best != nullptr
+                && (folder.root > best->root || (folder.root == best->root && folder.path >= best->path)))) {
+            continue;
         }
+        // A folder whose folder.json no longer names this owner (removed from a computer) is not handed out. One the
+        // worker has not read yet holds no recordings, so it leaves the table here; a read one is the worker's.
+        Folder onDisk;
+        if (!read_folder_json(folder.path, &onDisk.uid, &onDisk.kind, &onDisk.name) || onDisk.uid != uid) {
+            if (!folder.loaded) {
+                gone.append(folder.path);
+            }
+            continue;
+        }
+        best = &folder;
     }
+    const QString bestPath = best != nullptr ? best->path : QString();
+    for (const QString& path : std::as_const(gone)) {
+        m_folders.remove(path);
+        m_foldersChanged = true;
+    }
+    const auto found = bestPath.isEmpty() ? m_folders.cend() : m_folders.constFind(bestPath);
+    best = found != m_folders.cend() ? &found.value() : nullptr;
     if (best != nullptr) {
         const QString path = best->path;
         if (kind != kExplore && !name.isEmpty() && best->name != name && write_folder_json(path, uid, kind, name)) {
@@ -1881,7 +1905,7 @@ RecordingStore::setRemoveForTest(std::function<bool(const QString& path, QString
 }
 
 void
-RecordingStore::setFolderLoadHookForTest(std::function<void()> hook) {
+RecordingStore::setFolderLoadHookForTest(std::function<void(const QString& folder)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_folderLoadHook = std::move(hook);
 }
