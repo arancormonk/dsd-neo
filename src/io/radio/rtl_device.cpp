@@ -3988,16 +3988,6 @@ enum rtl_usb_grace_result : int {
 };
 } // namespace
 
-/* Whether a test holds the pre-recovery grace open past its deadline (rtl_device_test_hold_recovery_grace()). */
-static int
-rtl_usb_recovery_grace_held(void) {
-#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-    return g_test_hold_recovery_grace.load(std::memory_order_acquire);
-#else
-    return 0;
-#endif
-}
-
 /* Before a stall recovery resets a dongle behind an Android descriptor, wait out the unplug-owner grace
  * (rtl_device_set_unplug_owner_grace_ms()) as a session's ending does (#782): a stall can be an unplug whose detach
  * broadcast is on its way, and the host owns that. Polled until the deadline and once more at it: samples since the
@@ -4030,7 +4020,13 @@ rtl_usb_recovery_grace(const struct rtl_device* s, uint64_t verdict_progress) {
             result = RTL_USB_GRACE_MOVED;
             break;
         }
-        if (dsd_realtime_mono_ms() >= deadline_ms && !rtl_usb_recovery_grace_held()) {
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+            if (g_test_hold_recovery_grace.load(std::memory_order_acquire) != 0) {
+                dsd_sleep_ms(10);
+                continue;
+            }
+#endif
             result = RTL_USB_GRACE_PASSED;
             break;
         }
