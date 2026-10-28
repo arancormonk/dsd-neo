@@ -3996,11 +3996,15 @@ ui_render_tetra_call_block(const dsd_state* state) {
     ui_restore_call_info_color(state);
     printw("%s\n", call.text[0] + call.ids_end);
 
+    /* The labels are as long as the CSV rows that name them: cut at the screen width with a marker rather than wrapped
+       onto a line of their own, which would move every TETRA row below the block. */
     printw("| %.*s", call.label_start, call.text[1]);
     attron(COLOR_PAIR(4));
-    printw("%s", call.text[1] + call.label_start);
+    ui_row labels;
+    ui_row_begin(&labels, ui_get_panel_cols(), 2 + call.label_start);
+    ui_row_field(&labels, "%s", call.text[1] + call.label_start);
+    ui_row_end(&labels);
     ui_restore_call_info_color(state);
-    printw("\n");
 }
 
 static void

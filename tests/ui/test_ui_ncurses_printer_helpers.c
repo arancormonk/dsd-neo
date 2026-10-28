@@ -4429,6 +4429,51 @@ test_tetra_call_block_renders_above_the_rows(void) {
     free(opts);
 }
 
+/* Issue #773: the labels line is cut at the screen width, not wrapped onto a line of its own, so the block keeps its
+   two lines and the TETRA rows below it never move. */
+static void
+test_tetra_call_labels_clip_at_the_screen_width(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    opts->frame_tetra = 1;
+    dsd_state* state = tetra_call_state();
+    tetra_publish_control_channel(state);
+    tetra_observe_call(state, DSD_CALL_KIND_GROUP_VOICE, 100601U, 100702U, dsd_decode_now_mono_s());
+    tetra_stage_labels(state, 100601U, "County Fire and Rescue Dispatch North Zone Simulcast", 100702U,
+                       "Engine 21 Second Due");
+    state->carrier = 1;
+    g_unicode_stub = 0;
+    g_stub_max_x = 60;
+
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    const char* line2 = strchr(g_printw_capture, '\n');
+    assert(line2 != NULL);
+    line2++;
+    const char* end = strchr(line2, '\n');
+    assert(end != NULL);
+    /* The last column is never written (the cursor would wrap), so at most 59 cells, ending with the cut marker. */
+    const size_t width = (size_t)(end - line2);
+    assert(width <= 59U);
+    assert(strncmp(line2, "|        | [County Fire and Rescue", 34) == 0);
+    assert(strncmp(end - 3, "...", 3) == 0);
+    /* The TETRA rows follow on the very next line. */
+    assert(strncmp(end + 1, "| TETRA: ", 9) == 0);
+
+    /* Labels that fit are drawn whole, as before. */
+    g_stub_max_x = 80;
+    tetra_stage_labels(state, 100601U, "Fire Dispatch", 100702U, "Engine 21");
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_starts_with("| CALL   - TGT: [  100601] SRC: [  100702] Group                         \n"
+                               "|        | [Fire Dispatch] SRC: [Engine 21]\n"
+                               "| TETRA: ");
+
+    g_unicode_stub = 1;
+    tetra_call_state_free(state);
+    free(opts);
+}
+
 /* Issue #773 (Task 10 review): a slot row naming the target of the ended call it still holds labels it by that call's
    kind -- a private call's target as a radio -- and a target the call does not hold as a talkgroup. */
 static void
@@ -4771,6 +4816,7 @@ main(void) {
     test_tetra_rows_follow_the_view();
     test_tetra_call_block();
     test_tetra_call_block_renders_above_the_rows();
+    test_tetra_call_labels_clip_at_the_screen_width();
     test_slot_label_follows_ended_call_kind();
     test_nxdn_and_analog_live_service_names();
     test_dmr_and_dcs_live_service_names();

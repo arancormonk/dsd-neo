@@ -1022,8 +1022,9 @@ line only once the decoder has something for it, and under them the latest decod
 The live call heads those lines, in the P25/DMR slot rows' columns: the group (or, for a private call, the other
 party) and the talker with the call's emergency and priority tags and its kind (`Group`, `Private`, `Data`, or `Voice`
 for speech no call set-up has named yet, then `Encrypted` for an encrypted call), then their labels from the group
-and radio lists. A party not yet decoded has blank brackets, an ended call stays for 3 seconds, and with no call both
-lines stay in place with blank brackets so the lines below do not move:
+and radio lists. A party not yet decoded has blank brackets, an ended call stays for 3 seconds, labels wider than the
+screen are cut at its width with a marker (`…`, or `...` without UTF-8), and with no call both lines stay in place with
+blank brackets so the lines below do not move:
 
 ```text
 | CALL   - TGT: [  100601] SRC: [  100702] Group
