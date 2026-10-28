@@ -228,6 +228,20 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLog::AttemptStage stage);
     // JNI supplies one coherent record; desktop tests exercise the same publication path.
     void applyLifecycleStatus(const QJsonObject& status, bool running);
+    /**
+     * @brief Whether @p status is a record of another start attempt than m_attempt (gate r5 L1): one this host
+     * retired or superseded, or the previous session's while the start waits. Such a record drives no phase, run
+     * result, receiver health or device error. False while the host follows no attempt, and for a record that names
+     * none.
+     */
+    bool recordOfOtherAttempt(const QJsonObject& status) const;
+    /**
+     * @brief The start grace's expiry, if the record just folded ran it out: log it, retire the attempt, and either
+     * follow it (the service took it after all) or latch it undelivered. True when it expired.
+     */
+    bool noteStartExpiry(const QByteArray& service_state, uint64_t now_ms);
+    /** @brief Publish @p phase with @p reason, or the current attempt's own failure while one stands. */
+    void publishPhase(SessionPhase phase, const QString& reason);
     bool acknowledgeFailure(const QJsonObject& status);
 
     QJsonObject readLifecycleStatus() const;
@@ -264,6 +278,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief DecoderService.acknowledgeReceiverEnding(): endings up to @p session stay acknowledged past this host. */
     static void platformAcknowledgeReceiverEnding(uint64_t session);
     QString serviceFailureText() const;
+    /**
+     * @brief Refuse start attempt @p attempt because the service is @p service_state, not IDLE: logged, and published
+     * as kAttemptPreviousStopping unless a run is on screen (Starting or Running), which stays as it is. Always
+     * returns false.
+     */
+    bool refuseStart(uint64_t attempt, const QByteArray& service_state);
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);
     /**

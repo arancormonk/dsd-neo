@@ -101,6 +101,7 @@ class SessionPhaseTracker {
         m_saw_running = false;
         m_start_pending = true;
         m_start_requested_ms = 0;
+        m_start_grace_from_ms = 0;
         m_start_expired = false;
         m_phase = kSessionStarting;
         clear_stop_request();
@@ -138,6 +139,7 @@ class SessionPhaseTracker {
             return false;
         }
         m_start_requested_ms = now_ms;
+        m_start_grace_from_ms = now_ms;
         return true;
     }
 
@@ -168,6 +170,7 @@ class SessionPhaseTracker {
         m_saw_running = false;
         m_start_pending = true;
         m_start_requested_ms = now_ms;
+        m_start_grace_from_ms = now_ms;
         m_start_expired = false;
         m_phase = kSessionStarting;
     }
@@ -185,6 +188,40 @@ class SessionPhaseTracker {
         }
         return hold_receiver_end(
             hold_stop(service_state, fold_record(service_state, engine_running, session_id, reason), now_ms));
+    }
+
+    /**
+     * @brief Fold a lifecycle record of another start attempt than the one this tracker follows (gate r5 L1).
+     *
+     * The host passes here every record whose attempt is not its current one: an attempt it retired or superseded,
+     * or the previous session's, while the current start waits for the service. Such a record is not the current
+     * attempt's start, run or end, so the phase, the session followed, a stop request and a receiver ending are left
+     * as they are. Only the start grace goes on: while the start waits for the service, an expiry is judged here as on
+     * an IDLE record of the previous session. A STARTING record restarts the grace from @p now_ms: the service is
+     * busy with a start that can no longer run (a retirement cancels it once its configure returns), and handles the
+     * current START after it, on the same thread. The expiry still reports the wait since the request.
+     *
+     * @param service_state The record's DecoderService state name.
+     * @param now_ms As for update().
+     */
+    SessionPhase
+    update_other_attempt(const char* service_state, uint64_t now_ms) {
+        m_now_ms = now_ms;
+        if (!m_start_pending) {
+            return m_phase;
+        }
+        if (service_state != nullptr && strcmp(service_state, "STARTING") == 0) {
+            m_start_grace_from_ms = now_ms;
+            return m_phase;
+        }
+        if (idle_phase() == kSessionFailed) {
+            // The expiry ends the start, and with it a stop request or receiver ending standing over it, as the
+            // terminal Failed of an IDLE record does in hold_stop() and hold_receiver_end().
+            m_phase = kSessionFailed;
+            clear_stop_request();
+            m_receiver_end = false;
+        }
+        return m_phase;
     }
 
     /**
@@ -462,7 +499,7 @@ class SessionPhaseTracker {
     SessionPhase
     idle_phase() {
         if (m_start_pending) {
-            if (m_now_ms < m_start_requested_ms || m_now_ms - m_start_requested_ms < kStartGraceMs) {
+            if (m_now_ms < m_start_grace_from_ms || m_now_ms - m_start_grace_from_ms < kStartGraceMs) {
                 return kSessionStarting;
             }
             m_start_expired = true;
@@ -498,6 +535,9 @@ class SessionPhaseTracker {
     // A start was asked for at m_start_requested_ms and the service has not shown it yet (kStartGraceMs).
     bool m_start_pending = false;
     uint64_t m_start_requested_ms = 0;
+    // Where the grace is measured from: the request, or a later STARTING record of another attempt the service
+    // handled first (update_other_attempt()).
+    uint64_t m_start_grace_from_ms = 0;
     bool m_start_expired = false;
     uint64_t m_start_waited_ms = 0;
     // The clock of the record being folded (update()'s now_ms).

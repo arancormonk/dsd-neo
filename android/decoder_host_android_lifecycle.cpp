@@ -152,6 +152,16 @@ DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
     Q_EMIT sessionStateChanged();
 }
 
+bool
+DecoderHostAndroid::recordOfOtherAttempt(const QJsonObject& status) const {
+    // Records before #782 name no attempt; a host that has started none (a recreated Activity, a dismissed attempt)
+    // follows whatever the service runs.
+    if (m_attempt == 0 || !status.contains(QStringLiteral("attemptId"))) {
+        return false;
+    }
+    return static_cast<uint64_t>(status.value(QStringLiteral("attemptId")).toInteger()) != m_attempt;
+}
+
 void
 DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running) {
     const bool first_poll = !m_primed;
@@ -162,6 +172,19 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
 
     const uint64_t session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
     const QByteArray name = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
+    const uint64_t now_ms = readRealtimeMs();
+    /* Gate r5 L1: a record of another attempt than the current one (one this host retired or superseded, or the
+     * previous session's while the start waits) is none of the current attempt's start, run or end. It leaves the
+     * phase, the run result, the receiver health and device error, and the published state as they are; only the
+     * current start's grace goes on (SessionPhaseTracker::update_other_attempt()). */
+    if (!first_poll && recordOfOtherAttempt(status)) {
+        (void)m_phase.update_other_attempt(name.constData(), now_ms);
+        (void)noteStartExpiry(name, now_ms);
+        publishPhase(m_phase.phase(), m_failure);
+        m_primed = true;
+        return;
+    }
+
     const auto reason = static_cast<RunReason>(status.value(QStringLiteral("reason")).toInt());
     const int input_failure = status.value(QStringLiteral("inputFailure")).toInt();
     const int input_error = status.value(QStringLiteral("inputError")).toInt();
@@ -191,24 +214,10 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
             m_adopted_idle_session = session;
         }
     }
-    const uint64_t now_ms = readRealtimeMs();
     SessionPhase phase = status.isEmpty() ? m_phase.update(name.constData(), running, now_ms)
                                           : m_phase.update(name.constData(), running, session, reason, now_ms);
-    uint64_t waited_ms = 0;
-    if (m_phase.take_start_expired(&waited_ms)) {
-        hostDiagnostic(QStringLiteral("Start was not delivered to the decoder service within %1 ms (service state %2)")
-                           .arg(waited_ms)
-                           .arg(QString::fromUtf8(name)));
-        // The expiry was computed from the record read above; the retirement answers for now, under the lock the
-        // service decides each start with. Only an attempt that can no longer run is reported as undelivered.
-        if (platformRetireAttempts(m_attempt)) {
-            hostDiagnostic(
-                QStringLiteral("Start attempt %1 was taken by the decoder service after all").arg(m_attempt));
-            m_phase.note_start_taken(now_ms);
-            phase = m_phase.phase();
-        } else {
-            setAttemptFailure(kAttemptUndelivered, QStringLiteral("The decoder service did not respond to the start"));
-        }
+    if (noteStartExpiry(name, now_ms)) {
+        phase = m_phase.phase();
     }
     // The service's own failure of the attempt on screen, before its configure (#782). Older records never set one.
     const auto record_attempt = static_cast<uint64_t>(status.value(QStringLiteral("attemptId")).toInteger());
@@ -248,15 +257,7 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
         m_initialized_session = session;
         Q_EMIT sessionInitialized();
     }
-    if (m_attempt_failed) {
-        // The attempt's own failure outranks every record: they are older sessions', or say less.
-        setSessionPhase(kSessionFailed, m_attempt_failure_text);
-        setStatus(phase_text(kSessionFailed));
-    } else {
-        setSessionPhase(phase,
-                        first_poll || adopted_idle ? QString() : status.value(QStringLiteral("lastError")).toString());
-        setStatus(phase_text(phase));
-    }
+    publishPhase(phase, first_poll || adopted_idle ? QString() : status.value(QStringLiteral("lastError")).toString());
     if (m_phase.take_stop_expired()) {
         hostDiagnostic(QStringLiteral("Stop was not acknowledged by the decoder service within 2 s; showing the "
                                       "session as running again"));
@@ -264,6 +265,38 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
 
     // Attachment delivery can synchronously call start() through QML.
     m_primed = true;
+}
+
+bool
+DecoderHostAndroid::noteStartExpiry(const QByteArray& service_state, uint64_t now_ms) {
+    uint64_t waited_ms = 0;
+    if (!m_phase.take_start_expired(&waited_ms)) {
+        return false;
+    }
+    hostDiagnostic(QStringLiteral("Start was not delivered to the decoder service within %1 ms (service state %2)")
+                       .arg(waited_ms)
+                       .arg(QString::fromUtf8(service_state)));
+    // The expiry was computed from the record read above; the retirement answers for now, under the lock the
+    // service decides each start with. Only an attempt that can no longer run is reported as undelivered.
+    if (platformRetireAttempts(m_attempt)) {
+        hostDiagnostic(QStringLiteral("Start attempt %1 was taken by the decoder service after all").arg(m_attempt));
+        m_phase.note_start_taken(now_ms);
+    } else {
+        setAttemptFailure(kAttemptUndelivered, QStringLiteral("The decoder service did not respond to the start"));
+    }
+    return true;
+}
+
+void
+DecoderHostAndroid::publishPhase(SessionPhase phase, const QString& reason) {
+    if (m_attempt_failed) {
+        // The attempt's own failure outranks every record: they are older sessions', or say less.
+        setSessionPhase(kSessionFailed, m_attempt_failure_text);
+        setStatus(phase_text(kSessionFailed));
+    } else {
+        setSessionPhase(phase, reason);
+        setStatus(phase_text(phase));
+    }
 }
 
 bool
@@ -404,6 +437,21 @@ DecoderHostAndroid::stop() {
 }
 
 bool
+DecoderHostAndroid::refuseStart(uint64_t attempt, const QByteArray& service_state) {
+    hostDiagnostic(QStringLiteral("Start attempt %1 refused: the decoder service is %2")
+                       .arg(attempt)
+                       .arg(QString::fromUtf8(service_state)));
+    // A run on screen, starting or running, stays as it is: the refusal is this start's, not that run's failure.
+    if (m_published_phase == kSessionStarting || m_published_phase == kSessionRunning) {
+        return false;
+    }
+    m_attempt = attempt;
+    clearAttemptFailure();
+    setAttemptFailure(kAttemptPreviousStopping, QStringLiteral("A previous session is still stopping"));
+    return false;
+}
+
+bool
 DecoderHostAndroid::start(const QStringList& argv) {
     if (!m_primed) {
         refresh();
@@ -422,23 +470,24 @@ DecoderHostAndroid::start(const QStringList& argv) {
     const QJsonObject status = readLifecycleStatus();
     const auto last_session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
     const QByteArray service_state = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
+    const SessionPhaseTracker before = m_phase;
     if (!m_phase.note_start_requested(last_session, service_state.constData(), readRealtimeMs())) {
-        hostDiagnostic(QStringLiteral("Start attempt %1 refused: the decoder service is %2")
-                           .arg(attempt)
-                           .arg(QString::fromUtf8(service_state)));
-        // A run on screen, starting or running, stays as it is: the refusal is this start's, not that run's failure.
-        if (m_published_phase == kSessionStarting || m_published_phase == kSessionRunning) {
-            return false;
-        }
-        m_attempt = attempt;
-        clearAttemptFailure();
-        setAttemptFailure(kAttemptPreviousStopping, QStringLiteral("A previous session is still stopping"));
-        return false;
+        return refuseStart(attempt, service_state);
     }
     /* Accepted while one was on its way: the service reads IDLE, so that one's START is not delivered yet. This one
      * supersedes it, or it would run under a host that follows this one, and this one would be refused for it. */
     if (!settled) {
         (void)platformRetireAttempts(attempt - 1);
+        /* Gate r5 L1: the service may have taken that one between the read and the retirement. One still STARTING is
+         * cancelled once its configure returns, and this one's START is handled after it. One already RUNNING (or
+         * past it) runs on, and this one's START would only be rejected as busy: it is refused here, and the run on
+         * screen goes on as that attempt's, followed as before the request. */
+        const QByteArray now_state =
+            readLifecycleStatus().value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
+        if (now_state == "RUNNING" || now_state == "STOPPING") {
+            m_phase = before;
+            return refuseStart(attempt, now_state);
+        }
     }
     m_attempt = attempt;
     clearAttemptFailure();

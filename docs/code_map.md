@@ -8863,7 +8863,16 @@ attempt, and reports it undelivered unless the retirement says the service took 
 record). A superseding start retires the earlier attempts before the read only from a settled screen (published Idle or
 Failed); a start refused while one is starting or running on screen (an entry point no QML guard covers) leaves that
 attempt alone and publishes no refusal over it, and `Main.qml` keeps that run's `attemptedSource` and puts no card over
-it, while one the read accepts there supersedes the attempt on its way. Dismissing or retrying an undelivered start the
+it, while one the read accepts there supersedes the attempt on its way: it retires that attempt, then reads the
+service again, and if that attempt was taken past the point a retirement cancels (the service is RUNNING or STOPPING
+now) this start is refused as above and the run on screen stays that attempt's. Lifecycle records are scoped to the
+current attempt (`recordOfOtherAttempt()`): while the host follows an attempt, a record naming another one (a retired
+or superseded attempt's, or the previous session's while the start waits) drives no phase, run result, receiver health,
+device error, `sessionInitialized()` or failure text; only the start grace goes on
+(`SessionPhaseTracker::update_other_attempt()`), restarted by such a STARTING record, as the service handles this
+start's START after that one on the same thread, and the expiry logs the wait since the request. A record that names
+no attempt, and every record while the host follows none (a recreated Activity, a dismissed attempt), is followed as
+before. Dismissing or retrying an undelivered start the
 service took after all (the expiry's retirement cancels it while it configures) publishes Stopping until that attempt's
 cancelled end (`SessionPhaseTracker::note_attempt_retired()`), not the expiry's failure or a Starting that never runs.
 The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered after `dsd_input_failure_kind`'s 1-7: 8
@@ -8879,7 +8888,9 @@ paths in `rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the open's
 as Airspy's open does, so `failureMessage()` words them as kind 7 and a desktop run that opened after a failed open does
 not end as failed. Tests: `UI_QT_SESSION_STATE`, `UI_QT_ANDROID_HOST` (`check_undelivered_start_after_network_failure`,
 `check_refused_start`, `check_attempt_identity`, `check_dismissed_undelivered_start_winds_down`,
-`check_refused_start_leaves_the_run_on_screen`, `check_accepted_start_supersedes_the_one_on_its_way`),
+`check_refused_start_leaves_the_run_on_screen`, `check_accepted_start_supersedes_the_one_on_its_way`,
+`check_superseded_attempt_never_drives_the_phase`, `check_retired_attempt_records_are_ignored`,
+`check_superseded_attempt_that_ran_keeps_the_screen`),
 `IO_RTL_FD_FAILURE`, `IO_RTL_STREAM_START_FAILURE` (Airspy),
 `ANDROID_ENGINE_STOP_JVM` (`DecoderServiceAttemptTest.kt`), `ANDROID_R8`, `tst_main_receiver_notice.qml`.
 
