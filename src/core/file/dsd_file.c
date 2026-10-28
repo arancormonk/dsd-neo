@@ -967,17 +967,24 @@ wav_rename_get_event_item(const Event_History_I* event_struct) {
     return &event_struct->Event_History_Items[0];
 }
 
+/* Replace, in a component of a recording's file name, every character a file name on some platform cannot hold
+   (path separators, control characters, the Windows reserved set) and the dots and spaces, with '_'. */
+static void
+wav_rename_sanitize_component(char* text) {
+    for (char* p = text; *p; p++) {
+        const unsigned char c = (unsigned char)*p;
+        if (c < 32 || c == 127 || strchr("/\\:*?\"<>|. ", c)) {
+            *p = '_';
+        }
+    }
+}
+
 static void
 wav_rename_service(const Event_History* event_item, wav_rename_metadata* metadata) {
     metadata->service[0] = '\0';
     if (event_item && event_item->service_label[0]) {
         DSD_SNPRINTF(metadata->service, sizeof(metadata->service), "_SVC_%s", event_item->service_label);
-        for (char* p = metadata->service + 5; *p; p++) {
-            const unsigned char c = (unsigned char)*p;
-            if (c < 32 || c == 127 || strchr("/\\:*?\"<>|. ", c)) {
-                *p = '_';
-            }
-        }
+        wav_rename_sanitize_component(metadata->service + 5);
     }
 }
 
@@ -1010,6 +1017,11 @@ wav_rename_build_metadata(const Event_History* event_item, int analog, wav_renam
         DSD_SNPRINTF(metadata->sys_str, sizeof(metadata->sys_str), "%s", event_item->sysid_string);
         DSD_SNPRINTF(metadata->src_str, sizeof(metadata->src_str), "%s", event_item->src_str);
         DSD_SNPRINTF(metadata->tgt_str, sizeof(metadata->tgt_str), "%s", event_item->tgt_str);
+        /* The name's copies only: an M17 or D-STAR callsign can hold a '/', which would name a folder and fail the
+           publish (issue #708). The row, and the rdio-scanner sidecar built from it, keep the identity as received. */
+        wav_rename_sanitize_component(metadata->sys_str);
+        wav_rename_sanitize_component(metadata->src_str);
+        wav_rename_sanitize_component(metadata->tgt_str);
     }
     if (gi == 0) {
         DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "GROUP");

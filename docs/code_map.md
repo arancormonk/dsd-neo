@@ -9364,8 +9364,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.
   The Qt ReceivePolicySheet uses existing modal/keyboard/discard behavior; terminal menu_receive uses one captured
   destination per prompt chain. Global defaults live in `[receive]`; `scan_mode` restores them after row overrides.
-  Recording publication sanitizes service-name filename components; Rdio uses its supported talkgroup label without
-  changing the numeric target.
+  Recording publication sanitizes the service, system, target and source filename components
+  (`wav_rename_sanitize_component()`, on the name's copies only: the row and its rdio sidecar keep the identity as
+  received); Rdio uses its supported talkgroup label without changing the numeric target.
 - A service name only rejected traffic could carry (`dsd_receive_names_unreachable()`: an enabled filter of its kind, or
   the analog tone filter for a CTCSS/DCS name, rejects its identifier) is kept and reported, never refused, so a service
   can be blocked for a while. `dsd_scan_option_unreachable_names()` judges a row's options over the configured policies

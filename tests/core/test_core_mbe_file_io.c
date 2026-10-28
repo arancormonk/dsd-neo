@@ -3510,6 +3510,103 @@ close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) 
     return rc;
 }
 
+/*
+ * Issue #708: a radio identity can hold characters a file name cannot. M17's base-40 callsigns have '/' and '.', and a
+ * D-STAR callsign carries its suffix after a '/'. The recording is published under a name with them replaced, as a
+ * service name's are; the call's row keeps the identity as received, and so does the rdio-scanner sidecar.
+ */
+static int
+publish_unsafe_identity_case(const char* label, const char* sys, const char* tgt, const char* src, uint32_t target_id,
+                             const char* want_name_tail) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_identity")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 8000, 0);
+    rc |= expect_true(label, wav != NULL);
+    if (wav) {
+        rc |= expect_true(label, write_wav_test_samples(wav));
+
+        static dsd_opts opts;
+        static Event_History_I history;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&history, 0, sizeof history);
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_system_id = 17;
+        opts.rdio_upload_timeout_ms = 5000;
+        opts.rdio_upload_retries = 1;
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_start_time = (time_t)1700003000;
+        item->event_time = (time_t)1700003005;
+        item->gi = 0;
+        item->target_id = target_id;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", sys);
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", tgt);
+        DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", src);
+
+        rc |= expect_true(label, close_and_rename_wav_file(wav, &opts, path, dir, &history, 0) == NULL);
+        rc |= expect_true(label, strcmp(item->sysid_string, sys) == 0 && strcmp(item->tgt_str, tgt) == 0
+                                     && strcmp(item->src_str, src) == 0);
+
+        dir_files_ctx files;
+        DSD_MEMSET(&files, 0, sizeof files);
+        files.dir = dir;
+        (void)dsd_dir_list(dir, collect_dir_file, &files);
+        int recordings = 0;
+        int temps = 0;
+        char renamed[DSD_TEST_PATH_MAX] = {0};
+        for (int i = 0; i < files.count; i++) {
+            if (strncmp(files.names[i], "TEMP_", 5) == 0) {
+                temps++;
+            } else if (has_suffix(files.names[i], ".wav")) {
+                recordings++;
+                DSD_SNPRINTF(renamed, sizeof renamed, "%s/%s", dir, files.names[i]);
+                rc |= expect_true(label, has_suffix(files.names[i], want_name_tail));
+            }
+        }
+        if (temps != 0 || recordings != 1) {
+            DSD_FPRINTF(stderr, "%s: %d recordings published, %d left under a temp name\n", label, recordings, temps);
+            rc = 1;
+        }
+        if (renamed[0] != '\0') {
+            rc |= expect_wav_header(label, renamed);
+            char sidecar[DSD_TEST_PATH_MAX];
+            char body[4096];
+            if (target_id != 0U) {
+                char want[256];
+                DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\"", tgt);
+                if (make_rdio_sidecar_path(renamed, sidecar, sizeof sidecar) != 0
+                    || read_file_prefix(sidecar, body, sizeof body) != 0) {
+                    DSD_FPRINTF(stderr, "%s: no rdio sidecar\n", label);
+                    rc = 1;
+                } else {
+                    rc |= expect_true(label, strstr(body, want) != NULL);
+                    DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\"", sys);
+                    rc |= expect_true(label, strstr(body, want) != NULL);
+                }
+                (void)remove(sidecar);
+            }
+        }
+    }
+
+    remove_dir_tree(dir);
+    return rc;
+}
+
+static int
+test_close_and_rename_wav_replaces_unsafe_identity_characters(void) {
+    int rc = publish_unsafe_identity_case("D-STAR callsign with a suffix", "DSTAR", "CQCQCQ", "N0CALL/ID51", 0U,
+                                          "_DSTAR_GROUP_TGT_CQCQCQ_SRC_N0CALL_ID51.wav");
+    rc |= publish_unsafe_identity_case("M17 callsigns with '/' and '.'", "M17_CAN_7", "M17-M17 C", "AB1CD/P.2", 4021U,
+                                       "_M17_CAN_7_GROUP_TGT_M17-M17_C_SRC_AB1CD_P_2.wav");
+    return rc;
+}
+
 static int
 test_close_and_rename_wav_exports_rdio_sidecar(void) {
     int rc = close_and_rename_rdio_case("recording opened before the call starts at the call", (time_t)1700001900,
@@ -3733,6 +3830,7 @@ main(void) {
     rc |= test_close_and_rename_wav_preserves_nonempty_event_file();
     rc |= test_close_and_rename_wav_numeric_and_failure_paths();
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
+    rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
 
     if (rc == 0) {
         printf("CORE_MBE_FILE_IO: OK\n");
