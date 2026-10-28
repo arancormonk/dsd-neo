@@ -268,7 +268,8 @@ recording_command_id(const struct dsd_app_command* c) {
     return has_recording ? c->id : 0;
 }
 
-/* Whether the last config apply's [recording] took effect (ui_cmd_handle_config_apply()); decoder thread only. */
+/* Whether the config apply being applied had its [recording] take effect (ui_cmd_handle_config_apply()); apply_cmd()
+   clears it before every dispatch, so it never outlives one apply. Decoder thread only. */
 static int g_config_recording_applied;
 
 void
@@ -7969,7 +7970,6 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
 
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    g_config_recording_applied = 0;
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
@@ -8659,6 +8659,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
         }
     }
     g_apply_cmd_guard_held = guarded;
+    g_config_recording_applied = 0;
     const int result = apply_cmd_scoped(opts, state, c, guarded);
     g_apply_cmd_guard_held = 0;
     if (guarded) {

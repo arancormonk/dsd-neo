@@ -37,7 +37,8 @@ enum {
     DSD_APP_RECORDING_COMMAND_NONE = 0,    /**< none submitted in this process */
     DSD_APP_RECORDING_COMMAND_PENDING = 1, /**< submitted, not applied yet */
     DSD_APP_RECORDING_COMMAND_APPLIED = 2,
-    DSD_APP_RECORDING_COMMAND_FAILED = 3,  /**< applied, and it failed (a file did not open); nothing changed */
+    /** applied, and it failed (a file did not open, or the config carrying it was refused); nothing changed */
+    DSD_APP_RECORDING_COMMAND_FAILED = 3,
     DSD_APP_RECORDING_COMMAND_REFUSED = 4, /**< not applied: refused (Signal search runs, or not supported here) */
     DSD_APP_RECORDING_COMMAND_DROPPED = 5, /**< not applied: dropped from a full queue, or the session ended first */
 };

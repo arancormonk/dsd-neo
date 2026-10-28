@@ -2149,6 +2149,10 @@ test_record_unknown_only(void) {
     rc |= expect_record_blocked_only("a known destination makes a private call known", &d);
     d = eval_record(opts, state, 1, 1, 500, 7001);
     rc |= expect_record_blocked_only("a known source counts when the destination is a learned alias", &d);
+    d = eval_record(opts, state, 1, 1, 7001, 500);
+    rc |= expect_record_blocked_only("a known destination counts when the source is a learned alias", &d);
+    d = eval_record(opts, state, 1, 1, 7001, 400);
+    rc |= expect_record_blocked_only("a known destination counts when the source is a persisted alias", &d);
     d = eval_record(opts, state, 1, 1, 500, 400);
     rc |= expect_records("two aliases leave a private call unknown", &d);
     d = eval_record(opts, state, 1, 1, 250, 8888);

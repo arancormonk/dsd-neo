@@ -1509,13 +1509,6 @@ tg_policy_record_unknown_only(const dsd_opts* opts) {
     return opts && opts->record_unknown_only != 0;
 }
 
-/* Whether a non-alias exact row names @p id: what makes a private call's endpoint known to the unknown-only rule. */
-static int
-tg_policy_private_endpoint_known(const dsd_state* state, uint32_t id) {
-    dsd_tg_policy_lookup lookup;
-    return tg_policy_lookup_exact_in_ctx_kind(tg_policy_ctx_get_const(state), id, 0, &lookup);
-}
-
 static void DSD_ATTR_USED
 tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out,
                              int* mode_blocking, int* explicit_audio_block, int* explicit_record_block,
@@ -1777,11 +1770,11 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_HOLD);
     }
     if (!mode_blocking && !hold_mismatch && chosen) {
-        /* Either endpoint known makes the call known, each looked up on its own: the row chosen above may be the
-           other endpoint's learned alias. */
-        const int known =
-            tg_policy_record_unknown_only(opts)
-            && (tg_policy_private_endpoint_known(state, src) || tg_policy_private_endpoint_known(state, dst));
+        /* Either endpoint known makes the call known, each on its own row: the row chosen above may be the other
+           endpoint's learned alias. An endpoint's exact lookup returns its non-alias row whenever it has one. */
+        const int known = tg_policy_record_unknown_only(opts)
+                          && ((src_match && !tg_policy_entry_is_learned_alias(&src_entry))
+                              || (dst_match && !tg_policy_entry_is_learned_alias(&dst_entry)));
         tg_policy_apply_explicit_media_blocks(out, chosen->audio == 0u,
                                               chosen->audio != 0u && (chosen->record == 0u || known),
                                               chosen->audio != 0u && chosen->stream == 0u);

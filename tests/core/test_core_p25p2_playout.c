@@ -1792,6 +1792,8 @@ test_live_policy_leaves_recordability(void) {
 static int
 test_unknown_only_moves_the_verdict(void) {
     int rc = 0;
+    /* A frozen decode clock: the key's second cannot move between the burst and the retake. */
+    dsd_decode_clock_use_test(1000000ULL * 1000000000ULL);
     setup(0, 2);
     g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
     rc |= expect_int("listed talkgroup", dsd_tg_policy_set_mode(&g_state, 100U, 100U, "A"), 0);
@@ -1812,11 +1814,14 @@ test_unknown_only_moves_the_verdict(void) {
     g_opts.record_unknown_only = 0;
     burst(0, 0, DSD_P25P2_BURST_4V, 1000);
     rc |= expect_int("the cached verdict records", g_state.p25p2_playout.slot[0].live_verdict.recordable, 1);
+    const int64_t cached_second = g_state.p25p2_playout.slot[0].live_key.second;
     g_opts.record_unknown_only = 1;
     dsd_p25p2_playout_pair_done(&g_opts, &g_state);
     rc |= expect_int("the switch retakes the cached verdict", g_state.p25p2_playout.slot[0].live_verdict.recordable, 0);
     rc |= expect_int("the retaken key carries it", g_state.p25p2_playout.slot[0].live_key.record_unknown_only, 1);
+    rc |= expect_int("in the same decode second", g_state.p25p2_playout.slot[0].live_key.second == cached_second, 1);
     rc |= expect_int("the call still plays", g_block_count > 0, 1);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
