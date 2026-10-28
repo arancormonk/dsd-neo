@@ -49,6 +49,7 @@ class RecordingStatus : public QObject {
     Q_PROPERTY(QVariantMap failureCounts READ failureCounts NOTIFY changed)
     Q_PROPERTY(QString lastError READ lastError NOTIFY changed)
     Q_PROPERTY(QString refusal READ refusal NOTIFY changed)
+    Q_PROPERTY(int refusalCount READ refusalCount NOTIFY changed)
 
   public:
     explicit RecordingStatus(QObject* parent = nullptr);
@@ -102,6 +103,9 @@ class RecordingStatus : public QObject {
      *  (the session's run is not up yet), or empty.
      *  Such a change applies at the next start. */
     QString refusal() const;
+    /** @brief How many switches CommandBridge has refused, the same reason again included: a caller that reads it
+     *  before and after a switch knows whether that switch was the one refused (refusal() may be an earlier one's). */
+    int refusalCount() const;
 
   Q_SIGNALS:
     void changed();
@@ -109,6 +113,7 @@ class RecordingStatus : public QObject {
   private:
     dsd_app_recording_view m_view{};
     QString m_refusal;
+    int m_refusalCount = 0;
     bool m_sessionActive = false;
     bool m_runUp = false;
     /* CommandBridge sent a switch since this session started: the decoder's command state is this session's. */

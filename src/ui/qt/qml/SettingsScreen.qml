@@ -128,9 +128,12 @@ Item {
     // next start. The switches show the preference; the line under them says how
     // the running session took it (recordingStatus is scoped to the session).
     readonly property bool recordingLive: decoderHost.sessionActive === true
-    // A live switch the queue would not take: the preference is saved, the session kept its setting.
-    property string recordingError: ""
-    onRecordingLiveChanged: recordingError = ""
+    // How the last live switch went: "" (sent), the bridge's refusal for that switch
+    // ("storage-unavailable", "static-wav", "starting"), or "rejected" (the queue
+    // would not take it, or the bridge found no session while one reads as on). The
+    // preference is saved either way; the session kept its own setting.
+    property string recordingAttempt: ""
+    onRecordingLiveChanged: recordingAttempt = ""
     readonly property bool signalSearchOwned: typeof signalSearch !== "undefined" && !!signalSearch && !!signalSearch.status && signalSearch.status.owned === true
     // How the running session took a switch, under the switches.
     readonly property var recordingSessionNotices: {
@@ -138,9 +141,9 @@ Item {
         if (!recordingLive)
             return notes;
         var commandState = recordingStatus.commandState;
-        var refusal = recordingStatus.refusal;
-        if (recordingError.length > 0)
-            notes.push({text: recordingError, problem: true});
+        var refusal = recordingAttempt;
+        if (refusal === "rejected")
+            notes.push({text: qsTr("Couldn't change the running session. Applies at the next start."), problem: true});
         else if (commandState === "pending")
             notes.push({text: qsTr("Applying…"), problem: false});
         else if (commandState === "refused")
@@ -182,21 +185,24 @@ Item {
     }
     readonly property string recordingUsage: !recordings.indexed ? qsTr("Counting recordings…") : recordings.recordingCount + recordings.unfinishedCount === 0 ? qsTr("No recordings yet") : Util.recordingUsageText(recordings.usedBytes, prefs.recordingLimitMb, recordings.recordingCount + recordings.unfinishedCount)
 
-    // A refusal the bridge noted is said by recordingStatus; a submit the queue
-    // would not take says nothing there, so it is said here.
-    function applyRecordingResult(sent) {
-        recordingError = sent || recordingStatus.refusal.length > 0 ? "" : qsTr("Couldn't change the running session. Applies at the next start.");
+    // Judged from this switch alone: recordingStatus.refusal may be an earlier
+    // switch's, so only a refusal counted during this call is this one's.
+    function sendRecordingSwitch(send) {
+        var before = recordingStatus.refusalCount;
+        var sent = send();
+        var reason = recordingStatus.refusalCount !== before ? recordingStatus.refusal : "";
+        recordingAttempt = sent ? "" : reason === "storage-unavailable" || reason === "static-wav" || reason === "starting" ? reason : "rejected";
     }
     function setRecordCalls(on) {
         prefs.recordCalls = on;
         if (recordingLive)
-            applyRecordingResult(commands.setRecordCalls(on, prefs.recordUnknownOnly));
+            sendRecordingSwitch(function () { return commands.setRecordCalls(on, prefs.recordUnknownOnly); });
     }
     // Unknown-only travels with Record calls: it applies only while calls record.
     function setRecordUnknownOnly(on) {
         prefs.recordUnknownOnly = on;
         if (recordingLive && prefs.recordCalls)
-            applyRecordingResult(commands.setRecordUnknownOnly(on));
+            sendRecordingSwitch(function () { return commands.setRecordUnknownOnly(on); });
     }
 
     signal openDiagnostics

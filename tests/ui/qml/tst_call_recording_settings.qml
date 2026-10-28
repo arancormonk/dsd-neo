@@ -133,10 +133,7 @@ Item {
                 {tag: "failed", key: "commandState", value: "failed", text: "Couldn't change the running session. Applies at the next start.", problem: true},
                 {tag: "dropped", key: "commandState", value: "dropped", text: "Couldn't change the running session. Applies at the next start.", problem: true},
                 {tag: "applied", key: "commandState", value: "applied", text: "", problem: false},
-                {tag: "no-storage", key: "refusal", value: "storage-unavailable", text: "This session has no storage for call recordings. Applies at the next start.", problem: false},
-                {tag: "static-wav", key: "refusal", value: "static-wav", text: "This session records to one file (-w in Extra decoder arguments). Applies at the next start.", problem: false},
-                {tag: "starting", key: "refusal", value: "starting", text: "The session is still starting. Applies at the next start.", problem: false},
-                {tag: "no-session", key: "refusal", value: "no-session", text: "", problem: false},
+                {tag: "stale-refusal", key: "refusal", value: "starting", text: "", problem: false},
                 {tag: "journal", key: "journal", value: "failed", text: "New call recordings can't be listed in the app this session. Stop and start listening to try again.", problem: true}
             ];
         }
@@ -182,12 +179,12 @@ Item {
             compare(notices(), ["Couldn't change the running session. Applies at the next start."]);
             compare(problems().length, 1);
             verify(item("recordingNotices").visible);
-            // A refusal the bridge noted is said in its own words instead.
-            testContext.setRecordingStatus("refusal", "static-wav");
+            // A refusal the bridge noted for this switch is said in its own words instead.
+            commands.setRecordingRefusal("static-wav");
             item(data.unknown ? "recordUnknownOnlyToggle" : "recordCallsToggle").activate();
             compare(notices(), ["This session records to one file (-w in Extra decoder arguments). Applies at the next start."]);
             // One that goes through clears it.
-            testContext.setRecordingStatus("refusal", "");
+            commands.setRecordingRefusal("");
             commands.setRecordingAccepted(true);
             item(data.unknown ? "recordUnknownOnlyToggle" : "recordCallsToggle").activate();
             compare(notices().length, 0);
@@ -198,6 +195,45 @@ Item {
             testContext.setLifecyclePhase(0);
             testContext.setLifecyclePhase(2);
             compare(notices().length, 0);
+        }
+
+        // The bridge's refusal of a switch, in its words; a reading the bridge cannot use for a session that reads as
+        // on ("no-session") is said as a switch that did not go through.
+        function test_refusal_notices_data() {
+            return [
+                {tag: "no-storage", reason: "storage-unavailable", text: "This session has no storage for call recordings. Applies at the next start.", problem: false},
+                {tag: "static-wav", reason: "static-wav", text: "This session records to one file (-w in Extra decoder arguments). Applies at the next start.", problem: false},
+                {tag: "starting", reason: "starting", text: "The session is still starting. Applies at the next start.", problem: false},
+                {tag: "no-session", reason: "no-session", text: "Couldn't change the running session. Applies at the next start.", problem: true}
+            ];
+        }
+        function test_refusal_notices(data) {
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            commands.setRecordingAccepted(false);
+            commands.setRecordingRefusal(data.reason);
+            item("recordCallsToggle").activate();
+            compare(notices(), [data.text]);
+            compare(problems().length, data.problem ? 1 : 0);
+        }
+
+        // A refusal left from an earlier switch is not this one's: a later switch the queue would not take says so,
+        // not "still starting".
+        function test_stale_refusal_does_not_hide_a_rejection() {
+            testContext.setLifecyclePhase(2);
+            openScreen();
+            commands.setRecordingAccepted(false);
+            commands.setRecordingRefusal("starting");
+            item("recordCallsToggle").activate();
+            compare(notices(), ["The session is still starting. Applies at the next start."]);
+            commands.setRecordingRefusal("");
+            item("recordCallsToggle").activate();
+            compare(recordingStatus.refusal, "starting", "the status still holds the earlier refusal");
+            compare(notices(), ["Couldn't change the running session. Applies at the next start."]);
+            // And the same reason noted again is this switch's.
+            commands.setRecordingRefusal("starting");
+            item("recordCallsToggle").activate();
+            compare(notices(), ["The session is still starting. Applies at the next start."]);
         }
 
         function test_recording_failures_data() {

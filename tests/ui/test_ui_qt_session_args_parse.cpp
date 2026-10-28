@@ -340,11 +340,14 @@ test_live_beside_a_static_wav(dsd_qt::AppPrefs& prefs, Sessions& sessions, const
     expect("nothing is sent and the static WAV stays open",
            live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
     expect("the status says why", status.refusal() == QStringLiteral("static-wav") && status.staticWav());
+    const int refused = status.refusalCount();
     // Nor is Record calls off sent: a stop would close the user's file as surely as a start.
     expect("Record calls off is refused too", !bridge.setRecordCalls(false, false));
     expect("nothing is sent and the static WAV stays open",
            live.drain() == 0 && live.decoder.opts->static_wav_file == 1 && live.decoder.opts->wav_out_f != nullptr);
     expect("for the same reason", status.refusal() == QStringLiteral("static-wav"));
+    // A refusal for the same reason is still counted, so Settings can tell this switch's refusal from an earlier one.
+    expect("and counted again", status.refusalCount() == refused + 1);
 }
 
 /* A host whose session a test starts and ends. */
@@ -541,10 +544,13 @@ test_status_readings(void) {
     view.command_state = DSD_APP_RECORDING_COMMAND_DROPPED;
     view.command_id = DSD_APP_CMD_WAV_STOP;
     status.apply(view);
+    const int refusals = status.refusalCount();
     status.noteRefusal(QStringLiteral("static-wav"));
     status.noteRefusal(QStringLiteral("static-wav"));
-    expect("each move signalled once", changes == 3 && status.commandState() == "dropped" && status.command() == "stop"
-                                           && status.refusal() == "static-wav");
+    // Each refusal is a move of its own, the same reason again included: refusalCount() counts it.
+    expect("each move signalled once", changes == 4 && status.commandState() == "dropped" && status.command() == "stop"
+                                           && status.refusal() == "static-wav"
+                                           && status.refusalCount() == refusals + 2);
 }
 
 } // namespace

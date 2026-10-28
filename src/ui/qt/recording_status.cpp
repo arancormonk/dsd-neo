@@ -59,10 +59,8 @@ RecordingStatus::apply(const dsd_app_recording_view& view) {
 
 void
 RecordingStatus::noteRefusal(const QString& reason) {
-    if (reason == m_refusal) {
-        return;
-    }
     m_refusal = reason;
+    m_refusalCount++;
     Q_EMIT changed();
 }
 
@@ -240,6 +238,11 @@ RecordingStatus::lastError() const {
 QString
 RecordingStatus::refusal() const {
     return m_refusal;
+}
+
+int
+RecordingStatus::refusalCount() const {
+    return m_refusalCount;
 }
 
 } // namespace dsd_qt

@@ -332,7 +332,16 @@ Column {
                     Accessible.onDecreaseAction: nudge(-5000)
                     Keys.onRightPressed: nudge(5000)
                     Keys.onLeftPressed: nudge(-5000)
-                    FocusFrame {}
+                    // Around the bar's own slot, not the whole touch area, which
+                    // overhangs the time above it.
+                    FocusFrame {
+                        objectName: "recordingSeekFocus"
+                        anchors.fill: undefined
+                        x: -2
+                        y: (parent.height - height) / 2
+                        width: parent.width + 4
+                        height: 22
+                    }
 
                     function msAt(x) {
                         return Math.round(Math.max(0, Math.min(1, x / Math.max(1, track.width))) * player.durationMs);

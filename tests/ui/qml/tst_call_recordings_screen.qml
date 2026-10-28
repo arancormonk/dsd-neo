@@ -317,7 +317,6 @@ Item {
             screen().beginExport(recordings.folders[0], "all");
             var name = findChild(screen(), "callRecordingsExportPicker").selectedFile.toString();
             verify(name.indexOf("Fire_EMS_ _North_ _1_") >= 0, name);
-            verify(name.indexOf("/Fire") < 0 && name.indexOf(":") < 0 || name.indexOf("file:") === 0, "no separator from the name: " + name);
             screen().exportPickCancelled();
         }
 

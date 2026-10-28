@@ -8059,7 +8059,8 @@ Qt Quick frontend (`src/ui/qt`):
     unknown talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
     them come from `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next
-    start, a submit the queue would not take or a dropped command, recording failures, a failed journal); Storage
+    start, judged per switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped
+    command, recording failures, a failed journal); Storage
     limit (a ChoiceSheet of `recordingLimitChoices`), then the store's lines (storage away, low space while recording,
     recordings the limit removed, failed deletes), then Manage call recordings (usage, or "Counting recordings..."
     until `indexed`). The limit's removals and failed deletes count until the Call recordings screen shows them: it

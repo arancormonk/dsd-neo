@@ -711,14 +711,14 @@ class CommandRecorder : public QObject {
         m_recording_requests.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")},
                                                 {QStringLiteral("on"), on},
                                                 {QStringLiteral("unknownOnly"), unknownOnly}});
-        return m_recording_accepted;
+        return recordingAnswer();
     }
 
     Q_INVOKABLE bool
     setRecordUnknownOnly(bool on) {
         m_recording_requests.append(
             QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordUnknownOnly")}, {QStringLiteral("on"), on}});
-        return m_recording_accepted;
+        return recordingAnswer();
     }
 
     Q_INVOKABLE void
@@ -726,9 +726,32 @@ class CommandRecorder : public QObject {
         m_recording_accepted = accepted;
     }
 
+    /**
+     * @brief Refuse the next switches for @p reason, noting it in `recordingStatus` as CommandBridge does
+     * (RecordingStatus::noteRefusal(): the reason, and one more refusal counted); empty: a refused switch notes nothing,
+     * as a submit the queue would not take.
+     */
+    Q_INVOKABLE void
+    setRecordingRefusal(const QString& reason) {
+        m_recording_refusal = reason;
+    }
+
+    /* The `recordingStatus` readings a refusal is noted in. */
+    QQmlPropertyMap* recordingStatus = nullptr;
+
     Q_INVOKABLE QVariantList
     recordingRequests() const {
         return m_recording_requests;
+    }
+
+    bool
+    recordingAnswer() {
+        if (!m_recording_accepted && !m_recording_refusal.isEmpty() && recordingStatus != nullptr) {
+            recordingStatus->insert(QStringLiteral("refusal"), m_recording_refusal);
+            recordingStatus->insert(QStringLiteral("refusalCount"),
+                                    recordingStatus->value(QStringLiteral("refusalCount")).toInt() + 1);
+        }
+        return m_recording_accepted;
     }
 
     Q_INVOKABLE bool
@@ -1035,6 +1058,7 @@ class CommandRecorder : public QObject {
         m_relaxed_crc_accepted = true;
         m_relaxed_crc_requests.clear();
         m_recording_accepted = true;
+        m_recording_refusal.clear();
         m_recording_requests.clear();
         m_avoid_clear_requests.clear();
         m_scan_hold_calls = 0;
@@ -1287,6 +1311,7 @@ class CommandRecorder : public QObject {
     bool m_relaxed_crc_accepted = true;
     QVariantList m_relaxed_crc_requests;
     bool m_recording_accepted = true;
+    QString m_recording_refusal;
     QVariantList m_recording_requests;
     QStringList m_avoid_clear_requests;
     int m_scan_hold_calls = 0;
@@ -3390,6 +3415,7 @@ class Setup : public QObject {
         recording[QStringLiteral("failureCounts")] = QVariantMap();
         recording[QStringLiteral("lastError")] = QString();
         recording[QStringLiteral("refusal")] = QString();
+        recording[QStringLiteral("refusalCount")] = 0;
         m_recording_status = recording;
         m_recording_readings = new ReadingMap(engine);
         for (auto it = recording.cbegin(); it != recording.cend(); ++it) {
@@ -3445,6 +3471,7 @@ class Setup : public QObject {
 
         m_commands = new CommandRecorder();
         m_commands->setParent(engine);
+        m_commands->recordingStatus = m_recording_readings;
         ctx->setContextProperty(QStringLiteral("commands"), m_commands);
 
         /* Production models, not stand-ins. Two of these back a ListView whose

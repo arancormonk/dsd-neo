@@ -159,6 +159,25 @@ Item {
             compare(lastHostCall().ms, 0, "and at the start");
         }
 
+        // Keyboard focus on the bar frames the bar, not the time above it (the touch area overhangs the time).
+        function test_seek_focus_frame_clears_the_time() {
+            openWith([rec("t-1", pathA, 10000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 2, 1000, 10000, "");
+            var bar = item("recordingSeekBar");
+            bar.Window.window.requestActivate();
+            tryVerify(function () { return bar.Window.window.active; });
+            bar.forceActiveFocus();
+            tryVerify(function () { return bar.activeFocus; });
+            var frame = item("recordingSeekFocus");
+            verify(frame.visible);
+            var time = item("recordingTime");
+            var timeBottom = time.mapToItem(sheet(), 0, time.height).y;
+            var frameTop = frame.mapToItem(sheet(), 0, 0).y;
+            verify(frameTop >= timeBottom, "frame top " + frameTop + " under the time's bottom " + timeBottom);
+            verify(frame.width >= bar.width, "and spans the bar");
+        }
+
         function test_cant_play_data() {
             return [
                 {tag: "unavailable", error: "unavailable", text: "Can't play right now. Another app has the audio, such as a phone call."},
