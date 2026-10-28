@@ -499,8 +499,8 @@ measurementConversion(const QString& format, qsizetype at, const char* signedFie
     if (match.captured(1).contains(QLatin1Char('+'))) {
         return {}; // No producer prints a signed integer with "%+d"; one that does needs its own pattern.
     }
-    QString field = QString::fromLatin1(signedField ? signedField : kSignedField);
-    if (!signedField && !match.captured(4).isEmpty()) {
+    QString field = QString::fromLatin1(signedField != nullptr ? signedField : kSignedField);
+    if (signedField == nullptr && !match.captured(4).isEmpty()) {
         field = QStringLiteral("-?[0-9]{1,19}");
     }
     return pad + QStringLiteral("(") + field + QStringLiteral(")");
@@ -548,7 +548,7 @@ measurementPatterns() {
             if (!accepted || firstField <= 0 || !labelled) {
                 continue;
             }
-            if (entry.record) {
+            if (entry.record != nullptr) {
                 pattern = QStringLiteral("\\A") + QRegularExpression::escape(QLatin1String(entry.record)) + pattern
                           + QLatin1String(kRecordEnd);
             } else if (endsInField) {
