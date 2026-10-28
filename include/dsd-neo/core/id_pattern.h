@@ -56,6 +56,13 @@ int dsd_id_pattern_is_candidate(const char* token);
 int dsd_id_pattern_parse(const char* token, dsd_id_pattern* out);
 
 /**
+ * Rebuild a stored pattern from its canonical text (as dsd_id_pattern_parse() wrote it), counting its rank without
+ * validating it again: for rows whose text was validated when they were stored. NULL `text` gives the empty pattern;
+ * NULL `out` does nothing.
+ */
+void dsd_id_pattern_from_canonical(const char* text, dsd_id_pattern* out);
+
+/**
  * Write `id` in decimal without leading zeros (0 is "0") and NUL-terminate it. Returns the digit count, or 0 when
  * `out` is NULL or `out_size` cannot hold the digits and the terminator (then `out`, when it has room, holds "").
  * DSD_ID_DECIMAL_MAX bytes always suffice.

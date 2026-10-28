@@ -170,6 +170,26 @@ dsd_id_pattern_parse(const char* token, dsd_id_pattern* out) {
     return 0;
 }
 
+void
+dsd_id_pattern_from_canonical(const char* text, dsd_id_pattern* out) {
+    if (out == NULL) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (text == NULL) {
+        return;
+    }
+    for (size_t i = 0; i + 1U < sizeof(out->text) && text[i] != '\0'; i++) {
+        const char c = text[i];
+        out->text[i] = c;
+        if (c == '*') {
+            out->has_star = 1U;
+        } else if (id_is_digit(c)) {
+            out->literals++;
+        }
+    }
+}
+
 size_t
 dsd_id_decimal(uint32_t id, char* out, size_t out_size) {
     if (out == NULL) {

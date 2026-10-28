@@ -45,33 +45,10 @@ csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* 
 }
 
 enum group_parse_value_result {
-    GROUP_PARSE_VALUE_MISSING = 0,
-    GROUP_PARSE_VALUE_OK = 1,
-    GROUP_PARSE_VALUE_INVALID = -1,
+    GROUP_PARSE_VALUE_MISSING = CSV_CELL_MISSING,
+    GROUP_PARSE_VALUE_OK = CSV_CELL_OK,
+    GROUP_PARSE_VALUE_INVALID = CSV_CELL_INVALID,
 };
-
-static int
-group_parse_bool_field(char* token, int* out) {
-    const char* p = NULL;
-    if (!token || !out) {
-        return GROUP_PARSE_VALUE_INVALID;
-    }
-    p = trim_ws(token);
-    if (!p || p[0] == '\0') {
-        return GROUP_PARSE_VALUE_MISSING;
-    }
-    if (csv_ascii_casecmp(p, "true") == 0 || csv_ascii_casecmp(p, "yes") == 0 || csv_ascii_casecmp(p, "on") == 0
-        || strcmp(p, "1") == 0) {
-        *out = 1;
-        return GROUP_PARSE_VALUE_OK;
-    }
-    if (csv_ascii_casecmp(p, "false") == 0 || csv_ascii_casecmp(p, "no") == 0 || csv_ascii_casecmp(p, "off") == 0
-        || strcmp(p, "0") == 0) {
-        *out = 0;
-        return GROUP_PARSE_VALUE_OK;
-    }
-    return GROUP_PARSE_VALUE_INVALID;
-}
 
 static int
 group_parse_priority_field(char* token, int* out) {
@@ -178,7 +155,7 @@ group_entry_init(dsd_tg_policy_entry* entry, uint32_t id_start, uint32_t id_end,
     DSD_SNPRINTF(entry->name, sizeof(entry->name), "%s", name_field ? name_field : "");
     entry->priority = 0;
     entry->preempt = 0;
-    *out_mode_blocking = (strcmp(entry->mode, "B") == 0 || strcmp(entry->mode, "DE") == 0);
+    *out_mode_blocking = dsd_tg_policy_mode_blocks(entry->mode);
     entry->audio = *out_mode_blocking ? 0u : 1u;
     entry->record = entry->audio;
     entry->stream = entry->audio;
@@ -188,7 +165,7 @@ static void
 group_apply_optional_bool_field(const char* filename, unsigned int row_count, const char* label, char* token,
                                 uint8_t* target, int* has_flag) {
     int parsed = 0;
-    int br = group_parse_bool_field(token, &parsed);
+    int br = csv_parse_bool_cell(token, &parsed);
     if (br == GROUP_PARSE_VALUE_OK) {
         *target = parsed ? 1u : 0u;
         if (has_flag) {
@@ -229,7 +206,7 @@ group_apply_preempt_field(const group_policy_header* header, const char* filenam
     }
     if (header->prefix_len >= 2 && field_count > 4) {
         int parsed = 0;
-        int br = group_parse_bool_field(fields[4], &parsed);
+        int br = csv_parse_bool_cell(fields[4], &parsed);
         if (br == GROUP_PARSE_VALUE_OK) {
             entry->preempt = parsed ? 1u : 0u;
         } else if (br == GROUP_PARSE_VALUE_INVALID) {
@@ -264,22 +241,8 @@ group_enforce_media_constraints(const char* filename, unsigned int row_count, ds
     if (!entry) {
         return;
     }
-    if (mode_blocking) {
-        if ((has_audio && entry->audio) || (has_record && entry->record) || (has_stream && entry->stream)) {
-            LOG_WARN("WARNING: Group file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
-                     filename, row_count);
-        }
-        entry->audio = 0u;
-        entry->record = 0u;
-        entry->stream = 0u;
-        return;
-    }
-    if (entry->audio == 0u && ((has_record && entry->record) || (has_stream && entry->stream))) {
-        LOG_WARN("WARNING: Group file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
-                 filename, row_count);
-        entry->record = 0u;
-        entry->stream = 0u;
-    }
+    csv_enforce_media_cells("Group", filename, row_count, mode_blocking, has_audio, has_record, has_stream,
+                            &entry->audio, &entry->record, &entry->stream, 0);
 }
 
 static void

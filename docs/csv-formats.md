@@ -826,34 +826,61 @@ announcement: one heard during the dwell is retried on the next.
 
 Purpose: Provide names for source radio IDs (unit IDs), shown as `SName:` in event history and in the terminal
 call display: after `SRC:` on the NXDN target/source line, and on the slot's `D XTRA` line beside the talkgroup
-label for DMR and P25 Phase 2. This list supplies labels only, with no allow/block or media policy. Private-call
-destination radio IDs still use the group list.
+label for DMR and P25 Phase 2. A plain list supplies labels only. A list with policy columns (below) can also
+allow, block or stop recording calls by radio, using the modes and media flags documented for the
+[group list](#group-list-csv--g-file--trunking-group_csv). Private-call destination radio IDs still use the group
+list for their names.
 
 Required columns:
 
-1. `id` (decimal `uint32_t`, `0..4294967295`; exact `1234567` or inclusive range `2000000-2000999`, using the
-   same grammar as the group list's `id`)
+1. `id` (decimal `uint32_t`, `0..4294967295`): an exact ID `1234567`, an inclusive range `2000000-2000999`, or a
+   digit pattern. A pattern contains `x`/`X` (exactly one digit) or `*` (any run of digits, including none) and
+   otherwise only digits, and matches the radio ID written in decimal without leading zeros: `1xxx` covers
+   1000-1999, `2*` every ID starting with 2, `*05` every ID ending in 05, and `*` every ID. A pattern is at most 15
+   characters once `X` is lower-cased and repeated `*` collapsed, cannot start with `0`, and must match some ID in
+   `0..4294967295`; any other pattern is skipped as an invalid ID.
 2. `name` (free text, trimmed and truncated to **49 bytes**; truncation may cut a multi-byte UTF-8 tail)
 
 Optional column:
 
 3. `tags` (free text; accepted and ignored). Further columns are ignored.
 
+Policy columns, only when the header's third column is `mode` (case-insensitive, surrounding whitespace ignored),
+in this exact order from column 3:
+
+3. `mode`: `A` or empty means no restriction; `B` and `DE` block the radio
+4. `audio` (`on`/`off`, default from `mode`)
+5. `record` (`on`/`off`, default from `mode`)
+6. `stream` (`on`/`off`, default from `mode`)
+7. `tags` (free text; accepted and ignored)
+
+The header may stop early (`id,name,mode` is a complete policy header). A header column that breaks this order
+ends the policy columns there: that column and every later one are ignored. `audio`, `record` and `stream` accept
+`true`/`false`, `yes`/`no`, `on`/`off` or `1`/`0`; an invalid value is warned and the default kept. `audio=off`
+forces `record` and `stream` off, and `B`/`DE` forces all three off. Without `mode` in column 3 the file is a plain
+list, read exactly as before.
+
 Notes:
 
 - The first physical line is always consumed as a header. Blank lines are skipped.
-- A row with fewer than two fields, an unparsable ID or reversed range, or an empty name is warned and skipped.
+- A row with fewer than two fields, an unparsable ID, reversed range or invalid pattern, or an empty name is warned
+  and skipped. In a file with policy columns a row may leave `name` empty: it then decides policy for the IDs it
+  covers and names none of them.
 - A physical line with more than **998 bytes of content** (excluding its LF or CRLF terminator), or one that contains
   a NUL byte, is warned, its remainder discarded, and counted as one skipped row. Continuation fragments are never parsed as extra rows,
   and the following line is not consumed. An overlong header is still consumed as the header and is excluded
   from the validator's accepted/skipped/total counts, as are all headers and blank lines. It does not emit a
   skipped-row warning.
-- Exact matches beat ranges; the **first row wins** for duplicate exact IDs. Among ranges, the narrowest
-  range wins, with the **last row winning** equal-width ties, matching the group-list grammar.
+- Exact matches beat ranges, and ranges beat patterns; the **first row wins** for duplicate exact IDs. Among
+  ranges, the narrowest range wins, with the **last row winning** equal-width ties. Among patterns, the one with
+  more literal digits wins, then one without `*` over one with it, with the **last row winning** remaining ties.
+- Policy comes from the row that wins for the radio ID, named or not. The name comes from the row that wins among
+  the rows with a non-empty name, so `2*,Fire,A` with `2001234,,B` names radio 2001234 `Fire` and blocks it.
 - Names are not CSV-escaped; avoid commas and line breaks in fields.
 - Source labels prefer this list, then fall back to the active group list's **exact-row** label. A CSV alias
   therefore wins over an OTA talker alias learned for the same RID as the `SName:` label; the OTA alias text itself
-  is kept unchanged. Source `Mode:` still comes only from a group-list exact row, never from this list.
+  is kept unchanged. Source `Mode:` shows the winning row's mode when that row has policy columns and a non-empty
+  `mode`; otherwise it comes from a group-list exact row, as for a plain list.
 - Import replaces the current list. A missing or unreadable file, a read error, or an allocation failure fails
   the import and keeps the current list. All entry points accept zero usable rows as a loaded empty list.
   At engine startup a source-list load failure logs a warning and decoding continues without imported aliases.
@@ -871,6 +898,16 @@ id,name,tags
 1234567,Engine 21,Fire
 1234568,Ladder 4,Fire
 2000000-2000999,Dispatch consoles,Ops
+```
+
+Policy example (`examples/src_policy.csv`):
+
+```csv
+id,name,mode,audio,record,stream,tags
+1234567,Engine 21,A,on,on,on,Fire
+12345xx,Fire units,A,on,off,on,Fire
+1234599,,B
+9*,Test radios,B
 ```
 
 ## Decimal Key List CSV (`-k <file>`)

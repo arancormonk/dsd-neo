@@ -396,6 +396,62 @@ csv_ascii_casecmp(const char* a, const char* b) {
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
 
+/* What csv_parse_bool_cell() found in a cell. */
+enum { CSV_CELL_INVALID = -1, CSV_CELL_MISSING = 0, CSV_CELL_OK = 1 };
+
+/* An on/off policy cell (group list, radio list): true/yes/on/1 or false/no/off/0, case-insensitive and trimmed in
+ * place. An empty cell is CSV_CELL_MISSING (the default applies); anything else is CSV_CELL_INVALID. */
+static inline int
+csv_parse_bool_cell(char* token, int* out) {
+    if (!token || !out) {
+        return CSV_CELL_INVALID;
+    }
+    const char* p = trim_ws(token);
+    if (!p || p[0] == '\0') {
+        return CSV_CELL_MISSING;
+    }
+    if (csv_ascii_casecmp(p, "true") == 0 || csv_ascii_casecmp(p, "yes") == 0 || csv_ascii_casecmp(p, "on") == 0
+        || strcmp(p, "1") == 0) {
+        *out = 1;
+        return CSV_CELL_OK;
+    }
+    if (csv_ascii_casecmp(p, "false") == 0 || csv_ascii_casecmp(p, "no") == 0 || csv_ascii_casecmp(p, "off") == 0
+        || strcmp(p, "0") == 0) {
+        *out = 0;
+        return CSV_CELL_OK;
+    }
+    return CSV_CELL_INVALID;
+}
+
+/* Apply the mode rules to one row's media cells: a blocking mode forces audio, record and stream off, and audio off
+ * forces record and stream off. The has_* flags say which cells the row set; overriding one the row set warns
+ * ("<file_kind> file '<filename>' row N ...") unless @p quiet. */
+static inline void
+csv_enforce_media_cells(const char* file_kind, const char* filename, unsigned int row, int mode_blocking, int has_audio,
+                        int has_record, int has_stream, uint8_t* audio, uint8_t* record, uint8_t* stream, int quiet) {
+    if (!audio || !record || !stream) {
+        return;
+    }
+    if (mode_blocking) {
+        if (!quiet && ((has_audio && *audio) || (has_record && *record) || (has_stream && *stream))) {
+            LOG_WARN("WARNING: %s file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
+                     file_kind, filename, row);
+        }
+        *audio = 0u;
+        *record = 0u;
+        *stream = 0u;
+        return;
+    }
+    if (*audio == 0u && ((has_record && *record) || (has_stream && *stream))) {
+        if (!quiet) {
+            LOG_WARN("WARNING: %s file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
+                     file_kind, filename, row);
+        }
+        *record = 0u;
+        *stream = 0u;
+    }
+}
+
 /*
  * P25 band-plan CSV parse loop, shared by the importer and the dry-run validator
  * (dsd_csv_validate_p25_bandplan_file). Parses `path` into `rows` (capacity

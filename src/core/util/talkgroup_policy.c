@@ -241,17 +241,34 @@ tg_policy_safe_copy(char* dst, size_t dst_sz, const char* src) {
     DSD_SNPRINTF(dst, dst_sz, "%s", src);
 }
 
-static int
-tg_policy_mode_is_blocking(const char* mode) {
+int
+dsd_tg_policy_mode_blocks(const char* mode) {
     if (!mode) {
         return 0;
     }
     return (strcmp(mode, "B") == 0 || strcmp(mode, "DE") == 0);
 }
 
+void
+dsd_tg_policy_media_normalize(const char* mode, uint8_t* audio, uint8_t* record, uint8_t* stream) {
+    if (!audio || !record || !stream) {
+        return;
+    }
+    *audio = (*audio != 0u) ? 1u : 0u;
+    *record = (*record != 0u) ? 1u : 0u;
+    *stream = (*stream != 0u) ? 1u : 0u;
+    if (dsd_tg_policy_mode_blocks(mode)) {
+        *audio = 0u;
+    }
+    if (!*audio) {
+        *record = 0u;
+        *stream = 0u;
+    }
+}
+
 static void
 tg_policy_defaults_from_mode(const char* mode, uint8_t* audio, uint8_t* record, uint8_t* stream) {
-    uint8_t on = tg_policy_mode_is_blocking(mode) ? 0u : 1u;
+    uint8_t on = dsd_tg_policy_mode_blocks(mode) ? 0u : 1u;
     if (audio) {
         *audio = on;
     }
@@ -269,22 +286,12 @@ tg_policy_normalize_entry(dsd_tg_policy_entry* e) {
         return;
     }
     e->preempt = (e->preempt != 0u) ? 1u : 0u;
-    e->audio = (e->audio != 0u) ? 1u : 0u;
-    e->record = (e->record != 0u) ? 1u : 0u;
-    e->stream = (e->stream != 0u) ? 1u : 0u;
     if (e->priority < 0) {
         e->priority = 0;
     } else if (e->priority > 100) {
         e->priority = 100;
     }
-    if (tg_policy_mode_is_blocking(e->mode)) {
-        e->audio = 0;
-        e->record = 0;
-        e->stream = 0;
-    } else if (!e->audio) {
-        e->record = 0;
-        e->stream = 0;
-    }
+    dsd_tg_policy_media_normalize(e->mode, &e->audio, &e->record, &e->stream);
 }
 
 static int
@@ -382,16 +389,7 @@ tg_policy_entry_valid(const dsd_tg_policy_entry* e) {
 /* A stored pattern row's text as a dsd_id_pattern, with its rank. The text was validated canonical on insertion. */
 static void
 tg_policy_entry_pattern(const dsd_tg_policy_entry* e, dsd_id_pattern* out) {
-    DSD_MEMSET(out, 0, sizeof(*out));
-    for (size_t i = 0; i + 1U < sizeof(out->text) && e->pattern[i] != '\0'; i++) {
-        const char c = e->pattern[i];
-        out->text[i] = c;
-        if (c == '*') {
-            out->has_star = 1u;
-        } else if (c >= '0' && c <= '9') {
-            out->literals++;
-        }
-    }
+    dsd_id_pattern_from_canonical(e->pattern, out);
 }
 
 static uint64_t
@@ -1773,7 +1771,7 @@ tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint3
     DSD_MEMSET(&lookup, 0, sizeof(lookup));
     if (tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, &lookup)) {
         tg_policy_decision_apply_entry(out, &lookup.entry, lookup.match);
-        local_mode_blocking = tg_policy_mode_is_blocking(lookup.entry.mode);
+        local_mode_blocking = dsd_tg_policy_mode_blocks(lookup.entry.mode);
         local_audio_block = (!local_mode_blocking && lookup.entry.audio == 0u);
         local_record_block = (!local_mode_blocking && lookup.entry.audio != 0u
                               && (lookup.entry.record == 0u || tg_policy_record_unknown_only(opts)));
@@ -1912,8 +1910,8 @@ tg_policy_choose_private_entry(const dsd_tg_policy_entry* src_entry, int src_mat
 static int
 tg_policy_private_mode_is_blocking(int src_match, const dsd_tg_policy_entry* src_entry, int dst_match,
                                    const dsd_tg_policy_entry* dst_entry) {
-    return (src_match && tg_policy_mode_is_blocking(src_entry->mode))
-           || (dst_match && tg_policy_mode_is_blocking(dst_entry->mode));
+    return (src_match && dsd_tg_policy_mode_blocks(src_entry->mode))
+           || (dst_match && dsd_tg_policy_mode_blocks(dst_entry->mode));
 }
 
 int
@@ -2301,7 +2299,7 @@ tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t
 
 static int
 tg_policy_entry_requires_extended_csv(const dsd_tg_policy_entry* entry) {
-    const int media_default = !tg_policy_mode_is_blocking(entry->mode);
+    const int media_default = !dsd_tg_policy_mode_blocks(entry->mode);
     return entry->priority != 0 || entry->preempt || entry->audio != media_default || entry->record != media_default
            || entry->stream != media_default;
 }

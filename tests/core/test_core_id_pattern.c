@@ -261,6 +261,39 @@ test_specificity(void) {
     return rc;
 }
 
+/* A stored canonical text ranks as the pattern it was parsed from, without parsing it again. */
+static int
+test_from_canonical(void) {
+    static const char* const tokens[] = {"1XX**", "*05", "x", "*", "2xx*", "*000000000"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); i++) {
+        dsd_id_pattern parsed;
+        dsd_id_pattern ranked;
+        DSD_MEMSET(&ranked, 0xA5, sizeof(ranked));
+        if (dsd_id_pattern_parse(tokens[i], &parsed) != 0) {
+            DSD_FPRINTF(stderr, "from_canonical: \"%s\" did not parse\n", tokens[i]);
+            return 1;
+        }
+        dsd_id_pattern_from_canonical(parsed.text, &ranked);
+        if (strcmp(ranked.text, parsed.text) != 0 || ranked.literals != parsed.literals
+            || ranked.has_star != parsed.has_star) {
+            DSD_FPRINTF(stderr, "from_canonical(\"%s\"): got \"%s\" %u %u, want %u %u\n", parsed.text, ranked.text,
+                        (unsigned)ranked.literals, (unsigned)ranked.has_star, (unsigned)parsed.literals,
+                        (unsigned)parsed.has_star);
+            rc = 1;
+        }
+    }
+    dsd_id_pattern empty;
+    DSD_MEMSET(&empty, 0xA5, sizeof(empty));
+    dsd_id_pattern_from_canonical(NULL, &empty);
+    if (empty.text[0] != '\0' || empty.literals != 0U || empty.has_star != 0U || dsd_id_pattern_match(&empty, 1U)) {
+        DSD_FPRINTF(stderr, "from_canonical(NULL): want the empty pattern\n");
+        rc = 1;
+    }
+    dsd_id_pattern_from_canonical("1x", NULL);
+    return rc;
+}
+
 static int
 expect_decimal(uint32_t id, const char* want) {
     char out[DSD_ID_DECIMAL_MAX];
@@ -308,6 +341,7 @@ main(void) {
     rc |= test_match_table();
     rc |= test_specificity();
     rc |= test_decimal();
+    rc |= test_from_canonical();
     if (rc == 0) {
         printf("CORE_ID_PATTERN: OK\n");
     }
