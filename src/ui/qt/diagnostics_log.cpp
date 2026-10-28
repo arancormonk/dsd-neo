@@ -238,7 +238,7 @@ const ProducerLine kProducerLines[] = {
  * libusb's own log lines, which the USB receiver's log callback forwards to the runtime log unchanged: they start with
  * libusb's header, "libusb: <level> [<function>] ". The message after it is libusb's usbi_err/usbi_warn text, and only
  * one ending in its code (", errno=%d" or a negative "%d") is exempt, and then only if the text before the code is
- * itself free of key labels.
+ * itself free of key labels and of command-line echo markers (holdsKeyLabel() judges those first).
  */
 constexpr char kLibusbRecordPrefix[] = "libusb: ";
 
@@ -324,7 +324,8 @@ producerTemplates() {
 
 /**
  * @brief Whether @p text is one whole producer error line (see kProducerLines and kLibusbRecordPrefix). A %s field's
- * text is the producer's to quote, so a key label inside it keeps the key rule.
+ * text is the producer's to quote, so a key label inside it keeps the key rule. It says nothing of a command-line echo:
+ * holdsKeyLabel() drops one before it asks.
  */
 bool
 isProducerErrorLine(const QString& text) {
@@ -609,8 +610,11 @@ withoutMeasurementFields(const QString& text) {
 }
 
 /**
- * @brief Whether @p text holds a key label once the decoder's own sync labels and measurement fields are set aside;
- * a command-line echo gets neither set aside.
+ * @brief Whether @p text is dropped for a key label: one the exemptions do not account for (a whole producer error
+ * line, the decoder's own sync labels, the measurement templates' fields).
+ *
+ * A command-line echo (isArgumentEcho()) vetoes every exemption, so it is judged first (#782 gate r4 K1): a libusb
+ * line accepts any text before its code, so "args: -197" (-1 with RC4 key 97) would otherwise pass as one.
  */
 bool
 holdsKeyLabel(const QString& text) {
@@ -619,6 +623,9 @@ holdsKeyLabel(const QString& text) {
     }
     if (isArgumentEcho(text)) {
         return true;
+    }
+    if (isProducerErrorLine(text)) {
+        return false;
     }
     return withoutMeasurementFields(withoutSyncLabels(text)).contains(keyLabel());
 }
@@ -1015,7 +1022,7 @@ DiagnosticsLog::redact(QString text) {
     // Drop whole key-bearing records, including malformed values and labelled
     // short decimal/basic keys. Strip ANSI before matching to prevent evasion.
     text = withoutAnsi(std::move(text));
-    if (holdsKeyLabel(text) && !isProducerErrorLine(text)) {
+    if (holdsKeyLabel(text)) {
         return QLatin1String(kDroppedRecord);
     }
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));

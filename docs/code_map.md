@@ -8113,8 +8113,10 @@ Qt Quick frontend (`src/ui/qt`):
   range (a ppm is at most 200, a P25 transmit offset 13 bits, a socket result one digit), real ones by their exact
   precision. In a match only the numeric fields leave the key scan: the label, `%s` text and everything else on the
   record are still judged. A record on the command-line echo path (`isArgumentEcho()`: `args`, `argv`, `argc`, `cmd`,
-  `command line`, `exec`, or a quoted option as JSON, list or shell quoting) gets no exemption, sync labels included;
-  a bare `[-1, 9]` list has no label, so no template exempts it. What remains: a command line that spells a
+  `command line`, `exec`, or a quoted option as JSON, list or shell quoting) gets no exemption of any kind:
+  `holdsKeyLabel()` judges it before the producer lines, the sync labels and the templates (#782 gate r4 K1; a libusb
+  line takes any text before its code, so `args: -197` passed as one). A bare `[-1, 9]` list has no label, so no
+  template exempts it. What remains: a command line that spells a
   producer's label and then a key-form number in the field's place (`Tuner error set to -19 ppm.`, no echo marker) is
   kept; no producer echoes its arguments that way. `UI_QT_DIAGNOSTICS_LOG` holds one rendered line per template
   (`measurementCorpusSurvives()`, from the gate r3 producer sweep) and the key forms beside, inside and instead of
@@ -8123,7 +8125,8 @@ Qt Quick frontend (`src/ui/qt`):
   settings that end on an integer or follow it with a word (requested ppm, a scan row's `--squelch-db`) in
   `kProducerLines` (`%d`/`%i` bounded to three digits, `%u`, fixed-point `%f` with at most four integer digits, and
   `%s`, one token that must itself be free of key labels), or a libusb log line (`libusb: ` header) whose text before
-  its code has no key label. A producer line whose code is a key option with a value of at most two digits would
+  its code has no key label; neither is exempt on the echo path. `everyExemptionYieldsToArgumentEcho()` drops each
+  exemption kind with each echo marker and key form. A producer line whose code is a key option with a value of at most two digits would
   still be kept. Keep `kProducerLines` and `kMeasurementTemplates` in step with those producers' format strings, give
   a new producer of a signed number a line in the corpus, and keep the key-option pattern in step with
   `src/runtime/cli/args.c`. The persistent

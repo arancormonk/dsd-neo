@@ -1937,6 +1937,106 @@ syncLabelsSurvive() {
           "a key form beside a sync label, or its value, kept through the stream capture");
 }
 
+/* #782 gate r4 K1: a record that echoes a command line gets no exemption of any kind. A libusb log line accepts any text
+ * before its code, so "args: -197" (-1 with RC4 key 97) passed as one; a producer line's quoted name, a sync label, a
+ * measurement template's label and a SoapySDR gain's name can carry the marker as well. Each exemption kind, with each
+ * echo marker and each key form its field can hold, is dropped: as a record, live through the log tap or the stream
+ * capture, and again from a saved record. */
+static void
+everyExemptionYieldsToArgumentEcho() {
+    // Markers that stand before the key form, and the single-token ones a producer's quoted name can hold.
+    const QStringList markers = {
+        QStringLiteral("args:"), QStringLiteral("argv:"),  QStringLiteral("cmd:"), QStringLiteral("command line:"),
+        QStringLiteral("exec"),  QStringLiteral("\"-i\""), QStringLiteral("'-i'"), QStringLiteral("dsd-neo \"-i\" rtl"),
+    };
+    const QStringList tokenMarkers = {
+        QStringLiteral("args"), QStringLiteral("argv"),         QStringLiteral("cmd"), QStringLiteral("cmdline"),
+        QStringLiteral("exec"), QStringLiteral("command_line"), QStringLiteral("-i"),
+    };
+    // Each a key option with its value bundled: -1 with 97, -5 with 12, -9 with 25, -1 with 9, -2 with 5.
+    const QStringList keyForms = {
+        QStringLiteral("-197"), QStringLiteral("-512"), QStringLiteral("-925"),
+        QStringLiteral("-19"),  QStringLiteral("-25"),
+    };
+    const QStringList syncKeyLabels = {QStringLiteral("-P25p1"), QStringLiteral("-P25p2"), QStringLiteral("-YSF"),
+                                       QStringLiteral("-TETRA")};
+
+    struct Kind {
+        const char* name;
+        dsd_neo_log_level_t level; // the runtime log's level for a decoder record
+        bool stderrSource;         // false: through the runtime log
+        QString body;              // %1 the marker, %2 the key form
+        bool token;                // the marker stands in a quoted name: one token, quoted by the template
+    };
+
+    const Kind kinds[] = {
+        {"libusb error code", LOG_LEVEL_ERROR, false, QStringLiteral("libusb: error [op_open] %1 %2"), false},
+        {"libusb error code after text", LOG_LEVEL_ERROR, false, QStringLiteral("libusb: error [op_open] failed %1 %2"),
+         false},
+        {"libusb warning code", LOG_LEVEL_WARN, false, QStringLiteral("libusb: warning [do_close] %1 %2"), false},
+        {"libusb errno", LOG_LEVEL_ERROR, false, QStringLiteral("libusb: error [op_open] %1 %2 failed, errno=13"),
+         false},
+        {"producer line's quoted name", LOG_LEVEL_WARN, false,
+         QStringLiteral("WARNING: Trunk scan target '%1': --squelch-db %2 cannot gate digital acquisition without a "
+                        "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                        "stamps."),
+         true},
+        {"measurement fragment", LOG_LEVEL_INFO, false, QStringLiteral("%1 Offset: %2;"), false},
+        {"measurement fragment with context", LOG_LEVEL_INFO, false, QStringLiteral("%1 TX Offset: %2; Spacing: 100"),
+         false},
+        {"measurement line's name", LOG_LEVEL_INFO, true,
+         QStringLiteral("SoapySDR: adjusted gain %1 from %2.00 dB to -10.00 dB."), false},
+    };
+
+    auto& log = DiagnosticsLog::instance();
+    QTemporaryDir dir;
+    QByteArray stderrBytes;
+    int stderrLines = 0;
+    const auto expectDropped = [&](const Kind& kind, const QString& body) {
+        const QString source = kind.stderrSource ? QStringLiteral("stderr") : QStringLiteral("decoder");
+        static const char* levels[] = {"error", "warn", "info", "debug"};
+        const QString level = kind.stderrSource ? QStringLiteral("info") : QLatin1String(levels[kind.level]);
+        // A runtime-log record ends with its newline, kept as a space once saved.
+        const QString record = QStringLiteral("[%1] [%2] ").arg(source, level) + body
+                               + (kind.stderrSource ? QString() : QStringLiteral("\n"));
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      QByteArray("echo kept by the ") + kind.name + " exemption: " + record.toUtf8());
+        if (!kind.stderrSource) {
+            QString saved = record;
+            saved.replace(QLatin1Char('\n'), QLatin1Char(' '));
+            checkLabelled(DiagnosticsLog::redact(saved) == kDropped,
+                          QByteArray("saved echo kept by the ") + kind.name + " exemption: " + saved.toUtf8());
+            dsd_neo_log_write(kind.level, "%s\n", body.toUtf8().constData());
+            const auto ring = log.snapshot();
+            checkLabelled(!ring.isEmpty() && ring.last() == kDropped,
+                          QByteArray("live echo kept by the ") + kind.name + " exemption: " + body.toUtf8());
+        } else {
+            stderrBytes += body.toUtf8() + '\n';
+            ++stderrLines;
+        }
+    };
+    for (const auto& kind : kinds) {
+        for (const auto& marker : kind.token ? tokenMarkers : markers) {
+            for (const auto& key : keyForms) {
+                expectDropped(kind, kind.body.arg(marker, key));
+            }
+        }
+    }
+    // A sync label that reads as a key option, exempt only as the decoder prints it.
+    const Kind sync{"sync label", LOG_LEVEL_INFO, true, QString(), false};
+    for (const auto& marker : markers) {
+        for (const auto& label : syncKeyLabels) {
+            expectDropped(sync, marker + QStringLiteral(" 12:34:56 Sync: ") + label + QStringLiteral(" mod: GFSK"));
+            expectDropped(sync, QStringLiteral("12:34:56 Sync: ") + label + QStringLiteral(" ") + marker);
+        }
+    }
+    const auto records = streamRecords(stderrBytes, dir.path());
+    check(records.size() == stderrLines, "stderr echo records lost or split");
+    for (const auto& record : records) {
+        checkLabelled(record == kDropped, "stderr echo kept through the stream capture: " + record.toUtf8());
+    }
+}
+
 /* Records the Android app writes from Kotlin (#782), byte-identical to the golden records in
  * tests/android/LooperWatchdogTest.kt and ScreenTraceTest.kt (run_jvm_tests.py checks): a watchdog incident whose
  * stack names dispatchKeyEvent and AES, which the Kotlin side breaks up, and a screen change record. */
@@ -2618,6 +2718,7 @@ main(int argc, char** argv) {
     measurementCorpusSurvives();
     measurementExemptionsKeepKeyForms();
     syncLabelsSurvive();
+    everyExemptionYieldsToArgumentEcho();
     androidHostRecordsSurvive();
     teardownFlushMarkerRoundTrip();
     everyKeyOptionFormIsDropped();
