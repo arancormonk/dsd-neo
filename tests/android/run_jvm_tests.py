@@ -301,8 +301,9 @@ def native_lifecycle_contract():
 def receiver_option_tables_match():
     """UsbReceiverKind.sourceOfArgs() reads a start's input as the engine's parser does, from copies of its tables.
 
-    The getopt string in src/runtime/cli/args.c and dsd_cli_compact_args()'s long-option tables in
-    src/runtime/cli/compact.c must equal the Kotlin ones, or an option's operand could be read as an input (#782)."""
+    The getopt string (k_short_options in src/runtime/cli/compact.c, which args.c's getopt() reads through
+    dsd_cli_short_options()) and dsd_cli_compact_args()'s long-option tables in compact.c must equal the Kotlin ones, or
+    an option's operand could be read as an input (#782)."""
     kotlin_path = REPO / APP_SOURCES / "UsbReceiverKind.kt"
     args_path = REPO / "src/runtime/cli/args.c"
     compact_path = REPO / "src/runtime/cli/compact.c"
@@ -312,13 +313,15 @@ def receiver_option_tables_match():
         compact = compact_path.read_text(encoding="utf-8")
     except OSError as error:
         return f"cannot read the option tables: {error}"
-    native_short = re.search(r"getopt\(argc, argv,\s*((?:\"[^\"]*\"\s*)+)\)", args)
+    if not re.search(r"getopt\(argc, argv, dsd_cli_short_options\(\)\)", args):
+        return f"the getopt() in {args_path.relative_to(REPO)} no longer reads dsd_cli_short_options(): mirror its string"
+    native_short = re.search(r"\bk_short_options\[\] =\s*((?:\"[^\"]*\"\s*)+);", compact)
     kotlin_short = re.search(r"const val SHORT_OPTIONS =\s*((?:\"[^\"]*\"\s*\+?\s*)+)", kotlin)
     if not native_short or not kotlin_short:
-        return f"cannot find the getopt string in {args_path.relative_to(REPO)} or SHORT_OPTIONS in {APP_SOURCES}"
+        return f"cannot find k_short_options in {compact_path.relative_to(REPO)} or SHORT_OPTIONS in {APP_SOURCES}"
     joined = ["".join(re.findall(r'"([^"]*)"', match.group(1))) for match in (native_short, kotlin_short)]
     if joined[0] != joined[1]:
-        return f"SHORT_OPTIONS in UsbReceiverKind.kt must equal the getopt string of args.c: {joined[0]!r}"
+        return f"SHORT_OPTIONS in UsbReceiverKind.kt must equal k_short_options of compact.c: {joined[0]!r}"
     pairs = (
         ("k_skip_exact_no_arg", "LONG_NO_VALUE"),
         ("k_skip_exact_next_any", "LONG_NEXT_ANY"),
