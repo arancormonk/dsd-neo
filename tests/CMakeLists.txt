@@ -5094,7 +5094,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_runtime_rdio_export
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/runtime
 )
 target_link_libraries(
     dsd-neo_test_runtime_rdio_export

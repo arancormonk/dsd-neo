@@ -25,6 +25,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+#include "rdio_export_internal.h"
 
 #ifdef USE_CURL
 #include <curl/curl.h>
@@ -33,6 +34,44 @@
 
 #define DSD_RDIO_PATH_MAX         2048
 #define DSD_RDIO_UPLOAD_QUEUE_MAX 128U
+
+/* A path's final component under @p win's rules: the file name the publisher made. */
+static const char*
+dsd_rdio_path_file_name(const char* path, int win) {
+    const char* name = path;
+    for (const char* p = path; *p != '\0'; p++) {
+        if (*p == '/' || (win && *p == '\\')) {
+            name = p + 1;
+        }
+    }
+    return name;
+}
+
+int
+dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win) {
+    if (job_path == NULL || path == NULL) {
+        return 0;
+    }
+    const unsigned char* a = (const unsigned char*)dsd_rdio_path_file_name(job_path, win);
+    const unsigned char* b = (const unsigned char*)dsd_rdio_path_file_name(path, win);
+    if (*b == '\0') {
+        return 0;
+    }
+    for (;; a++, b++) {
+        unsigned char ca = *a;
+        unsigned char cb = *b;
+        if (win) {
+            ca = (ca >= 'A' && ca <= 'Z') ? (unsigned char)(ca - 'A' + 'a') : ca;
+            cb = (cb >= 'A' && cb <= 'Z') ? (unsigned char)(cb - 'A' + 'a') : cb;
+        }
+        if (ca != cb) {
+            return 0;
+        }
+        if (ca == '\0') {
+            return 1;
+        }
+    }
+}
 
 #ifdef USE_CURL
 typedef struct {
@@ -54,7 +93,7 @@ typedef struct dsd_rdio_upload_job {
 
 /* The queue's mutex lives for the whole process, unlike the worker and its condition variable: the recording store
  * asks dsd_rdio_upload_holds() from its own thread at any time, a shutdown included. 0 = not initialized,
- * 1 = initializing, 2 = ready. */
+ * 1 = initializing, 2 = ready, 3 = its init failed, for good: no worker starts and nothing is held. */
 static dsd_mutex_t g_rdio_upload_mutex;
 static atomic_int g_rdio_upload_mutex_state = 0;
 static dsd_cond_t g_rdio_upload_cond;
@@ -88,20 +127,26 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
     }
 }
 
-static void
+/* 0 when the queue's mutex is ready, -1 when its init failed. */
+static int
 dsd_rdio_upload_mutex_ensure(void) {
-    if (atomic_load(&g_rdio_upload_mutex_state) == 2) {
-        return;
+    int state = atomic_load(&g_rdio_upload_mutex_state);
+    if (state == 2) {
+        return 0;
+    }
+    if (state == 3) {
+        return -1;
     }
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_rdio_upload_mutex_state, &expected, 1)) {
-        (void)dsd_mutex_init(&g_rdio_upload_mutex);
-        atomic_store(&g_rdio_upload_mutex_state, 2);
-        return;
+        const int ok = dsd_mutex_init(&g_rdio_upload_mutex) == 0;
+        atomic_store(&g_rdio_upload_mutex_state, ok ? 2 : 3);
+        return ok ? 0 : -1;
     }
-    while (atomic_load(&g_rdio_upload_mutex_state) != 2) {
+    while ((state = atomic_load(&g_rdio_upload_mutex_state)) == 1) {
         dsd_thread_yield();
     }
+    return state == 2 ? 0 : -1;
 }
 
 static DSD_THREAD_RETURN_TYPE
@@ -168,8 +213,7 @@ dsd_rdio_upload_worker_init(void) {
 
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_rdio_upload_state, &expected, 1)) {
-        dsd_rdio_upload_mutex_ensure();
-        if (dsd_cond_init(&g_rdio_upload_cond) != 0) {
+        if (dsd_rdio_upload_mutex_ensure() != 0 || dsd_cond_init(&g_rdio_upload_cond) != 0) {
             atomic_store(&g_rdio_upload_state, 3);
             return -1;
         }
@@ -279,47 +323,17 @@ dsd_rdio_upload_shutdown(void) {
     atomic_store(&g_rdio_upload_state, 0);
 }
 
-/* A path's final component: the file name the publisher made. */
-static const char*
-dsd_rdio_path_file_name(const char* path) {
-    const char* name = path;
-    for (const char* p = path; *p != '\0'; p++) {
-#if DSD_PLATFORM_WIN_NATIVE
-        const int separator = *p == '/' || *p == '\\';
-#else
-        const int separator = *p == '/';
-#endif
-        if (separator) {
-            name = p + 1;
-        }
-    }
-    return name;
-}
-
-static int
-dsd_rdio_same_file_name(const char* a, const char* b) {
-#if DSD_PLATFORM_WIN_NATIVE
-    return dsd_strcasecmp(a, b) == 0;
-#else
-    return strcmp(a, b) == 0;
-#endif
-}
-
 int
 dsd_rdio_upload_holds(const char* path) {
-    if (path == NULL) {
+    const int win = DSD_PLATFORM_WIN_NATIVE;
+    if (path == NULL || dsd_rdio_path_file_name(path, win)[0] == '\0' || dsd_rdio_upload_mutex_ensure() != 0) {
         return 0;
     }
-    const char* name = dsd_rdio_path_file_name(path);
-    if (name[0] == '\0') {
-        return 0;
-    }
-    dsd_rdio_upload_mutex_ensure();
     dsd_mutex_lock(&g_rdio_upload_mutex);
     int held = g_rdio_upload_in_flight != NULL
-               && dsd_rdio_same_file_name(dsd_rdio_path_file_name(g_rdio_upload_in_flight->wav_path), name);
+               && dsd_rdio_upload_names_same_file(g_rdio_upload_in_flight->wav_path, path, win);
     for (const dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL && !held; job = job->next) {
-        held = dsd_rdio_same_file_name(dsd_rdio_path_file_name(job->wav_path), name);
+        held = dsd_rdio_upload_names_same_file(job->wav_path, path, win);
     }
     dsd_mutex_unlock(&g_rdio_upload_mutex);
     return held;

@@ -877,6 +877,8 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
    already exists, so a name opened twice would mix two calls. The token tells processes apart (64 random bits drawn
    once; collision-resistant, not unique), the sequence this process's files. */
 static uint64_t s_wav_temp_token;
+/* The token's one spelling, shared by the temp names, the journal ids and dsd_wav_temp_token_text(). */
+#define WAV_TEMP_TOKEN_FMT "%016llX"
 /* 0 = not drawn, 1 = drawing, 2 = drawn. */
 static atomic_int s_wav_temp_token_state = 0;
 static dsd_atomic_u64 s_wav_temp_seq;
@@ -913,8 +915,7 @@ dsd_wav_temp_token_text(char* out, size_t out_size) {
     if (out_size < DSD_WAV_TEMP_TOKEN_TEXT_SIZE) {
         return -1;
     }
-    /* open_wav_file()'s spelling of the token. */
-    (void)DSD_SNPRINTF(out, out_size, "%016llX", (unsigned long long)wav_temp_token());
+    (void)DSD_SNPRINTF(out, out_size, WAV_TEMP_TOKEN_FMT, (unsigned long long)wav_temp_token());
     return 0;
 }
 
@@ -990,11 +991,11 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
     int written = 0;
     if (ext == 0) {
-        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%016llX_%llu", dir, datestr, timestr,
-                               token, seq);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_" WAV_TEMP_TOKEN_FMT "_%llu", dir,
+                               datestr, timestr, token, seq);
     } else {
-        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_%016llX_%llu.wav", dir, datestr,
-                               timestr, token, seq);
+        written = DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_%s_%s_" WAV_TEMP_TOKEN_FMT "_%llu.wav", dir,
+                               datestr, timestr, token, seq);
     }
     if (written < 0 || (size_t)written >= temp_filename_size) {
         if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_OPEN)) {
@@ -1003,7 +1004,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
         temp_filename[0] = '\0';
         if (wav_journal_active()) {
             char id[48];
-            (void)DSD_SNPRINTF(id, sizeof id, "%016llX-%llu", token, seq);
+            (void)DSD_SNPRINTF(id, sizeof id, WAV_TEMP_TOKEN_FMT "-%llu", token, seq);
             wav_journal_error(id, "open", "", dir);
         }
         return NULL;

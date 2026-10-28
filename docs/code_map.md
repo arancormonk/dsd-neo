@@ -1178,9 +1178,9 @@ suite runs under this compiler.
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
-  path forms, the process token), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT`
-  (close-on-exec, `dsd_path_canonical()`),
-  `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
+  path forms, the process token), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer),
+  `PLATFORM_FILE_COMPAT` (close-on-exec, `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal
+  state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -2265,10 +2265,13 @@ suite runs under this compiler.
     calls keep theirs. An embedding host clears a cancel that landed after the last shutdown with
     `dsd_rdio_upload_cancel_reset()` when it configures the next run. `dsd_rdio_upload_holds()` (issue #708) tells the
     app's recording store whether a queued job, or the one in flight until its upload and the delete after it are over,
-    names a file: by its final path component (without case on Windows), so another spelling of the folder still
-    matches, under the queue's mutex, which for that reason lives for the process (the worker's condition variable is
-    still created and destroyed with the worker). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
-    during the drain, holds with a blocked uploader through 140 later publications, release after the delete),
+    names a file: by its final path component (without case on Windows; the pure rule is
+    `dsd_rdio_upload_names_same_file()` in `src/runtime/rdio_export_internal.h`, which takes the platform's rules as a
+    flag), so another spelling of the folder still matches, under the queue's mutex, which for that reason lives for
+    the process (the worker's condition variable is still created and destroyed with the worker; a failed mutex init
+    is final: no worker starts and nothing is held). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
+    during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
+    rule under POSIX and Windows rules on every host),
     `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and

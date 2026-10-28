@@ -29,6 +29,7 @@
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "rdio_export_internal.h"
 #include "test_support.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -2302,6 +2303,50 @@ test_api_drain_uploads_every_job_after_cancel_clears(void) {
 #endif
 }
 
+// Issue #708: the name rule behind dsd_rdio_upload_holds(), with POSIX and Windows rules on any host: the final path
+// components must be equal, whatever the folders; Windows also splits at a backslash and ignores ASCII case.
+static int
+test_upload_holds_name_rule(void) {
+    static const struct {
+        const char* job;
+        const char* path;
+        int win;
+        int want;
+        const char* what;
+    } cases[] = {
+        {"/rec/a/c.wav", "/elsewhere/c.wav", 0, 1, "posix: another folder, same name"},
+        {"/rec/a/c.wav", "c.wav", 0, 1, "posix: a bare name"},
+        {"/rec/a/c.wav", "/rec/a/d.wav", 0, 0, "posix: another name"},
+        {"/rec/a/c.wav", "/rec/a/C.wav", 0, 0, "posix: case counts"},
+        {"/rec/a\\c.wav", "c.wav", 0, 0, "posix: a backslash is part of the name"},
+        {"/rec/a\\c.wav", "/x/a\\c.wav", 0, 1, "posix: the name with its backslash"},
+        {"/rec/a/c.wav", "/rec/a/", 0, 0, "posix: a folder names no file"},
+        {"/rec/a/c.wav", "", 0, 0, "posix: empty"},
+        {"/rec/a/", "/rec/a/", 0, 0, "posix: two folders are not one file"},
+        {"C:\\rec\\c.wav", "D:/other/c.wav", 1, 1, "windows: either separator"},
+        {"C:\\rec\\c.wav", "c:\\REC\\C.WAV", 1, 1, "windows: without ASCII case"},
+        {"C:\\rec\\c.wav", "c.wav", 1, 1, "windows: a bare name"},
+        {"C:\\rec\\c.wav", "C:\\rec\\d.wav", 1, 0, "windows: another name"},
+        {"C:\\rec\\c.wav", "C:\\rec\\", 1, 0, "windows: a folder names no file"},
+        {"C:\\rec\\\xC3\xA9.wav", "\xC3\x89.wav", 1, 0, "windows: case beyond ASCII counts"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const int got = dsd_rdio_upload_names_same_file(cases[i].job, cases[i].path, cases[i].win);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "holds name rule: %s: got %d, want %d\n", cases[i].what, got, cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_rdio_upload_names_same_file(NULL, "c.wav", 0) != 0
+        || dsd_rdio_upload_names_same_file("c.wav", NULL, 1) != 0) {
+        DSD_FPRINTF(stderr, "holds name rule: NULL names no file\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 // Issue #708: the app's recording store never deletes a WAV the upload queue still owns. Against a blocked uploader,
 // the file in flight and every queued one are held through more than a full queue of later publications, the ones the
 // full queue refused are not, and after the session's shutdown nothing is.
@@ -2475,6 +2520,7 @@ main(void) {
     rc |= test_api_cancel_during_drain_returns_promptly();
     rc |= test_api_cancel_covers_uploads_queued_after_it();
     rc |= test_api_drain_uploads_every_job_after_cancel_clears();
+    rc |= test_upload_holds_name_rule();
     rc |= test_api_upload_holds_queued_and_in_flight_files();
     rc |= test_api_upload_holds_until_the_delete_is_over();
     return rc;
