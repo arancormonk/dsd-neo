@@ -28,6 +28,51 @@
 
 namespace dsd_qt {
 
+namespace {
+
+/* Whether @p index names one of @p rows rows in the list's single column. */
+bool
+listIndexValid(const QModelIndex& index, int rows) {
+    return index.isValid() && static_cast<unsigned int>(index.row()) < static_cast<unsigned int>(rows)
+           && index.column() == 0;
+}
+
+/* The kind role's text for a dsd_tg_policy_row_kind. */
+QString
+rowKindText(uint8_t kind) {
+    switch (kind) {
+        case DSD_TG_POLICY_ROW_PATTERN: return QStringLiteral("pattern");
+        case DSD_TG_POLICY_ROW_RANGE: return QStringLiteral("range");
+        default: return QStringLiteral("exact");
+    }
+}
+
+/* List order: numeric rows by their IDs, then pattern rows in list order. */
+template <typename Row>
+bool
+rowListedBefore(const Row& a, const Row& b) {
+    if (a.isPattern() != b.isPattern()) {
+        return b.isPattern();
+    }
+    if (a.isPattern()) {
+        return a.tableIndex < b.tableIndex;
+    }
+    return a.idStart < b.idStart || (a.idStart == b.idStart && a.idEnd < b.idEnd);
+}
+
+/* Each row's count of session avoids: the IDs its bounds cover, or for a pattern row the IDs its pattern matches. */
+template <typename Rows>
+void
+fillTemporaryAvoidCounts(Rows& rows, const dsd_state* snapshot) {
+    for (auto& row : rows) {
+        row.temporaryAvoidCount =
+            row.isPattern() ? dsd_tg_policy_session_avoid_count_pattern(snapshot, row.pattern.toLatin1().constData())
+                            : dsd_tg_policy_session_avoid_count(snapshot, row.idStart, row.idEnd);
+    }
+}
+
+} // namespace
+
 TalkgroupListModel::TalkgroupListModel(QAbstractItemModel* history, QObject* parent)
     : QAbstractListModel(parent), m_history(history) {
     if (history == nullptr) {
@@ -53,8 +98,7 @@ TalkgroupListModel::rowCount(const QModelIndex& parent) const {
 
 QVariant
 TalkgroupListModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || static_cast<unsigned int>(index.row()) >= static_cast<unsigned int>(count())
-        || index.column() != 0) {
+    if (!listIndexValid(index, count())) {
         return {};
     }
     return m_rows.at(index.row()).value(role);
@@ -75,10 +119,7 @@ TalkgroupListModel::Row::value(int role) const {
         case TableIndexRole: return tableIndex;
         case TemporaryAvoidCountRole: return QVariant::fromValue(temporaryAvoidCount);
         case RecordRole: return record;
-        case KindRole:
-            return kind == DSD_TG_POLICY_ROW_PATTERN ? QStringLiteral("pattern")
-                   : kind == DSD_TG_POLICY_ROW_RANGE ? QStringLiteral("range")
-                                                     : QStringLiteral("exact");
+        case KindRole: return rowKindText(kind);
         case PatternRole: return pattern;
         default: return {};
     }
@@ -189,21 +230,8 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     QSet<QString> categoryTags;
     QVector<Row> rows = listedRows(snapshot, categoryTags);
     appendHeardRows(rows, allowListedOnly);
-    for (Row& row : rows) {
-        row.temporaryAvoidCount =
-            row.isPattern() ? dsd_tg_policy_session_avoid_count_pattern(snapshot, row.pattern.toLatin1().constData())
-                            : dsd_tg_policy_session_avoid_count(snapshot, row.idStart, row.idEnd);
-    }
-    // Numeric rows by their IDs, then pattern rows in list order.
-    std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
-        if (a.isPattern() != b.isPattern()) {
-            return b.isPattern();
-        }
-        if (a.isPattern()) {
-            return a.tableIndex < b.tableIndex;
-        }
-        return a.idStart < b.idStart || (a.idStart == b.idStart && a.idEnd < b.idEnd);
-    });
+    fillTemporaryAvoidCounts(rows, snapshot);
+    std::stable_sort(rows.begin(), rows.end(), rowListedBefore<Row>);
     replaceRows(std::move(rows));
     updateCategories(categoryTags);
     m_heardDirty = false;

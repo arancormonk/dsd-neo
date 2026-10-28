@@ -423,32 +423,55 @@ csv_parse_bool_cell(char* token, int* out) {
     return CSV_CELL_INVALID;
 }
 
+/* Where a policy row came from, for its diagnostics ("<file_kind> file '<filename>' row N ..."), and whether to keep
+ * them quiet. */
+typedef struct {
+    const char* file_kind;
+    const char* filename;
+    unsigned int row;
+    int quiet;
+} csv_row_origin;
+
+/* One row's media cells and which of them the row set (has_*). */
+typedef struct {
+    uint8_t* audio;
+    uint8_t* record;
+    uint8_t* stream;
+    int has_audio;
+    int has_record;
+    int has_stream;
+} csv_media_cells;
+
+/* Whether the row set record or stream on. */
+static inline int
+csv_media_cells_set_record_or_stream(const csv_media_cells* m) {
+    return (m->has_record && *m->record) || (m->has_stream && *m->stream);
+}
+
 /* Apply the mode rules to one row's media cells: a blocking mode forces audio, record and stream off, and audio off
- * forces record and stream off. The has_* flags say which cells the row set; overriding one the row set warns
- * ("<file_kind> file '<filename>' row N ...") unless @p quiet. */
+ * forces record and stream off. Overriding a cell the row set warns unless the origin is quiet. */
 static inline void
-csv_enforce_media_cells(const char* file_kind, const char* filename, unsigned int row, int mode_blocking, int has_audio,
-                        int has_record, int has_stream, uint8_t* audio, uint8_t* record, uint8_t* stream, int quiet) {
-    if (!audio || !record || !stream) {
+csv_enforce_media_cells(const csv_row_origin* origin, int mode_blocking, const csv_media_cells* m) {
+    if (!origin || !m || !m->audio || !m->record || !m->stream) {
         return;
     }
     if (mode_blocking) {
-        if (!quiet && ((has_audio && *audio) || (has_record && *record) || (has_stream && *stream))) {
+        if (!origin->quiet && ((m->has_audio && *m->audio) || csv_media_cells_set_record_or_stream(m))) {
             LOG_WARN("WARNING: %s file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
-                     file_kind, filename, row);
+                     origin->file_kind, origin->filename, origin->row);
         }
-        *audio = 0u;
-        *record = 0u;
-        *stream = 0u;
+        *m->audio = 0u;
+        *m->record = 0u;
+        *m->stream = 0u;
         return;
     }
-    if (*audio == 0u && ((has_record && *record) || (has_stream && *stream))) {
-        if (!quiet) {
+    if (*m->audio == 0u && csv_media_cells_set_record_or_stream(m)) {
+        if (!origin->quiet) {
             LOG_WARN("WARNING: %s file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
-                     file_kind, filename, row);
+                     origin->file_kind, origin->filename, origin->row);
         }
-        *record = 0u;
-        *stream = 0u;
+        *m->record = 0u;
+        *m->stream = 0u;
     }
 }
 

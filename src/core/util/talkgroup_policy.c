@@ -2200,6 +2200,25 @@ tg_policy_private_call_known(const dsd_opts* opts, int src_match, const dsd_tg_p
                || (dst_match && !tg_policy_entry_is_learned_alias(dst_entry)));
 }
 
+// A private call's endpoint row: the first exact row for @p id. An endpoint of 0 is unknown, never an ID: no row (a
+// `0` row included) decides, admits or prioritises it.
+static int
+tg_policy_lookup_private_endpoint(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* entry) {
+    return id != 0U && tg_policy_lookup_exact_only(state, id, entry);
+}
+
+// The session's own blocks on either party of a private call: a temporary avoid or a call skip.
+static void
+tg_policy_apply_private_session_blocks(const dsd_state* state, uint32_t src, uint32_t dst,
+                                       dsd_tg_policy_decision* out) {
+    if (dsd_tg_policy_session_avoid_contains(state, src) || dsd_tg_policy_session_avoid_contains(state, dst)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+    }
+    if (tg_policy_call_skip_blocking(state, src) || tg_policy_call_skip_blocking(state, dst)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
+    }
+}
+
 static int
 tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst, int encrypted,
                                 int data_call, int allow_unlisted, dsd_tg_policy_decision* out) {
@@ -2217,9 +2236,8 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_init_decision(out, dst, src, encrypted, data_call);
     out->private_call = 1;
 
-    // An endpoint of 0 is unknown, never an ID: no row (a `0` row included) decides, admits or prioritises it.
-    src_match = src != 0U && tg_policy_lookup_exact_only(state, src, &src_entry);
-    dst_match = dst != 0U && tg_policy_lookup_exact_only(state, dst, &dst_entry);
+    src_match = tg_policy_lookup_private_endpoint(state, src, &src_entry);
+    dst_match = tg_policy_lookup_private_endpoint(state, dst, &dst_entry);
     chosen = tg_policy_choose_private_entry(&src_entry, src_match, &dst_entry, dst_match);
     if (chosen) {
         tg_policy_decision_apply_entry(out, chosen, DSD_TG_POLICY_MATCH_EXACT);
@@ -2229,12 +2247,7 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_private_set_hold_state(state, src, dst, out, &hold_mismatch);
     tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, src_match, dst_match, allow_unlisted, out);
     tg_policy_apply_enc_lockout_block(opts, state, dst, 0, data_call, out);
-    if (dsd_tg_policy_session_avoid_contains(state, src) || dsd_tg_policy_session_avoid_contains(state, dst)) {
-        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
-    }
-    if (tg_policy_call_skip_blocking(state, src) || tg_policy_call_skip_blocking(state, dst)) {
-        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
-    }
+    tg_policy_apply_private_session_blocks(state, src, dst, out);
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
     }

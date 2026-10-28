@@ -3,6 +3,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -241,8 +242,9 @@ group_enforce_media_constraints(const char* filename, unsigned int row_count, ds
     if (!entry) {
         return;
     }
-    csv_enforce_media_cells("Group", filename, row_count, mode_blocking, has_audio, has_record, has_stream,
-                            &entry->audio, &entry->record, &entry->stream, 0);
+    const csv_row_origin origin = {"Group", filename, row_count, 0};
+    const csv_media_cells media = {&entry->audio, &entry->record, &entry->stream, has_audio, has_record, has_stream};
+    csv_enforce_media_cells(&origin, mode_blocking, &media);
 }
 
 static void

@@ -2156,15 +2156,21 @@ nxdn_vcall_assgn_admit(const dsd_opts* opts, dsd_state* state, const struct nxdn
     return NXDN_ADMIT_REFUSE;
 }
 
+/* The assignment's target (a radio for a private call) and source labels. */
 static void
-nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq,
-                            time_t now) {
-    const int is_private_call = (info->call_type == 4U) ? 1 : 0;
+nxdn_vcall_assgn_print_labels(const dsd_state* state, const struct nxdn_vcall_assgn_info* info, int is_private_call) {
     if (info->destination_id != 0U) {
         nxdn_print_target_label(state, is_private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
                                 info->destination_id);
     }
     nxdn_print_source_label(state, info->source_unit_id);
+}
+
+static void
+nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq,
+                            time_t now) {
+    const int is_private_call = (info->call_type == 4U) ? 1 : 0;
+    nxdn_vcall_assgn_print_labels(state, info, is_private_call);
     const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
     const int hold_matches = (state->tg_hold != 0 && state->tg_hold == info->destination_id) ? 1 : 0;
     dsd_tg_policy_decision policy_decision;

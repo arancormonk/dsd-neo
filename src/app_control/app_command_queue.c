@@ -6690,6 +6690,20 @@ parse_selection_pattern(const char* at, char* out, size_t cap) {
     return 1;
 }
 
+/* The leading table_index field of a selection row (-1..INT32_MAX), with @p cursor left after its comma. */
+static int
+parse_selection_index(const char* line, int32_t* index_out, char** cursor) {
+    char* at = NULL;
+    errno = 0;
+    const long long index = strtoll(line, &at, 10);
+    if (errno || at == line || *at != ',' || index < -1 || index > INT32_MAX) {
+        return 0;
+    }
+    *index_out = (int32_t)index;
+    *cursor = at + 1;
+    return 1;
+}
+
 /* One row: table_index,kind,start,end,pattern, or the older table_index,start,end (exact or range by its bounds). */
 static int
 parse_selection_line(const char* line, dsd_tg_policy_selection* entry) {
@@ -6698,14 +6712,12 @@ parse_selection_line(const char* line, dsd_tg_policy_selection* entry) {
     for (const char* c = line; *c; ++c) {
         commas += *c == ',';
     }
-    errno = 0;
-    const long long index = strtoll(line, &at, 10);
-    if (errno || at == line || *at != ',' || index < -1 || index > INT32_MAX || (commas != 2U && commas != 4U)) {
+    int32_t index = 0;
+    if ((commas != 2U && commas != 4U) || !parse_selection_index(line, &index, &at)) {
         return 0;
     }
-    ++at;
     DSD_MEMSET(entry, 0, sizeof(*entry));
-    entry->policy_index = (int32_t)index;
+    entry->policy_index = index;
     if (commas == 2U) {
         if (!parse_selection_uint(&at, &entry->id_start, 0) || !parse_selection_uint(&at, &entry->id_end, 1)) {
             return 0;

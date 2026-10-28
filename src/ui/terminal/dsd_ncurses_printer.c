@@ -42,7 +42,6 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -3923,6 +3922,33 @@ ui_tetra_call_banner(uint8_t kind) {
     }
 }
 
+/* The call's tags, `[EM]` then `[PR:n]` after a space, or empty when it has neither. */
+static void
+ui_tetra_call_tags(const dsd_app_slot_call* call, char* tags, size_t tags_size) {
+    char priority_tag[12] = {0};
+    if (call->priority > 0U) {
+        DSD_SNPRINTF(priority_tag, sizeof priority_tag, "[PR:%u]", (unsigned)call->priority);
+    }
+    if (call->emergency || priority_tag[0] != '\0') {
+        DSD_SNPRINTF(tags, tags_size, " %s%s", call->emergency ? "[EM]" : "", priority_tag);
+    }
+}
+
+/* The continuation line's labels, appended to @p line: `[target label] SRC: [radio label]`, each part only when
+   its label is known. */
+static void
+ui_tetra_call_labels(const dsd_app_slot_call* call, char* line, size_t line_size) {
+    size_t used = strlen(line);
+    if (call->tg_label[0] != '\0') {
+        DSD_SNPRINTF(line + used, line_size - used, "[%s]", call->tg_label);
+        used = strlen(line);
+    }
+    if (call->src_label[0] != '\0') {
+        DSD_SNPRINTF(line + used, line_size - used, "%sSRC: [%s]", call->tg_label[0] != '\0' ? " " : "",
+                     call->src_label);
+    }
+}
+
 /* Fill @p out with the two lines of slot 0's call, without the "| " each is printed after. Pure, for the goldens: built
    from the shared call view alone at @p now_m (its 3 s ended hold included). Returns 2. */
 static int
@@ -3939,13 +3965,7 @@ ui_format_tetra_call_lines(const dsd_state* state, double now_m, ui_tetra_call_l
         if (call.src_id != 0U) {
             DSD_SNPRINTF(src, sizeof src, "%llu", (unsigned long long)call.src_id);
         }
-        char priority_tag[12] = {0};
-        if (call.priority > 0U) {
-            DSD_SNPRINTF(priority_tag, sizeof priority_tag, "[PR:%u]", (unsigned)call.priority);
-        }
-        if (call.emergency || priority_tag[0] != '\0') {
-            DSD_SNPRINTF(tags, sizeof tags, " %s%s", call.emergency ? "[EM]" : "", priority_tag);
-        }
+        ui_tetra_call_tags(&call, tags, sizeof tags);
         DSD_SNPRINTF(banner, sizeof banner, " %s%s", ui_tetra_call_banner(call.kind), call.enc ? " Encrypted" : "");
     }
     int banner_width = UI_SLOT_CALL_STATUS_WIDTH - (int)strlen(tags);
@@ -3964,15 +3984,7 @@ ui_format_tetra_call_lines(const dsd_state* state, double now_m, ui_tetra_call_l
     out->label_start = (int)sizeof(k_continuation) - 1;
     DSD_SNPRINTF(out->text[1], sizeof out->text[1], "%s", k_continuation);
     if (shown) {
-        size_t used = strlen(out->text[1]);
-        if (call.tg_label[0] != '\0') {
-            DSD_SNPRINTF(out->text[1] + used, sizeof out->text[1] - used, "[%s]", call.tg_label);
-            used = strlen(out->text[1]);
-        }
-        if (call.src_label[0] != '\0') {
-            DSD_SNPRINTF(out->text[1] + used, sizeof out->text[1] - used, "%sSRC: [%s]",
-                         call.tg_label[0] != '\0' ? " " : "", call.src_label);
-        }
+        ui_tetra_call_labels(&call, out->text[1], sizeof out->text[1]);
     }
     out->ended = call.state == DSD_APP_CALL_LINE_ENDED;
     return 2;

@@ -1217,6 +1217,23 @@ pending_find(tetra_state_t* ts, uint16_t call_id) {
     return NULL;
 }
 
+/* The entry a new connect-first set-up takes: a free one, else the least recently remembered. */
+static tetra_pending_connect*
+pending_slot(tetra_state_t* ts) {
+    for (size_t i = 0; i < TETRA_PENDING_CONNECTS; i++) {
+        if (!ts->calls.pending[i].used) {
+            return &ts->calls.pending[i];
+        }
+    }
+    tetra_pending_connect* oldest = &ts->calls.pending[0];
+    for (size_t i = 1; i < TETRA_PENDING_CONNECTS; i++) {
+        if (ts->calls.pending[i].seen_m < oldest->seen_m) {
+            oldest = &ts->calls.pending[i];
+        }
+    }
+    return oldest;
+}
+
 /* A PDU other than D-SETUP of call @p ev (@p c NULL when no record holds it): a D-CONNECT granting transmission for a
  * call no record holds remembers its caller, and a release or any other floor PDU of the call forgets one. */
 static void
@@ -1234,19 +1251,8 @@ calls_note_pending_connect(tetra_state_t* ts, const tetra_call_t* c, const tetra
     uint32_t caller = 0;
     if (ev->kind == TETRA_CALL_EV_CONNECT && !c && (ev->has & TETRA_CALL_HAS_GRANT) != 0u && ev->grant == 0u
         && sdu_party_ssi(sdu, &caller)) {
-        /* Its own entry, else a free one, else the least recently remembered. */
-        for (size_t i = 0; !p && i < TETRA_PENDING_CONNECTS; i++) {
-            if (!ts->calls.pending[i].used) {
-                p = &ts->calls.pending[i];
-            }
-        }
         if (!p) {
-            p = &ts->calls.pending[0];
-            for (size_t i = 1; i < TETRA_PENDING_CONNECTS; i++) {
-                if (ts->calls.pending[i].seen_m < p->seen_m) {
-                    p = &ts->calls.pending[i];
-                }
-            }
+            p = pending_slot(ts);
         }
         p->call_id = id;
         p->caller = caller;
@@ -1459,55 +1465,98 @@ event_moves_floor(uint8_t kind) {
  * decode clock; any other floor PDU between ends the pairing. A group notice later than that, or after another floor
  * PDU, loses the talker, and two floor PDUs missed in a row within the window (a whole transmission, its group notice
  * and the next individual grant) credit the previous talker until the next PDU names one (documented limits). */
+typedef struct {
+    uint32_t talker; /* the call's talker before the PDU */
+    uint32_t addr;   /* the MAC address's SSI, when addressed */
+    int addressed;   /* the PDU is addressed to a party SSI */
+    int group;       /* ... which is the call's group (its called GSSI) */
+    int individual;  /* ... which is any other SSI */
+    int has_grant;   /* the PDU carries a transmission grant */
+} floor_pdu;
+
+static void
+floor_pdu_init(floor_pdu* f, const tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    f->talker = c->talker_ssi;
+    f->addr = 0;
+    f->addressed = sdu_party_ssi(sdu, &f->addr);
+    f->group = f->addressed && basic_is_group(c->basic_service) && f->addr == c->called_ssi;
+    f->individual = f->addressed && !f->group;
+    f->has_grant = (ev->has & TETRA_CALL_HAS_GRANT) != 0u;
+}
+
+/* A D-TX GRANTED / D-TX INTERRUPT granting transmission that names no transmitting party: an individually addressed
+ * D-TX GRANTED names its addressee (and may pair); a group-addressed "granted to another user" keeps the talker only
+ * when paired; anything else leaves no talker. */
+static uint32_t
+floor_tx_unnamed(const tetra_call_t* c, const tetra_call_event* ev, const floor_pdu* f, double now_m, int* pairs) {
+    const int interrupt = ev->kind == TETRA_CALL_EV_TX_INTERRUPT;
+    if (f->individual && !interrupt && ev->grant == 0u) {
+        *pairs = 1;
+        return f->addr;
+    }
+    const int paired = f->group && ev->grant == 3u && c->pair_kind == (uint8_t)(ev->kind + 1u)
+                       && now_m - c->pair_m <= TETRA_GRANT_PAIR_S;
+    return paired ? f->talker : 0u;
+}
+
+/* The D-TX GRANTED / D-TX INTERRUPT rows of floor_transition(). */
+static uint32_t
+floor_tx_grant(const tetra_call_t* c, const tetra_call_event* ev, const floor_pdu* f, double now_m, int* pairs) {
+    const int interrupt = ev->kind == TETRA_CALL_EV_TX_INTERRUPT;
+    if (!f->has_grant) {
+        return f->talker;
+    }
+    if (ev->grant == 1u && (interrupt || f->group)) {
+        return 0u;
+    }
+    if (!grant_is_transmission(ev->grant)) {
+        return f->talker;
+    }
+    if ((ev->has & TETRA_CALL_HAS_TALKER) != 0u) {
+        *pairs = f->individual;
+        return ev->talker_ssi;
+    }
+    return floor_tx_unnamed(c, ev, f, now_m, pairs);
+}
+
+/* The D-CALL RESTORE rows of floor_transition(). */
+static uint32_t
+floor_restore(const tetra_call_event* ev, const floor_pdu* f) {
+    if (!f->has_grant || !f->individual) {
+        return f->talker;
+    }
+    if (ev->grant == 0u) {
+        return f->addr;
+    }
+    return f->talker == f->addr ? 0u : f->talker;
+}
+
+/* The D-CONNECT and D-CONNECT ACKNOWLEDGE rows of floor_transition(). */
+static uint32_t
+floor_connect(const tetra_call_event* ev, const floor_pdu* f) {
+    const int granted = f->has_grant && ev->grant == 0u;
+    if (ev->kind == TETRA_CALL_EV_CONNECT) {
+        return (f->talker == 0u && granted && f->addressed) ? f->addr : f->talker;
+    }
+    return (granted && f->individual) ? f->addr : f->talker;
+}
+
 static uint32_t
 floor_transition(const tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu, double now_m,
                  int* pairs) {
-    uint32_t addr = 0;
-    const int addressed = sdu_party_ssi(sdu, &addr);
-    const int group = addressed && basic_is_group(c->basic_service) && addr == c->called_ssi;
-    const int individual = addressed && !group;
-    const int has_grant = (ev->has & TETRA_CALL_HAS_GRANT) != 0u;
-    const uint32_t talker = c->talker_ssi;
+    floor_pdu f;
+    floor_pdu_init(&f, c, ev, sdu);
     *pairs = 0;
     switch ((tetra_call_event_kind)ev->kind) {
         case TETRA_CALL_EV_TX_GRANTED:
-        case TETRA_CALL_EV_TX_INTERRUPT: {
-            const int interrupt = ev->kind == TETRA_CALL_EV_TX_INTERRUPT;
-            if (!has_grant) {
-                return talker;
-            }
-            if (ev->grant == 1u && (interrupt || group)) {
-                return 0u;
-            }
-            if (!grant_is_transmission(ev->grant)) {
-                return talker;
-            }
-            if ((ev->has & TETRA_CALL_HAS_TALKER) != 0u) {
-                *pairs = individual;
-                return ev->talker_ssi;
-            }
-            if (individual && !interrupt && ev->grant == 0u) {
-                *pairs = 1;
-                return addr;
-            }
-            const int paired = group && ev->grant == 3u && c->pair_kind == (uint8_t)(ev->kind + 1u)
-                               && now_m - c->pair_m <= TETRA_GRANT_PAIR_S;
-            return paired ? talker : 0u;
-        }
+        case TETRA_CALL_EV_TX_INTERRUPT: return floor_tx_grant(c, ev, &f, now_m, pairs);
         case TETRA_CALL_EV_TX_CEASED: return 0u;
         case TETRA_CALL_EV_TX_CONTINUE:
-            return ((ev->has & TETRA_CALL_HAS_CONTINUE) != 0u && ev->continue_value != 0u) ? talker : 0u;
-        case TETRA_CALL_EV_RESTORE:
-            if (!has_grant || !individual) {
-                return talker;
-            }
-            if (ev->grant == 0u) {
-                return addr;
-            }
-            return talker == addr ? 0u : talker;
-        case TETRA_CALL_EV_CONNECT: return (talker == 0u && has_grant && ev->grant == 0u && addressed) ? addr : talker;
-        case TETRA_CALL_EV_CONNECT_ACK: return (has_grant && ev->grant == 0u && individual) ? addr : talker;
-        default: return talker;
+            return ((ev->has & TETRA_CALL_HAS_CONTINUE) != 0u && ev->continue_value != 0u) ? f.talker : 0u;
+        case TETRA_CALL_EV_RESTORE: return floor_restore(ev, &f);
+        case TETRA_CALL_EV_CONNECT:
+        case TETRA_CALL_EV_CONNECT_ACK: return floor_connect(ev, &f);
+        default: return f.talker;
     }
 }
 

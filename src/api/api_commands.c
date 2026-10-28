@@ -22,6 +22,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/config.h>

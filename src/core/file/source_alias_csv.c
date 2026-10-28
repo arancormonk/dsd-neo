@@ -10,6 +10,7 @@
  */
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -84,8 +85,9 @@ alias_parse_policy(const alias_header* header, char** fields, size_t count, cons
                      labels[i], fields[3 + i]);
         }
     }
-    csv_enforce_media_cells("Source ID", filename, row, blocking, given[0], given[1], given[2], &entry->audio,
-                            &entry->record, &entry->stream, quiet);
+    const csv_row_origin origin = {"Source ID", filename, row, quiet};
+    const csv_media_cells media = {&entry->audio, &entry->record, &entry->stream, given[0], given[1], given[2]};
+    csv_enforce_media_cells(&origin, blocking, &media);
 }
 
 /* Returns 0 stored, 1 invalid (skipped), -1 allocation failure. Diagnostics are suppressed when @p quiet. */

@@ -7,6 +7,7 @@
  * @brief Source aliases (the radio ID list): the immutable row store, its lookups and its snapshot copy. Rows are
  * exact IDs, ranges or digit patterns, with optional policy. See docs/csv-formats.md, "Source ID List CSV".
  */
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
@@ -194,33 +195,88 @@ dsd_source_policy_loaded(const dsd_state* state) {
 }
 
 /* The winning row for one ID among a set of rows, built one matching row at a time: the first exact row; else the
- * narrowest range, the last row winning ties; else the most specific pattern, the last row winning ties. */
+ * narrowest range, the last row winning ties; else the most specific pattern, the last row winning ties. Rows are held
+ * by index into the store (ALIAS_NONE: none yet). */
+#define ALIAS_NONE SIZE_MAX
+
 typedef struct {
-    const dsd_source_alias_entry* exact;
-    const dsd_source_alias_entry* range;
-    const dsd_source_alias_entry* pattern;
+    size_t exact;
+    size_t range;
+    size_t pattern;
     dsd_id_pattern rank; /* the pattern row's rank */
 } alias_pick;
 
 static void
-alias_pick_offer(alias_pick* p, const dsd_source_alias_entry* e, const dsd_id_pattern* rank) {
+alias_pick_init(alias_pick* p) {
+    DSD_MEMSET(p, 0, sizeof(*p));
+    p->exact = ALIAS_NONE;
+    p->range = ALIAS_NONE;
+    p->pattern = ALIAS_NONE;
+}
+
+static void
+alias_pick_offer(alias_pick* p, const dsd_source_alias_store* s, size_t i, const dsd_id_pattern* rank) {
+    const dsd_source_alias_entry* e = &s->entries[i];
     if (e->kind == DSD_TG_POLICY_ROW_EXACT) {
-        if (!p->exact) {
-            p->exact = e;
+        if (p->exact == ALIAS_NONE) {
+            p->exact = i;
         }
     } else if (e->kind == DSD_TG_POLICY_ROW_RANGE) {
-        if (!p->range || e->id_end - e->id_start <= p->range->id_end - p->range->id_start) {
-            p->range = e;
+        const dsd_source_alias_entry* held = p->range == ALIAS_NONE ? NULL : &s->entries[p->range];
+        if (!held || e->id_end - e->id_start <= held->id_end - held->id_start) {
+            p->range = i;
         }
-    } else if (rank && (!p->pattern || !dsd_id_pattern_more_specific(&p->rank, rank))) {
-        p->pattern = e;
+    } else if (rank && (p->pattern == ALIAS_NONE || !dsd_id_pattern_more_specific(&p->rank, rank))) {
+        p->pattern = i;
         p->rank = *rank;
     }
 }
 
 static const dsd_source_alias_entry*
-alias_pick_winner(const alias_pick* p) {
-    return p->exact ? p->exact : (p->range ? p->range : p->pattern);
+alias_pick_winner(const alias_pick* p, const dsd_source_alias_store* s) {
+    const size_t i = p->exact != ALIAS_NONE ? p->exact : (p->range != ALIAS_NONE ? p->range : p->pattern);
+    return i == ALIAS_NONE ? NULL : &s->entries[i];
+}
+
+/* Whether a pattern row can no longer win pick @p p: the pick is not wanted for this row (NULL), or a range already beat
+ * every pattern (an exact row ends the search before this is asked). */
+static int
+alias_pick_closed_to_patterns(const alias_pick* p) {
+    return !p || p->range != ALIAS_NONE;
+}
+
+/* Whether row @p e covers @p id (written in decimal as @p digits, @p len long); a matching pattern row's rank goes to
+ * @p rank. */
+static int
+alias_row_covers(const dsd_source_alias_entry* e, uint32_t id, const char* digits, size_t len, dsd_id_pattern* rank) {
+    if (e->kind != DSD_TG_POLICY_ROW_PATTERN) {
+        return id >= e->id_start && id <= e->id_end;
+    }
+    dsd_id_pattern_from_canonical(e->pattern, rank);
+    return dsd_id_pattern_match_decimal(rank, digits, len);
+}
+
+/* Offer row @p i to the picks that want it (@p any_pick, @p named_pick; NULL: not wanted for this row) when it covers
+ * @p id. A pattern row is matched only while one of them is still open to patterns. */
+static void
+alias_consider_row(const dsd_source_alias_store* s, size_t i, uint32_t id, const char* digits, size_t len,
+                   alias_pick* any_pick, alias_pick* named_pick) {
+    const dsd_source_alias_entry* e = &s->entries[i];
+    const int pattern = e->kind == DSD_TG_POLICY_ROW_PATTERN;
+    if (pattern && alias_pick_closed_to_patterns(any_pick) && alias_pick_closed_to_patterns(named_pick)) {
+        return; /* a pattern only wins where no exact or range row matched */
+    }
+    dsd_id_pattern rank;
+    if (!alias_row_covers(e, id, digits, len, &rank)) {
+        return;
+    }
+    const dsd_id_pattern* rank_ptr = pattern ? &rank : NULL;
+    if (any_pick) {
+        alias_pick_offer(any_pick, s, i, rank_ptr);
+    }
+    if (named_pick) {
+        alias_pick_offer(named_pick, s, i, rank_ptr);
+    }
 }
 
 /* One pass over the rows: the winner among all rows (@p any) and among named rows (@p named); either may be NULL when
@@ -230,45 +286,26 @@ static void
 alias_find(const dsd_source_alias_store* s, uint32_t id, const dsd_source_alias_entry** any,
            const dsd_source_alias_entry** named) {
     alias_pick picks[2];
-    DSD_MEMSET(picks, 0, sizeof(picks));
+    alias_pick_init(&picks[0]);
+    alias_pick_init(&picks[1]);
     char digits[DSD_ID_DECIMAL_MAX] = {0};
     const size_t len = s->pattern_count ? dsd_id_decimal(id, digits, sizeof(digits)) : 0u;
     for (size_t i = 0; i < s->count; ++i) {
-        const int open_any = any && !picks[0].exact;
-        const int open_named = named && !picks[1].exact;
-        if (!open_any && !open_named) {
+        alias_pick* any_pick = (any && picks[0].exact == ALIAS_NONE) ? &picks[0] : NULL;
+        alias_pick* named_pick = (named && picks[1].exact == ALIAS_NONE) ? &picks[1] : NULL;
+        if (!any_pick && !named_pick) {
             break; /* every wanted pick has its exact row: nothing later can win */
         }
-        const dsd_source_alias_entry* e = &s->entries[i];
-        const int want_any = open_any;
-        const int want_named = open_named && e->name[0];
-        dsd_id_pattern rank;
-        const dsd_id_pattern* rank_ptr = NULL;
-        if (e->kind == DSD_TG_POLICY_ROW_PATTERN) {
-            /* A pattern only wins where no exact or range row matched. */
-            if ((!want_any || picks[0].range) && (!want_named || picks[1].range)) {
-                continue;
-            }
-            dsd_id_pattern_from_canonical(e->pattern, &rank);
-            if (!dsd_id_pattern_match_decimal(&rank, digits, len)) {
-                continue;
-            }
-            rank_ptr = &rank;
-        } else if (id < e->id_start || id > e->id_end) {
-            continue;
+        if (s->entries[i].name[0] == '\0') {
+            named_pick = NULL; /* an unnamed row decides policy, never the name */
         }
-        if (want_any) {
-            alias_pick_offer(&picks[0], e, rank_ptr);
-        }
-        if (want_named) {
-            alias_pick_offer(&picks[1], e, rank_ptr);
-        }
+        alias_consider_row(s, i, id, digits, len, any_pick, named_pick);
     }
     if (any) {
-        *any = alias_pick_winner(&picks[0]);
+        *any = alias_pick_winner(&picks[0], s);
     }
     if (named) {
-        *named = alias_pick_winner(&picks[1]);
+        *named = alias_pick_winner(&picks[1], s);
     }
 }
 
@@ -312,21 +349,31 @@ dsd_source_policy_lookup(const dsd_state* state, uint32_t id, dsd_source_policy_
     return 1;
 }
 
+/* Clear an optional output string. */
+static void
+label_out_clear(char* out, size_t out_sz) {
+    if (out && out_sz) {
+        out[0] = '\0';
+    }
+}
+
+/* The radio list's mode for a label: the winning row's, when that row has policy and a mode. */
+static int
+alias_row_names_mode(const dsd_source_alias_entry* winner) {
+    return winner && winner->has_policy && winner->mode[0] != '\0';
+}
+
 int
 dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name, size_t name_sz) {
-    if (mode && mode_sz) {
-        mode[0] = '\0';
-    }
-    if (name && name_sz) {
-        name[0] = '\0';
-    }
+    label_out_clear(mode, mode_sz);
+    label_out_clear(name, name_sz);
     const dsd_source_alias_store* s = alias_get(state);
     const dsd_source_alias_entry* winner = NULL;
     const dsd_source_alias_entry* named = NULL;
     if (s) {
         alias_find(s, id, s->policy_count ? &winner : NULL, &named);
     }
-    const int radio_mode = winner && winner->has_policy && winner->mode[0] != '\0';
+    const int radio_mode = alias_row_names_mode(winner);
     /* The group list's exact row supplies whatever the radio list did not: the name, the mode, or both. */
     char group_mode[sizeof(winner->mode)] = {0};
     char group_name[DSD_SOURCE_ALIAS_NAME_MAX] = {0};

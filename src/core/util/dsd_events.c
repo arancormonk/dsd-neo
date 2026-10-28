@@ -26,7 +26,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -38,8 +37,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../audio/dsd_audio_gate_internal.h"
 #include "../file/wav_journal.h"
-#include "audio/dsd_audio_gate_internal.h"
 #include "call_state_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -1405,6 +1404,7 @@ typedef struct {
     uint32_t sys_id4;
     uint32_t sys_id5;
     uint32_t channel;
+    uint32_t policy_target_id;
     /* The frequency the call was heard on and its access code, as the row records them; see
      * watchdog_event_current_load_tuning() for the rules. */
     int64_t freq_hz;
@@ -1419,9 +1419,8 @@ typedef struct {
     char sysid_string[200];
     uint8_t t_name_loaded;
     uint8_t s_name_loaded;
-    /* The rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7); see
-     * watchdog_event_current_load_stream_export(). */
-    uint32_t policy_target_id;
+    /* The rdio-scanner export verdict (issue #773 D7) and, beside the system IDs above, the talkgroup it was judged
+     * on (policy_target_id); see watchdog_event_current_load_stream_export(). */
     uint8_t stream_export;
     /* Seconds the call has run on the canonical epoch's own timeline — through its
      * last observation while active, through its end once ended. Anchors the row's
