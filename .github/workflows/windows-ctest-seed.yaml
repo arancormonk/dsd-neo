@@ -46,6 +46,10 @@ jobs:
       VCPKG_NUGET_USER: ${{ github.repository_owner }}
       VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,readwrite"
       SCCACHE_GHA_ENABLED: "true"
+      # The test step outlasts sccache's 600 s idle timeout; a server that exits
+      # mid-job takes its counters with it, so the stats step and the action's
+      # summary would report a fresh server's zeros.
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,7 +65,9 @@ jobs:
           & $env:SCCACHE_PATH --zero-stats
 
       - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        uses: TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9 # v4.1.0
+        with:
+          arch: x64
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2

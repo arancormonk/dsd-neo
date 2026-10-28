@@ -126,8 +126,9 @@ jobs:
           } >> "$GITHUB_ENV"
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
+      # Restore only: macos-ci's push runs save this cache.
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.sha }}

@@ -83,7 +83,8 @@ jobs:
             vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
 
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
@@ -166,6 +167,16 @@ jobs:
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
   # The app's UI is QML, which the arm64 APK job can build but cannot run. This
   # job configures the same frontend for the host with the same pinned Qt the APK
@@ -274,7 +285,8 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-qt-ui-tests-${{ env.ANDROID_QT_VERSION }}-${{ github.sha }}
@@ -391,6 +403,16 @@ jobs:
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
   build-apk:
     needs: changes
@@ -526,7 +548,8 @@ jobs:
             vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
 
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
@@ -1212,6 +1235,16 @@ jobs:
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
   aab-status:
     name: AAB status

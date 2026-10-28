@@ -3,6 +3,12 @@ project(dsd-neo VERSION 2.11.4 LANGUAGES C CXX)
 if(POLICY CMP0083)
     cmake_policy(SET CMP0083 NEW)
 endif()
+# Drop repeated libraries from link lines where the linker resolves them without
+# repeats (Apple ld, MSVC link); Apple ld warns about every duplicate otherwise.
+# GNU-style linkers keep the repeats that circular static dependencies need.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
 include(CTest) # provides BUILD_TESTING and enables tests when on
 enable_testing()
 include(GNUInstallDirs)

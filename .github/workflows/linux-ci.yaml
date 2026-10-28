@@ -616,7 +616,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver.outputs.gcc_ver }}-${{ steps.toolver.outputs.cmake_ver }}-${{ github.sha }}
@@ -747,6 +748,16 @@ jobs:
       - name: Show ccache stats
         if: always()
         run: ccache -s
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
   scan-build:
     needs: changes
@@ -1659,8 +1670,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
+        id: ccache
         if: env.CI_RUN_CHECK == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-sanitize.outputs.compiler_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-${{ github.sha }}
@@ -1794,6 +1806,16 @@ jobs:
       - name: Show ccache stats
         if: env.CI_RUN_CHECK == 'true' && (always())
         run: ccache -s
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: env.CI_RUN_CHECK == 'true' && github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
   cmake-install-rules:
     name: cmake install rules
@@ -2126,8 +2148,9 @@ jobs:
             arch-iwyu-${{ runner.os }}-
 
       - name: Restore ccache
+        id: ccache
         if: env.CI_RUN_CHECK == 'true' && (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0' || steps.changed.outputs.analysis_full_scan == '1')
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
           key: ccache-${{ runner.os }}-arch-${{ github.job }}-${{ matrix.name }}-${{ github.sha }}
@@ -2208,3 +2231,13 @@ jobs:
           path: ${{ matrix.artifact_path }}
           include-hidden-files: true
           retention-days: 7
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: env.CI_RUN_CHECK == 'true' && github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
