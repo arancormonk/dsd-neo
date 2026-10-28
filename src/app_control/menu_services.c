@@ -104,14 +104,14 @@ svc_discard_new_wav(SNDFILE* wav, const char* path) {
 }
 
 /*
- * Start per-call recording (issue #708): a slot file that is open stays, a missing one opens, and the start completes
- * only with both open. A start that cannot open them changes nothing: the files it opened go again, and the mode is what
- * it was (a slot whose file failed to open earlier opens again at its next call end). A static WAV recording now is
- * closed as a static file, never named after a call or exported, and the per-call files' rotation takes over.
+ * Start per-call recording (issue #708): with per-call recording on, a slot file that is open stays and a missing one
+ * opens, and the start completes only with both open. A start that cannot open them changes nothing: the files it opened
+ * go again, and the mode is what it was (a slot whose file failed to open earlier opens again at its next call end).
+ * Off per-call recording, no handle open now is kept: a static WAV is closed as a static file, never named after a
+ * call or exported, and a per-call file the mode no longer covers is published as a call end would.
  */
 int
 svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
-    (void)state;
     if (!opts) {
         return -1;
     }
@@ -138,10 +138,8 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
         svc_discard_new_wav(right, right_name);
         return -1;
     }
-    if (opts->static_wav_file == 1) {
-        opts->wav_out_f = close_wav_file(opts->wav_out_f);
-        opts->wav_out_fR = close_wav_file(opts->wav_out_fR);
-        opts->static_wav_file = 0;
+    if (!per_call) {
+        (void)svc_stop_wav_recording(opts, state);
     }
     DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
     // Switched on mid-call, the recordings hold only what follows: their sidecars start now, not at the call's start.
@@ -366,33 +364,54 @@ svc_disable_event_log(dsd_opts* opts) {
     opts->event_out_file[0] = '\0';
 }
 
+/*
+ * Static WAV output (issue #708): the file opens first, so one that does not open leaves the recording that runs, and
+ * the mode, as they were. Then what records now closes (per-call files with their publication, an earlier static file
+ * as a static one) and the new file takes over. The static file that records already is kept: opening it a second time
+ * would append behind a header the first handle has not finalized.
+ */
 int
 svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    /* What records now closes first (issue #708): per-call files with their publication, an earlier static file as a
-       static one. Opening over it would leak its handle and, for a per-call slot, leave its temp file behind. */
+    if (opts->static_wav_file == 1 && opts->wav_out_f != NULL && strcmp(opts->wav_out_file, path) == 0) {
+        return 0;
+    }
+    SNDFILE* wav = open_static_wav_file(path);
+    if (wav == NULL) {
+        return -1;
+    }
     (void)svc_stop_wav_recording(opts, state);
     DSD_STRNCPY(opts->wav_out_file, path, sizeof opts->wav_out_file - 1);
     opts->wav_out_file[sizeof opts->wav_out_file - 1] = '\0';
     opts->dmr_stereo_wav = 0;
     opts->static_wav_file = 1;
-    openWavOutFileLR(opts, state);
-    return (opts->wav_out_f != NULL) ? 0 : -1;
+    opts->wav_out_f = wav;
+    return 0;
 }
 
+/*
+ * Raw WAV output: a new path opens first, so one that does not open leaves the raw WAV that runs (issue #708); the one
+ * it replaces is then closed, finalizing its header. The same path is closed first, as reopening it truncates it.
+ */
 int
 svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    /* The raw WAV open now is closed first, finalizing its header, rather than leaked (issue #708). */
+    if (opts->wav_out_raw != NULL && strcmp(opts->wav_out_file_raw, path) == 0) {
+        opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
+    }
+    SNDFILE* wav = open_raw_wav_file(opts, path);
+    if (wav == NULL) {
+        return -1;
+    }
     opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
     DSD_STRNCPY(opts->wav_out_file_raw, path, sizeof opts->wav_out_file_raw - 1);
     opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
-    openWavOutFileRaw(opts, state);
-    return (opts->wav_out_raw != NULL) ? 0 : -1;
+    opts->wav_out_raw = wav;
+    return 0;
 }
 
 int

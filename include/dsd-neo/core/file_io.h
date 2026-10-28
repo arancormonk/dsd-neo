@@ -95,6 +95,10 @@ void dsd_mbe_out_write_rx(dsd_opts* opts, dsd_state* state, int slot, int rx_slo
 /** Close the captures in slot_mask that belong to synctype's owner, or that a caller attached (owner 0). */
 void dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype);
 void openWavOutFileLR(dsd_opts* opts, dsd_state* state);
+/** Open the static (-w) WAV at @p path, appending to one that exists; NULL (logged) when it does not open. */
+SNDFILE* open_static_wav_file(const char* path);
+/** Open the raw (-6) WAV at @p path at the analog sink rate; NULL (logged) when it does not open. */
+SNDFILE* open_raw_wav_file(const dsd_opts* opts, const char* path);
 SNDFILE* open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext);
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
@@ -106,12 +110,6 @@ SNDFILE* close_wav_file(SNDFILE* wav_file);
  * handle (static or raw WAV) logs each short write and goes on, as before.
  */
 void dsd_wav_segment_write(SNDFILE* file, const short* samples, size_t count, const char* context);
-/** Test seam: replace the sf_write_short() and sf_close() the per-call recordings make; NULL restores libsndfile's. */
-typedef long long (*dsd_wav_test_write_fn)(SNDFILE* file, const short* samples, long long count);
-typedef int (*dsd_wav_test_close_fn)(SNDFILE* file);
-void dsd_wav_test_set_io(dsd_wav_test_write_fn write_fn, dsd_wav_test_close_fn close_fn);
-/** Test seam: let @p successful_opens more per-call segments open, then fail every open_wav_file(); -1 disables. */
-void dsd_wav_test_fail_opens_after(long successful_opens);
 /**
  * Close a per-call WAV, name it from the slot's staged row and export it to rdio-scanner.
  * `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),

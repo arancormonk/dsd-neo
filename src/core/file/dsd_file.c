@@ -896,6 +896,8 @@ wav_temp_token(void) {
     return s_wav_temp_token;
 }
 
+static long wav_file_get_size_or_negative(const char* filename);
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     if (temp_filename == NULL || temp_filename_size == 0) {
@@ -942,7 +944,11 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
             LOG_ERROR("Error - could not open wav output file %s; later open failures are counted, not logged\n",
                       temp_filename);
         }
-        /* No file holds the name, so no later close may try to publish it. */
+        /* An open that created the file and then failed (a full disk) leaves it empty: nothing to keep. No file holds
+           the name after that, so no later close may try to publish it. */
+        if (wav_file_get_size_or_negative(temp_filename) == 0) {
+            (void)remove(temp_filename);
+        }
         temp_filename[0] = '\0';
         return NULL;
     }
@@ -1187,36 +1193,43 @@ close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* w
     return close_and_rename_wav_file_ex(wav_file, opts, wav_out_filename, dir, event_struct, opened, 1);
 }
 
-void
-openWavOutFileLR(dsd_opts* opts, dsd_state* state) {
-    UNUSED(state);
-
+SNDFILE*
+open_static_wav_file(const char* path) {
     SF_INFO info;
     info.samplerate = 8000; //8000
     info.channels = 2;      //2 channel for stereo output
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->wav_out_f = sf_open(opts->wav_out_file, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
-
-    if (opts->wav_out_f == NULL) {
-        LOG_ERROR("Error - could not open wav output file %s\n", opts->wav_out_file);
-        return;
+    SNDFILE* wav = sf_open(path, SFM_RDWR, &info); //RDWR will append to file instead of overwrite file
+    if (wav == NULL) {
+        LOG_ERROR("Error - could not open wav output file %s\n", path);
     }
+    return wav;
 }
 
 void
-openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
+openWavOutFileLR(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
+    opts->wav_out_f = open_static_wav_file(opts->wav_out_file);
+}
 
+SNDFILE*
+open_raw_wav_file(const dsd_opts* opts, const char* path) {
     SF_INFO info;
     /* The analog sink rate: every block is converted to it, whatever rate the input runs at (issue #633). */
     info.samplerate = dsd_opts_analog_sink_rate_hz(opts);
     info.channels = 1;
     info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-    opts->wav_out_raw = sf_open(opts->wav_out_file_raw, SFM_WRITE, &info);
-    if (opts->wav_out_raw == NULL) {
-        LOG_ERROR("Error - could not open raw wav output file %s\n", opts->wav_out_file_raw);
-        return;
+    SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
+    if (wav == NULL) {
+        LOG_ERROR("Error - could not open raw wav output file %s\n", path);
     }
+    return wav;
+}
+
+void
+openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
+    UNUSED(state);
+    opts->wav_out_raw = open_raw_wav_file(opts, opts->wav_out_file_raw);
 }
 
 void

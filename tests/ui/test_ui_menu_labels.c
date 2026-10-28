@@ -862,6 +862,14 @@ test_recording_labels(void) {
     opts.dmr_stereo_wav = 1;
     opts.wav_out_f = (SNDFILE*)0x1;
     rc |= expect_str("per call wav on", lbl_per_call_wav(&ctx, b, sizeof(b)), "Per-call WAV [On]");
+    /* The label is the mode the toggle reads (issue #708): on while a slot whose open failed waits to reopen, off with a
+       handle the mode does not cover. */
+    opts.wav_out_f = NULL;
+    rc |= expect_str("per call wav on with no file open", lbl_per_call_wav(&ctx, b, sizeof(b)), "Per-call WAV [On]");
+    opts.dmr_stereo_wav = 0;
+    opts.wav_out_f = (SNDFILE*)0x1;
+    rc |= expect_str("per call wav off with a handle", lbl_per_call_wav(&ctx, b, sizeof(b)), "Per-call WAV [Off]");
+    opts.dmr_stereo_wav = 1;
 
     rc |= expect_str("stop replay off", lbl_stop_symbol_playback(&ctx, b, sizeof(b)), "Stop replay [Off]");
     opts.symbolfile = (FILE*)0x2;

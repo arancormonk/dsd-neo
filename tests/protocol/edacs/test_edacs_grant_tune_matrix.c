@@ -119,6 +119,8 @@ static Event_History_I g_eot_history[2];
 static max_align_t g_wav_sentinel;
 static int g_close_wav_count = 0;
 static int g_open_wav_count = 0;
+/* Set: every per-call open fails, as on a full disk (issue #708). */
+static int g_open_wav_fail = 0;
 #ifdef USE_RADIO
 static int g_rtl_read_count = 0;
 /* When above 0, every fake RTL read returns this sample instead of the counting ramp. */
@@ -267,7 +269,7 @@ __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, 
     (void)sample_rate;
     (void)ext;
     g_open_wav_count++;
-    return (SNDFILE*)&g_wav_sentinel;
+    return g_open_wav_fail ? NULL : (SNDFILE*)&g_wav_sentinel;
 }
 
 int
@@ -2293,6 +2295,39 @@ edacs_run_analog_retune_cases(void) {
     return rc;
 }
 
+/* Issue #708: an analog grant's slot 1 file that does not open is marked to open again at the call's end, as the event
+   layer's rotation marks one, and a later grant's open clears the mark. */
+static int
+edacs_run_analog_wav_reopen_mark_cases(void) {
+    int rc = 0;
+    for (int fail = 1; fail >= 0; fail--) {
+        edacs_reset_audio_hook_state();
+        g_tcp_signal = EDACS_TCP_DOTTING;
+        g_tcp_signal_rate_hz = 48000;
+        g_tcp_fail_at = 4 * 2880;
+        const edacs_grant_case* call = edacs_prepare_tcp_analog_call(48000, DSD_TRUNK_TUNE_RESULT_OK);
+        g_opts.use_rigctl = 1;
+        g_opts.dmr_stereo_wav = 1;
+        g_opts.static_wav_file = 0;
+        g_opts.wav_out_f = NULL;
+        g_opts.wav_out_reopen = fail ? 0 : 1;
+        g_open_wav_fail = fail;
+        g_open_wav_count = 0;
+        edacs_start_tcp_analog_call(call);
+        rc |= edacs_expect(g_open_wav_count >= 1, "analog-708", fail ? "open-fails" : "open-works",
+                           "the analog grant opened slot 1's file");
+        rc |= edacs_expect((g_opts.wav_out_reopen & 1) == fail, "analog-708", fail ? "open-fails" : "open-works",
+                           fail ? "a failed open is marked to reopen" : "an open clears the reopen mark");
+        g_open_wav_fail = 0;
+        g_opts.wav_out_f = NULL;
+        g_opts.use_rigctl = 0;
+        g_opts.dmr_stereo_wav = 0;
+        g_opts.wav_out_reopen = 0;
+    }
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
 /* A tune still in flight plays nothing, and one that fails leaves the call: the radio reads the previous channel again,
    so nothing it delivers is the new call's. Before the fix EDACS played whatever arrived. A tune that lands plays from
    the triplet after the one it landed in. A triplet a retune cut through decides nothing: the old channel's dotting in
@@ -3263,6 +3298,7 @@ main(void) {
     rc |= edacs_run_converted_collect_cases();
     rc |= edacs_run_analog_call_cases();
     rc |= edacs_run_analog_retune_cases();
+    rc |= edacs_run_analog_wav_reopen_mark_cases();
     rc |= edacs_run_analog_tune_gate_cases();
     rc |= edacs_run_golden_48k_cases();
 #ifdef USE_RADIO

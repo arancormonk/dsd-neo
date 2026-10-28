@@ -944,6 +944,9 @@ edacs_prepare_voice_wav_output(dsd_opts* opts, dsd_state* state, int is_digital)
     opts->wav_out_f =
         open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, EDACS_ANALOG_RATE_HZ, 0);
     opts->wav_out_open_time = dsd_decode_time();
+    /* A slot 1 file that did not open opens again at the call's end, as the event layer's rotation reopens one
+       (issue #708). */
+    opts->wav_out_reopen = opts->wav_out_f != NULL ? (opts->wav_out_reopen & ~1) : (opts->wav_out_reopen | 1);
 }
 
 static int

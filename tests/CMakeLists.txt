@@ -7672,6 +7672,7 @@ target_include_directories(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/core/file
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))

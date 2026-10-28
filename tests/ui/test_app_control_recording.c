@@ -27,6 +27,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <sndfile.h>
@@ -37,6 +38,7 @@
 #include "commands_internal.h"
 #include "edacs_internal.h"
 #include "test_support.h"
+#include "wav_segment_test_support.h"
 
 static int
 expect_true(const char* what, int ok) {
@@ -698,12 +700,14 @@ test_close_failure_keeps_the_temp_file(int writer) {
     const dir_count c = count_dir(r.dir);
     DSD_SNPRINTF(tag, sizeof tag, "%s: nothing published", writer_name(writer));
     rc |= expect_int(tag, c.published, 0);
-    DSD_SNPRINTF(tag, sizeof tag, "%s: the recording keeps its temp name", writer_name(writer));
-    rc |= expect_true(tag, c.temp >= 1);
+    /* A stop closes both slot files, and both keep their temp names. An NFM call's end closes its own recording, and
+       its commit rotates slot 1: that close fails too, and a new slot 1 file opens beside slot 2's. */
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the recordings keep their temp names", writer_name(writer));
+    rc |= expect_int(tag, c.temp, writer == WRITER_NFM ? 4 : 2);
     dsd_wav_recording_status status;
     dsd_wav_recording_status_get(&status);
-    DSD_SNPRINTF(tag, sizeof tag, "%s: the close failure counted", writer_name(writer));
-    rc |= expect_true(tag, status.failures[DSD_WAV_RECORDING_ERROR_CLOSE] >= 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: each close failure counted", writer_name(writer));
+    rc |= expect_int(tag, status.failures[DSD_WAV_RECORDING_ERROR_CLOSE], 2);
     DSD_SNPRINTF(tag, sizeof tag, "%s: the last error is the close", writer_name(writer));
     rc |= expect_int(tag, status.last_error, DSD_WAV_RECORDING_ERROR_CLOSE);
     DSD_SNPRINTF(tag, sizeof tag, "%s: one close warning", writer_name(writer));
@@ -752,6 +756,180 @@ test_failed_reopen_retries_at_the_next_call_end(void) {
     return rc;
 }
 
+/* A path no file can be created at: its folder does not exist. */
+static void
+unopenable_path(const rig* r, char* out, size_t out_size) {
+    char missing[DSD_TEST_PATH_MAX];
+    (void)dsd_test_path_join(missing, sizeof missing, r->dir, "missing-folder");
+    (void)dsd_test_path_join(out, out_size, missing, "out.wav");
+}
+
+/* B4: a static open that does not open leaves the recording that runs, and the mode, as they were. Main stopped it
+   first and then left static mode set with no file. */
+static int
+test_failed_static_open_keeps_the_running_recording(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_static_fail");
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    SNDFILE* left = r.opts->wav_out_f;
+    SNDFILE* right = r.opts->wav_out_fR;
+    char bad[DSD_TEST_PATH_MAX * 2];
+    unopenable_path(&r, bad, sizeof bad);
+    rc |= expect_int("static open queued", dsd_app_command_set_string(DSD_APP_CMD_WAV_STATIC_OPEN, bad),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)drain(&r);
+    rc |= expect_int("per-call recording stays on", r.opts->dmr_stereo_wav, 1);
+    rc |= expect_int("static mode stays off", r.opts->static_wav_file, 0);
+    rc |= expect_true("the slot files keep recording", r.opts->wav_out_f == left && r.opts->wav_out_fR == right);
+    rc |= expect_int("both slot files still on disk", count_dir(r.dir).temp, 2);
+    const dsd_app_recording_view v = view_now();
+    rc |= expect_int("the static open reads as failed", v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+    rc |= expect_int("the view still says per-call", v.mode, DSD_APP_RECORDING_MODE_PER_CALL);
+    rig_close(&r);
+    return rc;
+}
+
+/* A raw open that does not open leaves the raw WAV that runs. */
+static int
+test_failed_raw_open_keeps_the_running_raw_wav(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_raw_fail");
+    char first[DSD_TEST_PATH_MAX];
+    rc |= expect_int("raw path", dsd_test_path_join(first, sizeof first, r.dir, "raw1.wav"), 0);
+    (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_RAW_OPEN, first);
+    (void)drain(&r);
+    SNDFILE* raw = r.opts->wav_out_raw;
+    rc |= expect_true("raw open", raw != NULL);
+    char bad[DSD_TEST_PATH_MAX * 2];
+    unopenable_path(&r, bad, sizeof bad);
+    (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_RAW_OPEN, bad);
+    (void)drain(&r);
+    rc |= expect_true("the raw WAV keeps recording", r.opts->wav_out_raw == raw);
+    rc |= expect_true("its path stays", strcmp(r.opts->wav_out_file_raw, first) == 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* START backstop: with the mode off, a per-call handle still open (a mode change that closed nothing) is published,
+   not overwritten and leaked. */
+static int
+test_start_closes_handles_the_mode_does_not_cover(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_backstop");
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    fill_voice_frame(r.state);
+    dsd_write_mono_voice_to_slot_wav(r.opts, r.state, 0);
+    r.opts->dmr_stereo_wav = 0;
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    const dir_count c = count_dir(r.dir);
+    rc |= expect_int("only the new slot files are open", c.temp, 2);
+    rc |= expect_int("the old slot 1 recording is published", c.published, 1);
+    rc |= expect_int("per-call recording on", r.opts->dmr_stereo_wav, 1);
+    rig_close(&r);
+    return rc;
+}
+
+static int
+apply_recording_config(rig* r, int per_call, const char* static_path) {
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.per_call_wav = per_call;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r->dir);
+    if (static_path) {
+        DSD_SNPRINTF(cfg.static_wav_path, sizeof cfg.static_wav_path, "%s", static_path);
+    }
+    int rc = expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    return rc | expect_int("config drained", drain(r), 1);
+}
+
+/* A config whose [recording] turns per-call recording off closes the slot files with their publication. Main changed
+   the mode alone: the files stayed open and rotating, and the next start overwrote their handles. */
+static int
+test_config_turning_per_call_off_closes_the_slot_files(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_cfg_off");
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    fill_voice_frame(r.state);
+    dsd_write_mono_voice_to_slot_wav(r.opts, r.state, 0);
+    rc |= apply_recording_config(&r, 0, NULL);
+    rc |= expect_int("per-call recording off", r.opts->dmr_stereo_wav, 0);
+    rc |= expect_true("the slot files closed", r.opts->wav_out_f == NULL && r.opts->wav_out_fR == NULL);
+    dir_count c = count_dir(r.dir);
+    rc |= expect_int("no temp file left", c.temp, 0);
+    rc |= expect_int("slot 1's recording published", c.published, 1);
+    submit(DSD_APP_CMD_WAV_TOGGLE);
+    (void)drain(&r);
+    c = count_dir(r.dir);
+    rc |= expect_int("the toggle opens one new pair", c.temp, 2);
+    rig_close(&r);
+    return rc;
+}
+
+/* A config whose [recording] turns per-call recording on while a static WAV records closes the static file as one. Main
+   left it in slot 1, so the next call end published the operator's file into the per-call folder. */
+static int
+test_config_turning_per_call_on_closes_the_static_wav(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_cfg_on");
+    char static_path[DSD_TEST_PATH_MAX];
+    char static_dir[DSD_TEST_PATH_MAX];
+    rc |= expect_true("static dir", dsd_test_mkdtemp(static_dir, sizeof static_dir, "dsdneo_rec_cfg_s") != NULL);
+    rc |= expect_int("static path", dsd_test_path_join(static_path, sizeof static_path, static_dir, "static.wav"), 0);
+    rc |= open_static(&r, static_path);
+    rc |= apply_recording_config(&r, 1, NULL);
+    rc |= expect_int("per-call recording on", r.opts->dmr_stereo_wav, 1);
+    rc |= expect_int("static mode off", r.opts->static_wav_file, 0);
+    rc |= expect_true("both slot files open", r.opts->wav_out_f != NULL && r.opts->wav_out_fR != NULL);
+    rc |= expect_int("the static file closed as one", wav_header_data_bytes(static_path), 640);
+    end_p25_call(&r, 200U);
+    rc |= expect_int("the static file stays where it was", wav_header_data_bytes(static_path), 640);
+    rc |= expect_int("no published recording", count_dir(r.dir).published, 0);
+    (void)remove(static_path);
+    (void)dsd_test_rmdir(static_dir);
+    rig_close(&r);
+    return rc;
+}
+
+/* A config naming a static WAV that does not open leaves per-call recording running and fails the apply. */
+static int
+test_config_static_wav_that_fails_keeps_the_recording(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_cfg_fail");
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    SNDFILE* left = r.opts->wav_out_f;
+    char bad[DSD_TEST_PATH_MAX * 2];
+    unopenable_path(&r, bad, sizeof bad);
+    rc |= apply_recording_config(&r, 0, bad);
+    rc |= expect_int("per-call recording stays on", r.opts->dmr_stereo_wav, 1);
+    rc |= expect_int("static mode stays off", r.opts->static_wav_file, 0);
+    rc |= expect_true("slot 1 keeps recording", r.opts->wav_out_f == left);
+    rc |= expect_true("the toast says so", strstr(r.state->ui_msg, "did not open") != NULL);
+    rig_close(&r);
+    return rc;
+}
+
+/* A recording command with a malformed payload reads as failed at once, not pending until some later publication. */
+static int
+test_invalid_recording_command_reads_as_failed(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_invalid");
+    const int32_t junk = 1;
+    rc |= expect_int("malformed start queued", dsd_app_command_submit(DSD_APP_CMD_WAV_START, &junk, sizeof junk),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)drain(&r);
+    const dsd_app_recording_view v = view_now();
+    rc |= expect_int("the malformed start reads as failed", v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+    rc |= expect_int("nothing opened", count_dir(r.dir).files, 0);
+    rig_close(&r);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_log_lines, NULL);
@@ -770,6 +948,13 @@ main(void) {
         rc |= test_close_failure_keeps_the_temp_file(writer);
     }
     rc |= test_failed_reopen_retries_at_the_next_call_end();
+    rc |= test_failed_static_open_keeps_the_running_recording();
+    rc |= test_failed_raw_open_keeps_the_running_raw_wav();
+    rc |= test_start_closes_handles_the_mode_does_not_cover();
+    rc |= test_config_turning_per_call_off_closes_the_slot_files();
+    rc |= test_config_turning_per_call_on_closes_the_static_wav();
+    rc |= test_config_static_wav_that_fails_keeps_the_recording();
+    rc |= test_invalid_recording_command_reads_as_failed();
     if (rc == 0) {
         printf("APP_CONTROL_RECORDING: OK\n");
     }

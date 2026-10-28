@@ -7882,6 +7882,65 @@ cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, i
     }
 }
 
+/* The recording outputs a session runs (issue #708): the mode, the static WAV's path and the raw WAV's. */
+typedef struct {
+    int per_call;
+    int static_wav;
+    char static_path[sizeof(((dsd_opts*)0)->wav_out_file)];
+    char raw_path[sizeof(((dsd_opts*)0)->wav_out_file_raw)];
+} cfg_recording;
+
+static void
+cfg_recording_of(const dsd_opts* opts, cfg_recording* out) {
+    out->per_call = opts->dmr_stereo_wav == 1;
+    out->static_wav = opts->static_wav_file == 1;
+    DSD_SNPRINTF(out->static_path, sizeof out->static_path, "%s", opts->wav_out_file);
+    DSD_SNPRINTF(out->raw_path, sizeof out->raw_path, "%s", opts->wav_out_file_raw);
+}
+
+/*
+ * A config's [recording] (issue #708): staging writes the mode and paths it names, and opens and closes nothing, so the
+ * session's outputs are put back and moved by the services the WAV commands use. Per-call recording starts (closing a
+ * static WAV as one), a static WAV opens (closing what records first, and only once it has opened), "off" stops, and a
+ * raw path that changed opens or closes the raw WAV. A file that does not open leaves the recording that ran; the apply
+ * then fails with a toast, the rest of the config applied. Returns 0, or -1 for a file that did not open. The caller
+ * holds the P25 SM tick guard (a config apply writes the policy store).
+ */
+static int
+apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* before) {
+    cfg_recording want;
+    cfg_recording_of(opts, &want);
+    opts->dmr_stereo_wav = before->per_call;
+    opts->static_wav_file = before->static_wav;
+    DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", before->static_path);
+    DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", before->raw_path);
+    const char* failed = NULL;
+    if (want.per_call) {
+        if (svc_enable_per_call_wav(opts, state) != 0) {
+            failed = "per-call WAV";
+        }
+    } else if (want.static_wav) {
+        if (svc_open_static_wav(opts, state, want.static_path) != 0) {
+            failed = want.static_path;
+        }
+    } else if (before->per_call || before->static_wav || opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {
+        (void)svc_stop_wav_recording(opts, state);
+    }
+    if (strcmp(want.raw_path, before->raw_path) != 0) {
+        if (want.raw_path[0] == '\0') {
+            opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
+            opts->wav_out_file_raw[0] = '\0';
+        } else if (svc_open_raw_wav(opts, state, want.raw_path) != 0 && failed == NULL) {
+            failed = want.raw_path;
+        }
+    }
+    if (failed != NULL) {
+        ui_set_toast(state, 5, "Config applied; the recording %s did not open, so the one that ran goes on", failed);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -7921,7 +7980,10 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     ui_cfg_rollback rollback;
     ui_cfg_capture_rollback(opts, state, &rollback);
 #endif
+    cfg_recording recording_before;
+    cfg_recording_of(opts, &recording_before);
     dsd_stage_user_config_to_opts(&cfg, opts, state);
+    const int recording_rc = apply_cfg_recording(opts, state, &recording_before);
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
        force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
        keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
@@ -7962,7 +8024,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (restart_required) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
-    return (reconfigure_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+    return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
 }
 
 static int
@@ -8923,6 +8985,10 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
             dsd_app_recording_command_resolved(cmd.id, DSD_APP_RECORDING_COMMAND_FAILED);
+            if (dsd_app_recording_command_tracked(cmd.id)) {
+                /* Its failure shows in the next view, as an applied command's outcome does. */
+                dsd_telemetry_publish_opts_snapshot(opts);
+            }
             DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;

@@ -39,7 +39,8 @@ extern "C" {
 int svc_toggle_all_mutes(dsd_opts* opts);
 /**
  * @brief Enable per-call WAV capture, creating the output directory if needed. Opens the slot files that are not open
- * and keeps those that are; 0 with both open, -1 (nothing changed) when one does not open. A static WAV open closes.
+ * and keeps those that are; 0 with both open, -1 (nothing changed) when one does not open. Off per-call recording,
+ * every handle open now closes first: a static WAV as one, a per-call file with its publication.
  */
 int svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state);
 /**
@@ -195,9 +196,10 @@ void svc_set_p2_params(dsd_state* state, unsigned long long wacn, unsigned long 
 int svc_set_event_log(dsd_opts* opts, const char* path);
 /** @brief Disable event logging and clear the path. */
 void svc_disable_event_log(dsd_opts* opts);
-/** @brief Configure static WAV output (single file, no stereo split) and open it. */
+/** @brief Configure static WAV output (single file, no stereo split) and open it. The file opens first: -1 leaves the
+ * recording that runs and the mode as they were; 0 has closed what recorded before (per-call files published). */
 int svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path);
-/** @brief Configure RAW WAV output and open it. */
+/** @brief Configure RAW WAV output and open it. A new path opens first: -1 leaves the raw WAV that runs. */
 int svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Enable DSP debug output to the given filename under ./DSP/. */
 int svc_set_dsp_output_file(dsd_opts* opts, const char* filename);
