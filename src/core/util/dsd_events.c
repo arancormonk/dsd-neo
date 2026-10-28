@@ -39,6 +39,7 @@
 #include <string.h>
 #include <time.h>
 #include "../file/wav_journal.h"
+#include "audio/dsd_audio_gate_internal.h"
 #include "call_state_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -93,6 +94,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].svc = 0;
         event_struct->Event_History_Items[i].source_id = 0;
         event_struct->Event_History_Items[i].target_id = 0;
+        event_struct->Event_History_Items[i].policy_target_id = 0;
         event_struct->Event_History_Items[i].src_str[0] = '\0';
         event_struct->Event_History_Items[i].tgt_str[0] = '\0';
         event_struct->Event_History_Items[i].t_name[0] = '\0';
@@ -106,6 +108,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         /* No identity is kind "none", never kind 0 (slot), for every reader of a row no reception named. */
         event_struct->Event_History_Items[i].receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE;
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
+        /* Never judged: exports as before (issue #773 D7). */
+        event_struct->Event_History_Items[i].stream_export = 1U;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].freq_hz = 0;
         event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
@@ -163,6 +167,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].svc = event_struct->Event_History_Items[i - 1].svc;
         event_struct->Event_History_Items[i].source_id = event_struct->Event_History_Items[i - 1].source_id;
         event_struct->Event_History_Items[i].target_id = event_struct->Event_History_Items[i - 1].target_id;
+        event_struct->Event_History_Items[i].policy_target_id =
+            event_struct->Event_History_Items[i - 1].policy_target_id;
         copy_str_field(event_struct->Event_History_Items[i].src_str, event_struct->Event_History_Items[i - 1].src_str,
                        sizeof event_struct->Event_History_Items[i].src_str);
         copy_str_field(event_struct->Event_History_Items[i].tgt_str, event_struct->Event_History_Items[i - 1].tgt_str,
@@ -180,6 +186,7 @@ push_event_history(Event_History_I* event_struct) {
                        sizeof event_struct->Event_History_Items[i].channel_label);
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
+        event_struct->Event_History_Items[i].stream_export = event_struct->Event_History_Items[i - 1].stream_export;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
         event_struct->Event_History_Items[i].access_code_kind =
@@ -1412,6 +1419,10 @@ typedef struct {
     char sysid_string[200];
     uint8_t t_name_loaded;
     uint8_t s_name_loaded;
+    /* The rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7); see
+     * watchdog_event_current_load_stream_export(). */
+    uint32_t policy_target_id;
+    uint8_t stream_export;
     /* Seconds the call has run on the canonical epoch's own timeline — through its
      * last observation while active, through its end once ended. Anchors the row's
      * stamps: the first render subtracts it from the wall clock to fix
@@ -1786,8 +1797,35 @@ watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* 
     }
 }
 
+// Whether the call's recording may be exported to rdio-scanner (issue #773 D7), judged with the labels as the media
+// gates judge the call: its policy target, the over-the-air target's final blocks, then the radio part (see
+// dsd_audio_stream_export_allowed()). The verdict is recording-owned: it rides the staged row into the WAV close
+// (close_and_rename_wav_file_ex(), reached by every close path), so the recording a close publishes is exported only
+// when the row it is named from allows it; recordings already exported are not recalled.
+//
+// Re-judged on every render, so a source learned mid-call or a policy edit counts at the close. A patched P25 call is
+// judged on its member talkgroup only while it is active (patch membership is read from the live call); once it has
+// ended, the staged row's own talkgroup -- this epoch's, when staged_is_own -- is kept, so the finalize pass does not
+// re-judge it on the supergroup.
 static void
-watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+watchdog_event_current_load_stream_export(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                          const Event_History* staged, int staged_is_own,
+                                          watchdog_event_current_ctx* ctx) {
+    ctx->stream_export = 1U;
+    ctx->policy_target_id = 0U;
+    if (call == NULL || call->epoch == 0U) {
+        return;
+    }
+    const uint32_t pinned =
+        (call->phase != DSD_CALL_PHASE_ACTIVE && staged_is_own && staged != NULL) ? staged->policy_target_id : 0U;
+    uint32_t judged = 0U;
+    ctx->stream_export = dsd_audio_stream_export_allowed(opts, state, call, pinned, &judged) ? 1U : 0U;
+    ctx->policy_target_id = judged;
+}
+
+static void
+watchdog_event_current_load_labels(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                   const Event_History* staged, int staged_is_own, watchdog_event_current_ctx* ctx) {
     ctx->t_name_loaded = 0;
     ctx->s_name_loaded = 0;
 
@@ -1802,6 +1840,7 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
                                    sizeof(ctx->s_name))) {
         ctx->s_name_loaded = 1;
     }
+    watchdog_event_current_load_stream_export(opts, state, call, staged, staged_is_own, ctx);
 }
 
 // The scan channel this epoch is being heard on, asked exactly once: the epoch's first render
@@ -1930,6 +1969,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->svc = ctx->svc_opts;
     item->source_id = ctx->source_id;
     item->target_id = ctx->target_id;
+    item->policy_target_id = ctx->policy_target_id;
+    item->stream_export = ctx->stream_export;
     item->channel = ctx->channel;
     item->freq_hz = ctx->freq_hz;
     item->access_code_kind = ctx->access_code_kind;
@@ -2387,6 +2428,9 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->env = *env;
     ctx->source_id = item->source_id;
     ctx->target_id = item->target_id;
+    // A committed row's export verdict stands as its last render judged it; a merge re-renders only its text.
+    ctx->policy_target_id = item->policy_target_id;
+    ctx->stream_export = item->stream_export;
     ctx->svc_opts = item->svc;
     ctx->enc = item->enc;
     ctx->emergency = item->emergency;
@@ -2661,7 +2705,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     watchdog_event_current_load_system(opts, state, effective_call, &candidate, staged_is_own, &ctx);
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
-    watchdog_event_current_load_labels(state, &ctx);
+    watchdog_event_current_load_labels(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_apply_code_identity(&ctx);

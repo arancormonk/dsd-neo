@@ -282,6 +282,8 @@ Windows console runs:
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
   `--wav-journal` is set
+- A call whose talkgroup or radio policy row has `stream=off` is recorded but not exported (no sidecar, no upload);
+  see `docs/csv-formats.md`.
 - `-r <files>` Play saved MBE files
   SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
   the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by

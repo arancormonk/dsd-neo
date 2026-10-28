@@ -2151,6 +2151,13 @@ test_call_event_current_rows_isolated_per_target(void) {
         DSD_FPRINTF(stderr, "fresh scan target inherited another target's current event row\n");
         test_rc = 1;
     }
+    /* A fresh target's empty row is a row never judged, which exports as before (issue #773 D7): a WAV closed against
+       it before the target's first call renders is not kept from rdio-scanner. */
+    if (event_history[0].Event_History_Items[0].stream_export != 1U
+        || event_history[1].Event_History_Items[0].stream_export != 1U) {
+        DSD_FPRINTF(stderr, "fresh scan target's empty current event row skips the rdio-scanner export\n");
+        test_rc = 1;
+    }
 
     current = &event_history[0].Event_History_Items[0];
     current->target_id = 301U;

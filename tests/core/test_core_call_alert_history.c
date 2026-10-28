@@ -43,6 +43,8 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
+#include "../test_support/radio_policy_test.h"
+
 _Static_assert(DSD_EVENT_HISTORY_LEN == 255, "event history ring length is pinned by consumers of the snapshot");
 _Static_assert(offsetof(Event_History_I, revision) == sizeof(Event_History) * 255U,
                "event history revision must follow the existing items");
@@ -155,6 +157,11 @@ static double g_observed_m;
 
 typedef struct {
     time_t event_time;
+    // The staged row's rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7), and whether
+    // the event layer asked for an export.
+    uint8_t stream_export;
+    uint32_t policy_target_id;
+    int export_call;
     char sidecar[1024];
 } close_wav_capture;
 
@@ -251,8 +258,11 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         const int index = g_close_wav_capture_count++;
         close_wav_capture* capture = &g_close_wav_captures[index];
         capture->event_time = event_struct->Event_History_Items[0].event_time;
+        capture->stream_export = event_struct->Event_History_Items[0].stream_export;
+        capture->policy_target_id = event_struct->Event_History_Items[0].policy_target_id;
+        capture->export_call = export_call;
         capture->sidecar[0] = '\0';
-        if (export_call && opts != NULL && g_close_wav_export_dir[0] != '\0') {
+        if (export_call && capture->stream_export != 0U && opts != NULL && g_close_wav_export_dir[0] != '\0') {
             close_wav_export_sidecar(opts, event_struct, opened, index, capture);
         }
     }
@@ -7824,6 +7834,319 @@ test_crc_ras_marker_and_escalation(void) {
     return rc;
 }
 
+// Issue #773 D7: the `stream` policy flag decides the rdio-scanner export of a call's recording. The event layer judges
+// the call as the media gates do (its policy target, the over-the-air target's final blocks, the radio part) whenever
+// it resolves the row's labels, and the verdict travels on the staged row to the WAV close.
+
+static void
+stream_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2], max_align_t* wav_sentinel) {
+    reset_fixture(opts, state, event_history);
+    opts->wav_out_f = (SNDFILE*)wav_sentinel;
+    opts->wav_out_fR = (SNDFILE*)wav_sentinel;
+    g_open_wav_result = wav_sentinel;
+}
+
+// A talkgroup (or private endpoint) row with audio and recording on and its stream flag @p stream.
+static int
+stream_policy_row(dsd_state* state, uint32_t id, int stream) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, "A", "STREAM", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return -1;
+    }
+    row.audio = 1U;
+    row.record = 1U;
+    row.stream = stream ? 1U : 0U;
+    return dsd_tg_policy_append_exact(state, &row);
+}
+
+// One call on @p slot from its first observation to a verified terminator. Returns the WAV closes it caused.
+static int
+run_stream_call(dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, dsd_call_kind kind, uint64_t ota_target,
+                uint64_t policy_target, uint64_t source) {
+    const int before = g_close_wav_capture_count;
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = ota_target,
+        .policy_target_id = policy_target,
+        .ota_source_id = source,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) != 1) {
+        return -1;
+    }
+    dsd_event_sync_slot(opts, state, slot);
+    if (end_test_call(state, slot, DSD_CALL_END_TERMINATOR) != 1) {
+        return -1;
+    }
+    dsd_event_sync_slot(opts, state, slot);
+    return g_close_wav_capture_count - before;
+}
+
+// The last WAV close asked for an export and carried @p want_export, judged on @p want_target (0: not checked).
+static int
+expect_stream_close(const char* label, int closes, int want_export, uint32_t want_target) {
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: one recording closes", label);
+    int rc = expect_int(tag, closes, 1);
+    if (closes != 1 || g_close_wav_capture_count < 1) {
+        return 1;
+    }
+    const close_wav_capture* capture = &g_close_wav_captures[g_close_wav_capture_count - 1];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the event layer asks for the export", label);
+    rc |= expect_int(tag, capture->export_call, 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: export verdict", label);
+    rc |= expect_int(tag, capture->stream_export, want_export);
+    if (want_target != 0U) {
+        DSD_SNPRINTF(tag, sizeof tag, "%s: judged talkgroup", label);
+        rc |= expect_u64(tag, capture->policy_target_id, want_target);
+    }
+    return rc;
+}
+
+// A talkgroup row with stream=off and recording on: the recording is made, but not exported. Group calls on the
+// talkgroup and private calls to a listed endpoint, both slots; a row with stream on still exports.
+static int
+test_stream_off_skips_export(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        for (int private_call = 0; private_call <= 1; private_call++) {
+            for (int stream = 0; stream <= 1; stream++) {
+                char label[96];
+                DSD_SNPRINTF(label, sizeof label, "stream=%s %s call slot %u", stream ? "on" : "off",
+                             private_call ? "private" : "group", (unsigned)slot);
+                stream_fixture(&opts, &state, event_history, &wav_sentinel);
+                const uint32_t target = private_call ? 77U : 1201U;
+                rc |= expect_int(label, stream_policy_row(&state, target, stream), 0);
+                const int closes = run_stream_call(
+                    &opts, &state, slot, DSD_SYNC_DMR_BS_VOICE_POS,
+                    private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE, target, target, 42U);
+                rc |= expect_stream_close(label, closes, stream, target);
+                dsd_state_ext_free_all(&state);
+            }
+        }
+    }
+    return rc;
+}
+
+// A radio row with stream=off (audio and recording on) keeps every call it takes part in out of the export: a group
+// call it talks on, either party of a private call. Another radio on the same talkgroup is exported.
+static int
+test_radio_stream_off_skips_export(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+
+    const struct {
+        const char* label;
+        dsd_call_kind kind;
+        uint32_t target;
+        uint32_t source;
+        int exported;
+    } cases[] = {
+        {"radio stream=off talks on a group", DSD_CALL_KIND_GROUP_VOICE, 1201U, 42U, 0},
+        {"another radio on the group", DSD_CALL_KIND_GROUP_VOICE, 1201U, 43U, 1},
+        {"radio stream=off calls privately", DSD_CALL_KIND_PRIVATE_VOICE, 77U, 42U, 0},
+        {"radio stream=off is called privately", DSD_CALL_KIND_PRIVATE_VOICE, 42U, 77U, 0},
+    };
+
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            stream_fixture(&opts, &state, event_history, &wav_sentinel);
+            rc |= expect_int(cases[i].label, dsd_test_install_radio_policy(&state, 42U, "A", 1, 1, 0), 0);
+            const int closes = run_stream_call(&opts, &state, slot, DSD_SYNC_DMR_BS_VOICE_POS, cases[i].kind,
+                                               cases[i].target, cases[i].target, cases[i].source);
+            rc |= expect_stream_close(cases[i].label, closes, cases[i].exported, cases[i].target);
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    return rc;
+}
+
+static void
+stream_seed_patch(dsd_state* state, uint16_t sg, uint16_t wg) {
+    state->p25_patch_count = 1;
+    state->p25_patch_sgid[0] = sg;
+    state->p25_patch_is_patch[0] = 1U;
+    state->p25_patch_active[0] = 1U;
+    state->p25_patch_last_update[0] = dsd_decode_time();
+    state->p25_patch_wgid_count[0] = 1U;
+    state->p25_patch_wgid[0][0] = wg;
+}
+
+// A patched P25 call is judged on the member talkgroup its grant matched while that membership is current, as the
+// media gates judge it: the supergroup's row allows streaming, the member's has stream=off, so the call is not
+// exported. The verdict holds through the call's end, when patch membership is no longer read (it needs an active
+// call). Without a current patch the call is judged on the supergroup.
+static int
+test_patched_call_member_stream_off(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+
+    const struct {
+        int protocol;
+        uint8_t slot;
+    } lanes[] = {{DSD_SYNC_P25P1_POS, 0U}, {DSD_SYNC_P25P2_POS, 0U}, {DSD_SYNC_P25P2_POS, 1U}};
+
+    for (size_t l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        for (int member_stream = 0; member_stream <= 1; member_stream++) {
+            for (int patched = 0; patched <= 1; patched++) {
+                char label[96];
+                DSD_SNPRINTF(label, sizeof label, "%s patch, member stream=%s, lane %zu", patched ? "current" : "no",
+                             member_stream ? "on" : "off", l);
+                stream_fixture(&opts, &state, event_history, &wav_sentinel);
+                state.lastsynctype = lanes[l].protocol;
+                rc |= expect_int(label, stream_policy_row(&state, 9000U, 1), 0);
+                rc |= expect_int(label, stream_policy_row(&state, 123U, member_stream), 0);
+                if (patched) {
+                    stream_seed_patch(&state, 9000U, 123U);
+                }
+                const int closes = run_stream_call(&opts, &state, lanes[l].slot, lanes[l].protocol,
+                                                   DSD_CALL_KIND_GROUP_VOICE, 9000U, 123U, 456U);
+                rc |= expect_stream_close(label, closes, patched ? member_stream : 1, patched ? 123U : 9000U);
+                dsd_state_ext_free_all(&state);
+            }
+        }
+    }
+    return rc;
+}
+
+// Consecutive calls on a slot with opposite verdicts each close their recording with their own: a call that takes the
+// slot from one still running (the epoch change closes the outgoing recording), then calls run to their ends in the
+// other order. Both slots.
+static int
+test_consecutive_calls_opposite_verdicts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        char label[96];
+        stream_fixture(&opts, &state, event_history, &wav_sentinel);
+        rc |= expect_int("stream=off row", stream_policy_row(&state, 1201U, 0), 0);
+        rc |= expect_int("stream=on row", stream_policy_row(&state, 1202U, 1), 0);
+
+        rc |= expect_int("call A begins",
+                         observe_test_call(&state, slot, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1201U,
+                                           42U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                         1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        rc |= expect_int("call B takes the slot",
+                         observe_test_call(&state, slot, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1202U,
+                                           43U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                         1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        DSD_SNPRINTF(label, sizeof label, "call A (stream=off), closed by call B, slot %u", (unsigned)slot);
+        rc |= expect_stream_close(label, g_close_wav_capture_count, 0, 1201U);
+        rc |= expect_int("call B ends", end_test_call(&state, slot, DSD_CALL_END_TERMINATOR), 1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        DSD_SNPRINTF(label, sizeof label, "call B (stream=on), slot %u", (unsigned)slot);
+        rc |= expect_stream_close(label, g_close_wav_capture_count - 1, 1, 1202U);
+
+        DSD_SNPRINTF(label, sizeof label, "call C (stream=on), slot %u", (unsigned)slot);
+        rc |= expect_stream_close(label,
+                                  run_stream_call(&opts, &state, slot, DSD_SYNC_DMR_BS_VOICE_POS,
+                                                  DSD_CALL_KIND_GROUP_VOICE, 1202U, 1202U, 44U),
+                                  1, 1202U);
+        DSD_SNPRINTF(label, sizeof label, "call D (stream=off), slot %u", (unsigned)slot);
+        rc |= expect_stream_close(label,
+                                  run_stream_call(&opts, &state, slot, DSD_SYNC_DMR_BS_VOICE_POS,
+                                                  DSD_CALL_KIND_GROUP_VOICE, 1201U, 1201U, 45U),
+                                  0, 1201U);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
+// A Hold lifts what it lifts for recording: a stream flag only derived off -- a held B/DE or audio=off row, whose
+// stream is forced off with its audio -- and an allow-list miss. It never lifts an explicit stream=off on an audible
+// row, nor a radio row's stream=off. Unheld, a B row is not exported.
+static int
+test_hold_does_not_override_stream_off(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+
+    enum { ROW_STREAM_OFF, ROW_STREAM_ON, ROW_BLOCKED, ROW_AUDIO_OFF, ROW_NONE_ALLOW_LIST };
+
+    const struct {
+        const char* label;
+        int held;
+        int row;
+        int radio_stream_off;
+        int exported;
+    } cases[] = {
+        {"held talkgroup, explicit stream=off", 1, ROW_STREAM_OFF, 0, 0},
+        {"held talkgroup, stream=on", 1, ROW_STREAM_ON, 0, 1},
+        {"held talkgroup, mode B", 1, ROW_BLOCKED, 0, 1},
+        {"held talkgroup, audio=off", 1, ROW_AUDIO_OFF, 0, 1},
+        {"held unlisted talkgroup under the allow list", 1, ROW_NONE_ALLOW_LIST, 0, 1},
+        {"held talkgroup, radio stream=off", 1, ROW_STREAM_ON, 1, 0},
+        {"held talkgroup, mode B, radio stream=off", 1, ROW_BLOCKED, 1, 0},
+        {"unheld talkgroup, mode B", 0, ROW_BLOCKED, 0, 0},
+    };
+
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            stream_fixture(&opts, &state, event_history, &wav_sentinel);
+            state.tg_hold = cases[i].held ? 1201U : 0U;
+            if (cases[i].row == ROW_BLOCKED || cases[i].row == ROW_AUDIO_OFF) {
+                dsd_tg_policy_entry row;
+                rc |= expect_int(cases[i].label,
+                                 dsd_tg_policy_make_exact_entry(1201U, cases[i].row == ROW_BLOCKED ? "B" : "A",
+                                                                "RESTRICTED", DSD_TG_POLICY_SOURCE_IMPORTED, &row),
+                                 0);
+                if (cases[i].row == ROW_AUDIO_OFF) {
+                    row.audio = 0U; /* record and stream follow it off */
+                }
+                rc |= expect_int(cases[i].label, dsd_tg_policy_append_exact(&state, &row), 0);
+            } else if (cases[i].row == ROW_NONE_ALLOW_LIST) {
+                opts.trunk_use_allow_list = 1;
+            } else {
+                rc |= expect_int(cases[i].label, stream_policy_row(&state, 1201U, cases[i].row != ROW_STREAM_OFF), 0);
+            }
+            if (cases[i].radio_stream_off) {
+                rc |= expect_int(cases[i].label, dsd_test_install_radio_policy(&state, 42U, "A", 1, 1, 0), 0);
+            }
+            const int closes = run_stream_call(&opts, &state, slot, DSD_SYNC_DMR_BS_VOICE_POS,
+                                               DSD_CALL_KIND_GROUP_VOICE, 1201U, 1201U, 42U);
+            rc |= expect_stream_close(cases[i].label, closes, cases[i].exported, 1201U);
+            dsd_state_ext_free_all(&state);
+        }
+    }
+    return rc;
+}
+
+// Recordings the talkgroup policy never gates are never judged for the export either: a conventional NFM call (no
+// talkgroup) under the allow list, which would miss on every call, still exports.
+static int
+test_unjudged_recordings_export(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    stream_fixture(&opts, &state, event_history, &wav_sentinel);
+    opts.trunk_use_allow_list = 1;
+    const int closes = run_stream_call(&opts, &state, 0U, DSD_SYNC_ANALOG, DSD_CALL_KIND_VOICE, 0U, 0U, 0U);
+    const int rc = expect_stream_close("NFM call under the allow list", closes, 1, 0U);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -7984,6 +8307,12 @@ main(void) {
     rc |= test_ended_canonical_call_does_not_suppress_later_data();
     rc |= test_concurrent_call_history_snapshot_copy();
     rc |= test_call_context_snapshot_restores_committed_end();
+    rc |= test_stream_off_skips_export();
+    rc |= test_radio_stream_off_skips_export();
+    rc |= test_patched_call_member_stream_off();
+    rc |= test_consecutive_calls_opposite_verdicts();
+    rc |= test_hold_does_not_override_stream_off();
+    rc |= test_unjudged_recordings_export();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

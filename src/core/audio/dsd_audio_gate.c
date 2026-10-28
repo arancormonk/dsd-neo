@@ -31,6 +31,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd_audio_gate_internal.h"
 
 #define DSD_AUDIO_P25_PATCH_TTL_SECONDS 20
 
@@ -341,6 +342,19 @@ dsd_audio_policy_allows_record(const dsd_tg_policy_decision* decision) {
     return tg && decision->radio_record_allowed;
 }
 
+// The rdio-scanner export verdict (issue #773 D7): (Hold override ? no explicit stream block : talkgroup part with the
+// allow list) && radio part. A Hold lifts what it lifts for recording -- an allow-list miss and a stream flag only
+// derived off (a B/DE or audio=off row) -- but never an explicit stream=off on an audible row (DSD_TG_POLICY_BLOCK_STREAM;
+// the radio part sets that reason too, and is never lifted).
+static int
+dsd_audio_policy_allows_stream(const dsd_tg_policy_decision* decision) {
+    const int tg =
+        dsd_audio_hold_overrides_policy(decision)
+            ? (decision->block_reasons & DSD_TG_POLICY_BLOCK_STREAM) == 0u
+            : (decision->tg_stream_allowed && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0u);
+    return tg && decision->radio_stream_allowed;
+}
+
 static int
 dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
     return decision ? dsd_audio_policy_allows_audio(decision) : 1;
@@ -625,10 +639,12 @@ dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, c
     return rc;
 }
 
+// The talkgroup the record gate and the export verdict judge a group call on, from this snapshot of it: a P25 call's
+// patch member while that membership is current, else its policy target, else @p ota_target.
 static uint32_t
-dsd_audio_record_policy_target(const dsd_state* state, const dsd_call_snapshot* call, int slot, uint32_t ota_target) {
+dsd_audio_record_policy_target(const dsd_state* state, const dsd_call_snapshot* call, uint32_t ota_target) {
     if (DSD_SYNC_IS_P25(call->protocol)) {
-        return dsd_audio_p25_policy_target_for_slot(state, slot, ota_target);
+        return dsd_audio_p25_policy_target_of_call(state, call, ota_target);
     }
     if (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX) {
         return (uint32_t)call->policy_target_id;
@@ -650,7 +666,7 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
         return 0;
     }
     const uint32_t ota_target = (uint32_t)call.ota_target_id;
-    const uint32_t policy_target = dsd_audio_record_policy_target(state, &call, slot, ota_target);
+    const uint32_t policy_target = dsd_audio_record_policy_target(state, &call, ota_target);
     const uint32_t source_id = (uint32_t)call.ota_source_id;
     int rc = dsd_audio_record_policy_evaluate(opts, state, &call, ota_target, policy_target, source_id, &decision);
     if (rc != 0) {
@@ -658,6 +674,32 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
     }
 
     return !dsd_audio_policy_allows_record(&decision);
+}
+
+int
+dsd_audio_stream_export_allowed(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                uint32_t policy_target, uint32_t* judged_target) {
+    if (judged_target) {
+        *judged_target = 0U;
+    }
+    if (!state || !call || call->epoch == 0U || call->protocol == DSD_SYNC_ANALOG || DSD_SYNC_IS_M17(call->protocol)
+        || call->ota_target_id > UINT32_MAX || call->ota_source_id > UINT32_MAX) {
+        return 1;
+    }
+    const uint32_t ota_target = (uint32_t)call->ota_target_id;
+    const uint32_t source_id = (uint32_t)call->ota_source_id;
+    uint32_t target = ota_target;
+    if (call->kind != DSD_CALL_KIND_PRIVATE_VOICE) {
+        target = policy_target != 0U ? policy_target : dsd_audio_record_policy_target(state, call, ota_target);
+    }
+    dsd_tg_policy_decision decision;
+    if (dsd_audio_record_policy_evaluate(opts, state, call, ota_target, target, source_id, &decision) != 0) {
+        return 1;
+    }
+    if (judged_target) {
+        *judged_target = target;
+    }
+    return dsd_audio_policy_allows_stream(&decision);
 }
 
 int

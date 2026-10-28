@@ -716,6 +716,14 @@ Important behavior:
   a call that an exact or range row matches records as if that row said `record=off`, and a private call does when
   either radio has an exact row. Learned radio-ID aliases and mode `D` rows do not make a call known. A matching Hold
   still records, as it does past `record=off`; tuning and playback are unchanged.
+- `stream` decides whether a call's per-call WAV is exported to rdio-scanner (`--rdio-mode`: the DirWatch JSON sidecar
+  and the API upload). With `stream=off` the call still plays and is still recorded; its recording stays local. Local
+  audio and network audio output (`-o udp`, `-o -`) follow `audio`: there is no separate streaming output. A call is
+  judged as its audio and recording are (a patched P25 call on its member talkgroup, with the supergroup's blocks) and
+  on its radios (radio ID list below). A Hold exports a held talkgroup's calls as it records them, including a `B`/`DE`
+  or `audio=off` row (whose `stream` is off only because its audio is), but never one whose row sets `stream=off` with
+  its audio on, nor one whose radio row has `stream=off`. A recording already exported is not recalled when the flag
+  changes.
 - Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
   matched by them; use the M17 CAN filter to select M17 traffic.
 - Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges plus voice talkgroups heard this
@@ -879,11 +887,13 @@ Notes:
 - How policy rows act on calls:
   - Radio rows only restrict, and the most restrictive answer wins. A row in mode `A` admits nothing: it satisfies
     no `-W` allow list and lifts no talkgroup block. `B`/`DE` refuses the call (block reason `radio blocked`);
-    `audio=off` mutes it and `record=off` stops recording it (`stream` as for the group list).
+    `audio=off` mutes it, `record=off` stops recording it and `stream=off` keeps its calls' recordings out of the
+    rdio-scanner export (as for the group list).
   - A group call is judged on its source. A private call is judged on both parties: the group list's exact rows
     keep their role there, and radio rows add restrictions for either party.
   - A talkgroup Hold overrides the talkgroup part only. A held call whose radio is blocked is not tuned and stays
-    muted, and one whose radio has `record=off` plays but is not recorded.
+    muted, one whose radio has `record=off` plays but is not recorded, and one whose radio has `stream=off` is not
+    exported.
   - Radio rules act once the radio is known; a source or destination ID of `0` is unknown and never matches a row
     (of this list, or of the group list for a private call). A group call's target of `0` (an EDACS all-call) still
     matches a group-list `0` row.

@@ -1206,6 +1206,25 @@ suite runs under this compiler.
   `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
   `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
   (`--wav-journal`).
+- Invariant (rdio-scanner export verdict, issue #773 D7): the talkgroup and radio policy's `stream` flag decides only
+  whether a call's per-call WAV is exported (DirWatch sidecar and API upload); audio and `-o udp`/`-o -` follow
+  `audio`. The verdict is recording-owned: `watchdog_event_current_load_labels()` (`dsd_events.c`) judges the call on
+  every render through `dsd_audio_stream_export_allowed()` (module-private, `src/core/audio/dsd_audio_gate_internal.h`),
+  which evaluates it as the record gate does (a private call on both parties; a group call on its policy target -- a
+  patched P25 call's member while the membership is current -- then `dsd_tg_policy_apply_ota_final_blocks()` on the
+  over-the-air target, then the radio part), and stores `Event_History::stream_export` and `policy_target_id` on the
+  staged row. A Hold lifts what it lifts for recording (the allow-list miss, and a stream flag derived off by a
+  `B`/`DE` or `audio=off` row) but never an explicit `stream=off` on an audible row (`DSD_TG_POLICY_BLOCK_STREAM`) or a
+  radio row's.
+  Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
+  call. `close_and_rename_wav_file_ex()` (`dsd_file.c`), the one export call site, which every close path reaches
+  (event rotation, the WAV toggles, shutdown, analog calls, EDACS) with the slot's staged row, exports only when
+  `export_call` and the row's verdict allow it. `init_event_history()` sets `stream_export` 1, so a row never judged
+  exports as before; a memset-zero row reads 0, so code that builds a row outside `init_event_history()` sets it (the
+  trunk-scan empty snapshot does). Conventional analog calls, M17 and identities wider than 32 bits are never judged.
+  Neither field is shown, persisted or part of the control API's row fingerprint; exports already queued are not
+  recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -2354,6 +2373,7 @@ suite runs under this compiler.
     `IO_RTL_DEMOD_CONFIG`, `UI_QT_SESSION_ARGS`.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
+    The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
     `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
     a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718

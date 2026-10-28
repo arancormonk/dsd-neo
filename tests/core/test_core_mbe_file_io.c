@@ -3486,6 +3486,8 @@ close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) 
         item->channel = 0x10C8U;
         item->freq_hz = 851012500;
         item->enc = 1;
+        // A row whose export the policy allows, as init_event_history() leaves every row (issue #773 D7).
+        item->stream_export = 1U;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "P25_TEST");
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "FIRE DISP");
 
@@ -3637,6 +3639,81 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
                                         (time_t)1700001990);
     rc |= close_and_rename_rdio_case("recording opened mid-call starts when it opened", (time_t)1700001995,
                                      (time_t)1700001995);
+    return rc;
+}
+
+// Issue #773 D7: a row whose stream verdict is off keeps its recording but is not exported to rdio-scanner -- no
+// DirWatch sidecar and no upload, which share the one export call -- on both close entry points: the event layer's
+// rotation (close_and_rename_wav_file_ex()) and the toggle, shutdown, analog-call and EDACS closes
+// (close_and_rename_wav_file()), which all read the slot's staged row.
+static int
+close_and_rename_stream_case(const char* label, uint8_t stream_export, int use_ex) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_stream")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 8000, 0);
+    rc |= expect_true(label, wav != NULL);
+    if (wav) {
+        rc |= expect_true(label, write_wav_test_samples(wav));
+
+        static dsd_opts opts;
+        static Event_History_I history;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&history, 0, sizeof history);
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_system_id = 48;
+
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_start_time = (time_t)1700003990;
+        item->event_time = (time_t)1700004000;
+        item->gi = 0;
+        item->source_id = 42U;
+        item->target_id = 1201U;
+        item->policy_target_id = 1201U;
+        item->stream_export = stream_export;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "DMR_TEST");
+
+        SNDFILE* closed = use_ex ? close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, 0, 1)
+                                 : close_and_rename_wav_file(wav, &opts, path, dir, &history, 0);
+        rc |= expect_true(label, closed == NULL);
+        rc |= expect_true(label, file_size_or_negative(path) < 0);
+
+        char renamed[DSD_TEST_PATH_MAX];
+        const int published = find_wav_rename_output_for_numeric_event(renamed, sizeof renamed, dir, item);
+        char want[160];
+        DSD_SNPRINTF(want, sizeof want, "%s: the recording is published", label);
+        rc |= expect_true(want, published && file_size_or_negative(renamed) > 44);
+        if (published) {
+            char sidecar[DSD_TEST_PATH_MAX];
+            if (make_rdio_sidecar_path(renamed, sidecar, sizeof sidecar) != 0) {
+                rc = 1;
+            } else {
+                DSD_SNPRINTF(want, sizeof want, "%s: the rdio-scanner sidecar is %s", label,
+                             stream_export ? "written" : "not written");
+                rc |= expect_true(want, (file_size_or_negative(sidecar) >= 0) == (stream_export != 0U));
+                (void)remove(sidecar);
+            }
+            (void)remove(renamed);
+        }
+    }
+
+    (void)remove(path);
+    (void)remove_dir(dir);
+    return rc;
+}
+
+static int
+test_close_and_rename_wav_stream_off_skips_export(void) {
+    int rc = close_and_rename_stream_case("stream off, event rotation close", 0U, 1);
+    rc |= close_and_rename_stream_case("stream off, toggle/shutdown/analog/EDACS close", 0U, 0);
+    rc |= close_and_rename_stream_case("stream on, event rotation close", 1U, 1);
+    rc |= close_and_rename_stream_case("stream on, toggle/shutdown/analog/EDACS close", 1U, 0);
     return rc;
 }
 
@@ -3855,6 +3932,7 @@ main(void) {
     rc |= test_close_and_rename_wav_numeric_and_failure_paths();
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
     rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
+    rc |= test_close_and_rename_wav_stream_off_skips_export();
 
     if (rc == 0) {
         printf("CORE_MBE_FILE_IO: OK\n");
