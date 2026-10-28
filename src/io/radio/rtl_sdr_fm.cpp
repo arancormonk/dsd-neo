@@ -1612,9 +1612,9 @@ log_unsupported_control_if_needed(const char* control_name, int rc) {
 static int
 apply_ppm_setting(int ppm_error) {
     int rc = rtl_device_set_ppm(rtl_device_handle, ppm_error);
-    /* A correction the device may have taken, even in part, also moves what the rate it runs was derived from:
-       librtlsdr reprograms the sampling correction with it. The next hop writes the rate again. An unsupported control
-       changed nothing. */
+    /* A conservative invalidation: librtlsdr's rtlsdr_set_freq_correction() reprograms the sampling correction itself
+       and leaves the rate it runs alone, but a correction the device may have taken, even in part, is a change under the
+       record, so the next hop writes the rate and bandwidth again. An unsupported control changed nothing. */
     if (ppm_error != dongle.ppm_error.load(std::memory_order_acquire) && rc != DSD_ERR_NOT_SUPPORTED) {
         capture_writes_forget_tuning();
     }
@@ -8010,8 +8010,10 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
         return rc;
     }
     squelch_note_airspy_controls(source_kind == RADIO_SOURCE_AIRSPY ? &opts->airspy : NULL);
-    /* A device just opened holds none of what was recorded for the last one, whatever its backend. */
+    /* A device just opened holds none of what was recorded for the last one, whatever its backend. The record is the
+       new device's from here, so no later write claims it (wiping it) once the controller and the demod run. */
     capture_writes_forget();
+    g_capture_writes.dev = rtl_device_handle;
     if (g_stream) {
         g_stream->device = rtl_device_handle;
     }

@@ -4647,13 +4647,16 @@ Key public headers:
     bandwidth, gain), a refused retune's rollback, a PPM change (`apply_ppm_setting()`, not an unsupported one) and an
     offset tuning change (`capture_set_offset_tuning()`; the start records the rate only after its rate, offset tuning,
     bandwidth order ran). An entry counts only under the device's `rtl_device_capture_settings_generation()`, which
-    moves before every USB recovery swap and every rtl_tcp reconnect replay and before a Soapy configuration. Which
-    backends skip: USB and rtl_tcp; SoapySDR only for a known driver (the profile from driver key, hardware key and args,
-    a forced profile ignored: SoapyRTLSDR, HackRF, SDRPlay3, LMS7, PlutoSDR, UHD, SDDC, Airspy, whose tune leaves rate,
-    bandwidth and gain alone), a generic driver keeps every write; the Airspy backend skips same-value writes in its
-    adapter, and I/Q replay programs nothing. The retune mute windows and the `--iq-capture` RETUNE events are
-    unchanged. Test seam: `rtl_stream_test_capture_session_begin()`/`_step()`/`_end()`. Tests: `IO_RTL_CAPTURE_WRITES`
-    (device-call counts on the whole fake dongle), `IO_RTL_TCP_RECONNECT` (the generation moves on a replay).
+    moves before every USB recovery swap and every rtl_tcp reconnect replay. Which backends skip: USB and rtl_tcp
+    only. SoapySDR keeps every write for every driver: a driver's tune can move what was recorded (SoapySDRPlay3's
+    LNA-state range follows the band), the profile matcher works on keyword substrings, and no SoapySDR hardware was
+    available to check a driver on. The Airspy backend skips same-value writes in its adapter, and I/Q replay programs
+    nothing. An rtl_tcp frequency write restarts the throughput watchdog's grace (`rtl_tcp_metrics_reset_device()`),
+    as each hop's rate write did before. The retune mute windows and the `--iq-capture` RETUNE events are unchanged.
+    Test seam: `rtl_stream_test_capture_session_begin()`/`_step()`/`_end()`. Tests: `IO_RTL_CAPTURE_WRITES`
+    (device-call counts on the whole fake dongle; a Soapy device still writes on a same-rate hop),
+    `IO_RTL_TCP_RECONNECT` (same-rate hops send no rate command and restart the watchdog grace, the first hop after a
+    reconnect writes the rate, the generation moves on a replay).
   - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
     12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
     twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,

@@ -509,8 +509,13 @@ typedef struct {
     double selected_db;
     int writes;
     int refuse;
+    const char* driver_key; /* the driver's key, its profile picked from it as at configure (NULL: none) */
+    double rate_hz;         /* the sample rate last set, read back as is */
+    int frequency_writes;
+    int rate_writes;
+    int bandwidth_writes;
 } rtl_device_test_soapy_gain_fake;
-/* A control-only Soapy driver with quantized gain readback. NULL without SoapySDR. */
+/* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
 void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
 
@@ -619,12 +624,13 @@ enum {
 };
 
 typedef struct {
-    uint64_t generation; /* the published connection's identity; 0 with none */
-    int handoff;         /* RTL_TEST_TCP_HANDOFF_* */
-    int stop_requested;  /* the stop latch */
-    int gain_took;       /* the effective record holds a gain state */
-    int digital_agc;     /* the digital AGC the gain state wants */
-    int gain_unknown;    /* a failed gain unit may have reached a retired connection */
+    uint64_t generation;             /* the published connection's identity; 0 with none */
+    int handoff;                     /* RTL_TEST_TCP_HANDOFF_* */
+    int stop_requested;              /* the stop latch */
+    int gain_took;                   /* the effective record holds a gain state */
+    int digital_agc;                 /* the digital AGC the gain state wants */
+    int gain_unknown;                /* a failed gain unit may have reached a retired connection */
+    uint64_t watchdog_grace_from_ns; /* when the throughput watchdog's grace last started */
 } rtl_device_test_tcp_state;
 
 void rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out);

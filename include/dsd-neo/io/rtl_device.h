@@ -299,9 +299,9 @@ int rtl_device_get_sample_rate(struct rtl_device* dev);
 /**
  * @brief Whether a retune may leave a capture setting @p dev already holds unwritten (issue #782 D3).
  *
- * The backends that keep their sample rate, tuner bandwidth and gain across a retune answer 1: a USB RTL-SDR, an
- * rtl_tcp server, and a SoapySDR device whose driver is a known one (a generic driver keeps every write). An Airspy
- * skips a same-value write itself, and an I/Q replay has nothing to program, so both answer 0.
+ * The backends that keep their sample rate, tuner bandwidth and gain across a retune answer 1: a USB RTL-SDR and an
+ * rtl_tcp server. A SoapySDR device answers 0 for every driver (a driver's tune can move what was recorded, and none
+ * was checked on hardware), an Airspy skips a same-value write itself, and an I/Q replay has nothing to program.
  *
  * @param dev RTL-SDR device handle.
  * @param out_generation Receives a count that moves each time the device's settings were put back without the

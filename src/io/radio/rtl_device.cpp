@@ -472,9 +472,6 @@ struct rtl_device {
     uint32_t soapy_nearest_rate_cache_actual = 0U;
     int soapy_named_gain_override = 0;
     int soapy_named_gain_skip_logged = 0;
-    /* The driver is a known one (its profile from the driver alone, not a forced one), whose rate, bandwidth and gain
-       hold across a retune: rtl_device_capture_settings_generation(). */
-    int soapy_keeps_capture_settings = 0;
     char soapy_args_string[1024] = {};
     char soapy_driver_key[64] = {};
     char soapy_hardware_key[128] = {};
@@ -4222,15 +4219,6 @@ soapy_select_profile_locked(struct rtl_device* dev) {
     selection.hardware_key = dev->soapy_hardware_key;
     selection.args = dev->soapy_args_string;
     dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
-    /* Each known driver's setFrequency() leaves its rate, bandwidth and gain alone, so a retune need not write them
-       again (issue #782): SoapyRTLSDR, SoapyHackRF, SoapySDRPlay3, SoapyLMS7 (it re-applies its own baseband filter on
-       each tune), SoapyPlutoSDR, SoapyUHD, SoapySDDC and SoapyAirspy, the last two of which take a new rate only at the
-       stream's activation anyway. A same-value rewrite costs on some: SoapyLMS7 stops and restarts the stream on every
-       setSampleRate(), SoapyRTLSDR drops its buffered samples and soft-resets the demod. A driver none of them is (a
-       forced profile does not count) keeps every write: what its tune does to the rest is not known. */
-    selection.requested_profile.clear();
-    dev->soapy_keeps_capture_settings =
-        dsdneo::soapy_select_profile_id(selection) != dsdneo::SoapyProfileId::Generic ? 1 : 0;
 }
 
 static void
@@ -9047,8 +9035,6 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     const char* gains = cfg ? cfg->gains : NULL;
     const char* stream_format = cfg ? cfg->stream_format : NULL;
 
-    /* The driver settings below can move its rate grid and gains under what a retune recorded. */
-    dev->capture_settings_generation.fetch_add(1U, std::memory_order_acq_rel);
     rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), profile);
     rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), antenna);
     rtl_device_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock), clock_source);
@@ -9810,6 +9796,12 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
         });
         if (rc == 0) {
             dev->tcp_restart_pending.store(1, std::memory_order_release);
+            /* A retune restarts the throughput watchdog's grace, as the rate write each hop made always did; a hop
+               that keeps the rate sends no rate command now (issue #782 D3). */
+            rtl_tcp_lock(dev);
+            const uint32_t rate = dev->rate;
+            rtl_tcp_unlock(dev);
+            rtl_tcp_metrics_reset_device(dev, rate);
         }
         return rc;
     }
@@ -10017,10 +10009,11 @@ rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* o
         return 0;
     }
     *out_generation = dev->capture_settings_generation.load(std::memory_order_acquire);
-    if (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) {
-        return 1;
-    }
-    return (dev->backend == RTL_BACKEND_SOAPY && dev->soapy_keeps_capture_settings) ? 1 : 0;
+    /* SoapySDR keeps every write, whatever its driver. A driver's tune can move what the stream recorded (SoapySDRPlay3's
+       LNA-state range follows the band, so the same aggregate gain maps to other stages after a band change), the
+       profile matcher cannot tell a reviewed driver from one that merely shares a keyword, and no SoapySDR hardware is
+       at hand to check one on: the rewrite main always did is kept. */
+    return (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) ? 1 : 0;
 }
 
 static int
@@ -11509,6 +11502,9 @@ rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state*
     out->gain_unknown = dev->tcp_took.gain_unknown;
     rtl_tcp_unlock(dev);
     out->stop_requested = dev->stop_requested.load(std::memory_order_acquire);
+    rtl_tcp_metrics_lock(dev);
+    out->watchdog_grace_from_ns = dev->tcp_metrics.connection_established_ns;
+    rtl_tcp_metrics_unlock(dev);
 }
 
 extern "C" void
@@ -11776,6 +11772,27 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
     getGain(const int, const size_t) const override {
         return fake_->gain_db;
     }
+
+    void
+    setFrequency(const int, const size_t, const double, const SoapySDR::Kwargs&) override {
+        fake_->frequency_writes++;
+    }
+
+    void
+    setSampleRate(const int, const size_t, const double rate) override {
+        fake_->rate_writes++;
+        fake_->rate_hz = rate;
+    }
+
+    double
+    getSampleRate(const int, const size_t) const override {
+        return fake_->rate_hz;
+    }
+
+    void
+    setBandwidth(const int, const size_t, const double) override {
+        fake_->bandwidth_writes++;
+    }
 };
 } // namespace
 #endif
@@ -11798,6 +11815,10 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
     dev->soapy_lock_inited = 1;
     dev->soapy_dev = new RtlTestSoapyGainDevice(fake);
     dev->soapy_named_gain_override = named_override;
+    if (fake->driver_key) {
+        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), fake->driver_key);
+        soapy_select_profile_locked(dev);
+    }
     return dev;
 #else
     (void)fake;

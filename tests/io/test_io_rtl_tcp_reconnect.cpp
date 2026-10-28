@@ -1088,6 +1088,59 @@ test_latest_effective_settings_replayed(void) {
     rig_close(r);
 }
 
+/* hops_write_only_changes (#782 D3): the stream's hops on an rtl_tcp server send the frequency alone while the rate
+ * stays (no 0x02), each restarting the throughput watchdog's grace as the rate write used to, and the first hop after a
+ * reconnect, whose replay the stream did not make, sends the rate again. */
+void
+test_hops_write_only_changes(void) {
+    server_reset(default_script());
+    const auto r_owner = std::make_unique<dev_rig>();
+    dev_rig& r = *r_owner;
+    rig_open(r, 0, 0);
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+    assert(opts != nullptr);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:127.0.0.1:%d", g_srv.port);
+    /* The start's programming before the reader runs, as a stream's open does. */
+    rtl_stream_test_capture_result out{};
+    assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
+    assert(out.rc == 0);
+    rig_start(r);
+    (void)sync_server(r.dev, 0);
+    const size_t rates = server_params(0, 0x02).size();
+    const size_t freqs = server_params(0, 0x01).size();
+    assert(rates == 1U);
+    const uint32_t hops[] = {851262500U, 852037500U, 853087500U};
+    for (uint32_t center : hops) {
+        rtl_device_test_tcp_state before{};
+        rtl_device_test_tcp_state_get(r.dev, &before);
+        dsd_sleep_ms(2U);
+        assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, center, 0, &out) == 0);
+        assert(out.rc == 0);
+        rtl_device_test_tcp_state after{};
+        rtl_device_test_tcp_state_get(r.dev, &after);
+        assert(after.watchdog_grace_from_ns > before.watchdog_grace_from_ns);
+    }
+    (void)sync_server(r.dev, 0);
+    assert(server_params(0, 0x02).size() == rates);
+    assert(server_params(0, 0x01).size() == freqs + 3U);
+
+    lose_connection(r);
+    wait_generation(r, 2U);
+    (void)sync_server(r.dev, 1);
+    const size_t replayed_rates = server_params(1, 0x02).size();
+    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[0], 0, &out) == 0);
+    assert(out.rc == 0);
+    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[1], 0, &out) == 0);
+    assert(out.rc == 0);
+    (void)sync_server(r.dev, 1);
+    assert(server_params(1, 0x02).size() == replayed_rates + 1U);
+    /* The reader stops before the session puts the stream's state back. */
+    (void)rtl_device_stop_async(r.dev);
+    rtl_stream_test_capture_session_end();
+    free(opts);
+    rig_close(r);
+}
+
 /* replay_failure_not_published: a replay that fails part way publishes nothing (no stream, setters still refused),
  * and the reader reconnects again, whose replay is published. */
 void
@@ -2261,6 +2314,7 @@ const named_test kTests[] = {
     {"stop_during_silent_header", test_stop_during_silent_header},
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
+    {"hops_write_only_changes", test_hops_write_only_changes},
     {"replay_failure_not_published", test_replay_failure_not_published},
     {"concurrent_partial_writes_never_interleave", test_concurrent_partial_writes_never_interleave},
     {"old_sender_does_not_touch_replacement", test_old_sender_does_not_touch_replacement},

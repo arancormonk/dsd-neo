@@ -14,7 +14,8 @@
  * - a changed rate is written once, read back, and the bandwidth with it;
  * - a scan target's gain is written on the hop where it changes, compared on the gain asked for, not the nearest one
  *   the tuner took;
- * - a failed write, a PPM or offset tuning change, and a USB recovery's replay make the next hop write again.
+ * - a failed write, a PPM or offset tuning change, and a USB recovery's replay make the next hop write again;
+ * - a SoapySDR device keeps every write, whatever its driver.
  */
 
 #include <assert.h>
@@ -444,6 +445,41 @@ test_recovery_rewrites(void) {
     rig_close(r);
 }
 
+/* A SoapySDR device keeps every write, whatever its driver: a generic one, and ones keyed as an RTL-SDR or an SDRplay
+ * alike write the rate on every same-rate hop and the gain on every repeated request. */
+void
+test_soapy_rewrites_every_hop(void) {
+    const char* const keys[] = {"generic", "RTLSDR", "SDRplay"};
+    for (const char* key : keys) {
+        rtl_device_test_soapy_gain_fake fake{};
+        fake.driver_key = key;
+        fake.selected_db = 29.7;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        if (dev == nullptr) {
+            printf("IO_RTL_CAPTURE_WRITES: no SoapySDR in this build; Soapy case skipped\n");
+            return;
+        }
+        uint32_t generation = 0U;
+        assert(rtl_device_capture_settings_generation(dev, &generation) == 0);
+        dsd_opts* opts = make_rtl_opts();
+        rtl_stream_test_capture_result start{};
+        assert(rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &start) == 0);
+        assert(start.rc == 0 && fake.rate_writes == 1);
+        for (uint32_t center : kHopsHz) {
+            assert(hop(center).rc == 0);
+        }
+        assert(fake.rate_writes == 4);
+        assert(fake.frequency_writes >= 4);
+        const int gain_writes_before = fake.writes;
+        assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+        assert(step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 300) == 0);
+        assert(fake.writes - gain_writes_before == 2);
+        rtl_stream_test_capture_session_end();
+        rtl_device_test_soapy_gain_device_free(dev);
+        free(opts);
+    }
+}
+
 } // namespace
 
 int
@@ -470,6 +506,7 @@ main(int argc, char** argv) {
         {"offset_tuning", test_offset_tuning_change_rewrites},
         {"readback", test_readback_disagreeing_rewrites},
         {"recovery", test_recovery_rewrites},
+        {"soapy", test_soapy_rewrites_every_hop},
     };
 
     /* An argument runs that case alone. */
