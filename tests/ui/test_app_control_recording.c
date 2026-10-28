@@ -956,6 +956,237 @@ test_config_that_changes_no_recording_leaves_it(void) {
     return rc;
 }
 
+/* The recording transition through config applies, table-driven: every from-mode (off, per-call, static) to every
+   to-mode, the per-call folder kept or moved, the static path kept or new, the raw path kept or new, and each new
+   output's open succeeding or failing. A failure changes nothing; a success leaves exactly the target running, the
+   outputs it replaced closed as their own kind in their own folder, and the ones it kept untouched. */
+enum { REC_OFF = 0, REC_PER_CALL = 1, REC_STATIC = 2 };
+
+enum { FAIL_NONE = 0, FAIL_PRIMARY = 1, FAIL_RAW = 2 };
+
+typedef struct {
+    int from;
+    int to;
+    int new_dir;    /* to per-call: the config names folder B */
+    int new_static; /* to static: S2 instead of the running S1 */
+    int new_raw;    /* the config names R2 instead of the running R1 */
+    int fail;
+} transition_case;
+
+static int
+file_exists(const char* path) {
+    FILE* f = dsd_fopen_existing_regular_file(path, "rb");
+    if (f) {
+        fclose(f);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+run_transition_case(const transition_case* tc) {
+    rig r;
+    char tag[192];
+    char other[DSD_TEST_PATH_MAX];
+    char side[DSD_TEST_PATH_MAX];
+    char s1[DSD_TEST_PATH_MAX * 2];
+    char s2[DSD_TEST_PATH_MAX * 2];
+    char r1[DSD_TEST_PATH_MAX * 2];
+    char r2[DSD_TEST_PATH_MAX * 2];
+    char bad[DSD_TEST_PATH_MAX * 2];
+    static const char* const k_modes[3] = {"off", "per-call", "static"};
+    char name[96];
+    DSD_SNPRINTF(name, sizeof name, "%s->%s%s%s%s%s", k_modes[tc->from], k_modes[tc->to], tc->new_dir ? " new-dir" : "",
+                 tc->new_static ? " new-static" : "", tc->new_raw ? " new-raw" : "",
+                 tc->fail == FAIL_PRIMARY ? " fail" : (tc->fail == FAIL_RAW ? " raw-fail" : ""));
+    int rc = rig_open(&r, "dsdneo_rec_table_t");
+    rc |= expect_true("folder B", dsd_test_mkdtemp(other, sizeof other, "dsdneo_rec_table_b") != NULL);
+    rc |= expect_true("side folder", dsd_test_mkdtemp(side, sizeof side, "dsdneo_rec_table_s") != NULL);
+    (void)dsd_test_path_join(s1, sizeof s1, side, "s1.wav");
+    (void)dsd_test_path_join(s2, sizeof s2, side, "s2.wav");
+    (void)dsd_test_path_join(r1, sizeof r1, side, "r1.wav");
+    (void)dsd_test_path_join(r2, sizeof r2, side, "r2.wav");
+    unopenable_path(&r, bad, sizeof bad);
+
+    /* The from-state: the raw WAV R1 always runs, with audio; per-call slot 1 or the static S1 holds audio. */
+    (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_RAW_OPEN, r1);
+    (void)drain(&r);
+    short raw_block[480] = {0};
+    if (r.opts->wav_out_raw) {
+        (void)sf_write_short(r.opts->wav_out_raw, raw_block, 480);
+    }
+    if (tc->from == REC_PER_CALL) {
+        submit(DSD_APP_CMD_WAV_START);
+        (void)drain(&r);
+        fill_voice_frame(r.state);
+        dsd_write_mono_voice_to_slot_wav(r.opts, r.state, 0);
+    } else if (tc->from == REC_STATIC) {
+        rc |= open_static(&r, s1);
+    }
+    const int before_per_call = r.opts->dmr_stereo_wav;
+    const int before_static = r.opts->static_wav_file;
+    SNDFILE* const before_f = r.opts->wav_out_f;
+    SNDFILE* const before_fr = r.opts->wav_out_fR;
+    SNDFILE* const before_raw = r.opts->wav_out_raw;
+    const dir_count before_a = count_dir(r.dir);
+
+    if (tc->fail == FAIL_PRIMARY && tc->to == REC_PER_CALL) {
+        dsd_wav_test_fail_opens_after(0);
+    }
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.per_call_wav = tc->to == REC_PER_CALL;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", tc->new_dir ? other : r.dir);
+    if (tc->to == REC_STATIC) {
+        DSD_SNPRINTF(cfg.static_wav_path, sizeof cfg.static_wav_path, "%s",
+                     tc->fail == FAIL_PRIMARY ? bad : (tc->new_static ? s2 : s1));
+    }
+    DSD_SNPRINTF(cfg.raw_wav_path, sizeof cfg.raw_wav_path, "%s", tc->fail == FAIL_RAW ? bad : (tc->new_raw ? r2 : r1));
+    r.state->ui_msg[0] = '\0';
+    (void)dsd_app_command_apply_config(&cfg);
+    (void)drain(&r);
+    dsd_wav_test_fail_opens_after(-1);
+    const dir_count a = count_dir(r.dir);
+    const dir_count b = count_dir(other);
+
+    if (tc->fail != FAIL_NONE) {
+        DSD_SNPRINTF(tag, sizeof tag, "%s: nothing changed", name);
+        rc |= expect_true(tag, r.opts->dmr_stereo_wav == before_per_call && r.opts->static_wav_file == before_static
+                                   && r.opts->wav_out_f == before_f && r.opts->wav_out_fR == before_fr
+                                   && r.opts->wav_out_raw == before_raw && strcmp(r.opts->wav_out_dir, r.dir) == 0
+                                   && strcmp(r.opts->wav_out_file_raw, r1) == 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the files on disk are as they were", name);
+        rc |= expect_true(tag, a.temp == before_a.temp && a.published == before_a.published && b.files == 0
+                                   && !file_exists(s2));
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the toast says so", name);
+        rc |= expect_true(tag, strstr(r.state->ui_msg, "did not open") != NULL);
+    } else {
+        const int kept_per_call = tc->from == REC_PER_CALL && tc->to == REC_PER_CALL && !tc->new_dir;
+        const int kept_static = tc->from == REC_STATIC && tc->to == REC_STATIC && !tc->new_static;
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the mode is the target's", name);
+        rc |= expect_true(tag, r.opts->dmr_stereo_wav == (tc->to == REC_PER_CALL)
+                                   && r.opts->static_wav_file == (tc->to == REC_STATIC));
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the folder is the target's", name);
+        rc |= expect_true(tag, strcmp(r.opts->wav_out_dir, tc->new_dir ? other : r.dir) == 0);
+        if (tc->to == REC_PER_CALL) {
+            const char* dir = tc->new_dir ? other : r.dir;
+            DSD_SNPRINTF(tag, sizeof tag, "%s: both slot files open in the target folder", name);
+            rc |= expect_true(tag, r.opts->wav_out_f && r.opts->wav_out_fR
+                                       && strstr(r.opts->wav_out_file, dir) == r.opts->wav_out_file
+                                       && strstr(r.opts->wav_out_fileR, dir) == r.opts->wav_out_fileR);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: two slot files in the target folder", name);
+            rc |= expect_int(tag, tc->new_dir ? b.temp : a.temp, 2);
+        } else if (tc->to == REC_STATIC) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the static WAV open at its path", name);
+            rc |= expect_true(tag, r.opts->wav_out_f != NULL && r.opts->wav_out_fR == NULL
+                                       && strcmp(r.opts->wav_out_file, tc->new_static ? s2 : s1) == 0);
+        } else {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: nothing records", name);
+            rc |= expect_true(tag, r.opts->wav_out_f == NULL && r.opts->wav_out_fR == NULL);
+        }
+        if (kept_per_call || kept_static) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: what did not change is untouched", name);
+            rc |= expect_true(tag, r.opts->wav_out_f == before_f && r.opts->wav_out_fR == before_fr);
+        }
+        if (tc->from == REC_PER_CALL && !kept_per_call) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the old per-call files published in their own folder", name);
+            rc |= expect_true(tag, a.published == 1 && a.temp == (tc->to == REC_PER_CALL && !tc->new_dir ? 2 : 0));
+        }
+        if (tc->from == REC_STATIC && !kept_static) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the old static WAV closed as one, where it was", name);
+            rc |= expect_int(tag, wav_header_data_bytes(s1), 640);
+            rc |= expect_int(tag, a.published + b.published, 0);
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the raw WAV is the target's", name);
+        rc |=
+            expect_true(tag, r.opts->wav_out_raw != NULL && strcmp(r.opts->wav_out_file_raw, tc->new_raw ? r2 : r1) == 0
+                                 && (tc->new_raw || r.opts->wav_out_raw == before_raw));
+        if (tc->new_raw) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the old raw WAV closed", name);
+            rc |= expect_int(tag, wav_header_data_bytes(r1), 960);
+        }
+    }
+    if (r.opts->static_wav_file == 1) {
+        r.opts->wav_out_f = close_wav_file(r.opts->wav_out_f);
+    }
+    rig_close(&r);
+    remove_folder(other);
+    remove_folder(side);
+    return rc;
+}
+
+static int
+test_recording_transition_table(void) {
+    int rc = 0;
+    int cases = 0;
+    for (int from = REC_OFF; from <= REC_STATIC; from++) {
+        for (int to = REC_OFF; to <= REC_STATIC; to++) {
+            for (int variant = 0; variant < 2; variant++) {
+                for (int new_raw = 0; new_raw < 2; new_raw++) {
+                    for (int fail = FAIL_NONE; fail <= FAIL_RAW; fail++) {
+                        transition_case tc = {from, to, 0, 0, new_raw, fail};
+                        /* The variant moves the folder for per-call, names a new file for static; off has none. */
+                        if (variant && to == REC_OFF) {
+                            continue;
+                        }
+                        tc.new_dir = variant && to == REC_PER_CALL;
+                        tc.new_static = variant && to == REC_STATIC;
+                        const int primary_opens = (to == REC_PER_CALL && !(from == REC_PER_CALL && !tc.new_dir))
+                                                  || (to == REC_STATIC && !(from == REC_STATIC && !tc.new_static));
+                        if ((fail == FAIL_PRIMARY && !primary_opens) || (fail == FAIL_RAW && !new_raw)) {
+                            continue;
+                        }
+                        rc |= run_transition_case(&tc);
+                        cases++;
+                    }
+                }
+            }
+        }
+    }
+    return rc | expect_true("the table ran its cases", cases >= 40);
+}
+
+/* A static WAV whose file is not open (its open at start failed) is a component a raw open does not touch; a static
+   open of its path opens it. */
+static int
+test_raw_open_leaves_a_static_wav_without_a_file(void) {
+    rig r;
+    char side[DSD_TEST_PATH_MAX];
+    char s1[DSD_TEST_PATH_MAX * 2];
+    char r1[DSD_TEST_PATH_MAX * 2];
+    int rc = rig_open(&r, "dsdneo_rec_static_nofile");
+    rc |= expect_true("side folder", dsd_test_mkdtemp(side, sizeof side, "dsdneo_rec_static_nf") != NULL);
+    (void)dsd_test_path_join(s1, sizeof s1, side, "s1.wav");
+    (void)dsd_test_path_join(r1, sizeof r1, side, "r1.wav");
+    r.opts->static_wav_file = 1;
+    DSD_SNPRINTF(r.opts->wav_out_file, sizeof r.opts->wav_out_file, "%s", s1);
+    (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_RAW_OPEN, r1);
+    (void)drain(&r);
+    rc |= expect_true("the raw WAV opens", r.opts->wav_out_raw != NULL);
+    rc |= expect_true("the static WAV is left alone", r.opts->wav_out_f == NULL && !file_exists(s1));
+    rc |= expect_int("static mode kept", r.opts->static_wav_file, 1);
+    (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_STATIC_OPEN, s1);
+    (void)drain(&r);
+    rc |= expect_true("a static open of its path opens it", r.opts->wav_out_f != NULL && file_exists(s1));
+    r.opts->wav_out_f = close_wav_file(r.opts->wav_out_f);
+    rig_close(&r);
+    remove_folder(side);
+    return rc;
+}
+
+/* The two failures re-review 2 traced: a config turning per-call on from a static WAV whose per-call open fails, and a
+   folder move whose new pair fails to open, each change nothing. */
+static int
+test_config_per_call_failures_change_nothing(void) {
+    int rc = 0;
+    const transition_case from_static = {REC_STATIC, REC_PER_CALL, 0, 0, 0, FAIL_PRIMARY};
+    const transition_case moved = {REC_PER_CALL, REC_PER_CALL, 1, 0, 0, FAIL_PRIMARY};
+    rc |= run_transition_case(&from_static);
+    rc |= run_transition_case(&moved);
+    return rc;
+}
+
 /* More segments open at once than the table holds is reported once per run, like the failures. */
 static int
 test_full_segment_table_is_reported_once_per_run(void) {
@@ -1118,6 +1349,9 @@ main(void) {
     rc |= test_config_that_changes_no_recording_leaves_it();
     rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
     rc |= test_full_segment_table_is_reported_once_per_run();
+    rc |= test_recording_transition_table();
+    rc |= test_config_per_call_failures_change_nothing();
+    rc |= test_raw_open_leaves_a_static_wav_without_a_file();
     if (rc == 0) {
         printf("APP_CONTROL_RECORDING: OK\n");
     }

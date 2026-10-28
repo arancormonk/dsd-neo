@@ -1058,22 +1058,22 @@ suite runs under this compiler.
   on `event_time`. The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the
   row fingerprint. Tests:
   `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
-- WAV recording commands and failures (issue #708). `svc_enable_per_call_wav()` (WAV_START) keeps a slot file that is
-  open and opens a missing one; it completes only with both open, and otherwise removes what it opened and leaves the
-  mode as it was. Off per-call recording it keeps no handle: a static `-w` WAV is closed as a static file
-  (`close_wav_file()`: never renamed or exported) and `static_wav_file` cleared, a per-call file the mode no longer
-  covers is published. `svc_stop_wav_recording()` (WAV_STOP) closes a static WAV the same way, or
-  closes and publishes the slot files and the NFM call's recording at once (`dsd_engine_analog_call_stop_recording()`,
-  which keeps the call and its epoch). WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so does
-  the terminal's `Per-call WAV` label. A static open (`open_static_wav_file()`) and a raw open (`open_raw_wav_file()`)
-  open the new file first, so one that fails leaves what records and the mode as they were; then the static open stops
-  what records and the raw open closes the raw WAV it replaces (the static file already recording is kept; the same raw
-  path is closed first, as reopening truncates it). A live config apply (`DSD_APP_CMD_CONFIG_APPLY`) does not let
-  staging's mode, folder and path writes stand alone: `apply_cfg_recording()` puts the session's back and, when the
-  config changes any of them, moves them through those services (start, static open, stop, raw open or close), failing
-  the apply with a toast when a file does not open. Per-call files are published in the folder they were recorded in:
-  a moved folder stops them before the new one is set, and a per-call session then opens its new pair there (or marks
-  both slots to reopen there). The NFM recording is published in `analog_call::dir`, the folder it opened in. Per-call writers (the vocoder's slot writers through `dsd_audio_write_wav_short_block()`, EDACS analog,
+- WAV recording commands and failures (issue #708). The recording outputs (per-call WAVs and their folder, the static
+  `-w` WAV, the raw `-6` WAV) change through one function, `svc_recording_transition()` (`app_control/menu_services.c`,
+  target `svc_recording_target`: mode off/per-call/static, folder, static path, raw path), which WAV_START, WAV_STOP,
+  WAV_TOGGLE, the static and raw opens and a live `DSD_APP_CMD_CONFIG_APPLY` all use. A component the target does not
+  change is left alone (a raw-only change does not touch per-call files; per-call on in its own folder keeps its pair,
+  WAV_START's `reopen_missing` opening a missing slot). Every new output opens first into locals, per-call files in the
+  target folder; if one does not open, those that did are closed (a static file the open created is removed) and
+  nothing changes: mode, folder, paths, flags and handles stay as they were, and the caller reports the failure. Only
+  then do the old outputs close as their own kind: per-call files published in the folder they were opened in (with
+  the NFM call's recording, `dsd_engine_analog_call_stop_recording()`, in `analog_call::dir`, keeping the call and its
+  epoch; a handle open with recording off counts as per-call), a static WAV closed as a static file (`close_wav_file()`:
+  never renamed or exported), the raw WAV closed; then the new ones go in. A raw open of the path the raw WAV records
+  restarts it, closed first since the open truncates it. The config apply (`apply_cfg_recording()`) puts back what
+  staging wrote and hands what it staged to the transition, failing the apply with a toast when a file does not open.
+  WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so does the terminal's `Per-call WAV` label.
+  Per-call writers (the vocoder's slot writers through `dsd_audio_write_wav_short_block()`, EDACS analog,
   `engine/analog_call.c`) write through `dsd_wav_segment_write()` (`src/core/file/wav_segment.c`): a handle
   `open_wav_file()` opened is a segment, and its first short write latches it, so nothing more is written to it and it
   is published as usual at its close; static and raw handles log each short write as before (so does a segment past
@@ -1087,7 +1087,8 @@ suite runs under this compiler.
   dropped); `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command
   reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
   `unknown_only` and `journal_state` are reserved (always 0 / NONE). Tests: `APP_CONTROL_RECORDING` (every command
-  case through the queue and through config applies, each writer's short write and close failure behind the seams in
+  case through the queue and through config applies, the transition table (every from-mode to every to-mode, folder,
+  static and raw changes, each open failing), each writer's short write and close failure behind the seams in
   `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen
   mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
