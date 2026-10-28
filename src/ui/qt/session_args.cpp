@@ -8,6 +8,7 @@
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
 #include "radio_settings.h"
+#include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
 
@@ -876,10 +877,22 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host) const {
     SessionArgsError error = SessionArgsError::None;
     const QStringList args = buildArgs(system, &error);
     auto result = validationResult(error);
+    const bool recording = error == SessionArgsError::None && host && m_recordingSessions;
     if (error == SessionArgsError::None && host) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
     }
+    if (recording) {
+        // A saved system records into its own folder; Explore, a signal search and a map nobody saved share one.
+        const QString uid = system.value(QStringLiteral("uid")).toString();
+        const bool saved = !uid.isEmpty() && !system.value(QStringLiteral("signalSearch")).toBool()
+                           && (m_systems == nullptr || !m_systems->getByUid(uid).isEmpty());
+        (void)m_recordingSessions->beginSession(saved ? QStringLiteral("saved") : QStringLiteral("explore"), uid,
+                                                system.value(QStringLiteral("name")).toString());
+    }
     const bool started = error == SessionArgsError::None && host && host->start(args);
+    if (recording && !started && !host->sessionActive()) {
+        m_recordingSessions->endSession();
+    }
     result.insert(QStringLiteral("started"), started);
     if (started && host->sessionActive() && m_profiles) {
         m_profiles->retainForSession(system.value("decryptionProfileUid").toString());
@@ -907,7 +920,7 @@ SessionArgsBuilder::amBandwidthError(const QString& sourceType, int bandwidthKhz
 QString
 SessionArgsBuilder::keyError(const QString& type, const QString& value, const QString& csvPath, int force,
                              const QString& protocol) const {
-    const QString rule = session_args_key_protocol_error(protocol, type, value);
+    QString rule = session_args_key_protocol_error(protocol, type, value);
     if (!rule.isEmpty()) {
         return rule;
     }

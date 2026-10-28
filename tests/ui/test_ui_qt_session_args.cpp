@@ -31,6 +31,7 @@
 #include <utility>
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "recording_sessions.h"
 
 #include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
@@ -177,6 +178,85 @@ test_prefs_mapping(void) {
     prefs.setRelaxedCrc(defaults.relaxedCrc);
     prefs.setHangtimeSec(defaults.hangtimeSec);
     prefs.setExtraArgs(defaults.extraArgs);
+}
+
+/* Issue #708: a start asks the call recording store for the session's folder before the host starts, and frees it when
+ * the start did not happen. A saved system has its own folder; Explore, a signal search and a map with no uid share
+ * one. An invalid system asks for nothing. */
+void
+test_recording_sessions(void) {
+    class Sessions : public dsd_qt::RecordingSessions {
+      public:
+        QStringList calls;
+
+        QString
+        beginSession(const QString& kind, const QString& uid, const QString& name) override {
+            calls.append(QStringLiteral("begin %1 %2 %3").arg(kind, uid, name));
+            return QStringLiteral("/recordings/folder");
+        }
+
+        void
+        endSession() override {
+            calls.append(QStringLiteral("end"));
+        }
+    } sessions;
+
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList* calls = nullptr;
+        bool accept = true;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            (void)args;
+            calls->append(QStringLiteral("start"));
+            return accept;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    host.calls = &sessions.calls;
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setRecordingSessions(&sessions);
+    auto sys = usb_system();
+    sys["uid"] = QStringLiteral("sys-1");
+    sys["name"] = QStringLiteral("County");
+    expect("a saved system starts", builder.start(sys, &host).value("started").toBool());
+    expect("its folder is asked for before the host starts",
+           sessions.calls == QStringList({QStringLiteral("begin saved sys-1 County"), QStringLiteral("start")}));
+
+    sessions.calls.clear();
+    sys["signalSearch"] = true;
+    (void)builder.start(sys, &host);
+    expect("a signal search records into Explore",
+           sessions.calls.value(0) == QStringLiteral("begin explore sys-1 County"));
+    sessions.calls.clear();
+    sys.remove("signalSearch");
+    sys.remove("uid");
+    (void)builder.start(sys, &host);
+    expect("so does a map no one saved", sessions.calls.value(0).startsWith(QStringLiteral("begin explore ")));
+
+    sessions.calls.clear();
+    host.accept = false;
+    expect("a refused start", !builder.start(sys, &host).value("started").toBool());
+    expect("frees the folder", sessions.calls.size() == 3 && sessions.calls.value(2) == QStringLiteral("end"));
+
+    sessions.calls.clear();
+    sys["freqMhz"] = QStringLiteral("not a frequency");
+    (void)builder.start(sys, &host);
+    expect("an invalid system asks for nothing", sessions.calls.isEmpty());
 }
 
 /* The QML-facing builder reads the preference from the live AppPrefs, as a start does. */
@@ -1052,6 +1132,7 @@ main(int argc, char** argv) {
     test_tg_lockout_preference();
     test_relaxed_crc_preference();
     test_relaxed_crc_app_preference();
+    test_recording_sessions();
     test_prefs_mapping();
     test_defaults_and_overrides();
     test_nfm_system();

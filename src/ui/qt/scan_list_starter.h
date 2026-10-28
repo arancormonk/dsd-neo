@@ -14,6 +14,7 @@ class AppPrefs;
 class SavedSystemsModel;
 class DecryptionProfileProvider;
 class DecoderHost;
+class RecordingSessions;
 
 class ScanListStarter : public QObject {
     Q_OBJECT
@@ -33,6 +34,12 @@ class ScanListStarter : public QObject {
         m_profiles = profiles;
     }
 
+    /** @brief Where start() asks for the list's call recording folder (issue #708); nullptr: nowhere. */
+    void
+    setRecordingSessions(RecordingSessions* sessions) {
+        m_recordingSessions = sessions;
+    }
+
   private:
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
@@ -42,6 +49,7 @@ class ScanListStarter : public QObject {
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;
     DecryptionProfileProvider* m_profiles = nullptr;
+    RecordingSessions* m_recordingSessions = nullptr;
 };
 } // namespace dsd_qt
 #endif

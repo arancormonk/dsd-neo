@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QMetaType>
 #include <Qt>
 #include <QtGlobal>
@@ -673,7 +674,7 @@ managedSlotError(const QVariantMap& key, bool idParsed, quint32 id, const QStrin
         return QObject::tr("Choose a key format.");
     }
     const bool destination = key.value("lookup").toString() == "destination";
-    const QString idError = managedIdError(destination, idParsed, id, protocol);
+    QString idError = managedIdError(destination, idParsed, id, protocol);
     if (!idError.isEmpty()) {
         return idError;
     }
@@ -1192,7 +1193,7 @@ entryKeyId(const QVariant& raw, bool destination, bool* parsed, quint32* id) {
 /* The protocol a typed key is judged under: the draft's, else the stored profile's, else mixed. */
 static QString
 entryProtocol(const QVariantMap& entry, const QVariantMap* storedRow) {
-    const QString protocol = entry.value("protocol").toString();
+    QString protocol = entry.value("protocol").toString();
     if (!protocol.isEmpty()) {
         return protocol;
     }

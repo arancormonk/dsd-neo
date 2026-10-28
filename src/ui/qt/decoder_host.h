@@ -220,6 +220,16 @@ class DecoderHost : public QObject {
                 {QStringLiteral("session"), qlonglong(0)}};
     }
 
+    /**
+     * @brief The folders call recordings live in, preferred first (issue #708): new recording folders go to the first
+     * one available.
+     *
+     * Every root the host knows, a root whose storage is not mounted right now included, so the recording store can
+     * tell storage that is away from recordings that were deleted. The base host keeps them in one root, "Call
+     * recordings" in the app data folder.
+     */
+    virtual QStringList recordingRoots() const;
+
     virtual QString
     audioRoute() const {
         return QStringLiteral("System default");

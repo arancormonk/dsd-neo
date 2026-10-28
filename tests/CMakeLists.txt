@@ -18981,6 +18981,52 @@ if(DSD_ENABLE_QT_UI)
     )
 endif()
 
+if(DSD_ENABLE_QT_UI)
+    # Issue #708: the call recording store against real files and journals (hand-written and from the decoder's own
+    # writer), with History's real model: the tail, compaction, roots that are away, folders by uid, deletion safety,
+    # the storage limit, unfinished temp files, free space and export selections.
+    add_executable(
+        dsd-neo_test_ui_qt_recording_store
+        ui/test_ui_qt_recording_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_journal.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_recording_store
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/core/file
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_recording_store
+        PRIVATE
+            Qt6::Core
+            Qt6::Gui
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_recording_store
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_recording_store
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_RECORDING_STORE
+        COMMAND dsd-neo_test_ui_qt_recording_store
+    )
+    set_tests_properties(
+        UI_QT_RECORDING_STORE
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+endif()
+
 # WP-F3: exercise the real vocoder producers and canonical call boundaries.
 add_executable(
     dsd-neo_test_core_p25_voice_error_ring

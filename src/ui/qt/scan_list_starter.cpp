@@ -26,6 +26,7 @@
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
 #include "json_store.h"
+#include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_list_targets.h"
@@ -206,10 +207,18 @@ QVariantMap
 ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
     auto result = prepare(list, true);
     const auto args = result.take("args").toStringList();
+    const bool recording = result.value("ok").toBool() && host && m_recordingSessions;
     if (result.value("ok").toBool() && host) {
         host->noteStartAttempt(list.value("sourceType").toString());
     }
+    if (recording) {
+        (void)m_recordingSessions->beginSession(QStringLiteral("scan"), list.value("uid").toString(),
+                                                list.value("name").toString());
+    }
     const bool started = result.value("ok").toBool() && host && host->start(args);
+    if (recording && !started && !host->sessionActive()) {
+        m_recordingSessions->endSession();
+    }
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {
         for (const auto& value : list.value("entries").toList()) {

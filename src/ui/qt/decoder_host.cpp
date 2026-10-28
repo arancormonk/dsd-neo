@@ -263,6 +263,15 @@ DecoderHost::licenseNotices() const {
     return notices.join(QStringLiteral("\n\n"));
 }
 
+QStringList
+DecoderHost::recordingRoots() const {
+    // json_store's root, like the imports: one app data location for everything the app keeps. The store reads a root
+    // whose parent folder is missing as storage that is not mounted, and on a first launch nothing has made the app
+    // data folder yet.
+    (void)QDir().mkpath(json_store_root());
+    return {json_store_path(QStringLiteral("Call recordings"))};
+}
+
 QString
 DecoderHost::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
     const QUrl url(reference);

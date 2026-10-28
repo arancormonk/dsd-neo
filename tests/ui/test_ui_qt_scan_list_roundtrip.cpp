@@ -22,7 +22,9 @@
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
+#include "decoder_host.h"
 #include "json_store.h"
+#include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -260,6 +262,63 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     check(csvStarter.validate(csvList).value("warnings").toStringList().isEmpty());
 }
 
+/* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, and
+ * frees it when the start did not happen. */
+static void
+checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
+    struct Sessions : RecordingSessions {
+        QStringList calls;
+
+        QString
+        beginSession(const QString& kind, const QString& uid, const QString& name) override {
+            calls.append(QStringLiteral("begin %1 %2 %3").arg(kind, uid, name));
+            return QStringLiteral("/recordings/folder");
+        }
+
+        void
+        endSession() override {
+            calls.append(QStringLiteral("end"));
+        }
+    } sessions;
+
+    struct Host : DecoderHost {
+        QStringList* calls = nullptr;
+        bool accept = true;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& argv) override {
+            (void)argv;
+            calls->append(QStringLiteral("start"));
+            return accept;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    host.calls = &sessions.calls;
+    starter.setRecordingSessions(&sessions);
+    const QString begin =
+        QStringLiteral("begin scan %1 %2").arg(list.value("uid").toString(), list.value("name").toString());
+    check(starter.start(list, &host).value("started").toBool());
+    check(sessions.calls == QStringList({begin, QStringLiteral("start")}));
+    sessions.calls.clear();
+    host.accept = false;
+    check(!starter.start(list, &host).value("started").toBool());
+    check(sessions.calls == QStringList({begin, QStringLiteral("start"), QStringLiteral("end")}));
+    starter.setRecordingSessions(nullptr);
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -301,6 +360,7 @@ main(int argc, char** argv) {
 #endif
     auto result = starter.build(list);
     check(result.value("ok").toBool() && result.value("targetCount").toInt() == 1);
+    checkRecordingSessions(starter, list);
     const QString path = json_store_path("scan_lists/" + uid + ".csv");
     int count = 0;
     char error[256] = {};

@@ -7977,6 +7977,57 @@ Qt Quick frontend (`src/ui/qt`):
     while suspended, a spill across a process death, a stop and a clear while away, write volume; the real publisher,
     tap and consumer), `UI_QT_CONTROLLER` (the handoff on a tick with no redraw), `UI_QT_TALKGROUP_LIST_MODEL`,
     `UI_QT_QML_CALL_LISTS` (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
+- Call recording store (issue #708; `recording_store.{h,cpp}`, `recording_journal.{h,cpp}`, `recording_sessions.h`).
+  `RecordingStore`, the QML context property `recordings`, is the app's one index of call recordings; History stores
+  none.
+  - Roots and folders: `DecoderHost::recordingRoots()` lists every root, preferred first, a root whose storage is away
+    included (the base host: "Call recordings" in the app data folder). A root is available while it is a readable
+    folder, or is missing from a folder that exists; one whose parent is gone is away: what it held stays indexed,
+    untouched and undeleted, a delete of it waits, and it is read whole again when it returns. Each session owner has
+    a folder, `<sanitized name> (<uid8>)` (`recording_folder_base_name()`; `Explore` for every Explore, signal search
+    and unsaved session), with `folder.json` {uid, kind, name}; it is looked up by the full uid, so a rename keeps it
+    (and relabels it) and two uids sharing eight characters get `<name> (<uid8>) 2`. A folder without a folder.json is
+    not the app's and is never read or taken. New folders go to the first available root.
+  - Sessions (`RecordingSessions`): `SessionArgsBuilder::start()` and `ScanListStarter::start()` call
+    `beginSession(kind, uid, name)` before `DecoderHost::start()`, which makes the folder and marks it in use (waiting
+    for a compaction of it in progress), and `endSession()` when the start did not happen; `qt_ui.cpp` calls
+    `endSession()` when the host's session goes from active to inactive, and `assumeSessionRunning()` (every folder in
+    use) when one was already active as the UI came up.
+  - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass reads every available
+    root whole (folder.json, one directory listing, the journal from its start); later passes wake every second while
+    a folder is in use, else on request or once a minute, and tail each journal from its byte cursor, complete lines
+    only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name inside the folder). A
+    journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
+    index. The index keeps {id -> path, start, duration, fragment, folder, flags, size}: a `publish` of a file that is
+    not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
+    (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. Temp
+    files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
+    unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
+    journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
+    `publish` per live recording, the cursor then at its end) once it holds more than twice as many lines as live
+    recordings, only while no session uses the folder, and only when nothing but a torn line lies past the cursor.
+    History reads (`CallRecordingProvider`) take the store's lock; a whole-folder read applies its records 128 at a
+    time and lets a waiting History read in between, and sums (usage, limit, compaction) are taken on shared copies
+    outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
+    `recordingFragmentsChanged()`, `limitReached()`), so a paused GUI thread never collects more than one.
+  - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
+    `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
+    (`setPlayingPath()`) or a selection (`selectForExport()`, `selectRecordings()`, until `releaseSelection()`) holds
+    the file. Right before the unlink, under the lock: inside an available root by canonical folder and component
+    (`recording_path_inside_root()`), not a symlink, a regular file; one that fails leaves the index and stays on disk.
+    History rows stay.
+  - Limit (D2): `limitMb` (decimal MB, 0 none, default 1000) applies after each publish, at start and on a change: over
+    the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until the
+    total is at 95%. Free space where new folders go is read at start, after each publish and every minute while a
+    session records; under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
+  - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
+    pass takes 17 ms for 2,000 recordings, 155-177 ms for 20,000 (11 MB journal) and 390-470 ms for 50,000; a History
+    read meanwhile waits at most 0.6-0.75 ms (20,000) and 2 ms (50,000). A pass that finds nothing new costs 0.02-0.07
+    ms; one publish (tail, sums, delivery) 0.27 ms at 2,000, 1.8 ms at 20,000 and 5 ms at 50,000, on the worker; a
+    History read 0.04 us.
+  - Tests: `UI_QT_RECORDING_STORE` (the tail, the decoder's own writer, History roles from the store, compaction,
+    roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
+    free space, export selection), `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls).
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
   carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
   `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,

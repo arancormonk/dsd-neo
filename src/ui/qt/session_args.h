@@ -29,6 +29,7 @@ class AppPrefs;
 class DecoderHost;
 class SavedSystemsModel;
 class DecryptionProfileProvider;
+class RecordingSessions;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
 struct SessionArgPrefs {
@@ -150,6 +151,12 @@ class SessionArgsBuilder : public QObject {
         m_profiles = profiles;
     }
 
+    /** @brief Where start() asks for the session's call recording folder (issue #708); nullptr: nowhere. */
+    void
+    setRecordingSessions(RecordingSessions* sessions) {
+        m_recordingSessions = sessions;
+    }
+
     /**
      * @brief Validate one saved-system field map without returning key-bearing argv.
      * @return {"ok": bool, "error": category, "errorText": sentence}, and for "am-bandwidth" "bandwidthChoices":
@@ -181,6 +188,7 @@ class SessionArgsBuilder : public QObject {
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;
+    RecordingSessions* m_recordingSessions = nullptr;
 };
 
 } // namespace dsd_qt
