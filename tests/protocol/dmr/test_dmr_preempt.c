@@ -35,6 +35,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#include "../../test_support/radio_policy_test.h"
+
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -1175,6 +1177,31 @@ test_scan_target_contexts(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* D5 enrichment: a followed call whose checked LC names a talker the radio list blocks is still the followed call. Its
+   C_MOVE is followed, and a resident call on the control channel's carrier with such a talker still holds the receiver
+   (the media gates mute it); a talkgroup block still lets them go. */
+static int
+test_radio_block_keeps_followed_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    int rc = expect_true("radio list", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
+    clock_at(0.4);
+    rc |= expect_true("a move of the followed call naming a blocked talker is followed",
+                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
+
+    init_env(opts, st, 2.0);
+    rc |= expect_true("radio list again", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
+    tv_grant(opts, st, LPCN_B, 0, 200, 2);
+    rc |= expect_true("a resident call with a blocked talker is still busy", g_tunes == 0 && opts->trunk_is_tuned == 0);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1220,6 +1247,7 @@ main(void) {
     rc |= test_move_to_carrier_binds_moved_call(opts, st);
     rc |= test_move_carries_record_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
+    rc |= test_radio_block_keeps_followed_call(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

@@ -2726,6 +2726,14 @@ dmr_xpt_unknown_private_decision(const dsd_opts* opts, const dsd_state* state, d
     out->audio_allowed = out->tune_allowed;
     out->record_allowed = out->tune_allowed;
     out->stream_allowed = out->tune_allowed;
+    // No radio is named, so the radio part allows everything and the talkgroup part is the whole answer.
+    out->tg_tune_allowed = out->tune_allowed;
+    out->tg_audio_allowed = out->tune_allowed;
+    out->tg_record_allowed = out->tune_allowed;
+    out->tg_stream_allowed = out->tune_allowed;
+    out->radio_audio_allowed = 1;
+    out->radio_record_allowed = 1;
+    out->radio_stream_allowed = 1;
 }
 
 /* The candidate an XPT entry is: a group status with a talkgroup (XPT talkgroups are 8-bit, so the value is the real

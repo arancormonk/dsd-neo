@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -317,25 +318,32 @@ dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state
     return p25_crypto_audio_permitted(opts, state, slot);
 }
 
+// A matching Hold overrides the talkgroup part of the policy only: explicit temporary blocks (session avoid, call
+// skip) still mute a held talkgroup, and the radio part (the radio list's rows) applies after the override.
 static int
 dsd_audio_hold_overrides_policy(const dsd_tg_policy_decision* decision) {
-    // Explicit temporary blocks also mute a held talkgroup.
     return decision->tg_hold_active && decision->tg_hold_match
            && !(decision->block_reasons & (DSD_TG_POLICY_BLOCK_SESSION_AVOID | DSD_TG_POLICY_BLOCK_CALL_SKIP));
 }
 
+// The media verdicts: (Hold override || talkgroup part) && radio part. The allow list is a talkgroup reason.
+static int
+dsd_audio_policy_allows_audio(const dsd_tg_policy_decision* decision) {
+    const int tg = dsd_audio_hold_overrides_policy(decision)
+                   || (decision->tg_audio_allowed && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0u);
+    return tg && decision->radio_audio_allowed;
+}
+
+static int
+dsd_audio_policy_allows_record(const dsd_tg_policy_decision* decision) {
+    const int tg = dsd_audio_hold_overrides_policy(decision)
+                   || (decision->tg_record_allowed && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0u);
+    return tg && decision->radio_record_allowed;
+}
+
 static int
 dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
-    if (!decision) {
-        return 1;
-    }
-    if (dsd_audio_hold_overrides_policy(decision)) {
-        return 1;
-    }
-    if (!decision->audio_allowed || (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
-        return 0;
-    }
-    return 1;
+    return decision ? dsd_audio_policy_allows_audio(decision) : 1;
 }
 
 // The policy part of a P25 Phase 2 output verdict from one decision (issue #651): what the mixers' talkgroup gate
@@ -343,10 +351,10 @@ dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
 // evaluate the call exactly as the decode gate does, so one decision serves all three.
 static void
 dsd_p25p2_verdict_from_decision(const dsd_tg_policy_decision* decision, dsd_p25p2_playout_verdict* verdict) {
-    const int allowlist_blocked = (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u;
-    verdict->hold = dsd_audio_hold_overrides_policy(decision) ? 1U : 0U;
-    verdict->blocked = (!verdict->hold && (!decision->audio_allowed || allowlist_blocked)) ? 1U : 0U;
-    verdict->recordable = (verdict->hold || (decision->record_allowed && !allowlist_blocked)) ? 1U : 0U;
+    // A radio the radio list mutes stays muted under a Hold: the hold flag only stands for a Hold that plays the call.
+    verdict->hold = (dsd_audio_hold_overrides_policy(decision) && decision->radio_audio_allowed) ? 1U : 0U;
+    verdict->blocked = dsd_audio_policy_allows_audio(decision) ? 0U : 1U;
+    verdict->recordable = dsd_audio_policy_allows_record(decision) ? 1U : 0U;
 }
 
 // The slot's active call, if it has one, in one look.
@@ -366,6 +374,7 @@ dsd_p25p2_call_policy_key(const dsd_opts* opts, const dsd_state* state, const ds
     key->tg_hold = state->tg_hold;
     key->allow_list = (opts && opts->trunk_use_allow_list == 1) ? 1U : 0U;
     key->record_unknown_only = (opts && opts->record_unknown_only != 0) ? 1U : 0U;
+    key->radio_store = dsd_source_alias_store_id(state);
     key->ota_target = (call->ota_target_id <= UINT32_MAX) ? (uint32_t)call->ota_target_id : 0U;
     key->source = (call->ota_source_id <= UINT32_MAX) ? (uint32_t)call->ota_source_id : 0U;
     key->kind = (uint8_t)call->kind;
@@ -527,8 +536,7 @@ dsd_audio_group_gate_mutes(const dsd_opts* opts, const dsd_state* state, const d
     if (dsd_audio_group_gate_decision(opts, state, call, ota_tg, policy_tg, &decision) != 0) {
         return 0;
     }
-    return !dsd_audio_hold_overrides_policy(&decision)
-           && (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    return !dsd_audio_policy_allows_audio(&decision);
 }
 
 static int
@@ -649,13 +657,7 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
         return 0;
     }
 
-    if (dsd_audio_hold_overrides_policy(&decision)) {
-        return 0;
-    }
-    if (!decision.record_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
-        return 1;
-    }
-    return 0;
+    return !dsd_audio_policy_allows_record(&decision);
 }
 
 int

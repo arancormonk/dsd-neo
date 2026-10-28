@@ -1826,7 +1826,8 @@ dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
 
 /* ON_CC: the slots of the carrier the receiver listens on whose calls (named there by a checked LC or a seed) are live
    or in their hangtime tail and admitted by the policy. An unknown or blocked call never makes it busy, nor does one on
-   a slot the receive policy does not admit (rejected media never holds the receiver). */
+   a slot the receive policy does not admit (rejected media never holds the receiver). A call refused only because the
+   radio list blocks its talker is still the call heard there: it holds the receiver, muted by the media gates. */
 static int
 dmr_sm_resident_members(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long carrier_hz,
                         double now_m) {
@@ -1840,7 +1841,8 @@ dmr_sm_resident_members(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state
         const int live = dmr_sm_voice_evidence_m(ctx, state, s, now_m) > 0.0;
         const int tail = slot->last_active_m > 0.0 && (now_m - slot->last_active_m) < ctx->hangtime_s;
         dsd_tg_policy_decision decision;
-        if ((live || tail) && dmr_sm_slot_identity_decision(opts, state, slot, &decision) && decision.tune_allowed) {
+        if ((live || tail) && dmr_sm_slot_identity_decision(opts, state, slot, &decision)
+            && (decision.tune_allowed || dsd_tg_policy_decision_only_radio_blocks(&decision))) {
             members |= 1 << s;
         }
     }
@@ -2134,7 +2136,8 @@ dmr_sm_move_matches(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev) {
 }
 
 /* The policy's verdict on the moved call @p moved, in @p decision: 0 when it is denied tuning for a reason other than a
-   Hold mismatch (logged), or cannot be judged; media-only restrictions never stop following it. */
+   Hold mismatch or a radio-list block of its talker (logged), or cannot be judged; media-only restrictions never stop
+   following it, and a followed call is never let go for a radio rule. */
 static int
 dmr_sm_move_decision(const dsd_opts* opts, const dsd_state* state, const dmr_sm_slot_ctx_t* moved,
                      dsd_tg_policy_decision* decision) {
@@ -2142,7 +2145,8 @@ dmr_sm_move_decision(const dsd_opts* opts, const dsd_state* state, const dmr_sm_
         return 0;
     }
     const uint32_t non_tuning = (uint32_t)DSD_TG_POLICY_BLOCK_HOLD | (uint32_t)DSD_TG_POLICY_BLOCK_AUDIO
-                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM;
+                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM
+                                | (uint32_t)DSD_TG_POLICY_BLOCK_SOURCE;
     if (!decision->tune_allowed && (decision->block_reasons & ~non_tuning) != 0U) {
         sm_log(opts, "move-refused-policy");
         return 0;

@@ -105,6 +105,15 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
     return 0;
 }
 
+/* The radio the stand-in radio list blocks (0: none). */
+static uint32_t g_blocked_radio = 0U;
+
+int
+dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id) {
+    (void)state;
+    return radio_id != 0U && radio_id == g_blocked_radio;
+}
+
 /* The visit cap refuses to fire while a typed row transaction is outstanding. Only
  * scan_voice_gate.c is under test here, so the transaction is a flag the cases drive. */
 static int g_scan_waiting = 0;
@@ -528,6 +537,40 @@ test_m17_voice_ignores_talkgroup_policy(void) {
         open_voice_epoch_proto(&fix, DSD_SYNC_M17_STR_POS, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 0x1234ULL,
                                callsign_targets[i]);
         CHECK("M17 holds voice under allow list", probe_voice(&fix).retained_media_m > 0.0);
+        fixture_free(&fix);
+    }
+}
+
+/* A call whose target is unknown but whose source is known still meets the radio list: a blocked radio is not held
+   (radio rules act once the radio is known); an unblocked one is, and M17 stays outside policy. */
+static void
+test_source_only_blocked_radio_not_held(void) {
+    static const struct {
+        int protocol;
+        uint64_t target;
+        uint64_t source;
+        int held;
+        const char* tag;
+    } cases[] = {
+        {1, 0U, 777U, 0, "target 0 with a blocked source is not held"},
+        {1, 0x100000064ULL, 777U, 0, "a wide target with a blocked source is not held"},
+        {1, 0U, 778U, 1, "target 0 with another source holds"},
+        {1, 0U, 0U, 1, "target 0 without a source holds"},
+        {DSD_SYNC_M17_STR_POS, 0U, 777U, 1, "M17 stays outside policy"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+            g_failures++;
+            return;
+        }
+        g_blocked_radio = 777U;
+        open_voice_epoch_proto(&fix, cases[i].protocol, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, cases[i].source,
+                               cases[i].target);
+        CHECK(cases[i].tag, (probe_voice(&fix).retained_media_m > 0.0) == cases[i].held);
+        g_blocked_radio = 0U;
         fixture_free(&fix);
     }
 }
@@ -1707,6 +1750,7 @@ main(void) {
     test_policy_gating();
     test_m17_voice_ignores_talkgroup_policy();
     test_wide_ids_read_as_unknown();
+    test_source_only_blocked_radio_not_held();
     test_operator_hold_and_visit_reset();
     test_stale_epoch_cannot_rearm();
     test_zero_ms_falls_back_to_defaults();

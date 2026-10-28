@@ -56,6 +56,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include "../test_support/radio_policy_test.h"
 #include "metrics_model.h"
 
 namespace {
@@ -1851,6 +1852,43 @@ test_tetra_rows() {
     free(opts);
 }
 
+/* The block label names a radio the radio list blocks, for a call whose target is known and for one whose target is
+   not (only its source is). */
+static void
+test_block_label_radio_blocked() {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    expect("radio list installed", dsd_test_install_radio_policy(&state, 777U, "B", 0, 0, 0) == 0);
+    dsd_qt::MetricsModel model;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        dsd_call_observation observation = {};
+        observation.protocol = DSD_SYNC_P25P2_POS;
+        observation.slot = slot;
+        observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+        observation.ota_target_id = slot == 0 ? 123U : 0U;
+        observation.policy_target_id = observation.ota_target_id;
+        observation.ota_source_id = 777U;
+        observation.observed_m = 4.0;
+        dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    }
+    model.refresh(&opts, &state);
+    const auto slots = model.decryptionSlots();
+    expect("two slots listed", slots.size() == 2);
+    expect("a known target's blocked radio is labelled",
+           slots.size() == 2 && slots[0].toMap().value("blockReason") == QStringLiteral("radio blocked"));
+    expect("a source-only call's blocked radio is labelled",
+           slots.size() == 2 && slots[1].toMap().value("blockReason") == QStringLiteral("radio blocked"));
+    expect("radio list cleared", dsd_source_alias_clear(&state) == 0);
+    model.refresh(&opts, &state);
+    expect("no label without the radio list",
+           model.decryptionSlots().size() == 2
+               && model.decryptionSlots()[1].toMap().value("blockReason").toString().isEmpty());
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1871,6 +1909,7 @@ main(int argc, char** argv) {
     test_tone_filter_editor_setting();
     test_direct_key_presence();
     test_decryption_metadata();
+    test_block_label_radio_blocked();
     test_site();
     test_quality();
     test_lead_slot_keeps_earlier_call_and_quality();

@@ -1861,7 +1861,8 @@ edacs_handle_extended_mt1_system_all_call(dsd_opts* opts, dsd_state* state, unsi
     dsd_tg_policy_decision decision;
     int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0, &decision) == 0
                      && decision.tune_allowed);
-    if (!policy_ok && opts->trunk_use_allow_list == 1) {
+    // An all-call names no talkgroup, so the allow list admits it; a radio the radio list blocks is still refused.
+    if (!policy_ok && opts->trunk_use_allow_list == 1 && !decision.radio_blocked) {
         policy_ok = 1;
     }
 
@@ -2459,7 +2460,8 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     int policy_ok =
         dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0, &decision) == 0 && decision.tune_allowed;
     state->tg_hold = saved_tg_hold;
-    if (opts->trunk_use_allow_list == 1) {
+    // An all-call names no talkgroup, so the allow list admits it; a radio the radio list blocks is still refused.
+    if (opts->trunk_use_allow_list == 1 && !decision.radio_blocked) {
         policy_ok = 1;
     }
 

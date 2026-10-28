@@ -36,6 +36,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#include "../../test_support/radio_policy_test.h"
+
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -1797,6 +1799,33 @@ test_xpt_submit_channel_is_the_ranked_lsn(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* D5: a DMR voice grant naming a radio the radio list blocks is not tuned: a talkgroup grant by its source, a private
+   grant by either party. One naming an unblocked radio is. */
+static int
+test_grant_naming_blocked_radio_not_tuned(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+    init_env(opts, st);
+    st->trunk_chan_map[lpcn] = freq;
+    rc |= expect_true("radio list", dsd_test_install_radio_policy(st, 2100U, "B", 0, 0, 0) == 0);
+    build_grant(bits, bytes, 49U, lpcn, 1100U, 2100U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("group grant from a blocked radio not tuned", opts->trunk_is_tuned == 0);
+    build_grant(bits, bytes, 48U, lpcn, 2100U, 9002U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("private grant to a blocked radio not tuned", opts->trunk_is_tuned == 0);
+    build_grant(bits, bytes, 48U, lpcn, 9001U, 2100U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("private grant from a blocked radio not tuned", opts->trunk_is_tuned == 0);
+    build_grant(bits, bytes, 49U, lpcn, 1100U, 2101U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |=
+        expect_true("group grant from another radio tuned", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
+    reset_to_cc(opts, st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1815,6 +1844,7 @@ main(void) {
     }
 
     install_trunk_tuning_hooks();
+    rc |= test_grant_naming_blocked_radio_not_tuned(opts, st, lpcn, freq);
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;
     opts->trunk_use_allow_list = 1;

@@ -706,10 +706,11 @@ set_live_verdict(dsd_state* state, int slot, uint64_t epoch, const dsd_p25p2_pol
 
 static int
 same_policy_key(const dsd_p25p2_policy_key* a, const dsd_p25p2_policy_key* b) {
-    return a->table_context == b->table_context && a->table_generation == b->table_generation && a->second == b->second
-           && a->tg_hold == b->tg_hold && a->allow_list == b->allow_list
-           && a->record_unknown_only == b->record_unknown_only && a->ota_target == b->ota_target
-           && a->policy_target == b->policy_target && a->source == b->source && a->kind == b->kind;
+    return a->table_context == b->table_context && a->table_generation == b->table_generation
+           && a->radio_store == b->radio_store && a->second == b->second && a->tg_hold == b->tg_hold
+           && a->allow_list == b->allow_list && a->record_unknown_only == b->record_unknown_only
+           && a->ota_target == b->ota_target && a->policy_target == b->policy_target && a->source == b->source
+           && a->kind == b->kind;
 }
 
 // Take the slot's current talkgroup verdict, if its call is active, for the frames of that call's epoch. The epoch and

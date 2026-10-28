@@ -24,6 +24,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#include "../../test_support/radio_policy_test.h"
+
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -323,6 +325,38 @@ test_fallback_keeps_target_final_blocks(dsd_opts* opts, dsd_state* st, uint16_t 
     return rc;
 }
 
+/* D5: an assignment naming a radio the radio list blocks is not tuned (group by its source, private by either party,
+   the Type-C fallback too); a repeat of the held call's assignment naming one keeps the call it follows. */
+static int
+test_radio_policy_grants(dsd_opts* opts, dsd_state* st, uint16_t chan, long freq) {
+    int rc = 0;
+    uint8_t msg[96];
+    rc |= expect_true("radio list", dsd_test_install_radio_policy(st, 7701U, "B", 0, 0, 0) == 0);
+    rc |= expect_true("listed group", seed_exact(st, 7600U, "A", "GRP") == 0);
+    build_vcall_assgn(msg, 0x04U, 0U, 7701U, 7600U, chan);
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("group assignment from a blocked radio not tuned", g_tune_count == 0);
+    rc |= expect_true("the blocked radio has a group-list row", seed_exact(st, 7701U, "A", "SRC-ROW") == 0);
+    build_vcall_assgn(msg, 0x04U, 0U, 7701U, 7601U, chan);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("fallback assignment from a blocked radio not tuned", g_tune_count == 0);
+    rc |= expect_true("listed radio party", seed_exact(st, 7702U, "A", "UNIT") == 0);
+    build_vcall_assgn(msg, 0x04U, 4U, 7702U, 7701U, chan);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("private assignment to a blocked radio not tuned", g_tune_count == 0);
+
+    build_vcall_assgn(msg, 0x04U, 0U, 7700U, 7600U, chan);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("group assignment from another radio tuned", g_tune_count == 1 && opts->trunk_is_tuned == 1);
+    build_vcall_assgn(msg, 0x04U, 0U, 7701U, 7600U, chan);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("a repeat naming a blocked talker keeps the held call",
+                      opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq && g_tune_count == 1);
+    (void)dsd_source_alias_clear(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -383,6 +417,7 @@ main(void) {
     rc |= expect_true("group source fallback allowed", g_tune_count == 1 && g_last_tune_freq == freq);
 
     rc |= test_fallback_keeps_target_final_blocks(opts, st, chan, freq);
+    rc |= test_radio_policy_grants(opts, st, chan, freq);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

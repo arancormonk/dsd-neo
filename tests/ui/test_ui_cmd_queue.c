@@ -6996,6 +6996,14 @@ test_talkgroup_row_token_commands(void) {
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
     dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("another pattern's token removes nothing", (int)dsd_tg_policy_entry_count(&state), 3);
+    rc |= expect_contains("a token that names no row says so", state.ui_msg, "the row is no longer listed");
+    row = (dsd_app_tg_row_payload){
+        .table_index = 2, .kind = DSD_TG_POLICY_ROW_PATTERN, .fields = DSD_APP_TG_FIELD_PRIORITY, .priority = 40};
+    DSD_SNPRINTF(row.pattern, sizeof row.pattern, "%s", "1xxx");
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("a row set whose token names no row says so", state.ui_msg, "the row is no longer listed");
     DSD_SNPRINTF(rem.pattern, sizeof rem.pattern, "%s", "12*");
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
     dsd_app_drain_cmds(&opts, &state);

@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -51,6 +52,7 @@ static long g_frequency;
 static int g_phase;
 static char g_block_csv[DSD_TEST_PATH_MAX];
 static char g_allow_csv[DSD_TEST_PATH_MAX];
+static char g_radio_csv[DSD_TEST_PATH_MAX];
 
 typedef struct {
     uint64_t context;
@@ -272,6 +274,8 @@ prepare_policy(dsd_scan_row_profile* row, policy_view* baseline) {
         rc |= expect(dsd_tg_policy_set_mode(&g_state, 1234, 1234, "B") == 0, "seed blocked baseline");
     } else if (g_phase == 7 || g_phase == 19) {
         rc |= expect(dsd_tg_policy_set_mode(&g_state, 1234, 1234, "A") == 0, "seed editable row");
+    } else if (g_phase == 20) {
+        rc |= expect(csvSrcImportPath(g_radio_csv, &g_state) == 0, "seed blocked radio");
     }
     *baseline = read_policy(&g_opts, &g_state);
     if (g_phase >= 3 && g_phase <= 5) {
@@ -316,6 +320,9 @@ submit_phase(void) {
         case 16: return dsd_app_command_set_i32(DSD_APP_CMD_SLOT_PREF_SET, 1);
         /* Recording only unknown talkgroups changes a listed call's recordable verdict (issue #708). */
         case 19: return dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 1);
+        /* The radio list's policy rows judge the call too: its import and clear wait for the guard. */
+        case 20: return dsd_app_command_set_string(DSD_APP_CMD_IMPORT_SRC_LIST, g_radio_csv);
+        case 21: return dsd_app_command_submit(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR, NULL, 0);
         default: return -1;
     }
 }
@@ -395,6 +402,9 @@ check_postcondition(policy_view before, policy_view baseline) {
         case 19:
             return expect(g_opts.record_unknown_only == 1 && same_version(before, after) && after.allowed,
                           "unknown-only on, the listed talkgroup still plays");
+        case 20:
+            return expect(same_version(before, after) && !after.allowed, "radio list import blocks the call's radio");
+        case 21: return expect(same_version(before, after) && after.allowed, "radio list clear lets the radio play");
         default: return 1;
     }
 }
@@ -680,6 +690,17 @@ test_trunk_receive_release_due(void) {
     return rc;
 }
 
+/* Review focus: the radio list is reloaded or cleared while the watchdog's release drains the P25 Phase 2 audio queued
+   for the call; the command waits for the guard, so the drain plays under the verdict it started with. */
+static int
+test_radio_list_reload_during_playout(void) {
+    int rc = 0;
+    for (g_phase = 20; g_phase <= 21; ++g_phase) {
+        rc |= run_phase();
+    }
+    return rc;
+}
+
 static int
 write_csv(char* path, const char* content) {
     const int fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "dsd_policy_guard");
@@ -701,6 +722,7 @@ main(void) {
     dsd_neo_config_init();
     int rc = write_csv(g_block_csv, "id,mode,name\n1234,B,Blocked\n");
     rc |= write_csv(g_allow_csv, "id,mode,name\n1234,A,Row\n");
+    rc |= write_csv(g_radio_csv, "id,name,mode\n42,Blocked radio,B\n");
     if (!rc) {
         for (g_phase = 1; g_phase <= 10; ++g_phase) {
             rc |= run_phase();
@@ -717,8 +739,10 @@ main(void) {
         rc |= test_trunk_receive_release_due();
         g_phase = 19;
         rc |= run_phase();
+        rc |= test_radio_list_reload_during_playout();
     }
     (void)remove(g_block_csv);
     (void)remove(g_allow_csv);
+    (void)remove(g_radio_csv);
     return rc;
 }

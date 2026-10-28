@@ -72,6 +72,7 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
     DSD_TG_POLICY_BLOCK_SESSION_AVOID = 1u << 11,
     DSD_TG_POLICY_BLOCK_CALL_SKIP = 1u << 12,
+    DSD_TG_POLICY_BLOCK_SOURCE = 1u << 13, /**< The radio list blocks a known party (mode B/DE): "radio blocked". */
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */
@@ -117,7 +118,40 @@ typedef struct {
     char mode[8];
     char name[50];
     dsd_tg_policy_match_type match;
+    /* Provenance. tune/audio/record/stream_allowed above are the combined answer: the talkgroup part AND the radio
+     * part. The radio part comes from the radio ID list (<dsd-neo/core/source_alias.h>) for each known party (a group
+     * call's source; both parties of a private call; an ID of 0 is unknown). Radio rows only restrict: they never
+     * admit (-W) and never lift a talkgroup block. A Hold overrides the talkgroup part only (the media gates compute
+     * (hold override || tg_x) && radio_x), and a radio block denies tuning under a Hold too. Without radio policy the
+     * radio part allows everything and the talkgroup part equals the combined answer. */
+    int radio_match;          /**< A known party matched a radio row with policy. */
+    int radio_blocked;        /**< That row's mode is B/DE (DSD_TG_POLICY_BLOCK_SOURCE). */
+    int radio_audio_allowed;  /**< Radio part of audio_allowed. */
+    int radio_record_allowed; /**< Radio part of record_allowed. */
+    int radio_stream_allowed; /**< Radio part of stream_allowed. */
+    int tg_audio_allowed;     /**< Talkgroup part of audio_allowed (what a Hold may override). */
+    int tg_record_allowed;    /**< Talkgroup part of record_allowed. */
+    int tg_stream_allowed;    /**< Talkgroup part of stream_allowed. */
+    int tg_tune_allowed;      /**< Talkgroup part of tune_allowed. */
 } dsd_tg_policy_decision;
+
+/**
+ * @brief Whether tuning is denied by radio rules alone.
+ *
+ * 1 when @p decision denies tuning, its talkgroup part allows it, and every tuning denial reason is a radio reason
+ * (DSD_TG_POLICY_BLOCK_SOURCE). A path that re-judges a call it already follows, because its identity was learned or
+ * updated, keeps the call on such a rejection (the per-frame media gates mute and stop recording the radio); a new
+ * grant is still refused. 0 for NULL.
+ */
+int dsd_tg_policy_decision_only_radio_blocks(const dsd_tg_policy_decision* decision);
+
+/**
+ * @brief Whether the radio list's policy blocks radio @p radio_id (its winning row's mode is B/DE).
+ *
+ * 0 for radio 0 (unknown), without radio policy, or when no policy row blocks it. For a call whose target is unknown
+ * but whose source is known (the -Y voice gate, frontends' block labels).
+ */
+int dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id);
 
 typedef struct {
     uint32_t target_id;

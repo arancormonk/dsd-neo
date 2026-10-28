@@ -8,6 +8,7 @@
  * 4-state model: IDLE, ON_CC, TUNED, HUNTING
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -26,6 +27,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
+#include "../../test_support/radio_policy_test.h"
 #include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -3465,6 +3467,158 @@ test_tdma_enc_respects_media_policy(void) {
     return 0;
 }
 
+/* D5 enrichment: a call followed while its talker was unknown learns a talker the radio list blocks. The call is kept
+   (identity committed, no release, no return to the control channel); the per-frame gates mute it. Phase 1 (FDMA). */
+static int
+test_enrichment_radio_block_keeps_call_p1(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.synctype = DSD_SYNC_P25P1_POS;
+    if (dsd_test_install_radio_policy(&g_state, 303, "B", 0, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not install the radio list\n");
+        return 1;
+    }
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 0, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.vc_is_tdma || ctx.tune_count != 1 || !ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: Source-less Phase 1 grant was not followed\n");
+        return 1;
+    }
+    ev = p25_sm_ev_active_call(0, 1000, 0, 303, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].voice_active || ctx.slots[0].src != 303
+        || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1000, 303)) {
+        DSD_FPRINTF(stderr, "FAIL: A blocked talker learned mid-call released the Phase 1 call\n");
+        return 1;
+    }
+    int muted = -1;
+    int record = -1;
+    if (dsd_audio_group_gate_mono(&g_opts, &g_state, 1000, 0, &muted) != 0 || muted != 1
+        || dsd_audio_record_policy_gate_slot(&g_opts, &g_state, 0, &record) != 0 || record != 0) {
+        DSD_FPRINTF(stderr, "FAIL: The kept Phase 1 call with a blocked talker was not muted (muted=%d record=%d)\n",
+                    muted, record);
+        return 1;
+    }
+    // A talkgroup rejection still releases as before.
+    if (dsd_tg_policy_set_mode(&g_state, 1000, 1000, "B") != 0) {
+        return 1;
+    }
+    ev = p25_sm_ev_active_call(0, 1000, 0, 304, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: A talkgroup rejection no longer released the Phase 1 call\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* The same on Phase 2: the slot whose talker the radio list blocks keeps its call, the companion slot is unaffected,
+   and after a radio-list reload a later identity update naming a radio the new list blocks keeps it too. */
+static int
+test_enrichment_radio_block_keeps_call_p2(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    if (dsd_test_install_radio_policy(&g_state, 303, "B", 0, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not install the radio list\n");
+        return 1;
+    }
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 0, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 202, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 0, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(1, 2000, 0, 202, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    g_state.p25_p2_audio_allowed[0] = 1;
+    g_state.p25_p2_audio_allowed[1] = 1;
+    if (ctx.state != P25_SM_TUNED || !ctx.vc_is_tdma || !ctx.slots[0].voice_active || !ctx.slots[1].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: Phase 2 radio enrichment fixture did not follow both slots\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 1000, 0, 303, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].grant_active || !ctx.slots[0].voice_active
+        || ctx.slots[0].src != 303
+        || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1000, 303)) {
+        DSD_FPRINTF(stderr, "FAIL: A blocked talker learned mid-call released the Phase 2 slot\n");
+        return 1;
+    }
+    if (dsd_p25p2_decode_audio_allowed(&g_opts, &g_state, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: The kept Phase 2 slot with a blocked talker was not muted\n");
+        return 1;
+    }
+    if (!ctx.slots[1].grant_active || !ctx.slots[1].voice_active || ctx.slots[1].src != 202
+        || !canonical_call_is(1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 2000, 202)) {
+        DSD_FPRINTF(stderr, "FAIL: A radio block on one slot changed the companion slot\n");
+        return 1;
+    }
+
+    // A reload: the new list blocks 404, not 303. The next identity update names 404.
+    if (dsd_test_install_radio_policy(&g_state, 404, "B", 0, 0, 0) != 0) {
+        return 1;
+    }
+    if (dsd_p25p2_decode_audio_allowed(&g_opts, &g_state, 0, 0) != 1) {
+        DSD_FPRINTF(stderr, "FAIL: The reloaded radio list still muted the unblocked talker\n");
+        return 1;
+    }
+    ev = p25_sm_ev_active_call(0, 1000, 0, 404, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].voice_active || ctx.slots[0].src != 404
+        || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1000, 404)
+        || dsd_p25p2_decode_audio_allowed(&g_opts, &g_state, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: After a reload, a newly blocked talker released or played the Phase 2 slot\n");
+        return 1;
+    }
+    if (!ctx.slots[1].voice_active || ctx.slots[1].src != 202) {
+        DSD_FPRINTF(stderr, "FAIL: The reload changed the companion slot\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* D5: a grant naming a blocked radio is not tuned (group and private, either party); one without a source is tuned on
+   the talkgroup decision. */
+static int
+test_grant_naming_blocked_radio_not_tuned(void) {
+    for (int kind = 0; kind < 3; kind++) {
+        reset_test_state();
+        g_opts.trunk_tune_private_calls = 1;
+        g_state.trunk_chan_map[0x1234] = 851500000;
+        if (dsd_test_install_radio_policy(&g_state, 303, "B", 0, 0, 0) != 0) {
+            return 1;
+        }
+        p25_sm_ctx_t ctx;
+        p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+        p25_sm_event_t ev = kind == 0   ? p25_sm_ev_group_grant(0x1234, 851500000, 1000, 303, 0)
+                            : kind == 1 ? p25_sm_ev_indiv_grant(0x1234, 851500000, 500, 303, 0)
+                                        : p25_sm_ev_indiv_grant(0x1234, 851500000, 303, 500, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (ctx.state == P25_SM_TUNED || ctx.tune_count != 0) {
+            DSD_FPRINTF(stderr, "FAIL: A grant naming a blocked radio was tuned (kind %d)\n", kind);
+            return 1;
+        }
+        ev = kind == 0 ? p25_sm_ev_group_grant(0x1234, 851500000, 1000, 0, 0)
+                       : p25_sm_ev_indiv_grant(0x1234, 851500000, 500, 0, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (ctx.state != P25_SM_TUNED || ctx.tune_count != 1) {
+            DSD_FPRINTF(stderr, "FAIL: A grant without a source was not tuned on the talkgroup decision (kind %d)\n",
+                        kind);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 main(void) {
     int fail = 0;
@@ -3536,6 +3690,9 @@ main(void) {
     fail += test_inband_policy_reject_preserves_tdma_companion();
     fail += test_inband_policy_reject_releases_after_companion_ended();
     fail += test_tdma_enc_respects_media_policy();
+    fail += test_enrichment_radio_block_keeps_call_p1();
+    fail += test_enrichment_radio_block_keeps_call_p2();
+    fail += test_grant_naming_blocked_radio_not_tuned();
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);

@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../test_support/radio_policy_test.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
@@ -4611,6 +4612,36 @@ test_receive_permission_round_five(void) {
     session_close(&s);
 }
 
+/* D5: a call whose talker the radio list blocks is not followed (a group D-SETUP naming its talker, an individual one by
+   either party); a followed call that learns such a talker from a floor grant is kept, its speech muted. */
+static void
+test_radio_policy_follow(void) {
+    session s = session_open();
+    assert(dsd_test_install_radio_policy(s.state, 0x7777u, "B", 0, 0, 0) == 0);
+    send_group_setup(&s, 0x100u, 0x0A, 0x7777u, 0, -1, 0, 4, 120);
+    assert(record_talker(&s, 0x0A) == 0x7777u);
+    assert(g_tunes == 0 && followed_call(s.state) == -1);
+    send_private_setup(&s, 0x222u, 0x0E, 0x7777u, 0, 4, 120);
+    assert(g_tunes == 0 && followed_call(s.state) == -1);
+    send_private_setup(&s, 0x7777u, 0x0F, 0x333u, 0, 4, 120);
+    assert(g_tunes == 0 && followed_call(s.state) == -1);
+    session_close(&s);
+
+    s = session_group_call();
+    assert(dsd_test_install_radio_policy(s.state, 0x7777u, "B", 0, 0, 0) == 0);
+    assert(followed_call(s.state) == 0x0A && g_tunes == 1);
+    tetra_speech sp;
+    DSD_MEMSET(&sp, 0, sizeof sp);
+    sp.kind = TETRA_SPEECH_CALL;
+    sp.call_id = 0x0A;
+    assert(!tetra_calls_speech_muted(s.opts, s.state, &sp));
+    send_grant(&s, 0x100u, 0x0A, 3, 0x7777u);
+    assert(record_talker(&s, 0x0A) == 0x7777u && canonical(s.state).ota_source_id == 0x7777u);
+    assert(followed_call(s.state) == 0x0A && g_returns == 0 && g_tunes == 1);
+    assert(tetra_calls_speech_muted(s.opts, s.state, &sp));
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -4713,6 +4744,7 @@ main(void) {
     test_receive_permission_record_moves();
     test_receive_permission_round_four();
     test_receive_permission_round_five();
+    test_radio_policy_follow();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }

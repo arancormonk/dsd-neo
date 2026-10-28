@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,6 +22,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "../test_support/radio_policy_test.h"
 
 static int
 expect_true(const char* tag, int cond) {
@@ -3097,6 +3100,229 @@ test_priority_refresh_pattern_and_unknown(void) {
     return rc;
 }
 
+/* Radio policy (D5, D6, D8): a known radio's row only restricts. Group and private calls, the source known or unknown,
+ * each radio row variant, a Hold on the target or none, -W on or off. */
+typedef struct {
+    const char* mode;
+    int audio, record, stream;
+    int tune_ok, audio_ok, record_ok, stream_ok;
+    uint32_t reason;
+} radio_case;
+
+static int
+check_radio_decision(const char* tag, const dsd_tg_policy_decision* d, const radio_case* c, int known) {
+    const int tune_ok = known ? c->tune_ok : 1;
+    const int audio_ok = known ? c->audio_ok : 1;
+    const int record_ok = known ? c->record_ok : 1;
+    const int stream_ok = known ? c->stream_ok : 1;
+    const uint32_t reason = known ? c->reason : 0u;
+    const int ok = d->tune_allowed == tune_ok && d->audio_allowed == audio_ok && d->record_allowed == record_ok
+                   && d->stream_allowed == stream_ok && d->block_reasons == reason && d->radio_match == known
+                   && d->radio_blocked == (known && !c->tune_ok) && d->radio_audio_allowed == audio_ok
+                   && d->radio_record_allowed == record_ok && d->radio_stream_allowed == stream_ok
+                   && d->tg_tune_allowed == 1 && d->tg_audio_allowed == 1 && d->tg_record_allowed == 1
+                   && d->tg_stream_allowed == 1
+                   && dsd_tg_policy_decision_only_radio_blocks(d) == (known && !c->tune_ok);
+    if (!ok) {
+        DSD_FPRINTF(stderr,
+                    "%s: tune=%d audio=%d record=%d stream=%d reasons=0x%X radio_match=%d radio_blocked=%d "
+                    "radio=%d/%d/%d tg=%d/%d/%d/%d\n",
+                    tag, d->tune_allowed, d->audio_allowed, d->record_allowed, d->stream_allowed, d->block_reasons,
+                    d->radio_match, d->radio_blocked, d->radio_audio_allowed, d->radio_record_allowed,
+                    d->radio_stream_allowed, d->tg_tune_allowed, d->tg_audio_allowed, d->tg_record_allowed,
+                    d->tg_stream_allowed);
+    }
+    return ok ? 0 : 1;
+}
+
+static int
+test_radio_policy_matrix(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    const radio_case cases[] = {
+        {"B", 0, 0, 0, 0, 0, 0, 0, DSD_TG_POLICY_BLOCK_SOURCE}, {"A", 1, 1, 1, 1, 1, 1, 1, 0u},
+        {"A", 1, 0, 1, 1, 1, 0, 1, DSD_TG_POLICY_BLOCK_RECORD}, {"A", 0, 0, 0, 1, 0, 0, 0, DSD_TG_POLICY_BLOCK_AUDIO},
+        {"A", 1, 1, 0, 1, 1, 1, 0, DSD_TG_POLICY_BLOCK_STREAM}, {"DE", 1, 1, 1, 0, 0, 0, 0, DSD_TG_POLICY_BLOCK_SOURCE},
+    };
+    rc |= expect_true("listed talkgroup", add_exact_row(st, 100, "A", "Fire") == 0);
+    rc |= expect_true("listed radio party", add_exact_row(st, 200, "A", "Unit") == 0);
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= expect_true("radio row", dsd_test_install_radio_policy(st, 42, cases[i].mode, cases[i].audio,
+                                                                     cases[i].record, cases[i].stream)
+                                           == 0);
+        for (int private_call = 0; private_call <= 1; private_call++) {
+            for (int known = 0; known <= 1; known++) {
+                for (int hold = 0; hold <= 1; hold++) {
+                    for (int allow_list = 0; allow_list <= 1; allow_list++) {
+                        DSD_MEMSET(&opts, 0, sizeof opts);
+                        opts.trunk_tune_group_calls = opts.trunk_tune_private_calls = 1;
+                        opts.trunk_use_allow_list = allow_list;
+                        st->tg_hold = hold ? (private_call ? 200U : 100U) : 0U;
+                        dsd_tg_policy_decision d;
+                        const uint32_t src = known ? 42U : 0U;
+                        if (private_call) {
+                            dsd_tg_policy_evaluate_private_call(&opts, st, src, 200, 0, 0, &d);
+                        } else {
+                            dsd_tg_policy_evaluate_group_call(&opts, st, 100, src, 0, 0, &d);
+                        }
+                        char tag[96];
+                        DSD_SNPRINTF(tag, sizeof tag, "radio case %zu private=%d known=%d hold=%d -W=%d", i,
+                                     private_call, known, hold, allow_list);
+                        rc |= check_radio_decision(tag, &d, &cases[i], known);
+                        rc |= expect_true("hold provenance kept", d.tg_hold_match == hold);
+                    }
+                }
+            }
+        }
+    }
+    st->tg_hold = 0U;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = opts.trunk_tune_private_calls = 1;
+    dsd_tg_policy_decision d;
+
+    /* D8: a radio row restricts either party of a private call. */
+    rc |= expect_true("radio row on the called party", dsd_test_install_radio_policy(st, 200, "B", 0, 0, 0) == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 200, 0, 0, &d);
+    rc |= expect_true("blocked called radio blocks the private call",
+                      !d.tune_allowed && d.radio_blocked && (d.block_reasons & DSD_TG_POLICY_BLOCK_SOURCE) != 0u);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 7, 200, 0, 0, &d);
+    rc |= expect_true("blocked called radio blocks the private grant", !d.tune_allowed && d.radio_blocked);
+    rc |= expect_true("record-off radio on the caller", dsd_test_install_radio_policy(st, 7, "A", 1, 0, 1) == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 200, 0, 0, &d);
+    rc |= expect_true("caller's record-off reaches the private call",
+                      d.tune_allowed && d.audio_allowed && !d.record_allowed && d.radio_match);
+
+    /* D5: radio rows never admit. An A row satisfies no allow-list and lifts no talkgroup block. */
+    rc |= expect_true("allowed radio", dsd_test_install_radio_policy(st, 42, "A", 1, 1, 1) == 0);
+    opts.trunk_use_allow_list = 1;
+    dsd_tg_policy_evaluate_group_call(&opts, st, 300, 42, 0, 0, &d);
+    rc |= expect_true("radio A row admits no unlisted talkgroup",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u && d.radio_match
+                          && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    dsd_tg_policy_evaluate_private_call(&opts, st, 42, 999, 0, 0, &d);
+    rc |= expect_true("radio A row admits no unlisted private call",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    opts.trunk_use_allow_list = 0;
+    rc |= expect_true("blocked talkgroup", add_exact_row(st, 400, "B", "Off") == 0);
+    dsd_tg_policy_evaluate_group_call(&opts, st, 400, 42, 0, 0, &d);
+    rc |= expect_true("radio A row lifts no talkgroup block", !d.tune_allowed && !d.audio_allowed && !d.tg_tune_allowed
+                                                                  && !d.radio_blocked
+                                                                  && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    rc |= expect_true("blocked radio", dsd_test_install_radio_policy(st, 42, "B", 0, 0, 0) == 0);
+    dsd_tg_policy_evaluate_group_call(&opts, st, 400, 42, 0, 0, &d);
+    rc |= expect_true("talkgroup and radio both blocking is not radio-only",
+                      !d.tune_allowed && d.radio_blocked && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    rc |= expect_true("radio blocked label",
+                      strcmp(dsd_tg_policy_block_reason_label(DSD_TG_POLICY_BLOCK_SOURCE), "radio blocked") == 0);
+    rc |= expect_true("radio blocked check", dsd_tg_policy_radio_blocked(st, 42) == 1
+                                                 && dsd_tg_policy_radio_blocked(st, 0) == 0
+                                                 && dsd_tg_policy_radio_blocked(st, 43) == 0);
+
+    /* The supergroup's final blocks reach the talkgroup part too. */
+    rc |= expect_true("allowed radio again", dsd_test_install_radio_policy(st, 42, "A", 1, 1, 1) == 0);
+    dsd_tg_policy_evaluate_group_call(&opts, st, 100, 42, 0, 0, &d);
+    (void)dsd_tg_policy_apply_ota_final_blocks(&opts, st, 400, 100, 42, &d);
+    rc |= expect_true("ota final block is a talkgroup reason", !d.tune_allowed && !d.tg_tune_allowed
+                                                                   && !d.tg_audio_allowed && d.radio_audio_allowed
+                                                                   && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    rc |= expect_true("NULL decision is not radio-only", dsd_tg_policy_decision_only_radio_blocks(NULL) == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* Review focus: a labels-only radio list (no policy columns) leaves every decision bit-identical to no list. */
+static int
+test_no_radio_policy_no_change(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = opts.trunk_tune_private_calls = 1;
+    rc |= expect_true("listed talkgroup", add_exact_row(st, 100, "A", "Fire") == 0);
+    rc |= expect_true("blocked talkgroup", add_exact_row(st, 101, "B", "Off") == 0);
+    rc |= expect_true("pattern row", add_pattern_row(st, "2*", "A", "Twos") == 0);
+    const uint32_t targets[] = {100, 101, 205, 300};
+    const uint32_t sources[] = {0, 42, 101};
+
+    enum { N = 4 * 3 * 2 * 2 * 2 };
+
+    static dsd_tg_policy_decision before[N];
+    static dsd_tg_policy_decision after[N];
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1) {
+            const dsd_test_radio_row rows[] = {{42, NULL, 0, 0, 0, "Engine 42"}, {101, NULL, 0, 0, 0, "Unit"}};
+            rc |= expect_true("labels-only radio list", dsd_test_install_radio_rows(st, rows, 2) == 0);
+            rc |= expect_true("labels-only list has no policy", !dsd_source_policy_loaded(st));
+        }
+        size_t n = 0;
+        for (size_t t = 0; t < 4; t++) {
+            for (size_t s = 0; s < 3; s++) {
+                for (int allow_list = 0; allow_list <= 1; allow_list++) {
+                    for (int hold = 0; hold <= 1; hold++) {
+                        opts.trunk_use_allow_list = allow_list;
+                        st->tg_hold = hold ? 100U : 0U;
+                        dsd_tg_policy_decision* out = pass ? &after[n] : &before[n];
+                        dsd_tg_policy_evaluate_group_call(&opts, st, targets[t], sources[s], 0, 0, out);
+                        n++;
+                        out = pass ? &after[n] : &before[n];
+                        dsd_tg_policy_evaluate_private_call(&opts, st, sources[s], targets[t], 0, 0, out);
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+    rc |=
+        expect_true("labels-only radio list leaves decisions bit-identical", memcmp(before, after, sizeof before) == 0);
+    st->tg_hold = 0U;
+    free_test_state(st);
+    return rc;
+}
+
+/* A row token for an exact or range row carries no pattern text: stray text names no row. */
+static int
+test_row_token_refuses_stray_pattern_text(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("exact row", add_exact_row(st, 5, "A", "Five") == 0);
+    rc |= expect_true("range row", add_range_row(st, 10, 20, "A", "Teens") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 50;
+    rc |= expect_true("exact token with pattern text refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_EXACT, 5, 5, "5"},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 1);
+    rc |= expect_true("range token with pattern text refused",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_RANGE, 10, 20, "1x"})
+                          == 1);
+    dsd_tg_policy_selection selection = {0, 5, 5, DSD_TG_POLICY_ROW_EXACT, "5"};
+    rc |= expect_true("selection with stray pattern text refused",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &selection, 1, 0) == 1);
+    rc |= expect_true("clean exact token still applies",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_EXACT, 5, 5, ""},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 0);
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3144,5 +3370,8 @@ main(void) {
     rc |= test_session_avoid_count_pattern();
     rc |= test_unknown_private_endpoints();
     rc |= test_priority_refresh_pattern_and_unknown();
+    rc |= test_radio_policy_matrix();
+    rc |= test_no_radio_policy_no_change();
+    rc |= test_row_token_refuses_stray_pattern_text();
     return rc;
 }

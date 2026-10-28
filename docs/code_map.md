@@ -1365,11 +1365,37 @@ suite runs under this compiler.
   generation, which learned aliases and session avoids do not move; a context created in place by decoder writes
   accepts an edit captured with nothing loaded, and a generation wrap is structural.
 - Invariant (unknown endpoints, `talkgroup_policy.c`): an endpoint ID of 0 is unknown, never an ID. Private
-  evaluation and the followed calls' priority refresh look up no row for a 0 source or target, so a `0` row neither
-  blocks, admits (`-W`) nor prioritises a call that names one party. Private-call vs private-grant admission is
+  evaluation, the followed calls' priority refresh and the radio list's policy lookups look up no row for a 0 source
+  or target, so a `0` row neither blocks, admits (`-W`) nor prioritises a call that names one party. Private-call vs private-grant admission is
   unchanged: `dsd_tg_policy_evaluate_private_call()` still needs a listed known party under `-W`, the grant variant
   still tunes unlisted parties. Tests: `CORE_TALKGROUP_POLICY` (`test_unknown_private_endpoints`,
   `test_priority_refresh_pattern_and_unknown`).
+- Invariant (radio policy, `<dsd-neo/core/talkgroup_policy.h>`, issue #773 D5/D6/D8): the group and private evaluators
+  apply the radio list's policy rows (`dsd_source_policy_lookup()`) for each known party (a group call's source,
+  both parties of a private call) after the talkgroup evaluation, which they keep as the decision's talkgroup part
+  (`tg_tune/audio/record/stream_allowed`); the radio part is `radio_match`, `radio_blocked` and
+  `radio_audio/record/stream_allowed`, and the combined fields are their AND. Radio rows only restrict: they never
+  satisfy `-W` and never lift a talkgroup block. `B`/`DE` sets `DSD_TG_POLICY_BLOCK_SOURCE` ("radio blocked") and
+  denies tuning (a Hold included); media-only rows add AUDIO/RECORD/STREAM. Without radio policy
+  (`!dsd_source_policy_loaded()`) the radio list is never consulted and decisions are bit-identical to no list.
+  - A Hold overrides the talkgroup part only: the audio, record and P25 Phase 2 gates compute
+    `(hold override || tg_x) && radio_x` (`dsd_audio_policy_allows_audio/record()`), and a P25 Phase 2 verdict's
+    `hold` is set only when the radio part lets the call play.
+  - Enrichment vs admission: a path that re-judges a call it already follows because its identity was learned or
+    updated keeps the call on a rejection whose only reasons are radio reasons
+    (`dsd_tg_policy_decision_only_radio_blocks()`): P25 `p25_voice_start_apply_identity()` (the companion slot is
+    untouched), DMR resident members and C_MOVE of the followed call. TETRA never re-judges the call it follows, and
+    NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
+    per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
+    radio. App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose.
+  - A call whose target is unknown but whose source is known (`dsd_tg_policy_radio_blocked()`): the `-Y` voice gate
+    holds no blocked radio (M17 stays outside policy) and the Qt block label names it.
+  - The P25 Phase 2 verdict key carries the radio list's store id (`dsd_p25p2_policy_key::radio_store`), read from the
+    live decoder state, so a reload or clear retakes a waiting call's verdict.
+  - Tests: `CORE_TALKGROUP_POLICY` (`test_radio_policy_matrix`, `test_no_radio_policy_no_change`),
+    `CORE_AUDIO_GROUP_GATE` (`test_hold_keeps_radio_restrictions`, `test_midcall_source_mute`), `CORE_P25P2_PLAYOUT`,
+    `P25_SM_UNIFIED_CORE`, `DMR_PREEMPT`, `DMR_GRANT_POLICY`, `NXDN_GRANT_POLICY`, `EDACS_GRANT_TUNE_MATRIX`,
+    `TETRA_CALLS`, `ENGINE_SCAN_VOICE_GATE`, `UI_QT_METRICS_MODEL`.
 - Invariant (NXDN Type-C source fallback, `dsd_tg_policy_evaluate_group_source_fallback()`): a group call whose target
   matches no row is judged by its source's row (admission under `-W`, mode, media, priority), while the target's own
   final blocks stay in force: session avoid, call skip and encryption lockout (the source's own too), and a Hold on
@@ -1555,9 +1581,9 @@ suite runs under this compiler.
     gate judged the call on), or the one taken (`dsd_p25p2_playout_note_policy()`) by every path
     that changes a verdict or ends the calls before the playout drains, and each emission checks, cheaply
     (`dsd_p25p2_playout_policy_key()`), whether anything a waiting call's verdict reads moved since (its source named
-    by signaling, a patch change, a policy row learned from an alias, the hold, the allow list, or the decode clock's
-    next second as a bound for anything that runs out with time), taking its verdict again if so. The paths that
-    note: a user block
+    by signaling, a patch change, a policy row learned from an alias, a radio-list reload, the hold, the allow list,
+    or the decode clock's next second as a bound for anything that runs out with time), taking its verdict again if
+    so. The paths that note: a user block
     (`apply_user_block_transition_locked()`), the SM release before its return tune (whose engine hook ends the calls),
     the carrier boundary and the no-carrier pass. Every command that can change a call's verdict (a policy-store
     write, a hold change or the allow-list toggle, `apply_cmd()`) makes the change under the tick guard and takes the
@@ -2559,7 +2585,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
     completions. Successful inherited-policy scan exports update the configured persistence path.
     `app_command_queue.c` uses `command_writes_policy_store()` to guard live policy transactions against the P25
-    watchdog's release-time audio flush; callees must use `_locked` forms to avoid acquiring the guard again.
+    watchdog's release-time audio flush; callees must use `_locked` forms to avoid acquiring the guard again. The
+    radio list's import and clear (`DSD_APP_CMD_IMPORT_SRC_LIST`, `_CLEAR`) are on that list: its policy rows judge
+    calls too. Every other radio-list install is pre-start (engine start, `--src-csv`); a config apply only sets the
+    path. Tests: `ENGINE_P25_POLICY_STORE_GUARD` (`test_radio_list_reload_during_playout`, TSan preset).
   - Input switches (issue #634): Input > Switch source (WAV / raw file, symbol files, UDP, Pulse and a Pulse device),
     Replay last, Stop replay and the TCP connect go through `dsd_audio_switch_input()` by way of the services in
     `menu_services.c` and `tcp_audio_connect.c` (`svc_open_audio_file_in()`, `svc_open_symbol_stream_in()`,

@@ -600,6 +600,14 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
     return 0;
 }
 
+/* No radio list in this fixture: no radio is blocked. */
+int
+dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id) {
+    (void)state;
+    (void)radio_id;
+    return 0;
+}
+
 static int
 write_text_file(const char* path, const char* content) {
     FILE* fp = dsd_fopen_private(path, "wb");

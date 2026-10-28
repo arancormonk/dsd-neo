@@ -127,13 +127,14 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
         return 1;
     }
     const uint64_t wide_target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
-    if (wide_target == 0U || wide_target > UINT32_MAX) {
-        /* Unknown identity (LC never decoded, or not a 32-bit ID) counts as voice. */
-        return 1;
-    }
-    const uint32_t target = (uint32_t)wide_target;
     /* A source that does not fit 32 bits is unknown, not its truncated low half. */
     const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
+    if (wide_target == 0U || wide_target > UINT32_MAX) {
+        /* Unknown target (LC never decoded, or not a 32-bit ID) counts as voice, unless the radio list blocks its
+           known source: radio rules act once the radio is known. */
+        return !dsd_tg_policy_radio_blocked(state, source);
+    }
+    const uint32_t target = (uint32_t)wide_target;
     const int encrypted =
         call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
     dsd_tg_policy_decision decision;

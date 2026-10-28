@@ -876,6 +876,18 @@ Notes:
   more literal digits wins, then one without `*` over one with it, with the **last row winning** remaining ties.
 - Policy comes from the row that wins for the radio ID, named or not. The name comes from the row that wins among
   the rows with a non-empty name, so `2*,Fire,A` with `2001234,,B` names radio 2001234 `Fire` and blocks it.
+- How policy rows act on calls:
+  - Radio rows only restrict, and the most restrictive answer wins. A row in mode `A` admits nothing: it satisfies
+    no `-W` allow list and lifts no talkgroup block. `B`/`DE` refuses the call (block reason `radio blocked`);
+    `audio=off` mutes it and `record=off` stops recording it (`stream` as for the group list).
+  - A group call is judged on its source. A private call is judged on both parties: the group list's exact rows
+    keep their role there, and radio rows add restrictions for either party.
+  - A talkgroup Hold overrides the talkgroup part only. A held call whose radio is blocked is not tuned and stays
+    muted, and one whose radio has `record=off` plays but is not recorded.
+  - Radio rules act once the radio is known; a source or destination ID of `0` is unknown and never matches a row.
+    A grant that names a blocked radio is not tuned. A grant without a source is tuned on the talkgroup decision,
+    and when the source decodes mid-call the audio and recording gates apply its row. A call already followed is
+    never released for a radio rule: it stays tuned, and a blocked radio's audio stays muted.
 - Names are not CSV-escaped; avoid commas and line breaks in fields.
 - Source labels prefer this list, then fall back to the active group list's **exact-row** label. A CSV alias
   therefore wins over an OTA talker alias learned for the same RID as the `SName:` label; the OTA alias text itself

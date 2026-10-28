@@ -13,6 +13,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -25,6 +26,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#include "../test_support/radio_policy_test.h"
 
 static int
 expect_eq(const char* tag, int got, int want) {
@@ -542,6 +545,76 @@ test_record_unknown_only_gates(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* D6: a Hold overrides the talkgroup part only. A held blocked talkgroup whose radio is record-off plays and is not
+ * recorded; whose radio is blocked stays muted. Group and private calls, P25 Phase 1 (mono) and both Phase 2 slots
+ * (mixers, record gate, decode gate and the playout verdict). */
+static int
+test_hold_keeps_radio_restrictions(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+
+    const struct {
+        const char* mode;
+        int audio, record;
+        int plays, records;
+    } radio[] = {{NULL, 1, 1, 1, 1}, {"A", 1, 0, 1, 0}, {"A", 0, 0, 0, 0}, {"B", 0, 0, 0, 0}};
+
+    for (int phase2 = 0; phase2 <= 1; ++phase2) {
+        for (uint8_t slot = 0; slot < (phase2 ? 2 : 1); ++slot) {
+            for (int private_call = 0; private_call <= 1; ++private_call) {
+                for (size_t r = 0; r < sizeof radio / sizeof radio[0]; ++r) {
+                    DSD_MEMSET(opts, 0, sizeof(*opts));
+                    reset_state(st);
+                    const int synctype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+                    st->synctype = synctype;
+                    st->currentslot = slot;
+                    st->tg_hold = 123;
+                    st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+                    st->p25_p2_audio_allowed[slot] = 1;
+                    rc |= expect_eq("hold-radio blocked talkgroup", seed_policy_group(st, 123, "B", "Held"), 0);
+                    if (radio[r].mode) {
+                        rc |= expect_eq("hold-radio row",
+                                        dsd_test_install_radio_policy(st, 456, radio[r].mode, radio[r].audio,
+                                                                      radio[r].record, radio[r].audio),
+                                        0);
+                    }
+                    rc |= expect_eq("hold-radio call",
+                                    seed_call(st, slot, synctype,
+                                              private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
+                                              123, 123, 456),
+                                    1);
+                    int muted = -1;
+                    int record = -1;
+                    rc |= expect_eq("hold-radio mono", dsd_audio_group_gate_mono(opts, st, 123, 0, &muted), 0);
+                    rc |= expect_eq("hold-radio mono verdict", muted, !radio[r].plays);
+                    rc |= expect_eq("hold-radio record", dsd_audio_record_gate_mono(opts, st, &record), 0);
+                    rc |= expect_eq("hold-radio record verdict", record, radio[r].records);
+                    rc |= expect_eq("hold-radio record slot",
+                                    dsd_audio_record_policy_gate_slot(opts, st, slot, &record), 0);
+                    rc |= expect_eq("hold-radio record slot verdict", record, radio[r].records);
+                    if (phase2) {
+                        int left = -1;
+                        int right = -1;
+                        rc |= expect_eq("hold-radio dual",
+                                        dsd_audio_group_gate_dual(opts, st, slot == 0 ? 123 : 0, slot == 1 ? 123 : 0, 0,
+                                                                  0, &left, &right),
+                                        0);
+                        rc |= expect_eq("hold-radio dual verdict", slot == 0 ? left : right, !radio[r].plays);
+                        rc |= expect_eq("hold-radio decode", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0),
+                                        radio[r].plays);
+                        dsd_p25p2_playout_verdict verdict;
+                        rc |= expect_eq("hold-radio playout verdict",
+                                        dsd_p25p2_playout_policy_verdict(opts, st, slot, &verdict, NULL, NULL), 1);
+                        rc |= expect_eq("hold-radio playout hold", verdict.hold, radio[r].plays);
+                        rc |= expect_eq("hold-radio playout blocked", verdict.blocked, !radio[r].plays);
+                        rc |= expect_eq("hold-radio playout recordable", verdict.recordable, radio[r].records);
+                    }
+                }
+            }
+        }
+    }
+    return rc;
+}
+
 // A patched P25 call records on the policy target (the member WG its grant matched), not the over-the-air supergroup:
 // the rule follows the record decision, so a listed supergroup alone leaves the member call unknown.
 static int
@@ -607,6 +680,61 @@ test_record_unknown_only_p25_unmute(dsd_opts* opts, dsd_state* st) {
                                        : "an unknown talkgroup records under the override",
                                 record, !listed);
             }
+        }
+    }
+    return rc;
+}
+
+/* D5: a call tuned while its source was unknown is muted and stops recording once the source decodes as a blocked
+ * radio; the gates never end the call (no mid-call release for a radio rule). */
+static int
+test_midcall_source_mute(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int phase2 = 0; phase2 <= 1; ++phase2) {
+        for (int blocked = 0; blocked <= 1; ++blocked) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            reset_state(st);
+            const int synctype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+            st->synctype = synctype;
+            st->currentslot = 0;
+            st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+            st->p25_p2_audio_allowed[0] = 1;
+            rc |= expect_eq("midcall radio row",
+                            blocked ? dsd_test_install_radio_policy(st, 777, "B", 0, 0, 0)
+                                    : dsd_test_install_radio_policy(st, 777, "A", 1, 0, 1),
+                            0);
+            dsd_call_observation observation = {
+                .protocol = synctype,
+                .slot = 0,
+                .kind = DSD_CALL_KIND_GROUP_VOICE,
+                .ota_target_id = 300,
+                .policy_target_id = 300,
+                .ota_source_id = 0,
+                .observed_m = 1.0,
+            };
+            rc |= expect_eq("midcall tuned without a source",
+                            dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+            int muted = -1;
+            int record = -1;
+            rc |= expect_eq("midcall unknown plays", dsd_audio_group_gate_mono(opts, st, 300, 0, &muted), 0);
+            rc |= expect_eq("midcall unknown plays verdict", muted, 0);
+            rc |= expect_eq("midcall unknown records", dsd_audio_record_gate_mono(opts, st, &record), 0);
+            rc |= expect_eq("midcall unknown records verdict", record, 1);
+            observation.ota_source_id = 777;
+            observation.observed_m = 2.0;
+            (void)dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+            rc |= expect_eq("midcall learned", dsd_audio_group_gate_mono(opts, st, 300, 0, &muted), 0);
+            rc |= expect_eq("midcall learned mute", muted, blocked);
+            rc |= expect_eq("midcall learned record", dsd_audio_record_gate_mono(opts, st, &record), 0);
+            rc |= expect_eq("midcall learned record verdict", record, 0);
+            if (phase2) {
+                rc |= expect_eq("midcall learned decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), !blocked);
+            }
+            dsd_call_snapshot call;
+            rc |= expect_eq("midcall call kept",
+                            dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                                && call.ota_source_id == 777U,
+                            1);
         }
     }
     return rc;
@@ -984,6 +1112,8 @@ main(void) {
     rc |= test_record_unknown_only_gates(opts, st);
     rc |= test_record_unknown_only_p25_policy_target(opts, st);
     rc |= test_record_unknown_only_p25_unmute(opts, st);
+    rc |= test_hold_keeps_radio_restrictions(opts, st);
+    rc |= test_midcall_source_mute(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }

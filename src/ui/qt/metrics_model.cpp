@@ -728,6 +728,11 @@ struct DecryptionView {
             if (policy.block_reasons) {
                 block = QString::fromUtf8(dsd_tg_policy_block_reason_label(policy.block_reasons));
             }
+        } else if ((call.kind == DSD_CALL_KIND_GROUP_VOICE || call.kind == DSD_CALL_KIND_PRIVATE_VOICE)
+                   && call.ota_source_id > 0 && call.ota_source_id <= UINT32_MAX
+                   && dsd_tg_policy_radio_blocked(state, static_cast<uint32_t>(call.ota_source_id))) {
+            // Its target is not known yet, but its radio is: the radio list's block applies once the radio is known.
+            block = QString::fromUtf8(dsd_tg_policy_block_reason_label(DSD_TG_POLICY_BLOCK_SOURCE));
         }
         return block;
     }

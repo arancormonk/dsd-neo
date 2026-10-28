@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -68,6 +69,9 @@ dsd_tg_policy_block_reason_label(uint32_t block_reasons) {
     }
     if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
         return "mode";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_SOURCE) {
+        return "radio blocked";
     }
     if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
         return "audio";
@@ -1111,7 +1115,8 @@ tg_policy_entry_has_key(const dsd_tg_policy_entry* e, uint8_t kind, uint32_t id_
         return 0;
     }
     if (kind != DSD_TG_POLICY_ROW_PATTERN) {
-        return e->id_start == id_start && e->id_end == id_end;
+        // An exact or range token carries no pattern text: stray text names no row.
+        return pattern[0] == '\0' && e->id_start == id_start && e->id_end == id_end;
     }
     dsd_id_pattern parsed;
     return memchr(pattern, '\0', DSD_ID_PATTERN_TEXT_MAX) != NULL && dsd_id_pattern_parse(pattern, &parsed) == 0
@@ -1699,6 +1704,92 @@ tg_policy_init_decision(dsd_tg_policy_decision* out, uint32_t target_id, uint32_
     out->preempt_requested = 0;
     out->block_reasons = DSD_TG_POLICY_BLOCK_NONE;
     out->match = DSD_TG_POLICY_MATCH_NONE;
+    out->radio_audio_allowed = 1;
+    out->radio_record_allowed = 1;
+    out->radio_stream_allowed = 1;
+}
+
+/* One known radio's row with policy restricts the radio part (an ID of 0 is unknown, never looked up). */
+static void
+tg_policy_radio_restrict(const dsd_state* state, uint32_t radio, dsd_tg_policy_decision* out) {
+    dsd_source_policy_match m;
+    if (radio == 0U || !dsd_source_policy_lookup(state, radio, &m)) {
+        return;
+    }
+    out->radio_match = 1;
+    if (dsd_tg_policy_mode_blocks(m.entry.mode)) {
+        out->radio_blocked = 1;
+        out->radio_audio_allowed = 0;
+        out->radio_record_allowed = 0;
+        out->radio_stream_allowed = 0;
+        return;
+    }
+    if (!m.entry.audio) {
+        out->radio_audio_allowed = 0;
+        out->radio_record_allowed = 0;
+        out->radio_stream_allowed = 0;
+    }
+    if (!m.entry.record) {
+        out->radio_record_allowed = 0;
+    }
+    if (!m.entry.stream) {
+        out->radio_stream_allowed = 0;
+    }
+}
+
+/* The talkgroup evaluation in @p out is complete: keep it as the talkgroup part, then restrict the combined answer by
+ * the radio list's rows for the known parties @p a and @p b (D5: radio rows only restrict). Without radio policy the
+ * radio list is never consulted. */
+static void
+tg_policy_apply_radio_parts(const dsd_state* state, uint32_t a, uint32_t b, dsd_tg_policy_decision* out) {
+    out->tg_tune_allowed = out->tune_allowed;
+    out->tg_audio_allowed = out->audio_allowed;
+    out->tg_record_allowed = out->record_allowed;
+    out->tg_stream_allowed = out->stream_allowed;
+    if (!dsd_source_policy_loaded(state)) {
+        return;
+    }
+    tg_policy_radio_restrict(state, a, out);
+    if (b != a) {
+        tg_policy_radio_restrict(state, b, out);
+    }
+    if (!out->radio_match) {
+        return;
+    }
+    if (out->radio_blocked) {
+        out->tune_allowed = 0;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_SOURCE;
+    } else if (!out->radio_audio_allowed) {
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_AUDIO;
+    } else {
+        if (!out->radio_record_allowed) {
+            out->block_reasons |= DSD_TG_POLICY_BLOCK_RECORD;
+        }
+        if (!out->radio_stream_allowed) {
+            out->block_reasons |= DSD_TG_POLICY_BLOCK_STREAM;
+        }
+    }
+    out->audio_allowed = out->audio_allowed && out->radio_audio_allowed;
+    out->record_allowed = out->record_allowed && out->radio_record_allowed;
+    out->stream_allowed = out->stream_allowed && out->radio_stream_allowed;
+}
+
+/* Reasons that deny tuning; the rest restrict media only. */
+#define TG_POLICY_TUNE_DENY_REASONS                                                                                    \
+    (~((uint32_t)DSD_TG_POLICY_BLOCK_AUDIO | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD                                      \
+       | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM))
+
+int
+dsd_tg_policy_decision_only_radio_blocks(const dsd_tg_policy_decision* decision) {
+    return decision && !decision->tune_allowed && decision->tg_tune_allowed && decision->radio_blocked
+           && (decision->block_reasons & TG_POLICY_TUNE_DENY_REASONS & ~(uint32_t)DSD_TG_POLICY_BLOCK_SOURCE) == 0U;
+}
+
+int
+dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id) {
+    dsd_source_policy_match m;
+    return radio_id != 0U && dsd_source_policy_loaded(state) && dsd_source_policy_lookup(state, radio_id, &m)
+           && dsd_tg_policy_mode_blocks(m.entry.mode);
 }
 
 static void
@@ -1958,6 +2049,7 @@ tg_policy_evaluate_group(const dsd_opts* opts, const dsd_state* state, uint32_t 
     if (!mode_blocking && !hold_mismatch) {
         tg_policy_apply_explicit_media_blocks(out, explicit_audio_block, explicit_record_block, explicit_stream_block);
     }
+    tg_policy_apply_radio_parts(state, src, src, out);
 }
 
 int
@@ -2004,10 +2096,14 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
     }
     decision->block_reasons |= final;
     decision->tune_allowed = 0;
+    decision->tg_tune_allowed = 0;
     if (final & ~(uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT) {
         decision->audio_allowed = 0;
         decision->record_allowed = 0;
         decision->stream_allowed = 0;
+        decision->tg_audio_allowed = 0;
+        decision->tg_record_allowed = 0;
+        decision->tg_stream_allowed = 0;
     }
     return 1;
 }
@@ -2070,6 +2166,7 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
                                               chosen->audio != 0u && (chosen->record == 0u || known),
                                               chosen->audio != 0u && chosen->stream == 0u);
     }
+    tg_policy_apply_radio_parts(state, src, dst, out);
 
     return 0;
 }

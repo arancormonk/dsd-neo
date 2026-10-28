@@ -6497,8 +6497,11 @@ apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     DSD_MEMCPY(values.tags, p.tags, sizeof values.tags);
     const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
     const dsd_tg_policy_row_key key = tg_row_key(p.table_index, p.kind, p.id_start, p.id_end, p.pattern);
-    if (dsd_tg_policy_set_fields_key(state, p.policy_context, p.policy_generation, &key, &values, mask) != 0) {
-        ui_set_toast(state, 3, "Talkgroup edit refused: invalid fields or alias row");
+    const int rc = dsd_tg_policy_set_fields_key(state, p.policy_context, p.policy_generation, &key, &values, mask);
+    if (rc != 0) {
+        ui_set_toast(state, 3, "%s",
+                     rc == 1 && p.table_index >= 0 ? "Talkgroup list changed: the row is no longer listed"
+                                                   : "Talkgroup edit refused: invalid fields or alias row");
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup updated");
@@ -6516,8 +6519,11 @@ apply_cmd_tg_row_remove(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
     const dsd_tg_policy_row_key key = tg_row_key(p.table_index, p.kind, p.id_start, p.id_end, p.pattern);
-    if (dsd_tg_policy_remove_key(state, p.policy_context, p.policy_generation, &key) != 0) {
-        ui_set_toast(state, 3, "Talkgroup remove refused: missing or alias row");
+    const int rc = dsd_tg_policy_remove_key(state, p.policy_context, p.policy_generation, &key);
+    if (rc != 0) {
+        ui_set_toast(state, 3, "%s",
+                     rc == 1 && p.table_index >= 0 ? "Talkgroup list changed: the row is no longer listed"
+                                                   : "Talkgroup remove refused: missing or alias row");
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup removed");
@@ -8317,7 +8323,8 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
     return 0;
 }
 
-/* Every free, publish or realloc of the live talkgroup policy store runs under
+/* Every free, publish or realloc of the live talkgroup policy store, and every
+ * replacement of the radio list (its policy rows judge calls too), runs under
  * the P25 SM tick guard: the watchdog's release-time audio flush evaluates policy
  * under it (#554). The guard is not re-entrant. Nothing reached from these commands
  * may acquire it with p25_sm_tick_guard_enter(), run_manual_retune_guarded(),
@@ -8342,6 +8349,9 @@ command_writes_policy_store(const struct dsd_app_command* c) {
         DSD_APP_CMD_LOCKOUT_SLOT,
         DSD_APP_CMD_TG_SESSION_AVOID_CLEAR,
         DSD_APP_CMD_SKIP_SLOT,
+        /* The radio list's policy rows judge calls as the group list's do. */
+        DSD_APP_CMD_IMPORT_SRC_LIST,
+        DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
     };
     if (!c) {
         return 0;

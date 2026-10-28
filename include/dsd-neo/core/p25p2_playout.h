@@ -46,8 +46,8 @@ typedef enum dsd_p25p2_burst_kind {
  * after it ended, so a Skip, lockout or policy edit mutes audio queued before it; recordability stays as queued.
  */
 typedef struct dsd_p25p2_playout_verdict {
-    uint8_t blocked;    /**< The talkgroup policy mutes the call (no hold). */
-    uint8_t hold;       /**< A talkgroup hold matches the call: it plays even from a switched-off slot. */
+    uint8_t blocked;    /**< The policy mutes the call: its talkgroup part (no hold) or the radio list. */
+    uint8_t hold;       /**< A talkgroup hold plays the call (no radio-list mute); never a switched-off slot. */
     uint8_t crypto_ok;  /**< p25_crypto_audio_output_permitted(). */
     uint8_t recordable; /**< The static WAV may record the call. */
 } dsd_p25p2_playout_verdict;
@@ -65,12 +65,13 @@ enum {
 /**
  * What a call's talkgroup verdict reads that can move within its epoch (dsd_p25p2_playout_policy_key()): the call's
  * identity and the talkgroup its policy is judged on (a group call's policy target, its patch's member while that is
- * current; a private call's own target), the policy table's version, the hold, the allow-list switch, the
- * unknown-talkgroups-only record switch, and the decode clock's second (a cheap bound for anything that runs out with
- * time).
+ * current; a private call's own target), the policy table's version, the radio list's store, the hold, the allow-list
+ * switch, the unknown-talkgroups-only record switch, and the decode clock's second (a cheap bound for anything that runs
+ * out with time).
  */
 typedef struct dsd_p25p2_policy_key {
     uint64_t table_context;
+    uint64_t radio_store; /**< The radio list's store id (dsd_source_alias_store_id()): a reload or clear moves it. */
     int64_t second;
     uint32_t table_generation;
     uint32_t ota_target;
