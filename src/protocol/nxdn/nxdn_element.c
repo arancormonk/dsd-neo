@@ -1446,16 +1446,11 @@ nxdn_policy_tune_allowed(const dsd_opts* opts, const dsd_state* state, uint32_t 
 
     if (is_private_call) {
         rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call, &decision);
+    } else if (allow_source_fallback) {
+        // A target with no row is judged by its source's row; the target's final blocks and Hold still apply.
+        rc = dsd_tg_policy_evaluate_group_source_fallback(opts, state, target, source, 0, data_call, &decision);
     } else {
         rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call, &decision);
-        if (rc == 0 && allow_source_fallback && source != 0 && source != target
-            && decision.match == DSD_TG_POLICY_MATCH_NONE) {
-            dsd_tg_policy_decision source_decision;
-            if (dsd_tg_policy_evaluate_group_call(opts, state, source, source, 0, data_call, &source_decision) == 0
-                && source_decision.match != DSD_TG_POLICY_MATCH_NONE) {
-                decision = source_decision;
-            }
-        }
     }
 
     if (out_decision) {

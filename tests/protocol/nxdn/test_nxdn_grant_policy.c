@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -272,6 +273,56 @@ reset_tune_state(dsd_opts* opts, dsd_state* st) {
     st->trunk_vc_freq[0] = st->trunk_vc_freq[1] = 0;
 }
 
+/* B15: the Type-C source fallback (a target with no row judged by its source's row) keeps the target's session avoid,
+ * call skip, encryption lockout and Hold mismatch; a Hold on either the target or the source matches. */
+static int
+test_fallback_keeps_target_final_blocks(dsd_opts* opts, dsd_state* st, uint16_t chan, long freq) {
+    int rc = 0;
+    uint8_t msg[96];
+    build_vcall_assgn(msg, 0x04U, 0U, 7400U, 7300U, chan);
+    rc |= expect_true("seed fallback source row", seed_exact(st, 7400U, "A", "SRC-GRP") == 0);
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("fallback admits by the source row", g_tune_count == 1 && g_last_tune_freq == freq);
+
+    rc |= expect_true("avoid the target", dsd_tg_policy_session_avoid_add(st, 7300U) == 0);
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("target session avoid survives the fallback", g_tune_count == 0);
+    dsd_tg_policy_session_avoid_clear(st);
+
+    rc |= expect_true("skip the target", dsd_tg_policy_call_skip_arm(st, 7300U, 0U, 0, dsd_decode_now_mono_s()) == 0);
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("target call skip survives the fallback", g_tune_count == 0);
+    dsd_tg_policy_call_skip_clear(st);
+
+    (void)dsd_enc_lockout_note(st, 7300U, 1, 0x84, 4);
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("target encryption lockout survives the fallback", g_tune_count == 0);
+    dsd_enc_lockout_clear_all(st);
+
+    st->tg_hold = 7500U;
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("a Hold on neither party refuses", g_tune_count == 0);
+    st->tg_hold = 7300U;
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("a Hold on the target matches", g_tune_count == 1);
+    st->tg_hold = 7400U;
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("a Hold on the source matches", g_tune_count == 1);
+    st->tg_hold = 0U;
+
+    reset_tune_state(opts, st);
+    NXDN_decode_VCALL_ASSGN(opts, st, msg);
+    rc |= expect_true("fallback admits again once the blocks are gone", g_tune_count == 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -330,6 +381,8 @@ main(void) {
     reset_tune_state(opts, st);
     NXDN_decode_VCALL_ASSGN(opts, st, msg);
     rc |= expect_true("group source fallback allowed", g_tune_count == 1 && g_last_tune_freq == freq);
+
+    rc |= test_fallback_keeps_target_final_blocks(opts, st, chan, freq);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

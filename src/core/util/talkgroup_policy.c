@@ -1915,29 +1915,36 @@ tg_policy_private_mode_is_blocking(int src_match, const dsd_tg_policy_entry* src
            || (dst_match && dsd_tg_policy_mode_blocks(dst_entry->mode));
 }
 
-int
-dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
-                                  int encrypted, int data_call, dsd_tg_policy_decision* out) {
+/* A group call on @p tg judged by the row of @p row_id (@p tg itself, or the NXDN Type-C source fallback's source).
+ * The final blocks (encryption lockout, session avoid, call skip) of both IDs apply, and a Hold on either matches. */
+static void
+tg_policy_evaluate_group(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t row_id, uint32_t src,
+                         int encrypted, int data_call, dsd_tg_policy_decision* out) {
     int mode_blocking = 0;
     int explicit_audio_block = 0;
     int explicit_record_block = 0;
     int explicit_stream_block = 0;
     int hold_mismatch = 0;
 
-    if (!out) {
-        return -1;
-    }
     tg_policy_init_decision(out, tg, src, encrypted, data_call);
 
-    tg_policy_group_apply_lookup(opts, state, tg, out, &mode_blocking, &explicit_audio_block, &explicit_record_block,
+    tg_policy_group_apply_lookup(opts, state, row_id, out, &mode_blocking, &explicit_audio_block, &explicit_record_block,
                                  &explicit_stream_block);
     tg_policy_group_set_hold_state(state, tg, out, &hold_mismatch);
+    if (hold_mismatch && row_id != tg && state->tg_hold == row_id) {
+        out->tg_hold_match = 1;
+        hold_mismatch = 0;
+    }
     tg_policy_apply_group_tune_blocks(opts, encrypted, data_call, out);
     tg_policy_apply_enc_lockout_block(opts, state, tg, 1, data_call, out);
-    if (dsd_tg_policy_session_avoid_contains(state, tg)) {
+    if (row_id != tg) {
+        tg_policy_apply_enc_lockout_block(opts, state, row_id, 1, data_call, out);
+    }
+    if (dsd_tg_policy_session_avoid_contains(state, tg)
+        || (row_id != tg && dsd_tg_policy_session_avoid_contains(state, row_id))) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
     }
-    if (tg_policy_call_skip_blocking(state, tg)) {
+    if (tg_policy_call_skip_blocking(state, tg) || (row_id != tg && tg_policy_call_skip_blocking(state, row_id))) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
     }
 
@@ -1951,7 +1958,33 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     if (!mode_blocking && !hold_mismatch) {
         tg_policy_apply_explicit_media_blocks(out, explicit_audio_block, explicit_record_block, explicit_stream_block);
     }
+}
 
+int
+dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
+                                  int encrypted, int data_call, dsd_tg_policy_decision* out) {
+    if (!out) {
+        return -1;
+    }
+    tg_policy_evaluate_group(opts, state, tg, tg, src, encrypted, data_call, out);
+    return 0;
+}
+
+int
+dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
+                                             int encrypted, int data_call, dsd_tg_policy_decision* out) {
+    if (!out) {
+        return -1;
+    }
+    tg_policy_evaluate_group(opts, state, tg, tg, src, encrypted, data_call, out);
+    if (src == 0U || src == tg || out->match != DSD_TG_POLICY_MATCH_NONE) {
+        return 0;
+    }
+    dsd_tg_policy_lookup source_row;
+    if (!tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), src, &source_row)) {
+        return 0;
+    }
+    tg_policy_evaluate_group(opts, state, tg, src, src, encrypted, data_call, out);
     return 0;
 }
 

@@ -156,6 +156,18 @@ int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* sta
                                       int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
                                         int encrypted, int data_call, dsd_tg_policy_decision* out);
+/**
+ * @brief NXDN Type-C source fallback: a group call on @p tg judged by its source's row when @p tg matches no row.
+ *
+ * When @p tg matches no row and @p src (non-zero, not @p tg) matches one, the source row decides admission (`-W`),
+ * mode, media and priority. The target's final blocks still apply (session avoid, call skip, encryption lockout), as
+ * do the source's own, and a Hold on either ID matches. Otherwise exactly dsd_tg_policy_evaluate_group_call().
+ *
+ * @return 0 evaluated, -1 for NULL @p out.
+ */
+int dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd_state* state, uint32_t tg,
+                                                 uint32_t src, int encrypted, int data_call,
+                                                 dsd_tg_policy_decision* out);
 
 /**
  * Blocks on a patched call's over-the-air supergroup (SG) that no member WG
