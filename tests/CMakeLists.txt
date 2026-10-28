@@ -1326,6 +1326,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_id_pattern
+  HEADERS_PUBLIC_CORE_ID_PATTERN
+  dsd-neo/core/id_pattern.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_id_pattern_cxx
+  HEADERS_PUBLIC_CORE_ID_PATTERN_CXX
+  dsd-neo/core/id_pattern.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_received_identity
   HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY
   dsd-neo/core/received_identity.h
@@ -5957,6 +5969,15 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_access_code PRIVATE dsd-neo_core)
 add_test(NAME CORE_ACCESS_CODE COMMAND dsd-neo_test_core_access_code)
+
+# Issue #773: digit-pattern IDs for the group list and the radio list
+add_executable(dsd-neo_test_core_id_pattern core/test_core_id_pattern.c)
+target_include_directories(
+    dsd-neo_test_core_id_pattern
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_id_pattern PRIVATE dsd-neo_core)
+add_test(NAME CORE_ID_PATTERN COMMAND dsd-neo_test_core_id_pattern)
 
 # The system identity received on the carrier being decoded (dsd_state::rx_id)
 add_executable(
