@@ -120,6 +120,20 @@ internal object UsbReceiverKind {
         "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=", "--dcc-name=",
         "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=",
     )
+
+    /**
+     * Long options with a value that dsd_parse_args()'s pre-scan (DSD_PARSE_ARGS_PRESCAN_BLOCK in
+     * src/runtime/cli/args.c) leaves alone, because the bootstrap (src/runtime/bootstrap/bootstrap.c) reads them: the
+     * pre-scan steps over the option only, so their value is read as an argument of its own. Every other long option
+     * with a value takes it there.
+     */
+    private val PRESCAN_BOOTSTRAP_ONLY: Set<String> = setOf(
+        "--config", "--validate-config", "--profile",
+    )
+
+    /** The I/Q replay option, separate or attached; args.c makes the replay the input once getopt has read "-i". */
+    private const val IQ_REPLAY = "--iq-replay"
+
     /**
      * The local receiver a start's arguments name: "usb" for an RTL-SDR, "airspy", or empty for any other input
      * (rtl_tcp included), or for arguments the engine's parser refuses. Read as the engine reads them: the long-option
@@ -127,9 +141,12 @@ internal object UsbReceiverKind {
      * options ([lastInput]), separate, attached or bundled, the last one winning, past bare arguments, and never as
      * another option's value; nothing after "--" is an option. The engine's own classifier is
      * dsd_opts_audio_in_dev_is_rtl_spec() and _is_airspy_spec() (include/dsd-neo/core/opts.h): the exact name, or the
-     * name and a colon.
+     * name and a colon. A start that asks for an I/Q replay ([replayRequested]) takes no receiver, whatever its "-i":
+     * the replay replaces the input after getopt, or the parser refuses a replay without a path. An INI file's input
+     * (`--config`) is not read here.
      */
     fun sourceOfArgs(args: Array<String>): String {
+        if (replayRequested(args)) return ""
         val input = lastInput(longOptionsRemoved(args))
         return when {
             input == null -> ""
@@ -137,6 +154,26 @@ internal object UsbReceiverKind {
             input == "airspy" || input.startsWith("airspy:") -> AIRSPY
             else -> ""
         }
+    }
+
+    /**
+     * Whether the long-option pre-scan of dsd_parse_args() reads [IQ_REPLAY] in [args]: before any "--", and not as the
+     * value of another long option it reads. Unlike dsd_cli_compact_args(), the pre-scan takes the next argument of a
+     * `k_skip_exact_next_nonopt` option whatever it starts with, and takes no value for [PRESCAN_BOOTSTRAP_ONLY].
+     */
+    private fun replayRequested(args: Array<String>): Boolean {
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            if (arg == "--") return false
+            if (arg == IQ_REPLAY || arg.startsWith("$IQ_REPLAY=")) return true
+            val takesValue = arg !in PRESCAN_BOOTSTRAP_ONLY && (
+                arg in LONG_NEXT_ANY || arg in LONG_NEXT_PRESENT || arg in LONG_FREE_VALUE ||
+                    arg in LONG_NEXT_NON_OPTION
+                )
+            index += if (takesValue && index + 1 < args.size) 2 else 1
+        }
+        return false
     }
 
     /** What dsd_cli_compact_args() leaves for getopt: [args] without the long options it knows and their values. */

@@ -8846,7 +8846,11 @@ not ready, and a failed reopen then publishes its own. Every session gets a conn
 the engine's parser would (`UsbReceiverKind.sourceOfArgs()`: the long-option pass's tables from `compact.c` take long
 options and their values out, then getopt's string from `args.c` reads the short options, so another option's operand,
 such as an API token `-irtl`, is never an input; the last `-i` before any `--` wins, and arguments getopt refuses take
-nothing; `ANDROID_USB_RECEIVER_JVM` checks the Kotlin copies against both sources) and calls `takeForSession()`. A start
+nothing. A `--iq-replay <path>` or `--iq-replay=<path>` that `dsd_parse_args()`'s long-option pre-scan reads takes
+nothing whatever the `-i`, since the replay replaces the input after getopt; the pre-scan takes every long option's
+value except the bootstrap's `--config`, `--validate-config` and `--profile`, so the Kotlin walks it separately. An INI
+file's input is not read. `ANDROID_USB_RECEIVER_JVM` checks the Kotlin copies against `compact.c`, `args.c`'s getopt
+string and pre-scan, and that the replay is the only input the parse sets besides `-i`) and calls `takeForSession()`. A start
 with no broker connection of its kind takes nothing, and the native open then fails as kind 7. The first session on a
 connection takes it; a later one runs `reopen()`: the old connection is closed through `detachConnection()`, the same
 `UsbDevice` is opened again and published (`UsbSessionTake` carries device, epoch and connection into the lifecycle

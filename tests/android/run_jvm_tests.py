@@ -259,6 +259,75 @@ def receiver_option_tables_match():
     unknown = sorted(tables - {native for native, _ in pairs})
     if unknown:
         return f"compact.c has long-option tables UsbReceiverKind.kt does not mirror: {unknown}"
+    return replay_prescan_matches(kotlin, args, compact)
+
+
+def replay_prescan_matches(kotlin, args, compact):
+    """UsbReceiverKind.replayRequested() reads --iq-replay as dsd_parse_args()'s long-option pre-scan does (#782 r2 H1).
+
+    The pre-scan takes a value for every long option of compact.c's value tables except the bootstrap's own
+    (PRESCAN_BOOTSTRAP_ONLY), sets the replay from --iq-replay and --iq-replay=, and the replay is the only input the
+    parse sets besides getopt's -i."""
+    prescan = re.search(
+        r"#define DSD_PARSE_ARGS_PRESCAN_BLOCK\(\)(.*?)\n#define DSD_PARSE_ARGS_", args, re.S
+    )
+    bootstrap_path = REPO / "src/runtime/bootstrap/bootstrap.c"
+    receive_path = REPO / "src/runtime/receive_policy.c"
+    jvm_bootstrap = re.search(r"val PRESCAN_BOOTSTRAP_ONLY: Set<String> = setOf\((.*?)\n    \)", kotlin, re.S)
+    jvm_replay = re.search(r'const val IQ_REPLAY = "([^"]*)"', kotlin)
+    try:
+        bootstrap = bootstrap_path.read_text(encoding="utf-8")
+        receive = receive_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the bootstrap or receive options: {error}"
+    if not prescan or not jvm_bootstrap or not jvm_replay:
+        return "cannot find DSD_PARSE_ARGS_PRESCAN_BLOCK in args.c, or PRESCAN_BOOTSTRAP_ONLY or IQ_REPLAY in UsbReceiverKind.kt"
+    block = prescan.group(1)
+    if jvm_replay.group(1) != "--iq-replay" or not re.search(
+        r'strcmp\(argv\[i\], "--iq-replay"\) == 0\)(?:(?!\n        if \().)*?iq_replay_cli = DSD_PARSE_ARGS_NEXT_ARG\(\)',
+        block,
+        re.S,
+    ) or not re.search(r'strncmp\(argv\[i\], "--iq-replay=", 12\) == 0\)\s*\{\s*\\?\s*iq_replay_cli = argv\[i\] \+ 12;', block):
+        return "the pre-scan no longer reads --iq-replay <path> and --iq-replay=<path> as UsbReceiverKind.replayRequested() does"
+    value_tables = ("k_skip_exact_next_any", "k_skip_exact_next_nonnull", "k_free_value_options", "k_skip_exact_next_nonopt")
+    compact_values = set()
+    for name in value_tables:
+        table = re.search(rf"\b{name}\[\] = \{{(.*?)\}};", compact, re.S)
+        if not table:
+            return f"cannot find {name} in compact.c"
+        compact_values |= set(re.findall(r'"([^"]*)"', table.group(1)))
+    # What the pre-scan takes a value for: an exact name whose branch reads the next argument, every --airspy-* option
+    # through cli_parse_airspy_option(), and the receive policy's options through dsd_receive_option_argument().
+    taken = set()
+    for branch in re.split(r"\n        if \(", block):
+        head = branch.split("\n", 1)[0]
+        if "DSD_PARSE_ARGS_NEXT_ARG()" in branch or "arg_advance = 2" in branch:
+            taken |= set(re.findall(r'strcmp\(argv\[i\], "(--[^"]*)"\) == 0', head))
+    if 'strncmp(argv[i], "--airspy-", 9) == 0' in block and "cli_parse_airspy_option" in block:
+        taken |= {name for name in compact_values if name.startswith("--airspy-")}
+    kinds = re.search(r"dsd_receive_kind_name\(int kind\) \{\s*static const char\* const names\[\] = \{(.*?)\};", receive, re.S)
+    if "dsd_receive_option_argument(" in block and kinds:
+        taken |= {f"--{kind}-{suffix}" for kind in re.findall(r'"([^"]*)"', kinds.group(1)) for suffix in ("allow", "block", "name")}
+    bootstrap_only = set(re.findall(r'"([^"]*)"', jvm_bootstrap.group(1)))
+    expected = compact_values - bootstrap_only
+    if sorted(taken & compact_values) != sorted(expected):
+        return (
+            "PRESCAN_BOOTSTRAP_ONLY in UsbReceiverKind.kt must name exactly the value options the args.c pre-scan does "
+            f"not take a value for: missing {sorted(expected - taken)}, extra {sorted((taken & compact_values) - expected)}"
+        )
+    bootstrap_options = set(re.findall(r'strcmp\(argv\[\*i\], "(--[^"]*)"\) != 0', bootstrap))
+    if not bootstrap_only <= bootstrap_options:
+        return f"PRESCAN_BOOTSTRAP_ONLY names options bootstrap.c does not read: {sorted(bootstrap_only - bootstrap_options)}"
+    # The input the parse sets: getopt's -i (strncpy and terminator) and the replay (cli_set_iqreplay_audio_dev()).
+    writes = re.findall(
+        r"(?:DSD_\w+|memcpy|memmove|strn?cpy|strn?cat|v?snprintf)\(opts->audio_in_dev\b|opts->audio_in_dev\[[^\]]*\] = ", args
+    )
+    replay_sets = re.findall(r"opts->iq_replay_requested = 1;", args)
+    if len(writes) != 4 or len(replay_sets) != 1:
+        return (
+            f"args.c sets the input in {len(writes)} places and the replay in {len(replay_sets)}, not 4 and 1: model the new "
+            "one in UsbReceiverKind.sourceOfArgs()"
+        )
     return None
 
 

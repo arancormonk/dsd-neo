@@ -89,9 +89,36 @@ private fun anotherOptionsOperandIsNoInput() {
     }
 }
 
+// #782 gate r2 H1: --iq-replay replaces the input after getopt has read -i (args.c sets the replay as the input once
+// the short options are parsed), so a replay start takes no USB receiver, whichever form or order it is given in. The
+// long-option pre-scan reads it, which steps over other options' values but not over the bootstrap's own options.
+private fun anIqReplayReplacesTheInput() {
+    fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
+    check(of("-i", "rtl", "--iq-replay", "capture.iq") == "") { "a replay after -i rtl" }
+    check(of("--iq-replay", "capture.iq", "-i", "rtl:0:851.0125M") == "") { "a replay before -i rtl" }
+    check(of("-i", "rtl", "--iq-replay=capture.iq") == "" && of("--iq-replay=capture.iq", "-iairspy") == "") {
+        "a replay attached with ="
+    }
+    check(of("-i", "rtl", "--iq-replay") == "" && of("-i", "rtl", "--iq-replay=") == "") {
+        "a replay without a path is a start the engine's parser refuses"
+    }
+    check(of("-i", "rtl", "--profile", "--iq-replay", "capture.iq") == "") {
+        "the pre-scan does not step over the bootstrap's --profile value"
+    }
+    check(of("-i", "rtl", "--iq-replay-rate", "fast") == "usb" && of("-i", "rtl", "--iq-replay-rate=fast") == "usb") {
+        "the replay rate alone replays nothing"
+    }
+    check(of("-i", "rtl", "--api-token", "--iq-replay", "capture.iq") == "usb") {
+        "an API token that reads like --iq-replay is a token"
+    }
+    check(of("-i", "rtl", "--frame-log", "--iq-replay=capture.iq") == "usb") { "another option's value is a value" }
+    check(of("-i", "rtl", "--", "--iq-replay", "capture.iq") == "usb") { "nothing after -- is an option" }
+}
+
 fun main() {
     aStartsReceiverComesFromItsInput()
     anotherOptionsOperandIsNoInput()
+    anIqReplayReplacesTheInput()
     airspyBesideUnrelatedDevicesIsAirspy()
     twoRtlDonglesAreUsb()
     rtlAndAirspyAreBoth()
