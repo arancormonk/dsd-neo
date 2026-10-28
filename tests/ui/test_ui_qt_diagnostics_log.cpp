@@ -1664,6 +1664,235 @@ negativeMeasurementsDoNotCarryKeys() {
     }
 }
 
+/* #782 gate r3 J2, J3 sweep: one realistic line per producer format that prints a signed measurement, each with the
+ * negative values and every precision that producer prints. The producers were found by a format-string sweep of src/
+ * and the Android native code (the gate r3 fix report lists them); each line here is rendered from the producer's own
+ * format (file and function named beside it), stderr ones through the stream capture and runtime-log ones through the
+ * log tap, and each must reach the log unchanged, live and from a saved record. */
+static void
+measurementCorpusSurvives() {
+    const QString deg = QString::fromUtf8("\xC2\xB0");
+    const QStringList stderrLines = {
+        // rtl_device.cpp verbose_ppm_set(), the gain setters, and the SoapySDR gain step.
+        QStringLiteral("Tuner error set to -5 ppm."),
+        QStringLiteral("Tuner error set to -19 ppm."),
+        QStringLiteral("Tuner error set to -150 ppm."),
+        QStringLiteral("Tuner error set to -200 ppm."),
+        QStringLiteral("Tuner gain set to -1.00 dB."),
+        QStringLiteral("Tuner gain set to -9.90 dB."),
+        QStringLiteral("Tuner manual gain (nearest): -9.9 dB."),
+        QStringLiteral("Tuner manual gain (nearest): -5.4 dB."),
+        QStringLiteral("SoapySDR: adjusted gain LNA from -12.00 dB to -10.00 dB."),
+        QStringLiteral("SoapySDR: adjusted gain IF1 from -25.50 dB to -24.00 dB."),
+        // dsd_dibit.c and dsd_frame_sync.c: the slicer and sync statistics.
+        QStringLiteral("[SLICE-DECODE] d0:24.9% d1:25.1% d2:25.0% d3:25.0% avg:-0.12 range:[-2.95,2.91] (n=4800)"),
+        QStringLiteral("[SLICER] d0:24.9% d1:25.1% d2:25.0% d3:25.0% avg:-0.12 range:[-25.31,24.80] (n=4800)"),
+        QStringLiteral("[SYNC] range:[-2.9,2.9] dc:-0.05 ratio(1:3)=2400:2400"),
+        QStringLiteral("[SYNC] range:[-15.3,14.8] dc:-0.25 ratio(1:3)=2400:2400"),
+        // demod_pipeline.cpp: the CQPSK I/Q debug dump.
+        QStringLiteral("[IQ] (0.52,-0.25|-25") + deg + QStringLiteral(",0.58) (-0.31,-1.92|-99") + deg
+            + QStringLiteral(",1.94) "),
+        // dsd_gps.c: LIP, the three Lat/Lon reports, NMEA, Harris and NXDN, with either degree glyph.
+        QStringLiteral("Src: 1234; Lat: 32.12345") + deg + QStringLiteral("S Lon: 115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345); Spd: 0 km/h; Dir: 0") + deg,
+        QStringLiteral(" Lat: 32.12345 degS Lon: 115.12345 degW (-32.12345, -115.12345)"),
+        QStringLiteral(" Lat: -32.12345") + deg + QStringLiteral("S Lon: -115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345) "),
+        QStringLiteral(" GPS: -32.123450") + deg + QStringLiteral(", -115.123450") + deg
+            + QStringLiteral("; SPD: 0 knots; 0.000000 kph;"),
+        QStringLiteral(" Harris GPS: -32.123456 deg, -115.123456 deg; HEADING: 090 deg; TIME: 12:00:00 UTC;"),
+        QStringLiteral(" GPS: (-32.123456") + deg + QStringLiteral(", -115.123456") + deg
+            + QStringLiteral(") Speed: 0.0 k/h; COG: 0.0; Elevation: -25; Date: 2026/10/28; Time: 12:00;"),
+        // dmr_pdu.c dmr_lrrp_print_details() (J3) and the NMEA LOCN report.
+        QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)"),
+        QStringLiteral(" Altitude: -25.50m"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; 2026/10/28 12:00:00 (-32.12345") + deg
+            + QStringLiteral(", -115.12345") + deg + QStringLiteral(");"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; (-32.12345 deg, -115.12345 deg);"),
+        // m17.c: power, the UDP result, GNSS.
+        QStringLiteral(" PWR: -51.2 dB SQL HIT: 0;"),
+        QStringLiteral(" UDP IP Frame CRC: BEEF; UDP RETURN: -1: LEN: 25; SENT: 61;"),
+        QStringLiteral(" GPS: (-32.123450, -115.123450); Altitude: -25.5 m; Speed: 0.0 km/h; Bearing: 0 Degrees;"),
+        // dmr_csbk.c: the broadcast local time and offset.
+        QStringLiteral(" Date: 10.28; UTC Time: 02:15:00; Local: -3:15:00; Offset: -5;"),
+        QStringLiteral(" UTC Time: 02:15:00; Local: -10:15:00; Offset: -12;"),
+        // p25_lcw.c, p25p1_pdu_trunking.c, p25p2_vpdu.c: identifier offsets and the local time offset.
+        QStringLiteral(" Channel Identifier Update; Iden: 1; BW: 5; TX Offset: -25; Spacing: 64; Base: 851006250;"),
+        QStringLiteral(" Channel Identifier Update VU; Iden: 1; BW: 5; TX Offset: -255; Spacing: 64; Base: 851006250;"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-8191] Spacing [100]"),
+        QStringLiteral("  Local Time Offset: -5.0 Hours;"),
+        QStringLiteral("  Local Time Offset: -9.5 Hours;"),
+        // tetra_trunk_sm.c and udp_audio.c/m17_udp.c: result codes.
+        QStringLiteral("[TETRA SM] tune failed (result -1)"),
+        QStringLiteral("[TETRA SM] return failed (result -22)"),
+        QStringLiteral(" UDP Broadcast Set Error -1"),
+        // config_schema.c dsdcfg_diags_print(), with config_user_validation.cpp's range warnings.
+        QStringLiteral("/sdcard/dsd-neo.ini:12: warning [input] rtl_ppm: Value -1500 is out of range [-1000, 1000]"),
+        QStringLiteral("/sdcard/dsd-neo.ini:14: warning [input] rtl_sql: Value -150 is out of range [-120, 0]"),
+        QStringLiteral("/sdcard/dsd-neo.ini:15: warning [input] input_warn_db: Value -250.5 is out of range [-200, 0]"),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        QStringList expected;
+        for (const auto& line : stderrLines) {
+            bytes += line.toUtf8() + '\n';
+            expected << QStringLiteral("[stderr] [info] ") + line;
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records.size() == expected.size(), "a corpus line was lost or split by the stream capture");
+        for (qsizetype i = 0; i < std::min(records.size(), expected.size()); ++i) {
+            checkLabelled(records.at(i) == expected.at(i), "corpus line dropped: " + stderrLines.at(i).toUtf8());
+            checkLabelled(DiagnosticsLog::redact(expected.at(i)) == expected.at(i),
+                          "stored corpus line dropped: " + stderrLines.at(i).toUtf8());
+        }
+    }
+
+    struct DecoderLine {
+        dsd_neo_log_level_t level;
+        const char* levelName;
+        QByteArray text;
+    };
+
+    const DecoderLine decoderLines[] = {
+        // rtl_device.cpp: the replay resampler.
+        {LOG_LEVEL_INFO, "info",
+         "IQ replay: resampling the 2048000 Hz capture to 1536000 Hz (L/M=3/4, -5.25 ppm, 32 taps per phase, group "
+         "delay 0.50 ms)."},
+        {LOG_LEVEL_INFO, "info",
+         "IQ replay: resampling the 2400000 Hz capture to 1536000 Hz (L/M=16/25, -0.52 ppm, 24 taps per phase, group "
+         "delay 0.31 ms)."},
+        // rtl_sdr_fm.cpp: ppm corrections, the automatic ppm loop, the existing whole-line ppm and squelch lines.
+        {LOG_LEVEL_INFO, "info", "PPM correction applied: -19 (reconfigured 851012500 Hz)."},
+        {LOG_LEVEL_INFO, "info", "PPM correction applied: -150."},
+        {LOG_LEVEL_INFO, "info", "AUTO-PPM: src=1 pwr=-25.3 dB snr=12.0 dB df=-120.5 Hz ppm -5->-19"},
+        {LOG_LEVEL_INFO, "info", "AUTO-PPM: src=2 pwr=-51.0 dB snr=-1.5 dB df=-1520.0 Hz ppm -150->-200"},
+        {LOG_LEVEL_INFO, "info", "Requested RTL PPM Error Set to -19"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction request -150 failed (rc=-1); keeping applied value -19."},
+        {LOG_LEVEL_INFO, "info",
+         "Device does not support frequency (PPM) correction; configured ppm -150 will have no effect."},
+        {LOG_LEVEL_INFO, "info",
+         "Rate chain: capture=2048000 Hz resampled to 1536000 Hz (L/M=3/4, -5.25 ppm), base_decim=2, post=4 -> "
+         "demod=48000 Hz; resampler bypassed -> output=48000 Hz."},
+        // args.c: the low input threshold and the P25 timing options echoed as given.
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold: -50.0 dBFS"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold (env): -25.5 dBFS"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: VC grace set to -1.50s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Min follow dwell set to -2.00s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Grant->Voice timeout set to -5.25s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: MAC hold set to -9.00s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Force-release extra set to -1.25s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Force-release margin set to -0.50s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25p1: Error-hold threshold set to -12.5% (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25p1: Error-hold seconds set to -2.50s (CLI)."},
+        // channel_scan.c and trunk_scan.c: a row's squelch.
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -100 cannot gate digital acquisition without a radio "
+         "input; here it gates only the analog input monitor (-8) and the carrier activity it stamps."},
+        // rtl_demod_config.cpp, logged by rtl_sdr_fm.cpp: a negative analog width refused.
+        {LOG_LEVEL_ERROR, "error",
+         "NFM bandwidth -12500 Hz is negative; set 0 for the 12.5 kHz default or a width from 4000 to 25000 Hz. The "
+         "retune keeps the current receive profile."},
+    };
+    auto& log = DiagnosticsLog::instance();
+    for (const auto& line : decoderLines) {
+        dsd_neo_log_write(line.level, "%s\n", line.text.constData());
+        const auto ring = log.snapshot();
+        const QString expected =
+            QStringLiteral("[decoder] [%1] ").arg(QLatin1String(line.levelName)) + QString::fromUtf8(line.text) + ' ';
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "decoder corpus line dropped: " + line.text);
+        checkLabelled(DiagnosticsLog::redact(expected) == expected, "stored decoder corpus line dropped: " + line.text);
+    }
+    const auto counts = DiagnosticsLog::measurementTemplateCountsForTest();
+    check(counts.first == 44 && counts.second == counts.first,
+          "a measurement template was refused or the list changed");
+}
+
+/* J2: a number leaves the key scan only as a labelled producer field, so the forms a command line takes still drop:
+ * the reviewer's "args: -19 ppm" (-1 with RC4 key 9) and its units, punctuation and trailing text; the same with no
+ * label; every argument echo of a negative-looking key, bare, labelled, JSON, list or shell-quoted; a key beside or
+ * inside a measurement template; a template echoed on the command-line path; a field outside its producer's range or
+ * precision; and a template's field context without its label. */
+static void
+measurementExemptionsKeepKeyForms() {
+    QStringList records;
+    const QStringList tails = {QStringLiteral(" ppm"),      QStringLiteral(" dBFS"),   QStringLiteral(" dBm"),
+                               QStringLiteral(" dB"),       QStringLiteral(" Hz"),     QStringLiteral(" kHz"),
+                               QStringLiteral(" MHz"),      QStringLiteral(" ppm."),   QStringLiteral(";"),
+                               QStringLiteral(")"),         QStringLiteral(">"),       QStringLiteral("%"),
+                               QStringLiteral("-"),         QStringLiteral("."),       QStringLiteral(" s"),
+                               QStringLiteral(" ppm here"), QStringLiteral(" Hours;"), QStringLiteral(" m;"),
+                               QStringLiteral(""),          QStringLiteral(".5 dB"),   QStringLiteral(".12345")};
+    const QStringList contexts = {QString(),
+                                  QStringLiteral("args: "),
+                                  QStringLiteral("argv: "),
+                                  QStringLiteral("cmd: "),
+                                  QStringLiteral("command line: "),
+                                  QStringLiteral("dsd-neo "),
+                                  QStringLiteral("[")};
+    for (const auto& context : contexts) {
+        for (const auto& tail : tails) {
+            records << context + QStringLiteral("-19") + tail;
+            records << context + QStringLiteral("-55") + tail;
+        }
+    }
+    const QStringList keyForms = {QStringLiteral("-1 9"),      QStringLiteral("-19"),    QStringLiteral("-5 12"),
+                                  QStringLiteral("-512"),      QStringLiteral("-2 -5"),  QStringLiteral("-912"),
+                                  QStringLiteral("-25 1A2B"),  QStringLiteral("-31A2B"), QStringLiteral("-81A2B"),
+                                  QStringLiteral("-1 9 -5 12")};
+    for (const auto& form : keyForms) {
+        const QStringList parts = form.split(QLatin1Char(' '));
+        QStringList quoted;
+        QStringList single;
+        for (const auto& part : parts) {
+            quoted << QStringLiteral("\"") + part + QStringLiteral("\"");
+            single << QStringLiteral("'") + part + QStringLiteral("'");
+        }
+        records << form << QStringLiteral("args: ") + form << QStringLiteral("argv: ") + form
+                << QStringLiteral("cmd: ") + form << QStringLiteral("command line: ") + form
+                << QStringLiteral("dsd-neo -i rtl ") + form
+                << QStringLiteral("[") + quoted.join(QStringLiteral(", ")) + QStringLiteral("]")
+                << QStringLiteral("[") + parts.join(QStringLiteral(", ")) + QStringLiteral("]")
+                << single.join(QLatin1Char(' '))
+                << QStringLiteral("{\"args\": [") + quoted.join(QLatin1Char(',')) + QStringLiteral("]}");
+        // Beside or inside a measurement template, and a template echoed on the command-line path.
+        records << QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345) ") + form
+                << QStringLiteral(" PWR: -51.2 dB ") + form << QStringLiteral(" Offset: -5; ") + form
+                << QStringLiteral(" UDP Broadcast Set Error ") + form
+                << QStringLiteral("SoapySDR: adjusted gain ") + form + QStringLiteral(" from -12.00 dB to -10.00 dB.")
+                << QStringLiteral("Src: 1; Lat: 32.12345 ") + form
+                       + QStringLiteral(" Lon: 115.12345 degW (-32.12345, "
+                                        "-115.12345)")
+                << QStringLiteral("Tuner error set to -5 ppm. ") + form;
+    }
+    // A template on the command-line path, or with a field outside its producer's range or precision, or the field
+    // context without the label.
+    records << QStringLiteral("args: Tuner error set to -19 ppm.") << QStringLiteral("argv: Offset: -19;")
+            << QStringLiteral("cmd: Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)")
+            << QStringLiteral("command line: PWR: -51.2 dB") << QStringLiteral("\"-19\" Offset: -19;")
+            << QStringLiteral("Tuner error set to -201 ppm.") << QStringLiteral("Tuner error set to -912 ppm.")
+            << QStringLiteral("Tuner error set to -19 ppm") << QStringLiteral("  Local Time Offset: -5.00 Hours;")
+            << QStringLiteral(" Lat: -32.1234 Lon: -115.12345 (-32.12345, -115.12345)")
+            << QStringLiteral("  IDEN [1] TX Offset [-91234] Spacing [100]") << QStringLiteral(" [-25] Spacing [100]")
+            << QStringLiteral(" (-32.12345, -115.12345)") << QStringLiteral(" Offset: -19")
+            << QStringLiteral(" UDP Broadcast Set Error -1 9") << QStringLiteral(" UDP Broadcast Set Error -19 x")
+            << QStringLiteral(" PWR: -51.2 dB key") << QStringLiteral(" TX Offset: -19; Spacing: 64; Base: 1; secret");
+    for (const auto& record : records) {
+        checkLabelled(DiagnosticsLog::redact(QStringLiteral("[stderr] [info] ") + record) == kDropped,
+                      "key form kept beside the measurement rules: " + record.toUtf8());
+        checkLabelled(DiagnosticsLog::redact(QStringLiteral("[decoder] [info] ") + record + '\n') == kDropped,
+                      "key form kept beside the measurement rules (runtime log): " + record.toUtf8());
+    }
+    // Whole-line templates hold only for their own producer's source and level.
+    for (const auto& record : {QStringLiteral("[decoder] [info] Tuner error set to -19 ppm.\n"),
+                               QStringLiteral("[stderr] [info] PPM correction applied: -19."),
+                               QStringLiteral("[host] [info] NOTICE: Low input warning threshold: -50.0 dBFS")}) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      "whole-line template from another producer kept: " + record.toUtf8());
+    }
+}
+
 /* The decoder's frame-sync lines (printFrameSync(), print_dmr_sync_polarity()) survive in every polarity, as records and
  * through the stream capture, though some inverted labels read as a bundled key option ("-P25p1", "-YSF", "-TETRA").
  * Only the label itself is exempt, and only after "Sync: ": a key form beside it, or the same text elsewhere, drops. */
@@ -2386,6 +2615,8 @@ main(int argc, char** argv) {
     negativeDecimalsSurvive();
     negativeMeasurementsSurvive();
     negativeMeasurementsDoNotCarryKeys();
+    measurementCorpusSurvives();
+    measurementExemptionsKeepKeyForms();
     syncLabelsSurvive();
     androidHostRecordsSurvive();
     teardownFlushMarkerRoundTrip();

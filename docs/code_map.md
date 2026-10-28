@@ -8100,19 +8100,33 @@ Qt Quick frontend (`src/ui/qt`):
   no option cluster). The decoder's own frame-sync labels (`printFrameSync()`, `print_dmr_sync_polarity()`) are exempt
   as exact whole tokens right after `Sync: ` (`withoutSyncLabels()`): inverted `-P25p1`, `-YSF` and `-TETRA` read as
   bundled key options, and anything else on such a line is still judged. Keep that list in step with those labels.
-  Signed measurements are exempt the same way, token by token (`withoutMeasurements()`, #782 gate r1 G5), where getopt's
-  reading would give a digit key option (`-1`, `-2`, `-5`, `-9`, alone or behind `-0`, `-3`, `-4`, `-8`) a value no key
-  is written as: a whitespace-led number with a fraction (`-50.0 dBFS`, `-9.90 dB`), an integer of at most two digits
-  followed by a unit that is not hex (`ppm`, `dBFS`, `dBm`, `Hz`, `kHz`, `MHz`; `-2 dB` is still -2 with `DB`) or by
-  `;`, `)`, `>`, `%`, `-` or a sentence's `.`, or a number alone in brackets (`[-25]`). A one-digit value attached to a
-  key option before such a unit or mark (`-95 ppm`) would be kept. The one whole-record exemption is a record that is
-  wholly one producer's line: the librtlsdr, dsd-neo rtl/usb and Android service error lines and the signed settings
-  that end on an integer or follow it with a word (requested ppm, a scan row's `--squelch-db`) in `kProducerLines`
-  (`%d`/`%i` bounded to three digits, `%u`, fixed-point `%f` with at most four integer digits, and `%s`, one token that
-  must itself be free of key labels), or a libusb log line (`libusb: ` header) whose text before its code has no key
-  label. A producer line whose code is a key option with a value of at most two digits would still be kept. Keep
-  `kProducerLines` in step with those producers' format strings (`UI_QT_DIAGNOSTICS_LOG` counts them) and the
-  key-option pattern in step with `src/runtime/cli/args.c`. The persistent
+  Signed measurements are exempt only as fields of a producer's own format (`kMeasurementTemplates`,
+  `withoutMeasurementFields()`, #782 gate r3 J2/J3). No shape of a number tells a measurement from a key: getopt reads
+  `-19` as `-1` with RC4 key `9` whatever unit follows, and `tyt_ep_aes_keystream_creation()` takes `-55.3` as `-5`
+  with key 5. Each template is a run of one producer's printf text (or of one function's consecutive prints for a
+  line) with a label before its first field: a whole line tied to its `[source] [level] ` prefix (the tuner ppm and
+  gains, ppm corrections and AUTO-PPM, the replay resampler, the low-input threshold, the P25 timing options), or a
+  fragment found anywhere in a record (positions, altitudes and elevations from `dsd_gps.c`, `dmr_pdu.c` and `m17.c`,
+  slicer and sync ranges, P25 identifier and local time offsets, DMR local time and offset, M17 power and UDP result,
+  TETRA and socket result codes, the rate chain's replay ppm, configuration range warnings, a negative analog width).
+  A fragment that ends in a field must end the record. Integer fields are bounded by `kSignedField` or the producer's
+  range (a ppm is at most 200, a P25 transmit offset 13 bits, a socket result one digit), real ones by their exact
+  precision. In a match only the numeric fields leave the key scan: the label, `%s` text and everything else on the
+  record are still judged. A record on the command-line echo path (`isArgumentEcho()`: `args`, `argv`, `argc`, `cmd`,
+  `command line`, `exec`, or a quoted option as JSON, list or shell quoting) gets no exemption, sync labels included;
+  a bare `[-1, 9]` list has no label, so no template exempts it. What remains: a command line that spells a
+  producer's label and then a key-form number in the field's place (`Tuner error set to -19 ppm.`, no echo marker) is
+  kept; no producer echoes its arguments that way. `UI_QT_DIAGNOSTICS_LOG` holds one rendered line per template
+  (`measurementCorpusSurvives()`, from the gate r3 producer sweep) and the key forms beside, inside and instead of
+  them (`measurementExemptionsKeepKeyForms()`), and counts the templates. The one whole-record exemption is a record
+  that is wholly one producer's line: the librtlsdr, dsd-neo rtl/usb and Android service error lines and the signed
+  settings that end on an integer or follow it with a word (requested ppm, a scan row's `--squelch-db`) in
+  `kProducerLines` (`%d`/`%i` bounded to three digits, `%u`, fixed-point `%f` with at most four integer digits, and
+  `%s`, one token that must itself be free of key labels), or a libusb log line (`libusb: ` header) whose text before
+  its code has no key label. A producer line whose code is a key option with a value of at most two digits would
+  still be kept. Keep `kProducerLines` and `kMeasurementTemplates` in step with those producers' format strings, give
+  a new producer of a signed number a line in the corpus, and keep the key-option pattern in step with
+  `src/runtime/cli/args.c`. The persistent
   tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before

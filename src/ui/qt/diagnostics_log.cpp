@@ -173,33 +173,9 @@ withoutSyncLabels(const QString& text) {
     return QString(text).remove(labels);
 }
 
-/**
- * @brief @p text without the signed measurements producers print, which the key rule must not read as options.
- *
- * A negative number whose first digit is a key option's letter (-1, -2, -5, -9, or one behind -0, -3, -4 or -8) reads
- * to getopt as that option, its value being the rest of the token or the next one (#782 gate r1 G5: "Tuner error set
- * to -5 ppm.", "Low input warning threshold: -50.0 dBFS"). A token leaves the scan only where that value cannot be a
- * key, every digit option's key being hex or decimal digits: a number with a fraction, whose value then holds the '.';
- * an integer of one or two digits followed by a unit that is no hex value (ppm, dBFS, dBm, Hz, kHz, MHz; "dB" is hex,
- * so "-2 dB" stays a key form), or by punctuation no key value is written with (`;`, `)`, `>`, `%`, `-`, or a
- * sentence's '.'); or a number alone in brackets, a list that ends before any value. Each is led by whitespace, as a
- * producer prints it. What remains: a one-digit value attached to a key option before a unit or that punctuation
- * ("-95 ppm" is -9 with "5") would be kept. A '-' after an integer re-exposes what follows it once the integer is
- * gone, so "-5-2 1A2B" still drops.
- */
-QString
-withoutMeasurements(const QString& text) {
-    static const QRegularExpression measurements(
-        QStringLiteral("(?:^|(?<=\\s))-(?:[0-9]{1,3}\\.[0-9]{1,3}(?=\\.?(?:[\\s;,)%]|\\z))"
-                       "|[0-9]{1,2}(?=(?: ?(?:ppm|dBFS|dBm|Hz|kHz|MHz)(?![0-9A-Za-z]))|[;)>%-]|\\.(?:\\s|\\z)))"
-                       "|(?<=\\[)-[0-9]{1,3}(?:\\.[0-9]{1,3})?(?=\\])"));
-    return QString(text).remove(measurements);
-}
-
 /*
  * Lines that name why a USB receiver failed, which the key rule would drop for their negative code (" error -1"
- * reads as option -1), and lines that report a signed setting where withoutMeasurements() cannot tell it from a key
- * option's value: an integer that ends the line or is followed by a word. Each is one producer's fixed text, whole:
+ * reads as option -1), and a few lines that report a signed setting. Each is one producer's fixed text, whole:
  * the source and level formatRecord() gives it, then the producer's format, in which only the fields vary. Accepted
  * conversions: %d, %i and %u, a fixed-point %f (precision, flags and an l length allowed), and %s, whose text must not
  * hold a key label itself (isProducerErrorLine()); an entry with any other is left out (producerLineCountsForTest()
@@ -368,6 +344,279 @@ isProducerErrorLine(const QString& text) {
                                            + QLatin1String(kSignedField) + QLatin1String(kRecordEnd));
     const auto match = libusb.match(text);
     return match.hasMatch() && !match.captured(1).contains(keyLabel());
+}
+
+/*
+ * Signed measurements inside producer lines (#782 gate r3 J2, J3). A negative number whose first digit is a key option's
+ * letter (-1, -2, -5, -9, or one bundled behind -0, -3, -4, -8) reads to getopt as that option with the rest of the
+ * token or the next one as its value, and a key loader may take a value with a fraction or a unit after it ("-55.3":
+ * -5 with "5.3", which tyt_ep_aes_keystream_creation() reads as 5). No shape of the number tells a measurement from a
+ * key, so none is exempt by its shape: a number leaves the key scan only as a field of a template copied from the
+ * producer that prints it, with that producer's label before it.
+ *
+ * Each template is a run of one producer's printf format (or of the consecutive prints one function makes for a line).
+ * A whole line (`record` set) must be the whole record after that formatRecord() prefix, as kProducerLines are; a
+ * fragment (`record` null) may stand anywhere in a record, must open with literal text and hold a letter (its label),
+ * and a field that ends it must end the record. In a match, the numeric fields are removed before the key scan; the
+ * label, the rest of the record and any %s text are still scanned, so a key beside or inside a measurement drops the
+ * record. Integer fields are bounded by kSignedField or the entry's own range (a ppm is at most 200 either way), real
+ * ones by their exact precision. A record on the command-line echo path (isArgumentEcho()) gets no exemption at all.
+ *
+ * What remains: a template is matched by its text alone, so a command line that spells a producer's label and then a
+ * key-form number in the field's place ("Tuner error set to -19 ppm.") is kept. No producer echoes its arguments
+ * without one of the markers isArgumentEcho() knows, and every such marker turns the exemptions off.
+ *
+ * Keep each template in step with its producer: tests/ui/test_ui_qt_diagnostics_log.cpp holds one rendered line per
+ * template and the key forms beside them.
+ */
+struct MeasurementTemplate {
+    const char* record;      // the formatRecord() prefix of a whole line; null for a fragment
+    const char* format;      // the producer's printf text, UTF-8
+    const char* signedField; // the %d/%i/%ld pattern for this producer's range; null for kSignedField
+};
+
+// A ppm the stream applies or reports: clamped to +/-200 (clamp_requested_ppm(), rtl_sdr_fm.cpp).
+constexpr char kPpmField[] = "-?(?:[0-9]{1,2}|1[0-9]{2}|200)";
+// A P25 identifier's transmit offset in spacing units: 13 bits and a sign (p25_signed_offset_units()).
+constexpr char kTxOffsetField[] = "-?[0-9]{1,4}";
+// A value a configuration file or a demodulator setting gave, echoed in a range or refusal message.
+constexpr char kConfigField[] = "-?[0-9]{1,10}";
+// A socket call's result: 0 or -1 (SOCKET_ERROR).
+constexpr char kSocketResultField[] = "-?[0-9]";
+
+const MeasurementTemplate kMeasurementTemplates[] = {
+    // rtl_device.cpp, through the stderr pump: the applied ppm and the tuner gains (E4000 and FC0012/FC0013 tables go
+    // below 0 dB), and a SoapySDR gain moved to the driver's step.
+    {"[stderr] [info] ", "Tuner error set to %i ppm.", kPpmField},
+    {"[stderr] [info] ", "Tuner gain set to %0.2f dB.", nullptr},
+    {"[stderr] [info] ", "Tuner manual gain (nearest): %0.1f dB.", nullptr},
+    {"[stderr] [info] ", "SoapySDR: adjusted gain %s from %.2f dB to %.2f dB.", nullptr},
+    // rtl_device.cpp and rtl_sdr_fm.cpp, through the runtime log: the replay resampler's ratio error, ppm corrections,
+    // and the automatic ppm loop.
+    {"[decoder] [info] ",
+     "IQ replay: resampling the %u Hz capture to %u Hz (L/M=%d/%d, %+.2f ppm, %d taps per phase, group delay %.2f ms).",
+     nullptr},
+    {"[decoder] [info] ", "PPM correction applied: %d (reconfigured %u Hz).", kPpmField},
+    {"[decoder] [info] ", "PPM correction applied: %d.", kPpmField},
+    {"[decoder] [info] ", "AUTO-PPM: src=%d pwr=%.1f dB snr=%.1f dB df=%.1f Hz ppm %d->%d", kPpmField},
+    // args.c: the low input warning threshold, and the P25 timing options echoed as given (only the CC grace is
+    // clamped to 0..120 s).
+    {"[decoder] [info] ", "NOTICE: Low input warning threshold: %.1f dBFS", nullptr},
+    {"[decoder] [info] ", "NOTICE: Low input warning threshold (env): %.1f dBFS", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25: VC grace set to %.2fs (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25: Min follow dwell set to %.2fs (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25: Grant->Voice timeout set to %.2fs (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25: MAC hold set to %.2fs (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25: Force-release extra set to %.2fs (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25: Force-release margin set to %.2fs (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25p1: Error-hold threshold set to %.1f%% (CLI).", nullptr},
+    {"[decoder] [info] ", "NOTICE: P25p1: Error-hold seconds set to %.2fs (CLI).", nullptr},
+    // Slicer and sync statistics (dsd_dibit.c, dsd_frame_sync.c) and the I/Q debug dump (demod_pipeline.cpp).
+    {nullptr, "range:[%.2f,%.2f] (n=", nullptr},
+    {nullptr, "[SYNC] range:[%.1f,%.1f] dc:", nullptr},
+    {nullptr, "(%.2f,%.2f|%.0f\xC2\xB0,%.2f)", nullptr},
+    // Positions: LIP and Harris/NMEA reports (dsd_gps.c), DMR LRRP and NMEA LOCN (dmr_pdu.c), M17 GNSS (m17.c). A %s is
+    // the degree glyph (dsd_degrees_glyph(): the sign or " deg") and the hemisphere letter, or the optional time.
+    {nullptr, "Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf)", nullptr},
+    {nullptr, "GPS: %f%s, %f%s;", nullptr},
+    {nullptr, "Harris GPS: %.6lf%s, %.6lf%s;", nullptr},
+    {nullptr, "GPS: (%.6f%s, %.6f%s)", nullptr},
+    {nullptr, "Elevation: %d;", nullptr},
+    {nullptr, "Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", nullptr},
+    {nullptr, "Altitude: %.2lfm", nullptr},
+    {nullptr, "NMEA / LOCN; Source: %u;%s (%.5lf%s, %.5lf%s);", nullptr},
+    {nullptr, "GPS: (%f, %f);", nullptr},
+    {nullptr, "Altitude: %.1f m;", nullptr},
+    // Protocol fields: M17's power and UDP result (m17.c), DMR's local time and offset (dmr_csbk.c), P25 identifier
+    // offsets (p25_lcw.c, p25p1_pdu_trunking.c) and P25p2's local time offset (p25p2_vpdu.c).
+    {nullptr, "PWR: %.1f dB", nullptr},
+    {nullptr, "UDP RETURN: %d: LEN: %d; SENT: %d;", nullptr},
+    {nullptr, "Local: %02d:%02d:%02d;", nullptr},
+    {nullptr, "Offset: %d;", nullptr},
+    {nullptr, "TX Offset: %d; Spacing: ", kTxOffsetField},
+    {nullptr, "TX Offset [%d] Spacing [", kTxOffsetField},
+    {nullptr, "Local Time Offset: %.01f Hours;", nullptr},
+    // Result codes: TETRA's tuning hook (tetra_trunk_sm.c), and a UDP socket option (udp_audio.c, m17_udp.c).
+    {nullptr, "failed (result %d)", nullptr},
+    {nullptr, "UDP Broadcast Set Error %d", kSocketResultField},
+    // The rate chain's replay resampling (rtl_sdr_fm.cpp), configuration range warnings (config_user_validation.cpp,
+    // printed by dsdcfg_diags_print()), and a negative analog width refused (rtl_demod_config.cpp).
+    {nullptr, "(L/M=%d/%d, %+.2f ppm)", nullptr},
+    {nullptr, "Value %g is out of range [%d, %d]", kConfigField},
+    {nullptr, "Value %d is out of range [%d, %d]", kConfigField},
+    {nullptr, "bandwidth %d Hz is negative;", kConfigField},
+};
+
+struct MeasurementPatterns {
+    QList<QRegularExpression> patterns;
+    int listed = 0;
+    int accepted = 0;
+};
+
+/**
+ * @brief The pattern for the measurement template conversion that starts at @p at in @p format, and where it ends
+ * (@p end); empty when it is not one the templates accept. @p numeric says whether it is a field the match removes.
+ */
+QString
+measurementConversion(const QString& format, qsizetype at, const char* signedField, qsizetype* end, bool* numeric) {
+    static const QRegularExpression spec(QStringLiteral("%([-+ 0#]*)([0-9]*)(?:\\.([0-9]+))?(l{0,2})([diufgXxs%])"));
+    const auto match =
+        spec.match(format, at, QRegularExpression::NormalMatch, QRegularExpression::AnchorAtOffsetMatchOption);
+    if (!match.hasMatch()) {
+        return {};
+    }
+    *end = match.capturedEnd();
+    *numeric = true;
+    const QChar conversion = match.captured(5).at(0);
+    // A width pads with spaces unless it is a zero fill or left-justified.
+    const bool padded = !match.captured(2).isEmpty() && !match.captured(1).contains(QLatin1Char('0'))
+                        && !match.captured(1).contains(QLatin1Char('-'));
+    const QString pad = padded ? QStringLiteral(" *") : QString();
+    const QString sign = match.captured(1).contains(QLatin1Char('+')) ? QStringLiteral("[-+]") : QStringLiteral("-?");
+    if (conversion == QLatin1Char('%')) {
+        *numeric = false;
+        return QStringLiteral("%");
+    }
+    if (conversion == QLatin1Char('s')) {
+        *numeric = false;
+        return QStringLiteral("(?:.{0,64}?)");
+    }
+    if (conversion == QLatin1Char('f')) {
+        const QString precision = match.captured(3).isEmpty() ? QStringLiteral("6") : match.captured(3);
+        return pad + QStringLiteral("(") + sign + QStringLiteral("[0-9]{1,6}")
+               + (precision.toInt() > 0 ? QStringLiteral("\\.[0-9]{%1}").arg(precision) : QString())
+               + QStringLiteral(")");
+    }
+    if (conversion == QLatin1Char('g')) {
+        return pad + QStringLiteral("(") + sign + QStringLiteral("[0-9]{1,7}(?:\\.[0-9]{1,6})?(?:e[-+][0-9]{2,3})?)");
+    }
+    if (conversion == QLatin1Char('u')) {
+        return pad + QStringLiteral("([0-9]{1,10})");
+    }
+    if (conversion == QLatin1Char('X') || conversion == QLatin1Char('x')) {
+        return pad + QStringLiteral("([0-9A-Fa-f]{1,16})");
+    }
+    if (match.captured(1).contains(QLatin1Char('+'))) {
+        return {}; // No producer prints a signed integer with "%+d"; one that does needs its own pattern.
+    }
+    QString field = QString::fromLatin1(signedField ? signedField : kSignedField);
+    if (!signedField && !match.captured(4).isEmpty()) {
+        field = QStringLiteral("-?[0-9]{1,19}");
+    }
+    return pad + QStringLiteral("(") + field + QStringLiteral(")");
+}
+
+/** @brief The measurement templates, built; an entry the rules above refuse is left out and counted. */
+const MeasurementPatterns&
+measurementPatterns() {
+    static const MeasurementPatterns built = [] {
+        MeasurementPatterns out;
+        for (const auto& entry : kMeasurementTemplates) {
+            ++out.listed;
+            const QString format = QString::fromUtf8(entry.format);
+            QString pattern;
+            QString literals;
+            qsizetype firstField = -1;
+            bool accepted = true;
+            bool endsInField = false;
+            qsizetype literal = 0;
+            for (qsizetype at = format.indexOf(QLatin1Char('%')); at >= 0 && accepted;
+                 at = format.indexOf(QLatin1Char('%'), literal)) {
+                literals += format.mid(literal, at - literal);
+                pattern += QRegularExpression::escape(format.mid(literal, at - literal));
+                qsizetype end = at;
+                bool numeric = false;
+                const QString field = measurementConversion(format, at, entry.signedField, &end, &numeric);
+                accepted = !field.isEmpty();
+                pattern += field;
+                if (numeric && firstField < 0) {
+                    firstField = at;
+                }
+                endsInField = numeric && end == format.size();
+                literal = end;
+            }
+            literals += format.mid(literal);
+            pattern += QRegularExpression::escape(format.mid(literal));
+            // The label: literal text before the first field, with a letter in it, or (a fragment's punctuation-led
+            // field context) a symbol no command line is written with elsewhere in the template.
+            const QString label = format.left(std::max<qsizetype>(firstField, 0));
+            const auto letter = [](QChar c) { return c.isLetter(); };
+            const auto symbol = [](QChar c) { return c.unicode() > 0x7f; };
+            const bool labelled = std::any_of(label.cbegin(), label.cend(), letter)
+                                  || (entry.record == nullptr && !label.isEmpty()
+                                      && std::any_of(literals.cbegin(), literals.cend(), symbol));
+            if (!accepted || firstField <= 0 || !labelled) {
+                continue;
+            }
+            if (entry.record) {
+                pattern = QStringLiteral("\\A") + QRegularExpression::escape(QLatin1String(entry.record)) + pattern
+                          + QLatin1String(kRecordEnd);
+            } else if (endsInField) {
+                pattern += QStringLiteral("(?=") + QLatin1String(kRecordEnd) + QStringLiteral(")");
+            }
+            out.patterns.append(QRegularExpression(pattern));
+            ++out.accepted;
+        }
+        return out;
+    }();
+    return built;
+}
+
+/**
+ * @brief Whether @p text echoes a command line: a label for one, or a JSON, shell-quoted or list form with a quoted
+ * option in it. (A bare bracketed list, "[-1, 9]", has no producer label before its numbers, so no template exempts
+ * them anyway.)
+ */
+bool
+isArgumentEcho(const QString& text) {
+    static const QRegularExpression echo(
+        QStringLiteral("(?i)\\b(?:argv|args?|arguments|argc|cmd(?:line)?|command[ _-]?line|exec(?:ve|vp|l)?)\\b"
+                       "|[\"']-"));
+    return text.contains(echo);
+}
+
+/** @brief @p text without the numeric fields of the measurement templates it holds (see kMeasurementTemplates). */
+QString
+withoutMeasurementFields(const QString& text) {
+    QList<std::pair<qsizetype, qsizetype>> spans;
+    for (const auto& pattern : measurementPatterns().patterns) {
+        auto matches = pattern.globalMatch(text);
+        while (matches.hasNext()) {
+            const auto match = matches.next();
+            for (int group = 1; group <= match.lastCapturedIndex(); ++group) {
+                if (match.capturedLength(group) > 0) {
+                    spans.append({match.capturedStart(group), match.capturedLength(group)});
+                }
+            }
+        }
+    }
+    std::sort(spans.begin(), spans.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    QString out = text;
+    qsizetype floor = out.size();
+    for (const auto& [start, length] : spans) {
+        // Overlapping matches of two templates remove the same field once.
+        const qsizetype stop = std::min(start + length, floor);
+        if (stop > start) {
+            out.remove(start, stop - start);
+            floor = start;
+        }
+    }
+    return out;
+}
+
+/**
+ * @brief Whether @p text holds a key label once the decoder's own sync labels and measurement fields are set aside;
+ * a command-line echo gets neither set aside.
+ */
+bool
+holdsKeyLabel(const QString& text) {
+    if (!text.contains(keyLabel())) {
+        return false;
+    }
+    if (isArgumentEcho(text)) {
+        return true;
+    }
+    return withoutMeasurementFields(withoutSyncLabels(text)).contains(keyLabel());
 }
 
 QString
@@ -762,7 +1011,7 @@ DiagnosticsLog::redact(QString text) {
     // Drop whole key-bearing records, including malformed values and labelled
     // short decimal/basic keys. Strip ANSI before matching to prevent evasion.
     text = withoutAnsi(std::move(text));
-    if (withoutMeasurements(withoutSyncLabels(text)).contains(keyLabel()) && !isProducerErrorLine(text)) {
+    if (holdsKeyLabel(text) && !isProducerErrorLine(text)) {
         return QLatin1String(kDroppedRecord);
     }
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
@@ -775,6 +1024,11 @@ DiagnosticsLog::redact(QString text) {
 std::pair<int, int>
 DiagnosticsLog::producerLineCountsForTest() {
     return {producerTemplates().listed, producerTemplates().accepted};
+}
+
+std::pair<int, int>
+DiagnosticsLog::measurementTemplateCountsForTest() {
+    return {measurementPatterns().listed, measurementPatterns().accepted};
 }
 
 DiagnosticsLog::Segments::Segments(const char* currentName, const char* previousName, qint64 segmentLimit,

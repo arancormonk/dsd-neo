@@ -146,6 +146,9 @@ class DiagnosticsLog {
     static QString redact(QString text);
     // Test seam: how many producer error lines are listed, and how many have only %d and %u conversions and so count.
     static std::pair<int, int> producerLineCountsForTest();
+    // Test seam: how many signed-measurement templates are listed, and how many the builder accepted (each needs a
+    // label before its first field and only conversions it knows).
+    static std::pair<int, int> measurementTemplateCountsForTest();
 
     // Test seam: whether the startup window is open now.
     bool startupWindowOpenForTest();
