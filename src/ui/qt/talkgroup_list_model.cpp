@@ -199,8 +199,10 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
     rows.reserve(static_cast<qsizetype>(entries));
     for (size_t i = 0; i < entries; ++i) {
         dsd_tg_policy_entry entry;
+        // Rows here are addressed and covered by their bounds, which a pattern row does not have: patterns are not
+        // listed yet.
         if (!dsd_tg_policy_entry_at(snapshot, i, &entry) || entry.source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS
-            || strcmp(entry.mode, "D") == 0) {
+            || strcmp(entry.mode, "D") == 0 || entry.kind == DSD_TG_POLICY_ROW_PATTERN) {
             continue;
         }
         rows.push_back({entry.id_start, entry.id_end, QString::fromUtf8(entry.name), QString::fromUtf8(entry.tags),

@@ -1776,7 +1776,7 @@ test_xpt_submit_channel_is_the_ranked_lsn(dsd_opts* opts, dsd_state* st) {
         abort();
     }
     range.id_end = 49U;
-    range.is_range = 1U;
+    range.kind = DSD_TG_POLICY_ROW_RANGE;
     range.priority = 60;
     range.preempt = 1U;
     if (dsd_tg_policy_add_range_entry(st, &range) != 0) {

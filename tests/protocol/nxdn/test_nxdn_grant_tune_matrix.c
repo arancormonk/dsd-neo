@@ -1211,7 +1211,7 @@ nxdn_run_type_d_private_reconcile_case(void) {
     dsd_tg_policy_entry range;
     if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
         range.id_end = 1499U;
-        range.is_range = 1U;
+        range.kind = DSD_TG_POLICY_ROW_RANGE;
         range.priority = 100;
         (void)dsd_tg_policy_add_range_entry(&g_state, &range);
     }
@@ -1956,7 +1956,7 @@ nxdn_run_type_c_group_preempts_same_number_private_case(void) {
     dsd_tg_policy_entry range;
     if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
         range.id_end = 1499U;
-        range.is_range = 1U;
+        range.kind = DSD_TG_POLICY_ROW_RANGE;
         range.priority = 100;
         range.preempt = 1U;
         (void)dsd_tg_policy_add_range_entry(&g_state, &range);
@@ -2176,7 +2176,7 @@ nxdn_run_type_d_private_after_group_case(void) {
     dsd_tg_policy_entry range;
     if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
         range.id_end = 1499U;
-        range.is_range = 1U;
+        range.kind = DSD_TG_POLICY_ROW_RANGE;
         range.priority = 100;
         (void)dsd_tg_policy_add_range_entry(&g_state, &range);
     }
@@ -2292,7 +2292,7 @@ nxdn_run_type_d_info2_new_target_case(void) {
     dsd_tg_policy_entry range;
     if (dsd_tg_policy_make_exact_entry(1400U, "A", "range", DSD_TG_POLICY_SOURCE_IMPORTED, &range) == 0) {
         range.id_end = 1499U;
-        range.is_range = 1U;
+        range.kind = DSD_TG_POLICY_ROW_RANGE;
         range.priority = 100;
         (void)dsd_tg_policy_add_range_entry(&g_state, &range);
     }

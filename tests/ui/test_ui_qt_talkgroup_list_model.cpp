@@ -88,11 +88,12 @@ struct Fixture {
         dsd_tg_policy_entry entry;
         expect("create policy row", dsd_tg_policy_make_exact_entry(start, mode, name, source, &entry) == 0);
         entry.id_end = end;
-        entry.is_range = start != end;
+        entry.kind = start != end ? DSD_TG_POLICY_ROW_RANGE : DSD_TG_POLICY_ROW_EXACT;
         DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", tags);
-        expect("append policy row", (entry.is_range ? dsd_tg_policy_add_range_entry(state, &entry)
-                                                    : dsd_tg_policy_append_exact(state, &entry))
-                                        == 0);
+        expect("append policy row",
+               (entry.kind == DSD_TG_POLICY_ROW_RANGE ? dsd_tg_policy_add_range_entry(state, &entry)
+                                                      : dsd_tg_policy_append_exact(state, &entry))
+                   == 0);
     }
 
     void

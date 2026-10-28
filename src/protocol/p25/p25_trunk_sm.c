@@ -906,7 +906,8 @@ lookup_policy_priority_for_tg(const dsd_state* state, int tg) {
     if (!state || tg < 0) {
         return 0;
     }
-    if (dsd_tg_policy_lookup_id(state, (uint32_t)tg, &lookup) != 0) {
+    // The talkgroup's deciding row: a learned radio alias sharing its number never hides a range or pattern priority.
+    if (dsd_tg_policy_lookup_group(state, (uint32_t)tg, &lookup) != 0) {
         return 0;
     }
     if (lookup.match == DSD_TG_POLICY_MATCH_NONE) {

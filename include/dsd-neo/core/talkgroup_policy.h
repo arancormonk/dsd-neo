@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -21,11 +22,24 @@
 extern "C" {
 #endif
 
+/**
+ * How a lookup matched. Precedence is exact, then range, then pattern: PATTERN is the weakest match even though its
+ * value is the largest (values are kept for serialized compatibility).
+ */
 typedef enum {
     DSD_TG_POLICY_MATCH_NONE = 0,
     DSD_TG_POLICY_MATCH_RANGE = 1,
     DSD_TG_POLICY_MATCH_EXACT = 2,
+    DSD_TG_POLICY_MATCH_PATTERN = 3,
 } dsd_tg_policy_match_type;
+
+/** A row's ID kind (dsd_tg_policy_entry::kind). */
+typedef enum {
+    DSD_TG_POLICY_ROW_EXACT = 0, /**< one ID: id_start == id_end */
+    DSD_TG_POLICY_ROW_RANGE = 1, /**< id_start..id_end, id_start < id_end */
+    DSD_TG_POLICY_ROW_PATTERN =
+        2, /**< digit pattern (core/id_pattern.h) in `pattern`; id_start = id_end = 0, never a span */
+} dsd_tg_policy_row_kind;
 
 typedef enum {
     DSD_TG_POLICY_SOURCE_IMPORTED = 0,
@@ -64,7 +78,7 @@ typedef enum {
 const char* dsd_tg_policy_block_reason_label(uint32_t block_reasons);
 
 typedef struct {
-    uint32_t id_start;
+    uint32_t id_start; /* 0 on a pattern row: read the bounds only of exact and range rows. */
     uint32_t id_end;
     char mode[8];
     char name[50];
@@ -74,9 +88,10 @@ typedef struct {
     uint8_t audio;
     uint8_t record;
     uint8_t stream;
-    uint8_t is_range;
+    uint8_t kind; /* dsd_tg_policy_row_kind */
     uint8_t source;
     unsigned int row;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX]; /* Canonical pattern text on a pattern row; empty otherwise. */
 } dsd_tg_policy_entry;
 
 typedef struct {
@@ -116,7 +131,23 @@ typedef struct {
 int dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, dsd_tg_policy_entry_source source,
                                    dsd_tg_policy_entry* out);
 int dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
+/**
+ * @brief Append a pattern row (kind DSD_TG_POLICY_ROW_PATTERN, bounds 0/0, a valid pattern in `pattern`).
+ *
+ * The pattern is stored in its canonical form (lower-case `x`, single stars).
+ *
+ * @return 0 stored, 1 invalid row, -1 allocation failure.
+ */
+int dsd_tg_policy_add_pattern_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
+/** Row lookup for any ID: the first exact row (a talkgroup row before a learned alias), else the narrowest range (last
+ * row wins ties), else the most specific pattern (dsd_id_pattern_more_specific(), last row wins ties). Learned alias
+ * rows take part only as exact rows. Returns -1 for NULL @p out, 0 otherwise (match NONE when nothing matched). */
 int dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out);
+/** Talkgroup lookup: the row that decides talkgroup @p tg in group evaluation. As dsd_tg_policy_lookup_id(), but a
+ * learned alias row (a radio) never matches. Returns -1 for NULL @p out, 0 otherwise. */
+int dsd_tg_policy_lookup_group(const dsd_state* state, uint32_t tg, dsd_tg_policy_lookup* out);
+/** Number of pattern rows in the effective table; 0 without a policy context. */
+size_t dsd_tg_policy_pattern_count(const dsd_state* state);
 int dsd_tg_policy_has_entries(const dsd_state* state);
 int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                                size_t name_sz);
@@ -302,7 +333,8 @@ int dsd_tg_policy_edit_version_valid(const dsd_state* state, uint64_t context, u
  * missing range is refused.
  * Creates the context when absent.
  * Returns 0 applied, 1 invalid (NULL state/mode, empty or over-long mode, reversed bounds,
- * missing range), -1 allocation failure. */
+ * missing range), -1 allocation failure. Edits by bounds (this, set_fields, remove_bounds) never address a pattern
+ * row; edit one by index. */
 int dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end, const char* mode);
 /** Same edit on the row at @p index (decoder thread only; indices remain stable while it holds state).
  * Returns 0 applied, 1 bad index or mode. */
@@ -315,7 +347,7 @@ typedef struct {
 } dsd_tg_policy_selection;
 
 /** Apply an exact captured selection atomically. A stale capture (dsd_tg_policy_edit_version_valid())
- * or invalid rows return 1; allocation failure returns -1, leaving policy intact. A heard-only ID held
+ * or invalid rows (a pattern row included) return 1; allocation failure returns -1, leaving policy intact. A heard-only ID held
  * only by a learned alias takes that row over. Ranges, priority and preemption are retained. */
 int dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
                                           const dsd_tg_policy_selection* selection, size_t count, int listening);
@@ -344,7 +376,8 @@ int dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_en
 int dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end);
 /** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.
  * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
- * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end. Unmodelled free-text columns (e.g. alias metadata)
+ * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end, patterns as their
+ * canonical text. Unmodelled free-text columns (e.g. alias metadata)
  * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), -1 on I/O
  * failure with the old file intact. */
 int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state);

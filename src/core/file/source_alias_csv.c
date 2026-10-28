@@ -33,7 +33,7 @@ alias_parse_row(char* buffer, dsd_source_alias_store* store) {
     dsd_source_alias_entry entry = {0};
     int range = 0;
     if (csv_split_preserve_empty(buffer, fields, 8) < 2
-        || !csv_parse_id_field(fields[0], &entry.id_start, &entry.id_end, &range)) {
+        || !csv_parse_id_field(fields[0], &entry.id_start, &entry.id_end, &range, NULL)) {
         return 1;
     }
     char* name = trim_ws(fields[1]);

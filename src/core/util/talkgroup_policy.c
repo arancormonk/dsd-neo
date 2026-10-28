@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -32,6 +33,8 @@ typedef struct {
     /* The generation after the last change to rows a frontend edits (anything but learned aliases): an edit captured
      * at or after it still addresses the same rows. */
     unsigned int structural_generation;
+    /* Pattern rows in the table: 0 skips the pattern pass of every lookup (no formatting, no scan). */
+    size_t pattern_count;
 } dsd_tg_policy_table;
 
 const char*
@@ -312,9 +315,12 @@ tg_policy_copy_entry_normalized(dsd_tg_policy_entry* dst, const dsd_tg_policy_en
     dst->audio = src->audio;
     dst->record = src->record;
     dst->stream = src->stream;
-    dst->is_range = src->is_range ? 1u : 0u;
+    dst->kind = src->kind;
     dst->source = src->source;
     dst->row = src->row;
+    if (src->kind == DSD_TG_POLICY_ROW_PATTERN) {
+        DSD_SNPRINTF(dst->pattern, sizeof(dst->pattern), "%.*s", (int)(sizeof(src->pattern) - 1U), src->pattern);
+    }
     tg_policy_normalize_entry(dst);
 }
 
@@ -323,7 +329,7 @@ tg_policy_entry_valid_exact(const dsd_tg_policy_entry* e) {
     if (!e) {
         return 0;
     }
-    if (e->is_range != 0u) {
+    if (e->kind != DSD_TG_POLICY_ROW_EXACT) {
         return 0;
     }
     return e->id_start == e->id_end;
@@ -334,13 +340,58 @@ tg_policy_entry_valid_range(const dsd_tg_policy_entry* e) {
     if (!e) {
         return 0;
     }
-    if (e->is_range == 0u) {
+    if (e->kind != DSD_TG_POLICY_ROW_RANGE) {
         return 0;
     }
     if (e->id_start > e->id_end) {
         return 0;
     }
     return e->id_start != e->id_end;
+}
+
+/* A pattern row: placeholder 0/0 bounds and a terminated pattern that parses. @p out (may be NULL) takes it parsed. */
+static int
+tg_policy_entry_valid_pattern(const dsd_tg_policy_entry* e, dsd_id_pattern* out) {
+    dsd_id_pattern parsed;
+    if (!e || e->kind != DSD_TG_POLICY_ROW_PATTERN || e->id_start != 0u || e->id_end != 0u
+        || !memchr(e->pattern, '\0', sizeof(e->pattern))) {
+        return 0;
+    }
+    if (dsd_id_pattern_parse(e->pattern, &parsed) != 0) {
+        return 0;
+    }
+    if (out) {
+        *out = parsed;
+    }
+    return 1;
+}
+
+static int
+tg_policy_entry_valid(const dsd_tg_policy_entry* e) {
+    if (!e) {
+        return 0;
+    }
+    switch (e->kind) {
+        case DSD_TG_POLICY_ROW_EXACT: return tg_policy_entry_valid_exact(e);
+        case DSD_TG_POLICY_ROW_RANGE: return tg_policy_entry_valid_range(e);
+        case DSD_TG_POLICY_ROW_PATTERN: return tg_policy_entry_valid_pattern(e, NULL);
+        default: return 0;
+    }
+}
+
+/* A stored pattern row's text as a dsd_id_pattern, with its rank. The text was validated canonical on insertion. */
+static void
+tg_policy_entry_pattern(const dsd_tg_policy_entry* e, dsd_id_pattern* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    for (size_t i = 0; i + 1U < sizeof(out->text) && e->pattern[i] != '\0'; i++) {
+        const char c = e->pattern[i];
+        out->text[i] = c;
+        if (c == '*') {
+            out->has_star = 1u;
+        } else if (c >= '0' && c <= '9') {
+            out->literals++;
+        }
+    }
 }
 
 static uint64_t
@@ -445,7 +496,7 @@ tg_policy_find_policy_exact_idx_first(const dsd_tg_policy_context* ctx, uint32_t
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->is_range == 0u && e->id_start == id && e->id_end == id) {
+        if (e->kind == DSD_TG_POLICY_ROW_EXACT && e->id_start == id && e->id_end == id) {
             return (int)i;
         }
     }
@@ -459,7 +510,8 @@ tg_policy_entry_is_learned_alias(const dsd_tg_policy_entry* entry) {
     return entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS || strcmp(entry->mode, "D") == 0;
 }
 
-/* The first row with these bounds that is (@p alias 0) or is not (@p alias 1) a learned alias. */
+/* The first exact or range row with these bounds that is (@p alias 1) or is not (@p alias 0) a learned alias. A
+ * pattern row's 0/0 bounds are a placeholder, never an address. */
 static int
 tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end, int alias) {
     if (!ctx) {
@@ -467,7 +519,8 @@ tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_sta
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->id_start == id_start && e->id_end == id_end && tg_policy_entry_is_learned_alias(e) == (alias != 0)) {
+        if (e->kind != DSD_TG_POLICY_ROW_PATTERN && e->id_start == id_start && e->id_end == id_end
+            && tg_policy_entry_is_learned_alias(e) == (alias != 0)) {
             return (int)i;
         }
     }
@@ -749,7 +802,7 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
     out->priority = 0;
     out->preempt = 0;
     tg_policy_defaults_from_mode(out->mode, &out->audio, &out->record, &out->stream);
-    out->is_range = 0;
+    out->kind = DSD_TG_POLICY_ROW_EXACT;
     out->source = (uint8_t)source;
     out->row = 0;
     return 0;
@@ -757,19 +810,24 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
 
 static int
 tg_policy_store_append_kind(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int structural) {
-    if (!store || !entry
-        || !(entry->is_range ? tg_policy_entry_valid_range(entry) : tg_policy_entry_valid_exact(entry))) {
+    if (!store || !tg_policy_entry_valid(entry)) {
         return 1;
     }
     dsd_tg_policy_entry normalized;
     tg_policy_copy_entry_normalized(&normalized, entry);
-    if (!entry->is_range) {
-        normalized.id_end = normalized.id_start;
+    if (normalized.kind == DSD_TG_POLICY_ROW_PATTERN) {
+        // Stored, keyed and exported in canonical form.
+        dsd_id_pattern parsed;
+        (void)tg_policy_entry_valid_pattern(&normalized, &parsed);
+        DSD_SNPRINTF(normalized.pattern, sizeof(normalized.pattern), "%s", parsed.text);
     }
     if (tg_policy_table_reserve(store, store->table.count + 1) != 0) {
         return -1;
     }
     store->table.entries[store->table.count++] = normalized;
+    if (normalized.kind == DSD_TG_POLICY_ROW_PATTERN) {
+        store->table.pattern_count++;
+    }
     tg_policy_table_note_mutation_kind(store, structural);
     return 0;
 }
@@ -782,6 +840,15 @@ dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry
 int
 dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry) {
     if (!state || !entry || !tg_policy_entry_valid_range(entry)) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    return ctx ? dsd_tg_policy_store_append(ctx, entry) : -1;
+}
+
+int
+dsd_tg_policy_add_pattern_entry(dsd_state* state, const dsd_tg_policy_entry* entry) {
+    if (!state || !tg_policy_entry_valid_pattern(entry, NULL)) {
         return 1;
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
@@ -851,8 +918,6 @@ dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, d
         return 1;
     }
     tg_policy_copy_entry_normalized(&normalized, entry);
-    normalized.is_range = 0;
-    normalized.id_end = normalized.id_start;
 
     ctx = tg_policy_ctx_get_mut(state, mode != DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
     policy_idx = tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start);
@@ -1041,7 +1106,7 @@ dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, c
     } else {
         dsd_tg_policy_make_exact_entry(id_start, "A", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry);
         entry.id_end = id_end;
-        entry.is_range = id_start != id_end;
+        entry.kind = id_start != id_end ? DSD_TG_POLICY_ROW_RANGE : DSD_TG_POLICY_ROW_EXACT;
     }
     tg_policy_apply_fields(&entry, values, mask);
     if (index < 0) {
@@ -1089,7 +1154,8 @@ prepare_selection_entry(const dsd_tg_policy_context* ctx, dsd_tg_policy_entry* e
     size_t row;
     if (item->policy_index >= 0) {
         row = (size_t)item->policy_index;
-        if (row >= old_count || entries[row].id_start != item->id_start || entries[row].id_end != item->id_end
+        if (row >= old_count || entries[row].kind == DSD_TG_POLICY_ROW_PATTERN
+            || entries[row].id_start != item->id_start || entries[row].id_end != item->id_end
             || !tg_policy_row_editable(&entries[row])) {
             return 1;
         }
@@ -1193,6 +1259,9 @@ dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end
     if (index < 0) {
         return 1;
     }
+    if (ctx->table.entries[index].kind == DSD_TG_POLICY_ROW_PATTERN && ctx->table.pattern_count > 0) {
+        --ctx->table.pattern_count;
+    }
     DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
                 (ctx->table.count - (size_t)index - 1) * sizeof(*ctx->table.entries));
     --ctx->table.count;
@@ -1210,7 +1279,7 @@ tg_policy_lookup_exact_in_ctx_kind(const dsd_tg_policy_context* ctx, uint32_t id
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->is_range != 0u || e->id_start != id || e->id_end != id) {
+        if (e->kind != DSD_TG_POLICY_ROW_EXACT || e->id_start != id || e->id_end != id) {
             continue;
         }
         if (!tg_policy_entry_is_learned_alias(e)) {
@@ -1247,7 +1316,7 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
         uint64_t span = 0;
-        if (e->is_range == 0u || tg_policy_entry_is_learned_alias(e)) {
+        if (e->kind != DSD_TG_POLICY_ROW_RANGE || tg_policy_entry_is_learned_alias(e)) {
             continue;
         }
         if (id < e->id_start || id > e->id_end) {
@@ -1263,8 +1332,57 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     return best_idx;
 }
 
-/* A talkgroup's row: a non-alias exact row, else the narrowest range. A learned radio alias names a radio, so it never
- * decides a talkgroup's mode, priority, preemption or media. */
+/* The most specific pattern row matching @p id (more literal digits, then no star; the last row wins ties), skipping
+ * learned aliases as the range pass does. Free when the table has no pattern rows; otherwise the ID is formatted once
+ * for the whole scan. */
+static int
+tg_policy_find_best_pattern_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
+    if (!ctx || ctx->table.pattern_count == 0) {
+        return -1;
+    }
+    char digits[DSD_ID_DECIMAL_MAX];
+    const size_t len = dsd_id_decimal(id, digits, sizeof(digits));
+    int best_idx = -1;
+    dsd_id_pattern best;
+    DSD_MEMSET(&best, 0, sizeof(best));
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
+        if (e->kind != DSD_TG_POLICY_ROW_PATTERN || tg_policy_entry_is_learned_alias(e)) {
+            continue;
+        }
+        dsd_id_pattern candidate;
+        tg_policy_entry_pattern(e, &candidate);
+        if (!dsd_id_pattern_match_decimal(&candidate, digits, len)) {
+            continue;
+        }
+        if (best_idx < 0 || !dsd_id_pattern_more_specific(&best, &candidate)) {
+            best_idx = (int)i;
+            best = candidate;
+        }
+    }
+    return best_idx;
+}
+
+/* After the exact pass: the narrowest range, else the most specific pattern. */
+static int
+tg_policy_lookup_span_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out) {
+    const int range = tg_policy_find_best_range_idx(ctx, id);
+    if (range >= 0) {
+        out->match = DSD_TG_POLICY_MATCH_RANGE;
+        out->entry = ctx->table.entries[range];
+        return 1;
+    }
+    const int pattern = tg_policy_find_best_pattern_idx(ctx, id);
+    if (pattern >= 0) {
+        out->match = DSD_TG_POLICY_MATCH_PATTERN;
+        out->entry = ctx->table.entries[pattern];
+        return 1;
+    }
+    return 0;
+}
+
+/* A talkgroup's row: a non-alias exact row, else the narrowest range, else the most specific pattern. A learned radio
+ * alias names a radio, so it never decides a talkgroup's mode, priority, preemption or media. */
 static int
 tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd_tg_policy_lookup* out) {
     if (!ctx || !ctx->table.entries || ctx->table.count == 0) {
@@ -1273,13 +1391,7 @@ tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd
     if (tg_policy_lookup_exact_in_ctx_kind(ctx, tg, 0, out)) {
         return 1;
     }
-    const int range = tg_policy_find_best_range_idx(ctx, tg);
-    if (range < 0) {
-        return 0;
-    }
-    out->match = DSD_TG_POLICY_MATCH_RANGE;
-    out->entry = ctx->table.entries[range];
-    return 1;
+    return tg_policy_lookup_span_in_ctx(ctx, tg, out);
 }
 
 static void
@@ -1305,7 +1417,6 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
 int
 dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out) {
     const dsd_tg_policy_context* ctx = NULL;
-    int best_idx = -1;
     if (!out) {
         return -1;
     }
@@ -1325,13 +1436,25 @@ dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_looku
     if (tg_policy_lookup_exact_in_ctx(ctx, id, out)) {
         return 0;
     }
-
-    best_idx = tg_policy_find_best_range_idx(ctx, id);
-    if (best_idx >= 0) {
-        out->match = DSD_TG_POLICY_MATCH_RANGE;
-        out->entry = ctx->table.entries[best_idx];
-    }
+    (void)tg_policy_lookup_span_in_ctx(ctx, id, out);
     return 0;
+}
+
+int
+dsd_tg_policy_lookup_group(const dsd_state* state, uint32_t tg, dsd_tg_policy_lookup* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->match = DSD_TG_POLICY_MATCH_NONE;
+    (void)tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, out);
+    return 0;
+}
+
+size_t
+dsd_tg_policy_pattern_count(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    return ctx ? ctx->table.pattern_count : 0;
 }
 
 int
@@ -1383,6 +1506,7 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
     clone->table.structural_generation = src->table.structural_generation;
+    clone->table.pattern_count = src->table.pattern_count;
     clone->lazy = src->lazy;
     clone->active = src->active;
     clone->call_skips = src->call_skips;
@@ -2053,7 +2177,9 @@ tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t
         char clean_mode[sizeof(entry->mode)];
         char clean_name[sizeof(entry->name)];
         char clean_tags[sizeof(entry->tags)];
-        if (entry->is_range) {
+        if (entry->kind == DSD_TG_POLICY_ROW_PATTERN) {
+            DSD_SNPRINTF(id_text, sizeof(id_text), "%s", entry->pattern);
+        } else if (entry->kind == DSD_TG_POLICY_ROW_RANGE) {
             DSD_SNPRINTF(id_text, sizeof(id_text), "%u-%u", entry->id_start, entry->id_end);
         } else {
             DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
@@ -2475,14 +2601,8 @@ tg_policy_reload_validate_candidate(const dsd_state* imported) {
             || !tg_policy_is_terminated_cstr(e->name, sizeof(e->name))) {
             return -1;
         }
-        if (e->is_range == 0u) {
-            if (!tg_policy_entry_valid_exact(e)) {
-                return -1;
-            }
-        } else {
-            if (!tg_policy_entry_valid_range(e)) {
-                return -1;
-            }
+        if (!tg_policy_entry_valid(e)) {
+            return -1;
         }
     }
 

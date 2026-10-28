@@ -765,7 +765,7 @@ test_zero_bounds() {
         dsd_tg_policy_entry entry = {};
         check(dsd_tg_policy_make_exact_entry(0, "A", "Zero", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
         entry.id_end = end;
-        entry.is_range = end != 0;
+        entry.kind = end != 0 ? DSD_TG_POLICY_ROW_RANGE : DSD_TG_POLICY_ROW_EXACT;
         check((end ? dsd_tg_policy_add_range_entry(&state, &entry) : dsd_tg_policy_append_exact(&state, &entry)) == 0);
         uint64_t context = 0;
         unsigned int generation = 0;

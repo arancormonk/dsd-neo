@@ -158,7 +158,7 @@ test_policy(void) {
            && strcmp(mode, "A") == 0);
     e.id_start = 100;
     e.id_end = 200;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     assert(dsd_tg_policy_add_range_entry(state, &e) == 0);
     assert(!dsd_source_label_lookup(state, 150, mode, sizeof(mode), name, sizeof(name)));
     dsd_state_ext_free_all(state);

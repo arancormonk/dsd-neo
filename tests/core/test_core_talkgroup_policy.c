@@ -199,7 +199,7 @@ test_lookup_and_precedence(void) {
 
     init_entry(&e, 1200, "B", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1299;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append range", dsd_tg_policy_add_range_entry(st, &e) == 0);
 
     rc |= expect_true("lookup exact wins", dsd_tg_policy_lookup_id(st, 1201, &lookup) == 0);
@@ -212,18 +212,18 @@ test_lookup_and_precedence(void) {
 
     init_entry(&e, 1205, "A", "NARROW", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1208;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append narrow range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     rc |= expect_true("lookup narrow", dsd_tg_policy_lookup_id(st, 1206, &lookup) == 0);
     rc |= expect_true("narrow wins", strcmp(lookup.entry.name, "NARROW") == 0);
 
     init_entry(&e, 1300, "A", "SPAN-1", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1309;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append span1", dsd_tg_policy_add_range_entry(st, &e) == 0);
     init_entry(&e, 1300, "B", "SPAN-2", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1309;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append span2", dsd_tg_policy_add_range_entry(st, &e) == 0);
     rc |= expect_true("lookup equal span", dsd_tg_policy_lookup_id(st, 1305, &lookup) == 0);
     rc |= expect_true("last inserted equal-span wins", strcmp(lookup.entry.name, "SPAN-2") == 0);
@@ -244,7 +244,7 @@ test_policy_exact_lookup(void) {
 
     init_entry(&e, 1, "A", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 100;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     init_entry(&e, 42, "DE", "EXACT", DSD_TG_POLICY_SOURCE_IMPORTED);
     rc |= expect_true("append exact", dsd_tg_policy_append_exact(st, &e) == 0);
@@ -257,7 +257,7 @@ test_policy_exact_lookup(void) {
     rc |= expect_true("range for non-exact", lookup.match == DSD_TG_POLICY_MATCH_RANGE);
 
     init_entry(&e, 200, "A", "BAD-RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
-    e.is_range = 0;
+    e.kind = DSD_TG_POLICY_ROW_EXACT;
     rc |= expect_true("reject exact in range helper", dsd_tg_policy_add_range_entry(st, &e) == 1);
 
     free_test_state(st);
@@ -1093,7 +1093,7 @@ test_alias_rows_never_decide_talkgroup_policy(void) {
     DSD_MEMSET(&e, 0, sizeof(e));
     e.id_start = 1000;
     e.id_end = 1999;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     DSD_SNPRINTF(e.mode, sizeof(e.mode), "%s", "A");
     DSD_SNPRINTF(e.name, sizeof(e.name), "%s", "Fire");
     e.priority = 100;
@@ -1487,7 +1487,7 @@ expect_zeroed_entry(const char* tag, const dsd_tg_policy_entry* entry) {
     rc |= expect_true(tag, entry->audio == 0);
     rc |= expect_true(tag, entry->record == 0);
     rc |= expect_true(tag, entry->stream == 0);
-    rc |= expect_true(tag, entry->is_range == 0);
+    rc |= expect_true(tag, entry->kind == DSD_TG_POLICY_ROW_EXACT);
     rc |= expect_true(tag, entry->source == 0);
     rc |= expect_true(tag, entry->row == 0);
     return rc;
@@ -1554,14 +1554,15 @@ test_mode_edits_and_enumeration(void) {
 
     init_entry(&e, 1300, "A", "Regional", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1399;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append editable range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     rc |= expect_true("edit range bounds", dsd_tg_policy_set_mode(st, 1300, 1399, "B") == 0);
     rc |= expect_true("append missing exact", dsd_tg_policy_set_mode(st, 900, 900, "B") == 0);
     rc |= expect_true("enumerated append count", dsd_tg_policy_entry_count(st) == 4);
     rc |= expect_true("enumerate range in append order", dsd_tg_policy_entry_at(st, 2, &row) == 1);
-    rc |= expect_true("range edit retained bounds",
-                      row.id_start == 1300 && row.id_end == 1399 && row.is_range && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("range edit retained bounds", row.id_start == 1300 && row.id_end == 1399
+                                                        && row.kind == DSD_TG_POLICY_ROW_RANGE
+                                                        && strcmp(row.mode, "B") == 0);
     rc |= expect_true("enumerate runtime row last", dsd_tg_policy_entry_at(st, 3, &row) == 1);
     rc |= expect_true("runtime row identity", row.id_start == 900 && row.id_end == 900 && row.name[0] == '\0'
                                                   && row.source == DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
@@ -1632,7 +1633,7 @@ test_group_file_rewrite(void) {
     rc |= expect_true("seed rewrite exact", dsd_tg_policy_append_exact(st, &e) == 0);
     init_entry(&e, 1300, "A", "Regional", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1399;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("seed rewrite range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
     rc |= expect_true("rewrite tagged table", dsd_tg_policy_write_group_file(opts, st) == 0);
@@ -1648,9 +1649,9 @@ test_group_file_rewrite(void) {
                                                     && strcmp(row.name, "Dispatch") == 0
                                                     && strcmp(row.tags, "FIRE") == 0);
     rc |= expect_true("roundtrip range row", dsd_tg_policy_entry_at(loaded, 1, &row) == 1);
-    rc |= expect_true("roundtrip range fields", row.id_start == 1300 && row.id_end == 1399 && row.is_range
-                                                    && strcmp(row.mode, "A") == 0 && strcmp(row.name, "Regional") == 0
-                                                    && row.tags[0] == '\0');
+    rc |= expect_true("roundtrip range fields", row.id_start == 1300 && row.id_end == 1399
+                                                    && row.kind == DSD_TG_POLICY_ROW_RANGE && strcmp(row.mode, "A") == 0
+                                                    && strcmp(row.name, "Regional") == 0 && row.tags[0] == '\0');
 
     fp = dsd_fopen_private(path, "w");
     if (!fp) {
@@ -1942,7 +1943,7 @@ test_session_avoids(void) {
     dsd_tg_policy_entry entry;
     init_entry(&entry, 100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
     entry.id_end = 199;
-    entry.is_range = 1;
+    entry.kind = DSD_TG_POLICY_ROW_RANGE;
     entry.priority = 70;
     entry.preempt = 1;
     int rc = expect_true("seed allowed range", dsd_tg_policy_add_range_entry(state, &entry) == 0);
@@ -2359,7 +2360,382 @@ test_set_fields_record(void) {
     value.record = 2;
     rc |= expect_true("record above 1 refused",
                       dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_RECORD) == 1);
+/* Append a pattern row through the public API. */
+static int
+add_pattern_row(dsd_state* st, const char* pattern, const char* mode, const char* name) {
+    dsd_tg_policy_entry e;
+    init_entry(&e, 0, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", pattern);
+    return dsd_tg_policy_add_pattern_entry(st, &e);
+}
+
+static int
+add_range_row(dsd_state* st, uint32_t first, uint32_t last, const char* mode, const char* name) {
+    dsd_tg_policy_entry e;
+    init_entry(&e, first, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.id_end = last;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
+    return dsd_tg_policy_add_range_entry(st, &e);
+}
+
+static int
+add_exact_row(dsd_state* st, uint32_t id, const char* mode, const char* name) {
+    dsd_tg_policy_entry e;
+    init_entry(&e, id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED);
+    return dsd_tg_policy_append_exact(st, &e);
+}
+
+/* Whether the talkgroup lookup for @p id decides by @p match through the row named @p name. */
+static int
+group_row_is(const dsd_state* st, uint32_t id, dsd_tg_policy_match_type match, const char* name) {
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_lookup by_id;
+    return dsd_tg_policy_lookup_group(st, id, &lookup) == 0 && lookup.match == match
+           && strcmp(lookup.entry.name, name) == 0 && dsd_tg_policy_lookup_id(st, id, &by_id) == 0
+           && by_id.match == match && strcmp(by_id.entry.name, name) == 0;
+}
+
+static dsd_tg_policy_match_type
+group_match(const dsd_state* st, uint32_t id) {
+    dsd_tg_policy_lookup lookup;
+    return dsd_tg_policy_lookup_group(st, id, &lookup) == 0 ? lookup.match : DSD_TG_POLICY_MATCH_NONE;
+}
+
+/* Exact (first row), then the narrowest range, then the most specific pattern: more literal digits, then no star,
+ * then the last row. */
+static int
+test_pattern_precedence(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    rc |= expect_true("add 1*", add_pattern_row(st, "1*", "A", "Org1") == 0);
+    rc |= expect_true("add 12*", add_pattern_row(st, "12*", "B", "Org12") == 0);
+    rc |= expect_true("add 1200-1299", add_range_row(st, 1200, 1299, "A", "R") == 0);
+    rc |= expect_true("add 1234", add_exact_row(st, 1234, "A", "E") == 0);
+    rc |= expect_true("exact beats range and patterns", group_row_is(st, 1234, DSD_TG_POLICY_MATCH_EXACT, "E"));
+    rc |= expect_true("range beats patterns", group_row_is(st, 1250, DSD_TG_POLICY_MATCH_RANGE, "R"));
+    rc |= expect_true("more literal digits win", group_row_is(st, 1290000, DSD_TG_POLICY_MATCH_PATTERN, "Org12"));
+    rc |= expect_true("only the wider pattern matches", group_row_is(st, 1500, DSD_TG_POLICY_MATCH_PATTERN, "Org1"));
+    rc |= expect_true("no row matches", group_match(st, 2000) == DSD_TG_POLICY_MATCH_NONE);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1290000, 7, 0, 0, &d);
+    rc |= expect_true("pattern mode B blocks", d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0
+                                                   && d.match == DSD_TG_POLICY_MATCH_PATTERN
+                                                   && strcmp(d.name, "Org12") == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d);
+    rc |= expect_true("pattern mode A admits", d.tune_allowed == 1 && d.match == DSD_TG_POLICY_MATCH_PATTERN);
+
+    // At equal literal digits a pattern without a star beats one with a star, wherever it is listed.
+    rc |= expect_true("add 1xx", add_pattern_row(st, "1xx", "A", "Hundreds") == 0);
+    rc |= expect_true("add later 1*", add_pattern_row(st, "1*", "A", "Org1-late") == 0);
+    rc |= expect_true("no star beats star", group_row_is(st, 150, DSD_TG_POLICY_MATCH_PATTERN, "Hundreds"));
     free_test_state(st);
+
+    // Equally specific patterns: the last row wins, in either order.
+    for (int order = 0; order < 2; ++order) {
+        st = (dsd_state*)calloc(1, sizeof(*st));
+        if (!st) {
+            return 1;
+        }
+        rc |= expect_true("add first tie", add_pattern_row(st, order ? "5*x" : "5x*", "A", order ? "P2" : "P1") == 0);
+        rc |= expect_true("add second tie", add_pattern_row(st, order ? "5x*" : "5*x", "A", order ? "P1" : "P2") == 0);
+        rc |= expect_true("equal specificity: last row wins",
+                          group_row_is(st, 55, DSD_TG_POLICY_MATCH_PATTERN, order ? "P1" : "P2"));
+        free_test_state(st);
+    }
+
+    // A learned alias exact row never hides a pattern for a talkgroup, but labels keep reading exact rows only.
+    st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    dsd_tg_policy_entry alias;
+    char mode[8];
+    char name[50];
+    rc |= expect_true("add 7xx", add_pattern_row(st, "7xx", "B", "Sevens") == 0);
+    init_entry(&alias, 750, "D", "Radio 750", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias under pattern", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_true("talkgroup lookup skips alias", dsd_tg_policy_lookup_group(st, 750, &lookup) == 0
+                                                          && lookup.match == DSD_TG_POLICY_MATCH_PATTERN
+                                                          && strcmp(lookup.entry.name, "Sevens") == 0);
+    rc |= expect_true("pattern gives no label",
+                      dsd_tg_policy_lookup_label(st, 760, mode, sizeof(mode), name, sizeof(name)) == 0);
+    rc |= expect_true("private call reads exact rows only",
+                      dsd_tg_policy_evaluate_private_call(&opts, st, 760, 9, 0, 0, &d) == 0
+                          && d.match == DSD_TG_POLICY_MATCH_NONE && d.tune_allowed == 1);
+    free_test_state(st);
+    return rc;
+}
+
+/* `*` is the documented catch-all: under it a more specific row decides, and with the allow list it lists every ID. */
+static int
+test_catch_all_star(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    rc |= expect_true("add *", add_pattern_row(st, "*", "B", "Everything") == 0);
+    rc |= expect_true("add 1xxx", add_pattern_row(st, "1xxx", "A", "Thousands") == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d);
+    rc |= expect_true("1xxx admits 1500", d.tune_allowed == 1 && strcmp(d.name, "Thousands") == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 5, 7, 0, 0, &d);
+    rc |= expect_true("* blocks 5", d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0
+                                        && strcmp(d.name, "Everything") == 0);
+    opts.trunk_use_allow_list = 1;
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d);
+    rc |= expect_true("pattern row lists its IDs",
+                      d.tune_allowed == 1 && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0);
+    free_test_state(st);
+
+    st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("add * listening", add_pattern_row(st, "*", "A", "All") == 0);
+    static const uint32_t ids[] = {0u, 1u, 77u, 1000000000u, 4294967295u};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+        (void)dsd_tg_policy_evaluate_group_call(&opts, st, ids[i], 7, 0, 0, &d);
+        rc |= expect_true("* with the allow list lists every ID",
+                          d.tune_allowed == 1 && d.match == DSD_TG_POLICY_MATCH_PATTERN
+                              && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0);
+    }
+    free_test_state(st);
+    return rc;
+}
+
+/* A list without pattern rows decides exactly as before patterns existed, and keeps the no-pattern fast path. */
+static int
+test_legacy_list_unchanged(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    rc |= expect_true("legacy exact", add_exact_row(st, 100, "A", "Dispatch") == 0);
+    rc |= expect_true("legacy duplicate", add_exact_row(st, 100, "B", "Shadowed") == 0);
+    rc |= expect_true("legacy blocked", add_exact_row(st, 200, "B", "Blocked") == 0);
+    rc |= expect_true("legacy wide range", add_range_row(st, 1000, 1999, "A", "Wide") == 0);
+    rc |= expect_true("legacy narrow range", add_range_row(st, 1500, 1599, "B", "Narrow") == 0);
+    rc |= expect_true("legacy tie first", add_range_row(st, 3000, 3009, "A", "TieFirst") == 0);
+    rc |= expect_true("legacy tie last", add_range_row(st, 3000, 3009, "B", "TieLast") == 0);
+    init_entry(&e, 1700, "D", "Radio", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("legacy alias", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("legacy list has no pattern rows", dsd_tg_policy_pattern_count(st) == 0);
+
+    static const struct {
+        uint32_t id;
+        dsd_tg_policy_match_type match;
+        const char* name;
+        int tune;
+    } table[] = {
+        {100, DSD_TG_POLICY_MATCH_EXACT, "Dispatch", 1}, {200, DSD_TG_POLICY_MATCH_EXACT, "Blocked", 0},
+        {1001, DSD_TG_POLICY_MATCH_RANGE, "Wide", 1},    {1550, DSD_TG_POLICY_MATCH_RANGE, "Narrow", 0},
+        {1700, DSD_TG_POLICY_MATCH_RANGE, "Wide", 1},    {3005, DSD_TG_POLICY_MATCH_RANGE, "TieLast", 0},
+        {5000, DSD_TG_POLICY_MATCH_NONE, "", 1},         {0, DSD_TG_POLICY_MATCH_NONE, "", 1},
+    };
+
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); ++i) {
+        (void)dsd_tg_policy_evaluate_group_call(&opts, st, table[i].id, 7, 0, 0, &d);
+        rc |= expect_true("legacy decision", d.match == table[i].match && strcmp(d.name, table[i].name) == 0
+                                                 && d.tune_allowed == table[i].tune);
+    }
+    opts.trunk_use_allow_list = 1;
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 5000, 7, 0, 0, &d);
+    rc |= expect_true("legacy allow list still blocks unlisted",
+                      d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
+    free_test_state(st);
+    return rc;
+}
+
+static int
+write_text(const char* path, const char* text) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return 1;
+    }
+    const int failed = DSD_FPRINTF(fp, "%s", text) < 0;
+    return (fclose(fp) != 0 || failed) ? 1 : 0;
+}
+
+/* Import a list with pattern rows, edit it, write it back and reload: kinds, canonical texts and the extended header
+ * survive. */
+static int
+test_pattern_row_rewrite_round_trip(void) {
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    char path[] = "dsd-neo-test-tg-pattern-XXXXXX";
+    char l1[256];
+    char l2[256];
+    char l3[256];
+    dsd_tg_policy_entry row;
+    if (!opts || !st || !loaded) {
+        free(opts);
+        free_test_state(st);
+        free_test_state(loaded);
+        return 1;
+    }
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(st);
+        free_test_state(loaded);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    rc |= expect_true("write pattern list", write_text(path, "id,mode,name,priority,preempt,audio,record,stream,tags\n"
+                                                             "1XXX,A,Thousands,5,true,on,on,on,FIRE\n"
+                                                             "**05,B,Ends05,,,,,,\n"
+                                                             "1200-1299,A,Range,,,,,,\n"
+                                                             "42,A,Exact,,,,,,\n")
+                                                == 0);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("import pattern list", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("pattern rows counted", dsd_tg_policy_pattern_count(st) == 2);
+    rc |= expect_true("edit pattern row by index", dsd_tg_policy_set_mode_at(st, 0, "B") == 0);
+    rc |= expect_true("rewrite pattern list", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("read rewritten pattern list",
+                      read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true("extended header kept",
+                      strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
+    rc |= expect_true("canonical pattern written", strcmp(l2, "1xxx,B,Thousands,5,true,off,off,off,FIRE\n") == 0);
+    rc |= expect_true("collapsed star written", strcmp(l3, "*05,B,Ends05,0,false,off,off,off,\n") == 0);
+    rc |= expect_true("reload rewritten pattern list", dsd_tg_policy_reload_group_file(opts, loaded) == 0);
+    rc |= expect_true("reloaded row count", dsd_tg_policy_entry_count(loaded) == 4);
+    rc |= expect_true("reloaded pattern row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1
+                                                  && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                  && strcmp(row.pattern, "1xxx") == 0 && row.id_start == 0
+                                                  && row.id_end == 0 && strcmp(row.mode, "B") == 0 && row.priority == 5
+                                                  && row.preempt == 1 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("reloaded second pattern", dsd_tg_policy_entry_at(loaded, 1, &row) == 1
+                                                     && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                     && strcmp(row.pattern, "*05") == 0);
+    rc |= expect_true("reloaded range row", dsd_tg_policy_entry_at(loaded, 2, &row) == 1
+                                                && row.kind == DSD_TG_POLICY_ROW_RANGE && row.pattern[0] == '\0'
+                                                && row.id_start == 1200 && row.id_end == 1299);
+    rc |= expect_true("reloaded exact row", dsd_tg_policy_entry_at(loaded, 3, &row) == 1
+                                                && row.kind == DSD_TG_POLICY_ROW_EXACT && row.pattern[0] == '\0'
+                                                && row.id_start == 42);
+    rc |= expect_true("reloaded patterns counted", dsd_tg_policy_pattern_count(loaded) == 2);
+    rc |= expect_true("reloaded pattern decides", group_row_is(loaded, 1906, DSD_TG_POLICY_MATCH_PATTERN, "Thousands"));
+    (void)remove(path);
+    free(opts);
+    free_test_state(st);
+    free_test_state(loaded);
+    return rc;
+}
+
+/* Edits by bounds never address a pattern row through its placeholder 0/0 bounds, and bad pattern rows are refused. */
+static int
+test_bounds_edits_skip_pattern_rows(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_entry row;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("add pattern", add_pattern_row(st, "1xxx", "A", "Thousands") == 0);
+    rc |= expect_true("remove ID 0 finds no row", dsd_tg_policy_remove_bounds(st, 0, 0) == 1);
+    rc |= expect_true("set mode of ID 0 appends exact", dsd_tg_policy_set_mode(st, 0, 0, "B") == 0);
+    rc |= expect_true("pattern row untouched", dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                                   && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                   && strcmp(row.mode, "A") == 0);
+    rc |=
+        expect_true("exact 0 appended", dsd_tg_policy_entry_at(st, 1, &row) == 1 && row.kind == DSD_TG_POLICY_ROW_EXACT
+                                            && row.id_start == 0 && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("remove exact 0", dsd_tg_policy_remove_bounds(st, 0, 0) == 0);
+    rc |= expect_true("pattern row kept", dsd_tg_policy_entry_count(st) == 1 && dsd_tg_policy_pattern_count(st) == 1);
+
+    rc |= expect_true("leading zero pattern refused", add_pattern_row(st, "05x", "A", "Bad") == 1);
+    rc |= expect_true("unmatchable pattern refused", add_pattern_row(st, "5xxxxxxxxx", "A", "Bad") == 1);
+    rc |= expect_true("exact text refused as pattern", add_pattern_row(st, "123", "A", "Bad") == 1);
+    init_entry(&e, 7, "A", "Bounds", DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", "7x");
+    rc |= expect_true("pattern row with bounds refused", dsd_tg_policy_add_pattern_entry(st, &e) == 1);
+    rc |= expect_true("pattern kind refused as exact", dsd_tg_policy_append_exact(st, &e) == 1);
+    rc |= expect_true("pattern kind refused as range", dsd_tg_policy_add_range_entry(st, &e) == 1);
+    e.id_start = e.id_end = 0;
+    rc |= expect_true("non-canonical text stored canonically", dsd_tg_policy_add_pattern_entry(st, &e) == 0
+                                                                   && dsd_tg_policy_entry_at(st, 1, &row) == 1
+                                                                   && strcmp(row.pattern, "7x") == 0);
+    rc |= expect_true("only valid rows added",
+                      dsd_tg_policy_entry_count(st) == 2 && dsd_tg_policy_pattern_count(st) == 2);
+    free_test_state(st);
+    return rc;
+}
+
+/* A pattern row reaches frontend snapshots and a scan row's own group list with its kind and text. */
+static int
+test_pattern_survives_snapshot_and_scan_context(void) {
+    int rc = 0;
+    dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
+    dsd_state* published = (dsd_state*)calloc(1, sizeof(*published));
+    dsd_state* consumer = (dsd_state*)calloc(1, sizeof(*consumer));
+    char path[] = "dsd-neo-test-tg-pattern-scan-XXXXXX";
+    dsd_tg_policy_entry row;
+    dsd_scan_row_profile profile = {0};
+    if (!live || !published || !consumer) {
+        rc = 1;
+        goto done;
+    }
+    rc |= expect_true("live pattern", add_pattern_row(live, "12*", "B", "Twelve") == 0);
+    rc |= expect_true("publish pattern", dsd_tg_policy_copy_snapshot(published, live) == 0);
+    rc |= expect_true("consume pattern", dsd_tg_policy_copy_snapshot(consumer, published) == 0);
+    rc |= expect_true("snapshot keeps pattern row", dsd_tg_policy_entry_at(consumer, 0, &row) == 1
+                                                        && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                        && strcmp(row.pattern, "12*") == 0);
+    rc |= expect_true("snapshot counts patterns", dsd_tg_policy_pattern_count(consumer) == 1);
+    rc |=
+        expect_true("snapshot pattern decides", group_row_is(consumer, 1290000, DSD_TG_POLICY_MATCH_PATTERN, "Twelve"));
+
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        rc = 1;
+        goto done;
+    }
+    (void)dsd_close(fd);
+    rc |= expect_true("write scan row list", write_text(path, "id,mode,name\n5xx,A,Row Fives\n") == 0);
+    rc |= expect_true("load scan row list", dsd_tg_policy_load(path, &profile.groups) == 0);
+    (void)remove(path);
+    profile.values.present = DSD_SCAN_OPT_GROUP;
+    rc |= expect_true("reserve scan groups", dsd_scan_groups_begin(live) == 0);
+    dsd_scan_groups_enter(live, &profile);
+    rc |= expect_true("scan row pattern decides", group_row_is(live, 512, DSD_TG_POLICY_MATCH_PATTERN, "Row Fives"));
+    rc |= expect_true("scan row hides the baseline pattern", group_match(live, 1290000) == DSD_TG_POLICY_MATCH_NONE);
+    rc |= expect_true("publish scan row", dsd_tg_policy_copy_snapshot(published, live) == 0);
+    rc |= expect_true("scan row snapshot keeps pattern", dsd_tg_policy_entry_at(published, 0, &row) == 1
+                                                             && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                             && strcmp(row.pattern, "5xx") == 0);
+    dsd_scan_groups_leave(live);
+    rc |= expect_true("baseline pattern back after leave",
+                      group_row_is(live, 1290000, DSD_TG_POLICY_MATCH_PATTERN, "Twelve"));
+done:
+    dsd_tg_policy_release(profile.groups);
+    free_test_state(live);
+    free_test_state(published);
+    free_test_state(consumer);
     return rc;
 }
 
@@ -2397,5 +2773,11 @@ main(void) {
     rc |= test_mode_edits_and_enumeration();
     rc |= test_group_file_rewrite();
     rc |= test_scan_row_policy_activity();
+    rc |= test_pattern_precedence();
+    rc |= test_catch_all_star();
+    rc |= test_legacy_list_unchanged();
+    rc |= test_pattern_row_rewrite_round_trip();
+    rc |= test_bounds_edits_skip_pattern_rows();
+    rc |= test_pattern_survives_snapshot_and_scan_context();
     return rc;
 }

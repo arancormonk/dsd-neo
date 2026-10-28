@@ -5,7 +5,8 @@ Files in this corpus are selector-prefixed fuzz seeds, not user-facing CSV examp
 The first byte selects which importer the fuzz harness exercises, then the remaining bytes are written to a temporary
 file and parsed as that CSV format:
 
-- `selector % 8 == 0`: group list (`csvGroupImportPath`) -- seeded by `group.csv`, `malformed.csv` (`H`)
+- `selector % 8 == 0`: group list (`csvGroupImportPath`, then lookups on IDs taken from the input) -- seeded by
+  `group.csv`, `group_patterns.csv` (digit patterns, ranges, exact rows), `malformed.csv` (`H`)
 - `selector % 8 == 1`: channel map (`csvChanImport`) -- seeded by `channel.csv`, `channel_direct.csv`, and
   `channel_direct_conflict.csv`, `scan_options.csv` (`I`)
 - `selector % 8 == 2`: decimal key list (`csvKeyImportDec`) -- seeded by `key_dec.csv` (`J`)

@@ -17,6 +17,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -185,24 +186,27 @@ csv_parse_u32_token(const char* token, uint32_t* out) {
     return 1;
 }
 
+/* The ID kinds csv_parse_id_field() reports; equal to dsd_tg_policy_row_kind's values. */
+enum { CSV_ID_EXACT = 0, CSV_ID_RANGE = 1, CSV_ID_PATTERN = 2 };
+
 static inline int
-csv_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
+csv_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_kind) {
+    if (!token || !out_start || !out_end || !out_kind) {
         return 0;
     }
     if (!csv_parse_u32_token(token, out_start)) {
         return 0;
     }
     *out_end = *out_start;
-    *out_is_range = 0;
+    *out_kind = CSV_ID_EXACT;
     return 1;
 }
 
 static inline int
-csv_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
+csv_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_kind) {
     uint32_t start = 0;
     uint32_t end = 0;
-    if (!token || !dash || !out_start || !out_end || !out_is_range) {
+    if (!token || !dash || !out_start || !out_end || !out_kind) {
         return 0;
     }
     if (strchr(dash + 1, '-') != NULL) {
@@ -223,25 +227,39 @@ csv_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_e
     }
     *out_start = start;
     *out_end = end;
-    *out_is_range = (start != end) ? 1 : 0;
+    *out_kind = (start != end) ? CSV_ID_RANGE : CSV_ID_EXACT;
     return 1;
 }
 
+/*
+ * Parse an id cell: one decimal ID, a start-end range, or a digit pattern (<dsd-neo/core/id_pattern.h>; any cell with
+ * x, X or *). A pattern sets *out_kind to CSV_ID_PATTERN, both bounds to 0 and @p out_pattern to its canonical form;
+ * with a NULL @p out_pattern the caller takes no patterns and a pattern cell is rejected. Returns 1 when parsed.
+ */
 static inline int
-csv_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
+csv_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_kind, dsd_id_pattern* out_pattern) {
+    if (!token || !out_start || !out_end || !out_kind) {
         return 0;
     }
     token = trim_ws(token);
     if (!token || token[0] == '\0') {
         return 0;
     }
+    if (dsd_id_pattern_is_candidate(token)) {
+        if (!out_pattern || dsd_id_pattern_parse(token, out_pattern) != 0) {
+            return 0;
+        }
+        *out_start = 0;
+        *out_end = 0;
+        *out_kind = CSV_ID_PATTERN;
+        return 1;
+    }
 
     char* dash = strchr(token, '-');
     if (!dash) {
-        return csv_parse_single_id(token, out_start, out_end, out_is_range);
+        return csv_parse_single_id(token, out_start, out_end, out_kind);
     }
-    return csv_parse_range_id(token, dash, out_start, out_end, out_is_range);
+    return csv_parse_range_id(token, dash, out_start, out_end, out_kind);
 }
 
 static inline const char*

@@ -6705,7 +6705,7 @@ test_talkgroup_row_commands(void) {
         if (scenario < 2) {
             dsd_tg_policy_make_exact_entry(1000, scenario == 0 ? "B" : "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
             e.id_end = 1099;
-            e.is_range = 1;
+            e.kind = DSD_TG_POLICY_ROW_RANGE;
             dsd_tg_policy_add_range_entry(state, &e);
         }
         dsd_tg_policy_set_mode(state, 1001, 1001, "A");
@@ -6761,7 +6761,7 @@ test_talkgroup_row_commands(void) {
     dsd_tg_policy_append_exact(state, &e);
     e.id_start = 4000;
     e.id_end = 4099;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     DSD_SNPRINTF(e.mode, sizeof e.mode, "%s", "A");
     e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
     dsd_tg_policy_add_range_entry(state, &e);

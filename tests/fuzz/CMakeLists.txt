@@ -98,6 +98,7 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
         ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
         # csvDmrTgKeyImport() clears the live map through keyring_dmr_tg_map_reset().
         ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
         ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
