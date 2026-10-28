@@ -731,8 +731,9 @@ obtained in Java and injected:
 1. `UsbSourceManager.kt` matches an attached device against the RTL2832U and Airspy
    vendor/product table (`UsbReceiverKind.kt`), requests permission if it does not already have it, calls
    `UsbManager.openDevice()` and takes `UsbDeviceConnection.getFileDescriptor()`.
-2. That descriptor goes to `DsdNative.nativeSetUsbFd(fd)` →
-   `rtl_device_set_preopened_fd()` (`src/io/radio/rtl_device.cpp`).
+2. That descriptor goes to `DsdNative.nativeSetUsbFd(fd, resetFirst)` →
+   `rtl_device_publish_preopened_fd()` (`src/io/radio/rtl_device.cpp`), with
+   whether the attachment owes a USB reset (below).
 3. `rtl_device_create()` sees the injected descriptor and calls `rtlsdr_open_fd()`
    instead of `rtlsdr_open()`. That entry point — added by the patch below — turns
    libusb device discovery off and wraps the descriptor with
@@ -783,17 +784,20 @@ returns, or no samples arrive for 5 s), ends by itself. The Monitor's LIVE pill
 turns to `LOST` at once, while the session still saves and uploads its last calls;
 tapping it explains that the session is finishing and offers **Stop now**, which
 drops the uploads still waiting. On a short landscape Monitor, where the header
-scrolls away, a fixed `RTL-SDR LOST` line above Stop does the same. Nothing
-restarts during a session: the desktop build resets and reopens a stalled
-RTL-SDR in place, once per stall (`docs/cli.md`, "Stall recovery"), but the
-app opens the dongle through Android's USB host and never resets it, so a
-stalled RTL-SDR ends the session here as before, and Reconnect starts it again.
+scrolls away, a fixed `RTL-SDR LOST` line above Stop does the same. A stalled
+RTL-SDR is reset and reopened in place, once per stall, as on the desktop
+(`docs/cli.md`, "Stall recovery"), and Listen shows the toast "RTL-SDR stopped
+sending samples; reset and reopened" (#782). The app resets it through its own USB
+descriptor, after the 2 s grace below lets a detach broadcast own an unplug.
+Only when that does not bring samples back (or the dongle stalls again within
+60 s) does the session end; an Airspy, which is never reset, ends as before.
 
 Once the session has ended, Listen shows a notice in place of the receiver card:
 "RTL-SDR was unplugged, so <system> stopped. Plug it back in, then tap Reconnect."
-or "RTL-SDR stopped sending samples, so <system> stopped. Check its USB connection,
-then tap Reconnect." **Reconnect** runs the usual USB access (a permission prompt
-if one is needed) and then starts the same system, scan list or Explore session.
+or "RTL-SDR stopped sending samples, so <system> stopped. Tap Reconnect to reset it
+and start again." (an Airspy's: "… Tap Reconnect to start again."). **Reconnect**
+runs the usual USB access (a permission prompt if one is needed) and then starts
+the same system, scan list or Explore session; the RTL-SDR's open resets it first.
 With Signal search open, its screen says to plug the receiver back in and start
 the search again. **Dismiss** clears the notice and cancels a Reconnect still
 waiting. After the Activity is recreated (for example after Android reclaimed
@@ -884,6 +888,20 @@ error only while that same connection is ready: two dongles with the same or no
 serial, or a replacement connection to the same dongle, never show another's.
 libusb's own error and warning lines reach the diagnostics through its log callback
 (`rtl_usb_log_install()`, set before every descriptor open).
+
+A stalled RTL-SDR owes a USB reset before its next open (#782): reopening the same
+dongle does not clear a wedged bulk stream, and `USBDEVFS_RESET` on the app's own
+descriptor does. The engine sets the obligation for the descriptor it holds when
+the stall is detected (before the grace, so a Stop then keeps it) and clears it once
+samples arrive after that or a reset succeeds (`nativeUsbResetOwed()`). The broker
+records it on the physical attachment (`UsbResetObligations.kt`: device name and
+attach epoch, with VID:PID and serial) after each run, and before it lets a
+connection go, and hands it with the next descriptor of that attachment; the open
+resets first. A refused reset keeps it; a detach drops it. Selecting another
+receiver never applies one attachment's to another. The obligations are kept in
+app-private storage (`noBackupFilesDir/usb-reset-owed`): at process start an entry
+whose device is no longer attached is dropped, and one still attached is honoured on
+its first open (the worst a stale one costs is one reset that was not needed).
 
 `ANDROID_USB_BROKER_JVM` runs `UsbRequestState.kt` and the real
 `UsbSourceManager.kt` on the JVM against stubs of the USB service and its prompts.

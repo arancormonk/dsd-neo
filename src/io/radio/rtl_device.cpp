@@ -79,6 +79,12 @@ struct airspy_source;
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
 #include <excpt.h>
 #endif
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+/* USBDEVFS_RESET and the device descriptor read through the app's usbfs descriptor (#782). */
+#include <linux/usbdevice_fs.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 /* Some platforms (e.g. non-glibc) may not define MSG_NOSIGNAL */
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -423,6 +429,10 @@ struct rtl_device {
      * knows to hand the descriptor back to its owner. See
      * rtl_device_preopened_fd_in_use(). */
     int owns_preopened_fd = 0;
+    /* ... that descriptor, and the publish it was taken at (rtl_preopened_fd_take()); meaningful only while
+     * owns_preopened_fd is set. Written at open, before any reader or monitor starts. */
+    int preopened_fd = -1;
+    uint32_t preopened_generation = 0U;
     dsd_thread_t thread{};
     struct input_ring_state* input_ring = nullptr;
     struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
@@ -571,7 +581,7 @@ struct rtl_device {
      * the reason when not. The identity is re-resolved after a reopen that found the dongle on another port. */
     struct rtl_usb_identity identity{};
     std::atomic<int> usb_recovery_on{0};
-    const char* usb_recovery_off_reason = "";
+    char usb_recovery_off_reason[128] = "";
     struct rtl_usb_effective usb_eff{};
     /* A restarted reader's starting point: the progress count when it started, and a sequence bumped each time, so the
      * progress monitor can watch it afresh. */
@@ -3217,6 +3227,8 @@ static std::atomic<uint32_t> g_test_verdict_pause_ms{0U};
 static std::atomic<unsigned int> g_test_verdicts_paused{0U};
 /* rtl_device_test_verdicts_in_grace(): verdicts that began waiting out the unplug-owner grace. */
 static std::atomic<unsigned int> g_test_verdicts_in_grace{0U};
+/* rtl_device_test_recoveries_in_grace(): stall recoveries that began waiting out the pre-recovery grace (#782). */
+static std::atomic<unsigned int> g_test_recoveries_in_grace{0U};
 
 extern "C" void
 rtl_device_test_set_progress_limit_ms(uint32_t limit_ms) {
@@ -3277,7 +3289,44 @@ extern "C" unsigned int
 rtl_device_test_verdicts_in_grace(void) {
     return g_test_verdicts_in_grace.load(std::memory_order_acquire);
 }
+
+extern "C" unsigned int
+rtl_device_test_recoveries_in_grace(void) {
+    return g_test_recoveries_in_grace.load(std::memory_order_acquire);
+}
 #endif
+
+/* The descriptor whose dongle owes a USB reset before its next open, -1 when none (#782): bound to the descriptor, so
+ * an obligation can never be applied to another one. Set with the slot, under its lock (the host's publish), or for
+ * the held descriptor by its stall verdict or recovery; cleared by a successful reset, or by samples after the verdict
+ * that set it. See rtl_device_preopened_fd_reset_owed(). */
+static std::atomic<int> g_preopened_usb_fd_reset_owed{-1};
+
+/* Moves with every publish, under the slot's lock: a device that took a descriptor at one value finds the host's
+ * connection replaced (or released, on a detach) when it moved since. */
+static std::atomic<uint32_t> g_preopened_usb_fd_generation{0U};
+
+/* @p fd's dongle owes a reset before its next open. */
+static void
+rtl_usb_reset_owed_set(int fd) {
+    g_preopened_usb_fd_reset_owed.store(fd, std::memory_order_release);
+}
+
+/* @p fd's dongle no longer owes one; an obligation the host bound to another descriptor since stays. */
+static void
+rtl_usb_reset_owed_clear(int fd) {
+    int expected = fd;
+    (void)g_preopened_usb_fd_reset_owed.compare_exchange_strong(expected, -1, std::memory_order_acq_rel,
+                                                                std::memory_order_acquire);
+}
+
+/* Whether the host replaced or released the connection behind @p dev's descriptor since the device took it: a detach
+ * clears the slot, and a new session's connection is published in its place. */
+static int
+rtl_usb_preopened_fd_moved(const struct rtl_device* dev) {
+    return dev->owns_preopened_fd
+           && g_preopened_usb_fd_generation.load(std::memory_order_acquire) != dev->preopened_generation;
+}
 
 /* rtl_device_set_unplug_owner_grace_ms(): set once by the Android host at startup, read whenever a failure is
  * raised. */
@@ -3808,6 +3857,78 @@ rtl_usb_recovery_refusal(const struct rtl_device* s, const rtl_recovery_budget* 
     return nullptr;
 }
 
+/* The reset obligation the RTL-SDR's progress monitor set for its descriptor (#782): at the progress count of the
+ * verdict that set it, so samples after it clear it again. Owned by the monitor thread. */
+namespace {
+struct rtl_usb_owed_watch {
+    int set;           /* this monitor's verdict set it */
+    uint64_t progress; /* ... when the progress count stood here */
+};
+} // namespace
+
+/* A stall verdict on @p s, made when its progress stood at @p progress: a dongle behind an Android descriptor owes a
+ * reset before its next open from now on, before any grace and whatever Stop follows (#782). */
+static void
+rtl_usb_owed_on_verdict(const struct rtl_device* s, rtl_usb_owed_watch* w, uint64_t progress) {
+    if (!s->owns_preopened_fd) {
+        return;
+    }
+    rtl_usb_reset_owed_set(s->preopened_fd);
+    w->set = 1;
+    w->progress = progress;
+}
+
+/* Samples verified since the verdict that set the obligation clear it: the dongle streams without a reset. */
+static void
+rtl_usb_owed_on_progress(const struct rtl_device* s, rtl_usb_owed_watch* w, uint64_t progress) {
+    if (w->set && progress != w->progress) {
+        rtl_usb_reset_owed_clear(s->preopened_fd);
+        w->set = 0;
+    }
+}
+
+/* How the pre-recovery grace (rtl_usb_recovery_grace()) ended. */
+namespace {
+enum rtl_usb_grace_result : int {
+    RTL_USB_GRACE_PASSED = 0,  /* still silent, still the session's: recover */
+    RTL_USB_GRACE_RESUMED = 1, /* samples since the verdict: no stall after all */
+    RTL_USB_GRACE_LEFT = 2,    /* a stop, an exit request or a detach (which stops the session) */
+    RTL_USB_GRACE_MOVED = 3,   /* the host released or replaced the receiver's connection */
+};
+} // namespace
+
+/* Before a stall recovery resets a dongle behind an Android descriptor, wait out the unplug-owner grace
+ * (rtl_device_set_unplug_owner_grace_ms()) as a session's ending does (#782): a stall can be an unplug whose detach
+ * broadcast is on its way, and the host owns that. Polled until the deadline and once more at it: samples since the
+ * verdict (made at @p verdict_progress), a stop, an exit request or the monitor's own stop, and the connection's
+ * publish each end it early. Desktop receivers, and a host with no grace, recover at once. */
+static rtl_usb_grace_result
+rtl_usb_recovery_grace(struct rtl_device* s, uint64_t verdict_progress) {
+    const uint32_t grace_ms = rtl_device_unplug_owner_grace_ms();
+    if (!s->owns_preopened_fd || grace_ms == 0U) {
+        return RTL_USB_GRACE_PASSED;
+    }
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    g_test_recoveries_in_grace.fetch_add(1U, std::memory_order_acq_rel);
+#endif
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + grace_ms;
+    for (;;) {
+        if (!rtl_monitor_running(s)) {
+            return RTL_USB_GRACE_LEFT;
+        }
+        if (rtl_device_receiver_progressed_since(s, verdict_progress)) {
+            return RTL_USB_GRACE_RESUMED;
+        }
+        if (rtl_usb_preopened_fd_moved(s)) {
+            return RTL_USB_GRACE_MOVED;
+        }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return RTL_USB_GRACE_PASSED;
+        }
+        dsd_sleep_ms(10);
+    }
+}
+
 /* Post a stall recovery request for @p s to its stream's controller (the registered callback). */
 static void
 rtl_usb_recovery_post(struct rtl_device* s, uint64_t silence_ms) {
@@ -3841,6 +3962,7 @@ rtl_usb_progress_monitor(void* arg) {
     rtl_progress_watch_begin(&watch, s->progress.load(std::memory_order_relaxed));
     rtl_recovery_budget budget{};
     budget.rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
+    rtl_usb_owed_watch owed{};
     while (rtl_monitor_running(s)) {
         rtl_monitor_wait(s);
         if (!rtl_monitor_running(s)) {
@@ -3881,15 +4003,33 @@ rtl_usb_progress_monitor(void* arg) {
         }
         const int streaming =
             s->reader_entered.load(std::memory_order_acquire) && !s->reader_exited.load(std::memory_order_acquire);
-        if (!rtl_progress_watch_step(&watch, s->progress.load(std::memory_order_relaxed), streaming)) {
+        const uint64_t progress = s->progress.load(std::memory_order_relaxed);
+        rtl_usb_owed_on_progress(s, &owed, progress);
+        if (!rtl_progress_watch_step(&watch, progress, streaming)) {
             continue;
         }
-        const uint64_t now_ms = dsd_realtime_mono_ms();
-        if (!rtl_usb_recovery_refusal(s, &budget, &watch, now_ms, cause, sizeof cause)) {
-            budget.requested = 1;
-            budget.requested_ms = now_ms;
-            rtl_usb_recovery_post(s, watch.silence_ms);
-            continue;
+        rtl_usb_owed_on_verdict(s, &owed, watch.progress);
+        if (!rtl_usb_recovery_refusal(s, &budget, &watch, dsd_realtime_mono_ms(), cause, sizeof cause)) {
+            const rtl_usb_grace_result grace = rtl_usb_recovery_grace(s, watch.progress);
+            if (grace == RTL_USB_GRACE_RESUMED) {
+                const uint64_t resumed = s->progress.load(std::memory_order_relaxed);
+                rtl_usb_owed_on_progress(s, &owed, resumed);
+                rtl_progress_watch_begin(&watch, resumed);
+                continue;
+            }
+            if (grace == RTL_USB_GRACE_LEFT) {
+                continue;
+            }
+            if (grace == RTL_USB_GRACE_PASSED) {
+                budget.requested = 1;
+                budget.requested_ms = dsd_realtime_mono_ms();
+                rtl_usb_recovery_post(s, watch.silence_ms);
+                continue;
+            }
+            DSD_SNPRINTF(cause, sizeof cause,
+                         "RTL-SDR: the receiver sent no samples for %llu"
+                         " ms and its USB connection was released, so it was not reset; the stream stops",
+                         (unsigned long long)watch.silence_ms);
         }
         if (rtl_device_end_for_receiver(s, -ETIMEDOUT, watch.progress, cause)) {
             (void)rtl_usb_cancel_async(s);
@@ -8212,22 +8352,42 @@ static std::atomic<int> g_preopened_usb_fd_held{-1};
  */
 static std::mutex g_preopened_usb_fd_lock;
 
-/* The host's "reset this descriptor before opening it" request for the next open (#782); see the header. */
-static std::atomic<int> g_preopened_usb_fd_reset_first{0};
-
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 static std::atomic<int (*)(int)> g_open_fd_failure_hook{nullptr};
+/* rtl_device_test_set_fd_reset_hook(): stands in for USBDEVFS_RESET on the descriptor, 0 or a negative errno. */
+static std::atomic<int (*)(int)> g_fd_reset_hook{nullptr};
+/* rtl_device_test_set_fd_identity_hook(): stands in for reading the descriptor's VID:PID and the opened handle's
+ * strings, 0 or a negative errno. */
+static std::atomic<int (*)(int, struct rtl_usb_identity*)> g_fd_identity_hook{nullptr};
 
 extern "C" void
 rtl_device_test_set_open_fd_failure_hook(int (*hook)(int)) {
     g_open_fd_failure_hook.store(hook, std::memory_order_release);
 }
+
+extern "C" void
+rtl_device_test_set_fd_reset_hook(int (*hook)(int)) {
+    g_fd_reset_hook.store(hook, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_set_fd_identity_hook(int (*hook)(int, struct rtl_usb_identity*)) {
+    g_fd_identity_hook.store(hook, std::memory_order_release);
+}
 #endif
 
 void
-rtl_device_set_preopened_fd(int sys_fd) {
+rtl_device_publish_preopened_fd(int sys_fd, int reset_first) {
     const std::lock_guard<std::mutex> guard(g_preopened_usb_fd_lock);
-    g_preopened_usb_fd.store((sys_fd < 0) ? -1 : sys_fd, std::memory_order_release);
+    const int fd = (sys_fd < 0) ? -1 : sys_fd;
+    g_preopened_usb_fd.store(fd, std::memory_order_release);
+    g_preopened_usb_fd_reset_owed.store((reset_first && fd >= 0) ? fd : -1, std::memory_order_release);
+    g_preopened_usb_fd_generation.fetch_add(1U, std::memory_order_acq_rel);
+}
+
+void
+rtl_device_set_preopened_fd(int sys_fd) {
+    rtl_device_publish_preopened_fd(sys_fd, 0);
 }
 
 int
@@ -8245,27 +8405,130 @@ rtl_device_preopened_fd_held(void) {
     return g_preopened_usb_fd_held.load(std::memory_order_acquire);
 }
 
-void
-rtl_device_set_preopened_fd_reset_first(int reset_first) {
-    g_preopened_usb_fd_reset_first.store(reset_first ? 1 : 0, std::memory_order_release);
-}
-
 int
-rtl_device_preopened_fd_reset_first(void) {
-    return g_preopened_usb_fd_reset_first.load(std::memory_order_acquire);
+rtl_device_preopened_fd_reset_owed(void) {
+    return g_preopened_usb_fd_reset_owed.load(std::memory_order_acquire);
 }
 
 #if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
     || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
-/* The slot's descriptor, now marked held, or -1 when none is set. One step with rtl_device_set_preopened_fd(). */
-static int
+/* What a device takes from the slot (rtl_preopened_fd_take()). */
+namespace {
+struct rtl_preopened_take {
+    int fd = -1;
+    int reset_first = 0;      /* the dongle owes a reset before this open */
+    uint32_t generation = 0U; /* the publish it was taken at */
+};
+} // namespace
+
+/* The slot's descriptor, now marked held, whether it owes a reset, and the publish it came with; fd -1 when none is
+ * set. One step with rtl_device_publish_preopened_fd(). */
+static rtl_preopened_take
 rtl_preopened_fd_take(void) {
     const std::lock_guard<std::mutex> guard(g_preopened_usb_fd_lock);
-    const int fd = g_preopened_usb_fd.load(std::memory_order_acquire);
-    if (fd >= 0) {
-        g_preopened_usb_fd_held.store(fd, std::memory_order_release);
+    rtl_preopened_take take;
+    take.fd = g_preopened_usb_fd.load(std::memory_order_acquire);
+    if (take.fd >= 0) {
+        g_preopened_usb_fd_held.store(take.fd, std::memory_order_release);
+        take.reset_first = g_preopened_usb_fd_reset_owed.load(std::memory_order_acquire) == take.fd;
+        take.generation = g_preopened_usb_fd_generation.load(std::memory_order_acquire);
     }
-    return fd;
+    return take;
+}
+
+/* How a USB reset through an Android descriptor ended (#782). */
+namespace {
+enum rtl_usb_fd_reset_result : int {
+    RTL_USB_FD_RESET_DONE = 0,    /* reset; the descriptor still leads to the device */
+    RTL_USB_FD_RESET_DEAD = 1,    /* the descriptor no longer leads to a device: it re-enumerates, or is gone */
+    RTL_USB_FD_RESET_REFUSED = 2, /* the kernel refused the reset; the device is as it was */
+};
+} // namespace
+
+/* USBDEVFS_RESET on @p fd: 0 or a negative errno. Never touches a descriptor anywhere else: a host test that installs no
+ * seam gets -ENOTSUP. */
+static int
+rtl_usb_fd_reset_raw(int fd) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const auto hook = g_fd_reset_hook.load(std::memory_order_acquire)) {
+        return hook(fd);
+    }
+#endif
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    if (ioctl(fd, USBDEVFS_RESET, 0) == 0) {
+        return 0;
+    }
+    return -errno;
+#else
+    (void)fd;
+    return -ENOTSUP;
+#endif
+}
+
+/* Reset the dongle behind @p fd, with nothing open on it, and log how it went, with errno. A successful reset clears
+ * the descriptor's obligation; a refused or fatal one keeps it. @p before says what the reset precedes, for the log. */
+static rtl_usb_fd_reset_result
+rtl_usb_fd_reset(int fd, const char* before) {
+    const int rc = rtl_usb_fd_reset_raw(fd);
+    if (rc == 0) {
+        rtl_usb_reset_owed_clear(fd);
+        LOG_INFO("RTL-SDR: reset the USB device through descriptor %d %s\n", fd, before);
+        return RTL_USB_FD_RESET_DONE;
+    }
+    if (rc == -ENODEV || rc == -EBADF) {
+        LOG_ERROR("RTL-SDR: the USB reset through descriptor %d %s left it unusable (errno %d)\n", fd, before, -rc);
+        return RTL_USB_FD_RESET_DEAD;
+    }
+    LOG_WARN("RTL-SDR: the USB reset through descriptor %d %s was refused (errno %d); opening it without one\n", fd,
+             before, -rc);
+    return RTL_USB_FD_RESET_REFUSED;
+}
+
+/* What identifies the dongle behind Android descriptor @p fd (#782): its VID:PID, from the device descriptor usbfs
+ * returns at the start of the file, and the strings read on its opened @p handle. The descriptor names the one device,
+ * so the strings only confirm it. 0 or a negative errno. */
+static int
+rtl_usb_fd_identity_read(int fd, rtlsdr_dev_t* handle, struct rtl_usb_identity* out) {
+    DSD_MEMSET(out, 0, sizeof *out);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const auto hook = g_fd_identity_hook.load(std::memory_order_acquire)) {
+        (void)handle;
+        const int rc = hook(fd, out);
+        out->valid = (rc == 0) ? 1 : 0;
+        return rc;
+    }
+#endif
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    uint8_t desc[18];
+    const ssize_t n = pread(fd, desc, sizeof desc, 0);
+    if (n < 0) {
+        return -errno;
+    }
+    if (n != (ssize_t)sizeof desc || desc[1] != 0x01U) {
+        return -EIO;
+    }
+    out->vid = (uint16_t)(desc[8] | (desc[9] << 8));
+    out->pid = (uint16_t)(desc[10] | (desc[11] << 8));
+    if (rtlsdr_get_usb_strings(handle, out->manufacturer, out->product, out->serial) != 0) {
+        return -EIO;
+    }
+    out->manufacturer[sizeof out->manufacturer - 1] = '\0';
+    out->product[sizeof out->product - 1] = '\0';
+    out->serial[sizeof out->serial - 1] = '\0';
+    out->valid = 1;
+    return 0;
+#else
+    (void)fd;
+    (void)handle;
+    return -ENOTSUP;
+#endif
+}
+
+/* Whether two descriptor identities name the same dongle. */
+static int
+rtl_usb_fd_identity_same(const struct rtl_usb_identity* a, const struct rtl_usb_identity* b) {
+    return a->valid && b->valid && a->vid == b->vid && a->pid == b->pid && strcmp(a->manufacturer, b->manufacturer) == 0
+           && strcmp(a->product, b->product) == 0 && strcmp(a->serial, b->serial) == 0;
 }
 #endif
 
@@ -8301,19 +8564,13 @@ rtl_usb_open_index(rtlsdr_dev_t** out, uint32_t index) {
 #endif
 }
 
-/* This receiver will not be reset and reopened when it stalls: say why, once, where its open is logged. A receiver
- * that is never recovered by design (@p by_design: Android, whose host owns reconnects) says so at info level; every
- * other reason is a warning. */
+/* This receiver will not be reset and reopened when it stalls: say why, once, where its open is logged. */
 static void
-rtl_usb_recovery_off(struct rtl_device* dev, const char* reason, int by_design) {
+rtl_usb_recovery_off(struct rtl_device* dev, const char* reason) {
     dev->usb_recovery_on.store(0, std::memory_order_release);
-    dev->usb_recovery_off_reason = reason;
+    DSD_SNPRINTF(dev->usb_recovery_off_reason, sizeof dev->usb_recovery_off_reason, "%s", reason);
     dev->identity.valid = 0;
-    if (by_design) {
-        LOG_INFO("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
-    } else {
-        LOG_WARN("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
-    }
+    LOG_WARN("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
 }
 
 /**
@@ -8389,12 +8646,20 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
      * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
      * project patch on the vendored tree; the configure step proves it is there. */
     // cppcheck-suppress knownConditionTrueFalse -- Native Android supports this; the desktop test seam can disable it.
-    const int preopened_fd = rtl_device_preopened_fd_supported() ? rtl_preopened_fd_take() : -1;
+    const rtl_preopened_take taken =
+        rtl_device_preopened_fd_supported() ? rtl_preopened_fd_take() : rtl_preopened_take{};
+    const int preopened_fd = taken.fd;
     if (preopened_fd >= 0) {
         /* Claimed (held) before the wrap, not after: the owner must not be told the
          * descriptor is free while libusb is part way through taking it. libusb's own
          * error text reaches the diagnostics from here on (#782). */
         rtl_usb_log_install();
+        /* A dongle a stall wedged streams nothing after a plain reopen; the reset through this descriptor clears it
+         * (#782). A refused reset opens without one and keeps the obligation, and one that left the descriptor
+         * unusable lets the open below fail with its own error. */
+        if (taken.reset_first) {
+            (void)rtl_usb_fd_reset(preopened_fd, "before opening it");
+        }
         r = rtl_usb_open_preopened_fd(&dev->dev, preopened_fd);
         if (r < 0) {
             g_last_usb_open_error.store(r, std::memory_order_release);
@@ -8407,7 +8672,18 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
             return NULL;
         }
         dev->owns_preopened_fd = 1;
-        rtl_usb_recovery_off(dev, RTL_USB_ID_OFF_REASON_ANDROID, 1);
+        dev->preopened_fd = preopened_fd;
+        dev->preopened_generation = taken.generation;
+        /* The descriptor is the identity (#782): its VID:PID and the strings on the handle, checked again after a
+         * stall recovery reopened it. */
+        const int id_rc = rtl_usb_fd_identity_read(preopened_fd, dev->dev, &dev->identity);
+        if (id_rc == 0) {
+            dev->usb_recovery_on.store(1, std::memory_order_release);
+        } else {
+            char reason[96];
+            DSD_SNPRINTF(reason, sizeof reason, "its descriptor's USB identity could not be read (errno %d)", -id_rc);
+            rtl_usb_recovery_off(dev, reason);
+        }
         return dev;
     }
 #endif
@@ -8427,7 +8703,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     if (verified == RTL_USB_ID_OK) {
         dev->usb_recovery_on.store(1, std::memory_order_release);
     } else {
-        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified), 0);
+        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified));
     }
 
     return dev;
@@ -9051,17 +9327,17 @@ rtl_usb_retire_handle(struct rtl_device* dev) {
 }
 
 /* Close a retired USB handle for good: bias tee off and FIFO reset first, then the handle, and only then is an
- * Android descriptor handed back to its owner. */
+ * Android descriptor handed back to its owner. A stall recovery that failed left no handle, and the descriptor is
+ * handed back all the same (#782). */
 static void
 rtl_usb_close_retired(struct rtl_device* dev, rtlsdr_dev_t* handle) {
-    if (!handle) {
-        return;
-    }
+    if (handle) {
 #ifdef USE_RTLSDR_BIAS_TEE
-    (void)rtl_usb_ctl_set_bias_tee(handle, 0);
+        (void)rtl_usb_ctl_set_bias_tee(handle, 0);
 #endif
-    (void)rtl_usb_ctl_reset_buffer(handle);
-    (void)rtl_usb_ctl_close(handle);
+        (void)rtl_usb_ctl_reset_buffer(handle);
+        (void)rtl_usb_ctl_close(handle);
+    }
     if (dev->owns_preopened_fd) {
         /* Released only now that libusb is done with it: the owner polls this to
          * decide when closing the underlying connection is safe. */
@@ -10724,7 +11000,7 @@ rtl_usb_reset_and_locate(struct rtl_device* dev, int* out_index, struct rtl_usb_
      * fails the recovery, and recovery stays off from then on, rather than open a dongle that may not be this one. */
     const int index = rtl_usb_identity_index(&dev->identity);
     if (index < 0) {
-        rtl_usb_recovery_off(dev, "no single receiver carries its USB strings after the reset", 0);
+        rtl_usb_recovery_off(dev, "no single receiver carries its USB strings after the reset");
         DSD_SNPRINTF(why, why_size, "%s", "after the USB reset no single receiver carries its USB strings");
         return -ENODEV;
     }
@@ -10733,7 +11009,7 @@ rtl_usb_reset_and_locate(struct rtl_device* dev, int* out_index, struct rtl_usb_
         return -ECANCELED;
     }
     if (resolved != RTL_USB_ID_OK) {
-        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved), 0);
+        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved));
         DSD_SNPRINTF(why, why_size, "after the USB reset: %s", rtl_usb_identity_off_reason(resolved));
         return -ENODEV;
     }
@@ -10761,6 +11037,81 @@ rtl_usb_publish_restored(struct rtl_device* dev, rtlsdr_dev_t* handle) {
     return rc;
 }
 
+#if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
+    || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The swap's reset and reopen for a dongle opened from an Android descriptor (#782), with its handle closed: reset
+ * through that descriptor, then open it again (the descriptor is the device, so nothing is located), into @p out.
+ * Outcomes: reset and reopened; refused, so it is reopened without a reset (the obligation stays, and a stall that
+ * persists ends the session through the budget); or the descriptor is dead, ENODEV or EBADF from the reset or the
+ * open, which fails the recovery: the device re-enumerates, and the host's detach and attach take over. */
+static int
+rtl_usb_fd_reset_and_reopen(struct rtl_device* dev, rtlsdr_dev_t** out, char* why, size_t why_size) {
+    const int fd = dev->preopened_fd;
+    /* The descriptor's dongle owes its reset from the moment the reader is retired for one, whatever comes next. */
+    rtl_usb_reset_owed_set(fd);
+    if (rtl_usb_stop_latched(dev)) {
+        return -ECANCELED;
+    }
+    if (rtl_usb_preopened_fd_moved(dev)) {
+        DSD_SNPRINTF(why, why_size, "%s", "the app released the receiver's USB connection");
+        return -ENODEV;
+    }
+    if (rtl_usb_fd_reset(fd, "to recover it") == RTL_USB_FD_RESET_DEAD) {
+        DSD_SNPRINTF(why, why_size, "%s", "the USB reset left the receiver's descriptor unusable");
+        return -ENODEV;
+    }
+    if (rtl_usb_stop_latched(dev)) {
+        return -ECANCELED;
+    }
+    const int rc = rtl_usb_open_preopened_fd(out, fd);
+    if (rc < 0 || !*out) {
+        DSD_SNPRINTF(why, why_size, "could not reopen the receiver's descriptor after the USB reset (rc=%d)", rc);
+        return (rc < 0) ? rc : -EIO;
+    }
+    return 0;
+}
+
+/* Check the handle reopened from the Android descriptor is the same dongle, and replay its settings. */
+static int
+rtl_usb_restore_fd_handle(struct rtl_device* dev, rtlsdr_dev_t* handle, char* why, size_t why_size) {
+    struct rtl_usb_identity fresh{};
+    const int id_rc = rtl_usb_fd_identity_read(dev->preopened_fd, handle, &fresh);
+    if (id_rc != 0) {
+        DSD_SNPRINTF(why, why_size, "the reopened receiver's USB identity could not be read (errno %d)", -id_rc);
+        return -EIO;
+    }
+    if (!rtl_usb_fd_identity_same(&fresh, &dev->identity)) {
+        rtl_usb_recovery_off(dev, "the reopened descriptor leads to another receiver");
+        DSD_SNPRINTF(why, why_size, "%s", "the reopened descriptor leads to another receiver");
+        return -EIO;
+    }
+    const char* failed = "";
+    const int rc = rtl_usb_replay_effective(dev, handle, &dev->usb_eff, &failed);
+    if (rc != 0 && rc != -ECANCELED) {
+        DSD_SNPRINTF(why, why_size, "could not restore the receiver's %s", failed);
+    }
+    return rc;
+}
+#endif
+
+/* The desktop swap's reset and reopen, with the handle closed: reset the dongle at its recorded port, find it again
+ * and open it by its index, into @p out, with where it is now in @p fresh. */
+static int
+rtl_usb_port_reset_and_reopen(struct rtl_device* dev, rtlsdr_dev_t** out, struct rtl_usb_identity* fresh, char* why,
+                              size_t why_size) {
+    int index = -1;
+    int rc = rtl_usb_reset_and_locate(dev, &index, fresh, why, why_size);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = rtl_usb_open_index(out, (uint32_t)index);
+    if (rc < 0 || !*out) {
+        DSD_SNPRINTF(why, why_size, "could not reopen the receiver after the USB reset (rc=%d)", rc);
+        return (rc < 0) ? rc : -EIO;
+    }
+    return 0;
+}
+
 /* The swap itself, under usb_lifecycle_lock with recovering set. */
 static int
 rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
@@ -10776,20 +11127,31 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         (void)rtl_usb_ctl_reset_buffer(retired);
         rtl_usb_close_swapped(dev, retired);
     }
+    rtlsdr_dev_t* handle = nullptr;
+    int rc = 0;
+#if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
+    || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (dev->owns_preopened_fd) {
+        rc = rtl_usb_fd_reset_and_reopen(dev, &handle, why, why_size);
+        if (rc == 0) {
+            rc = rtl_usb_restore_fd_handle(dev, handle, why, why_size);
+        }
+        if (rc == 0) {
+            rc = rtl_usb_publish_restored(dev, handle);
+        }
+        if (rc != 0 && handle) {
+            rtl_usb_close_swapped(dev, handle);
+        }
+        return rc;
+    }
+#endif
     if (rtl_usb_stop_latched(dev)) {
         return -ECANCELED;
     }
-    int index = -1;
     struct rtl_usb_identity fresh{};
-    int rc = rtl_usb_reset_and_locate(dev, &index, &fresh, why, why_size);
+    rc = rtl_usb_port_reset_and_reopen(dev, &handle, &fresh, why, why_size);
     if (rc != 0) {
         return rc;
-    }
-    rtlsdr_dev_t* handle = nullptr;
-    rc = rtl_usb_open_index(&handle, (uint32_t)index);
-    if (rc < 0 || !handle) {
-        DSD_SNPRINTF(why, why_size, "could not reopen the receiver after the USB reset (rc=%d)", rc);
-        return (rc < 0) ? rc : -EIO;
     }
     rc = rtl_usb_restore_handle(dev, handle, &fresh, why, why_size);
     if (rc == 0) {

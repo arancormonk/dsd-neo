@@ -237,6 +237,16 @@ void rtl_device_test_refuse_progress_monitor(int refuse);
 /* How many receiver verdicts began waiting out the unplug-owner grace, ever: a test polls it to know a verdict is
  * pending. */
 unsigned int rtl_device_test_verdicts_in_grace(void);
+/* How many stall recoveries of a receiver opened from an Android descriptor began waiting out the pre-recovery grace,
+ * ever (#782): a test polls it to know the verdict was reached and the recovery waits. */
+unsigned int rtl_device_test_recoveries_in_grace(void);
+/* The Android descriptor's seams (#782), in the pattern of the open-fd failure hook: @p hook stands in for
+ * USBDEVFS_RESET on the descriptor, and for reading the descriptor's VID:PID and the opened handle's USB strings; each
+ * answers 0 or a negative errno. NULL restores the platform's, which a host build has none of: it never touches a
+ * descriptor, and answers -ENOTSUP. */
+void rtl_device_test_set_fd_reset_hook(int (*hook)(int fd));
+struct rtl_usb_identity;
+void rtl_device_test_set_fd_identity_hook(int (*hook)(int fd, struct rtl_usb_identity* out));
 
 struct rtl_device;
 

@@ -126,17 +126,38 @@ int rtl_device_preopened_fd_in_use(void);
 int rtl_device_preopened_fd_held(void);
 
 /**
- * @brief Ask that the next open from the pre-opened descriptor resets the device first (#782).
+ * @brief Hand the next USB open a descriptor, saying whether its dongle owes a USB reset first (#782).
  *
- * The Android host hands this with each new descriptor (false unless the attachment
- * owes a reset). Recorded only: the open path that honours it consumes it.
+ * rtl_device_set_preopened_fd() with the reset obligation bound to @p sys_fd in the
+ * same step: the Android host passes @p reset_first nonzero when the attachment
+ * behind the descriptor owes a reset (a stall wedged its bulk stream, and reopening
+ * the same device does not clear that). Every publish replaces the obligation, so
+ * one never outlives the descriptor it was handed with: -1, or a descriptor with
+ * @p reset_first 0, clears it. rtl_device_set_preopened_fd() is this with 0.
  *
- * @param reset_first Nonzero to reset before the next open.
+ * The open that takes @p sys_fd resets the device first (USBDEVFS_RESET, Android
+ * only) and consumes the obligation when the reset succeeded; a refused reset opens
+ * without one and keeps it.
+ *
+ * @param sys_fd Open USB file descriptor, or -1 to clear.
+ * @param reset_first Nonzero when the device owes a reset before it is opened.
  */
-void rtl_device_set_preopened_fd_reset_first(int reset_first);
+void rtl_device_publish_preopened_fd(int sys_fd, int reset_first);
 
-/** @brief The request rtl_device_set_preopened_fd_reset_first() recorded: 1 or 0. */
-int rtl_device_preopened_fd_reset_first(void);
+/**
+ * @brief The descriptor whose dongle owes a USB reset before its next open, or -1 (#782).
+ *
+ * The physical "reset before the next open" requirement, apart from how the session
+ * ended. Besides a publish (rtl_device_publish_preopened_fd()), the engine sets it
+ * for the descriptor it holds when the progress monitor's stall verdict is reached
+ * or a stall recovery retires the reader, before any grace and whatever Stop follows,
+ * and clears it once samples arrive after that verdict or a USB reset succeeded. The
+ * Android host reads it for the attachment it handed that descriptor with and keeps
+ * it across sessions and process restarts. Lock-free.
+ *
+ * @return The descriptor, or -1.
+ */
+int rtl_device_preopened_fd_reset_owed(void);
 
 /**
  * @brief Whether this build can open a device from a pre-opened descriptor.
@@ -442,8 +463,9 @@ int rtl_device_stop_async(struct rtl_device* dev);
  * @brief Whether a USB device can be reset and reopened when it stops delivering samples.
  *
  * Decided at open: the device's USB port was identified uniquely (no other device carries its manufacturer, product
- * and serial strings, every candidate could be read, the build has libusb) and the opened handle carries them. When
- * not, the open logged "RTL-SDR: stall recovery is off for this receiver: <reason>".
+ * and serial strings, every candidate could be read, the build has libusb) and the opened handle carries them. A
+ * device opened from an Android descriptor is identified by that descriptor: its VID:PID and the strings readable on
+ * the opened handle (#782). When not, the open logged "RTL-SDR: stall recovery is off for this receiver: <reason>".
  *
  * @return 1 when eligible, 0 otherwise (including every non-USB device).
  */
@@ -460,6 +482,10 @@ int rtl_device_usb_recovery_eligible(const struct rtl_device* dev);
  * took is left at the fresh dongle's default; one that took and cannot be restored fails the recovery. Only then is
  * the new handle published. The reader is not restarted (rtl_device_usb_resume_reader()). While it runs, setters
  * return RTL_DEVICE_EBUSY and change nothing, and getters report no reading once the old handle is retired.
+ *
+ * A device opened from an Android descriptor (#782) is reset through that descriptor (USBDEVFS_RESET) and reopened
+ * from it, the same descriptor being its identity: a refused reset reopens without one, and one that left the
+ * descriptor unusable (ENODEV, EBADF) fails the recovery, as the device is then re-enumerating.
  *
  * @param dev RTL-SDR device handle.
  * @param why Receives the reason on failure (may be NULL).

@@ -61,9 +61,6 @@ struct rtl_usb_identity {
     char manufacturer[256], product[256], serial[256];
 };
 
-/* For a receiver opened from an Android USB descriptor, which this unit cannot identify. */
-#define RTL_USB_ID_OFF_REASON_ANDROID "opened from an Android descriptor"
-
 /* Before rtlsdr_open(index). Fills out (valid only on RTL_USB_ID_OK). */
 rtl_usb_id_result rtl_usb_identity_resolve(int index, struct rtl_usb_identity* out);
 /* After rtlsdr_open(): the opened handle carries the identity's triple. */

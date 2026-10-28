@@ -4534,8 +4534,9 @@ Key public headers:
     with a system librtlsdr and never on Android; otherwise every call returns `RTL_USB_ID_NO_LIBUSB`. Tests:
     `IO_RTL_USB_IDENTITY` (fake device list), `IO_RTL_USB_IDENTITY_STUB`.
   - USB handle swap (`rtl_device.cpp`): `rtl_device_create()` resolves the identity before the open and verifies the
-    handle after; any other result (or an Android descriptor) logs `RTL-SDR: stall recovery is off for this receiver:
-    <reason>` once (info level for Android, a warning otherwise) and leaves `rtl_device_usb_recovery_eligible()` 0. Two
+    handle after (an Android descriptor: see "Android descriptor recovery" below); any other result logs `RTL-SDR:
+    stall recovery is off for this receiver: <reason>` once, as a warning, and leaves
+    `rtl_device_usb_recovery_eligible()` 0. Two
     locks, taken `usb_lifecycle_lock` then `usb_ctrl_lock`, never the reverse, neither on the sample path: every use of
     the librtlsdr handle (setters, getters, `rtlsdr_cancel_async()`) and of the controls' record is under
     `usb_ctrl_lock`, so the demod never reads a gain change in flight; the handle is published or retired only with both
@@ -4603,6 +4604,29 @@ Key public headers:
     probe, failure and stop, capture events; ASan/TSan), `IO_USB_PROGRESS_MONITOR` (ineligible with a callback),
     `IO_RTL_REPLAY_EOF_AND_CF32` (gap reasons replay as `StreamGap`), `APP_COMMAND_QUEUE` (the toast),
     `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
+  - Android descriptor recovery and the reset obligation (#782; `rtl_device.cpp`). A device opened from the app's
+    descriptor is identified by it: VID:PID from the usbfs device descriptor (`pread()` at offset 0) and the strings on
+    the opened handle (`rtl_usb_fd_identity_read()`); unreadable, recovery is off with the errno. Its swap closes the
+    old handle as above, then `rtl_usb_fd_reset_and_reopen()`: `USBDEVFS_RESET` on the same descriptor
+    (`rtl_usb_fd_reset()`, logged with errno), then `rtlsdr_open_fd()` on it, the identity checked again (another
+    dongle turns recovery off), then the replay and the publish. Outcomes: done; refused (any errno but ENODEV/EBADF),
+    reopened without a reset, so a persisting stall ends through the budget; dead (ENODEV/EBADF, or an open that
+    fails), the recovery fails and the session ends as #774's, the host's detach and attach taking over. A stop is
+    checked right before the reset, and a host publish since the device took its descriptor (a detach clears the slot)
+    fails it. A device that failed its recovery holds no handle; destroy hands its descriptor back all the same. Before
+    posting, the monitor of such a device waits out the unplug-owner grace (`rtl_usb_recovery_grace()`, 2 s from the
+    Android host): samples since the verdict drop the recovery (the watch restarts), a stop, an exit request or the
+    monitor's own stop end it silently, and a moved publish ends the session for the receiver with "its USB connection
+    was released, so it was not reset". Desktop receivers post at once. The reset obligation
+    (`g_preopened_usb_fd_reset_owed`, `rtl_device_preopened_fd_reset_owed()`) is a descriptor, never a flag, so it can
+    only apply to that descriptor: `rtl_device_publish_preopened_fd(fd, reset_first)` sets or clears it with the slot
+    in one step (every publish replaces it; `rtl_device_set_preopened_fd()` passes 0), the stall verdict and the swap's
+    retirement set it for the held descriptor before any grace or Stop, samples after the verdict that set it and a
+    successful reset clear it (compare-and-swap on the descriptor). The open that takes a descriptor owing a reset
+    resets it first (`rtl_preopened_fd_take()` reads both under the slot's lock). The host side (the broker's per-
+    attachment record, storage and the swap) is in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
+    `rtl_device_test_set_fd_reset_hook()`, `rtl_device_test_set_fd_identity_hook()`,
+    `rtl_device_test_recoveries_in_grace()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
   - rtl_tcp connections and reconnects (issue #518 B3, B4, B13, B16, B17; `rtl_device.cpp`). The server sends exactly a
     12-byte header ("RTL0", tuner type, gain count, big-endian) and then u8 I/Q: `rtl_tcp_read_header()` reads those
     twelve bytes and nothing more (no gain table), across receive timeouts, with explicit results (SUCCESS, EOF,
@@ -7442,10 +7466,10 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
   access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
-  layout, Onboarding wording and Monitor geometry. A desktop RTL-SDR eligible for stall recovery is reset and reopened
-  once per stall before its session would end (IO, "USB stall recovery"); a brokered receiver is opened from a USB
-  descriptor and never recovered in place (stall recovery is off by design, logged at info level), so a stall ends its
-  session as described here.
+  layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per
+  stall before its session would end (IO, "USB stall recovery"; a brokered one through its descriptor, after the
+  unplug-owner grace, "Android descriptor recovery"), so only a stall that recovery could not clear, or an Airspy's,
+  ends its session as described here.
   - `qml/DeviceStatus.qml` (a non-visual `QtObject`, in `qmldir` and the `qt_add_resources` list) is the one reading
     of the brokered receiver that Listen, Onboarding and the Monitor share, so one receiver is never named or worded two
     ways. `kind`: the connected source when ready; else the receiver of the session that just ended
@@ -7482,15 +7506,17 @@ Qt Quick frontend (`src/ui/qt`):
   - Receiver notice (Main.qml): when `receiverHealth` reads `lost` or `failed` and no session is active,
     `receiverNotice()` words the ending as Home's failure, ranked after a start error and live USB-access text and
     before the host's failure: "RTL-SDR was unplugged, so <name> stopped. Plug it back in, then tap Reconnect." or
-    "RTL-SDR stopped sending samples, so <name> stopped. Check its USB connection, then tap Reconnect.", naming the
+    "RTL-SDR stopped sending samples, so <name> stopped. Tap Reconnect to reset it and start again." (an Airspy,
+    never reset: "… Tap Reconnect to start again."; no copy blames the cable, #782), naming the
     attempt's system, scan list, Explore or Signal search. The `FailureCard` (`homeFailureCard`) button reads
     `retryText` "Reconnect" while the notice shows (`receiverNoticeShown`), and the details panel is hidden, so two
     Retry actions never compete. Reconnect is `retrySource()`: the usual USB gate (a permission prompt if needed), then
     the same session. After an Activity recreation the UI has no verified link from the service's run to a saved
     system or list (`attemptedSource` is empty), so Reconnect only asks for access to the lost kind, starts nothing,
-    and the copy ends "Plug it back in, tap Reconnect, then start it again." (a stream failure: "Check its USB
-    connection, tap Reconnect, then start it again."). With Signal search open, its screen says "… plug it back in,
-    then start the search again." (or "Check its USB connection, then start the search again."). Dismiss clears the
+    and the copy ends "Plug it back in, tap Reconnect, then start it again." (a stream failure: "Tap Reconnect to reset
+    it, then start it again.", an Airspy's "Tap Reconnect, then start it again."). With Signal search open, its screen
+    says "… plug it back in, then start the search again." (or "Start the search again to reset it.", an Airspy's
+    "Start the search again."). Dismiss clears the
     notice and any restart queued behind a Reconnect or Retry (`cancelPendingRestart()`); Back does not cancel a
     pending Reconnect (Android's permission dialog takes Back as a denial). While a start waits on USB access the live
     access text ("USB permission denied") outranks the input-failure texts. During a session the notice never shows;
@@ -8646,7 +8672,7 @@ by kind (with two Airspys it may prompt for the other). Tests:
 `UI_QT_SESSION_STATE` (`test_receiver_end_holds_stopping_through_long_running`), `IO_RTL_RUN_RESULT` (causes, sources,
 the grace, the receiver's own open error), `UI_QT_ANDROID_HOST` (`check_receiver_health`, `check_claim_error_scope`,
 `check_claim_error_connection`, `check_receiver_take_failures`, `check_request_record`), `UI_QT_CONTROLLER`,
-`ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`, `IO_RTL_FD_HELD`, `IO_RTL_USB_LOG`.
+`ANDROID_ENGINE_STOP_JVM`, `ANDROID_USB_BROKER_JVM`, `IO_RTL_FD_HELD`, `IO_RTL_USB_LOG`, `IO_RTL_USB_FD_RECOVERY`.
 
 Stop delivery (PR #723 follow-up): `DecoderService.stopDecoder()` also calls `requestEngineStop()` synchronously
 under the service lock, before posting the intent, for RUNNING and STOPPING. The JNI stop only raises atomics; the

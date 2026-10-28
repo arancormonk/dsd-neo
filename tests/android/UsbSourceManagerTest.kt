@@ -30,8 +30,9 @@ private fun rtl(name: String = RTL_A) = UsbDevice(name, 0x0bda, 0x2838, "0000000
 
 private fun airspy(name: String = AIRSPY_A, serial: String = SERIAL) = UsbDevice(name, 0x1d50, 0x60a1, serial, "AIRSPY")
 
-// One per case: the manager registers its receiver once, on the first context it sees.
-private class Rig {
+// One per case: the manager registers its receiver once, on the first context it sees. [storage] is the app-private
+// directory, one a "previous process" wrote to; [present] is on the bus, permitted, before the process starts.
+private class Rig(storage: File? = null, present: List<UsbDevice> = emptyList()) {
     val context = Context()
     val usb: UsbManager get() = context.usb
 
@@ -39,6 +40,11 @@ private class Rig {
         // This thread is the main thread: broadcasts and the service's start run here, and the Qt thread's requests
         // wait in Handler.pending until drain().
         Looper.mainThread = Thread.currentThread()
+        storage?.let { context.noBackupFilesDir = it }
+        for (device in present) {
+            usb.plug(device)
+            usb.granted += device.deviceName
+        }
         UsbSourceManager.initializeAttachments(context)
     }
 
@@ -599,6 +605,168 @@ private fun aBlockedSerialReadBlocksNothing() {
     check(rig.record().optBoolean("ready")) { "the connection is untouched" }
 }
 
+private val RTL_SERIAL_B = "00000002"
+
+private fun rtlB(name: String = RTL_B) = UsbDevice(name, 0x0bda, 0x2838, RTL_SERIAL_B, "RTL2838UHIDIR")
+
+/** What the broker keeps in app-private storage. */
+private fun stored(rig: Rig) = File(rig.context.noBackupFilesDir, "usb-reset-owed").let { if (it.isFile) it.readText() else "" }
+
+// #782 WP1: a stall leaves the RTL-SDR owing a USB reset. The run's end records it on the attachment (and stores it);
+// the next session's fresh connection carries it to the engine with its descriptor; a reset that succeeded clears it.
+private fun aStallsResetTravelsWithTheNextDescriptor() {
+    val rig = Rig()
+    rig.connect(rtl())
+    check(DsdNative.publishedResetFirst.toList() == listOf(false)) { "a fresh attachment owes nothing" }
+    rig.take()
+    val first = rig.usb.opened.single()
+    // The engine's stall verdict on the session's descriptor.
+    DsdNative.resetOwed = first.fileDescriptor
+    UsbSourceManager.noteSessionEnded()
+    check("usb: RTL2838UHIDIR owes a USB reset before its next open" in DsdNative.diagnostics) { "${DsdNative.diagnostics}" }
+    check(stored(rig).startsWith("$RTL_A\t${0x0bda}\t${0x2838}\t00000001")) { "kept in storage: ${stored(rig)}" }
+    val second = rig.take()
+    check(second.failureKind == "" && second.connection == 2L) { "$second" }
+    val reopened = rig.usb.opened.last()
+    check(DsdNative.usbFd == reopened.fileDescriptor && DsdNative.publishedResetFirst.last()) {
+        "the new descriptor goes to the engine with the reset: ${DsdNative.publishedResetFirst}"
+    }
+    check(DsdNative.resetOwed == reopened.fileDescriptor) { "bound to the new descriptor, not the old one" }
+    check("usb: RTL2838UHIDIR owes a USB reset; the engine resets it before opening it" in DsdNative.diagnostics)
+    // The open reset it.
+    DsdNative.resetOwed = -1
+    UsbSourceManager.noteSessionEnded()
+    check(stored(rig) == "") { "a reset that succeeded clears it: ${stored(rig)}" }
+    rig.take()
+    check(!DsdNative.publishedResetFirst.last()) { "and the session after it opens without one" }
+}
+
+// #782: the obligation reaches the next descriptor even when the worker's report has not run yet: the swap reads the
+// engine before it lets the old descriptor go (Stop during the grace, then a start at once).
+private fun theSwapReadsTheObligationItself() {
+    val rig = Rig()
+    rig.connect(rtl())
+    rig.take()
+    DsdNative.resetOwed = rig.usb.opened.single().fileDescriptor
+    rig.take()
+    check(DsdNative.publishedResetFirst.last() && DsdNative.resetOwed == rig.usb.opened.last().fileDescriptor) {
+        "the reopened descriptor carries the reset"
+    }
+}
+
+// #782: A owes a reset; B is selected and opened without one; back on A, A's open resets it.
+private fun eachReceiverKeepsItsOwnObligation() {
+    val rig = Rig()
+    rig.plug(rtl())
+    rig.plug(rtlB())
+    rig.usb.granted += RTL_A
+    rig.usb.granted += RTL_B
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "00000001")
+    rig.take()
+    DsdNative.resetOwed = rig.usb.opened.single().fileDescriptor
+    UsbSourceManager.noteSessionEnded()
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", RTL_SERIAL_B)
+    check(rig.record().optString("serial") == RTL_SERIAL_B) { "B is connected: ${rig.record()}" }
+    check(!DsdNative.publishedResetFirst.last() && DsdNative.resetOwed == -1) { "B never gets A's reset" }
+    rig.take()
+    UsbSourceManager.noteSessionEnded()
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "00000001")
+    check(rig.record().optString("serial") == "00000001") { "A is connected again: ${rig.record()}" }
+    check(DsdNative.publishedResetFirst.toList() == listOf(false, false, true)) {
+        "A's own reset is asked of its next open: ${DsdNative.publishedResetFirst}"
+    }
+}
+
+// #782: a reset the kernel refused leaves the obligation in the engine, so it is kept for the next open too.
+private fun aRefusedResetIsAskedAgain() {
+    val rig = Rig()
+    rig.connect(rtl())
+    rig.take()
+    DsdNative.resetOwed = rig.usb.opened.single().fileDescriptor
+    rig.take()
+    // The engine's open was refused the reset: the obligation stays bound to the descriptor it took.
+    check(DsdNative.resetOwed == rig.usb.opened.last().fileDescriptor)
+    UsbSourceManager.noteSessionEnded()
+    check(stored(rig).isNotEmpty()) { "still owed" }
+    rig.take()
+    check(DsdNative.publishedResetFirst.takeLast(2) == listOf(true, true)) { "asked again: ${DsdNative.publishedResetFirst}" }
+}
+
+// #782: a detach takes the obligation with it; the device comes back as a new enumeration that owes nothing.
+private fun aDetachDropsTheObligation() {
+    val rig = Rig()
+    val device = rtl()
+    rig.connect(device)
+    rig.take()
+    DsdNative.resetOwed = rig.usb.opened.single().fileDescriptor
+    UsbSourceManager.noteSessionEnded()
+    rig.unplug(device)
+    check(stored(rig) == "") { "dropped from storage too: ${stored(rig)}" }
+    check("usb: RTL2838UHIDIR was detached; it no longer owes a USB reset" in DsdNative.diagnostics) { "${DsdNative.diagnostics}" }
+    rig.connect(rtl(RTL_A_REPLUGGED))
+    check(!DsdNative.publishedResetFirst.last()) { "the re-plugged device opens without a reset" }
+}
+
+private const val RTL_A_REPLUGGED = "/dev/bus/usb/001/009"
+private const val STORAGE = "dsdneo.test.storage"
+
+// #782: a new process meets the stored obligations. A, still attached, is reset on its first open; B, detached while
+// no process ran, is dropped from storage; B plugged in again later opens without a reset.
+private fun aNewProcessHonoursWhatIsStillAttached() {
+    val storage = java.nio.file.Files.createTempDirectory("dsd-usb-process").toFile()
+    System.setProperty(STORAGE, storage.path)
+    inNewProcess("process_first")
+    inNewProcess("process_second")
+}
+
+private fun firstProcessLeavesTwoObligations() {
+    val rig = Rig(storage = File(System.getProperty(STORAGE)))
+    rig.plug(rtl())
+    rig.plug(rtlB())
+    rig.usb.granted += RTL_A
+    rig.usb.granted += RTL_B
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "00000001")
+    rig.take()
+    DsdNative.resetOwed = DsdNative.usbFd
+    UsbSourceManager.noteSessionEnded()
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", RTL_SERIAL_B)
+    rig.take()
+    DsdNative.resetOwed = DsdNative.usbFd
+    UsbSourceManager.noteSessionEnded()
+    check(stored(rig).lines().filter { it.isNotEmpty() }.map { it.substringBefore('\t') } == listOf(RTL_A, RTL_B)) {
+        "both are stored: ${stored(rig)}"
+    }
+}
+
+private fun secondProcessHonoursA() {
+    val rig = Rig(storage = File(System.getProperty(STORAGE)), present = listOf(rtl()))
+    check(stored(rig).lines().filter { it.isNotEmpty() }.map { it.substringBefore('\t') } == listOf(RTL_A)) {
+        "B, no longer attached, is dropped: ${stored(rig)}"
+    }
+    check("usb: $RTL_A still owes a USB reset from an earlier process" in DsdNative.diagnostics) { "${DsdNative.diagnostics}" }
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
+    check(rig.record().optBoolean("ready") && DsdNative.publishedResetFirst.toList() == listOf(true)) {
+        "A's first open resets it: ${DsdNative.publishedResetFirst}"
+    }
+    rig.plug(rtlB())
+    rig.usb.granted += RTL_B
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", RTL_SERIAL_B)
+    check(DsdNative.publishedResetFirst.last() == false) { "B, plugged in again, opens without one" }
+}
+
+/** Runs [case] as a new process would: in a class loader of its own, so every object starts afresh. */
+private fun inNewProcess(case: String) {
+    val classpath = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).toURI().toURL() }
+    URLClassLoader(classpath.toTypedArray(), ClassLoader.getPlatformClassLoader()).use { loader ->
+        val run = loader.loadClass("io.github.arancormonk.dsdneo.UsbSourceManagerTestKt").getMethod("runCase", String::class.java)
+        try {
+            run.invoke(null, case)
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw IllegalStateException("$case: ${e.targetException.message}", e.targetException)
+        }
+    }
+}
+
 private val CASES = linkedMapOf<String, () -> Unit>(
     "identity" to ::eachPromptHasItsOwnIdentity,
     "expiry" to ::anUnansweredPromptExpiresOnThePoll,
@@ -633,11 +801,23 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "stale_replug" to ::aStaleListingAcrossAReplug,
     "stale_detach" to ::aStaleListingAcrossADetach,
     "blocked_serial" to ::aBlockedSerialReadBlocksNothing,
+    "reset_owed_swap" to ::aStallsResetTravelsWithTheNextDescriptor,
+    "reset_owed_unreported" to ::theSwapReadsTheObligationItself,
+    "reset_owed_per_receiver" to ::eachReceiverKeepsItsOwnObligation,
+    "reset_owed_refused" to ::aRefusedResetIsAskedAgain,
+    "reset_owed_detach" to ::aDetachDropsTheObligation,
+    "reset_owed_process" to ::aNewProcessHonoursWhatIsStillAttached,
+)
+
+// Run only inside reset_owed_process, each as its own process.
+private val PROCESSES = linkedMapOf<String, () -> Unit>(
+    "process_first" to ::firstProcessLeavesTwoObligations,
+    "process_second" to ::secondProcessHonoursA,
 )
 
 /** Entry point inside a case's own class loader. */
 fun runCase(name: String) {
-    CASES.getValue(name)()
+    (CASES[name] ?: PROCESSES.getValue(name))()
 }
 
 fun main() {

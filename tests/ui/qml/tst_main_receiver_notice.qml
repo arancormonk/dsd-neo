@@ -189,7 +189,11 @@ Item {
                 {tag: "Explore, unplugged", kind: "explore", source: "usb", state: "lost",
                     text: "RTL-SDR was unplugged, so Explore stopped. Plug it back in, then tap Reconnect."},
                 {tag: "Airspy saved system, stream failed", kind: "saved", source: "airspy", state: "failed",
-                    text: "Airspy stopped sending samples, so County P25 stopped. Check its USB connection, then tap Reconnect."},
+                    text: "Airspy stopped sending samples, so County P25 stopped. Tap Reconnect to start again."},
+                {tag: "saved system, stream failed", kind: "saved", source: "usb", state: "failed",
+                    text: "RTL-SDR stopped sending samples, so County P25 stopped. Tap Reconnect to reset it and start again."},
+                {tag: "Explore, stream failed", kind: "explore", source: "usb", state: "failed",
+                    text: "RTL-SDR stopped sending samples, so Explore stopped. Tap Reconnect to reset it and start again."},
                 {tag: "Airspy scan list, unplugged", kind: "scan", source: "airspy", state: "lost",
                     text: "Airspy was unplugged, so Night scan stopped. Plug it back in, then tap Reconnect."}
             ];
@@ -242,7 +246,7 @@ Item {
             var uid = startTarget("saved", "usb");
             failByReceiver("usb");
             tryCompare(card(), "visible", true);
-            compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Check its USB connection, then tap Reconnect.");
+            compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Tap Reconnect to reset it and start again.");
             tap(findChild(card(), "failureRetry"));
             tryCompare(app, "awaitingUsbAccess", true);
             connect("usb");
@@ -328,7 +332,7 @@ Item {
             testContext.setReceiverHealth("failed", "usb");
             compare(app.attemptedSource, null);
             tryCompare(card(), "visible", true);
-            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Check its USB connection, tap Reconnect, then start it again.");
+            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Tap Reconnect to reset it, then start it again.");
             tap(findChild(card(), "failureRetry"));
             compare(testContext.lastDeviceAccess().count, 1);
             compare(decoderHost.sessionState, 0);
@@ -361,7 +365,26 @@ Item {
         function test_recreated_stream_failure_wording() {
             testContext.setReceiverHealth("failed", "usb");
             tryCompare(card(), "visible", true);
-            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Check its USB connection, tap Reconnect, then start it again.");
+            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Tap Reconnect to reset it, then start it again.");
+        }
+
+        // #782: only an RTL-SDR is reset on its next open; an Airspy's notice
+        // promises no reset, and none blames the cable.
+        function test_airspy_stream_failure_promises_no_reset() {
+            testContext.setReceiverHealth("failed", "airspy");
+            tryCompare(card(), "visible", true);
+            compare(card().message, "Airspy stopped sending samples, so the session stopped. Tap Reconnect, then start it again.");
+        }
+
+        function test_airspy_signal_search_stream_failure() {
+            connect("airspy");
+            app.attemptedSource = {kind: "explore", uid: "", remember: false,
+                system: {name: "Signal search", sourceType: "airspy", signalSearch: true}};
+            home().signalSearch();
+            verify(app.signalSearchOpen);
+            testContext.setReceiverHealth("failed", "airspy");
+            tryCompare(findChild(findChild(app, "signalSearchScreen"), "searchMessage"), "text",
+                "Airspy stopped sending samples, so Signal search stopped. Start the search again.");
         }
 
         function test_signal_search_says_to_start_the_search_again() {
@@ -376,7 +399,7 @@ Item {
                 "RTL-SDR was unplugged, so Signal search stopped. Plug it back in, then start the search again.");
             testContext.setReceiverHealth("failed", "usb");
             tryCompare(findChild(search, "searchMessage"), "text",
-                "RTL-SDR stopped sending samples, so Signal search stopped. Check its USB connection, then start the search again.");
+                "RTL-SDR stopped sending samples, so Signal search stopped. Start the search again to reset it.");
             // Closed, the search's ending is Listen's notice, with Reconnect.
             app.signalSearchOpen = false;
             testContext.setReceiverHealth("lost", "usb");

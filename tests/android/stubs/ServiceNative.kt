@@ -88,11 +88,15 @@ object DsdNative {
 object UsbSourceManager {
     /** The receiver kind of every take, in order. */
     val takes = CopyOnWriteArrayList<String>()
+    /** Sessions whose end the worker reported, so a reset the receiver owes is kept (#782). */
+    @Volatile var sessionEnds = 0
     @Volatile internal var answer: (String) -> UsbSessionTake = { UsbSessionTake() }
     fun reset() {
         takes.clear()
+        sessionEnds = 0
         answer = { UsbSessionTake() }
     }
+    fun noteSessionEnded() { sessionEnds++ }
     internal fun takeForSession(context: Context, source: String): UsbSessionTake {
         takes += source
         return answer(source)

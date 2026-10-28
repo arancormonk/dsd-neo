@@ -39,6 +39,8 @@ open class Context {
     }
     val usb = UsbManager()
     val receivers = mutableListOf<BroadcastReceiver>()
+    /** App-private storage: a directory of the test's own, or the one a "previous process" left (#782). */
+    var noBackupFilesDir: java.io.File = java.nio.file.Files.createTempDirectory("dsd-usb-test").toFile()
     open val applicationContext: Context get() = this
     val packageName = "io.github.arancormonk.dsdneo"
     fun getSystemService(name: String): Any? = if (name == USB_SERVICE) usb else null

@@ -305,13 +305,14 @@ SUITES = {
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
     "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
-    # The USB broker's permission requests, detach and attach bookkeeping, and the attachment's kind: the plain-Kotlin
-    # state with no stubs, then UsbSourceManager itself against stubs of the USB service, prompts and engine.
+    # The USB broker's permission requests, detach and attach bookkeeping, the attachment's kind and the USB resets
+    # attachments owe: the plain-Kotlin state with no stubs, then UsbSourceManager itself against stubs of the USB
+    # service, prompts and engine.
     "usb": Suite(
         builds=(
             Build(
-                sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt"),
-                tests=("UsbRequestStateTest.kt",),
+                sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt", "UsbResetObligations.kt"),
+                tests=("UsbRequestStateTest.kt", "UsbResetObligationsTest.kt"),
             ),
             # The production manager itself, against a scripted bus, prompt and engine.
             Build(
@@ -320,6 +321,7 @@ SUITES = {
                     "UsbRequestState.kt",
                     "UsbAttachmentTracker.kt",
                     "UsbReceiverKind.kt",
+                    "UsbResetObligations.kt",
                     "UsbSessionTake.kt",
                     "EngineStop.kt",
                 ),

@@ -107,18 +107,30 @@ Window {
      * it back. Reconnect resumes the attempt Main started; after an Activity
      * recreation there is none, so the notice says to start it again after
      * Reconnect. @p search words it for Signal search's own screen, where the
-     * search is started again from its controls.
+     * search is started again from its controls. A stalled RTL-SDR the app
+     * could not recover in place owes a USB reset, which the next open does
+     * (#782): its notice says so. Nothing blames the cable: the stream stopped,
+     * and the app cannot know why.
      */
     function receiverNotice(search) {
         var lost = receiverHealth.state === "lost";
-        var receiver = receiverHealth.source === "airspy" ? qsTr("Airspy") : receiverHealth.source === "usb" ? qsTr("RTL-SDR") : qsTr("The receiver");
-        if (search)
-            return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then start the search again.")).arg(receiver).arg(qsTr("Signal search"));
+        var resets = receiverHealth.source === "usb";
+        var receiver = receiverHealth.source === "airspy" ? qsTr("Airspy") : resets ? qsTr("RTL-SDR") : qsTr("The receiver");
+        if (search) {
+            if (lost)
+                return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again.").arg(receiver).arg(qsTr("Signal search"));
+            return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Start the search again to reset it.") : qsTr("%1 stopped sending samples, so %2 stopped. Start the search again.")).arg(receiver).arg(qsTr("Signal search"));
+        }
         var attempt = attemptedSource;
-        if (!attempt)
-            return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, tap Reconnect, then start it again.")).arg(receiver).arg(qsTr("the session"));
+        if (!attempt) {
+            if (lost)
+                return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again.").arg(receiver).arg(qsTr("the session"));
+            return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect, then start it again.")).arg(receiver).arg(qsTr("the session"));
+        }
         var session = attempt.kind !== "explore" ? attempt.system.name || qsTr("the session") : attempt.system.signalSearch ? qsTr("Signal search") : qsTr("Explore");
-        return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then tap Reconnect.")).arg(receiver).arg(session);
+        if (lost)
+            return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.").arg(receiver).arg(session);
+        return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it and start again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to start again.")).arg(receiver).arg(session);
     }
     readonly property string receiverNoticeText: receiverEnded ? receiverNotice(false) : ""
     // Whether the failure on screen is that notice: Reconnect on Listen, the search's own wording there.

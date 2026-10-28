@@ -282,6 +282,9 @@ class DecoderService : Service() {
             val rc = DsdNative.nativeRun()
             Log.i(TAG, "engine run returned $rc")
             DsdNative.nativeHostDiagnostic("engine run returned $rc")
+            // A stall can leave the RTL-SDR owing a USB reset before its next open; the broker keeps that on the
+            // attachment, across processes too (#782).
+            UsbSourceManager.noteSessionEnded()
             // Released before the state drops to IDLE. acquireWakeLock is a no-op while
             // a lock is held, so a start that observes IDLE first would find the lock
             // still ours and decode with nothing keeping the CPU awake.

@@ -14728,6 +14728,32 @@ if(DSD_HAS_RADIO)
     add_test(NAME IO_RTL_USB_RECOVERY COMMAND dsd-neo_test_io_rtl_usb_recovery)
     set_tests_properties(IO_RTL_USB_RECOVERY PROPERTIES TIMEOUT 120)
 
+    # #782: a stalled RTL-SDR opened from an Android descriptor, over the fake dongle
+    # and the descriptor seams: the reset obligation bound to its descriptor, the swap
+    # through it (close, reset, reopen, replay) and each reset outcome, and the
+    # pre-recovery grace with samples, a stop and a detach inside it.
+    add_executable(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        io/test_io_rtl_usb_fd_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_USB_FD_RECOVERY
+        COMMAND dsd-neo_test_io_rtl_usb_fd_recovery
+    )
+    set_tests_properties(IO_RTL_USB_FD_RECOVERY PROPERTIES TIMEOUT 120)
+
     # rtl_tcp connection handling against a scripted fake rtl_tcp server on loopback:
     # the exact header parser, bounded and cancellable connects, header reads and
     # command sends, the reconnect handed to the stream's controller with the last

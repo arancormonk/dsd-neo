@@ -643,7 +643,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
 }
 
 JNIEXPORT jint JNICALL
-Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass clazz, jint sys_fd) {
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass clazz, jint sys_fd,
+                                                           jboolean reset_first) {
     (void)env;
     (void)clazz;
 
@@ -658,11 +659,13 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass c
     }
     /* Java owns the descriptor: it comes from a UsbDeviceConnection that the service
      * holds open for the engine's lifetime, and -1 clears the slot on detach. The
-     * engine reads it during input setup, so it has to be set before nativeRun. */
-    rtl_device_set_preopened_fd(static_cast<int>(sys_fd));
+     * engine reads it during input setup, so it has to be set before nativeRun. The
+     * reset obligation travels bound to it (#782). */
+    rtl_device_publish_preopened_fd(static_cast<int>(sys_fd), reset_first == JNI_TRUE ? 1 : 0);
     return kStatusOk;
 #else
     (void)sys_fd;
+    (void)reset_first;
     return kStatusError;
 #endif
 }
@@ -679,18 +682,19 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetAirspyUsbFd(JNIEnv* env, jc
 }
 
 /**
- * @brief Whether the next RTL-SDR open from the descriptor resets the device first (#782).
+ * @brief The RTL-SDR descriptor whose dongle owes a USB reset before its next open, or -1 (#782).
  *
- * UsbSourceManager hands this with each descriptor it publishes; recorded for the open path that honours it.
+ * UsbSourceManager records it on the attachment it handed that descriptor with. Lock-free, so the main thread never
+ * waits behind a configure.
  */
-JNIEXPORT void JNICALL
-Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbResetFirst(JNIEnv* env, jclass clazz, jboolean reset_first) {
+JNIEXPORT jint JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeUsbResetOwed(JNIEnv* env, jclass clazz) {
     (void)env;
     (void)clazz;
 #ifdef USE_RADIO
-    rtl_device_set_preopened_fd_reset_first(reset_first == JNI_TRUE ? 1 : 0);
+    return rtl_device_preopened_fd_reset_owed();
 #else
-    (void)reset_first;
+    return -1;
 #endif
 }
 

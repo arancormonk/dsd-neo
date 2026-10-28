@@ -127,7 +127,8 @@ QtObject {
         case "lost":
             return qsTr("%1 was unplugged while listening. Plug it back in, then tap Retry.").arg(leadName);
         case "fault":
-            return qsTr("%1 stopped sending samples while listening. Check its USB connection, then tap Retry.").arg(leadName);
+            // #782: an RTL-SDR's next open resets it; nothing says why it stopped.
+            return (kind === "usb" ? qsTr("%1 stopped sending samples while listening. Tap Retry, then start listening again to reset it.") : qsTr("%1 stopped sending samples while listening. Tap Retry, then start listening again.")).arg(leadName);
         case "failed":
             return hostText || (failureKind === 4 ? qsTr("Android has not given access to %1. Tap Retry to ask again.").arg(name) : qsTr("Android could not open %1. Tap Retry to try again.").arg(name));
         case "ready":

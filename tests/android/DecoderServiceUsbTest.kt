@@ -170,9 +170,23 @@ private fun aRetirementDuringTheTakeConfiguresNothing() {
     endsQuietly(service, id, "retired during the take")
 }
 
+// #782: the worker reports every run's end to the broker, which records what a stall left the RTL-SDR owing on its
+// attachment even when no start follows to read it.
+private fun aRunsEndIsReportedToTheBroker() {
+    val service = newService()
+    UsbSourceManager.answer = { UsbSessionTake(device = "/dev/bus/usb/001/007", epoch = 1L, connection = 1L) }
+    val (_, intent) = hostStart(service, RTL)
+    deliver(service, intent)
+    await(DsdNative.enteredRun)
+    check(UsbSourceManager.sessionEnds == 0) { "nothing is reported while the run goes" }
+    finish(service)
+    check(UsbSourceManager.sessionEnds == 1) { "the run's end is reported once: ${UsbSourceManager.sessionEnds}" }
+}
+
 fun main(args: Array<String>) {
     val tests = linkedMapOf<String, () -> Unit>(
         "take_before_configure" to ::theReceiverIsTakenBeforeConfigure,
+        "run_end_reported" to ::aRunsEndIsReportedToTheBroker,
         "take_failure" to ::aFailedTakeFailsTheAttempt,
         "retire_before_take" to ::aRetirementBeforeTheTakeOpensNothing,
         "retire_during_take" to ::aRetirementDuringTheTakeConfiguresNothing,

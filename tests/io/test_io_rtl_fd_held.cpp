@@ -3,7 +3,7 @@
  * #782: which Android USB descriptor the engine holds. The app closes a retired connection once its own descriptor is
  * no longer held, so the query names the descriptor taken at open, keeps naming it after the slot moves on to a
  * replacement, and lets go only when the device is closed or its open failed. The "reset first" request the app hands
- * with a descriptor is recorded for the open path.
+ * with a descriptor is recorded for it.
  */
 #include <cstdio>
 #include <dsd-neo/io/rtl_device.h>
@@ -79,12 +79,12 @@ main() {
     check(rtl_device_preopened_fd_held() == -1, "and lets it go on close");
     rtl_device_test_usb_dongle_install(nullptr);
 
-    /* The reset request travels with the descriptor; false unless the host asks. */
-    check(rtl_device_preopened_fd_reset_first() == 0, "no reset is asked by default");
-    rtl_device_set_preopened_fd_reset_first(1);
-    check(rtl_device_preopened_fd_reset_first() == 1, "the host's reset request is recorded");
-    rtl_device_set_preopened_fd_reset_first(0);
-    check(rtl_device_preopened_fd_reset_first() == 0, "and withdrawn");
+    /* The reset request travels with the descriptor; none unless the host asks (IO_RTL_USB_FD_RECOVERY has the rest). */
+    check(rtl_device_preopened_fd_reset_owed() == -1, "no reset is asked by default");
+    rtl_device_publish_preopened_fd(45, 1);
+    check(rtl_device_preopened_fd_reset_owed() == 45, "the host's reset request is recorded for its descriptor");
+    rtl_device_publish_preopened_fd(45, 0);
+    check(rtl_device_preopened_fd_reset_owed() == -1, "and withdrawn");
 
     /* The Airspy's descriptor is not held by anything here. */
     check(rtl_device_airspy_preopened_fd_held() == -1, "no Airspy descriptor is held");

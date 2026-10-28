@@ -82,18 +82,24 @@ object DsdNative {
      *
      * An app cannot open `/dev/bus/usb` nodes, so the descriptor comes from
      * [android.hardware.usb.UsbDeviceConnection]. Java keeps ownership: the
-     * connection must stay open for as long as the engine is running.
+     * connection must stay open for as long as the engine is running. [resetFirst]
+     * is true when the attachment owes a USB reset (#782): the RTL-SDR open that
+     * takes this descriptor resets the device first. It is bound to [fd], so every
+     * call replaces it.
      */
-    external fun nativeSetUsbFd(fd: Int): Int
+    external fun nativeSetUsbFd(fd: Int, resetFirst: Boolean): Int
 
     @JvmStatic
     external fun nativeSetAirspyUsbFd(fd: Int): Int
 
     /**
-     * Whether the next RTL-SDR open from the descriptor resets the device first (#782). [UsbSourceManager] hands it
-     * with every descriptor it publishes; false unless the attachment owes a reset.
+     * The RTL-SDR descriptor whose dongle owes a USB reset before its next open, or -1 (#782).
+     *
+     * Set with [nativeSetUsbFd], and by the engine when a stall stopped the dongle's samples (before any grace and
+     * whatever Stop follows); cleared by samples since, or a reset that succeeded. [UsbSourceManager] records it on
+     * the attachment it handed that descriptor with.
      */
-    external fun nativeSetUsbResetFirst(resetFirst: Boolean)
+    external fun nativeUsbResetOwed(): Int
 
     /**
      * The descriptors the engine holds, as { RTL-SDR, Airspy }, each -1 when none; null when the call failed (#782).
