@@ -38,7 +38,7 @@ private fun theBufferIsBoundedAndCountsWhatItDropped() {
     check(delivered.first() == "record 0" && delivered[HostDiagnosticsCapacity - 1] == "record 63") {
         "the first records are kept: an incident's header and stack come first"
     }
-    check(delivered.last() == "diagnostics: 10 host records dropped before native diagnostics were ready")
+    check(delivered.last() == "diagnostics: 10 host records dropped while waiting for native diagnostics")
     pending.submit("after")
     check(delivered.last() == "after") { "the count is reported once" }
 }
@@ -68,6 +68,51 @@ private fun twoThreadsKeepEveryRecord() {
     }
 }
 
+// The class-initialization cycle the app could hit (#782 review): in the app, delivery is a call into DsdNative,
+// which waits for DsdNative's class initialization if another thread is running it, and that initialization marks
+// these records ready. StubNative plays DsdNative with a real JVM class initializer.
+private lateinit var cyclePending: PendingHostRecords
+private val initStarted = java.util.concurrent.CountDownLatch(1)
+private val deliverEntered = java.util.concurrent.CountDownLatch(1)
+private val cycleDelivered = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+private object StubNative {
+    init {
+        initStarted.countDown()
+        // Another thread is now inside deliver and about to touch this class, which waits for this initializer.
+        deliverEntered.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        // As DsdNative's init does through HostDiagnostics.nativeReady().
+        if (!cyclePending.isReady) {
+            cyclePending.markReady()
+        }
+    }
+
+    fun take(line: String) {
+        cycleDelivered += line
+    }
+}
+
+private fun deliveryNeverHoldsTheLockAClassInitializerNeeds() {
+    cyclePending = PendingHostRecords(64) { line ->
+        deliverEntered.countDown()
+        StubNative.take(line)
+    }
+    cyclePending.markReady() // As ProcessFacts.processFacts() does, before DsdNative is first used.
+    val initializer = Thread { StubNative.take("initializer") }.apply { isDaemon = true }
+    val watchdog = Thread {
+        initStarted.await()
+        cyclePending.submit("incident")
+    }.apply { isDaemon = true }
+    initializer.start()
+    watchdog.start()
+    initializer.join(3_000)
+    watchdog.join(3_000)
+    check(!initializer.isAlive && !watchdog.isAlive) {
+        "deadlock: delivery held the lock while waiting for a class initializer that waits for the lock"
+    }
+    check(cycleDelivered.toSet() == setOf("incident", "initializer")) { cycleDelivered.toString() }
+}
+
 /** The app's buffer size, as HostDiagnostics.CAPACITY says; HostDiagnostics itself needs the native library. */
 private const val HostDiagnosticsCapacity = 64
 
@@ -76,5 +121,6 @@ fun main() {
     aReadyBufferThatWasNotDrainedSendsBeforeTheNextRecord()
     theBufferIsBoundedAndCountsWhatItDropped()
     twoThreadsKeepEveryRecord()
+    deliveryNeverHoldsTheLockAClassInitializerNeeds()
     println("PASS: pending host records wait, bound and drain in order")
 }

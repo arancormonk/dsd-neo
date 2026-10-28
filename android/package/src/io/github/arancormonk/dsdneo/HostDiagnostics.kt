@@ -39,7 +39,8 @@ object HostDiagnostics {
     /**
      * Native diagnostics can take records. The ones waiting go out on the watchdog's thread, so neither the library's
      * loading nor the diagnostics log's install calls back into native code from here; with no watchdog running, they
-     * go ahead of the next record.
+     * go ahead of the next record. Takes no lock: [DsdNative]'s initializer calls it, while another thread may be
+     * delivering a record and so waiting for that initializer.
      */
     fun nativeReady() {
         if (pending.isReady) {

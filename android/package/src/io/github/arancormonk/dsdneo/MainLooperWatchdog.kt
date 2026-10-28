@@ -65,14 +65,17 @@ object MainLooperWatchdog {
     }
 
     private fun capture(): LooperWatchdog.Capture {
-        // Thread.getStackTrace() names native methods too, as Java declares them; that is all it can see.
-        val stack = Looper.getMainLooper().thread.stackTrace.map { it.toString() }
+        // Thread.getStackTrace() names native methods too, as Java declares them; that is all it can see. The state is
+        // read first: taking the stack suspends the thread for a moment.
+        val thread = Looper.getMainLooper().thread
+        val state = thread.state.name
+        val stack = thread.stackTrace.map { it.toString() }
         val inputs = screen
         val screenText = if (inputs == null) {
             "not applied yet"
         } else {
             "as of ${SystemClock.uptimeMillis() - inputs.at} ms before: ${inputs.text}"
         }
-        return LooperWatchdog.Capture(stack, activities.snapshot.toString(), screenText)
+        return LooperWatchdog.Capture(stack, activities.snapshot.toString(), screenText, state)
     }
 }

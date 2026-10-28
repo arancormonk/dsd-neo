@@ -49,6 +49,7 @@
 extern "C" int dsd_test_diagnostics_drain(dsd_opts*, dsd_state*);
 #include "../../src/app_control/commands_internal.h"
 #include "session_args.h"
+#include "teardown_trace.h"
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
 #include <memory>
 #include "../test_support/test_support.h"
@@ -1476,8 +1477,8 @@ negativeDecimalsSurvive() {
  * tests/android/LooperWatchdogTest.kt and ScreenTraceTest.kt (run_jvm_tests.py checks): a watchdog incident whose
  * stack names dispatchKeyEvent and AES, which the Kotlin side breaks up, and a screen change record. */
 #define DIAGNOSTICS_GOLDEN_WATCHDOG                                                                                    \
-    "watchdog: stall 1.1 of 3 at uptime 12.345 s: main thread blocked 1501 ms; 2 touches delivered since the probe; "  \
-    "activity 2 resumed, window 3 attached; stack of 3 frames\n"                                                       \
+    "watchdog: stall 1.1 of 3 at uptime 12.345 s: main thread blocked 1501 ms, state BLOCKED; 2 touches delivered "    \
+    "since the probe; activity 2 resumed, window 3 attached; stack of 3 frames\n"                                      \
     "watchdog: stall 1.2 of 3: screen as of 40 ms before: mode dim_between_calls, delay 30 s, session 7, "             \
     "visible, focused, top, not multi-window, screen on, wants dim and keep on, engaged by nothing\n"                  \
     "watchdog: stall 1.3 of 3: main stack 1-3: android.view.ViewRootImpl.dispatchK*yEvent(ViewRootImpl.java:7012) "    \
@@ -1499,12 +1500,13 @@ androidHostRecordsSurvive() {
                               "brightness none requested, none read back")
             << QStringLiteral("screen: change 4: traversal after 100 ms, draw after 100 ms on window 2")
             << QStringLiteral("screen: change 1: no draw within 2000 ms; no traversal")
-            << QStringLiteral("diagnostics: 10 host records dropped before native diagnostics were ready")
+            << QStringLiteral("diagnostics: 10 host records dropped while waiting for native diagnostics")
             << QStringLiteral("teardown: activity 2 destroying at uptime 1234.567 s")
             << QStringLiteral("teardown: stopService took 3 ms")
             << QStringLiteral("teardown: Qt event loop returned at uptime 1234.890 s")
-            << QStringLiteral("teardown: ~RadioReferenceModel took 1012 ms");
-    check(records.size() == 13, "golden watchdog incident is not three records");
+            << QStringLiteral("teardown: ~RadioReferenceModel took 1012 ms")
+            << QStringLiteral("teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms");
+    check(records.size() == 14, "golden watchdog incident is not three records");
     for (const auto& text : records) {
         const QString record = QStringLiteral("[host] [info] ") + text;
         checkLabelled(DiagnosticsLog::redact(record) == record, "Android host record changed: " + text.toUtf8());
@@ -1514,6 +1516,37 @@ androidHostRecordsSurvive() {
     check(DiagnosticsLog::redact(QStringLiteral("[host] [info] android.view.ViewRootImpl.dispatchKeyEvent"))
               == kDropped,
           "the key rule no longer drops dispatchKeyEvent; the Kotlin breaking-up can be revisited");
+}
+
+/* The Android teardown's final flush is reported by the next start from a marker file, once, and only when the
+ * marker is well formed; the record survives redaction. */
+static void
+teardownFlushMarkerRoundTrip() {
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("teardown-flush.marker"));
+    check(dsd_qt::teardownFlushMarkerTake(path).isEmpty(), "a missing flush marker reported something");
+    check(dsd_qt::teardownFlushMarkerWrite(path, 37, true), "the flush marker was not written");
+    const QString completed = dsd_qt::teardownFlushMarkerTake(path);
+    check(completed == QStringLiteral("teardown: the previous process's final diagnostics flush took 37 ms"),
+          "the completed flush marker reads wrong");
+    check(!QFile::exists(path) && dsd_qt::teardownFlushMarkerTake(path).isEmpty(), "the flush marker reported twice");
+    check(dsd_qt::teardownFlushMarkerWrite(path, 500, false), "the flush marker was not written");
+    const QString timedOut = dsd_qt::teardownFlushMarkerTake(path);
+    check(timedOut
+              == QStringLiteral("teardown: the previous process's final diagnostics flush took 500 ms, and timed out"),
+          "the timed-out flush marker reads wrong");
+    for (const QString& record : {completed, timedOut}) {
+        const QString line = QStringLiteral("[host] [info] ") + record;
+        check(DiagnosticsLog::redact(line) == line, "the flush marker record does not survive redaction");
+    }
+    for (const QByteArray& bad : {QByteArray("flush x completed"), QByteArray("flush 12"),
+                                  QByteArray("junk 1 completed"), QByteArray("flush 12 maybe"), QByteArray()}) {
+        QFile file(path);
+        check(file.open(QIODevice::WriteOnly) && file.write(bad) == bad.size(), "could not write a bad marker");
+        file.close();
+        check(dsd_qt::teardownFlushMarkerTake(path).isEmpty() && !QFile::exists(path),
+              "a malformed flush marker was reported or kept");
+    }
 }
 
 /* Only a whole producer record is exempt: anything around or inside it, or the same text from another producer,
@@ -2005,6 +2038,7 @@ main(int argc, char** argv) {
     producerErrorLinesDoNotCarryKeys();
     negativeDecimalsSurvive();
     androidHostRecordsSurvive();
+    teardownFlushMarkerRoundTrip();
     everyKeyOptionFormIsDropped();
     streamCaptureLineRules();
     appendKeepsTheFile();

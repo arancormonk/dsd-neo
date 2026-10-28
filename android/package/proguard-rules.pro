@@ -68,3 +68,10 @@
 -keep,includedescriptorclasses class io.github.arancormonk.dsdneo.DsdNative {
     native <methods>;
 }
+
+# Line numbers for stack traces, the main-looper watchdog's incidents included
+# (#782): retrace maps them with the build's mapping.txt. At minSdk 29 R8 encodes
+# them as instruction offsets, so the DEX does not grow (it shrank 5.8 KB; the
+# mapping grew 57 KB). Source file names stay out of the APK.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile

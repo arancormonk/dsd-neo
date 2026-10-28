@@ -14,10 +14,10 @@ package io.github.arancormonk.dsdneo
  * first check at least [PERIOD_MS] after it was posted, so an idle process costs one main-thread message and one
  * watchdog message per period. A probe that has waited more than [STALL_MS] is a stall, and the first stall in any
  * [MIN_INCIDENT_INTERVAL_MS] becomes an incident: several correlated records, each with the incident id and a sequence
- * number and each within [HostRecordText.MAX_BYTES], that say how long the main thread has been blocked, where the
- * activity stood, what the screen policy last saw, how many touch events Android delivered since the probe was posted
- * (touches during a stall mean input ran while ordinary messages did not), and the main thread's stack, top frame
- * first. Nothing is read from the message queue: no `Looper.dump()`, no message contents. When the probe runs, one
+ * number and each within [HostRecordText.MAX_BYTES], that say how long the main thread has been blocked and in which
+ * thread state, where the activity stood, what the screen policy last saw, how many touch events Android delivered
+ * since the probe was posted (touches during a stall mean input ran while ordinary messages did not), and the main
+ * thread's stack, top frame first. Nothing is read from the message queue: no `Looper.dump()`, no message contents. When the probe runs, one
  * more record says `main thread resumed after N ms` and how many touches the stall saw. Stalls the interval keeps out
  * are counted in the next incident.
  *
@@ -41,8 +41,12 @@ class LooperWatchdog(
         fun at(timeMs: Long, task: Runnable)
     }
 
-    /** What an incident records besides the wait, read on the watchdog's thread at the capture. */
-    class Capture(val stack: List<String>, val activity: String, val screen: String)
+    /**
+     * What an incident records besides the wait, read on the watchdog's thread at the capture. [state] is the main
+     * thread's Thread.State: BLOCKED on a monitor, WAITING or TIMED_WAITING (a join or condition wait), or RUNNABLE,
+     * which is also how a native or binder call shows.
+     */
+    class Capture(val stack: List<String>, val activity: String, val screen: String, val state: String)
 
     private var checkAt = NONE
 
@@ -95,6 +99,12 @@ class LooperWatchdog(
         val ran = ranAt
         if (ran != NONE) {
             if (incident != 0) {
+                if (late > SUSPENDED_MS) {
+                    // Thawed with the probe run before this check: the wait it measured includes the hold too.
+                    val held = minOf(late, ran - sentAt)
+                    heldMs += held
+                    sentAt += held
+                }
                 resumed(ran)
             }
             send(now)
@@ -208,7 +218,8 @@ class LooperWatchdog(
             val omitted = frames.size - next
             val head = buildString {
                 append("watchdog: stall $id.1 of $total at uptime ${HostRecordText.uptime(now)}: ")
-                append("main thread blocked $waited ms; $touches touches delivered since the probe; ")
+                append("main thread blocked $waited ms, state ${facts.state}; ")
+                append("$touches touches delivered since the probe; ")
                 append(HostRecordText.safe(facts.activity))
                 append("; stack of ${frames.size} frames")
                 if (omitted > 0) {

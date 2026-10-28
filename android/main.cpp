@@ -15,6 +15,7 @@
 #include <QGuiApplication>
 #include <QLatin1Char>
 #include <QQmlApplicationEngine>
+#include <QStandardPaths>
 #include <QString>
 #include <memory>
 #include <stdint.h>
@@ -52,10 +53,18 @@ main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("DSD-neo"));
     app.setOrganizationName(QStringLiteral("dsd-neo"));
+    // Beside the diagnostics log, which resolves the same location on this thread.
+    const QString flushMarker = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                                + QStringLiteral("/diagnostics/teardown-flush.marker");
 
     // Held by pointer only so the teardown below can time each one's destruction; the order is unchanged.
     auto host = std::make_unique<dsd_android::DecoderHostAndroid>();
     auto engine = std::make_unique<QQmlApplicationEngine>();
+    // The host installed the diagnostics log, so the previous teardown's flush can be reported now.
+    const QString previousFlush = dsd_qt::teardownFlushMarkerTake(flushMarker);
+    if (!previousFlush.isEmpty()) {
+        log_teardown(previousFlush);
+    }
     if (!dsd_qt::ui_load(*engine, host.get())) {
         return 1;
     }
@@ -77,8 +86,14 @@ main(int argc, char* argv[]) {
         const dsd_qt::TeardownStage stage("decoder host");
         host.reset();
     }
-    log_teardown(QStringLiteral("teardown: main() returning at uptime %1").arg(uptime_text(dsd_realtime_mono_ms())));
-    (void)dsd_qt::DiagnosticsLog::flushDiagnostics(dsd_qt::DiagnosticsLog::kShutdownFlushMs);
+    const int bound = dsd_qt::DiagnosticsLog::kShutdownFlushMs;
+    const uint64_t flushStart = dsd_realtime_mono_ms();
+    log_teardown(QStringLiteral("teardown: main() returning at uptime %1; flushing, at most %2 ms")
+                     .arg(uptime_text(flushStart))
+                     .arg(bound));
+    const bool flushed = dsd_qt::DiagnosticsLog::flushDiagnostics(bound);
+    // No record can follow the flush durably; the next start reports it from this marker.
+    (void)dsd_qt::teardownFlushMarkerWrite(flushMarker, dsd_realtime_mono_ms() - flushStart, flushed);
     dsd_qt::teardownTraceInstall(nullptr);
     return rc;
 }

@@ -8,8 +8,8 @@ package io.github.arancormonk.dsdneo
  * rule leaves alone after a colon.
  */
 private const val GOLDEN_WATCHDOG =
-    "watchdog: stall 1.1 of 3 at uptime 12.345 s: main thread blocked 1501 ms; 2 touches delivered since the probe; " +
-        "activity 2 resumed, window 3 attached; stack of 3 frames\n" +
+    "watchdog: stall 1.1 of 3 at uptime 12.345 s: main thread blocked 1501 ms, state BLOCKED; 2 touches delivered " +
+        "since the probe; activity 2 resumed, window 3 attached; stack of 3 frames\n" +
         "watchdog: stall 1.2 of 3: screen as of 40 ms before: mode dim_between_calls, delay 30 s, session 7, " +
         "visible, focused, top, not multi-window, screen on, wants dim and keep on, engaged by nothing\n" +
         "watchdog: stall 1.3 of 3: main stack 1-3: android.view.ViewRootImpl.dispatchK*yEvent(ViewRootImpl.java:7012) " +
@@ -24,6 +24,7 @@ private val GOLDEN_CAPTURE = LooperWatchdog.Capture(
     activity = "activity 2 resumed, window 3 attached",
     screen = "as of 40 ms before: mode dim_between_calls, delay 30 s, session 7, visible, focused, top, " +
         "not multi-window, screen on, wants dim and keep on, engaged by nothing",
+    state = "BLOCKED",
 )
 
 /** The watchdog against a fake clock, a fake watchdog thread and a fake main looper that runs only when told to. */
@@ -49,7 +50,7 @@ private class Rig(var stack: List<String> = listOf("android.os.MessageQueue.nati
         touches = { touches },
         capture = {
             captures += 1
-            LooperWatchdog.Capture(stack, "activity 1 resumed, window 1 attached", "as of 0 ms before: mode off")
+            LooperWatchdog.Capture(stack, "activity 1 resumed, window 1 attached", "as of 0 ms before: mode off", "RUNNABLE")
         },
         emit = { records += it },
     )
@@ -74,6 +75,15 @@ private class Rig(var stack: List<String> = listOf("android.os.MessageQueue.nati
         if (mainRuns) {
             runMain()
         }
+    }
+
+    /** A thaw after [lateBy] ms in which the main looper runs before the watchdog's next check, which runs late. */
+    fun thawMainFirst(lateBy: Long) {
+        val next = timers.minByOrNull { it.first } ?: return
+        timers.remove(next)
+        now = next.first + lateBy
+        runMain()
+        next.second.run()
     }
 
     fun runMain() {
@@ -133,7 +143,9 @@ private fun aStallBecomesOneIncidentWithItsResume() {
     check(rig.captures == 1)
     check(incident.size == 3) { "header, screen and one stack record: $incident" }
     check(incident[0].startsWith("watchdog: stall 1.1 of 3 at uptime ")) { incident[0] }
-    check(incident[0].contains("main thread blocked 1501 ms; 2 touches delivered since the probe")) { incident[0] }
+    check(incident[0].contains("main thread blocked 1501 ms, state RUNNABLE; 2 touches delivered since the probe")) {
+        incident[0]
+    }
     check(incident[0].contains("activity 1 resumed, window 1 attached")) { incident[0] }
     check(incident[1] == "watchdog: stall 1.2 of 3: screen as of 0 ms before: mode off") { incident[1] }
     check(
@@ -217,12 +229,24 @@ private fun aFrozenProcessIsNotAStall() {
     val resumed = rig.take().last()
     check(resumed.contains("main thread resumed after ${ranAt - postedAt - 10_000} ms;")) { resumed }
     check(resumed.endsWith("; the watchdog itself was held for 10000 ms, not counted")) { resumed }
+    // Frozen again inside a stall, and this time the main looper runs the probe before the late check after the thaw.
+    rig.advance(rig.now + 31_000)
+    rig.mainRuns = false
+    rig.advance(rig.now + 500)
+    val sentAt = rig.now
+    rig.advance(sentAt + 2_000)
+    check(rig.captures == 2)
+    rig.thawMainFirst(lateBy = 20_000)
+    val thawResume = rig.take().last()
+    check(thawResume.contains("main thread resumed after ${rig.now - sentAt - 20_000} ms;")) { thawResume }
+    check(thawResume.endsWith("; the watchdog itself was held for 20000 ms, not counted")) { thawResume }
+    rig.mainRuns = true
 }
 
 private fun theIncidentSplitsIntoRecordsTopFramesFirst() {
     val frames = (1..120).map { "com.example.Deep.frame$it(Deep.java:$it)" } +
         listOf("android.os.λ.Unicode(λ.java:1)", "x".repeat(400))
-    val capture = LooperWatchdog.Capture(frames, "activity 1 resumed, window 1 attached", "s".repeat(600))
+    val capture = LooperWatchdog.Capture(frames, "activity 1 resumed, window 1 attached", "s".repeat(600), "WAITING")
     val records = LooperWatchdog.incident(7, 3_600_000L, 2_000L, 0L, capture, 0)
     val stack = records.drop(2)
     check(stack.size == LooperWatchdog.MAX_STACK_RECORDS) { "stack records: ${stack.size}" }
