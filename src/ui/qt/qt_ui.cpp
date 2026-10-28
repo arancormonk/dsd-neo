@@ -198,9 +198,10 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* network = new P25NetworkModel(&engine); // WP-F2
     auto* commands = new CommandBridge(&engine);
     DiagnosticsLog::installTap();
-    // The log is process-lifetime and never destroyed, so its last records are made durable here.
+    // The log is process-lifetime and never destroyed, so its last records are made durable here (or, on Android, by
+    // main()'s final flush after the teardown, which this only asks to start).
     QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
-                     [] { (void)DiagnosticsLog::flushDiagnostics(DiagnosticsLog::kShutdownFlushMs); });
+                     [] { DiagnosticsLog::flushAtQuit(); });
     auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
     auto* prefs = new AppPrefs(&engine);
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);

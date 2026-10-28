@@ -47,7 +47,7 @@ object DsdNative {
     /** Re-arms the diagnostics startup window at a device boundary (issue #745). */
     external fun nativeArmStartupDiagnostics()
 
-    /** Bounded flush of the persistent diagnostics before the process may go. */
+    /** Starts a flush of the persistent diagnostics before the process may go, without waiting for it (#782). */
     external fun nativeFlushDiagnostics()
 
     /**

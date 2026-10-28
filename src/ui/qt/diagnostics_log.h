@@ -62,6 +62,10 @@ class DiagnosticsLog {
 
     enum class IoFault { None, Write, Sync, SyncAndOpen };
 
+    // What became of a flush: everything asked for was appended and synced; its bound ran out first (or the log was
+    // not published within it); or a write or sync failed.
+    enum class FlushOutcome { Completed, TimedOut, Failed };
+
     // Where in a start an attempt note comes from: the USB access request that precedes a start of a local dongle,
     // or the start itself. Only the start records a session marker.
     enum class AttemptStage { UsbAccess, Start };
@@ -86,6 +90,13 @@ class DiagnosticsLog {
     // flush() of the published log; a negative timeout waits without bound, otherwise the timeout also bounds the wait
     // for the publish. False if the log was not published in time.
     static bool flushDiagnostics(int timeoutMs);
+    // flushDiagnostics(), with what became of the flush.
+    static FlushOutcome flushDiagnosticsOutcome(int timeoutMs);
+    // The flush at the application's quit (aboutToQuit): bounded by kShutdownFlushMs, or only asked for, without a
+    // wait, once the caller has said it flushes again after its teardown (setFinalFlushAfterQuit(), Android's main(),
+    // #782), so the teardown holds one bounded flush.
+    static void flushAtQuit();
+    static void setFinalFlushAfterQuit(bool owned);
     // Test seams: whether installTap()'s publish has happened, and the thread that resolved the log's directory (the
     // one QStandardPaths call).
     static bool installedForTest();
@@ -103,6 +114,8 @@ class DiagnosticsLog {
     // True once everything submitted before the call is appended and synced. A negative timeout
     // waits for the writer; on timeout or a write/sync failure it returns false.
     bool flush(int timeoutMs = -1);
+    // flush(), with what became of it.
+    FlushOutcome flushOutcome(int timeoutMs = -1);
     // Records the process line (also the head of every later segment). Once per instance.
     void noteProcess(const QString& facts, const QStringList& followingLines = {});
     // A session attempt is about to touch the device: records the line for the stage (a USB access request, or the
@@ -138,6 +151,8 @@ class DiagnosticsLog {
       private:
         void emitLine();
         bool continuesValue(const QString& text);
+        // Follows the open quote through a line that is still its value.
+        void followQuote(const QString& plain);
 
         DiagnosticsLog& m_log;
         QString m_source;
@@ -147,6 +162,9 @@ class DiagnosticsLog {
         // The quote a dropped record left open (0: none), and how much of the quoted value has been dropped since.
         char16_t m_quote = 0;
         qsizetype m_quotedSize = 0;
+        // An oversized line is skipped unread but followed for quotes: the quote open so far, and the last character.
+        char16_t m_oversizedQuote = 0;
+        char16_t m_oversizedLast = 0;
     };
 
   private:

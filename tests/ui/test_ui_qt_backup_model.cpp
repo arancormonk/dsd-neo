@@ -1298,7 +1298,9 @@ test_destructor_marks_its_teardown_stage(FakeHost& host) {
         const TeardownCapture capture;
         { BackupModel model(&host, {}); }
         expect("~BackupModel marks its teardown stage",
-               TeardownCapture::lines() == QStringList{QStringLiteral("teardown: ~BackupModel took 7 ms")});
+               TeardownCapture::lines()
+                   == QStringList({QStringLiteral("teardown: ~BackupModel started"),
+                                   QStringLiteral("teardown: ~BackupModel took 7 ms")}));
     }
 }
 

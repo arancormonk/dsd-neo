@@ -2457,10 +2457,12 @@ test_destructor_marks_its_teardown_stage(void) {
         auto model = std::make_unique<CallHistoryModel>();
         model.reset();
         expect("~CallHistoryModel marks its teardown stage",
-               TeardownCapture::lines() == QStringList{QStringLiteral("teardown: ~CallHistoryModel took 7 ms")});
+               TeardownCapture::lines()
+                   == QStringList({QStringLiteral("teardown: ~CallHistoryModel started"),
+                                   QStringLiteral("teardown: ~CallHistoryModel took 7 ms")}));
     }
     { CallHistoryModel model; }
-    expect("no teardown marker after the markers go off", TeardownCapture::lines().size() == 1);
+    expect("no teardown marker after the markers go off", TeardownCapture::lines().size() == 2);
 }
 
 } // namespace

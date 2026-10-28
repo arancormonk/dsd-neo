@@ -57,6 +57,10 @@ main(int argc, char* argv[]) {
     const QString flushMarker = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                                 + QStringLiteral("/diagnostics/teardown-flush.marker");
 
+    // This main() flushes the diagnostics once more after its teardown, so the quit's own flush only starts one: the
+    // teardown holds a single bounded flush wait, this one (#782).
+    dsd_qt::DiagnosticsLog::setFinalFlushAfterQuit(true);
+
     // Held by pointer only so the teardown below can time each one's destruction; the order is unchanged.
     auto host = std::make_unique<dsd_android::DecoderHostAndroid>();
     auto engine = std::make_unique<QQmlApplicationEngine>();
@@ -91,9 +95,14 @@ main(int argc, char* argv[]) {
     log_teardown(QStringLiteral("teardown: main() returning at uptime %1; flushing, at most %2 ms")
                      .arg(uptime_text(flushStart))
                      .arg(bound));
-    const bool flushed = dsd_qt::DiagnosticsLog::flushDiagnostics(bound);
-    // No record can follow the flush durably; the next start reports it from this marker.
-    (void)dsd_qt::teardownFlushMarkerWrite(flushMarker, dsd_realtime_mono_ms() - flushStart, flushed);
+    const auto flushed = dsd_qt::DiagnosticsLog::flushDiagnosticsOutcome(bound);
+    // No record can follow the flush durably; the next start reports it from this marker, a timeout apart from a
+    // store that failed to write.
+    const dsd_qt::TeardownFlush outcome =
+        flushed == dsd_qt::DiagnosticsLog::FlushOutcome::Completed  ? dsd_qt::TeardownFlush::Completed
+        : flushed == dsd_qt::DiagnosticsLog::FlushOutcome::TimedOut ? dsd_qt::TeardownFlush::TimedOut
+                                                                    : dsd_qt::TeardownFlush::Failed;
+    (void)dsd_qt::teardownFlushMarkerWrite(flushMarker, dsd_realtime_mono_ms() - flushStart, outcome);
     dsd_qt::teardownTraceInstall(nullptr);
     return rc;
 }

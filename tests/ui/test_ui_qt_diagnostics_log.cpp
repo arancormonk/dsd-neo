@@ -37,6 +37,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <functional>
 #include <mutex>
@@ -767,10 +768,13 @@ flushReportsFailures() {
         check(reader.snapshot().join('\n').contains(QStringLiteral("durable record")), "flushed record not on disk");
         log.setIoFaultForTest(DiagnosticsLog::IoFault::Write);
         log.submit("host", "info", "lost record");
-        check(!log.flush(), "a failed write reported durable");
+        check(log.flushOutcome() == DiagnosticsLog::FlushOutcome::Failed, "a failed write reported durable or late");
         log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
         log.submit("host", "info", "unsynced record");
         check(!log.flush(), "a failed sync reported durable");
+        log.submit("host", "info", "unsynced again");
+        check(log.flushOutcome(10000) == DiagnosticsLog::FlushOutcome::Failed,
+              "a failed sync within the bound reported as a timeout");
         log.noteSessionAttempt(QStringLiteral("rtl"));
         log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
         log.submit("host", "info", "recovered record");
@@ -1473,6 +1477,50 @@ negativeDecimalsSurvive() {
     }
 }
 
+/* The decoder's frame-sync lines (printFrameSync(), print_dmr_sync_polarity()) survive in every polarity, as records and
+ * through the stream capture, though some inverted labels read as a bundled key option ("-P25p1", "-YSF", "-TETRA").
+ * Only the label itself is exempt, and only after "Sync: ": a key form beside it, or the same text elsewhere, drops. */
+static void
+syncLabelsSurvive() {
+    const QStringList labels = {
+        QStringLiteral("-DMR  "),        QStringLiteral("+DMR  "),        QStringLiteral("-M17 EOT"),
+        QStringLiteral("-M17 STR"),      QStringLiteral("-dPMR "),        QStringLiteral("-EDACS"),
+        QStringLiteral("-X2-TDMA "),     QStringLiteral("-NXDN96 "),      QStringLiteral("-P25p1 "),
+        QStringLiteral("+P25p1"),        QStringLiteral("-P25p2"),        QStringLiteral("-YSF "),
+        QStringLiteral("-TETRA NDB"),    QStringLiteral("-TETRA SB"),     QStringLiteral("-TETRA CB"),
+        QStringLiteral("-DSTAR VOICE "), QStringLiteral("-DSTAR HEADER"), QStringLiteral("-PV   "),
+        QStringLiteral("-PV_C "),        QStringLiteral("-M17 LSF"),
+    };
+    QByteArray bytes;
+    QStringList expected;
+    for (const auto& label : labels) {
+        const QString line = QStringLiteral("12:34:56 Sync: ") + label + QStringLiteral(" mod: GFSK");
+        const QString record = QStringLiteral("[stderr] [info] ") + line;
+        checkLabelled(DiagnosticsLog::redact(record) == record, "sync line dropped: " + line.toUtf8());
+        bytes += line.toUtf8() + '\n';
+        expected << record;
+    }
+    QTemporaryDir dir;
+    check(streamRecords(bytes, dir.path()) == expected, "sync lines dropped by the stream capture");
+
+    for (const auto& record : {
+             QStringLiteral("[stderr] [info] 12:34:56 Sync: -YSF -2 1A2B"),
+             QStringLiteral("[stderr] [info] Sync: -P25p1 -ZT1F"),
+             QStringLiteral("[stderr] [info] Sync: -TETRA-2 1A2B"),
+             QStringLiteral("[stderr] [info] Sync: -P25p1x"),
+             QStringLiteral("[stderr] [info] args: -P25p1"),
+             QStringLiteral("[stderr] [info] -YSF"),
+             QStringLiteral("[stderr] [info] Sync: -DMR  key 1A2B"),
+         }) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      "key form beside a sync label kept: " + record.toUtf8());
+    }
+    QDir(dir.path()).removeRecursively();
+    const auto records = streamRecords("Sync: -YSF -2\n1A2B\nSync: -YSF \n", dir.path());
+    check(records == QStringList({kDropped, kDropped, QStringLiteral("[stderr] [info] Sync: -YSF ")}),
+          "a key form beside a sync label, or its value, kept through the stream capture");
+}
+
 /* Records the Android app writes from Kotlin (#782), byte-identical to the golden records in
  * tests/android/LooperWatchdogTest.kt and ScreenTraceTest.kt (run_jvm_tests.py checks): a watchdog incident whose
  * stack names dispatchKeyEvent and AES, which the Kotlin side breaks up, and a screen change record. */
@@ -1500,13 +1548,15 @@ androidHostRecordsSurvive() {
                               "brightness none requested, none read back")
             << QStringLiteral("screen: change 4: traversal after 100 ms, draw after 100 ms on window 2")
             << QStringLiteral("screen: change 1: no draw within 2000 ms; no traversal")
+            << QStringLiteral("screen: touch while dimmed: passed on, dim still on; 2 more since, not recorded")
+            << QStringLiteral("screen: touch while dimmed: not taken: the screen policy follows another activity")
             << QStringLiteral("diagnostics: 10 host records dropped while waiting for native diagnostics")
             << QStringLiteral("teardown: activity 2 destroying at uptime 1234.567 s")
             << QStringLiteral("teardown: stopService took 3 ms")
             << QStringLiteral("teardown: Qt event loop returned at uptime 1234.890 s")
             << QStringLiteral("teardown: ~RadioReferenceModel took 1012 ms")
             << QStringLiteral("teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms");
-    check(records.size() == 14, "golden watchdog incident is not three records");
+    check(records.size() == 16, "golden watchdog incident is not three records");
     for (const auto& text : records) {
         const QString record = QStringLiteral("[host] [info] ") + text;
         checkLabelled(DiagnosticsLog::redact(record) == record, "Android host record changed: " + text.toUtf8());
@@ -1525,17 +1575,26 @@ teardownFlushMarkerRoundTrip() {
     QTemporaryDir dir;
     const QString path = dir.filePath(QStringLiteral("teardown-flush.marker"));
     check(dsd_qt::teardownFlushMarkerTake(path).isEmpty(), "a missing flush marker reported something");
-    check(dsd_qt::teardownFlushMarkerWrite(path, 37, true), "the flush marker was not written");
+    check(dsd_qt::teardownFlushMarkerWrite(path, 37, dsd_qt::TeardownFlush::Completed),
+          "the flush marker was not written");
     const QString completed = dsd_qt::teardownFlushMarkerTake(path);
     check(completed == QStringLiteral("teardown: the previous process's final diagnostics flush took 37 ms"),
           "the completed flush marker reads wrong");
     check(!QFile::exists(path) && dsd_qt::teardownFlushMarkerTake(path).isEmpty(), "the flush marker reported twice");
-    check(dsd_qt::teardownFlushMarkerWrite(path, 500, false), "the flush marker was not written");
+    check(dsd_qt::teardownFlushMarkerWrite(path, 500, dsd_qt::TeardownFlush::TimedOut),
+          "the flush marker was not written");
     const QString timedOut = dsd_qt::teardownFlushMarkerTake(path);
     check(timedOut
               == QStringLiteral("teardown: the previous process's final diagnostics flush took 500 ms, and timed out"),
           "the timed-out flush marker reads wrong");
-    for (const QString& record : {completed, timedOut}) {
+    // A flush that ended in its bound but could not write or sync is no timeout (#782).
+    check(dsd_qt::teardownFlushMarkerWrite(path, 3, dsd_qt::TeardownFlush::Failed), "the flush marker was not written");
+    const QString failed = dsd_qt::teardownFlushMarkerTake(path);
+    check(failed
+              == QStringLiteral(
+                  "teardown: the previous process's final diagnostics flush took 3 ms, and failed to write"),
+          "the failed flush marker reads wrong");
+    for (const QString& record : {completed, timedOut, failed}) {
         const QString line = QStringLiteral("[host] [info] ") + record;
         check(DiagnosticsLog::redact(line) == line, "the flush marker record does not survive redaction");
     }
@@ -1679,6 +1738,8 @@ streamCaptureLineRules() {
     // A quote opened in a dropped record runs on to its close, but no further than one record's bound.
     bytes += "--api-token 'never closed\n" + QByteArray(600, 'w').replace(100, 1, " ") + "\n"
              + QByteArray(600, 'v').replace(100, 1, " ") + "\nSampling at 1536000 S/s.\n";
+    // A line inside that quote dropped for its own sake (" -1") is still the value: the quote runs on through it.
+    bytes += "--api-token 'alpha\nbeta -1 gamma\nfinal words'\nTuner gain set to 30 dB.\n";
     // An apostrophe inside a word opens no quote.
     bytes += "Invalid key: don't\nTuner gain set to 30 dB.\nlast";
     const auto records = streamRecords(bytes, dir.path());
@@ -1699,10 +1760,51 @@ streamCaptureLineRules() {
         kDropped,
         QStringLiteral("[stderr] [info] Sampling at 1536000 S/s."),
         kDropped,
+        kDropped,
+        kDropped,
+        QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
+        kDropped,
         QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
         QStringLiteral("[stderr] [info] last"),
     };
     check(records == expected, "stream capture line rules changed");
+}
+
+/* An oversized line is omitted unread, but a quote it opens or closes is followed through it: the rest of a quoted key
+ * value on the next line drops, and a quote closed inside it no longer holds the lines after. */
+static void
+oversizedLineKeepsItsQuote() {
+    const QString omitted = QStringLiteral("[stderr] [info] [oversized diagnostic omitted]");
+    const QString kept = QStringLiteral("[stderr] [info] w2 w3");
+    const QString after = QStringLiteral("[stderr] [info] Tuner gain set to 30 dB.");
+
+    struct Case {
+        const char* name;
+        QByteArray bytes;
+        QStringList expected;
+    };
+
+    const Case cases[] = {
+        {"quote opened in the cleared bytes",
+         "--api-token 'w1 " + QByteArray(1100, 'w') + "\nw2 w3'\nTuner gain set to 30 dB.\n",
+         {omitted, kDropped, after}},
+        {"quote opened in the skipped bytes",
+         QByteArray(1100, 'x') + " --api-token 'w1 abc\nw2 w3'\nTuner gain set to 30 dB.\n",
+         {omitted, kDropped, after}},
+        {"quote closed in the skipped bytes",
+         "--api-token 'w1 " + QByteArray(1100, 'w') + "' tail\nw2 w3\n",
+         {omitted, kept}},
+        {"carried quote closed inside it",
+         "--api-token 'alpha\n" + QByteArray(1100, 'y') + "' end\nw2 w3\n",
+         {kDropped, omitted, kept}},
+        {"carried quote still open after it",
+         "--api-token 'alpha\n" + QByteArray(1100, 'y') + "\nw2 w3'\nTuner gain set to 30 dB.\n",
+         {kDropped, omitted, kDropped, after}},
+    };
+    for (const auto& c : cases) {
+        QTemporaryDir dir;
+        checkLabelled(streamRecords(c.bytes, dir.path()) == c.expected, QByteArray("oversized line quote: ") + c.name);
+    }
 }
 
 // --- Host records (issue #782) ---
@@ -1946,6 +2048,22 @@ installTapDoesNotWaitForTheLoad() {
         log.submit("stderr", "info", "direct line during the load");
     });
     check(!DiagnosticsLog::flushDiagnostics(50), "a flush reported durable before the log was published");
+    check(DiagnosticsLog::flushDiagnosticsOutcome(50) == DiagnosticsLog::FlushOutcome::TimedOut,
+          "a flush the publish outran is a timeout");
+    // #782: the quit's flush waits its whole bound, unless a final flush follows the teardown (Android's main()):
+    // then it only asks for one, so the teardown holds one bounded wait.
+    {
+        const auto timed = [] {
+            const uint64_t start = dsd_realtime_mono_ms();
+            DiagnosticsLog::flushAtQuit();
+            return dsd_realtime_mono_ms() - start;
+        };
+        check(timed() + 50 >= static_cast<uint64_t>(DiagnosticsLog::kShutdownFlushMs),
+              "the quit's own flush did not wait for its bound");
+        DiagnosticsLog::setFinalFlushAfterQuit(true);
+        check(timed() < 100, "the quit's flush waited though a final flush follows the teardown");
+        DiagnosticsLog::setFinalFlushAfterQuit(false);
+    }
     // A flush asked for before the publish is honoured once it happens, within its bound.
     bool flushed = false;
     std::thread flusher([&flushed] { flushed = DiagnosticsLog::flushDiagnostics(10000); });
@@ -2037,10 +2155,12 @@ main(int argc, char** argv) {
     producerErrorLinesSurvive();
     producerErrorLinesDoNotCarryKeys();
     negativeDecimalsSurvive();
+    syncLabelsSurvive();
     androidHostRecordsSurvive();
     teardownFlushMarkerRoundTrip();
     everyKeyOptionFormIsDropped();
     streamCaptureLineRules();
+    oversizedLineKeepsItsQuote();
     appendKeepsTheFile();
     writeVolumeIsTheLogItself();
     rotationKeepsTheBound();

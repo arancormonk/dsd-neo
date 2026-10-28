@@ -1240,7 +1240,9 @@ test_destructor_marks_its_teardown_stage(void) {
         h->model.loadSystem(6673);
         delete h;
         expect("~RadioReferenceModel marks its teardown stage",
-               TeardownCapture::lines() == QStringList{QStringLiteral("teardown: ~RadioReferenceModel took 7 ms")});
+               TeardownCapture::lines()
+                   == QStringList({QStringLiteral("teardown: ~RadioReferenceModel started"),
+                                   QStringLiteral("teardown: ~RadioReferenceModel took 7 ms")}));
     }
     QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
 }

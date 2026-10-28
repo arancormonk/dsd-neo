@@ -140,7 +140,9 @@ testDestructorMarksItsTeardownStage(dsd_qt::KnownFrequencyIndex* index) {
     {
         const TeardownCapture capture;
         { dsd_qt::SignalSearchModel search(&android, index); }
-        assert(TeardownCapture::lines() == QStringList{QStringLiteral("teardown: ~SignalSearchModel took 7 ms")});
+        assert(TeardownCapture::lines()
+               == QStringList({QStringLiteral("teardown: ~SignalSearchModel started"),
+                               QStringLiteral("teardown: ~SignalSearchModel took 7 ms")}));
     }
 }
 

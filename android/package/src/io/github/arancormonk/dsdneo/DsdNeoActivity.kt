@@ -216,9 +216,10 @@ class DsdNeoActivity : QtActivity() {
             // about to block.
             timedStage("stopService") { stopService(Intent(this, DecoderService::class.java)) }
 
-            // The process may end with Qt's teardown; make the last diagnostics durable first (bounded). What follows
-            // is made durable by main() in android/main.cpp, which flushes again once Qt's teardown is done.
-            timedStage("diagnostics flush") { DsdNative.nativeFlushDiagnostics() }
+            // The process may end with Qt's teardown; start writing the last diagnostics now, without waiting. main() in
+            // android/main.cpp makes them and everything after durable with the teardown's one bounded flush wait,
+            // once Qt's teardown is done.
+            timedStage("diagnostics flush request") { DsdNative.nativeFlushDiagnostics() }
             timedStage("nativeQuitUi") { DsdNative.nativeQuitUi() }
             // A held relaunch shows up here: Qt's teardown below waits for main() to return.
             trace.phase(this, "in Qt teardown")

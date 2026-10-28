@@ -56,15 +56,22 @@ teardownTraceInstall(const TeardownTraceHooks* hooks) {
 }
 
 /**
- * @brief Logs `teardown: <name> took <n> ms` when it goes out of scope, if markers were on when it was made.
+ * @brief Logs `teardown: <name> started` when made and `teardown: <name> took <n> ms` when it goes out of scope, if
+ * markers were on when it was made.
  *
- * Declare it first in the destructor or scope to time: what the body waits for is what it measures.
+ * Declare it first in the destructor or scope to time: what the body waits for is what it measures. The start record
+ * lets a teardown that hangs name the stage it hangs in: the one that started and never took, rather than whatever
+ * unmarked object follows the last record.
  */
 class TeardownStage {
   public:
     explicit TeardownStage(const char* name)
         : m_hooks(teardown_trace_detail::hooks().load(std::memory_order_acquire)), m_name(name),
-          m_start(m_hooks != nullptr ? m_hooks->nowMs() : 0) {}
+          m_start(m_hooks != nullptr ? m_hooks->nowMs() : 0) {
+        if (m_hooks != nullptr) {
+            m_hooks->log(QStringLiteral("teardown: %1 started").arg(QString::fromUtf8(m_name)));
+        }
+    }
 
     ~TeardownStage() {
         if (m_hooks != nullptr) {
@@ -85,19 +92,24 @@ class TeardownStage {
     uint64_t m_start;
 };
 
+/** @brief What became of the final diagnostics flush: done in its bound, the bound ran out, or a write or sync failed. */
+enum class TeardownFlush { Completed, TimedOut, Failed };
+
 /**
- * @brief Records at @p path how long the final diagnostics flush took and whether it completed in its bound.
+ * @brief Records at @p path how long the final diagnostics flush took and what became of it.
  *
  * Not synced: it only has to outlive the process, which the page cache does. Best effort; false on any failure.
  */
 inline bool
-teardownFlushMarkerWrite(const QString& path, uint64_t tookMs, bool completed) {
+teardownFlushMarkerWrite(const QString& path, uint64_t tookMs, TeardownFlush outcome) {
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         return false;
     }
-    const QByteArray text = QByteArray("flush ") + QByteArray::number(static_cast<qulonglong>(tookMs))
-                            + (completed ? QByteArray(" completed\n") : QByteArray(" timed-out\n"));
+    const char* word = outcome == TeardownFlush::Completed  ? " completed\n"
+                       : outcome == TeardownFlush::TimedOut ? " timed-out\n"
+                                                            : " failed\n";
+    const QByteArray text = QByteArray("flush ") + QByteArray::number(static_cast<qulonglong>(tookMs)) + word;
     return file.write(text) == text.size();
 }
 
@@ -121,10 +133,12 @@ teardownFlushMarkerTake(const QString& path) {
     const QList<QByteArray> fields = text.split(' ');
     bool ok = false;
     const qulonglong took = fields.size() == 3 && fields.at(0) == "flush" ? fields.at(1).toULongLong(&ok) : 0;
-    if (!ok || (fields.at(2) != "completed" && fields.at(2) != "timed-out")) {
+    if (!ok || (fields.at(2) != "completed" && fields.at(2) != "timed-out" && fields.at(2) != "failed")) {
         return {};
     }
-    const QString outcome = fields.at(2) == "completed" ? QStringLiteral("") : QStringLiteral(", and timed out");
+    const QString outcome = fields.at(2) == "completed"   ? QStringLiteral("")
+                            : fields.at(2) == "timed-out" ? QStringLiteral(", and timed out")
+                                                          : QStringLiteral(", and failed to write");
     return QStringLiteral("teardown: the previous process's final diagnostics flush took %1 ms%2")
         .arg(took)
         .arg(outcome);

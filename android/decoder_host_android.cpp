@@ -579,12 +579,16 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeArmStartupDiagnostics(JNIEnv* 
     dsd_qt::DiagnosticsLog::armStartupDiagnostics();
 }
 
-/** @brief Bounded flush of the persistent diagnostics before the process may go (Activity teardown). */
+/**
+ * @brief Starts a flush of the persistent diagnostics before the process may go (Activity teardown), without waiting
+ * for it: main() makes the teardown's records durable with the one bounded flush wait, once Qt's teardown is done
+ * (#782).
+ */
 JNIEXPORT void JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeFlushDiagnostics(JNIEnv* env, jclass clazz) {
     (void)env;
     (void)clazz;
-    (void)dsd_qt::DiagnosticsLog::flushDiagnostics(dsd_qt::DiagnosticsLog::kShutdownFlushMs);
+    (void)dsd_qt::DiagnosticsLog::flushDiagnostics(0);
 }
 
 /**

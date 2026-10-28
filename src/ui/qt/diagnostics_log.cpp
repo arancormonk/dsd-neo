@@ -142,17 +142,34 @@ const char kDroppedRecord[] = "[redacted sensitive diagnostic]";
  * @brief What marks a record as key-bearing: a key word, or a key-taking CLI option.
  *
  * getopt takes a short option's value attached or as the next argument, and bundles it behind options that take none
- * (`-ZT1F`), so a dash-led token counts when a key option's letter follows only characters that can be option letters.
- * A decimal such as "-3.2 dB" is no option cluster: getopt stops at the '.'. A host may echo arguments as a list or
- * quoted, so a quote, `[` or `,` can lead the token too. The long options without a key word in their name are listed.
+ * (`-ZT1F`), so a dash-led token counts when a key option's letter follows only options that take no argument
+ * (src/runtime/cli/args.c's option string) or letters that are no option at all. After a letter that takes one, the
+ * rest of the token is that letter's value: "-DMR" is -D with "MR". A decimal such as "-3.2 dB" is no option cluster:
+ * getopt stops at the '.'. A host may echo arguments as a list or quoted, so a quote, `[` or `,` can lead the token too.
+ * The long options without a key word in their name are listed.
  */
 const QRegularExpression&
 keyLabel() {
     static const QRegularExpression labelled(QStringLiteral(
         "(?i)(key|secret|password|token|\\b(?:K[1-4]|RC4|AES|Hytera|scrambler)\\b|(?:^|\\s)-(?:H|b|R|1|!)\\S*"
         "|--dmr-(?:baofeng-pc5|csi-ee72)"
-        "|(?-i:(?:^|[\\s\"'\\[,])-[A-Za-z0-9~^_!@]*?[12!@59ASHRb]))"));
+        "|(?-i:(?:^|[\\s\"'\\[,])-[~yhaepPqYWrlZTF0348EO^Nju]*?[12!@59ASHRb]))"));
     return labelled;
+}
+
+/**
+ * @brief @p text without the decoder's own frame-sync labels, which the key rule must not read as options.
+ *
+ * printFrameSync() (src/dsp/dsd_frame_sync.c) and print_dmr_sync_polarity() (src/protocol/dmr/dmr_bs.c) print
+ * "Sync: <label>", and an inverted label starts with '-'. Some read as a key option bundled behind ones that take no
+ * argument ("-P25p1" is -P, then -2 with "5p1"), so each is exempt as an exact whole token in that place, and only
+ * there: anything else on the line is still judged.
+ */
+QString
+withoutSyncLabels(const QString& text) {
+    static const QRegularExpression labels(
+        QStringLiteral("(?<=\\bSync: )-(?:DMR|dPMR|DSTAR|EDACS|M17|P25p1|P25p2|PV|PV_C|TETRA|X2-TDMA|YSF)(?=\\s|\\z)"));
+    return QString(text).remove(labels);
 }
 
 /*
@@ -307,6 +324,24 @@ startsQuoted(const QString& text) {
 }
 
 /**
+ * @brief The quote open after @p c, inside @p open (0: none) and after @p previous (0: @p c starts the text).
+ *
+ * A quote opens only at the start of a token, so an apostrophe inside a word ("don't") opens nothing; it closes at the
+ * same character anywhere.
+ */
+char16_t
+quoteAfter(char16_t open, char16_t previous, char16_t c) {
+    if (open != 0) {
+        return c == open ? 0 : open;
+    }
+    if ((c == u'\'' || c == u'"')
+        && (previous == 0 || QChar(previous).isSpace() || QStringLiteral("=[,(").contains(QChar(previous)))) {
+        return c;
+    }
+    return 0;
+}
+
+/**
  * @brief The quote left open at the end of @p text, starting inside @p open (0: none).
  *
  * A quote opens only at the start of a token, so an apostrophe inside a word ("don't") opens nothing; it closes at the
@@ -315,15 +350,7 @@ startsQuoted(const QString& text) {
 char16_t
 quoteLeftOpen(const QString& text, char16_t open) {
     for (qsizetype i = 0; i < text.size(); ++i) {
-        const char16_t c = text.at(i).unicode();
-        if (open != 0) {
-            if (c == open) {
-                open = 0;
-            }
-        } else if ((c == u'\'' || c == u'"')
-                   && (i == 0 || text.at(i - 1).isSpace() || QStringLiteral("=[,(").contains(text.at(i - 1)))) {
-            open = c;
-        }
+        open = quoteAfter(open, i == 0 ? 0 : text.at(i - 1).unicode(), text.at(i).unicode());
     }
     return open;
 }
@@ -564,6 +591,25 @@ DiagnosticsLog::armStartupDiagnostics() {
 
 bool
 DiagnosticsLog::flushDiagnostics(int timeoutMs) {
+    return flushDiagnosticsOutcome(timeoutMs) == FlushOutcome::Completed;
+}
+
+namespace {
+std::atomic<bool> g_finalFlushAfterQuit{false};
+} // namespace
+
+void
+DiagnosticsLog::setFinalFlushAfterQuit(bool owned) {
+    g_finalFlushAfterQuit.store(owned, std::memory_order_release);
+}
+
+void
+DiagnosticsLog::flushAtQuit() {
+    (void)flushDiagnostics(g_finalFlushAfterQuit.load(std::memory_order_acquire) ? 0 : kShutdownFlushMs);
+}
+
+DiagnosticsLog::FlushOutcome
+DiagnosticsLog::flushDiagnosticsOutcome(int timeoutMs) {
     auto& host = hostDiagnostics();
     if (!host.ready.load(std::memory_order_acquire)) {
         // The bound covers the wait for the publish too.
@@ -573,13 +619,13 @@ DiagnosticsLog::flushDiagnostics(int timeoutMs) {
         if (timeoutMs < 0) {
             host.published.wait(lock, ready);
         } else if (!host.published.wait_for(lock, std::chrono::milliseconds(timeoutMs), ready)) {
-            return false;
+            return FlushOutcome::TimedOut;
         } else {
             const quint64 waited = static_cast<quint64>(dsd_realtime_mono_ms()) - start;
             timeoutMs = waited >= static_cast<quint64>(timeoutMs) ? 0 : timeoutMs - static_cast<int>(waited);
         }
     }
-    return instance().flush(timeoutMs);
+    return instance().flushOutcome(timeoutMs);
 }
 
 bool
@@ -599,7 +645,7 @@ DiagnosticsLog::redact(QString text) {
     // Drop whole key-bearing records, including malformed values and labelled
     // short decimal/basic keys. Strip ANSI before matching to prevent evasion.
     text = withoutAnsi(std::move(text));
-    if (text.contains(keyLabel()) && !isProducerErrorLine(text)) {
+    if (withoutSyncLabels(text).contains(keyLabel()) && !isProducerErrorLine(text)) {
         return QLatin1String(kDroppedRecord);
     }
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
@@ -942,8 +988,10 @@ DiagnosticsLog::StreamCapture::feed(const char* data, size_t size) {
             if (m_oversized) {
                 m_log.submit(m_source, QStringLiteral("info"), QStringLiteral("[oversized diagnostic omitted]"));
                 m_oversized = false;
-                // Omitted unread, it may have named a key option.
+                // Omitted unread, it may have named a key option, and a quoted value it opened runs on.
                 m_afterDropped = true;
+                m_quote = m_oversizedQuote;
+                m_quotedSize = 0;
             }
             if (!m_line.empty()) {
                 emitLine();
@@ -951,12 +999,21 @@ DiagnosticsLog::StreamCapture::feed(const char* data, size_t size) {
             continue;
         }
         if (m_oversized) {
+            // Skipped unread, but followed for quotes. A quote is ASCII, and no byte of a multibyte character is a
+            // quote or a space.
+            const auto byte = static_cast<unsigned char>(c);
+            m_oversizedQuote = quoteAfter(m_oversizedQuote, m_oversizedLast, byte);
+            m_oversizedLast = byte < 0x80 ? byte : u'x';
             continue;
         }
         m_line.push_back(c);
         if (m_line.size() >= 1024U) {
             // Do not split a secret-bearing record into unlabelled fragments.
             m_oversized = true;
+            // Inside a quote a dropped record left open, the line is still that value.
+            const QString cleared = withoutAnsi(QString::fromUtf8(m_line.c_str()));
+            m_oversizedQuote = quoteLeftOpen(cleared, m_afterDropped ? m_quote : 0);
+            m_oversizedLast = cleared.isEmpty() ? 0 : cleared.back().unicode();
             m_line.clear();
         }
     }
@@ -975,9 +1032,15 @@ DiagnosticsLog::StreamCapture::emitLine() {
     m_line.clear();
     QByteArray record = formatRecord(m_source, QStringLiteral("info"), text);
     if (record == kDroppedRecord) {
+        // Dropped for its own sake inside a quote an earlier dropped record opened, it is still that value: the quote
+        // runs on through it.
+        if (m_afterDropped && m_quote != 0) {
+            followQuote(withoutAnsi(text));
+        } else {
+            m_quote = quoteLeftOpen(withoutAnsi(text), 0);
+            m_quotedSize = 0;
+        }
         m_afterDropped = true;
-        m_quote = quoteLeftOpen(withoutAnsi(text), 0);
-        m_quotedSize = 0;
     } else if (continuesValue(text)) {
         // The rest of the dropped record's value, split off at a newline before redaction could see it whole.
         record = kDroppedRecord;
@@ -987,6 +1050,16 @@ DiagnosticsLog::StreamCapture::emitLine() {
     m_log.enqueue(record, isHostSource(m_source));
 }
 
+void
+DiagnosticsLog::StreamCapture::followQuote(const QString& plain) {
+    m_quote = quoteLeftOpen(plain, m_quote);
+    // A quote that never closes ends with the bound a single line has: past it, the lines are judged one by one.
+    m_quotedSize += plain.size();
+    if (m_quotedSize > 1024) {
+        m_quote = 0;
+    }
+}
+
 bool
 DiagnosticsLog::StreamCapture::continuesValue(const QString& text) {
     if (!m_afterDropped) {
@@ -994,12 +1067,7 @@ DiagnosticsLog::StreamCapture::continuesValue(const QString& text) {
     }
     const QString plain = withoutAnsi(text);
     if (m_quote != 0) {
-        m_quote = quoteLeftOpen(plain, m_quote);
-        // A quote that never closes ends with the bound a single line has: past it, the lines are judged one by one.
-        m_quotedSize += plain.size();
-        if (m_quotedSize > 1024) {
-            m_quote = 0;
-        }
+        followQuote(plain);
         return true;
     }
     if (isKeyContinuation(plain) || isSingleToken(plain) || startsQuoted(plain)) {
@@ -1120,20 +1188,25 @@ DiagnosticsLog::clear() {
 
 bool
 DiagnosticsLog::flush(int timeoutMs) {
+    return flushOutcome(timeoutMs) == FlushOutcome::Completed;
+}
+
+DiagnosticsLog::FlushOutcome
+DiagnosticsLog::flushOutcome(int timeoutMs) {
     std::unique_lock<std::mutex> lock(m_queueMutex);
     const quint64 ticket = ++m_flushRequested;
     if (m_options.manualDrain) {
         step(lock, true);
-        return flushResult(ticket);
+        return flushResult(ticket) ? FlushOutcome::Completed : FlushOutcome::Failed;
     }
     m_ready.notify_one();
     const auto done = [this, ticket] { return m_flushDone >= ticket; };
     if (timeoutMs < 0) {
         m_flushed.wait(lock, done);
     } else if (!m_flushed.wait_for(lock, std::chrono::milliseconds(timeoutMs), done)) {
-        return false;
+        return FlushOutcome::TimedOut;
     }
-    return flushResult(ticket);
+    return flushResult(ticket) ? FlushOutcome::Completed : FlushOutcome::Failed;
 }
 
 bool
