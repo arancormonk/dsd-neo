@@ -598,8 +598,11 @@ test_feed(void) {
         assert(strstr(g_line, "\"src_id\":4242,\"src_label\":\"Engine 21\",\"tg_label\":\"Dispatcher 7\","
                               "\"protocol_label\":\"NXDN\"")
                != NULL);
-        const char* kind = strstr(g_line, "\"kind\":3");
-        assert(kind != NULL && strstr(kind + 1, "\"kind\":") == NULL);
+        int kind_keys = 0;
+        for (const char* k = strstr(g_line, "\"kind\":"); k != NULL; k = strstr(k + 1, "\"kind\":")) {
+            kind_keys++;
+        }
+        assert(kind_keys == 1 && strstr(g_line, "\"kind\":3") != NULL);
         assert(dsd_call_state_end(state, 0U, dsd_decode_now_mono_s()) > 0);
         DSD_MEMSET(row, 0, sizeof *row);
     }
