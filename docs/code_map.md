@@ -633,8 +633,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
     (sparse files past 2 GiB and 4 GiB, skipped where the filesystem cannot make one)
-  - Private file opens: `dsd_fopen_private()` creates a written file owner-only, and on POSIX its descriptor is
-    close-on-exec (`O_CLOEXEC`: logs, captures and the recording journal stay open a whole run; issue #708); `dsd_fopen_private_ex()` also says
+  - Private file opens: `dsd_fopen_private()` creates a written file owner-only, and no child process inherits its
+    descriptor (`O_CLOEXEC` on POSIX, issue #708; `_O_NOINHERIT` on Windows): logs, captures and the recording
+    journal stay open a whole run; `dsd_fopen_private_ex()` also says
     whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
     made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
     Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF. An `x` after a write mode
