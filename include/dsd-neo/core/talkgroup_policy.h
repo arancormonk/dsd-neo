@@ -278,6 +278,8 @@ int dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id);
 int dsd_tg_policy_session_avoid_contains(const dsd_state* state, uint32_t id);
 /** Count distinct avoided IDs in inclusive bounds; 0..UINT32_MAX counts the whole scope. */
 size_t dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end);
+/** Count distinct avoided IDs a digit pattern (core/id_pattern.h) matches; 0 for a NULL or invalid pattern. */
+size_t dsd_tg_policy_session_avoid_count_pattern(const dsd_state* state, const char* pattern);
 /** Clear only temporary blocks in the current scope; NULL/empty is a no-op. */
 void dsd_tg_policy_session_avoid_clear(dsd_state* state);
 
@@ -342,13 +344,17 @@ int dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode);
 
 typedef struct {
     int32_t policy_index; /**< -1 for a heard-only exact ID; otherwise the captured table row. */
-    uint32_t id_start;
+    uint32_t id_start;    /**< 0 on a pattern row. */
     uint32_t id_end;
+    uint8_t kind;                          /**< Captured row's dsd_tg_policy_row_kind (EXACT when heard-only). */
+    char pattern[DSD_ID_PATTERN_TEXT_MAX]; /**< The captured pattern row's text; empty otherwise. */
 } dsd_tg_policy_selection;
 
-/** Apply an exact captured selection atomically. A stale capture (dsd_tg_policy_edit_version_valid())
- * or invalid rows (a pattern row included) return 1; allocation failure returns -1, leaving policy intact. A heard-only ID held
- * only by a learned alias takes that row over. Ranges, priority and preemption are retained. */
+/** Apply an exact captured selection atomically. Each listed item names its row like a dsd_tg_policy_row_key (index,
+ * kind, bounds or pattern; a range may start at 0); a heard-only item is one exact non-zero ID. A stale capture
+ * (dsd_tg_policy_edit_version_valid()) or an invalid item returns 1; allocation failure returns -1, leaving policy
+ * intact. A heard-only ID held only by a learned alias takes that row over. Ranges, priority and preemption are
+ * retained. */
 int dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
                                           const dsd_tg_policy_selection* selection, size_t count, int listening);
 
@@ -374,6 +380,40 @@ int dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_en
  * only by a learned alias has nothing to remove).
  * Remaining rows keep their order; a successful edit advances the table generation. */
 int dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end);
+
+/**
+ * A row token: the row a frontend listed, named by its table index and its key. A duplicate row is a row of its own,
+ * and a pattern row is addressed by its text (canonicalised before the compare), never by its 0/0 bounds.
+ * table_index -1 is a bounds-only edit of an exact or range row (the first talkgroup row with these bounds, as
+ * dsd_tg_policy_set_fields() and dsd_tg_policy_remove_bounds() address it); a pattern row always needs its index.
+ */
+typedef struct {
+    int32_t table_index; /**< Captured table row, or -1 for a bounds-only edit. */
+    uint8_t kind;        /**< dsd_tg_policy_row_kind */
+    uint32_t id_start;   /**< 0 on a pattern row. */
+    uint32_t id_end;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX]; /**< Pattern rows only; empty otherwise. */
+} dsd_tg_policy_row_key;
+
+/**
+ * @brief dsd_tg_policy_set_fields() on the row a token names, captured at (@p context, @p generation).
+ *
+ * Refused when the capture is stale (dsd_tg_policy_edit_version_valid()), or when the row at the token's index no
+ * longer has that kind and key or is a learned alias. A bounds-only token (index -1) edits as
+ * dsd_tg_policy_set_fields() does, after the same version check.
+ *
+ * @return 0 applied, 1 stale or invalid (nothing changed), -1 allocation failure.
+ */
+int dsd_tg_policy_set_fields_key(dsd_state* state, uint64_t context, unsigned int generation,
+                                 const dsd_tg_policy_row_key* key, const dsd_tg_policy_entry* values, uint32_t mask);
+/**
+ * @brief Remove the row a token names, captured at (@p context, @p generation); the same checks as
+ *        dsd_tg_policy_set_fields_key(). A bounds-only token removes as dsd_tg_policy_remove_bounds() does.
+ *
+ * @return 0 removed, 1 stale or invalid (nothing changed), -1 allocation failure.
+ */
+int dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int generation,
+                             const dsd_tg_policy_row_key* key);
 /** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.
  * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
  * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end, patterns as their

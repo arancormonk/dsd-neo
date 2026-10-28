@@ -13,6 +13,7 @@
 
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/runtime/config.h>
 #include <stddef.h>
@@ -284,9 +285,10 @@ enum dsd_app_command_id {
     // P25 helpers
     DSD_APP_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }
 
-    // Edit the first effective policy row with these bounds, preserving its metadata.
-    // Missing exact IDs are added. listen=1 selects A; listen=0 selects B and releases
-    // blocked active group calls. Persist to group_in_file unless a scan row owns the list.
+    // Edit the row the payload's row token names (or, bounds-only, the first effective row
+    // with these bounds), preserving its metadata. Missing exact IDs are added. listen=1
+    // selects A; listen=0 selects B and releases blocked active group calls. Persist to
+    // group_in_file unless a scan row owns the list.
     DSD_APP_CMD_TG_LISTEN_SET = 590, // payload: dsd_app_tg_listen_payload
     // Edit all rows except radio-ID aliases; a nonempty tag selects exact tag matches.
     DSD_APP_CMD_TG_LISTEN_SET_ALL = 591,      // payload: dsd_app_tg_listen_all_payload
@@ -387,10 +389,30 @@ typedef struct {
     uint64_t cc;
 } dsd_app_p25_p2_params_payload;
 
+/*
+ * Row token fields shared by the single-row talkgroup payloads (TG_LISTEN_SET, TG_ROW_SET, TG_ROW_REMOVE), as
+ * dsd_tg_policy_row_key in <dsd-neo/core/talkgroup_policy.h>:
+ *   table_index  the listed row's index in the effective table; -1 for a heard-only exact ID or a legacy bounds-only
+ *                edit, which addresses the first talkgroup row with id_start..id_end (a missing exact ID is added).
+ *                A zeroed payload is index 0, so a bounds-only caller sets -1 explicitly.
+ *   kind         DSD_APP_TG_ROW_* (dsd_tg_policy_row_kind) of the listed row; ignored with index -1.
+ *   pattern      a pattern row's text (id_start = id_end = 0); a pattern row always needs its index.
+ * A token edit is refused, changing nothing, when the captured context/generation is stale or the row at the index
+ * no longer has that kind and key.
+ */
+enum { DSD_APP_TG_ROW_EXACT = 0, DSD_APP_TG_ROW_RANGE = 1, DSD_APP_TG_ROW_PATTERN = 2 };
+
 typedef struct {
     uint32_t id_start;
     uint32_t id_end; /* Equal to id_start for an exact talkgroup. */
     int32_t listen;  /* 1 = listen (A), 0 = do not tune (B). */
+    int32_t table_index;
+    uint8_t kind;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX];
+    /* The captured list version. Checked like TG_ROW_SET's whenever the payload carries a token (index >= 0) or a
+     * non-zero pair; a legacy bounds-only payload (index -1, both 0) is applied unchecked. */
+    uint64_t policy_context;
+    unsigned int policy_generation;
 } dsd_app_tg_listen_payload;
 
 typedef struct {
@@ -421,6 +443,9 @@ typedef struct {
     uint8_t record; /* 1 = record the talkgroup's calls, 0 = do not (the CSV's record column) */
     uint64_t policy_context;
     unsigned int policy_generation;
+    int32_t table_index; /* Row token: see dsd_app_tg_listen_payload. */
+    uint8_t kind;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX];
 } dsd_app_tg_row_payload;
 
 typedef struct {
@@ -428,6 +453,9 @@ typedef struct {
     uint32_t id_end;
     uint64_t policy_context;
     unsigned int policy_generation;
+    int32_t table_index; /* Row token: see dsd_app_tg_listen_payload. */
+    uint8_t kind;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX];
 } dsd_app_tg_range_payload;
 
 typedef struct {
@@ -441,7 +469,8 @@ typedef struct {
     uint32_t policy_generation;
     uint32_t count;
     int32_t listening;
-    char selection_path[1024]; /**< Private frontend-owned rows: table_index,start,end. */
+    char selection_path[1024]; /**< Private frontend-owned rows: table_index,kind,start,end,pattern (pattern empty
+                                    except on a pattern row); an old table_index,start,end row is exact or range. */
 } dsd_app_tg_selection_payload;
 
 /** Retained outcome of the most recently drained TG_LIST_EXPORT command.

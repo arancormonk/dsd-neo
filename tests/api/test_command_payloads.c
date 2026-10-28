@@ -376,6 +376,60 @@ test_talkgroup_edits(void) {
             "\"policy_generation\":1}}");
 }
 
+/* B14: single-row edits carry an optional row token (table_index, pattern); without one they stay bounds-only. */
+static void
+test_talkgroup_row_tokens(void) {
+    assert(ok("{\"cmd\":\"tg_row_set\",\"params\":{\"table_index\":3,\"pattern\":\"12*\",\"fields\":8,"
+              "\"name\":\"Twelves\",\"policy_context\":5,\"policy_generation\":6}}"));
+    dsd_app_tg_row_payload row = {0};
+    assert(g_last_id == DSD_APP_CMD_TG_ROW_SET && g_last_n == sizeof row);
+    DSD_MEMCPY(&row, g_last, sizeof row);
+    assert(row.table_index == 3 && row.kind == DSD_APP_TG_ROW_PATTERN && strcmp(row.pattern, "12*") == 0);
+    assert(row.id_start == 0U && row.id_end == 0U && strcmp(row.name, "Twelves") == 0);
+    assert(row.policy_context == 5U && row.policy_generation == 6U);
+
+    assert(ok("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":100,\"id_end\":199,\"fields\":8,\"name\":\"R\","
+              "\"policy_context\":5,\"policy_generation\":6}}"));
+    DSD_MEMCPY(&row, g_last, sizeof row);
+    assert(row.table_index == -1 && row.kind == DSD_APP_TG_ROW_RANGE && row.pattern[0] == '\0');
+    assert(row.id_start == 100U && row.id_end == 199U);
+    assert(ok("{\"cmd\":\"tg_row_set\",\"params\":{\"table_index\":1,\"id_start\":7,\"id_end\":7,\"fields\":8,"
+              "\"name\":\"E\",\"policy_context\":5,\"policy_generation\":6}}"));
+    DSD_MEMCPY(&row, g_last, sizeof row);
+    assert(row.table_index == 1 && row.kind == DSD_APP_TG_ROW_EXACT && row.id_start == 7U);
+
+    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"pattern\":\"12*\",\"fields\":8,\"policy_context\":5,"
+            "\"policy_generation\":6}}");
+    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"table_index\":3,\"pattern\":\"12*\",\"id_start\":12,\"id_end\":0,"
+            "\"fields\":8,\"policy_context\":5,\"policy_generation\":6}}");
+    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"table_index\":-2,\"id_start\":1,\"id_end\":1,\"fields\":8,"
+            "\"policy_context\":5,\"policy_generation\":6}}");
+    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"table_index\":3,\"pattern\":\"1234567890123456\",\"fields\":8,"
+            "\"policy_context\":5,\"policy_generation\":6}}");
+
+    assert(ok("{\"cmd\":\"tg_row_remove\",\"params\":{\"table_index\":2,\"pattern\":\"1xxx\",\"policy_context\":5,"
+              "\"policy_generation\":6}}"));
+    dsd_app_tg_range_payload range = {0};
+    assert(g_last_id == DSD_APP_CMD_TG_ROW_REMOVE && g_last_n == sizeof range);
+    DSD_MEMCPY(&range, g_last, sizeof range);
+    assert(range.table_index == 2 && range.kind == DSD_APP_TG_ROW_PATTERN && strcmp(range.pattern, "1xxx") == 0);
+
+    assert(ok("{\"cmd\":\"tg_listen_set\",\"params\":{\"id_start\":100,\"id_end\":100,\"listen\":true}}"));
+    dsd_app_tg_listen_payload listen = {0};
+    assert(g_last_id == DSD_APP_CMD_TG_LISTEN_SET && g_last_n == sizeof listen);
+    DSD_MEMCPY(&listen, g_last, sizeof listen);
+    assert(listen.table_index == -1 && listen.kind == DSD_APP_TG_ROW_EXACT && listen.listen == 1);
+    assert(listen.policy_context == 0U && listen.policy_generation == 0U);
+    assert(ok("{\"cmd\":\"tg_listen_set\",\"params\":{\"table_index\":4,\"pattern\":\"*05\",\"listen\":false,"
+              "\"policy_context\":\"18446744073709551614\",\"policy_generation\":9}}"));
+    DSD_MEMCPY(&listen, g_last, sizeof listen);
+    assert(listen.table_index == 4 && listen.kind == DSD_APP_TG_ROW_PATTERN && strcmp(listen.pattern, "*05") == 0);
+    assert(listen.policy_context == UINT64_C(18446744073709551614) && listen.policy_generation == 9U);
+    refused("{\"cmd\":\"tg_listen_set\",\"params\":{\"table_index\":4,\"id_start\":1,\"id_end\":1,\"listen\":true}}");
+    refused("{\"cmd\":\"tg_listen_set\",\"params\":{\"id_start\":1,\"id_end\":1,\"listen\":true,"
+            "\"policy_context\":5}}");
+}
+
 static void
 test_keys(void) {
     assert(ok("{\"cmd\":\"key_aes_set\",\"params\":{\"K1\":\"0x0123456789ABCDEF\",\"K2\":18446744073709551615,"
@@ -533,6 +587,7 @@ main(void) {
     test_scalars();
     test_strings();
     test_talkgroup_edits();
+    test_talkgroup_row_tokens();
     test_keys();
     test_receive();
     test_structured();

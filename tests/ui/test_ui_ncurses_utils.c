@@ -220,6 +220,10 @@ test_terminal_lock_marks_range_and_pattern(void) {
     DSD_SNPRINTF(row.pattern, sizeof(row.pattern), "%s", "12*");
     rc |= expect_true("add pattern row", dsd_tg_policy_add_pattern_entry(state, &row) == 0);
     rc |= expect_true("add allow exact", add_policy(state, 1210U, "A", "ALLOW") == 0);
+    rc |= expect_true("make learned radio alias",
+                      dsd_tg_policy_make_exact_entry(7000U, "DE", "RADIO", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row)
+                          == 0);
+    rc |= expect_true("add learned radio alias", dsd_tg_policy_append_exact(state, &row) == 0);
 
     rc |= expect_int_eq("range locks TG", ui_is_locked_from_label(state, "TG: 1250"), 1);
     rc |= expect_int_eq("pattern locks TG", ui_is_locked_from_label(state, "TG: 1290000"), 1);
@@ -228,6 +232,7 @@ test_terminal_lock_marks_range_and_pattern(void) {
     rc |= expect_int_eq("range does not lock TGT", ui_is_locked_from_label(state, "TGT: 1250"), 0);
     rc |= expect_int_eq("pattern does not lock TGT", ui_is_locked_from_label(state, "TGT: 1290000"), 0);
     rc |= expect_int_eq("unmatched TG not locked", ui_is_locked_from_label(state, "TG: 5000"), 0);
+    rc |= expect_int_eq("a radio alias does not lock the same TG", ui_is_locked_from_label(state, "TG: 7000"), 0);
     dsd_state_ext_free_all(state);
     free(state);
     return rc;

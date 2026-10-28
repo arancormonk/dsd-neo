@@ -320,16 +320,64 @@ param_id_range(const dsd_json_node* params, uint32_t* start, uint32_t* end) {
     return 0;
 }
 
+/* The row a single-row talkgroup edit names. Without table_index it is a bounds-only edit (index -1: the first
+   talkgroup row with id_start..id_end). A pattern row needs table_index and its pattern text; its ids may then be
+   omitted and must be 0. The kind follows: pattern, else range or exact by the bounds. */
+typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    int32_t table_index;
+    uint8_t kind;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX];
+} api_tg_row_token;
+
+static int
+param_tg_row_token(const dsd_json_node* params, api_tg_row_token* out) {
+    int64_t index = -1;
+    DSD_MEMSET(out, 0, sizeof *out);
+    if (param_i64_opt(params, "table_index", -1, INT32_MAX, &index) != 0
+        || param_str_opt(params, "pattern", out->pattern, sizeof out->pattern) != 0) {
+        return -1;
+    }
+    out->table_index = (int32_t)index;
+    if (out->pattern[0] == '\0') {
+        out->kind = DSD_APP_TG_ROW_EXACT;
+        if (param_id_range(params, &out->id_start, &out->id_end) != 0) {
+            return -1;
+        }
+        out->kind = out->id_start != out->id_end ? DSD_APP_TG_ROW_RANGE : DSD_APP_TG_ROW_EXACT;
+        return 0;
+    }
+    out->kind = DSD_APP_TG_ROW_PATTERN;
+    if (index < 0
+        || (dsd_json_obj_get(params, "id_start") != NULL && param_u32(params, "id_start", &out->id_start) != 0)
+        || (dsd_json_obj_get(params, "id_end") != NULL && param_u32(params, "id_end", &out->id_end) != 0)
+        || out->id_start != 0U || out->id_end != 0U) {
+        return -1;
+    }
+    return 0;
+}
+
 static int
 submit_tg_listen(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)d;
     (void)request_id;
     dsd_app_tg_listen_payload p;
     DSD_MEMSET(&p, 0, sizeof p);
+    api_tg_row_token row;
     int listen = 0;
-    if (param_id_range(params, &p.id_start, &p.id_end) != 0 || param_bool(params, "listen", &listen) != 0) {
+    const int has_policy =
+        dsd_json_obj_get(params, "policy_context") != NULL || dsd_json_obj_get(params, "policy_generation") != NULL;
+    if (param_tg_row_token(params, &row) != 0 || param_bool(params, "listen", &listen) != 0
+        || ((has_policy || row.table_index >= 0)
+            && param_policy(params, &p.policy_context, &p.policy_generation) != 0)) {
         return API_INVALID_PARAMS;
     }
+    p.id_start = row.id_start;
+    p.id_end = row.id_end;
+    p.table_index = row.table_index;
+    p.kind = row.kind;
+    DSD_MEMCPY(p.pattern, row.pattern, sizeof p.pattern);
     p.listen = listen;
     return dsd_app_command_set_tg_listen(&p);
 }
@@ -358,7 +406,8 @@ submit_tg_row(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
     int listen = 0;
     int preempt = 0;
     int record = 0;
-    if (param_id_range(params, &p.id_start, &p.id_end) != 0 || param_i64(params, "fields", 1, 0x3F, &fields) != 0
+    api_tg_row_token row;
+    if (param_tg_row_token(params, &row) != 0 || param_i64(params, "fields", 1, 0x3F, &fields) != 0
         || param_policy(params, &p.policy_context, &p.policy_generation) != 0
         || param_bool_opt(params, "listen", &listen) != 0 || param_bool_opt(params, "preempt", &preempt) != 0
         || param_bool_opt(params, "record", &record) != 0 || param_i32_opt(params, "priority", &p.priority) != 0
@@ -366,6 +415,11 @@ submit_tg_row(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
         || param_str_opt(params, "tags", p.tags, sizeof p.tags) != 0) {
         return API_INVALID_PARAMS;
     }
+    p.id_start = row.id_start;
+    p.id_end = row.id_end;
+    p.table_index = row.table_index;
+    p.kind = row.kind;
+    DSD_MEMCPY(p.pattern, row.pattern, sizeof p.pattern);
     p.fields = (uint32_t)fields;
     p.listen = listen;
     p.preempt = preempt;
@@ -379,10 +433,15 @@ submit_tg_range(const api_command_desc* d, const dsd_json_node* params, uint64_t
     (void)request_id;
     dsd_app_tg_range_payload p;
     DSD_MEMSET(&p, 0, sizeof p);
-    if (param_id_range(params, &p.id_start, &p.id_end) != 0
-        || param_policy(params, &p.policy_context, &p.policy_generation) != 0) {
+    api_tg_row_token row;
+    if (param_tg_row_token(params, &row) != 0 || param_policy(params, &p.policy_context, &p.policy_generation) != 0) {
         return API_INVALID_PARAMS;
     }
+    p.id_start = row.id_start;
+    p.id_end = row.id_end;
+    p.table_index = row.table_index;
+    p.kind = row.kind;
+    DSD_MEMCPY(p.pattern, row.pattern, sizeof p.pattern);
     return dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &p, sizeof p);
 }
 
@@ -984,12 +1043,14 @@ static const api_command_desc k_commands[] = {
 
     API_KIND("p25_p2_params_set", DSD_APP_CMD_P25_P2_PARAMS_SET, submit_p25p2, "{wacn,sysid,cc}"),
 
-    API_KIND("tg_listen_set", DSD_APP_CMD_TG_LISTEN_SET, submit_tg_listen, "{id_start,id_end,listen}"),
+    API_KIND("tg_listen_set", DSD_APP_CMD_TG_LISTEN_SET, submit_tg_listen,
+             "{id_start,id_end,listen,table_index,pattern,policy_context,policy_generation}"),
     API_KIND("tg_listen_set_all", DSD_APP_CMD_TG_LISTEN_SET_ALL, submit_tg_listen_all, "{listen,tags}"),
     API_KIND("tg_row_set", DSD_APP_CMD_TG_ROW_SET, submit_tg_row,
-             "{id_start,id_end,fields,listen,priority,preempt,name,tags,policy_context,policy_generation}"),
+             "{id_start,id_end,fields,listen,priority,preempt,name,tags,policy_context,policy_generation,table_index,"
+             "pattern}"),
     API_KIND("tg_row_remove", DSD_APP_CMD_TG_ROW_REMOVE, submit_tg_range,
-             "{id_start,id_end,policy_context,policy_generation}"),
+             "{id_start,id_end,policy_context,policy_generation,table_index,pattern}"),
     API_KIND("tg_list_export", DSD_APP_CMD_TG_LIST_EXPORT, submit_tg_export, "{path,policy_context,policy_generation}"),
     API_KIND("tg_selection_set", DSD_APP_CMD_TG_SELECTION_SET, submit_tg_selection,
              "{path,count,listening,policy_context,policy_generation}"),

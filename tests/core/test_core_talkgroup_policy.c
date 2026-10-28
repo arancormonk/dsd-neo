@@ -1181,7 +1181,7 @@ test_edits_prefer_talkgroup_rows(void) {
     rc |= expect_true("learn alias 700", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
     const size_t before = dsd_tg_policy_entry_count(st);
     dsd_tg_policy_table_version(st, &context, &generation);
-    dsd_tg_policy_selection sel = {-1, 700, 700};
+    dsd_tg_policy_selection sel = {-1, 700, 700, DSD_TG_POLICY_ROW_EXACT, ""};
     rc |= expect_true("heard selection over alias",
                       dsd_tg_policy_set_listening_selection(st, context, generation, &sel, 1, 0) == 0);
     dsd_tg_policy_lookup_id(st, 700, &lookup);
@@ -1874,7 +1874,8 @@ test_captured_selection(void) {
     uint64_t context;
     unsigned int generation;
     dsd_tg_policy_table_version(state, &context, &generation);
-    dsd_tg_policy_selection selected[] = {{1, 123, 123}, {-1, 456, 456}};
+    dsd_tg_policy_selection selected[] = {{1, 123, 123, DSD_TG_POLICY_ROW_EXACT, ""},
+                                          {-1, 456, 456, DSD_TG_POLICY_ROW_EXACT, ""}};
     rc |= expect_true("exact captured selection",
                       dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 0) == 0);
     rc |= expect_true("first duplicate unchanged",
@@ -1888,7 +1889,8 @@ test_captured_selection(void) {
     rc |= expect_true("stale selection refused",
                       dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 1) == 1);
     dsd_tg_policy_table_version(state, &context, &generation);
-    dsd_tg_policy_selection invalid[] = {{0, 123, 123}, {1, 999, 999}};
+    dsd_tg_policy_selection invalid[] = {{0, 123, 123, DSD_TG_POLICY_ROW_EXACT, ""},
+                                         {1, 999, 999, DSD_TG_POLICY_ROW_EXACT, ""}};
     rc |= expect_true("bad selection rejected atomically",
                       dsd_tg_policy_set_listening_selection(state, context, generation, invalid, 2, 0) == 1);
     rc |= expect_true("bad later row leaves earlier unchanged",
@@ -2739,6 +2741,231 @@ done:
     return rc;
 }
 
+static dsd_tg_policy_row_key
+row_key(int32_t index, uint8_t kind, uint32_t first, uint32_t last, const char* pattern) {
+    dsd_tg_policy_row_key key;
+    DSD_MEMSET(&key, 0, sizeof(key));
+    key.table_index = index;
+    key.kind = kind;
+    key.id_start = first;
+    key.id_end = last;
+    DSD_SNPRINTF(key.pattern, sizeof(key.pattern), "%s", pattern ? pattern : "");
+    return key;
+}
+
+/* B14: a row token edits the row it names, even when an identical row precedes it (bounds alone address the first). */
+static int
+test_row_token_edits_the_addressed_duplicate(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("first duplicate range", add_range_row(st, 100, 199, "A", "First") == 0);
+    rc |= expect_true("second duplicate range", add_range_row(st, 100, 199, "A", "Second") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    const dsd_tg_policy_row_key second = row_key(1, DSD_TG_POLICY_ROW_RANGE, 100, 199, NULL);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    DSD_SNPRINTF(values.name, sizeof(values.name), "%s", "Edited");
+    DSD_SNPRINTF(values.mode, sizeof(values.mode), "%s", "B");
+    rc |= expect_true("edit the second duplicate by token",
+                      dsd_tg_policy_set_fields_key(st, context, generation, &second, &values,
+                                                   DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_LISTEN)
+                          == 0);
+    rc |= expect_true("first duplicate untouched", dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                                       && strcmp(row.name, "First") == 0 && strcmp(row.mode, "A") == 0);
+    rc |= expect_true("second duplicate edited", dsd_tg_policy_entry_at(st, 1, &row) == 1
+                                                     && strcmp(row.name, "Edited") == 0 && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("the last duplicate decides the tie", group_row_is(st, 150, DSD_TG_POLICY_MATCH_RANGE, "Edited"));
+
+    dsd_tg_policy_table_version(st, &context, &generation);
+    rc |= expect_true("token of the wrong kind refused",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_EXACT, 100, 199, ""})
+                          == 1);
+    rc |= expect_true("token past the table refused",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){2, DSD_TG_POLICY_ROW_RANGE, 100, 199, ""})
+                          == 1);
+    rc |= expect_true("remove the second duplicate by token",
+                      dsd_tg_policy_remove_key(st, context, generation, &second) == 0);
+    rc |= expect_true("only the first duplicate left", dsd_tg_policy_entry_count(st) == 1
+                                                           && dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                                           && strcmp(row.name, "First") == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* A token captured before a reload is stale: nothing changes, even though the reloaded list has a row at that index
+ * with the same bounds. */
+static int
+test_row_token_stale_after_reload(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    char path[] = "dsd-neo-test-tg-token-reload-XXXXXX";
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("write list", write_text(path, "id,mode,name\n100-199,A,Range\n12*,A,Twelve\n") == 0);
+    rc |= expect_true("load list", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    const dsd_tg_policy_row_key range = row_key(0, DSD_TG_POLICY_ROW_RANGE, 100, 199, NULL);
+    const dsd_tg_policy_row_key pattern = row_key(1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*");
+    rc |= expect_true("reload list", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    DSD_SNPRINTF(values.name, sizeof(values.name), "%s", "Stale");
+    rc |= expect_true("stale range token refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation, &range, &values, DSD_TG_POLICY_FIELD_NAME)
+                          == 1);
+    rc |= expect_true("stale pattern token refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation, &pattern, &values, DSD_TG_POLICY_FIELD_NAME)
+                          == 1);
+    rc |= expect_true("stale remove refused", dsd_tg_policy_remove_key(st, context, generation, &range) == 1);
+    rc |= expect_true("stale bounds-only edit refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){-1, DSD_TG_POLICY_ROW_RANGE, 100, 199, ""},
+                                                   &values, DSD_TG_POLICY_FIELD_NAME)
+                          == 1);
+    rc |=
+        expect_true("nothing changed", dsd_tg_policy_entry_count(st) == 2 && dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                           && strcmp(row.name, "Range") == 0 && dsd_tg_policy_entry_at(st, 1, &row) == 1
+                                           && strcmp(row.name, "Twelve") == 0);
+    (void)remove(path);
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
+/* B14: a captured selection may name a listed range that starts at 0. */
+static int
+test_selection_accepts_zero_start_range(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("zero-start range", add_range_row(st, 0, 99, "A", "Low") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection selection = {0, 0, 99, DSD_TG_POLICY_ROW_RANGE, ""};
+    rc |= expect_true("zero-start listed row toggles",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &selection, 1, 0) == 0);
+    rc |=
+        expect_true("zero-start row not tuned", dsd_tg_policy_entry_at(st, 0, &row) == 1 && strcmp(row.mode, "B") == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* A pattern row is edited, toggled and removed by its token, never by its placeholder bounds; removing it clears the
+ * pattern fast path again. */
+static int
+test_pattern_row_edit_remove(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("exact row", add_exact_row(st, 5, "A", "Five") == 0);
+    rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    DSD_SNPRINTF(values.name, sizeof(values.name), "%s", "Twelves");
+    DSD_SNPRINTF(values.tags, sizeof(values.tags), "%s", "FIRE");
+    DSD_SNPRINTF(values.mode, sizeof(values.mode), "%s", "B");
+    values.priority = 40;
+    values.preempt = 1;
+    const uint32_t all = DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_LISTEN
+                         | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT;
+    rc |= expect_true("wrong pattern text refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "13*"},
+                                                   &values, all)
+                          == 1);
+    rc |= expect_true("pattern token without an index refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){-1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"},
+                                                   &values, all)
+                          == 1);
+    rc |= expect_true("non-canonical token text addresses the row",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12**"},
+                                                   &values, all)
+                          == 0);
+    rc |= expect_true("pattern row edited",
+                      dsd_tg_policy_entry_at(st, 1, &row) == 1 && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                          && strcmp(row.pattern, "12*") == 0 && strcmp(row.name, "Twelves") == 0
+                          && strcmp(row.tags, "FIRE") == 0 && strcmp(row.mode, "B") == 0 && row.priority == 40
+                          && row.preempt == 1 && row.id_start == 0 && row.id_end == 0);
+    rc |= expect_true("exact row untouched", dsd_tg_policy_entry_at(st, 0, &row) == 1 && strcmp(row.name, "Five") == 0);
+
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection selection = {1, 0, 0, DSD_TG_POLICY_ROW_PATTERN, "12*"};
+    rc |= expect_true("selection names the pattern row",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &selection, 1, 1) == 0);
+    rc |= expect_true("pattern row listening", dsd_tg_policy_entry_at(st, 1, &row) == 1 && strcmp(row.mode, "A") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection wrong = {1, 0, 0, DSD_TG_POLICY_ROW_PATTERN, "1xxx"};
+    rc |= expect_true("selection with another pattern refused",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &wrong, 1, 0) == 1);
+    dsd_tg_policy_selection heard = {-1, 0, 0, DSD_TG_POLICY_ROW_PATTERN, "12*"};
+    rc |= expect_true("heard-only pattern selection refused",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &heard, 1, 0) == 1);
+
+    rc |= expect_true("remove the pattern row by token",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"})
+                          == 0);
+    rc |= expect_true("pattern fast path back on",
+                      dsd_tg_policy_pattern_count(st) == 0 && dsd_tg_policy_entry_count(st) == 1);
+    rc |= expect_true("pattern no longer matches", group_match(st, 1234) == DSD_TG_POLICY_MATCH_NONE);
+    free_test_state(st);
+    return rc;
+}
+
+/* Session avoids under a pattern row are counted by the matcher. */
+static int
+test_session_avoid_count_pattern(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
+    rc |= expect_true("avoid 12", dsd_tg_policy_session_avoid_add(st, 12) == 0);
+    rc |= expect_true("avoid 1234", dsd_tg_policy_session_avoid_add(st, 1234) == 0);
+    rc |= expect_true("avoid 2123", dsd_tg_policy_session_avoid_add(st, 2123) == 0);
+    rc |= expect_true("matched avoids counted", dsd_tg_policy_session_avoid_count_pattern(st, "12*") == 2);
+    rc |= expect_true("invalid pattern counts nothing", dsd_tg_policy_session_avoid_count_pattern(st, "05x") == 0);
+    rc |= expect_true("NULL pattern counts nothing", dsd_tg_policy_session_avoid_count_pattern(st, NULL) == 0);
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2779,5 +3006,10 @@ main(void) {
     rc |= test_pattern_row_rewrite_round_trip();
     rc |= test_bounds_edits_skip_pattern_rows();
     rc |= test_pattern_survives_snapshot_and_scan_context();
+    rc |= test_row_token_edits_the_addressed_duplicate();
+    rc |= test_row_token_stale_after_reload();
+    rc |= test_selection_accepts_zero_start_range();
+    rc |= test_pattern_row_edit_remove();
+    rc |= test_session_avoid_count_pattern();
     return rc;
 }

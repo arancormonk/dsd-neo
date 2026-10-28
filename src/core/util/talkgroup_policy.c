@@ -537,6 +537,8 @@ tg_policy_find_edit_idx(const dsd_tg_policy_context* ctx, uint32_t id_start, uin
     return tg_policy_find_bounds_idx_kind(ctx, id_start, id_end, 1);
 }
 
+static int tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out);
+
 static int DSD_ATTR_USED
 tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* out) {
     dsd_tg_policy_lookup lookup;
@@ -544,10 +546,8 @@ tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_e
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (dsd_tg_policy_lookup_id(state, id, &lookup) != 0) {
-        return 0;
-    }
-    if (lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &lookup)) {
         return 0;
     }
     *out = lookup.entry;
@@ -608,6 +608,20 @@ dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32
     }
     const size_t after = end == UINT32_MAX ? ctx->session_avoid_count : tg_policy_avoid_lower_bound(ctx, end + 1U);
     return after - tg_policy_avoid_lower_bound(ctx, start);
+}
+
+size_t
+dsd_tg_policy_session_avoid_count_pattern(const dsd_state* state, const char* pattern) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    dsd_id_pattern parsed;
+    if (!ctx || dsd_id_pattern_parse(pattern, &parsed) != 0) {
+        return 0;
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < ctx->session_avoid_count; i++) {
+        count += dsd_id_pattern_match(&parsed, ctx->session_avoids[i]) ? 1U : 0U;
+    }
+    return count;
 }
 
 static int
@@ -1082,13 +1096,49 @@ tg_policy_apply_fields(dsd_tg_policy_entry* entry, const dsd_tg_policy_entry* va
     }
 }
 
+static int
+tg_policy_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask) {
+    const uint32_t all = DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
+                         | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_RECORD;
+    return !values || !mask || (mask & ~all) || tg_policy_listen_fields_invalid(values, mask)
+           || tg_policy_other_fields_invalid(values, mask);
+}
+
+/* Whether @p e is the row a token or captured selection names: the same kind, and the same bounds (exact, range) or
+ * the same canonical pattern text (pattern; @p pattern is the token's text, canonicalised here). */
+static int
+tg_policy_entry_has_key(const dsd_tg_policy_entry* e, uint8_t kind, uint32_t id_start, uint32_t id_end,
+                        const char* pattern) {
+    if (e->kind != kind) {
+        return 0;
+    }
+    if (kind != DSD_TG_POLICY_ROW_PATTERN) {
+        return e->id_start == id_start && e->id_end == id_end;
+    }
+    dsd_id_pattern parsed;
+    return memchr(pattern, '\0', DSD_ID_PATTERN_TEXT_MAX) != NULL && dsd_id_pattern_parse(pattern, &parsed) == 0
+           && strcmp(parsed.text, e->pattern) == 0;
+}
+
+/* The row a token names, or -1 when the index is out of the table, the row there has another kind or key, or it is a
+ * learned alias (frontends never list one for editing). */
+static int
+tg_policy_find_key_idx(const dsd_tg_policy_context* ctx, const dsd_tg_policy_row_key* key) {
+    if (!ctx || key->table_index < 0 || (size_t)key->table_index >= ctx->table.count) {
+        return -1;
+    }
+    const dsd_tg_policy_entry* e = &ctx->table.entries[key->table_index];
+    if (!tg_policy_entry_has_key(e, key->kind, key->id_start, key->id_end, key->pattern)
+        || !tg_policy_row_editable(e)) {
+        return -1;
+    }
+    return (int)key->table_index;
+}
+
 int
 dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, const dsd_tg_policy_entry* values,
                          uint32_t mask) {
-    const uint32_t all = DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
-                         | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_RECORD;
-    if (!state || !values || id_start > id_end || !mask || (mask & ~all)
-        || tg_policy_listen_fields_invalid(values, mask) || tg_policy_other_fields_invalid(values, mask)) {
+    if (!state || id_start > id_end || tg_policy_fields_invalid(values, mask)) {
         return 1;
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
@@ -1113,6 +1163,36 @@ dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, c
         return dsd_tg_policy_store_append(ctx, &entry);
     }
     ctx->table.entries[index] = entry;
+    tg_policy_table_note_mutation(ctx);
+    return 0;
+}
+
+/* A token checked before it addresses anything: a capture still valid, and an index or a bounds-only (-1) edit of an
+ * exact or range row. */
+static int
+tg_policy_key_usable(const dsd_state* state, uint64_t context, unsigned int generation,
+                     const dsd_tg_policy_row_key* key) {
+    if (!state || !key || key->table_index < -1 || (key->table_index == -1 && key->kind == DSD_TG_POLICY_ROW_PATTERN)) {
+        return 0;
+    }
+    return dsd_tg_policy_edit_version_valid(state, context, generation);
+}
+
+int
+dsd_tg_policy_set_fields_key(dsd_state* state, uint64_t context, unsigned int generation,
+                             const dsd_tg_policy_row_key* key, const dsd_tg_policy_entry* values, uint32_t mask) {
+    if (tg_policy_fields_invalid(values, mask) || !tg_policy_key_usable(state, context, generation, key)) {
+        return 1;
+    }
+    if (key->table_index == -1) {
+        return dsd_tg_policy_set_fields(state, key->id_start, key->id_end, values, mask);
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    const int index = tg_policy_find_key_idx(ctx, key);
+    if (index < 0) {
+        return 1;
+    }
+    tg_policy_apply_fields(&ctx->table.entries[index], values, mask);
     tg_policy_table_note_mutation(ctx);
     return 0;
 }
@@ -1148,19 +1228,20 @@ selection_has_duplicates(const dsd_tg_policy_selection* selection, size_t count)
 static int
 prepare_selection_entry(const dsd_tg_policy_context* ctx, dsd_tg_policy_entry* entries, size_t old_count, size_t* used,
                         const dsd_tg_policy_selection* item, int listening) {
-    if (!item->id_start || item->id_start > item->id_end || item->policy_index < -1) {
+    if (item->policy_index < -1) {
         return 1;
     }
     size_t row;
     if (item->policy_index >= 0) {
+        // A listed row is named by its key, so a range starting at 0 and a pattern row (0/0 bounds) are rows like any.
         row = (size_t)item->policy_index;
-        if (row >= old_count || entries[row].kind == DSD_TG_POLICY_ROW_PATTERN
-            || entries[row].id_start != item->id_start || entries[row].id_end != item->id_end
+        if (row >= old_count
+            || !tg_policy_entry_has_key(&entries[row], item->kind, item->id_start, item->id_end, item->pattern)
             || !tg_policy_row_editable(&entries[row])) {
             return 1;
         }
     } else {
-        if (item->id_start != item->id_end) {
+        if (item->kind != DSD_TG_POLICY_ROW_EXACT || !item->id_start || item->id_start != item->id_end) {
             return 1;
         }
         if (tg_policy_find_bounds_idx_kind(ctx, item->id_start, item->id_end, 0) >= 0) {
@@ -1249,6 +1330,18 @@ dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsign
     return 0;
 }
 
+/* Remove row @p index, keeping the pattern fast-path count in step. */
+static void
+tg_policy_remove_at(dsd_tg_policy_context* ctx, size_t index) {
+    if (ctx->table.entries[index].kind == DSD_TG_POLICY_ROW_PATTERN && ctx->table.pattern_count > 0) {
+        --ctx->table.pattern_count;
+    }
+    DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
+                (ctx->table.count - index - 1) * sizeof(*ctx->table.entries));
+    --ctx->table.count;
+    tg_policy_table_note_mutation(ctx);
+}
+
 int
 dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end) {
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
@@ -1259,13 +1352,25 @@ dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end
     if (index < 0) {
         return 1;
     }
-    if (ctx->table.entries[index].kind == DSD_TG_POLICY_ROW_PATTERN && ctx->table.pattern_count > 0) {
-        --ctx->table.pattern_count;
+    tg_policy_remove_at(ctx, (size_t)index);
+    return 0;
+}
+
+int
+dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int generation,
+                         const dsd_tg_policy_row_key* key) {
+    if (!tg_policy_key_usable(state, context, generation, key)) {
+        return 1;
     }
-    DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
-                (ctx->table.count - (size_t)index - 1) * sizeof(*ctx->table.entries));
-    --ctx->table.count;
-    tg_policy_table_note_mutation(ctx);
+    if (key->table_index == -1) {
+        return dsd_tg_policy_remove_bounds(state, key->id_start, key->id_end);
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    const int index = tg_policy_find_key_idx(ctx, key);
+    if (index < 0) {
+        return 1;
+    }
+    tg_policy_remove_at(ctx, (size_t)index);
     return 0;
 }
 
@@ -1480,7 +1585,8 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
     if (name && name_sz > 0) {
         name[0] = '\0';
     }
-    if (dsd_tg_policy_lookup_id(state, id, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &lookup)) {
         return 0;
     }
     tg_policy_safe_copy(mode, mode_sz, lookup.entry.mode);

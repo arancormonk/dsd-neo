@@ -301,7 +301,7 @@ submit_phase(void) {
             return dsd_app_command_apply_config(&cfg);
         }
         case 7: {
-            const dsd_app_tg_listen_payload edit = {1234, 1234, 0};
+            const dsd_app_tg_listen_payload edit = {.id_start = 1234, .id_end = 1234, .listen = 0, .table_index = -1};
             return dsd_app_command_set_tg_listen(&edit);
         }
         case 8: return dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0);
