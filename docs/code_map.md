@@ -1049,53 +1049,59 @@ suite runs under this compiler.
   tick guard or the event layer's call-state lock, and the WAV app commands (start, stop, toggle, static and raw open)
   take the tick guard in `apply_cmd()`, so one process never publishes two recordings at once.
   `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, so a recording opened before a
-  replay moves the clock is never dated after its calls. `-P` opens nothing while it is parsed (issue #708): it sets the
-  mode and `opts->cli_wav_mode` (`dsd_cli_wav_mode`, which `-P` and `-w` read to refuse each other while still replacing
-  a config's mode), and the engine opens the slot files at start (`open_recording_outputs_if_needed()`, creating the
-  folder), after the replay clock is set and in the folder the whole command line names. `event_time` is the row's last
-  activity, the segment's end by the time its WAV closes. It is only the fallback for a row with no start (a
-  `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it), and decode time
-  comes after that. `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
+  replay moves the clock is never dated after its calls. `-P` opens nothing while it is parsed (issue #708, B2: `-P -7
+  <dir>` opened its first files in the folder set before `-7`): it sets the mode and `opts->cli_wav_mode`
+  (`dsd_cli_wav_mode`, which `-P` and `-w` read to refuse each other in either order while still replacing a config's
+  mode), and the engine opens the slot files at start (`open_recording_outputs_if_needed()`, creating the folder), after
+  the replay clock is set and in the folder the whole command line names (`RUNTIME_CLI_PARSE`, `ENGINE_RUN_SETUP`).
+  `event_time` is the row's last activity, the segment's end by the time its WAV closes. It is only the fallback for a
+  row with no start (a `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it),
+  and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
+  shares (below). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
   `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
-  on `event_time`. The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the
-  row fingerprint. Tests:
-  `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
-- WAV recording commands and failures (issue #708). The recording outputs (per-call WAVs and their folder, the static
-  `-w` WAV, the raw `-6` WAV) change through one function, `svc_recording_transition()` (`app_control/menu_services.c`,
-  target `svc_recording_target`: mode off/per-call/static, folder, static path, raw path), which WAV_START, WAV_STOP,
-  WAV_TOGGLE, the static and raw opens and a live `DSD_APP_CMD_CONFIG_APPLY` all use. A component the target does not
-  change is left alone (a raw-only change does not touch per-call files; per-call on in its own folder keeps its pair,
-  WAV_START's `reopen_missing` opening a missing slot). Every new output opens first into locals, per-call files in the
-  target folder; if one does not open, those that did are closed (a static file the open created is removed) and
-  nothing changes: mode, folder, paths, flags and handles stay as they were, and the caller reports the failure. Only
-  then do the old outputs close as their own kind: per-call files published in the folder they were opened in (with
-  the NFM call's recording, `dsd_engine_analog_call_stop_recording()`, in `analog_call::dir`, keeping the call and its
-  epoch; a handle open with recording off counts as per-call), a static WAV closed as a static file (`close_wav_file()`:
-  never renamed or exported), the raw WAV closed; then the new ones go in. A raw open of the path the raw WAV records
-  restarts it, closed first since the open truncates it. The config apply (`apply_cfg_recording()`) puts back what
-  staging wrote and hands what it staged to the transition, failing the apply with a toast when a file does not open.
-  WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so does the terminal's `Per-call WAV` label.
-  Per-call writers (the vocoder's slot writers through `dsd_audio_write_wav_short_block()`, EDACS analog,
-  `engine/analog_call.c`) write through `dsd_wav_segment_write()` (`src/core/file/wav_segment.c`): a handle
-  `open_wav_file()` opened is a segment, and its first short write latches it, so nothing more is written to it and it
-  is published as usual at its close; static and raw handles log each short write as before (so does a segment past
-  the table's 16 slots, reported once per run). A failed `sf_close()` keeps
-  the temp name. Open, write, close and publish failures are counted per decoder run
-  (`<dsd-neo/core/wav_recording.h>`, reset by `dsd_engine_run_common_setup()`), each kind logged once per run. A slot
-  whose reopen failed (at a call end or an EDACS analog grant) is marked in `opts->wav_out_reopen` and opens again at
-  its next call end (`watchdog_event_rotate_wav_if_needed()`). `include/dsd-neo/app_control/recording_view.h` is the frontends' view:
-  mode, open slot files, the counts and last error kind, and the last recording command's state. The queue counts
-  recording commands as it admits them and as they leave it (applied, failed, refused while Signal search runs,
-  dropped), a config apply among them when it carries [recording] (`recording_command_id()`), whose outcome is its
-  recording transition's, whatever else in the config failed or needs a restart;
-  `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command reads
-  PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at once).
-  `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below); `journal_named` is
-  whether the run names one at all (the Qt app names one exactly when it has a folder to record into). Tests: `APP_CONTROL_RECORDING` (every command
-  case through the queue and through config applies, the transition table (every from-mode to every to-mode, folder,
-  static and raw changes, each open failing), each writer's short write and close failure behind the seams in
-  `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen
-  mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states).
+  on `event_time`. Its service, system, target and source components are made file-safe
+  (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces
+  become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file), on the
+  name's copies only: the row, the recording journal and the rdio sidecar keep the identity as received
+  (`CORE_WAV_JOURNAL`). The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into
+  the row fingerprint. Tests: `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
+- WAV recording commands and failures (issue #708, B4 and B5). The recording outputs (per-call WAVs and their folder,
+  the static `-w` WAV, the raw `-6` WAV) change through one function, `svc_recording_transition()`
+  (`app_control/menu_services.c`, target `svc_recording_target`: mode off/per-call/static, folder, static path, raw
+  path), which WAV_START, WAV_STOP, WAV_TOGGLE, the static and raw opens and a live `DSD_APP_CMD_CONFIG_APPLY` all use.
+  A component the target does not change is left alone (a raw-only change does not touch per-call files; per-call on in
+  its own folder keeps its pair, WAV_START's `reopen_missing` opening a missing slot). Every new output opens first into
+  locals, per-call files in the target folder; if one does not open, those that did are closed (a static file the open
+  created is removed) and nothing changes: mode, folder, paths, flags and handles stay as they were, and the caller
+  reports the failure. Only then do the old outputs close as their own kind: per-call files published in the folder they
+  were opened in (with the NFM call's recording, `dsd_engine_analog_call_stop_recording()`, in `analog_call::dir`,
+  keeping the call and its epoch; a handle open with recording off counts as per-call), a static WAV closed as a static
+  file (`close_wav_file()`: never renamed or exported), the raw WAV closed; then the new ones go in. A raw open of the
+  path the raw WAV records restarts it, closed first since the open truncates it. The config apply
+  (`apply_cfg_recording()`) puts back what staging wrote and hands what it staged to the transition, failing the apply
+  with a toast when a file does not open. WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so
+  does the terminal's `Per-call WAV` label. Per-call writers (the vocoder's slot writers through
+  `dsd_audio_write_wav_short_block()`, EDACS analog, `engine/analog_call.c`) write through `dsd_wav_segment_write()`
+  (`src/core/file/wav_segment.c`): a handle `open_wav_file()` opened is a segment, and its first short write latches it,
+  so nothing more is written to it and it is published as usual at its close; static and raw handles log each short
+  write as before (so does a segment past the table's 16 slots, reported once per run). A failed `sf_close()` keeps the
+  temp name. Open, write, close and publish failures are counted per decoder run (`<dsd-neo/core/wav_recording.h>`,
+  reset by `dsd_engine_run_common_setup()`), each kind logged once per run. A slot whose reopen failed (at a call end or
+  an EDACS analog grant) is marked in `opts->wav_out_reopen` and opens again at its next call end
+  (`watchdog_event_rotate_wav_if_needed()`). `<dsd-neo/app_control/recording_view.h>` is the frontends' view
+  (`dsd_app_recording_view_get()`, any thread, readable after the session stops): mode, open slot files, the counts and
+  last error kind, and the last recording command's state. The queue counts recording commands as it admits them and as
+  they leave it (applied, failed, refused while Signal search runs, dropped), a config apply among them when it carries
+  [recording] (`recording_command_id()`), whose outcome is its recording transition's, whatever else in the config
+  failed or needs a restart; `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot,
+  so a command reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at
+  once). `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below);
+  `journal_named` is whether the run names one at all (the Qt app names one exactly when it has a folder to record
+  into). Tests: `APP_CONTROL_RECORDING` (every command case through the queue and through config applies, the transition
+  table (every from-mode to every to-mode, folder, static and raw changes, each open failing), each writer's short write
+  and close failure behind the seams in `src/core/file/wav_segment_test_support.h`, the reopen retry),
+  `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states),
+  `UI_MENU_SERVICES` (a failed open changes nothing), `UI_MENU_LABELS` (the `Per-call WAV` label follows the mode).
 - Recording journal (`--wav-journal <file>`, `opts->wav_journal_file`, issue #708). The decoder appends one JSON line
   for each per-call WAV it publishes, discards or fails to keep, and for each recording a history row later claims;
   the app's call recording store reads it to tie recordings to History rows and to tell the files it manages from the
@@ -1179,9 +1185,10 @@ suite runs under this compiler.
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
-  path forms, the process token), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer),
-  `PLATFORM_FILE_COMPAT` (close-on-exec, `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal
-  state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
+  path forms, the process token; the write and pending-list seams in `src/core/file/wav_journal_test_support.h`),
+  `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
+  `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
+  (`--wav-journal`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -1370,7 +1377,10 @@ suite runs under this compiler.
   `DSD_APP_TG_FIELD_RECORD` / `DSD_TG_POLICY_FIELD_RECORD`, applied after a mode change in the same edit; a row that
   blocks or plays no audio keeps record off (D11: Listening off then on sets it on again). Tests:
   `CORE_TALKGROUP_POLICY`, `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_MBE_TRANSFORM_CONTEXT`,
-  `CORE_MBE_FILE_IO`, `EDACS_GRANT_TUNE_MATRIX`, `TETRA_VOICE_PIPELINE`, `APP_CONTROL_RECORDING`, `APP_COMMAND_QUEUE`.
+  `CORE_MBE_FILE_IO`, `EDACS_GRANT_TUNE_MATRIX`, `TETRA_VOICE_PIPELINE`, `APP_CONTROL_RECORDING`, `APP_COMMAND_QUEUE`
+  (Record after the mode in one `TG_ROW_SET`), `ENGINE_P25_POLICY_STORE_GUARD` (the switch retakes a Phase 2 verdict),
+  `RUNTIME_CLI_PARSE` and `RUNTIME_CONFIG_USER` (the option and the INI round trip), `API_COMMAND_PAYLOADS`
+  (`record_unknown_only_set`, `tg_row_set` `record`).
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
@@ -7937,17 +7947,16 @@ Qt Quick frontend (`src/ui/qt`):
   - Row identity and fragments (issue #708): every row has a uid (`Row::uid`, persisted `uid`, the `uid` role), handed
     out when the row is first logged and never again (`callHistory/nextUid`, kept past a clear); a merge keeps the
     surviving row's. `rowForUid()` finds a row wherever it moved, and `rowPositionsChanged()` fires on every insert,
-    removal, move and reset, so a view following one row (the detail sheet) looks it up again
-    (`recordingsForUid()` reads that row's `recordings` role). Each row also lists the
-    ring fragments it absorbed (`Row::fragments`, persisted `fr`): `call_history_fragment_key()`
-    (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push stamp>`, the recording journal's
-    `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again add the absorbed fragments; an
-    index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and clear. Rows older builds wrote
-    have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a `CallRecordingProvider` (the
-    call recording store; none, and so no recordings, until one is set with `setRecordingProvider()`) by the row's
-    fragments; the provider names the fragments whose recordings changed through `recordingFragmentsChanged()`, and
-    the rows holding them re-read the two roles. A recording the store knows before its row exists shows when the row
-    arrives.
+    removal, move and reset, so a view following one row (the detail sheet) looks it up again (`recordingsForUid()`
+    reads that row's `recordings` role). Each row also lists the ring fragments it absorbed (`Row::fragments`, persisted
+    `fr`): `call_history_fragment_key()` (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push
+    stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
+    add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
+    clear. Rows older builds wrote have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a
+    `CallRecordingProvider` (the call recording store; none, and so no recordings, until one is set with
+    `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings changed through
+    `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the store knows before
+    its row exists shows when the row arrives.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
@@ -8010,32 +8019,31 @@ Qt Quick frontend (`src/ui/qt`):
     `recordCalls`, `recordUnknownOnly` and `recordingLimitMb` (keys `recording/*`, portable; the limit one of
     `recordingLimitChoices`, 1000 by default) map to `SessionArgPrefs`; the starter puts the folder `beginSession()`
     returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after `-t`/`-F` and before the
-    extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra `-P` records into a managed
-    folder), then `-P` when Record calls is on, with `--record-unknown-only` only beside it (unknown-only travels with
-    Record calls, so a disabled switch never filters the user's own `-w`, extra `-P` or MBE capture); no folder (no root
-    available, or a validation-only build) names no recording at all. A scan list passes it through its tuner build,
-    once; a draft list asks for no folder. The caller says what a start is (`SessionArgsBuilder::start(system, host,
-    kind)`: "saved", "explore", "search"), since an edited Explore map can carry a saved system's uid. Extra options
-    naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse the start
-    (`SessionArgsError::CallRecordingOption`), `-w` does while Record calls is on (`CallRecordingStaticWav`), and an
-    extra `-P` does when the store had no folder to give (`CallRecordingNoStorage`, `SessionArgPrefs::
+    extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra `-P` records into a
+    managed folder), then `-P` when Record calls is on, with `--record-unknown-only` only beside it (unknown-only
+    travels with Record calls, so a disabled switch never filters the user's own `-w`, extra `-P` or MBE capture); no
+    folder (no root available, or a validation-only build) names no recording at all. A scan list passes it through its
+    tuner build, once; a draft list asks for no folder. The caller says what a start is
+    (`SessionArgsBuilder::start(system, host, kind)`: "saved", "explore", "search"), since an edited Explore map can
+    carry a saved system's uid. Extra options naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse
+    the start (`SessionArgsError::CallRecordingOption`), `-w` does while Record calls is on (`CallRecordingStaticWav`),
+    and an extra `-P` does when the store had no folder to give (`CallRecordingNoStorage`, `SessionArgPrefs::
     recordingUnavailable`: it would record outside the app's storage); `CallRecordingOption` and
-    `CallRecordingNoStorage` share the start screen's "call-recording-option" category. `session_args_recording_extra_error()` walks the tokens as the
-    decoder walks its argv, by the parser's own arity (`dsd_cli_long_option_arity()`, from the tables
-    `dsd_cli_compact_args()` steps by, and `dsd_cli_short_option_takes_value()`, from the getopt string
-    `dsd_cli_short_options()` the parser reads), so an option's value is never taken for an option and an option never
-    for a value. A target CSV's options cell refuses every recording switch already (`dsd_scan_options_parse()` has
-    none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and on every change.
+    `CallRecordingNoStorage` share the start screen's "call-recording-option" category.
+    `session_args_recording_extra_error()` walks the tokens as the decoder walks its argv, by the parser's own arity
+    (`dsd_cli_long_option_arity()`, `dsd_cli_short_option_takes_value()`; Runtime, CLI), so an option's value is never
+    taken for an option and an option never for a value. A target CSV's options cell refuses every recording switch
+    already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and
+    on every change.
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or
     unknown-only off then WAV stop; it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
     ("no-session", from the host, since a view outlives its run), while its run is not up yet ("starting": until then
-    the view is the last run's; up when Running, after `sessionInitialized()` on a host that signals it, or at once for a
-    session the UI found running), when on would record into a session that names no
-    recording journal ("storage-unavailable": no folder to record into), or either way in a session recording to a static
-    WAV of its extra options ("static-wav": a start or a stop would close the user's file); the preference applies at the
-    next start. `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the
-    refusal, and its command readings stay "none" until this session sends a switch (the decoder's command state is
-    process-wide).
+    the view is the last run's; up when Running, after `sessionInitialized()` on a host that signals it, or at once for
+    a session the UI found running), when on would record into a session that names no recording journal
+    ("storage-unavailable": no folder to record into), or either way in a session recording to a static WAV of its extra
+    options ("static-wav": a start or a stop would close the user's file); the preference applies at the next start.
+    `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the refusal, and its
+    command readings stay "none" until this session sends a switch (the decoder's command state is process-wide).
     `setRecordUnknownOnly()` is sent only while the session records each call (a start still applying counts) and is
     otherwise inert: it travels with the next Record calls on. `RecordingStatus` (`recording_status.{h,cpp}`, context
     property `recordingStatus`, refreshed every UI tick by `UiController`) reads `recording_view` for QML: per-call,
@@ -8045,44 +8053,43 @@ Qt Quick frontend (`src/ui/qt`):
     `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
     and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
     reference and ends in exactly one `recordingTransferFinished(selection, result, missing)`, a refusal included; one
-    at a time; `recordingTransfer*` progress) and share (`shareRecording()`, indexed recordings only). The base host
-    has no player and no zip, and saves one file synchronously through `copyFileToDocument()`; a platform overrides
+    at a time; `recordingTransfer*` progress) and share (`shareRecording()`, indexed recordings only). The base host has
+    no player and no zip, and saves one file synchronously through `copyFileToDocument()`; a platform overrides
     `beginPlayback()`, `stopPlayback()` (calling the base), the other playback controls, `beginRecordingTransfer()` and
     `shareRecordingFile()` and reports through `publishPlayback()`, `publishRecordingTransferProgress()` and
-    `finishRecordingTransfer()`. `playRecording()` routes through those virtuals: a missing file or a host with no player
-    stops what plays first, so the store's hold on a file ends only once nothing plays it. A transfer stats no file on
-    the GUI thread: the platform skips the files gone, publishes the total it really writes and reports the gone ones
-    at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`. `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing
-    (`setPlayingPath()` from Preparing to the end), releases each transfer's selection when it finishes, rechecks the
-    missing files (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`).
-  - UI (QML, spec 3.9). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only
-    unknown talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
+    `finishRecordingTransfer()`. `playRecording()` routes through those virtuals: a missing file or a host with no
+    player stops what plays first, so the store's hold on a file ends only once nothing plays it. A transfer stats no
+    file on the GUI thread: the platform skips the files gone, publishes the total it really writes and reports the gone
+    ones at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`.
+    `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing (`setPlayingPath()` from Preparing to the
+    end), releases each transfer's selection when it finishes, rechecks the missing files (`recheckPaths()`) and gives
+    the host the share check (`setRecordingIndex()`).
+  - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
+    talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
     them come from `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next
     start, judged per switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped
-    command, recording failures, a failed journal); Storage
-    limit (a ChoiceSheet of `recordingLimitChoices`), then the store's lines (storage away, low space while recording,
-    recordings the limit removed, failed deletes), then Manage call recordings (usage, or "Counting recordings..."
-    until `indexed`). The limit's removals and failed deletes count until the Call recordings screen shows them: it
-    takes them and calls `RecordingStore::acknowledgeNotices()`, which starts both counts again.
-    `CallRecordingsScreen.qml` (Main's
-    `callRecordingsOpen` layer): one row per owner with recordings, Unfinished recordings, Export as zip by date preset
-    (the selection first, then the picker; a dismissed picker releases it; the owner's name made file-safe by the
-    store's folder rule), progress with Cancel, the result of its own selection only, deletes with confirmations, and
-    the limit's removals and failed deletes since the screen opened, and `deletesWaiting`.
-    `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording` is true (History,
-    Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows its row by uid
-    (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold: play/pause,
-    position and seek, the parts (the one shown kept on its recording by path) with a Play all parts action (the host
-    keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a stop clears
-    the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part the host
-    reports "missing" leaves the block at once; closing the sheet
-    stops what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record
-    switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only
-    where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History
-    shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`,
-    `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`,
-    `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    command, recording failures, a failed journal); Storage limit (a ChoiceSheet of `recordingLimitChoices`), then the
+    store's lines (storage away, low space while recording, recordings the limit removed, failed deletes), then Manage
+    call recordings (usage, or "Counting recordings..." until `indexed`). The limit's removals and failed deletes count
+    until the Call recordings screen shows them: it takes them and calls `RecordingStore::acknowledgeNotices()`, which
+    starts both counts again. `CallRecordingsScreen.qml` (Main's `callRecordingsOpen` layer): one row per owner with
+    recordings, Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed
+    picker releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of
+    its own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen
+    opened, and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose
+    `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
+    `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
+    `CallRecordingPlayer.qml` above Hold: play/pause, position and seek, the parts (the one shown kept on its recording
+    by path) with a Play all parts action (the host keeps no queue: a part that stopped at its end, path kept and
+    position at its length, plays the next; a stop clears the path and ends it), Share (`recordingShareFailed()` worded
+    there), Save to file and Delete. A part the host reports "missing" leaves the block at once; closing the sheet stops
+    what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record switch
+    follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where
+    it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows
+    `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
+    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
+    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, shared storage's `getExternalFilesDir(null)/Call recordings` first (named
     even while away, at the path Android gives the app there), then `filesDir/Call recordings`. Playback:
@@ -9163,7 +9170,7 @@ optimized releases and mapping retention are described in `android/README.md`.
 
 Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
 `policy_context` and `policy_generation` to reject edits from a stale list. The
-row `fields` mask selects listen/priority/preempt/name/tags. IDs 652/653 reserve a
+row `fields` mask selects listen/priority/preempt/name/tags/record. IDs 652/653 reserve a
 typed, bounded direct key and an int32 force-key mode. These five handlers currently
 report “not implemented”; force-key is registered as a configured scan-mode setting.
 Queue storage and drain temporaries are securely erased after use and on discard,
@@ -9773,9 +9780,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.
   The Qt ReceivePolicySheet uses existing modal/keyboard/discard behavior; terminal menu_receive uses one captured
   destination per prompt chain. Global defaults live in `[receive]`; `scan_mode` restores them after row overrides.
-  Recording publication sanitizes the service, system, target and source filename components
-  (`wav_rename_sanitize_component()`, on the name's copies only: the row and its rdio sidecar keep the identity as
-  received); Rdio uses its supported talkgroup label without changing the numeric target.
+  Recording publication makes the service, system, target and source name components file-safe on the name's copies
+  only (Core, `wav_rename_sanitize_component()`); Rdio uses its supported talkgroup label without changing the numeric
+  target.
 - A service name only rejected traffic could carry (`dsd_receive_names_unreachable()`: an enabled filter of its kind, or
   the analog tone filter for a CTCSS/DCS name, rejects its identifier) is kept and reported, never refused, so a service
   can be blocked for a while. `dsd_scan_option_unreachable_names()` judges a row's options over the configured policies

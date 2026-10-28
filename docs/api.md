@@ -576,6 +576,10 @@ field, and the decoder refuses the rest when it applies the command.
   `tg_selection_set`. A captured pair stays valid while only learned
   over-the-air aliases and session avoids change the list; a reload, a clear,
   another list or any edit of a talkgroup row makes it stale (`-2`).
+* **`record_unknown_only_set`**: `1` records only talkgroups the group list
+  does not know (`--record-unknown-only`, see [docs/cli.md](cli.md)), `0` every
+  call the list lets record. Like the WAV commands it waits while the decoder
+  holds a carrier and is refused while Signal search runs.
 * **`tg_selection_set`**: `path` names a CSV of `table_index,start,end` rows the
   decoder reads, `count` the number of rows, `listening` the value to apply.
 * **`decryption_apply`**: `type` (`basic`, `hex`, `rc4`, `scrambler`,
