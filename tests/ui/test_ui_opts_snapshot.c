@@ -18,6 +18,8 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <sndfile.h>
 #include "recording_view_internal.h"
 #include "snapshot_internal.h"
 #include "test_support.h"

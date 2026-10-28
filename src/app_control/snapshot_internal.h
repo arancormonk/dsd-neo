@@ -8,6 +8,7 @@
 
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef DSD_NEO_TEST_HOOKS

@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/call_state.h>

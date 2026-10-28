@@ -12,7 +12,6 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -546,8 +545,8 @@ wav_journal_unlink_pending_except(uint8_t slot, uint64_t epoch) {
 
 void
 dsd_wav_journal_unlink_pending(void) {
-    for (uint8_t slot = 0; slot < WAV_JOURNAL_SLOTS; slot++) {
-        wav_journal_unlink_pending_except(slot, 0);
+    for (int slot = 0; slot < WAV_JOURNAL_SLOTS; slot++) {
+        wav_journal_unlink_pending_except((uint8_t)slot, 0);
     }
 }
 

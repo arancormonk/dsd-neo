@@ -20,12 +20,13 @@
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_TAP_H_
 
 #include <QByteArray>
+#include <QHash> // IWYU pragma: keep -- Context holds the seen map (a QHash) by value.
 #include <QList>
 #include <QString>
 #include <QtGlobal>
 #include <condition_variable>
 #include <dsd-neo/app_control/history_tap.h>
-#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -65,10 +66,14 @@ class CallHistorySpill {
     /** @brief How many appends wrote to the file. */
     int appendsForTest() const;
 
+    /** @brief How many appends were tried, written or not. */
+    int appendAttemptsForTest() const;
+
   private:
     QString m_path;
     mutable std::mutex m_mutex;
     int m_appends = 0;
+    int m_attempts = 0;
 };
 
 /**
@@ -126,6 +131,8 @@ class CallHistoryTap {
     void run();
     void poll();
     void flush();
+    /** @brief Cut the held rows to the bound, oldest first, reporting the first cut of a run of failed appends. */
+    void trimPending();
 
     CallHistoryTapSource m_source;
     CallHistorySpill* m_spill;
@@ -152,6 +159,7 @@ class CallHistoryTap {
     /* The spill lines found and not yet appended, oldest first. */
     QList<QByteArray> m_pending;
     int m_pendingPolls = 0;
+    bool m_appendFailing = false;
     bool m_dropReported = false;
     int m_batchPollsRun = 5;
 };

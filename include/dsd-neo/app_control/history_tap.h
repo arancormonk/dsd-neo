@@ -16,7 +16,11 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_HISTORY_TAP_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_HISTORY_TAP_H_
 
-#include <dsd-neo/core/state_fwd.h>
+/* A frontend header names the history ring only through state_fwd.h (the arch rules keep state.h out); IWYU attributes
+   the typedef to state.h in a unit that included that first. */
+#include <dsd-neo/core/state_fwd.h> // IWYU pragma: keep
+// IWYU pragma: no_include "dsd-neo/core/state.h"
+// IWYU pragma: no_include <dsd-neo/core/state.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

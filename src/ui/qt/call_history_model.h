@@ -54,11 +54,11 @@
 #include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
-#include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <memory>
 #include <stdint.h>
@@ -311,6 +311,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief How many times the tap has appended to the spill since this model was built. */
     int spillAppendsForTest() const;
+
+    /** @brief How many times the tap has tried to, written or not. */
+    int spillAppendAttemptsForTest() const;
 #endif
 
   Q_SIGNALS:

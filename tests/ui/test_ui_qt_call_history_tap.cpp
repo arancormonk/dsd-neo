@@ -23,8 +23,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QMessageLogContext>
-#include <QModelIndex>
+#include <QIODevice>
+#include <QLatin1String>
+#include <QObject>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
@@ -36,7 +37,6 @@
 #include <atomic>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/snapshot.h>
-#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -249,7 +249,8 @@ test_background_commits_keep_every_row(void) {
     set_app_state(Qt::ApplicationSuspended);
     expect("the tap runs while suspended", model.backgroundCaptureRunningForTest());
     for (int batch = 0; batch < 6; batch++) {
-        decoder.commitCalls(0, 50, 31001U + static_cast<uint32_t>(batch) * 50U, when + batch * 1500);
+        decoder.commitCalls(0, 50, 31001U + static_cast<uint32_t>(batch) * 50U,
+                            when + static_cast<time_t>(batch) * 1500);
         decoder.publish();
         model.waitForBackgroundPollForTest();
     }
@@ -452,6 +453,14 @@ test_unwritable_spill_keeps_a_bounded_backlog(void) {
         model.waitForBackgroundPollForTest();
     }
     expect("the backlog beyond the bound is reported once", g_spillDropWarnings == 1);
+    // Cut to the bound, the backlog is retried on the batch cadence, not at every poll.
+    const int attempts = model.spillAppendAttemptsForTest();
+    for (int poll = 0; poll < 10; poll++) {
+        model.waitForBackgroundPollForTest();
+    }
+    expect("a failing spill is retried every five polls",
+           model.spillAppendAttemptsForTest() - attempts >= 1 && model.spillAppendAttemptsForTest() - attempts <= 2);
+    expect("and reported no more", g_spillDropWarnings == 1);
     QDir(spill_path()).removeRecursively();
     set_app_state(Qt::ApplicationActive);
     gui_ingest(model);
@@ -490,7 +499,8 @@ test_sustained_write_volume(void) {
     const int lines = spill_lines();
     expect("every call is in History", model.count() == polls && lines == polls);
     expect("a row costs about a kilobyte of spill", lines > 0 && bytes / lines <= 1536);
-    expect("ten calls a second stay inside the 16 KiB/s budget", lines > 0 && 10 * bytes / lines < 16 * 1024);
+    expect("ten calls a second stay inside the 16 KiB/s budget",
+           lines > 0 && qint64{10} * bytes / lines < qint64{16} * 1024);
 }
 
 } // namespace

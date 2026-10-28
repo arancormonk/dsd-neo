@@ -1601,7 +1601,7 @@ row_from_json(const QJsonObject& obj) {
     row_carrier_from_json(row, obj);
     // Issue #708; absent in stores older builds wrote (a uid is then assigned at load).
     row.uid = qMax<qint64>(json_i64_or(obj, "uid", 0), 0);
-    for (const QJsonValue& fragment : obj.value(QLatin1String("fr")).toArray()) {
+    for (const auto& fragment : obj.value(QLatin1String("fr")).toArray()) {
         const QString key = fragment.toString();
         if (!key.isEmpty() && !row.fragments.contains(key)) {
             row.fragments.append(key);
@@ -2175,6 +2175,11 @@ CallHistoryModel::waitForBackgroundPollForTest() {
 int
 CallHistoryModel::spillAppendsForTest() const {
     return m_spill->appendsForTest();
+}
+
+int
+CallHistoryModel::spillAppendAttemptsForTest() const {
+    return m_spill->appendAttemptsForTest();
 }
 #endif
 

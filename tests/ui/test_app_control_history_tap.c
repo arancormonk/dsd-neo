@@ -25,7 +25,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "../../src/app_control/snapshot_internal.h"
 #include "dsd-neo/core/safe_api.h"
 

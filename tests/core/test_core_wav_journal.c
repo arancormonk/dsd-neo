@@ -19,9 +19,10 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/wav_journal.h>
@@ -29,13 +30,11 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -416,14 +415,14 @@ test_commit_publishes_under_the_pushed_row(void) {
     hex64(ring->instance, hex, sizeof hex);
     rc |= expect_true("every record starts with its version", strncmp(pub, "{\"v\":1,", 7) == 0);
     rc |= expect_str("the id is the temp name's token and sequence", field_s(pub, "id"), id);
-    rc |= expect_int("stamped on the decode clock", field_ll(pub, "t"), (long long)(k_t0 + 105));
+    rc |= expect_int("stamped on the decode clock", field_ll(pub, "t"), (long long)k_t0 + 105);
     rc |= expect_int("the row is the pushed row's stamp", field_ll(pub, "row"), (long long)ring->push_seq);
     rc |= expect_true("that row is the call's", ring->Event_History_Items[1].target_id == 100U);
     rc |= expect_str("the ring instance", field_s(pub, "instance"), hex);
     rc |= expect_int("slot 1", field_ll(pub, "slot"), 0);
     rc |= expect_str("not pending", field_s(pub, "pending"), "false");
     rc |= expect_int("no epoch", field_ll(pub, "epoch"), 0);
-    rc |= expect_int("the call's start, not the file's open", field_ll(pub, "start"), (long long)(k_t0 + 100));
+    rc |= expect_int("the call's start, not the file's open", field_ll(pub, "start"), (long long)k_t0 + 100);
     rc |= expect_int("three frames of 160 samples at 8 kHz", field_ll(pub, "duration_ms"), 60);
     rc |= expect_int("8 kHz", field_ll(pub, "rate"), 8000);
     rc |= expect_str("no rdio upload", field_s(pub, "rdio"), "false");
@@ -480,13 +479,13 @@ test_merge_chain_names_the_retained_row(void) {
         rc |= expect_int("each names the retained row", pub ? field_ll(pub, "row") : -9, (long long)row);
     }
     const char* first = record(&g_j, "publish", 0);
-    rc |= expect_int("the first starts with the call", first ? field_ll(first, "start") : -9, (long long)(k_t0 + 10));
+    rc |= expect_int("the first starts with the call", first ? field_ll(first, "start") : -9, (long long)k_t0 + 10);
     for (int seg = 0; seg < 2; seg++) {
         const char* pub = record(&g_j, "publish", seg + 1);
         const time_t want = opened[seg] > staged_start[seg] ? opened[seg] : staged_start[seg];
         rc |= expect_int("a reacquired segment starts at max(open, its row's start)", pub ? field_ll(pub, "start") : -9,
                          (long long)want);
-        rc |= expect_true("not at the call's start", pub && field_ll(pub, "start") > (long long)(k_t0 + 10));
+        rc |= expect_true("not at the call's start", pub && field_ll(pub, "start") > (long long)k_t0 + 10);
     }
     rc |= expect_int("no pending records", count_records(&g_j, "link") + count_records(&g_j, "unlink"), 0);
     rig_close(&r);
@@ -957,8 +956,8 @@ test_start_after_mid_call_enable(void) {
     end_call(&r, DSD_CALL_END_EXPLICIT);
     reload(&r);
     const char* pub = record(&g_j, "publish", 0);
-    rc |= expect_int("starts at the open, not the call's start", pub ? field_ll(pub, "start") : -9,
-                     (long long)(k_t0 + 40));
+    rc |=
+        expect_int("starts at the open, not the call's start", pub ? field_ll(pub, "start") : -9, (long long)k_t0 + 40);
     rig_close(&r);
     return rc;
 }
@@ -1015,8 +1014,8 @@ test_start_on_the_replay_clock(void) {
     reload(&r);
     const char* pub = record(&g_j, "publish", 0);
     rc |= expect_int("the call's start on the capture's clock", pub ? field_ll(pub, "start") : -9,
-                     (long long)(anchor + 60));
-    rc |= expect_int("stamped on the capture's clock", pub ? field_ll(pub, "t") : -9, (long long)(anchor + 65));
+                     (long long)anchor + 60);
+    rc |= expect_int("stamped on the capture's clock", pub ? field_ll(pub, "t") : -9, (long long)anchor + 65);
     rig_close(&r);
     return rc;
 }

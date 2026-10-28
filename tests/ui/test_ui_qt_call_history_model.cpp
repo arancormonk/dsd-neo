@@ -42,7 +42,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
-#include <QMessageLogContext>
+#include <QMap>
 #include <QMetaType>
 #include <QModelIndex>
 #include <QObject>
@@ -72,6 +72,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
 

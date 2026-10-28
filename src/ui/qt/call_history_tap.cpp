@@ -7,12 +7,13 @@
 
 #include <QDir>
 #include <QFile>
-#include <QFileDevice>
 #include <QFileInfo>
 #include <QIODevice>
 #include <QList>
 #include <chrono>
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/core/state.h>
+#include <iterator>
 #include <new>
 #include <utility>
 
@@ -21,7 +22,7 @@ namespace dsd_qt {
 namespace {
 
 /* The most rows the tap holds while the spill cannot be written: twice what one slot's ring keeps. */
-constexpr qsizetype kMaxPendingRows = 2 * (DSD_EVENT_HISTORY_LEN - 1);
+constexpr qsizetype kMaxPendingRows = qsizetype{2} * (DSD_EVENT_HISTORY_LEN - 1);
 
 } // namespace
 
@@ -33,6 +34,7 @@ CallHistorySpill::append(const QByteArray& lines) {
         return true;
     }
     const std::lock_guard<std::mutex> lock(m_mutex);
+    m_attempts++;
     QDir().mkpath(QFileInfo(m_path).absolutePath());
     QFile file(m_path);
     if (!file.open(QIODevice::ReadWrite | QIODevice::Append)) {
@@ -87,6 +89,12 @@ CallHistorySpill::appendsForTest() const {
     return m_appends;
 }
 
+int
+CallHistorySpill::appendAttemptsForTest() const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return m_attempts;
+}
+
 CallHistoryTap::CallHistoryTap(CallHistoryTapSource source, CallHistorySpill* spill)
     : m_source(source), m_spill(spill) {}
 
@@ -113,6 +121,7 @@ CallHistoryTap::start(Context context) {
     m_cursor[1] = dsd_app_history_tap_cursor{};
     m_pending.clear();
     m_pendingPolls = 0;
+    m_appendFailing = false;
     m_dropReported = false;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -219,7 +228,8 @@ CallHistoryTap::poll() {
         walk.clearedThrough = clear.pushSeq[slot];
         QList<CallHistoryModel::FreshRow> fresh;
         CallHistoryModel::walkRing(*ring, slot, walk, fresh);
-        // The walk goes newest first; held oldest first, so a backlog the spill cannot take loses its oldest rows.
+        // The walk goes newest first; each slot's rows are held oldest first, so a backlog the spill cannot take
+        // loses its oldest rows (a poll's slot 0 rows before its slot 1 rows).
         for (auto it = fresh.crbegin(); it != fresh.crend(); ++it) {
             m_pending.append(CallHistoryModel::spillLine(*it));
         }
@@ -236,8 +246,13 @@ CallHistoryTap::poll() {
         return;
     }
     // At most one append every m_batchPolls polls: the oldest held row waits that long, no longer. A burst that
-    // fills the bound is written at once instead.
-    if (++m_pendingPolls >= m_batchPollsRun || m_pending.size() >= kMaxPendingRows) {
+    // fills the bound is written at once instead, unless the spill is failing: then the backlog is only cut to the
+    // bound, and the append is retried on the same five-poll cadence.
+    ++m_pendingPolls;
+    if (m_appendFailing) {
+        trimPending();
+    }
+    if (m_pendingPolls >= m_batchPollsRun || (!m_appendFailing && m_pending.size() >= kMaxPendingRows)) {
         flush();
     }
 }
@@ -254,9 +269,16 @@ CallHistoryTap::flush() {
     m_pendingPolls = 0;
     if (m_spill->append(lines)) {
         m_pending.clear();
+        m_appendFailing = false;
         m_dropReported = false;
         return;
     }
+    m_appendFailing = true;
+    trimPending();
+}
+
+void
+CallHistoryTap::trimPending() {
     // A failed append (a full disk) keeps the rows for the next one, but only the newest kMaxPendingRows: the
     // ring holds the newest rows for the model besides, and an unbounded backlog would only grow while the disk
     // stays full. Reported once per run of failures.

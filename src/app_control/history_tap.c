@@ -4,7 +4,7 @@
  */
 
 #include <dsd-neo/app_control/history_tap.h>
-#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <stddef.h>
 #include "snapshot_internal.h"
 

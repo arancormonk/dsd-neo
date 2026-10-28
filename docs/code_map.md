@@ -7948,30 +7948,31 @@ Qt Quick frontend (`src/ui/qt`):
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
     starts `CallHistoryTap` (a `std::thread`; only when the app wired `setHistoryTapSource(&dsd_app_history_tap_copy)`)
-    with copies of its seen map, session, labels and clear mark. Once a second it copies each slot whose committed
-    rows changed through the History tap (`<dsd-neo/app_control/history_tap.h>`), into two 3.75 MB buffers allocated
-    at start, and walks the copy outside every lock with the model's own rules (`walkRing()`, `noteSeen()`, the clear
-    mark settled as `settleClear()` would, attribution from the tap's options fields). Rows it finds new or advanced
-    are appended as JSON lines (`spillLine()`: the row with its `fr`, its seen key and entry, the verdict) to
+    with copies of its seen map, session, labels and clear mark. Once a second it copies each slot whose committed rows
+    changed through the History tap (`<dsd-neo/app_control/history_tap.h>`), into two 3.75 MB buffers allocated at
+    start, and walks the copy outside every lock with the model's own rules (`walkRing()`, `noteSeen()`, the clear mark
+    settled as `settleClear()` would, attribution from the tap's options fields). Rows it finds new or advanced are
+    appended as JSON lines (`spillLine()`: the row with its `fr`, its seen key and entry, the verdict) to
     `call_history_spill.jsonl` (`CallHistorySpill`, one mutex), oldest first, at most once every five polls (at once
-    when the held rows reach twice one ring's, 508) and at stop; a torn last line gets a newline before the next
-    append. While the spill cannot be written (a full disk) the tap keeps only the newest 508 rows it holds, the ring
-    still having the newest for the model, and reports the drop once per run of failures. Any other application state owes the handoff
-    (`backgroundCaptureHandoffOwed()`): the next `refresh()`, which `UiController::tick()` forces with
-    `flushHistory()` when no redraw would, stops the tap (a last poll, then its last append), adopts the clear mark the
-    tap bound if the model's was still pending, and folds the spill in before its own ring walk (`foldSpill()`). The
-    fold also runs at load, so a process killed in the background loses nothing its batches wrote. It is idempotent by
-    fragment: a line whose fragment a row already holds can only refine it, and its seen entry joins the model's as a
-    fresh read would; lines a clear covers are skipped. The spill is emptied only after a save of the generation the
-    fold made is acknowledged, and only if it still holds exactly what the fold read, so a tap appending meanwhile
-    loses nothing. `clearAll()` while the tap runs stops it, takes its read position into the mark, empties the spill
-    and starts it again; after the app returned but before the first ingest it hands the tap off instead, which leaves
-    it stopped. Decided limit: the tap binds a clear the model made before it had read any ring per slot, at its first
-    copy of each, and the model adopts the binding only once both slots are bound (its own mark binds both slots
-    together). A tap that read one slot only leaves the mark pending, the model binds it at its own first read, and the
-    ring rows between the two binds stay hidden in that ring (the tap's spilled rows are already in the log). Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs
-    about 210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy
-    does); a minimal row spills as about 440 bytes (a named row about a kilobyte).
+    when the held rows reach twice one ring's, 508) and at stop; a torn last line gets a newline before the next append.
+    While the spill cannot be written (a full disk) the tap keeps only the newest 508 rows it holds, the ring still
+    having the newest for the model, retries the append on the same five-poll cadence, and reports the drop once per run
+    of failures. Any other application state owes the handoff (`backgroundCaptureHandoffOwed()`): the next `refresh()`,
+    which `UiController::tick()` forces with `flushHistory()` when no redraw would, stops the tap (a last poll, then its
+    last append), adopts the clear mark the tap bound if the model's was still pending, and folds the spill in before
+    its own ring walk (`foldSpill()`). The fold also runs at load, so a process killed in the background loses nothing
+    its batches wrote. It is idempotent by fragment: a line whose fragment a row already holds can only refine it, and
+    its seen entry joins the model's as a fresh read would; lines a clear covers are skipped. The spill is emptied only
+    after a save of the generation the fold made is acknowledged, and only if it still holds exactly what the fold read,
+    so a tap appending meanwhile loses nothing. `clearAll()` while the tap runs stops it, takes its read position into
+    the mark, empties the spill and starts it again; after the app returned but before the first ingest it hands the tap
+    off instead, which leaves it stopped. Decided limit: the tap binds a clear the model made before it had read any
+    ring per slot, at its first copy of each, and the model adopts the binding only once both slots are bound (its own
+    mark binds both slots together). A tap that read one slot only leaves the mark pending, the model binds it at its
+    own first read, and the ring rows between the two binds stay hidden in that ring (the tap's spilled rows are already
+    in the log). Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs about
+    210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy does); a
+    minimal row spills as about 440 bytes (a named row about a kilobyte).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
     while suspended, a spill across a process death, a stop and a clear while away, write volume; the real publisher,
     tap and consumer), `UI_QT_CONTROLLER` (the handoff on a tick with no redraw), `UI_QT_TALKGROUP_LIST_MODEL`,

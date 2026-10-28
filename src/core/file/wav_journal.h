@@ -11,7 +11,6 @@
    closes the journal. Every writer returns at once while no journal is on. */
 
 #include <dsd-neo/core/file_io.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
