@@ -18990,6 +18990,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             exit_facts
     )
+    add_test(
+        NAME ANDROID_WATCHDOG_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            watchdog
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -18999,6 +19006,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM
         ANDROID_EXIT_FACTS_JVM
+        ANDROID_WATCHDOG_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

@@ -20,6 +20,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.MotionEvent
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
 import androidx.core.content.ContextCompat
@@ -45,6 +46,11 @@ import kotlin.math.abs
  * Before the screen-off broadcast and each callback that can lose the foreground, a synchronous status sample goes
  * straight to the controller, so audio that began since the last poll is known when the policy judges a snooze or an
  * arming. [StatusFeed] keeps no stamp of its own, so such a sample cannot be undone by a later tick.
+ *
+ * Diagnostics (#782): each change of the dim goes to a [ScreenTrace] with the policy inputs, the requested and
+ * read-back brightness and the activity and window generations, and pre-draw and draw listeners on the attached
+ * window tell it whether a traversal and a draw followed. Every application also hands the inputs to
+ * [MainLooperWatchdog] for its incidents. Neither changes what is applied.
  */
 object ScreenSupport {
     private const val TAG = "dsd-neo"
@@ -79,6 +85,10 @@ object ScreenSupport {
     /** Whether a refused wake was reported, and for which session: a refusal is reported once per session. */
     private var refusalReported = false
     private var refusalSession: Long? = null
+
+    /** The dim state the trace last recorded, null before the first; and the listeners on the attached window. */
+    private var tracedDim: Boolean? = null
+    private var drawWatch: DrawWatch? = null
 
     private object Platform : ScreenController.Effects {
         override fun setKeepScreenOn(on: Boolean) {
@@ -121,6 +131,39 @@ object ScreenSupport {
     private val feed = StatusFeed(controller)
     private val tick = Runnable { controller.tick() }
 
+    private val traceTick: Runnable = Runnable { trace.tick() }
+    private val trace: ScreenTrace = ScreenTrace(SystemClock::uptimeMillis, { atMs ->
+        main.removeCallbacks(traceTick)
+        if (atMs != null) {
+            main.postAtTime(traceTick, atMs)
+        }
+    }, HostDiagnostics::submit)
+
+    /** The pre-draw and draw listeners on one activity's window, which tell the trace a traversal or a draw came. */
+    private class DrawWatch(val activity: Activity) {
+        private val preDraw = ViewTreeObserver.OnPreDrawListener {
+            trace.preDraw()
+            true // Never cancels the draw.
+        }
+        private val draw = ViewTreeObserver.OnDrawListener {
+            trace.draw(MainLooperWatchdog.activities.snapshot.window)
+        }
+
+        fun install() {
+            val observer = activity.window.decorView.viewTreeObserver
+            observer.addOnPreDrawListener(preDraw)
+            observer.addOnDrawListener(draw)
+        }
+
+        fun remove() {
+            val observer = activity.window.decorView.viewTreeObserver
+            if (observer.isAlive) {
+                observer.removeOnPreDrawListener(preDraw)
+                observer.removeOnDrawListener(draw)
+            }
+        }
+    }
+
     /** Android's wake verdict for the policy, which asks it only for a sample that would otherwise wake. */
     private val wakeVerdict: () -> Boolean = { wakeAllowed() }
 
@@ -152,6 +195,9 @@ object ScreenSupport {
         }
         bind(activity)
         slot.attach(activity)
+        // A recreated activity can attach before the old one detaches, so the listeners move here, not at detach.
+        drawWatch?.remove()
+        drawWatch = DrawWatch(activity).also { it.install() }
         applyWindow()
     }
 
@@ -161,6 +207,8 @@ object ScreenSupport {
             return
         }
         if (slot.detach(activity)) {
+            drawWatch?.remove()
+            drawWatch = null
             controller.destroyed()
         }
     }
@@ -357,7 +405,15 @@ object ScreenSupport {
      * live attributes: Qt may replace them, and a write that changes nothing still relayouts the window.
      */
     private fun applyWindow() {
-        val window = slot.current?.window ?: return
+        val inputs = ScreenTrace.inputs(controller.state, SystemClock.uptimeMillis())
+        MainLooperWatchdog.screenInputs(inputs)
+        val window = slot.current?.window
+        if (window == null) {
+            if (tracedDim != dimmed) {
+                traceDim("no attached window, not written", inputs, written = false)
+            }
+            return
+        }
         val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         if (((window.attributes.flags and flag) != 0) != keepScreenOn) {
             if (keepScreenOn) {
@@ -371,6 +427,18 @@ object ScreenSupport {
         if (abs(attributes.screenBrightness - brightness) > BRIGHTNESS_TOLERANCE) {
             attributes.screenBrightness = brightness
             window.attributes = attributes
+            val requested = ScreenTrace.brightness(brightness)
+            val readBack = ScreenTrace.brightness(window.attributes.screenBrightness)
+            traceDim("brightness $requested requested, $readBack read back", inputs, written = true)
+        } else if (tracedDim != dimmed) {
+            val live = ScreenTrace.brightness(attributes.screenBrightness)
+            traceDim("brightness already $live, not written", inputs, written = false)
         }
+    }
+
+    private fun traceDim(outcome: String, inputs: String, written: Boolean) {
+        tracedDim = dimmed
+        val state = if (dimmed) "on" else "off"
+        trace.changed("dim $state, $outcome; $inputs; ${MainLooperWatchdog.activities.snapshot}", written)
     }
 }

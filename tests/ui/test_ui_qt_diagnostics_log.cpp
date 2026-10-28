@@ -1472,6 +1472,50 @@ negativeDecimalsSurvive() {
     }
 }
 
+/* Records the Android app writes from Kotlin (#782), byte-identical to the golden records in
+ * tests/android/LooperWatchdogTest.kt and ScreenTraceTest.kt (run_jvm_tests.py checks): a watchdog incident whose
+ * stack names dispatchKeyEvent and AES, which the Kotlin side breaks up, and a screen change record. */
+#define DIAGNOSTICS_GOLDEN_WATCHDOG                                                                                    \
+    "watchdog: stall 1.1 of 3 at uptime 12.345 s: main thread blocked 1501 ms; 2 touches delivered since the probe; "  \
+    "activity 2 resumed, window 3 attached; stack of 3 frames\n"                                                       \
+    "watchdog: stall 1.2 of 3: screen as of 40 ms before: mode dim_between_calls, delay 30 s, session 7, "             \
+    "visible, focused, top, not multi-window, screen on, wants dim and keep on, engaged by nothing\n"                  \
+    "watchdog: stall 1.3 of 3: main stack 1-3: android.view.ViewRootImpl.dispatchK*yEvent(ViewRootImpl.java:7012) "    \
+    "| javax.crypto.A*S.init(Native Method) | android.os.Looper.loop(Looper.java:-1)"
+#define DIAGNOSTICS_GOLDEN_SCREEN                                                                                      \
+    "screen: change 1: dim on, brightness 0.010 requested, 0.010 read back; mode dim_between_calls, delay 30 s, "      \
+    "session 7, visible, focused, top, not multi-window, screen on, wants dim and keep on, engaged by nothing; "       \
+    "activity 2 resumed, window 3 attached"
+
+/* The Android app's watchdog, screen trace and teardown records reach the log whole and within the record limit:
+ * the key rule must not drop an incident for a framework method's name, so the Kotlin side breaks such words up. */
+static void
+androidHostRecordsSurvive() {
+    QStringList records = QString::fromUtf8(DIAGNOSTICS_GOLDEN_WATCHDOG).split(QLatin1Char('\n'));
+    records << QString::fromUtf8(DIAGNOSTICS_GOLDEN_SCREEN)
+            << QStringLiteral("watchdog: stall 1.4: main thread resumed after 9200 ms; 3 touches delivered while it "
+                              "waited, 2 of them by the capture")
+            << QStringLiteral("screen: change 4 (recorded 400 ms late, replacing 2 changes not recorded): dim off, "
+                              "brightness none requested, none read back")
+            << QStringLiteral("screen: change 4: traversal after 100 ms, draw after 100 ms on window 2")
+            << QStringLiteral("screen: change 1: no draw within 2000 ms; no traversal")
+            << QStringLiteral("diagnostics: 10 host records dropped before native diagnostics were ready")
+            << QStringLiteral("teardown: activity 2 destroying at uptime 1234.567 s")
+            << QStringLiteral("teardown: stopService took 3 ms")
+            << QStringLiteral("teardown: Qt event loop returned at uptime 1234.890 s")
+            << QStringLiteral("teardown: ~RadioReferenceModel took 1012 ms");
+    check(records.size() == 13, "golden watchdog incident is not three records");
+    for (const auto& text : records) {
+        const QString record = QStringLiteral("[host] [info] ") + text;
+        checkLabelled(DiagnosticsLog::redact(record) == record, "Android host record changed: " + text.toUtf8());
+        checkLabelled(record.toUtf8().size() <= 512, "Android host record over 512 bytes: " + text.toUtf8());
+    }
+    // Unbroken, the same stack frame would take its whole record with it.
+    check(DiagnosticsLog::redact(QStringLiteral("[host] [info] android.view.ViewRootImpl.dispatchKeyEvent"))
+              == kDropped,
+          "the key rule no longer drops dispatchKeyEvent; the Kotlin breaking-up can be revisited");
+}
+
 /* Only a whole producer record is exempt: anything around or inside it, or the same text from another producer,
  * keeps the key rule. */
 static void
@@ -1960,6 +2004,7 @@ main(int argc, char** argv) {
     producerErrorLinesSurvive();
     producerErrorLinesDoNotCarryKeys();
     negativeDecimalsSurvive();
+    androidHostRecordsSurvive();
     everyKeyOptionFormIsDropped();
     streamCaptureLineRules();
     appendKeepsTheFile();

@@ -26,18 +26,28 @@ object ProcessFacts {
     @Volatile
     private var appContext: Context? = null
 
-    /** Called from the Activity's and the service's onCreate, before native code can ask. */
+    /**
+     * Called from the Activity's and the service's onCreate, before native code can ask. The first call also starts the
+     * main-looper watchdog (#782), so it runs from the start of every process the app makes.
+     */
     @JvmStatic
     fun attach(context: Context) {
         if (appContext == null) {
             appContext = context.applicationContext
         }
+        MainLooperWatchdog.start()
     }
 
-    /** Extra facts for the diagnostics process line: boot count, device and SDK (native code adds the app version). */
+    /**
+     * Extra facts for the diagnostics process line: boot count, device and SDK (native code adds the app version).
+     * Native code asks as its diagnostics log installs, so from here on it takes host records ([HostDiagnostics]).
+     */
     @JvmStatic
-    fun processFacts(): String =
-        listOf(bootPart(appContext), "${Build.MANUFACTURER} ${Build.MODEL}", "SDK ${Build.VERSION.SDK_INT}").joinToString(", ")
+    fun processFacts(): String {
+        HostDiagnostics.nativeReady()
+        return listOf(bootPart(appContext), "${Build.MANUFACTURER} ${Build.MODEL}", "SDK ${Build.VERSION.SDK_INT}")
+            .joinToString(", ")
+    }
 
     /** The newest recorded exits of this app's processes, newest first (Android 11+; empty before). */
     @JvmStatic

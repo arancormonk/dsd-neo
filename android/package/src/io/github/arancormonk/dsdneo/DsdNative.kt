@@ -27,6 +27,7 @@ object DsdNative {
 
     init {
         System.loadLibrary("dsd-neo-app_arm64-v8a")
+        HostDiagnostics.nativeReady()
     }
 
     external fun nativeInit(configDir: String, cacheDir: String): Int

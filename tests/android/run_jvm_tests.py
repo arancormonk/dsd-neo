@@ -79,6 +79,35 @@ def golden_records_match():
     )
 
 
+def kotlin_golden_matches(c_marker, kotlin_test, kotlin_marker):
+    """Whether a golden diagnostics record in a Kotlin test and the C++ test that runs it through redaction agree."""
+    c_test = REPO / "tests/ui/test_ui_qt_diagnostics_log.cpp"
+    kotlin_path = HERE / kotlin_test
+    try:
+        native = literal_after(c_test, c_marker, ("\\",))
+        kotlin = literal_after(kotlin_path, kotlin_marker, ("=", "+"))
+    except (OSError, ValueError) as error:
+        return f"cannot read the golden diagnostics records: {error}"
+    if native == kotlin:
+        return None
+    return (
+        f"{c_marker} in {c_test.relative_to(REPO)} and {kotlin_marker} in {kotlin_path.relative_to(REPO)} must be "
+        "byte-identical, so the records Kotlin writes are the ones native redaction is shown to keep"
+    )
+
+
+def watchdog_golden_matches():
+    return kotlin_golden_matches(
+        "#define DIAGNOSTICS_GOLDEN_WATCHDOG", "LooperWatchdogTest.kt", "private const val GOLDEN_WATCHDOG ="
+    )
+
+
+def screen_golden_matches():
+    return kotlin_golden_matches(
+        "#define DIAGNOSTICS_GOLDEN_SCREEN", "ScreenTraceTest.kt", "private const val GOLDEN_SCREEN ="
+    )
+
+
 class Build(NamedTuple):
     sources: tuple  # Production files under APP_SOURCES.
     tests: tuple  # Test files beside this script; each one's main() runs, in this order.
@@ -358,7 +387,8 @@ SUITES = {
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
-    # ScreenWake it answers with, against a PowerManager stub that models reference counting.
+    # ScreenWake it answers with, against a PowerManager stub that models reference counting. The screen trace (#782)
+    # builds with the policy, whose inputs it records.
     "screen": Suite(
         builds=(
             Build(
@@ -369,6 +399,9 @@ SUITES = {
                     "StatusFeed.kt",
                     "ActivitySlot.kt",
                     "DecoderStatus.kt",
+                    "ScreenTrace.kt",
+                    "HostRecordText.kt",
+                    "ActivityTrace.kt",
                 ),
                 tests=(
                     "ScreenPolicyTest.kt",
@@ -376,6 +409,7 @@ SUITES = {
                     "ScreenTouchTest.kt",
                     "StatusFeedTest.kt",
                     "ActivitySlotTest.kt",
+                    "ScreenTraceTest.kt",
                 ),
             ),
             Build(
@@ -384,6 +418,19 @@ SUITES = {
                 stubs=("PowerManager.kt",),
             ),
         ),
+        checks=(screen_golden_matches,),
+    ),
+    # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
+    # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and
+    # HostDiagnostics, the Android glue around them, are not built here.
+    "watchdog": Suite(
+        builds=(
+            Build(
+                sources=("LooperWatchdog.kt", "ActivityTrace.kt", "PendingHostRecords.kt", "HostRecordText.kt"),
+                tests=("LooperWatchdogTest.kt", "ActivityTraceTest.kt", "PendingHostRecordsTest.kt"),
+            ),
+        ),
+        checks=(watchdog_golden_matches,),
     ),
 }
 
