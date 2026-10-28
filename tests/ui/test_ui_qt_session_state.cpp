@@ -12,6 +12,7 @@
 #include "../../android/run_status.h"
 #include "../../android/session_state_map.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/runtime/input_failure.h"
 
 using dsd_android::kSessionFailed;
 using dsd_android::kSessionIdle;

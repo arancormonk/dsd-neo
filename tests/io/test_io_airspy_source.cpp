@@ -147,7 +147,6 @@ main() {
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <initializer_list>
-#include <memory>
 #include <stdio.h>
 #include "rtl_stream_test_support.h"
 #include "test_support.h"

@@ -35,6 +35,8 @@
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 
+struct rtl_device;
+
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.

@@ -11,6 +11,8 @@
 #include <memory>
 #include "rtl_stream_test_support.h"
 
+struct rtl_device;
+
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 static int failures;
 static int open_answer;

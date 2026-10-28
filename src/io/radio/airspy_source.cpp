@@ -14,12 +14,12 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/input_failure.h>
-#include <mutex>
 #include <new>
-#include "rtl_usb_identity.h"
 struct airspy_device;
 
 #if defined(__ANDROID__) && defined(USE_AIRSPY_OPEN_FD)
+#include <mutex>
+#include "rtl_usb_identity.h"
 static std::atomic<int> usb_fd{-1};
 /* Taking the descriptor and replacing it are one step each, so an owner that cleared it can trust usb_held (#782). */
 static std::mutex usb_fd_lock;
