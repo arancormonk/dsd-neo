@@ -40,9 +40,25 @@ private fun theNewestThreeNewestFirst() {
     check(ExitFacts.lines(emptyList(), format).isEmpty()) { "no records, no lines" }
 }
 
+// #782: a start logs only the exits no earlier start logged, so the host store does not fill with the same history.
+private fun eachExitIsLoggedOnce() {
+    val first = listOf(record(30, 6), record(20, 3), record(10, 1))
+    check(ExitFacts.unlogged(first, emptySet()) == first) { "a first start logs every exit" }
+    val logged = first.map(ExitFacts::key).toSet()
+    check(ExitFacts.unlogged(first, logged).isEmpty()) { "a later start logs the same exits again" }
+    val next = listOf(record(40, 5), record(30, 6), record(20, 3))
+    check(ExitFacts.unlogged(next, logged) == listOf(record(40, 5))) { "only the new exit is logged" }
+    // A wall clock set back: an exit stamped before the newest logged one is still new.
+    val earlier = listOf(record(30, 6), record(25, 2).copy(pid = 9999))
+    check(ExitFacts.unlogged(earlier, logged) == listOf(earlier[1])) { "an exit stamped earlier is still logged" }
+    // The same time from another process is another exit.
+    check(ExitFacts.unlogged(listOf(record(30, 6).copy(pid = 1)), logged).size == 1) { "pid tells exits apart" }
+}
+
 fun main() {
     everyReasonHasItsName()
     aLineCarriesTheFacts()
     theNewestThreeNewestFirst()
+    eachExitIsLoggedOnce()
     println("ExitFactsTest: OK")
 }

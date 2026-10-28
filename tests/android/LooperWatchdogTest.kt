@@ -243,6 +243,26 @@ private fun aFrozenProcessIsNotAStall() {
     rig.mainRuns = true
 }
 
+// The main looper runs the probe, ending a real stall, and only then is the process frozen, before the watchdog's next
+// check: the freeze came after the wait, so none of it is taken out of the stall the resume reports.
+private fun aFreezeAfterTheProbeRanLeavesTheStallWhole() {
+    val rig = Rig()
+    rig.watchdog.start()
+    rig.advance(rig.now + 1_000)
+    rig.mainRuns = false
+    rig.advance(rig.now + 500)
+    val postedAt = rig.now
+    rig.advance(postedAt + 3_000)
+    check(rig.captures == 1)
+    val ranAt = rig.now
+    rig.runMain()
+    rig.advance(rig.now + 1_000, lateBy = 10_000)
+    val resumed = rig.take().last()
+    check(resumed.contains("main thread resumed after ${ranAt - postedAt} ms;")) { resumed }
+    check(!resumed.contains("held")) { resumed }
+    rig.mainRuns = true
+}
+
 private fun theIncidentSplitsIntoRecordsTopFramesFirst() {
     val frames = (1..120).map { "com.example.Deep.frame$it(Deep.java:$it)" } +
         listOf("android.os.λ.Unicode(λ.java:1)", "x".repeat(400))
@@ -297,6 +317,7 @@ fun main() {
     aStallBecomesOneIncidentWithItsResume()
     incidentsAreRateLimited()
     aFrozenProcessIsNotAStall()
+    aFreezeAfterTheProbeRanLeavesTheStallWhole()
     theIncidentSplitsIntoRecordsTopFramesFirst()
     println("PASS: main-looper watchdog probes, stalls, rate limit and records")
 }

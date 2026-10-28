@@ -252,10 +252,22 @@ object ScreenSupport {
 
     /** Whether the activity should swallow this touch event: one that belongs to a tap brightening a dimmed screen. */
     fun dispatchTouch(activity: Activity, event: MotionEvent): Boolean {
-        if (!onMain("dispatchTouch") || slot.current !== activity) {
+        if (!onMain("dispatchTouch")) {
             return false
         }
-        return controller.touch(event.actionMasked, accessibility?.isTouchExplorationEnabled == true)
+        // A tap meant to lift the dim is recorded with what came of it (#782).
+        val dimmedDown = dimmed && event.actionMasked == MotionEvent.ACTION_DOWN
+        if (slot.current !== activity) {
+            if (dimmedDown) {
+                trace.touchWhileDimmed(taken = false, swallowed = false, dimAfter = true)
+            }
+            return false
+        }
+        val swallowed = controller.touch(event.actionMasked, accessibility?.isTouchExplorationEnabled == true)
+        if (dimmedDown) {
+            trace.touchWhileDimmed(taken = true, swallowed = swallowed, dimAfter = dimmed)
+        }
+        return swallowed
     }
 
     /** A key press, a generic motion event or Back. Never swallowed. */

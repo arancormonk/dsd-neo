@@ -178,6 +178,29 @@ private fun theInputsNameWhatEngagesThePolicy() {
     check(rig.take().single() == GOLDEN_SCREEN) { rig.records.toString() }
 }
 
+// #782: a touch that comes down while the dim is on says whether the policy took it and what came of it, at most once
+// per interval, the next record counting the ones left out.
+private fun aTouchWhileDimmedIsRecorded() {
+    val rig = TraceRig()
+    rig.trace.touchWhileDimmed(taken = true, swallowed = true, dimAfter = false)
+    check(rig.take() == listOf("screen: touch while dimmed: swallowed, dim off")) { "a tap that lifted the dim" }
+    rig.now += 1_000
+    rig.trace.touchWhileDimmed(taken = true, swallowed = false, dimAfter = true)
+    rig.now += 1_000
+    rig.trace.touchWhileDimmed(taken = false, swallowed = false, dimAfter = true)
+    check(rig.take().isEmpty()) { "inside the interval, touches are only counted" }
+    rig.now += ScreenTrace.MIN_TOUCH_INTERVAL_MS
+    rig.trace.touchWhileDimmed(taken = true, swallowed = false, dimAfter = true)
+    check(rig.take() == listOf("screen: touch while dimmed: passed on, dim still on; 2 more since, not recorded")) {
+        "a tap the policy ignored, and the ones left out"
+    }
+    rig.now += ScreenTrace.MIN_TOUCH_INTERVAL_MS
+    rig.trace.touchWhileDimmed(taken = false, swallowed = false, dimAfter = true)
+    check(rig.take() == listOf("screen: touch while dimmed: not taken: the screen policy follows another activity")) {
+        "a tap that reached an activity the policy does not follow"
+    }
+}
+
 fun main() {
     aWrittenChangeIsFollowedToItsDraw()
     aChangeThatNeverDrawsSaysSo()
@@ -185,5 +208,6 @@ fun main() {
     aLateTickLetsTheNextChangeReplaceTheWaitingOne()
     theRecordsFitAndKeepKeyWordsOut()
     theInputsNameWhatEngagesThePolicy()
+    aTouchWhileDimmedIsRecorded()
     println("PASS: screen trace records, rate limit and draw follow")
 }

@@ -14,7 +14,7 @@ package io.github.arancormonk.dsdneo
  * itself restarts, which is why the process line also carries the boot count.
  */
 object ExitFacts {
-    /** Newest records logged per process start. Repeats across launches are harmless. */
+    /** Newest records read per process start; each is logged by the first start that reads it ([unlogged]). */
     const val MAX_LINES = 3
 
     /** Longest description kept, in characters; the diagnostics record bound is 512 bytes. */
@@ -30,6 +30,16 @@ object ExitFacts {
         val pssKb: Long,
         val description: String?,
     )
+
+    /** What tells one record from another across starts: its time and pid. */
+    fun key(record: Record): String = "${record.timestampMs}/${record.pid}"
+
+    /**
+     * The [records] not in [logged] (keys an earlier start logged, [key]), so a start logs only exits it has not logged
+     * before (#782): the host store keeps its records across starts, and repeats would crowd them out. A set rather
+     * than the newest time, so a wall clock set back cannot hide a new exit.
+     */
+    fun unlogged(records: List<Record>, logged: Set<String>): List<Record> = records.filter { key(it) !in logged }
 
     /** `ApplicationExitInfo.REASON_*`, by value; a reason newer than this table prints as its number. */
     fun reasonName(reason: Int): String = when (reason) {

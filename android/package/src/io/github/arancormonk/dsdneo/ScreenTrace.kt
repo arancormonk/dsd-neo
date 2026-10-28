@@ -22,6 +22,10 @@ import java.util.Locale
  * draw, and one follow record per recorded change says when they came, that no draw came within [DRAW_WAIT_MS], or
  * that a later change replaced it first. A follow record never comes before its change record.
  *
+ * A touch that comes down while the dim is on is recorded too ([touchWhileDimmed]): whether the screen policy took it and
+ * what came of it, so "the tap was ignored" reads apart from "no tap arrived", where no record comes. At most one per
+ * [MIN_TOUCH_INTERVAL_MS]; the next one counts those left out.
+ *
  * [schedule] asks for [tick] at an instant on [clock], replacing any earlier request; null cancels. Main thread only.
  */
 class ScreenTrace(
@@ -46,6 +50,9 @@ class ScreenTrace(
 
     private var follow: Follow? = null
     private var scheduled: Long? = null
+
+    private var lastTouchRecordAt: Long? = null
+    private var touchesLeftOut = 0
 
     /**
      * The dim changed, or was written again: [description] says which way, what was requested and what the window
@@ -93,6 +100,28 @@ class ScreenTrace(
         follow = null
         finish(current, "${seen(current)}, draw after ${clock() - current.at} ms on window $window")
         reschedule()
+    }
+
+    /**
+     * A touch came down on the activity while the dim was on. [taken]: the screen policy saw it (it reached the
+     * activity the policy follows); then [swallowed] is its answer and [dimAfter] whether the dim is still on after it.
+     */
+    fun touchWhileDimmed(taken: Boolean, swallowed: Boolean, dimAfter: Boolean) {
+        val now = clock()
+        val last = lastTouchRecordAt
+        if (last != null && now - last < MIN_TOUCH_INTERVAL_MS) {
+            touchesLeftOut += 1
+            return
+        }
+        val outcome = if (!taken) {
+            "not taken: the screen policy follows another activity"
+        } else {
+            (if (swallowed) "swallowed" else "passed on") + ", dim " + (if (dimAfter) "still on" else "off")
+        }
+        val leftOut = if (touchesLeftOut > 0) "; $touchesLeftOut more since, not recorded" else ""
+        emit(HostRecordText.fit("screen: touch while dimmed: $outcome$leftOut"))
+        lastTouchRecordAt = now
+        touchesLeftOut = 0
     }
 
     /** The instant [schedule] asked for. */
@@ -149,6 +178,7 @@ class ScreenTrace(
     companion object {
         const val MIN_INTERVAL_MS = 1_000L
         const val DRAW_WAIT_MS = 2_000L
+        const val MIN_TOUCH_INTERVAL_MS = 5_000L
 
         /** A window brightness as records show it: "none" for no override (any negative), else the fraction. */
         fun brightness(value: Float): String =

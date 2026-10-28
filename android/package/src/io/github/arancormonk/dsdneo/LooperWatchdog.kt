@@ -100,8 +100,9 @@ class LooperWatchdog(
         if (ran != NONE) {
             if (incident != 0) {
                 if (late > SUSPENDED_MS) {
-                    // Thawed with the probe run before this check: the wait it measured includes the hold too.
-                    val held = minOf(late, ran - sentAt)
+                    // Thawed with the probe run before this check: the wait it measured includes the hold from when this
+                    // check was due until the probe ran, and none of a hold that began after it ran.
+                    val held = (ran - checkAt).coerceIn(0L, late)
                     heldMs += held
                     sentAt += held
                 }

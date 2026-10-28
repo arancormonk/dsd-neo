@@ -9,6 +9,8 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,7 +51,10 @@ object ProcessFacts {
             .joinToString(", ")
     }
 
-    /** The newest recorded exits of this app's processes, newest first (Android 11+; empty before). */
+    /**
+     * The newest recorded exits of this app's processes that no earlier start logged, newest first (Android 11+; empty
+     * before). The keys of the records read are kept in app-private storage, so the next start skips them (#782).
+     */
     @JvmStatic
     fun exitLines(): Array<String> {
         val context = appContext ?: return emptyArray()
@@ -61,8 +66,22 @@ object ProcessFacts {
             val records = manager.getHistoricalProcessExitReasons(context.packageName, 0, ExitFacts.MAX_LINES).map {
                 ExitFacts.Record(it.timestamp, it.pid, it.reason, it.status, it.importance, it.pss, it.description)
             }
+            val marker = File(context.noBackupFilesDir, EXITS_LOGGED_FILE)
+            val logged = try {
+                marker.readLines().toSet()
+            } catch (_: IOException) {
+                emptySet()
+            }
+            val fresh = ExitFacts.unlogged(records, logged)
+            if (fresh.isNotEmpty()) {
+                try {
+                    marker.writeText(records.joinToString("\n") { ExitFacts.key(it) })
+                } catch (_: IOException) {
+                    // Unrecorded, the next start logs these again, which is all it costs.
+                }
+            }
             val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-            ExitFacts.lines(records) { format.format(Date(it)) }.toTypedArray()
+            ExitFacts.lines(fresh) { format.format(Date(it)) }.toTypedArray()
         } catch (_: RuntimeException) {
             emptyArray()
         }
@@ -77,6 +96,9 @@ object ProcessFacts {
         }
         return parts.joinToString(", ")
     }
+
+    /** The keys ([ExitFacts.key]) of the exit records the last start read, one per line. */
+    private const val EXITS_LOGGED_FILE = "exit-facts-logged"
 
     private fun bootPart(context: Context?): String = try {
         if (context == null) "boot ?" else "boot ${Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT)}"
