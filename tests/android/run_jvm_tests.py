@@ -260,12 +260,16 @@ def usb_broker_contract():
             f"{where}: a detach must stop the engine only when nativeSessionUsesLocalReceiver() or nativeIsUsbFdInUse() "
             "says the session uses it, and release the connection either way"
         )
-    # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request.
+    # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request (the
+    # record recordLocked() builds, which a session's reopen also holds, #782).
     status = re.search(r"fun deviceStatus\(\): String \{(.*?)\n    \}", manager, re.S)
     if not status or "requests.expireIfStale()" not in status.group(1):
         return f"{where}: deviceStatus() must retire an unanswered request"
+    built = re.search(r"fun recordLocked\(\): String =(.*?)\.toString\(\)\n", manager, re.S)
+    if "recordLocked()" not in status.group(1) or not built:
+        return f"{where}: deviceStatus() must publish the record recordLocked() builds"
     for key in ("pending", "requestedSource", "requestedSerial"):
-        if f'.put("{key}"' not in status.group(1):
+        if f'.put("{key}"' not in built.group(1):
             return f"{where}: deviceStatus() must publish {key}"
     # #647 B4: an access request that finds the receiver ready rewrites the record for it.
     if not ready_branch_rewrites_status(manager):
@@ -380,7 +384,7 @@ SUITES = {
                 sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt", "UsbSessionTake.kt"),
                 tests=("DecoderServiceStopTest.kt", "DecoderServiceAttemptTest.kt", "DecoderServiceUsbTest.kt"),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
-                       "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),
+                       "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt", "SuppressLint.kt"),
             ),
         ),
         checks=(stop_callers_carry_their_cause, native_lifecycle_contract),

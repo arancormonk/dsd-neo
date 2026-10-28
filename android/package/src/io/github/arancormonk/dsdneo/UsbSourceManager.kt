@@ -49,10 +49,12 @@ import org.json.JSONObject
  * [resetObligations], read back from the engine ([reconcileResetOwed]) and handed to it with each new descriptor
  * ([publish]); it survives a process restart in app-private storage.
  *
- * One serialized owner (#782): every change to this state runs on the main thread,
- * where the USB broadcasts and the service's start arrive; the Qt thread's access
- * requests are posted there ([onMain]). [lock] only makes the state readable from
- * other threads, and is never held across a binder call: the bus listing and serial
+ * One serialized owner (#782): changes to this state run on the main thread, where
+ * the USB broadcasts and the service's start arrive; the Qt thread's access requests
+ * are posted there ([onMain]). Two reads of the Qt thread's poll also change state,
+ * each in one step under [lock]: [deviceStatus] retires an unanswered permission
+ * request, and [takeAttachment] takes the attach edge. Otherwise [lock] only makes
+ * the state readable from other threads, and it is never held across a binder call: the bus listing and serial
  * reads come before the change they feed, and a listing older than an attach or
  * detach applied since is discarded ([events]).
  */
@@ -75,6 +77,8 @@ object UsbSourceManager {
 
     private val lock = Any()
     private var connection: UsbDeviceConnection? = null
+    /** While a session's reopen runs, the record [deviceStatus] answered with before it began; null otherwise. */
+    private var reopening: String? = null
     private var attachedName: String? = null
     private var status: String = ""
     // WP-S2: application context only; never retain the Activity.
@@ -268,11 +272,21 @@ object UsbSourceManager {
         // so a detach's diagnostic cannot land between the two and be overwritten; logged after.
         var expired = false
         val record = synchronized(lock) {
+            // A session's reopen in progress reads as the connection it replaces (#782).
+            reopening?.let { return@synchronized it }
             if (requests.expireIfStale()) {
                 expired = true
                 status = NO_ANSWER
                 failureKind = ""
             }
+            recordLocked()
+        }
+        if (expired) logStatus(NO_ANSWER)
+        return record
+    }
+
+    /** The record [deviceStatus] answers with, under [lock]. */
+    private fun recordLocked(): String =
             JSONObject().put("ready", connection != null).put("text", status)
                 .put("kind", failureKind).put("name", deviceLabel).put("source", connectedSource).put("serial", connectedSerial)
                 .put("pending", requests.pending).put("requestedSource", requests.requestedSource)
@@ -280,10 +294,6 @@ object UsbSourceManager {
                 // #782: which connection is ready, so the host shows a session's receiver error only for its own.
                 .put("device", attachedName.orEmpty()).put("epoch", if (connection != null) connectedEpoch else 0L)
                 .put("connection", if (connection != null) connectionId else 0L).toString()
-        }
-        if (expired) logStatus(NO_ANSWER)
-        return record
-    }
 
     /**
      * The kind of receiver attached right now, for the UI's existing poll: "usb", "airspy", "both" or empty.
@@ -822,8 +832,22 @@ object UsbSourceManager {
         return reopen((synchronized(lock) { attachmentContext } ?: context.applicationContext), source, held)
     }
 
-    /** Body of [takeForSession] for a connection a session already took: close it, open the device again, publish. */
+    /**
+     * Body of [takeForSession] for a connection a session already took: close it, open the device again, publish.
+     * The UI's poll reads the record from before it meanwhile ([reopening]), never the gap between the old
+     * connection's close and the new one's publish as a receiver that is not ready; a failed reopen then publishes its
+     * own record.
+     */
     private fun reopen(context: Context, source: String, held: Held): UsbSessionTake {
+        synchronized(lock) { reopening = recordLocked() }
+        try {
+            return reopenHeld(context, source, held)
+        } finally {
+            synchronized(lock) { reopening = null }
+        }
+    }
+
+    private fun reopenHeld(context: Context, source: String, held: Held): UsbSessionTake {
         val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
         // Binder calls, all before the state changes below and none under the lock.
         val listed = manager.deviceList[held.name]?.takeIf { isKnown(it) && sourceOf(it) == source }

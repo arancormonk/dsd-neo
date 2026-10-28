@@ -1200,6 +1200,106 @@ check_attempt_identity() {
     serviceStops = 0;
 }
 
+/* #782 (Task 4 minor 1): the grace ran out on a start the service took after all, so the retirement cancels it while it
+ * configures. Dismissing or retrying the undelivered start then shows the attempt winding down, never the expiry's
+ * stale failure or "Starting…" for a session that will not run, until its cancelled end. */
+static void
+check_dismissed_undelivered_start_winds_down() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    for (const bool retry : {false, true}) {
+        DecoderHostAndroid host;
+        serviceStops = 0;
+        retirements.clear();
+        serviceTookAttempt = false;
+        nowMs = 400000;
+        retained_record() = {{"sessionId", 120}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the start is dispatched");
+        const uint64_t attempt = lastStartAttempt;
+        nowMs = 402000;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered,
+              "the expired start is undelivered");
+        /* The service took it between the IDLE record and the retirement, which cancels it. */
+        retained_record() = {
+            {"sessionId", 121}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)attempt}};
+        if (retry) {
+            host.stop();
+        } else {
+            host.dismissFailure();
+        }
+        check(host.sessionState() == DecoderHost::Stopping && host.inputFailureKind() == 0,
+              "a dismissed undelivered start the service still holds winds down");
+        check(serviceStops == 0, "dismissing it sends no stop: the retirement cancels it");
+        nowMs = 402250;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Stopping, "its configuring record is no start on screen");
+        retained_record() = {
+            {"sessionId", 121}, {"state", "IDLE"}, {"reason", kRunCancelled}, {"attemptId", (qint64)attempt}};
+        nowMs = 402500;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "its cancelled end is idle");
+    }
+    retained_record() = QJsonObject();
+}
+
+/* #782 (Task 4 minors 2 and 3): a start refused while another is on screen, starting or running, through an entry
+ * point no QML guard covers, neither retires that attempt nor publishes its refusal over it, and the attempt on screen
+ * is still the one the host follows. */
+static void
+check_refused_start_leaves_the_run_on_screen() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    serviceStops = 0;
+    serviceTookAttempt = false;
+    nowMs = 500000;
+    retained_record() = {{"sessionId", 130}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    retained_record() = {
+        {"sessionId", 131}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+    nowMs = 500250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting, "the first start is starting");
+    retirements.clear();
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a second start is refused");
+    check(retirements.isEmpty(), "a refused start retires nothing while another is starting");
+    check(host.sessionState() == DecoderHost::Starting && host.inputFailureKind() == 0 && host.failureText().isEmpty(),
+          "the refusal is not published over a starting run");
+    /* The attempt on screen is still the one followed: a failure its record names before its configure is its own. */
+    retained_record() = {{"sessionId", 131},           {"state", "IDLE"},           {"reason", kRunFailed},
+                         {"attemptId", (qint64)first}, {"failureKind", "usb_gone"}, {"lastError", "USB receiver gone"}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUsbGone,
+          "the starting attempt keeps its own failure");
+
+    host.stop();
+    retirements.clear();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a start from a settled screen");
+    const uint64_t second = lastStartAttempt;
+    check(retirements == QList<uint64_t>{second - 1}, "a start from a settled screen supersedes every earlier one");
+    retained_record() = {
+        {"sessionId", 132}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "it runs");
+    retirements.clear();
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a start while it runs is refused");
+    check(retirements.isEmpty(), "a refused start retires nothing while another runs");
+    check(host.sessionState() == DecoderHost::Running && host.inputFailureKind() == 0 && host.failureText().isEmpty(),
+          "the refusal is not published over a running run");
+    running = false;
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1215,6 +1315,8 @@ main(int argc, char** argv) {
     check_undelivered_start_after_network_failure();
     check_refused_start();
     check_attempt_identity();
+    check_dismissed_undelivered_start_winds_down();
+    check_refused_start_leaves_the_run_on_screen();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

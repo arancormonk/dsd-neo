@@ -54,7 +54,11 @@ class UsbManager {
     }
     fun unplug(name: String) { synchronized(devices) { devices.remove(name) } }
     fun hasPermission(device: UsbDevice) = device.deviceName in granted
-    fun openDevice(device: UsbDevice): UsbDeviceConnection? =
-        if (refuseOpen) null else UsbDeviceConnection(nextFd++).also { opened += it }
+    /** Runs inside every openDevice(), which is a binder call on Android; a test reads the broker from here. */
+    @Volatile var openHook: (() -> Unit)? = null
+    fun openDevice(device: UsbDevice): UsbDeviceConnection? {
+        openHook?.invoke()
+        return if (refuseOpen) null else UsbDeviceConnection(nextFd++).also { opened += it }
+    }
     fun requestPermission(device: UsbDevice, intent: PendingIntent) { prompts += device to intent }
 }

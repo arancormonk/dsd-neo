@@ -208,6 +208,35 @@ private fun theRecordNamesTheAttempt() {
     endsQuietly(service, id, "configure failure")
 }
 
+// A process died with a START undelivered, and the platform redelivers it into the process it restarted, whose host
+// counts attempts from 1 again. That START carries the dead process's token: it never configures, and it leaves the
+// attempt counter alone, so the new host's own first start runs.
+private fun anEarlierProcessStartIsRejected() {
+    val service = newService()
+    val earlier = Intent(service, DecoderService::class.java)
+        .setAction(DecoderService.ACTION_START)
+        .putExtra(DecoderService.EXTRA_ARGS, RTL)
+        .putExtra(DecoderService.EXTRA_ATTEMPT, nextAttempt + 5)
+        .putExtra(DecoderService.EXTRA_PROCESS, DecoderService.processToken xor 1L)
+    val before = record()
+    val id = deliver(service, earlier)
+    check(DsdNative.configured.isEmpty()) { "an earlier process's START was configured" }
+    neverRan("earlier process")
+    check(DsdNative.diagnostics.any { it.startsWith("service: start attempt ${nextAttempt + 5} rejected: sent by an earlier process") }) {
+        DsdNative.diagnostics
+    }
+    check(record().optLong("sessionId") == before.optLong("sessionId")) { "a rejected START is no session: ${record()}" }
+    endsQuietly(service, id, "earlier process")
+
+    val host = newService()
+    val (attempt, intent) = hostStart(host, RTL)
+    deliver(host, intent)
+    await(DsdNative.enteredRun)
+    check(DsdNative.configured.size == 1) { "the host's own start configures: ${DsdNative.configured}" }
+    check(record().optLong("attemptId") == attempt) { "the host's attempt $attempt runs: ${record()}" }
+    finish(host)
+}
+
 fun main(args: Array<String>) {
     val tests = linkedMapOf<String, () -> Unit>(
         "timeout_dismiss" to ::timeoutThenDismiss,
@@ -216,7 +245,8 @@ fun main(args: Array<String>) {
         "retire_during_configure" to ::retireDuringConfigure,
         "retire_before_publication" to ::retireJustBeforeWorkerPublication,
         "stale_idle_snapshot" to ::timeoutFromAnEarlierIdleSnapshot,
-        "record" to ::theRecordNamesTheAttempt
+        "record" to ::theRecordNamesTheAttempt,
+        "earlier_process" to ::anEarlierProcessStartIsRejected
     )
     for ((name, test) in tests) {
         if (args.isNotEmpty() && name !in args) continue

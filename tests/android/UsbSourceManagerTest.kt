@@ -355,6 +355,55 @@ private fun aSecondSessionGetsAFreshDescriptor() {
     check(rig.take().connection == 3L) { "and every later session reopens again" }
 }
 
+// #782 (Task 5 minor 1): the Qt poll reads the broker while a session's reopen runs, between the retired connection's
+// close and the new one's publish. It reads the connection that is being replaced, never a receiver that is not ready.
+private fun theSwapIsNeverReadAsNotReady() {
+    val rig = Rig()
+    rig.connect(rtl())
+    rig.take()
+    val during = mutableListOf<JSONObject>()
+    rig.usb.openHook = { during += rig.record() }
+    val again = rig.take()
+    rig.usb.openHook = null
+    check(again.failureKind == "" && again.connection == 2L) { "$again" }
+    check(during.size == 1 && rig.usb.opened.first().closed) { "the poll ran with the old connection closed" }
+    check(during.single().optBoolean("ready") && during.single().optLong("connection") == 1L) {
+        "the swap read as not ready: ${during.single()}"
+    }
+    check(rig.record().optBoolean("ready") && rig.record().optLong("connection") == 2L) { "then the new connection" }
+    // A swap that fails ends not ready, with its kind, as before.
+    rig.usb.refuseOpen = true
+    rig.usb.openHook = { during += rig.record() }
+    check(rig.take().failureKind == UsbSessionTake.USB_OPEN_FAILED)
+    rig.usb.openHook = null
+    check(during.last().optBoolean("ready")) { "a failing swap is not read as not ready while it runs" }
+    check(!rig.record().optBoolean("ready") && rig.kind() == "open_failed") { "${rig.record()}" }
+}
+
+// #782 (Task 5 minor 5): the detach broadcast queued behind a start that reopened the receiver runs once the start's
+// configure returned, so the native record names the session's receiver: the session is stopped, and the new
+// connection stays open until the engine lets go of its descriptor, then closes.
+private fun aDetachAfterASuccessfulReopenStopsTheSession() {
+    val rig = Rig()
+    val device = rtl()
+    rig.connect(device)
+    rig.take()
+    check(rig.take().connection == 2L) { "the second session reopened the receiver" }
+    val first = rig.usb.opened.first()
+    val reopened = rig.usb.opened.last()
+    check(first.closed && !reopened.closed && DsdNative.usbFd == reopened.fileDescriptor)
+    DsdNative.sessionUsesLocalReceiver = true
+    DsdNative.held = intArrayOf(reopened.fileDescriptor, -1)
+    rig.unplug(device)
+    check(DsdNative.stopCauses == listOf("detached")) { "the session on the reopened receiver is stopped" }
+    check(!rig.record().optBoolean("ready") && DsdNative.usbFd == -1) { "the connection is released" }
+    Thread.sleep(300)
+    check(!reopened.closed) { "the reopened connection stays open while the engine holds its descriptor" }
+    DsdNative.held = intArrayOf(-1, -1)
+    DsdNative.sessionUsesLocalReceiver = false
+    awaitClosed(reopened, "the reopened connection closes once the engine let go of it")
+}
+
 // #782: the device is no longer listed when the start reopens it (its detach broadcast is still queued behind the
 // start on the main thread). The start fails as usb_gone, and the broker reads not ready.
 private fun aDeviceGoneMidSwapFailsTheStart() {
@@ -835,6 +884,8 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "swap_gone" to ::aDeviceGoneMidSwapFailsTheStart,
     "swap_permission" to ::aRevokedPermissionFailsTheStart,
     "swap_open_failed" to ::aFailedReopenFailsTheStart,
+    "swap_never_not_ready" to ::theSwapIsNeverReadAsNotReady,
+    "swap_then_detach" to ::aDetachAfterASuccessfulReopenStopsTheSession,
     "swap_previous_session" to { aStartWhileThePreviousSessionHoldsTheReceiverIsRefused("session") },
     "swap_previous_descriptor" to { aStartWhileThePreviousSessionHoldsTheReceiverIsRefused("descriptor") },
     "swap_airspy" to ::anAirspySessionGetsAFreshDescriptor,

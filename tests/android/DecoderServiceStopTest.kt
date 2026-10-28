@@ -341,6 +341,15 @@ private fun aFailedOrRefusedStartLeavesNoNotification() {
             DsdNative.configureCode = -3
             deliver(service, Intent().setAction(DecoderService.ACTION_START))
         },
+        // A one-shot configuration (help and the like) that ends without a session.
+        "configuration exit" to { service: DecoderService ->
+            DsdNative.configureCode = DsdNative.STATUS_CONFIG_EXIT
+            deliver(service, Intent().setAction(DecoderService.ACTION_START))
+        },
+        "nativeInit failure" to { service: DecoderService ->
+            DsdNative.initCode = -2
+            deliver(service, Intent().setAction(DecoderService.ACTION_START))
+        },
         "stop with nothing running" to { service: DecoderService ->
             deliver(service, Intent().setAction(DecoderService.ACTION_STOP))
         },
@@ -367,6 +376,9 @@ private fun aServiceDestroyedWhileRunningLeavesNoNotification() {
     DsdNative.stopHook = { DsdNative.finishRun.countDown() }
     service.bringDown()
     service.onDestroy()
+    // The released run can end before onDestroy() looks for its thread, which then has nothing to join: its session
+    // end still reaches the main queue, and must not land in the next case's.
+    joinEngineWorker()
     Handler.drain()
     check(DsdNative.stops == listOf(false)) { "a destroyed service drains its run" }
     check(shade.shown.isEmpty()) { "onDestroy() left a notification behind" }
@@ -449,7 +461,9 @@ private fun aStopThatFindsNothingRunningIsLogged() {
     check(log.any { it.startsWith("Stop session ") && it.endsWith("cause=user state=IDLE: no run to cancel") }) { log }
     val id = deliver(service, service.intents.remove())
     check(log.any { it.startsWith("service: received STOP id=$id state=IDLE delay=") }) { log }
+    // The service's own teardown at IDLE, which follows every session end, is no stop anybody asked for.
     service.onDestroy()
+    check(log.none { "cause=lifecycle" in it }) { "an idle teardown logged a stop: $log" }
     settle(service)
 }
 
@@ -474,6 +488,10 @@ private fun aSlowWakeLockAcquireBlocksNoLockReader() {
             read.countDown()
         }.start()
         check(read.await(2, TimeUnit.SECONDS)) { "a wake-lock acquire blocked lifecycleStatus() or stopDecoder()" }
+        // A stop while STARTING is not lost: the intent it sends cancels the run once the start has published it.
+        check(DsdNative.diagnostics.any { it.endsWith("cause=user state=STARTING: deferred to the stop intent ordered behind its start") }) {
+            DsdNative.diagnostics
+        }
     } finally {
         acquired.countDown()
         starter.join(5000)

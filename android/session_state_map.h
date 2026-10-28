@@ -248,6 +248,27 @@ class SessionPhaseTracker {
         return true;
     }
 
+    /**
+     * @brief Note that the host gave up on the start it follows after the service had taken it after all (#782).
+     *
+     * The expiry failed the start, and the retirement it made cancels the attempt the service is configuring: it ends
+     * cancelled without running. Its failure dismissed, the attempt is winding down, so Stopping is published and held
+     * as a stop request is, until that attempt's terminal record; a RUNNING run of kStopGraceMs (which a cancelled
+     * attempt never reaches) gives it back.
+     */
+    void
+    note_attempt_retired(uint64_t now_ms) {
+        m_failed = false;
+        m_attempting = false;
+        m_saw_running = false;
+        m_start_pending = false;
+        m_stop_requested = true;
+        m_stop_delivered = false;
+        m_stop_running = false;
+        m_stop_running_since_ms = now_ms;
+        m_phase = kSessionStopping;
+    }
+
     /** @brief Whether a stop request was just dropped by the grace (true once per drop), for one diagnostics line. */
     bool
     take_stop_expired() {

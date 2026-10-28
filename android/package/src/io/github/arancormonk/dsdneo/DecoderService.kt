@@ -5,6 +5,7 @@
 
 package io.github.arancormonk.dsdneo
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -20,6 +21,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import java.security.SecureRandom
 import java.util.Locale
 import org.json.JSONObject
 
@@ -75,7 +77,12 @@ class DecoderService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val args = intent.getStringArrayExtra(EXTRA_ARGS) ?: emptyArray()
-                startDecoding(args, startId, intent.getLongExtra(EXTRA_ATTEMPT, 0L))
+                startDecoding(
+                    args,
+                    startId,
+                    intent.getLongExtra(EXTRA_ATTEMPT, 0L),
+                    intent.getLongExtra(EXTRA_PROCESS, 0L)
+                )
             }
             ACTION_STOP -> {
                 synchronized(lock) { lastStart = DeliveredStart(serial, startId) }
@@ -158,10 +165,11 @@ class DecoderService : Service() {
             Log.e(TAG, "engine still running; keeping the wake lock until it returns")
         }
         // Last, because the platform took the foreground notification down before it
-        // scheduled this callback (ActiveServices.bringDownServiceLocked() cancels it, then
-        // calls scheduleStopService()), so anything posted since — stopDecoding()'s
-        // "Stopping…" above included — is an ordinary ongoing notification that nothing
-        // else would remove. Only another live instance, fronting a run of its own, keeps it.
+        // scheduled this callback (ActiveServices.bringDownServiceLocked() posts its cancel
+        // to the system server's handler, then calls scheduleStopService()), so anything
+        // posted since — stopDecoding()'s "Stopping…" above included — is an ordinary
+        // ongoing notification that nothing else would remove. Only another live instance,
+        // fronting a run of its own, keeps it.
         val replaced = current != null && current !== this
         if (current === this) {
             current = null
@@ -175,14 +183,23 @@ class DecoderService : Service() {
     /**
      * Runs one start on the main thread. [attempt] is the host's id for it (0: a start without one): the host retires
      * an attempt it has given up on (retireAttempts()), and a retired or superseded attempt never runs (#782).
+     * [process] is the [processToken] of the process that sent it.
      */
-    private fun startDecoding(args: Array<String>, startId: Int, attempt: Long) {
+    private fun startDecoding(args: Array<String>, startId: Int, attempt: Long, process: Long) {
         var rejectedIn: State? = null
+        var foreign = false
         val session = synchronized(lock) {
             // Publish the id with the decision to start or reject. Doing this before
             // foreground promotion lets an old worker take a new run's id while the
             // main thread is still in the notification binder call.
             lastStart = DeliveredStart(serial, startId)
+            // First: a dead process's START, which the platform redelivers into this one, belongs to a host that no
+            // longer exists, and its attempt id means nothing next to this process's own, which count from 1 again.
+            if ((attempt != 0L || process != 0L) && process != processToken) {
+                foreign = true
+                rejectedIn = state
+                return@synchronized 0L
+            }
             // Before the busy check: a start the host has given up on is nothing to the run that holds the service.
             if (attempt != 0L && (attempt <= retiredThrough || attempt <= newestAttempt)) {
                 rejectedIn = state
@@ -213,7 +230,11 @@ class DecoderService : Service() {
         rejectedIn?.let { found ->
             // The host already shows what became of it, and a later attempt may own the screen.
             DsdNative.nativeHostDiagnostic(
-                "service: start attempt $attempt rejected as retired or superseded (state $found)"
+                if (foreign) {
+                    "service: start attempt $attempt rejected: sent by an earlier process (state $found)"
+                } else {
+                    "service: start attempt $attempt rejected as retired or superseded (state $found)"
+                }
             )
             stopIfIdle()
             return
@@ -883,7 +904,9 @@ class DecoderService : Service() {
      * In that order, so nothing can post between the platform dropping the foreground and
      * this instance being destroyed: stopSelf() makes ActiveServices cancel the foreground
      * notification and only then schedule onDestroy() on this looper, so a status tick
-     * already queued there would run in between (#782).
+     * already queued there would run in between (#782). The cancel is itself asynchronous
+     * (ServiceRecord.cancelNotification() posts it to the system server's handler), so a
+     * repost could land before or after it, which made the field bug intermittent.
      *
      * A newer accepted run that owns the service again keeps its notification and its
      * polling. Its start came after [start], so the platform ignores the stopSelf():
@@ -987,6 +1010,16 @@ class DecoderService : Service() {
         const val EXTRA_SENT_UPTIME = "io.github.arancormonk.dsdneo.extra.SENT_UPTIME"
         /** The host's id for a START's attempt (#782); see [retireAttempts]. Absent or 0: a start without one. */
         const val EXTRA_ATTEMPT = "io.github.arancormonk.dsdneo.extra.ATTEMPT"
+        /** The sending process's [processToken], beside [EXTRA_ATTEMPT]. */
+        const val EXTRA_PROCESS = "io.github.arancormonk.dsdneo.extra.PROCESS"
+
+        /**
+         * This process's token, never 0, sent with every START it dispatches (#782). Attempt ids count from 1 in every
+         * process, and the platform redelivers an undelivered START into the process it restarts after a crash or a
+         * kill: the token tells that START apart, so it neither runs a session no host follows nor makes this
+         * process's own attempts look superseded.
+         */
+        val processToken: Long = SecureRandom().let { random -> generateSequence { random.nextLong() }.first { it != 0L } }
 
         private val lock = Any()
         private var state = State.IDLE
@@ -1044,7 +1077,11 @@ class DecoderService : Service() {
          * started no poll — is the one in the foreground. Its own stopSelf() is the only one
          * that can stop it: Service.stopSelf() passes the instance's token, and
          * ActiveServices.findServiceLocked() matches only the service record it names.
+         *
+         * Lint's StaticFieldLeak is suppressed here alone: the field is main-thread only and cleared in the instance's
+         * own onDestroy(), so it never outlives the service it names.
          */
+        @SuppressLint("StaticFieldLeak")
         private var current: DecoderService? = null
 
         /** Instances created so far, for [serial]; main thread only. */
@@ -1074,8 +1111,19 @@ class DecoderService : Service() {
                 stopDiagnostic("Ignoring stale stop for session $expectedSession; current session $sessionId")
                 return false
             }
+            if (state == State.STARTING) {
+                // stopDecoder() goes on to send its intent, which runs after the start and cancels what it published.
+                stopDiagnostic(
+                    "Stop session $sessionId cause=${cause.wire} state=$state: " +
+                        "deferred to the stop intent ordered behind its start"
+                )
+                return false
+            }
             if (state != State.RUNNING && state != State.STOPPING) {
-                stopDiagnostic("Stop session $sessionId cause=${cause.wire} state=$state: no run to cancel")
+                // onDestroy() at IDLE follows every session's end: a no-op, not a stop worth a record.
+                if (cause != StopCause.LIFECYCLE) {
+                    stopDiagnostic("Stop session $sessionId cause=${cause.wire} state=$state: no run to cancel")
+                }
                 return false
             }
             // Repeated stops are deliberate: a user's Stop while a lifecycle stop is draining
@@ -1153,6 +1201,7 @@ class DecoderService : Service() {
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_ARGS, args)
                 .putExtra(EXTRA_ATTEMPT, attempt)
+                .putExtra(EXTRA_PROCESS, processToken)
             intent.putExtra(EXTRA_SENT_UPTIME, SystemClock.uptimeMillis())
             context.startForegroundService(intent)
         }

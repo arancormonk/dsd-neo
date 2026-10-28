@@ -346,6 +346,7 @@ DecoderHostAndroid::dismissAttemptFailure() {
     (void)platformRetireAttempts(m_attempt);
     m_attempt = 0;
     const bool was_failed = m_attempt_failed;
+    const int kind = m_attempt_failure_kind;
     m_attempt_failed = false;
     m_attempt_failure_kind = 0;
     m_attempt_failure_text.clear();
@@ -354,8 +355,17 @@ DecoderHostAndroid::dismissAttemptFailure() {
     }
     // The tracker went on following the service underneath. A failure of its own (the expired grace, the attempt's
     // failed record) goes with the attempt's, as stop() acknowledges any failure; otherwise its phase is published.
-    if (m_phase.phase() == kSessionFailed && acknowledgeFailure(readLifecycleStatus())) {
-        return;
+    if (m_phase.phase() == kSessionFailed) {
+        const QJsonObject status = readLifecycleStatus();
+        if (acknowledgeFailure(status)) {
+            return;
+        }
+        // An undelivered start the service took after all is still being given up: the retirement cancels it. Not
+        // the expiry's stale failure, nor "Starting…" for a session that never runs, until its terminal record.
+        if (kind == kAttemptUndelivered && !status.isEmpty()
+            && status.value(QStringLiteral("state")).toString() != QStringLiteral("IDLE")) {
+            m_phase.note_attempt_retired(readRealtimeMs());
+        }
     }
     setSessionPhase(m_phase.phase());
     setStatus(phase_text(m_phase.phase()));
@@ -400,14 +410,12 @@ DecoderHostAndroid::start(const QStringList& argv) {
     }
     const uint64_t attempt = next_attempt_id();
     /* #782: before the service state is read, so no earlier attempt (one whose grace ran out, or one a host before
-     * this one asked for) can be taken by the service once this one is asked for, whatever the read says. */
-    (void)platformRetireAttempts(attempt - 1);
-    m_attempt = attempt;
-    if (m_attempt_failed) {
-        m_attempt_failed = false;
-        m_attempt_failure_kind = 0;
-        m_attempt_failure_text.clear();
-        Q_EMIT runResultChanged();
+     * this one asked for) can be taken by the service once this one is asked for, whatever the read says. Only from a
+     * settled screen: a start that reaches here while one is on its way (an entry point no guard covers) must not
+     * cancel that one, as it would be refused for it below. */
+    const bool settled = m_published_phase == kSessionIdle || m_published_phase == kSessionFailed;
+    if (settled) {
+        (void)platformRetireAttempts(attempt - 1);
     }
     /* Clears the previous attempt's reason; setSessionPhase publishes that. */
     const QJsonObject status = readLifecycleStatus();
@@ -417,9 +425,17 @@ DecoderHostAndroid::start(const QStringList& argv) {
         hostDiagnostic(QStringLiteral("Start attempt %1 refused: the decoder service is %2")
                            .arg(attempt)
                            .arg(QString::fromUtf8(service_state)));
+        // A run on screen, starting or running, stays as it is: the refusal is this start's, not that run's failure.
+        if (m_published_phase == kSessionStarting || m_published_phase == kSessionRunning) {
+            return false;
+        }
+        m_attempt = attempt;
+        clearAttemptFailure();
         setAttemptFailure(kAttemptPreviousStopping, QStringLiteral("A previous session is still stopping"));
         return false;
     }
+    m_attempt = attempt;
+    clearAttemptFailure();
     m_initialized_session = last_session;
     // The new session replaces the last one, and with it any receiver ending, seen yet or not.
     clearReceiverHealth(qMax(last_session, m_health_session));
@@ -432,6 +448,16 @@ DecoderHostAndroid::start(const QStringList& argv) {
     setSessionPhase(m_phase.phase());
     setStatus(QStringLiteral("Starting…"));
     return true;
+}
+
+void
+DecoderHostAndroid::clearAttemptFailure() {
+    if (m_attempt_failed) {
+        m_attempt_failed = false;
+        m_attempt_failure_kind = 0;
+        m_attempt_failure_text.clear();
+        Q_EMIT runResultChanged();
+    }
 }
 
 bool

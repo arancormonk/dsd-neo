@@ -272,6 +272,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * records say, until the next start or a dismissal.
      */
     void setAttemptFailure(int kind, const QString& text);
+    /** @brief Drop the previous attempt's failure for a start that goes ahead or a refusal of its own. */
+    void clearAttemptFailure();
     /** @brief Retire the current attempt and drop its failure, then publish the phase the records give. */
     void dismissAttemptFailure();
 
