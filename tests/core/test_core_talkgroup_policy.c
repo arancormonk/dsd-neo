@@ -3316,7 +3316,24 @@ test_radio_policy_matrix(void) {
     return rc;
 }
 
-/* Review focus: a labels-only radio list (no policy columns) leaves every decision bit-identical to no list. */
+/* Every field of two decisions, member by member (the struct has padding, so its bytes are not its value). */
+static int
+decisions_equal(const dsd_tg_policy_decision* a, const dsd_tg_policy_decision* b) {
+    return a->target_id == b->target_id && a->source_id == b->source_id && a->encrypted == b->encrypted
+           && a->data_call == b->data_call && a->private_call == b->private_call && a->tune_allowed == b->tune_allowed
+           && a->audio_allowed == b->audio_allowed && a->record_allowed == b->record_allowed
+           && a->stream_allowed == b->stream_allowed && a->priority == b->priority
+           && a->preempt_requested == b->preempt_requested && a->block_reasons == b->block_reasons
+           && a->tg_hold_active == b->tg_hold_active && a->tg_hold_match == b->tg_hold_match
+           && strncmp(a->mode, b->mode, sizeof a->mode) == 0 && strncmp(a->name, b->name, sizeof a->name) == 0
+           && a->match == b->match && a->radio_match == b->radio_match && a->radio_blocked == b->radio_blocked
+           && a->radio_audio_allowed == b->radio_audio_allowed && a->radio_record_allowed == b->radio_record_allowed
+           && a->radio_stream_allowed == b->radio_stream_allowed && a->tg_audio_allowed == b->tg_audio_allowed
+           && a->tg_record_allowed == b->tg_record_allowed && a->tg_stream_allowed == b->tg_stream_allowed
+           && a->tg_tune_allowed == b->tg_tune_allowed;
+}
+
+/* Review focus: a labels-only radio list (no policy columns) leaves every decision identical to no list. */
 static int
 test_no_radio_policy_no_change(void) {
     int rc = 0;
@@ -3361,8 +3378,11 @@ test_no_radio_policy_no_change(void) {
             }
         }
     }
-    rc |=
-        expect_true("labels-only radio list leaves decisions bit-identical", memcmp(before, after, sizeof before) == 0);
+    int same = 1;
+    for (size_t i = 0; i < sizeof before / sizeof before[0]; i++) {
+        same &= decisions_equal(&before[i], &after[i]);
+    }
+    rc |= expect_true("labels-only radio list leaves decisions identical", same);
     st->tg_hold = 0U;
     free_test_state(st);
     return rc;

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/source_alias.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #include "../../test_support/radio_policy_test.h"

@@ -559,7 +559,7 @@ test_hold_keeps_radio_restrictions(dsd_opts* opts, dsd_state* st) {
     } radio[] = {{NULL, 1, 1, 1, 1}, {"A", 1, 0, 1, 0}, {"A", 0, 0, 0, 0}, {"B", 0, 0, 0, 0}};
 
     for (int phase2 = 0; phase2 <= 1; ++phase2) {
-        for (uint8_t slot = 0; slot < (phase2 ? 2 : 1); ++slot) {
+        for (int slot = 0; slot < (phase2 ? 2 : 1); ++slot) {
             for (int private_call = 0; private_call <= 1; ++private_call) {
                 for (size_t r = 0; r < sizeof radio / sizeof radio[0]; ++r) {
                     DSD_MEMSET(opts, 0, sizeof(*opts));

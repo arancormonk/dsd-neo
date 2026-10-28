@@ -9,7 +9,6 @@
  */
 
 #include <dsd-neo/core/id_pattern.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

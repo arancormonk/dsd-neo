@@ -546,17 +546,17 @@ test_m17_voice_ignores_talkgroup_policy(void) {
 static void
 test_source_only_blocked_radio_not_held(void) {
     static const struct {
-        int protocol;
         uint64_t target;
         uint64_t source;
-        int held;
         const char* tag;
+        int protocol;
+        int held;
     } cases[] = {
-        {1, 0U, 777U, 0, "target 0 with a blocked source is not held"},
-        {1, 0x100000064ULL, 777U, 0, "a wide target with a blocked source is not held"},
-        {1, 0U, 778U, 1, "target 0 with another source holds"},
-        {1, 0U, 0U, 1, "target 0 without a source holds"},
-        {DSD_SYNC_M17_STR_POS, 0U, 777U, 1, "M17 stays outside policy"},
+        {0U, 777U, "target 0 with a blocked source is not held", 1, 0},
+        {0x100000064ULL, 777U, "a wide target with a blocked source is not held", 1, 0},
+        {0U, 778U, "target 0 with another source holds", 1, 1},
+        {0U, 0U, "target 0 without a source holds", 1, 1},
+        {0U, 777U, "M17 stays outside policy", DSD_SYNC_M17_STR_POS, 1},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
