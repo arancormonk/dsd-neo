@@ -1103,9 +1103,6 @@ test_hops_write_every_setting(void) {
     for (uint32_t tuner : {5U, 1U, 2U, 3U, 6U, 4U, 0U}) {
         conn_script sc = default_script();
         sc.tuner_type = tuner;
-        /* Well above the 1.536 Msps the session asks for, so a slowed runner (TSan stretches each 2 ms gap) never
-         * falls under the throughput watchdog's floor and reconnects in the middle of a hop. */
-        sc.chunks = {65536U};
         server_reset(sc);
         const auto r_owner = std::make_unique<dev_rig>();
         dev_rig& r = *r_owner;
