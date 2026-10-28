@@ -27,6 +27,7 @@ object DsdNative {
 
     init {
         System.loadLibrary("dsd-neo-app_arm64-v8a")
+        HostDiagnostics.nativeReady()
     }
 
     external fun nativeInit(configDir: String, cacheDir: String): Int
@@ -46,8 +47,14 @@ object DsdNative {
     /** Re-arms the diagnostics startup window at a device boundary (issue #745). */
     external fun nativeArmStartupDiagnostics()
 
-    /** Bounded flush of the persistent diagnostics before the process may go. */
+    /** Starts a flush of the persistent diagnostics before the process may go, without waiting for it (#782). */
     external fun nativeFlushDiagnostics()
+
+    /**
+     * Gives up a configured session that will never run: its start attempt was retired during configure (#782). Clears
+     * the native configuration and the run record's receiver, and ends the record cancelled.
+     */
+    external fun nativeDiscardConfigured(): Int
 
     external fun nativeRun(): Int
 
@@ -76,12 +83,32 @@ object DsdNative {
      *
      * An app cannot open `/dev/bus/usb` nodes, so the descriptor comes from
      * [android.hardware.usb.UsbDeviceConnection]. Java keeps ownership: the
-     * connection must stay open for as long as the engine is running.
+     * connection must stay open for as long as the engine is running. [resetFirst]
+     * is true when the attachment owes a USB reset (#782): the RTL-SDR open that
+     * takes this descriptor resets the device first. It is bound to [fd], so every
+     * call replaces it.
      */
-    external fun nativeSetUsbFd(fd: Int): Int
+    external fun nativeSetUsbFd(fd: Int, resetFirst: Boolean): Int
 
     @JvmStatic
     external fun nativeSetAirspyUsbFd(fd: Int): Int
+
+    /**
+     * The RTL-SDR descriptor whose dongle owes a USB reset before its next open, or -1 (#782).
+     *
+     * Set with [nativeSetUsbFd], and by the engine when a stall stopped the dongle's samples (before any grace and
+     * whatever Stop follows); cleared by samples since, or a reset that succeeded. [UsbSourceManager] records it on
+     * the attachment it handed that descriptor with.
+     */
+    external fun nativeUsbResetOwed(): Int
+
+    /**
+     * The descriptors the engine holds, as { RTL-SDR, Airspy }, each -1 when none; null when the call failed (#782).
+     *
+     * A descriptor is held from just before libusb wraps it until the device is closed. [UsbSourceManager] closes a
+     * released connection once its own descriptor is no longer held, whatever a later session holds.
+     */
+    external fun nativeHeldUsbFds(): IntArray?
 
     /**
      * Whether the engine currently has the descriptor wrapped in libusb.

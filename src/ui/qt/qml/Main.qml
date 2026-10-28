@@ -59,7 +59,56 @@ Window {
             return qsTr("The receiver could not be opened or stopped receiving. Check its USB connection and settings.");
         if (kind === 6)
             return qsTr("The source configuration could not be applied. Review its settings and imported files.");
+        // Kinds 8 and up belong to the start attempt itself, never to an
+        // earlier session (android/run_status.h AttemptFailureKind).
+        if (kind === 8)
+            return qsTr("The previous session is still stopping. Tap Retry to start this one once it has stopped.");
+        if (kind === 9)
+            return qsTr("The decoder did not respond in time, so the session was not started. Tap Retry, or open Details if this keeps happening.");
+        var receiverFailure = receiverStartFailure(false);
+        if (receiverFailure.length)
+            return receiverFailure;
         return awaitingUsbAccess ? usbAccessText : qsTr("The source could not be started. Review its settings or open Details.");
+    }
+    /**
+     * A start that could not take its USB receiver before the session began
+     * (kinds 10-12, android/run_status.h): the receiver went away, lost its
+     * permission, or could not be reopened. Worded for the card, whose Retry
+     * asks for the receiver again, or for Signal search's own screen (@p search),
+     * where the search is started again from its controls. Empty for any other
+     * failure.
+     */
+    function receiverStartFailure(search) {
+        var kind = decoderHost ? decoderHost.inputFailureKind || 0 : 0;
+        if (kind < 10 || kind > 12)
+            return "";
+        var type = attemptedSource && attemptedSource.system ? attemptedSource.system.sourceType : "";
+        var receiver = type === "airspy" ? qsTr("Airspy") : type === "usb" ? qsTr("RTL-SDR") : qsTr("The receiver");
+        if (search) {
+            if (kind === 10)
+                return qsTr("%1 needs USB permission again, so Signal search was not started. Start the search again, then allow access when asked.").arg(receiver);
+            if (kind === 11)
+                return qsTr("%1 could not be reopened, so Signal search was not started. Start the search again, or unplug it and plug it back in if this keeps happening.").arg(receiver);
+            return qsTr("%1 is no longer connected, so Signal search was not started. Plug it back in, then start the search again.").arg(receiver);
+        }
+        if (kind === 10)
+            return qsTr("%1 needs USB permission again, so the session was not started. Tap Retry, then allow access when asked.").arg(receiver);
+        if (kind === 11)
+            return qsTr("%1 could not be reopened, so the session was not started. Tap Retry, or unplug it and plug it back in if this keeps happening.").arg(receiver);
+        return qsTr("%1 is no longer connected, so the session was not started. Plug it back in, then tap Retry.").arg(receiver);
+    }
+    /**
+     * A start attempt's own failure (kinds 8-12, android/run_status.h) worded
+     * for Signal search's screen, which has no Retry or Details: the search is
+     * started again from its controls. Empty for any other failure.
+     */
+    function searchStartFailure() {
+        var kind = decoderHost ? decoderHost.inputFailureKind || 0 : 0;
+        if (kind === 8)
+            return qsTr("The previous session is still stopping, so Signal search was not started. Start the search again once it has stopped.");
+        if (kind === 9)
+            return qsTr("The decoder did not respond in time, so Signal search was not started. Start the search again, or open Diagnostics in Settings if this keeps happening.");
+        return receiverStartFailure(true);
     }
     // #647 D2a: the host's word on the last session's receiver, scoped to that
     // session. Listen gives it a notice once the session is over; while it
@@ -71,18 +120,30 @@ Window {
      * it back. Reconnect resumes the attempt Main started; after an Activity
      * recreation there is none, so the notice says to start it again after
      * Reconnect. @p search words it for Signal search's own screen, where the
-     * search is started again from its controls.
+     * search is started again from its controls. A stalled RTL-SDR the app
+     * could not recover in place owes a USB reset, which the next open does
+     * (#782): its notice says so. Nothing blames the cable: the stream stopped,
+     * and the app cannot know why.
      */
     function receiverNotice(search) {
         var lost = receiverHealth.state === "lost";
-        var receiver = receiverHealth.source === "airspy" ? qsTr("Airspy") : receiverHealth.source === "usb" ? qsTr("RTL-SDR") : qsTr("The receiver");
-        if (search)
-            return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then start the search again.")).arg(receiver).arg(qsTr("Signal search"));
+        var resets = receiverHealth.source === "usb";
+        var receiver = receiverHealth.source === "airspy" ? qsTr("Airspy") : resets ? qsTr("RTL-SDR") : qsTr("The receiver");
+        if (search) {
+            if (lost)
+                return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then start the search again.").arg(receiver).arg(qsTr("Signal search"));
+            return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Start the search again to reset it.") : qsTr("%1 stopped sending samples, so %2 stopped. Start the search again.")).arg(receiver).arg(qsTr("Signal search"));
+        }
         var attempt = attemptedSource;
-        if (!attempt)
-            return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, tap Reconnect, then start it again.")).arg(receiver).arg(qsTr("the session"));
+        if (!attempt) {
+            if (lost)
+                return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, tap Reconnect, then start it again.").arg(receiver).arg(qsTr("the session"));
+            return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it, then start it again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect, then start it again.")).arg(receiver).arg(qsTr("the session"));
+        }
         var session = attempt.kind !== "explore" ? attempt.system.name || qsTr("the session") : attempt.system.signalSearch ? qsTr("Signal search") : qsTr("Explore");
-        return (lost ? qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.") : qsTr("%1 stopped sending samples, so %2 stopped. Check its USB connection, then tap Reconnect.")).arg(receiver).arg(session);
+        if (lost)
+            return qsTr("%1 was unplugged, so %2 stopped. Plug it back in, then tap Reconnect.").arg(receiver).arg(session);
+        return (resets ? qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to reset it and start again.") : qsTr("%1 stopped sending samples, so %2 stopped. Tap Reconnect to start again.")).arg(receiver).arg(session);
     }
     readonly property string receiverNoticeText: receiverEnded ? receiverNotice(false) : ""
     // Whether the failure on screen is that notice: Reconnect on Listen, the search's own wording there.
@@ -783,6 +844,7 @@ Window {
         if (!sys || !sys.sourceType)
             return;
         var remember = !options || options.remember !== false;
+        var previousSource = attemptedSource;
         attemptedSource = {
             kind: scan ? "scan" : row < 0 ? "explore" : "saved",
             uid: sys.uid || "",
@@ -844,8 +906,15 @@ Window {
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
         if (!(built.started)) {
-            if (decoderHost.failureText.length === 0)
-                mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name);
+            // A host that refuses with nothing to publish over a run on screen
+            // (starting or running) leaves that run as it was: its source stays
+            // the one a failure names and Retry starts, and no card is put over it.
+            if (decoderHost.failureText.length === 0) {
+                if (decoderHost.sessionState === 1 || decoderHost.sessionState === 2)
+                    attemptedSource = previousSource;
+                else
+                    mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name);
+            }
             return;
         }
         mainRoot.exploring = (row < 0) && !sys.signalSearch;
@@ -1026,7 +1095,11 @@ Window {
             completionMessage: mainRoot.completionMessage
             onRetryFailure: mainRoot.retrySource()
             onEditFailure: mainRoot.editFailedSource()
-            onDismissFailure: mainRoot.dismissedFailure = mainRoot.failureText
+            onDismissFailure: {
+                mainRoot.dismissedFailure = mainRoot.failureText;
+                // Gives up the attempt the card reports, so it can never start later.
+                decoderHost.dismissFailure();
+            }
             onFailureDetails: failureDetails.visible = true
             onReplayAgain: mainRoot.retrySource()
             x: mainRoot.expanded ? nav.width : 0
@@ -1336,8 +1409,9 @@ Window {
         sessionActive: decoderHost.sessionActive
         leaving: mainRoot.leavingSearch
         sessionSource: metrics.radioSource || ({})
-        // A receiver's ending is worded for this screen: the search starts again from here.
-        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText
+        // A receiver's ending, and a start attempt's own failure, are worded for
+        // this screen: the search starts again from here.
+        failure: mainRoot.receiverNoticeShown ? mainRoot.receiverNotice(true) : mainRoot.failureText === mainRoot.hostFailure && mainRoot.searchStartFailure().length > 0 ? mainRoot.searchStartFailure() : mainRoot.failureText
         onBackRequested: mainRoot.requestBack()
         onClosed: {
             mainRoot.abandonSignalSearchStart();

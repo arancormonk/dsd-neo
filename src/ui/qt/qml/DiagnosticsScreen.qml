@@ -121,7 +121,7 @@ Item {
         id: clearConfirm
         objectName: "diagnosticsClearConfirm"
         title: qsTr("Clear diagnostics?")
-        message: qsTr("The current log and the saved previous-run tail are removed.")
+        message: qsTr("The current log, the host and session records, and the saved previous-run records are removed.")
         confirmText: qsTr("Clear log")
         destructive: true
         onConfirmed: diagnosticsLog.clear()

@@ -146,6 +146,24 @@ if(DSD_HAS_RADIO)
         unset(_dsd_neo_io_radio_libusb_targets)
     endif()
 
+    # Android: libusb's own error lines reach the diagnostics through its log
+    # callback, which the same unit sets (rtl_usb_identity.cpp). The vendored
+    # libusb is the instance librtlsdr and libairspy open the app's descriptor with.
+    if(ANDROID AND TARGET dsd-neo_vendor_libusb)
+        set(_dsd_neo_io_radio_libusb_log_targets dsd-neo_io_radio)
+        if(BUILD_TESTING)
+            list(
+                APPEND _dsd_neo_io_radio_libusb_log_targets
+                dsd-neo_io_radio_private_test_support
+            )
+        endif()
+        foreach(_target IN LISTS _dsd_neo_io_radio_libusb_log_targets)
+            target_compile_definitions(${_target} PRIVATE DSD_HAVE_LIBUSB_LOG)
+            target_link_libraries(${_target} PRIVATE dsd-neo_vendor_libusb)
+        endforeach()
+        unset(_dsd_neo_io_radio_libusb_log_targets)
+    endif()
+
     install(
         TARGETS dsd-neo_io_radio
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
 #ifdef USE_RADIO
@@ -58,6 +59,9 @@ main(int argc, char** argv) {
     int exit_rc = 1;
     int bootstrap_rc = dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &exit_rc);
     if (bootstrap_rc != DSD_BOOTSTRAP_CONTINUE) {
+        /* No run, so no engine cleanup: close what the options opened before the parse stopped, so a -P recording
+           with no audio is removed rather than left behind as an empty TEMP file (#782). */
+        dsd_engine_release_outputs(opts, state);
         freeState(state);
         free(opts);
         free(state);
@@ -80,6 +84,7 @@ main(int argc, char** argv) {
         DSD_FPRINTF(stderr, "Airspy support unavailable in this build.\n");
         rc = 1;
 #endif
+        dsd_engine_release_outputs(opts, state);
     } else {
         rc = dsd_cli_frontend_run(opts, state);
     }

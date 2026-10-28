@@ -1397,10 +1397,11 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
     usb_world_reset(0);
 }
 
-/* An Android receiver (opened from the app's descriptor) is never recovered by design: its open says so once, at info
- * level, not as a warning. */
+/* An Android receiver (opened from the app's descriptor) is recovered in place since #782, identified by that
+ * descriptor (IO_RTL_USB_FD_RECOVERY); one whose identity cannot be read is not, and its open says why once, as a
+ * warning like every other reason. */
 void
-test_android_recovery_off_logged_at_info(void) {
+test_android_recovery_off_logged_as_warning(void) {
     rtl_device_test_set_open_fd_failure_hook(open_fd_succeeds);
     rtl_device_set_preopened_fd(7);
     (void)log_take();
@@ -1410,10 +1411,13 @@ test_android_recovery_off_logged_at_info(void) {
     rtl_device* dev = rtl_device_create(0, ring.get());
     assert(dev != nullptr);
     const std::string log = log_take();
-    assert(log.find("RTL-SDR: stall recovery is off for this receiver: opened from an Android descriptor")
-           != std::string::npos);
+    /* ENOTSUP differs between C libraries (95 on glibc, 45 on macOS, 129 in the MSVC UCRT). */
+    const std::string unidentified = "RTL-SDR: stall recovery is off for this receiver: its descriptor's USB identity "
+                                     "could not be read (errno "
+                                     + std::to_string(ENOTSUP) + ")";
+    assert(log.find(unidentified) != std::string::npos);
     const int descriptor_level = log_off_level_take();
-    assert(descriptor_level == (int)LOG_LEVEL_INFO);
+    assert(descriptor_level == (int)LOG_LEVEL_WARN);
     assert(rtl_device_usb_recovery_eligible(dev) == 0);
     rtl_device_destroy(dev);
     input_ring_destroy(ring.get());
@@ -1492,7 +1496,7 @@ main(void) {
 
     test_required_synchronization_failure_refuses_open();
     test_ineligible_recovery_off_reason_logged();
-    test_android_recovery_off_logged_at_info();
+    test_android_recovery_off_logged_as_warning();
     rtl_usb_identity identity{};
     const auto capability = rtl_usb_identity_resolve(0, &identity);
     assert(capability == RTL_USB_ID_OK || capability == RTL_USB_ID_NO_LIBUSB);

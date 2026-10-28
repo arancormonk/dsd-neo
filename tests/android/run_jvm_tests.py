@@ -79,6 +79,35 @@ def golden_records_match():
     )
 
 
+def kotlin_golden_matches(c_marker, kotlin_test, kotlin_marker):
+    """Whether a golden diagnostics record in a Kotlin test and the C++ test that runs it through redaction agree."""
+    c_test = REPO / "tests/ui/test_ui_qt_diagnostics_log.cpp"
+    kotlin_path = HERE / kotlin_test
+    try:
+        native = literal_after(c_test, c_marker, ("\\",))
+        kotlin = literal_after(kotlin_path, kotlin_marker, ("=", "+"))
+    except (OSError, ValueError) as error:
+        return f"cannot read the golden diagnostics records: {error}"
+    if native == kotlin:
+        return None
+    return (
+        f"{c_marker} in {c_test.relative_to(REPO)} and {kotlin_marker} in {kotlin_path.relative_to(REPO)} must be "
+        "byte-identical, so the records Kotlin writes are the ones native redaction is shown to keep"
+    )
+
+
+def watchdog_golden_matches():
+    return kotlin_golden_matches(
+        "#define DIAGNOSTICS_GOLDEN_WATCHDOG", "LooperWatchdogTest.kt", "private const val GOLDEN_WATCHDOG ="
+    )
+
+
+def screen_golden_matches():
+    return kotlin_golden_matches(
+        "#define DIAGNOSTICS_GOLDEN_SCREEN", "ScreenTraceTest.kt", "private const val GOLDEN_SCREEN ="
+    )
+
+
 class Build(NamedTuple):
     sources: tuple  # Production files under APP_SOURCES.
     tests: tuple  # Test files beside this script; each one's main() runs, in this order.
@@ -182,6 +211,135 @@ def native_lifecycle_contract():
     init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
     if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
         return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
+    # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -P, -6), so
+    # every way a configured session ends without nativeRun() closes them: a discard, a failed or exiting configure (and
+    # the next configure over one never run), and nativeDestroy() before it frees the options.
+    release = "dsd_engine_release_outputs(g_opts, g_state);"
+    for name, count in (("nativeDiscardConfigured", 1), ("nativeConfigure", 2), ("nativeDestroy", 1)):
+        body = re.search(rf"DsdNative_{name}\(.*?\n\}}", jni, re.S)
+        if not body or body.group(0).count(release) < count:
+            return f"android/dsdneo_jni.cpp: {name} must call {release} ({count} time(s)) for a session that never ran"
+    configure = re.search(r"DsdNative_nativeConfigure\(.*?\n\}", jni, re.S).group(0)
+    tail = configure.split("g_configured = false;", 1)
+    if len(tail) != 2 or release not in tail[1] or configure.find(release) > configure.find("dsd_runtime_bootstrap("):
+        return "android/dsdneo_jni.cpp: nativeConfigure must release before the bootstrap and after a failed one"
+    return None
+
+
+def receiver_option_tables_match():
+    """UsbReceiverKind.sourceOfArgs() reads a start's input as the engine's parser does, from copies of its tables.
+
+    The getopt string in src/runtime/cli/args.c and dsd_cli_compact_args()'s long-option tables in
+    src/runtime/cli/compact.c must equal the Kotlin ones, or an option's operand could be read as an input (#782)."""
+    kotlin_path = REPO / APP_SOURCES / "UsbReceiverKind.kt"
+    args_path = REPO / "src/runtime/cli/args.c"
+    compact_path = REPO / "src/runtime/cli/compact.c"
+    try:
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        args = args_path.read_text(encoding="utf-8")
+        compact = compact_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the option tables: {error}"
+    native_short = re.search(r"getopt\(argc, argv,\s*((?:\"[^\"]*\"\s*)+)\)", args)
+    kotlin_short = re.search(r"const val SHORT_OPTIONS =\s*((?:\"[^\"]*\"\s*\+?\s*)+)", kotlin)
+    if not native_short or not kotlin_short:
+        return f"cannot find the getopt string in {args_path.relative_to(REPO)} or SHORT_OPTIONS in {APP_SOURCES}"
+    joined = ["".join(re.findall(r'"([^"]*)"', match.group(1))) for match in (native_short, kotlin_short)]
+    if joined[0] != joined[1]:
+        return f"SHORT_OPTIONS in UsbReceiverKind.kt must equal the getopt string of args.c: {joined[0]!r}"
+    pairs = (
+        ("k_skip_exact_no_arg", "LONG_NO_VALUE"),
+        ("k_skip_exact_next_any", "LONG_NEXT_ANY"),
+        ("k_skip_exact_next_nonnull", "LONG_NEXT_PRESENT"),
+        ("k_free_value_options", "LONG_FREE_VALUE"),
+        ("k_skip_exact_next_nonopt", "LONG_NEXT_NON_OPTION"),
+        ("k_skip_prefix", "LONG_ATTACHED_PREFIXES"),
+    )
+    for native_name, kotlin_name in pairs:
+        native = re.search(rf"\b{native_name}\[\] = \{{(.*?)\}};", compact, re.S)
+        jvm = re.search(rf"val {kotlin_name}: Set<String> = setOf\((.*?)\n    \)", kotlin, re.S)
+        if not native or not jvm:
+            return f"cannot find {native_name} in compact.c or {kotlin_name} in UsbReceiverKind.kt"
+        native_items = re.findall(r'"([^"]*)"', native.group(1))
+        jvm_items = re.findall(r'"([^"]*)"', jvm.group(1))
+        if sorted(native_items) != sorted(jvm_items):
+            missing = sorted(set(native_items) - set(jvm_items))
+            extra = sorted(set(jvm_items) - set(native_items))
+            return f"{kotlin_name} in UsbReceiverKind.kt must equal {native_name} in compact.c: missing {missing}, extra {extra}"
+    # Any other long-option table in compact.c would be one this copy does not know.
+    tables = set(re.findall(r"static const char\* const (k_\w+)\[\]", compact)) | {"k_free_value_options"}
+    unknown = sorted(tables - {native for native, _ in pairs})
+    if unknown:
+        return f"compact.c has long-option tables UsbReceiverKind.kt does not mirror: {unknown}"
+    return replay_prescan_matches(kotlin, args, compact)
+
+
+def replay_prescan_matches(kotlin, args, compact):
+    """UsbReceiverKind.replayRequested() reads --iq-replay as dsd_parse_args()'s long-option pre-scan does (#782 r2 H1).
+
+    The pre-scan takes a value for every long option of compact.c's value tables except the bootstrap's own
+    (PRESCAN_BOOTSTRAP_ONLY), sets the replay from --iq-replay and --iq-replay=, and the replay is the only input the
+    parse sets besides getopt's -i."""
+    prescan = re.search(
+        r"#define DSD_PARSE_ARGS_PRESCAN_BLOCK\(\)(.*?)\n#define DSD_PARSE_ARGS_", args, re.S
+    )
+    bootstrap_path = REPO / "src/runtime/bootstrap/bootstrap.c"
+    receive_path = REPO / "src/runtime/receive_policy.c"
+    jvm_bootstrap = re.search(r"val PRESCAN_BOOTSTRAP_ONLY: Set<String> = setOf\((.*?)\n    \)", kotlin, re.S)
+    jvm_replay = re.search(r'const val IQ_REPLAY = "([^"]*)"', kotlin)
+    try:
+        bootstrap = bootstrap_path.read_text(encoding="utf-8")
+        receive = receive_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the bootstrap or receive options: {error}"
+    if not prescan or not jvm_bootstrap or not jvm_replay:
+        return "cannot find DSD_PARSE_ARGS_PRESCAN_BLOCK in args.c, or PRESCAN_BOOTSTRAP_ONLY or IQ_REPLAY in UsbReceiverKind.kt"
+    block = prescan.group(1)
+    if jvm_replay.group(1) != "--iq-replay" or not re.search(
+        r'strcmp\(argv\[i\], "--iq-replay"\) == 0\)(?:(?!\n        if \().)*?iq_replay_cli = DSD_PARSE_ARGS_NEXT_ARG\(\)',
+        block,
+        re.S,
+    ) or not re.search(r'strncmp\(argv\[i\], "--iq-replay=", 12\) == 0\)\s*\{\s*\\?\s*iq_replay_cli = argv\[i\] \+ 12;', block):
+        return "the pre-scan no longer reads --iq-replay <path> and --iq-replay=<path> as UsbReceiverKind.replayRequested() does"
+    value_tables = ("k_skip_exact_next_any", "k_skip_exact_next_nonnull", "k_free_value_options", "k_skip_exact_next_nonopt")
+    compact_values = set()
+    for name in value_tables:
+        table = re.search(rf"\b{name}\[\] = \{{(.*?)\}};", compact, re.S)
+        if not table:
+            return f"cannot find {name} in compact.c"
+        compact_values |= set(re.findall(r'"([^"]*)"', table.group(1)))
+    # What the pre-scan takes a value for: an exact name whose branch reads the next argument, every --airspy-* option
+    # through cli_parse_airspy_option(), and the receive policy's options through dsd_receive_option_argument().
+    taken = set()
+    for branch in re.split(r"\n        if \(", block):
+        head = branch.split("\n", 1)[0]
+        if "DSD_PARSE_ARGS_NEXT_ARG()" in branch or "arg_advance = 2" in branch:
+            taken |= set(re.findall(r'strcmp\(argv\[i\], "(--[^"]*)"\) == 0', head))
+    if 'strncmp(argv[i], "--airspy-", 9) == 0' in block and "cli_parse_airspy_option" in block:
+        taken |= {name for name in compact_values if name.startswith("--airspy-")}
+    kinds = re.search(r"dsd_receive_kind_name\(int kind\) \{\s*static const char\* const names\[\] = \{(.*?)\};", receive, re.S)
+    if "dsd_receive_option_argument(" in block and kinds:
+        taken |= {f"--{kind}-{suffix}" for kind in re.findall(r'"([^"]*)"', kinds.group(1)) for suffix in ("allow", "block", "name")}
+    bootstrap_only = set(re.findall(r'"([^"]*)"', jvm_bootstrap.group(1)))
+    expected = compact_values - bootstrap_only
+    if sorted(taken & compact_values) != sorted(expected):
+        return (
+            "PRESCAN_BOOTSTRAP_ONLY in UsbReceiverKind.kt must name exactly the value options the args.c pre-scan does "
+            f"not take a value for: missing {sorted(expected - taken)}, extra {sorted((taken & compact_values) - expected)}"
+        )
+    bootstrap_options = set(re.findall(r'strcmp\(argv\[\*i\], "(--[^"]*)"\) != 0', bootstrap))
+    if not bootstrap_only <= bootstrap_options:
+        return f"PRESCAN_BOOTSTRAP_ONLY names options bootstrap.c does not read: {sorted(bootstrap_only - bootstrap_options)}"
+    # The input the parse sets: getopt's -i (strncpy and terminator) and the replay (cli_set_iqreplay_audio_dev()).
+    writes = re.findall(
+        r"(?:DSD_\w+|memcpy|memmove|strn?cpy|strn?cat|v?snprintf)\(opts->audio_in_dev\b|opts->audio_in_dev\[[^\]]*\] = ", args
+    )
+    replay_sets = re.findall(r"opts->iq_replay_requested = 1;", args)
+    if len(writes) != 4 or len(replay_sets) != 1:
+        return (
+            f"args.c sets the input in {len(writes)} places and the replay in {len(replay_sets)}, not 4 and 1: model the new "
+            "one in UsbReceiverKind.sourceOfArgs()"
+        )
     return None
 
 
@@ -231,12 +389,16 @@ def usb_broker_contract():
             f"{where}: a detach must stop the engine only when nativeSessionUsesLocalReceiver() or nativeIsUsbFdInUse() "
             "says the session uses it, and release the connection either way"
         )
-    # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request.
+    # #647 WP4: the host polls deviceStatus(), which retires an unanswered request and publishes the request (the
+    # record recordLocked() builds, which a session's reopen also holds, #782).
     status = re.search(r"fun deviceStatus\(\): String \{(.*?)\n    \}", manager, re.S)
     if not status or "requests.expireIfStale()" not in status.group(1):
         return f"{where}: deviceStatus() must retire an unanswered request"
+    built = re.search(r"fun recordLocked\(\): String =(.*?)\.toString\(\)\n", manager, re.S)
+    if "recordLocked()" not in status.group(1) or not built:
+        return f"{where}: deviceStatus() must publish the record recordLocked() builds"
     for key in ("pending", "requestedSource", "requestedSerial"):
-        if f'.put("{key}"' not in status.group(1):
+        if f'.put("{key}"' not in built.group(1):
             return f"{where}: deviceStatus() must publish {key}"
     # #647 B4: an access request that finds the receiver ready rewrites the record for it.
     if not ready_branch_rewrites_status(manager):
@@ -304,14 +466,19 @@ SUITES = {
         ),
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
-    "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
-    # The USB broker's permission requests, detach and attach bookkeeping, and the attachment's kind: the plain-Kotlin
-    # state with no stubs, then UsbSourceManager itself against stubs of the USB service, prompts and engine.
+    # Which receiver a start's arguments name, read with copies of the engine's option tables, which the check compares.
+    "usb_receiver": Suite(
+        builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),),
+        checks=(receiver_option_tables_match,),
+    ),
+    # The USB broker's permission requests, detach and attach bookkeeping, the attachment's kind and the USB resets
+    # attachments owe: the plain-Kotlin state with no stubs, then UsbSourceManager itself against stubs of the USB
+    # service, prompts and engine.
     "usb": Suite(
         builds=(
             Build(
-                sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt"),
-                tests=("UsbRequestStateTest.kt",),
+                sources=("UsbRequestState.kt", "UsbAttachmentTracker.kt", "UsbReceiverKind.kt", "UsbResetObligations.kt"),
+                tests=("UsbRequestStateTest.kt", "UsbResetObligationsTest.kt"),
             ),
             # The production manager itself, against a scripted bus, prompt and engine.
             Build(
@@ -320,6 +487,8 @@ SUITES = {
                     "UsbRequestState.kt",
                     "UsbAttachmentTracker.kt",
                     "UsbReceiverKind.kt",
+                    "UsbResetObligations.kt",
+                    "UsbSessionTake.kt",
                     "EngineStop.kt",
                 ),
                 tests=("UsbSourceManagerTest.kt",),
@@ -344,17 +513,19 @@ SUITES = {
         builds=(
             Build(sources=("EngineStop.kt",), tests=("EngineStopTest.kt",)),
             Build(
-                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt"),
-                tests=("DecoderServiceStopTest.kt",),
+                # UsbSourceManager is the stub in ServiceNative.kt: the service's take of its receiver is scripted.
+                sources=("EngineStop.kt", "DecoderService.kt", "DecoderStatus.kt", "UsbReceiverKind.kt", "UsbSessionTake.kt"),
+                tests=("DecoderServiceStopTest.kt", "DecoderServiceAttemptTest.kt", "DecoderServiceUsbTest.kt"),
                 stubs=("Service.kt", "ServiceContext.kt", "ServicePackageManager.kt", "ServiceNative.kt",
-                       "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt"),
+                       "Os.kt", "PowerManager.kt", "Log.kt", "JSONObject.kt", "SuppressLint.kt"),
             ),
         ),
         checks=(stop_callers_carry_their_cause, native_lifecycle_contract),
     ),
     # The screen policy and the pure adapters around it compile with no stubs at all, so an android.* import in any of
     # them fails the build. ScreenLocks, the one wrapper over the platform's wake locks, builds apart, with the pure
-    # ScreenWake it answers with, against a PowerManager stub that models reference counting.
+    # ScreenWake it answers with, against a PowerManager stub that models reference counting. The screen trace (#782)
+    # builds with the policy, whose inputs it records.
     "screen": Suite(
         builds=(
             Build(
@@ -365,6 +536,9 @@ SUITES = {
                     "StatusFeed.kt",
                     "ActivitySlot.kt",
                     "DecoderStatus.kt",
+                    "ScreenTrace.kt",
+                    "HostRecordText.kt",
+                    "ActivityTrace.kt",
                 ),
                 tests=(
                     "ScreenPolicyTest.kt",
@@ -372,6 +546,7 @@ SUITES = {
                     "ScreenTouchTest.kt",
                     "StatusFeedTest.kt",
                     "ActivitySlotTest.kt",
+                    "ScreenTraceTest.kt",
                 ),
             ),
             Build(
@@ -380,6 +555,19 @@ SUITES = {
                 stubs=("PowerManager.kt",),
             ),
         ),
+        checks=(screen_golden_matches,),
+    ),
+    # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
+    # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and
+    # HostDiagnostics, the Android glue around them, are not built here.
+    "watchdog": Suite(
+        builds=(
+            Build(
+                sources=("LooperWatchdog.kt", "ActivityTrace.kt", "PendingHostRecords.kt", "HostRecordText.kt"),
+                tests=("LooperWatchdogTest.kt", "ActivityTraceTest.kt", "PendingHostRecordsTest.kt"),
+            ),
+        ),
+        checks=(watchdog_golden_matches,),
     ),
 }
 

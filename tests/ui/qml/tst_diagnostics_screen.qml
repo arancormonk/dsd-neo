@@ -45,7 +45,7 @@ Item {
             var confirm = findChild(screen.item, "diagnosticsClearConfirm");
             verify(confirm.visible);
             compare(confirm.title, "Clear diagnostics?");
-            compare(confirm.message, "The current log and the saved previous-run tail are removed.");
+            compare(confirm.message, "The current log, the host and session records, and the saved previous-run records are removed.");
             compare(confirm.confirmText, "Clear log");
             verify(confirm.destructive);
             verify(diagnosticsLog.allText().indexOf(line) >= 0);

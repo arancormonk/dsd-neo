@@ -18,6 +18,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
+#include <initializer_list>
 #include <stdint.h>
 #include <utility>
 #include "../../android/decoder_host_android.h"
@@ -74,6 +75,17 @@ static int hostRefreshes;
 // The platform's start intents and USB access requests the host dispatched.
 static int startDispatches;
 static int accessRequests;
+// #782: the attempt each start intent carried, why the next dispatch fails ("" hands it over), and the service's side
+// of DecoderService.retireAttempts(): each call's bound, the lifecycle reads made before it, and its answer.
+static uint64_t lastStartAttempt;
+static QString startDispatchFailure;
+static QList<uint64_t> retirements;
+static int lifecycleReadsAtRetire;
+static bool serviceTookAttempt;
+// When not empty, the record the service publishes once the retirement returns (gate r5 L1): what happened to the
+// service between the host's lifecycle read and its retirement. Its answer is then the service's own rule, taken when
+// the record's attempt is the bound and was not cancelled, and the hook is used once.
+static QJsonObject recordAtRetire;
 
 // UsbSourceManager.deviceStatus(), which the host's local-device refresh applies.
 static QJsonObject&
@@ -163,9 +175,27 @@ void
 DecoderHostAndroid::shareDiagnostics(const QString&, const QString&) {}
 
 QString
-DecoderHostAndroid::platformStartDecoder(const QStringList&) {
+DecoderHostAndroid::platformStartDecoder(const QStringList&, uint64_t attempt) {
+    if (!startDispatchFailure.isEmpty()) {
+        return startDispatchFailure;
+    }
     ++startDispatches;
+    lastStartAttempt = attempt;
     return {};
+}
+
+bool
+DecoderHostAndroid::platformRetireAttempts(uint64_t through) {
+    retirements.append(through);
+    lifecycleReadsAtRetire = lifecycleReads;
+    if (!recordAtRetire.isEmpty()) {
+        retained_record() = recordAtRetire;
+        recordAtRetire = QJsonObject();
+        /* DecoderService.retireAttempts(): one still STARTING is cancelled, one past it (RUNNING) is taken. */
+        return static_cast<uint64_t>(retained_record().value(QStringLiteral("attemptId")).toInteger()) == through
+               && retained_record().value(QStringLiteral("state")).toString() != QStringLiteral("STARTING");
+    }
+    return serviceTookAttempt;
 }
 
 void
@@ -607,7 +637,10 @@ check_receiver_health() {
     retained_record() = lifecycle_record(82, "IDLE", kRunCompleted, kEndReceiverFailed, kReceiverAirspy);
     running = false;
     host.refresh();
-    check(host.sessionState() == DecoderHost::Idle && health_state(host) == QStringLiteral("failed"),
+    /* #782: the refusal is the attempt's failure, and stands past the stopped session's end until a dismissal or the
+     * next start; the notice, which Main words ahead of it, stays with it. */
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptPreviousStopping
+              && health_state(host) == QStringLiteral("failed"),
           "the failed receiver's notice survives the terminal record");
     check(host.start({}) && startDispatches == 1, "a start is dispatched");
     check(health_state(host) == QStringLiteral("ok"), "start() clears the notice");
@@ -805,6 +838,134 @@ check_claim_error_scope() {
     retained_record() = QJsonObject();
 }
 
+/* A broker record of a ready RTL-SDR connection: its attachment (device name, attach epoch) and connection number. */
+static QJsonObject
+rtl_connection(const char* device, qint64 epoch, qint64 connection, const char* serial) {
+    return {{"ready", true},     {"source", "usb"},          {"serial", serial},
+            {"name", "RTL-SDR"}, {"text", "Ready: RTL-SDR"}, {"device", device},
+            {"epoch", epoch},    {"connection", connection}};
+}
+
+/* A failed RTL-SDR session's terminal record, naming the connection the session took. */
+static QJsonObject
+claim_failure(int session, const char* device, qint64 epoch, qint64 connection) {
+    using namespace dsd_android;
+    QJsonObject failed = lifecycle_record(session, "IDLE", kRunFailed, kEndNone, kReceiverRtl);
+    failed.insert("deviceError", -6);
+    failed.insert("lastError", "Decoder run failed (1); USB open/claim error -6");
+    failed.insert("usbDevice", device);
+    failed.insert("usbEpoch", epoch);
+    failed.insert("usbConnection", connection);
+    return failed;
+}
+
+/* #782: a session's claim error belongs to the connection that session took, not to whatever shares its kind and
+ * serial: two dongles with the same (or no) serial, and a replacement connection to the same dongle, never show it. */
+static void
+check_claim_error_connection() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    const char* kA = "/dev/bus/usb/001/002";
+    const char* kB = "/dev/bus/usb/001/003";
+    for (const char* serial : {"00000001", ""}) {
+        DecoderHostAndroid host;
+        usb_record() = rtl_connection(kA, 1, 1, serial);
+        retained_record() = {{"sessionId", 120}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        retained_record() = claim_failure(121, kA, 1, 1);
+        host.refresh();
+        check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy, "the claim error shows for its own dongle");
+        // Another dongle of the same kind, with the same serial or none, is connected instead.
+        usb_record() = rtl_connection(kB, 2, 2, serial);
+        host.refresh();
+        check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
+                  && host.localDeviceStatus() == QStringLiteral("Ready: RTL-SDR"),
+              *serial ? "a dongle with the same serial never shows another's claim error"
+                      : "a dongle with no serial never shows another's claim error");
+        usb_record() = rtl_connection(kA, 1, 1, serial);
+        host.refresh();
+        check(host.localDeviceFailureKind() == DecoderHost::DeviceBusy, "it shows again for its own connection");
+    }
+
+    /* The session's terminal result arrives after the next start reopened the same dongle (a new connection): it
+     * concerns the connection the session took, which is gone. */
+    DecoderHostAndroid host;
+    usb_record() = rtl_connection(kA, 1, 3, "00000001");
+    retained_record() = {{"sessionId", 130}, {"state", "IDLE"}};
+    host.refresh();
+    QJsonObject run = lifecycle_record(131, "RUNNING", kRunPending, kEndNone, kReceiverRtl);
+    run.insert("usbDevice", kA);
+    run.insert("usbEpoch", 1);
+    run.insert("usbConnection", 3);
+    retained_record() = run;
+    running = true;
+    host.refresh();
+    usb_record() = rtl_connection(kA, 1, 4, "00000001");
+    retained_record() = claim_failure(131, kA, 1, 3);
+    running = false;
+    host.refresh();
+    check(host.localDeviceFailureKind() == DecoderHost::NoDeviceFailure
+              && host.localDeviceStatus() == QStringLiteral("Ready: RTL-SDR"),
+          "a late result never lands on the replacement connection");
+
+    usb_record() = QJsonObject();
+    retained_record() = QJsonObject();
+}
+
+/* #782: the service's own failure of a start that could not take its USB receiver: the attempt's kind and text reach
+ * QML, and the broker's record, now not ready, says what the receiver needs. */
+static void
+check_receiver_take_failures() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+
+    struct Case {
+        const char* wire;
+        int kind;
+        const char* text;
+        const char* broker_kind;
+        int pill;
+    };
+
+    const Case cases[] = {
+        {"usb_gone", kAttemptUsbGone, "The USB receiver is no longer connected", "detached",
+         DecoderHost::DeviceDetached},
+        {"usb_permission", kAttemptUsbPermission, "The USB receiver needs permission again", "permission",
+         DecoderHost::DevicePermission},
+        {"usb_open_failed", kAttemptUsbOpenFailed, "The USB receiver could not be reopened", "open_failed",
+         DecoderHost::DeviceOpenFailed},
+        {"previous_stopping", kAttemptPreviousStopping, "A previous session is still stopping", "", -1},
+    };
+    for (const Case& c : cases) {
+        DecoderHostAndroid host;
+        usb_record() = rtl_connection("/dev/bus/usb/001/002", 1, 1, "00000001");
+        retained_record() = {{"sessionId", 140}, {"state", "IDLE"}, {"reason", kRunCompleted}};
+        running = false;
+        host.refresh();
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the start is dispatched");
+        retained_record() = {{"sessionId", 141},      {"state", "IDLE"},
+                             {"reason", kRunFailed},  {"attemptId", (qint64)lastStartAttempt},
+                             {"failureKind", c.wire}, {"lastError", c.text}};
+        if (c.pill >= 0) {
+            usb_record() = {{"ready", false}, {"source", ""}, {"text", "Device detached"}, {"kind", c.broker_kind}};
+        }
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == c.kind
+                  && host.inputFailureCode() == 0 && host.failureText() == QLatin1String(c.text),
+              "the service's take failure is the attempt's failure, with its kind and text");
+        if (c.pill >= 0) {
+            check(!host.localDeviceReady() && host.localDeviceFailureKind() == c.pill,
+                  "the broker reads not ready, with what the receiver needs");
+        }
+        host.dismissFailure();
+    }
+    usb_record() = QJsonObject();
+    retained_record() = QJsonObject();
+}
+
 /* The USB record's outstanding access request reaches QML through the host (#647 WP3). */
 static void
 check_request_record() {
@@ -837,6 +998,577 @@ check_request_record() {
     usb_record() = QJsonObject();
 }
 
+/* #782: the last session failed on the network; the next start, a USB one, never reaches the service. Its card must
+ * say the start was not delivered, never the old session's network failure, however often the old record is read. */
+static void
+check_undelivered_start_after_network_failure() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    hostDiagnostics = 0;
+    serviceStops = 0;
+    startDispatches = 0;
+    retirements.clear();
+    serviceTookAttempt = false;
+    nowMs = 100000;
+    retained_record() = {{"sessionId", 90}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    retained_record() = {{"sessionId", 91}, {"state", "RUNNING"}, {"reason", kRunPending}};
+    running = true;
+    host.refresh();
+    const QJsonObject network_failure = {{"sessionId", 91},      {"state", "IDLE"},
+                                         {"reason", kRunFailed}, {"lastError", "Decoder run failed (1)"},
+                                         {"inputFailure", 1},    {"inputError", 111}};
+    retained_record() = network_failure;
+    running = false;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == 1,
+          "the network session failed with its kind");
+
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the USB start is dispatched");
+    check(startDispatches == 1, "one start intent");
+    for (uint64_t waited = 250; waited < 2000; waited += 250) {
+        nowMs = 100000 + waited;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Starting, "the start waits out its grace");
+    }
+    check(hostDiagnostics == 0, "nothing is logged under the grace");
+    nowMs = 102000;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed, "an undelivered start fails after 2 s");
+    check(host.inputFailureKind() == kAttemptUndelivered && host.inputFailureCode() == 0,
+          "the failure is the undelivered start's, not the old network failure");
+    check(host.failureText() == QStringLiteral("The decoder service did not respond to the start"),
+          "the failure text is the undelivered start's");
+    check(hostDiagnostics == 1
+              && lastHostDiagnostic
+                     == QStringLiteral(
+                         "Start was not delivered to the decoder service within 2000 ms (service state IDLE)"),
+          "the expiry is logged with its wait and the service state");
+    for (int poll = 1; poll <= 8; ++poll) {
+        nowMs = 102000 + 250 * poll;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered
+                  && host.inputFailureCode() == 0,
+              "later polls of the old record never bring the network failure back");
+    }
+    check(retirements.size() == 2 && retirements.last() == lastStartAttempt,
+          "the expiry retired the attempt it gave up on");
+    host.stop();
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "Dismiss acknowledges it");
+    check(serviceStops == 0, "acknowledging an undelivered start stops nothing");
+    retained_record() = QJsonObject();
+}
+
+/* #782: a start refused because the previous session is still stopping says so, and keeps saying so. */
+static void
+check_refused_start() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    serviceStops = 0;
+    startDispatches = 0;
+    nowMs = 200000;
+    retained_record() = {{"sessionId", 70}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    /* The service is stopping a session whose receiver failed; the UI has not polled it yet. */
+    const QJsonObject stopping = {
+        {"sessionId", 71}, {"state", "STOPPING"}, {"reason", kRunPending}, {"inputFailure", 1}, {"inputError", 111}};
+    retained_record() = stopping;
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the start is refused");
+    check(startDispatches == 0, "a refused start dispatches nothing");
+    check(host.sessionState() == DecoderHost::Failed, "the refusal is a failure on screen");
+    check(host.inputFailureKind() == kAttemptPreviousStopping && host.inputFailureCode() == 0,
+          "the refusal has its own kind");
+    check(host.failureText() == QStringLiteral("A previous session is still stopping"), "and its own text");
+    for (int poll = 1; poll <= 4; ++poll) {
+        nowMs = 200000 + 250 * poll;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptPreviousStopping,
+              "polls of the stopping session keep the refusal");
+    }
+    retained_record() = {{"sessionId", 71}, {"state", "IDLE"}, {"reason", kRunCancelled}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptPreviousStopping,
+          "the stopped session's end keeps the refusal until it is dismissed");
+    host.stop();
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+          "Retry or Dismiss clears it");
+    check(serviceStops == 0, "clearing the refusal stops nothing");
+    check(lastHostDiagnostic.startsWith(QStringLiteral("Start attempt "))
+              && lastHostDiagnostic.endsWith(QStringLiteral(" refused: the decoder service is STOPPING")),
+          "the refusal is logged with the service state");
+    retained_record() = QJsonObject();
+}
+
+/* #782: every start carries a new attempt id, and retires every earlier attempt before the service state is read. */
+static void
+check_attempt_identity() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    int results = 0;
+    QObject::connect(&host, &DecoderHost::runResultChanged, [&results]() { ++results; });
+    hostDiagnostics = 0;
+    serviceStops = 0;
+    startDispatches = 0;
+    retirements.clear();
+    serviceTookAttempt = false;
+    nowMs = 300000;
+    retained_record() = {{"sessionId", 100}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+
+    const int reads = lifecycleReads;
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    check(first != 0 && retirements == QList<uint64_t>{first - 1}, "a start retires every attempt before it");
+    check(lifecycleReadsAtRetire == reads, "before it reads the service state");
+    /* The service took it after all: the IDLE record the expiry came from was older than the retirement. */
+    serviceTookAttempt = true;
+    nowMs = 302000;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+          "an attempt the service took is no failure");
+    check(lastHostDiagnostic
+              == QStringLiteral("Start attempt %1 was taken by the decoder service after all").arg(first),
+          "the late take is logged");
+    retained_record() = {
+        {"sessionId", 101}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+    running = true;
+    nowMs = 302250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "and it runs");
+
+    /* The service fails the next attempt before its configure, with a kind of its own. */
+    retained_record() = {
+        {"sessionId", 101}, {"state", "IDLE"}, {"reason", kRunCompleted}, {"attemptId", (qint64)first}};
+    running = false;
+    host.refresh();
+    serviceTookAttempt = false;
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the second start is dispatched");
+    const uint64_t second = lastStartAttempt;
+    check(second > first && retirements.last() == second - 1, "the second start supersedes the first");
+    const QJsonObject gone = {{"sessionId", 102},          {"state", "IDLE"},
+                              {"reason", kRunFailed},      {"attemptId", (qint64)second},
+                              {"failureKind", "usb_gone"}, {"lastError", "USB receiver gone"}};
+    retained_record() = gone;
+    results = 0;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUsbGone
+              && host.failureText() == QStringLiteral("USB receiver gone") && results > 0,
+          "the service's failure kind for this attempt is published");
+    QJsonObject other = gone;
+    other.insert(QStringLiteral("attemptId"), static_cast<qint64>(second + 7));
+    other.insert(QStringLiteral("failureKind"), QStringLiteral("usb_permission"));
+    retained_record() = other;
+    host.refresh();
+    check(host.inputFailureKind() == kAttemptUsbGone, "another attempt's failure kind replaces nothing");
+    retained_record() = gone;
+    const int before_dismiss = retirements.size();
+    host.dismissFailure();
+    check(retirements.size() == before_dismiss + 1 && retirements.last() == second, "a dismissal retires the attempt");
+    check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+          "and clears its failure");
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && host.inputFailureKind() == 0,
+          "the dismissed attempt's record does not bring it back");
+
+    /* A start the host could not hand over: no kind, and not the old session's. */
+    retained_record() = {
+        {"sessionId", 103}, {"state", "IDLE"}, {"reason", kRunFailed}, {"inputFailure", 1}, {"inputError", 111}};
+    host.refresh();
+    host.stop();
+    startDispatchFailure = QStringLiteral("No Android context");
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "an undispatchable start fails");
+    startDispatchFailure.clear();
+    check(host.sessionState() == DecoderHost::Failed && host.failureText() == QStringLiteral("No Android context")
+              && host.inputFailureKind() == 0 && host.inputFailureCode() == 0,
+          "with its own text and no kind");
+    host.refresh();
+    check(host.inputFailureKind() == 0 && host.failureText() == QStringLiteral("No Android context"),
+          "the old record's network failure stays out");
+
+    /* Dismissing a failure the service reported retires the attempt and leaves the failure as it was. */
+    host.stop();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a third start");
+    const uint64_t third = lastStartAttempt;
+    retained_record() = {{"sessionId", 104},  {"state", "IDLE"},  {"reason", kRunFailed},
+                         {"inputFailure", 7}, {"inputError", -6}, {"attemptId", (qint64)third}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == 7 && host.inputFailureCode() == -6,
+          "a receiver that could not be opened reaches the card as a device failure");
+    host.dismissFailure();
+    check(retirements.last() == third && host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == 7,
+          "a dismissal leaves a run's own failure to the card");
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+    serviceStops = 0;
+}
+
+/* #782 (Task 4 minor 1): the grace ran out on a start the service took after all, so the retirement cancels it while it
+ * configures. Dismissing or retrying the undelivered start then shows the attempt winding down, never the expiry's
+ * stale failure or "Starting…" for a session that will not run, until its cancelled end. */
+static void
+check_dismissed_undelivered_start_winds_down() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    for (const bool retry : {false, true}) {
+        DecoderHostAndroid host;
+        serviceStops = 0;
+        retirements.clear();
+        serviceTookAttempt = false;
+        nowMs = 400000;
+        retained_record() = {{"sessionId", 120}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the start is dispatched");
+        const uint64_t attempt = lastStartAttempt;
+        nowMs = 402000;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered,
+              "the expired start is undelivered");
+        /* The service took it between the IDLE record and the retirement, which cancels it. */
+        retained_record() = {
+            {"sessionId", 121}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)attempt}};
+        if (retry) {
+            host.stop();
+        } else {
+            host.dismissFailure();
+        }
+        check(host.sessionState() == DecoderHost::Stopping && host.inputFailureKind() == 0,
+              "a dismissed undelivered start the service still holds winds down");
+        check(serviceStops == 0, "dismissing it sends no stop: the retirement cancels it");
+        nowMs = 402250;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Stopping, "its configuring record is no start on screen");
+        retained_record() = {
+            {"sessionId", 121}, {"state", "IDLE"}, {"reason", kRunCancelled}, {"attemptId", (qint64)attempt}};
+        nowMs = 402500;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Idle && host.failureText().isEmpty(), "its cancelled end is idle");
+    }
+    retained_record() = QJsonObject();
+}
+
+/* #782 (Task 4 minors 2 and 3): a start refused while another is on screen, starting or running, through an entry
+ * point no QML guard covers, neither retires that attempt nor publishes its refusal over it, and the attempt on screen
+ * is still the one the host follows. */
+static void
+check_refused_start_leaves_the_run_on_screen() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    serviceStops = 0;
+    serviceTookAttempt = false;
+    nowMs = 500000;
+    retained_record() = {{"sessionId", 130}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    retained_record() = {
+        {"sessionId", 131}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+    nowMs = 500250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting, "the first start is starting");
+    retirements.clear();
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a second start is refused");
+    check(retirements.isEmpty(), "a refused start retires nothing while another is starting");
+    check(host.sessionState() == DecoderHost::Starting && host.inputFailureKind() == 0 && host.failureText().isEmpty(),
+          "the refusal is not published over a starting run");
+    /* The attempt on screen is still the one followed: a failure its record names before its configure is its own. */
+    retained_record() = {{"sessionId", 131},           {"state", "IDLE"},           {"reason", kRunFailed},
+                         {"attemptId", (qint64)first}, {"failureKind", "usb_gone"}, {"lastError", "USB receiver gone"}};
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUsbGone,
+          "the starting attempt keeps its own failure");
+
+    host.stop();
+    retirements.clear();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a start from a settled screen");
+    const uint64_t second = lastStartAttempt;
+    check(retirements == QList<uint64_t>{second - 1}, "a start from a settled screen supersedes every earlier one");
+    retained_record() = {
+        {"sessionId", 132}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+    running = true;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "it runs");
+    retirements.clear();
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a start while it runs is refused");
+    check(retirements.isEmpty(), "a refused start retires nothing while another runs");
+    check(host.sessionState() == DecoderHost::Running && host.inputFailureKind() == 0 && host.failureText().isEmpty(),
+          "the refusal is not published over a running run");
+    running = false;
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+}
+
+/* Re-review N1: a start accepted while one is on its way (published Starting, its START not delivered yet, so the
+ * service still reads IDLE) supersedes that one once the service state accepted it, never before. Otherwise both
+ * STARTs arrive, the first runs, and this one's grace expires as undelivered under a host that follows it. */
+static void
+check_accepted_start_supersedes_the_one_on_its_way() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    serviceStops = 0;
+    serviceTookAttempt = false;
+    nowMs = 600000;
+    retained_record() = {{"sessionId", 140}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    nowMs = 600250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting, "it is on its way, its START not delivered");
+    retirements.clear();
+    const int reads = lifecycleReads;
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
+          "a start while one is on its way is accepted while the service is idle");
+    const uint64_t second = lastStartAttempt;
+    check(second > first && retirements == QList<uint64_t>{second - 1},
+          "an accepted start supersedes the one on its way");
+    check(lifecycleReadsAtRetire > reads, "once the service state accepted it");
+    retained_record() = {
+        {"sessionId", 141}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+    running = true;
+    nowMs = 600500;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running && host.inputFailureKind() == 0,
+          "the superseding start is the one followed");
+    running = false;
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+}
+
+/* Gate r5 L1: a second start supersedes the first while that one is on its way, and the service takes the first
+ * between the host's lifecycle read and its retirement, which cancels it while it configures. The first's records
+ * (STARTING, then its cancelled end, a newer session than the read) are not the second's: the second keeps Starting
+ * and its grace, and either its own records drive the phase or its grace runs out and retires it. */
+static void
+check_superseded_attempt_never_drives_the_phase() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    for (const bool delivered : {false, true}) {
+        DecoderHostAndroid host;
+        hostDiagnostics = 0;
+        serviceStops = 0;
+        startDispatches = 0;
+        serviceTookAttempt = false;
+        nowMs = 700000;
+        retained_record() = {{"sessionId", 150}, {"state", "IDLE"}};
+        running = false;
+        host.refresh();
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+        const uint64_t first = lastStartAttempt;
+        nowMs = 700250;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Starting, "the first start is on its way");
+
+        retirements.clear();
+        recordAtRetire = {
+            {"sessionId", 151}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+        nowMs = 700500;
+        check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
+              "the second start is accepted: the first is cancelled while it configures");
+        const uint64_t second = lastStartAttempt;
+        check(second > first && startDispatches == 2 && retirements == QList<uint64_t>{first},
+              "the second start is dispatched and supersedes the first");
+
+        nowMs = 700750;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Starting && host.failureText().isEmpty(),
+              "the superseded attempt's STARTING record leaves the second start Starting");
+        retained_record() = {
+            {"sessionId", 151}, {"state", "IDLE"}, {"reason", kRunCancelled}, {"attemptId", (qint64)first}};
+        nowMs = 701000;
+        host.refresh();
+        check(host.sessionState() == DecoderHost::Starting && host.failureText().isEmpty()
+                  && host.inputFailureKind() == 0,
+              "the superseded attempt's cancelled end is not the second start's end");
+        check(host.statusText() == QStringLiteral("Starting…"), "the status still reads Starting");
+
+        if (!delivered) {
+            /* The second START is still on its way: its grace runs out and retires it, so it never runs later. */
+            for (uint64_t at = 701250; at < 702750; at += 250) {
+                nowMs = at;
+                host.refresh();
+                check(host.sessionState() == DecoderHost::Starting,
+                      "the grace runs from the superseded attempt's last STARTING record, which the second START "
+                      "waits behind");
+            }
+            check(hostDiagnostics == 0, "nothing is logged under the grace");
+            nowMs = 702750;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Failed && host.inputFailureKind() == kAttemptUndelivered,
+                  "the delayed second start times out as undelivered");
+            check(retirements.last() == second, "and is retired, so it can never start later");
+            check(lastHostDiagnostic
+                      == QStringLiteral(
+                          "Start was not delivered to the decoder service within 2250 ms (service state IDLE)"),
+                  "the expiry logs the wait since the request");
+            host.stop();
+            check(host.sessionState() == DecoderHost::Idle && serviceStops == 0, "Dismiss acknowledges it");
+        } else {
+            /* The second START arrives once the first is cancelled: its own records drive the phase. */
+            retained_record() = {
+                {"sessionId", 152}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+            nowMs = 701250;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Starting, "the second start's STARTING record is followed");
+            retained_record() = {
+                {"sessionId", 152}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+            running = true;
+            nowMs = 701500;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Running && host.statusText() == QStringLiteral("Decoding"),
+                  "the second start's RUNNING record publishes Running");
+            retained_record() = {{"sessionId", 152},           {"state", "IDLE"},
+                                 {"reason", kRunFailed},       {"lastError", "Radio open failed"},
+                                 {"inputFailure", 1},          {"inputError", 111},
+                                 {"attemptId", (qint64)second}};
+            running = false;
+            nowMs = 701750;
+            host.refresh();
+            check(host.sessionState() == DecoderHost::Failed
+                      && host.failureText() == QStringLiteral("Radio open failed") && host.inputFailureKind() == 1,
+                  "the second start's own terminal record publishes its failure");
+            host.stop();
+        }
+        check(serviceStops == 0, "nothing here stops the service");
+    }
+    retained_record() = QJsonObject();
+}
+
+/* Gate r5 L1: records of a retired attempt, whatever they say, leave the current start's phase, grace, run result
+ * and receiver health untouched; the current attempt's own records still drive them. */
+static void
+check_retired_attempt_records_are_ignored() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    int results = 0;
+    int initialized = 0;
+    QObject::connect(&host, &DecoderHost::runResultChanged, [&results]() { ++results; });
+    int devices = 0;
+    QObject::connect(&host, &DecoderHost::sessionInitialized, [&initialized]() { ++initialized; });
+    QObject::connect(&host, &DecoderHost::localDeviceChanged, [&devices]() { ++devices; });
+    serviceStops = 0;
+    serviceTookAttempt = false;
+    nowMs = 800000;
+    retained_record() = {{"sessionId", 160}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    nowMs = 800250;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "a second start supersedes it");
+    const uint64_t second = lastStartAttempt;
+    check(retirements.last() == first, "the first is retired");
+
+    results = 0;
+    devices = 0;
+    retained_record() = {{"sessionId", 161},    {"state", "RUNNING"},        {"reason", kRunPending},
+                         {"initialized", true}, {"endCause", kEndDetached},  {"receiverSource", kReceiverRtl},
+                         {"deviceError", -6},   {"attemptId", (qint64)first}};
+    running = true;
+    nowMs = 800500;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting, "a retired attempt's RUNNING record is not the start's run");
+    check(host.receiverHealth().value(QStringLiteral("state")).toString() != QStringLiteral("lost") && initialized == 0
+              && devices == 0,
+          "nor its receiver ending, device error or initialization");
+    retained_record() = {
+        {"sessionId", 161},  {"state", "IDLE"},   {"reason", kRunFailed},      {"lastError", "Decoder run failed (1)"},
+        {"inputFailure", 1}, {"inputError", 111}, {"attemptId", (qint64)first}};
+    running = false;
+    nowMs = 800750;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Starting && host.failureText().isEmpty(),
+          "a retired attempt's terminal record is not the start's end");
+    check(host.inputFailureKind() == 0 && host.inputFailureCode() == 0 && host.terminalReason() != kRunFailed
+              && results == 0,
+          "nor its run result");
+
+    retained_record() = {
+        {"sessionId", 162}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)second}};
+    running = true;
+    nowMs = 801000;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "the current attempt's record drives the phase");
+    retained_record() = {{"sessionId", 162},
+                         {"state", "IDLE"},
+                         {"reason", kRunCompleted},
+                         {"endCause", kEndDetached},
+                         {"receiverSource", kReceiverRtl},
+                         {"attemptId", (qint64)second}};
+    running = false;
+    nowMs = 801250;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle && host.terminalReason() == kRunCompleted,
+          "and its terminal record ends it");
+    check(host.receiverHealth().value(QStringLiteral("state")).toString() == QStringLiteral("lost"),
+          "with its own receiver ending");
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+}
+
+/* Gate r5 L1: the attempt on its way was taken past the point a retirement can cancel it, between the read that
+ * accepted a second start and that start's retirement of it: it runs. The second START would only be rejected as
+ * busy, so the second start is refused, and the run on screen is the first, whose records drive the phase. */
+static void
+check_superseded_attempt_that_ran_keeps_the_screen() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    using namespace dsd_android;
+    DecoderHostAndroid host;
+    serviceStops = 0;
+    startDispatches = 0;
+    serviceTookAttempt = false;
+    nowMs = 900000;
+    retained_record() = {{"sessionId", 170}, {"state", "IDLE"}};
+    running = false;
+    host.refresh();
+    check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}), "the first start is dispatched");
+    const uint64_t first = lastStartAttempt;
+    nowMs = 900250;
+    host.refresh();
+    retirements.clear();
+    recordAtRetire = {{"sessionId", 171}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+    running = true;
+    check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
+          "a start whose predecessor ran meanwhile is refused");
+    check(startDispatches == 1 && retirements == QList<uint64_t>{first}, "it dispatches nothing");
+    check(host.sessionState() == DecoderHost::Starting && host.failureText().isEmpty() && host.inputFailureKind() == 0,
+          "and publishes no refusal over the starting run");
+    check(lastHostDiagnostic.endsWith(QStringLiteral(" refused: the decoder service is RUNNING")),
+          "the refusal is logged with the service state");
+    nowMs = 900500;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Running, "the first attempt's run is the one on screen");
+    retained_record() = {
+        {"sessionId", 171}, {"state", "IDLE"}, {"reason", kRunCompleted}, {"attemptId", (qint64)first}};
+    running = false;
+    nowMs = 900750;
+    host.refresh();
+    check(host.sessionState() == DecoderHost::Idle, "and its end ends it");
+    check(serviceStops == 0, "nothing here stops the service");
+    retained_record() = QJsonObject();
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -846,7 +1578,18 @@ main(int argc, char** argv) {
     check_stop_publishes_stopping();
     check_receiver_health();
     check_claim_error_scope();
+    check_claim_error_connection();
+    check_receiver_take_failures();
     check_request_record();
+    check_undelivered_start_after_network_failure();
+    check_refused_start();
+    check_attempt_identity();
+    check_dismissed_undelivered_start_winds_down();
+    check_refused_start_leaves_the_run_on_screen();
+    check_accepted_start_supersedes_the_one_on_its_way();
+    check_superseded_attempt_never_drives_the_phase();
+    check_retired_attempt_records_are_ignored();
+    check_superseded_attempt_that_ran_keeps_the_screen();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

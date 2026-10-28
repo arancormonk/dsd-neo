@@ -396,6 +396,15 @@ class DecoderHost : public QObject {
     virtual void stop() = 0;
 
     /**
+     * @brief The user dismissed the failure on screen (#782).
+     *
+     * A host that tracks its start attempts gives up on the one that failed, so it can never start later, and drops
+     * a failure scoped to it. The default has nothing to give up.
+     */
+    virtual void
+    dismissFailure() {}
+
+    /**
      * @brief Send the UI to the background instead of destroying it.
      *
      * Closing the window is not a neutral act: on Android it finishes the Activity,

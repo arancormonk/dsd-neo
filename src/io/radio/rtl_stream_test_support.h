@@ -237,6 +237,27 @@ void rtl_device_test_refuse_progress_monitor(int refuse);
 /* How many receiver verdicts began waiting out the unplug-owner grace, ever: a test polls it to know a verdict is
  * pending. */
 unsigned int rtl_device_test_verdicts_in_grace(void);
+/* How many stall recoveries of a receiver opened from an Android descriptor began waiting out the pre-recovery grace,
+ * ever (#782): a test polls it to know the verdict was reached and the recovery waits. */
+unsigned int rtl_device_test_recoveries_in_grace(void);
+/* While @p hold is set, a pre-recovery grace does not pass at its deadline (samples, a stop or a released connection
+ * still end it), so a test acts inside it however late its thread runs; clearing it lets the grace pass once its
+ * deadline has. */
+void rtl_device_test_hold_recovery_grace(int hold);
+/* The monitor's clock reading (dsd_realtime_mono_ms()) the latest pre-recovery grace's deadline counts from, stored
+ * before rtl_device_test_recoveries_in_grace() counts it. */
+uint64_t rtl_device_test_recovery_grace_started_ms(void);
+/* How many pre-recovery graces ended, ever, and how the latest ended: 0 passed, 1 samples resumed, 2 a stop, exit
+ * request or detach, 3 the connection was released or replaced; -1 before any. */
+unsigned int rtl_device_test_recovery_graces_ended(void);
+int rtl_device_test_recovery_grace_result(void);
+/* The Android descriptor's seams (#782), in the pattern of the open-fd failure hook: @p hook stands in for
+ * USBDEVFS_RESET on the descriptor, and for reading the descriptor's VID:PID and the opened handle's USB strings; each
+ * answers 0 or a negative errno. NULL restores the platform's, which a host build has none of: it never touches a
+ * descriptor, and answers -ENOTSUP. */
+void rtl_device_test_set_fd_reset_hook(int (*hook)(int fd));
+struct rtl_usb_identity;
+void rtl_device_test_set_fd_identity_hook(int (*hook)(int fd, struct rtl_usb_identity* out));
 
 struct rtl_device;
 
@@ -343,7 +364,8 @@ int rtl_device_test_usb_gain_unknown(const struct rtl_device* dev);
 
 /* An RTL-SDR's tuning controls as librtlsdr keeps them, in place of librtlsdr's. */
 typedef struct {
-    int tuner_type; /* an RTLSDR_TUNER_* value: R820T (5) and R828D (6) refuse offset tuning with -2 */
+    int tuner_type; /* an RTLSDR_TUNER_* value: R820T (5) and R828D (6) refuse offset tuning with -2, and an FC2580
+                       (4) sets filter_bw for the band on every tune, as fc2580_set_freq() does */
     uint32_t rate;  /* sample rate, 0 on a fresh handle */
     uint32_t freq;  /* centre frequency the samples are delivered around, 0 until set */
     uint32_t
@@ -447,6 +469,9 @@ typedef struct {
     uint32_t capture_rate_hz; /* capture rate the stream runs at */
     int offset_tuning;        /* whether the stream counts on the dongle's hardware offset tuning */
     int fs4_rotation;         /* whether the stream shifts the capture by Fs/4 and rotates it back in software */
+    int rate_out_hz;          /* the demod's output rate for that capture rate */
+    int rate_forced;          /* the device runs another rate than the stream's plan (capture_rate_device_forced) */
+    int downsample_passes;    /* half-band passes from the capture rate */
 } rtl_stream_test_capture_result;
 
 /* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
@@ -458,6 +483,26 @@ int rtl_stream_test_program_initial_capture(struct rtl_device* dev, const dsd_op
 int rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
                                            uint32_t retune_center_hz, int retune_rate_in_hz,
                                            rtl_stream_test_capture_result* out);
+
+/* A capture-programming session on @p dev as the open device (issue #782 D3): the stream start's programming for
+ * @p center_hz, with a 48 kHz demod input, into @p out; then steps, until rtl_stream_test_capture_session_end() puts
+ * the stream's own state back. One at a time, with no stream running. */
+int rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                          rtl_stream_test_capture_result* out);
+
+/* A step of a capture-programming session (rtl_stream_test_capture_session_step()). */
+enum {
+    RTL_STREAM_TEST_CAPTURE_HOP = 0,         /* a controller retune to center_hz, at demod input rate value (0: kept) */
+    RTL_STREAM_TEST_CAPTURE_GAIN_AUTO = 1,   /* a retune profile's automatic gain */
+    RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL = 2, /* a retune profile's manual gain of value tenths of a dB */
+    RTL_STREAM_TEST_CAPTURE_AUTOGAIN = 3,    /* the tuner autogain supervisor's gain of value tenths of a dB */
+    RTL_STREAM_TEST_CAPTURE_PPM = 4,         /* a PPM correction of value */
+    RTL_STREAM_TEST_CAPTURE_OFFSET = 5,      /* offset tuning turned on (value 1) or off */
+};
+
+/* Run one step; @p out (optional) holds the capture after it, with its rc. Returns -1 with no session, else 0. */
+int rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out);
+void rtl_stream_test_capture_session_end(void);
 
 /* The stream's tuner-gain callers (rtl_stream_test_apply_gain()). */
 enum {
@@ -476,8 +521,13 @@ typedef struct {
     double selected_db;
     int writes;
     int refuse;
+    const char* driver_key; /* the driver's key, its profile picked from it as at configure (NULL: none) */
+    double rate_hz;         /* the sample rate last set, read back as is */
+    int frequency_writes;
+    int rate_writes;
+    int bandwidth_writes;
 } rtl_device_test_soapy_gain_fake;
-/* A control-only Soapy driver with quantized gain readback. NULL without SoapySDR. */
+/* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
 void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
 
@@ -533,6 +583,9 @@ void rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, voi
  * of the restarted reader's hand-off (on the controller's thread); NULL removes it. */
 void rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) on the progress monitor's thread once samples decided it clears the reset obligation its
+ * watch holds (#782), before it clears it; NULL removes it. */
+void rtl_device_test_set_owed_clear_hook(void (*hook)(const struct rtl_device*, void*), void* ctx);
 
 /* ---- rtl_tcp (issue #518 WP3) ---- */
 
@@ -586,15 +639,41 @@ enum {
 };
 
 typedef struct {
-    uint64_t generation; /* the published connection's identity; 0 with none */
-    int handoff;         /* RTL_TEST_TCP_HANDOFF_* */
-    int stop_requested;  /* the stop latch */
-    int gain_took;       /* the effective record holds a gain state */
-    int digital_agc;     /* the digital AGC the gain state wants */
-    int gain_unknown;    /* a failed gain unit may have reached a retired connection */
+    uint64_t generation;             /* the published connection's identity; 0 with none */
+    int handoff;                     /* RTL_TEST_TCP_HANDOFF_* */
+    int stop_requested;              /* the stop latch */
+    int gain_took;                   /* the effective record holds a gain state */
+    int digital_agc;                 /* the digital AGC the gain state wants */
+    int gain_unknown;                /* a failed gain unit may have reached a retired connection */
+    uint64_t watchdog_grace_from_ns; /* when the throughput watchdog's grace last started */
 } rtl_device_test_tcp_state;
 
 void rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out);
+
+/* A wait for the demod thread to leave its processing block (controller_wait_for_demod_idle(), which every holder of
+ * the reconfigure gate runs before it rewrites demod state), as rtl_stream_test_set_demod_idle_wait_probe() reports
+ * it. */
+enum {
+    RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN = 1,    /* the wait starts */
+    RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_IDLE = 2, /* it returned with no demod block running */
+    RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_BUSY = 3, /* it returned while a demod block still ran */
+};
+
+/* Call @p probe(event, @p ctx) on the waiting thread as each such wait starts and returns; NULL removes it. */
+void rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx);
+
+/* A live block's output write into a full output ring once the stream stops, with no decoder reading
+ * (rtl_stream_test_full_output_write_on_stop()). */
+typedef struct {
+    size_t written;      /* samples the write put in the ring */
+    uint64_t elapsed_ms; /* how long the write took to return */
+    int exit_forced;     /* it returned only because the test's 1 s watchdog set the global exit */
+} rtl_stream_test_full_output_write;
+
+/* Write a block's output into a full output ring while the stream is stopping (should_exit set, no reconfigure gate,
+ * no global exit) on a stand-in stream. A watchdog sets the global exit after 1 s and clears it again, so a write that
+ * waits for room forever still returns. Run with no stream open; returns 0, or a negative value when it cannot run. */
+int rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out);
 
 /* The controller's work items (rtl_stream_test_set_controller_work_hook()). */
 enum {

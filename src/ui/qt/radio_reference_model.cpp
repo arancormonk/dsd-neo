@@ -36,6 +36,7 @@
 #include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
+#include "teardown_trace.h"
 
 namespace dsd_qt {
 
@@ -452,9 +453,11 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
 }
 
 RadioReferenceModel::~RadioReferenceModel() {
-    /* FIRST statement: this cancels everything in flight and joins the worker,
-     * so no callback can still be running when the members below are destroyed.
-     * The same rule ~CallHistoryModel() follows for its save pool. */
+    const TeardownStage stage("~RadioReferenceModel");
+    /* FIRST statement after the stage marker, which only times this body: this
+     * cancels everything in flight and joins the worker, so no callback can still
+     * be running when the members below are destroyed. The same rule
+     * ~CallHistoryModel() follows for its save pool. */
     dsd_rr_client_destroy(m_client);
     m_client = nullptr;
     cancelLocation();

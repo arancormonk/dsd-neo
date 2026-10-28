@@ -3,6 +3,7 @@
 #define DSD_NEO_ANDROID_LOCAL_DEVICE_STATE_H_
 #include <QJsonObject>
 #include <QString>
+#include <QtGlobal>
 #include "decoder_host.h"
 
 namespace dsd_android {
@@ -17,6 +18,11 @@ struct LocalDeviceState {
     bool pending = false;
     QString requestedSource;
     QString requestedSerial;
+    // #782: the ready connection: its attachment (UsbDevice name, attach epoch) and connection generation; empty and
+    // 0 when none, and in records from before they were published.
+    QString device;
+    qint64 epoch = 0;
+    qint64 connection = 0;
 
     void
     apply(dsd_qt::DecoderHost& host, const QJsonObject& record) {
@@ -36,9 +42,13 @@ struct LocalDeviceState {
         const bool nextPending = record.value(QStringLiteral("pending")).toBool();
         const QString nextRequestedSource = record.value(QStringLiteral("requestedSource")).toString();
         const QString nextRequestedSerial = record.value(QStringLiteral("requestedSerial")).toString();
+        const QString nextDevice = record.value(QStringLiteral("device")).toString();
+        const qint64 nextEpoch = record.value(QStringLiteral("epoch")).toInteger();
+        const qint64 nextConnection = record.value(QStringLiteral("connection")).toInteger();
         if (serial == nextSerial && source == nextSource && ready == nextReady && text == nextText
             && failureKind == failure && name == nextName && pending == nextPending
-            && requestedSource == nextRequestedSource && requestedSerial == nextRequestedSerial) {
+            && requestedSource == nextRequestedSource && requestedSerial == nextRequestedSerial && device == nextDevice
+            && epoch == nextEpoch && connection == nextConnection) {
             return;
         }
         serial = nextSerial;
@@ -50,6 +60,9 @@ struct LocalDeviceState {
         pending = nextPending;
         requestedSource = nextRequestedSource;
         requestedSerial = nextRequestedSerial;
+        device = nextDevice;
+        epoch = nextEpoch;
+        connection = nextConnection;
         Q_EMIT host.localDeviceChanged();
     }
 };

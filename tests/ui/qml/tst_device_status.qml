@@ -144,5 +144,14 @@ Item {
             verify(status.detailText.indexOf("stopped sending samples") >= 0, status.detailText);
             verify(status.detailText.indexOf("Airspy") >= 0, status.detailText);
         }
+
+        function test_stream_failure_detail_never_blames_the_cable() {
+            // #782: an RTL-SDR's next open resets it; an Airspy's does not.
+            apply({health: "failed", healthSource: "usb", attached: "usb", requested: "usb"});
+            compare(status.state, "fault");
+            compare(status.detailText, "RTL-SDR stopped sending samples while listening. Tap Retry, then start listening again to reset it.");
+            apply({health: "failed", healthSource: "airspy", attached: "airspy", requested: "airspy"});
+            compare(status.detailText, "Airspy stopped sending samples while listening. Tap Retry, then start listening again.");
+        }
     }
 }

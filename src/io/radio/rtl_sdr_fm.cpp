@@ -599,6 +599,175 @@ load_dongle_rate(void) {
     return dongle.rate.load(std::memory_order_acquire);
 }
 
+/*
+ * What the open device was last asked for and what it took, so a retune writes only the capture settings that changed
+ * (issue #782 D3). Every hop used to set the sample rate again, which on an RTL-SDR reprograms the tuner filter, the
+ * resampler and the PPM correction and soft-resets the demod while it streams, and then the tuner bandwidth, and a scan
+ * target's gain. The request and what took stay apart: the comparison is on the request (a quantized rate or a nearest
+ * gain never equals its request, which would rewrite it on every hop), while the stream runs on what took: the rate
+ * read back here, the gain dongle_note_gain() recorded.
+ *
+ * An entry describes the device only while it is the open one and the device's generation is the one the entry was
+ * written under (rtl_device_capture_settings_generation(): a USB recovery moves it); a device whose writes may not be
+ * skipped (rtl_tcp, which has no acknowledgement of a write, and SoapySDR) records nothing. A failed or partial write, a PPM or offset tuning change, and a
+ * device opened or closed forget the entries it may have changed, so the next hop writes them again. Used by the thread
+ * that drives the device: the decoder at open, the controller on a retune (the demod parked behind the reconfigure
+ * gate), the demod's autogain between blocks, an external landing under the gate.
+ */
+namespace {
+struct CaptureWriteRecord {
+    struct rtl_device* dev;
+    int rate_valid;
+    uint32_t rate_generation;
+    uint32_t rate_requested_hz;
+    uint32_t rate_actual_hz; /* read back after the write */
+    int bw_valid;
+    uint32_t bw_generation;
+    uint32_t bw_requested_hz;
+    int gain_valid;
+    uint32_t gain_generation;
+    int gain_auto;               /* the gain mode asked for */
+    int gain_requested_tenth_db; /* the manual gain asked for; dongle.gain holds the one that took */
+};
+} // namespace
+
+static CaptureWriteRecord g_capture_writes{};
+
+static void
+capture_writes_forget(void) {
+    g_capture_writes = CaptureWriteRecord{};
+}
+
+/* The rate and the tuner bandwidth: a failed or partial retune, a PPM or offset tuning change. */
+static void
+capture_writes_forget_tuning(void) {
+    g_capture_writes.rate_valid = 0;
+    g_capture_writes.bw_valid = 0;
+}
+
+static void
+capture_writes_forget_gain(void) {
+    g_capture_writes.gain_valid = 0;
+}
+
+/* Whether the device's writes may be skipped, with its generation now in @p out_generation, read before a write so a
+ * replay that runs meanwhile leaves what the write records out of date. */
+static int
+capture_writes_generation(uint32_t* out_generation) {
+    *out_generation = 0U;
+    return rtl_device_capture_settings_generation(rtl_device_handle, out_generation);
+}
+
+/* Make the record the open device's before an entry is written: entries kept for another device go. */
+static void
+capture_writes_claim(void) {
+    if (g_capture_writes.dev != rtl_device_handle) {
+        capture_writes_forget();
+        g_capture_writes.dev = rtl_device_handle;
+    }
+}
+
+/* A frequency write that took: forget what the device's tuner undoes when it tunes (rtl_device_capture_retune_resets():
+ * an FC2580 resets its channel filter on every tune), so it is written again. */
+static void
+capture_writes_note_frequency(void) {
+    const unsigned resets = rtl_device_capture_retune_resets(rtl_device_handle);
+    if (resets & RTL_CAPTURE_SETTING_RATE) {
+        g_capture_writes.rate_valid = 0;
+    }
+    if (resets & RTL_CAPTURE_SETTING_BANDWIDTH) {
+        g_capture_writes.bw_valid = 0;
+    }
+    if (resets & RTL_CAPTURE_SETTING_GAIN) {
+        g_capture_writes.gain_valid = 0;
+    }
+}
+
+/* Whether an entry written under @p generation still describes the open device. */
+static int
+capture_writes_entry_current(int valid, uint32_t generation) {
+    uint32_t now = 0U;
+    return valid && rtl_device_handle && g_capture_writes.dev == rtl_device_handle && capture_writes_generation(&now)
+           && now == generation;
+}
+
+static void
+capture_writes_note_rate(int cacheable, uint32_t generation, uint32_t requested_hz, uint32_t actual_hz) {
+    if (!cacheable || actual_hz == 0U) {
+        g_capture_writes.rate_valid = 0;
+        return;
+    }
+    capture_writes_claim();
+    g_capture_writes.rate_valid = 1;
+    g_capture_writes.rate_generation = generation;
+    g_capture_writes.rate_requested_hz = requested_hz;
+    g_capture_writes.rate_actual_hz = actual_hz;
+}
+
+/* The rate the device runs for @p requested_hz, when it was asked for that rate last and still reads back what it took
+ * then: into @p out_actual_hz, returning 1. A readback that disagrees forgets the rate and the bandwidth. */
+static int
+capture_writes_kept_rate(uint32_t requested_hz, uint32_t* out_actual_hz) {
+    if (!capture_writes_entry_current(g_capture_writes.rate_valid, g_capture_writes.rate_generation)
+        || g_capture_writes.rate_requested_hz != requested_hz) {
+        return 0;
+    }
+    /* The hop's own frequency write, which comes after this check, would undo it. */
+    if (rtl_device_capture_retune_resets(rtl_device_handle) & RTL_CAPTURE_SETTING_RATE) {
+        return 0;
+    }
+    const int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    if (actual <= 0 || (uint32_t)actual != g_capture_writes.rate_actual_hz) {
+        capture_writes_forget_tuning();
+        return 0;
+    }
+    *out_actual_hz = g_capture_writes.rate_actual_hz;
+    return 1;
+}
+
+static void
+capture_writes_note_bandwidth(int cacheable, uint32_t generation, uint32_t requested_hz) {
+    if (!cacheable) {
+        g_capture_writes.bw_valid = 0;
+        return;
+    }
+    capture_writes_claim();
+    g_capture_writes.bw_valid = 1;
+    g_capture_writes.bw_generation = generation;
+    g_capture_writes.bw_requested_hz = requested_hz;
+}
+
+static int
+capture_writes_kept_bandwidth(uint32_t requested_hz) {
+    return capture_writes_entry_current(g_capture_writes.bw_valid, g_capture_writes.bw_generation)
+           && g_capture_writes.bw_requested_hz == requested_hz;
+}
+
+/* A gain change that took: automatic (@p is_auto), or the manual @p requested_tenth_db as asked for. */
+static void
+capture_writes_note_gain(int cacheable, uint32_t generation, int is_auto, int requested_tenth_db) {
+    if (!cacheable) {
+        g_capture_writes.gain_valid = 0;
+        return;
+    }
+    capture_writes_claim();
+    g_capture_writes.gain_valid = 1;
+    g_capture_writes.gain_generation = generation;
+    g_capture_writes.gain_auto = is_auto ? 1 : 0;
+    g_capture_writes.gain_requested_tenth_db = is_auto ? 0 : requested_tenth_db;
+}
+
+static int
+capture_writes_kept_gain(int is_auto, int requested_tenth_db) {
+    if (!capture_writes_entry_current(g_capture_writes.gain_valid, g_capture_writes.gain_generation)) {
+        return 0;
+    }
+    if (is_auto) {
+        return g_capture_writes.gain_auto;
+    }
+    return !g_capture_writes.gain_auto && g_capture_writes.gain_requested_tenth_db == requested_tenth_db;
+}
+
 static inline void
 store_dongle_rate(uint32_t sample_rate_hz) {
     dongle.rate.store(sample_rate_hz, std::memory_order_release);
@@ -659,14 +828,24 @@ retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t reque
 
     int rc = rtl_device_set_frequency(rtl_device_handle, actual_capture_freq_hz);
     if (rc == 0) {
+        capture_writes_note_frequency();
         store_dongle_frequency(actual_capture_freq_hz);
         LOG_INFO("Adjusted fs/4 capture center for actual device rate: center=%u, capture=%u Hz.\n", center_freq_hz,
                  actual_capture_freq_hz);
     } else {
+        capture_writes_forget_tuning();
         LOG_WARN(
             "WARNING: Failed to adjust fs/4 capture center for actual device rate: center=%u, capture=%u Hz (rc=%d).\n",
             center_freq_hz, actual_capture_freq_hz, rc);
     }
+}
+
+/* Run the rate chain at @p actual_capture_rate_hz, a rate the device delivers in place of the one requested. */
+static void
+run_capture_rate_chain_at(uint32_t actual_capture_rate_hz) {
+    store_dongle_rate(actual_capture_rate_hz);
+    demod.rate_out = demod_output_rate_for_capture_rate(actual_capture_rate_hz);
+    demod.capture_rate_device_forced = 1;
 }
 
 /* Run the rate chain at the rate the device reports instead of the one requested; returns the rate it runs at. */
@@ -676,9 +855,7 @@ note_actual_capture_rate(uint32_t requested_capture_rate_hz, uint32_t actual_cap
         return requested_capture_rate_hz;
     }
 
-    store_dongle_rate(actual_capture_rate_hz);
-    demod.rate_out = demod_output_rate_for_capture_rate(actual_capture_rate_hz);
-    demod.capture_rate_device_forced = 1;
+    run_capture_rate_chain_at(actual_capture_rate_hz);
     LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", requested_capture_rate_hz,
              actual_capture_rate_hz, demod.rate_out);
     return actual_capture_rate_hz;
@@ -1456,6 +1633,12 @@ log_unsupported_control_if_needed(const char* control_name, int rc) {
 static int
 apply_ppm_setting(int ppm_error) {
     int rc = rtl_device_set_ppm(rtl_device_handle, ppm_error);
+    /* A conservative invalidation: librtlsdr's rtlsdr_set_freq_correction() reprograms the sampling correction itself
+       and leaves the rate it runs alone, but a correction the device may have taken, even in part, is a change under the
+       record, so the next hop writes the rate and bandwidth again. An unsupported control changed nothing. */
+    if (ppm_error != dongle.ppm_error.load(std::memory_order_acquire) && rc != DSD_ERR_NOT_SUPPORTED) {
+        capture_writes_forget_tuning();
+    }
     log_unsupported_control_if_needed("PPM correction control", rc);
     return rc;
 }
@@ -1706,17 +1889,24 @@ soapy_bandwidth_request_is_explicit(const dsd_opts* opts) {
     return (opts && radio_source_is_soapy(opts) && opts->soapy_bandwidth_hz >= 0) ? 1 : 0;
 }
 
-/* The tuner bandwidth for the capture, at start and on every retune: the configured (or automatic) one, never narrower
- * than the filter hardware offset tuning needs while it is on (rtl_offset_aware_bandwidth_hz()). */
+/* The tuner bandwidth for the capture: the configured (or automatic) one, never narrower than the filter hardware
+ * offset tuning needs while it is on (rtl_offset_aware_bandwidth_hz()). */
+static uint32_t
+capture_tuner_bandwidth_hz(uint32_t capture_rate_hz) {
+    return rtl_offset_aware_bandwidth_hz(choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz),
+                                         dongle.offset_tuning, rtl_device_get_offset_tuning_hz(rtl_device_handle));
+}
+
 static int
-apply_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts, int fail_explicit_soapy) {
-    const uint32_t bw_hz =
-        rtl_offset_aware_bandwidth_hz(choose_tuner_bw_hz(capture_rate_hz, (uint32_t)rtl_dsp_bw_hz),
-                                      dongle.offset_tuning, rtl_device_get_offset_tuning_hz(rtl_device_handle));
+apply_tuner_bandwidth_hz(uint32_t bw_hz, const dsd_opts* opts, int fail_explicit_soapy) {
+    uint32_t generation = 0U;
+    const int cacheable = capture_writes_generation(&generation);
     int rc = rtl_device_set_tuner_bandwidth(rtl_device_handle, bw_hz);
     if (rc == 0) {
+        capture_writes_note_bandwidth(cacheable, generation, bw_hz);
         return 0;
     }
+    g_capture_writes.bw_valid = 0;
     if (radio_source_is_soapy(opts) && soapy_bandwidth_request_is_explicit(opts)) {
         if (fail_explicit_soapy) {
             LOG_ERROR("Failed to apply explicit SoapySDR bandwidth request (rc=%d).\n", rc);
@@ -1727,6 +1917,22 @@ apply_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts, in
     }
     log_unsupported_control_if_needed("Tuner bandwidth control", rc);
     return 0;
+}
+
+/* The tuner bandwidth for the capture, at start and after every rate write: librtlsdr sets the tuner filter for the
+ * new rate itself (and for the LO offset while offset tuning is on), so it is written again whatever it was. */
+static int
+apply_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts, int fail_explicit_soapy) {
+    return apply_tuner_bandwidth_hz(capture_tuner_bandwidth_hz(capture_rate_hz), opts, fail_explicit_soapy);
+}
+
+/* On a retune that left the rate as it was: the tuner bandwidth only when it is not the one the device took last. */
+static void
+apply_changed_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts) {
+    const uint32_t bw_hz = capture_tuner_bandwidth_hz(capture_rate_hz);
+    if (!capture_writes_kept_bandwidth(bw_hz)) {
+        (void)apply_tuner_bandwidth_hz(bw_hz, opts, 0);
+    }
 }
 
 /* Forward declarations for visualization ring clears (defined later in file) */
@@ -2741,13 +2947,31 @@ extern "C" void rtl_stream_set_tuner_autogain(int onoff);
 /* Spectrum updater used in demod thread (implemented in rtl_metrics.cpp). */
 extern "C" void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz);
 
+/* ---------------- Demod processing blocks and the reconfigure gate ----------------
+ * The demod thread runs each block between demod_enter_processing_block() and demod_leave_processing_block(), with
+ * demod_processing_active up. A thread that rewrites demod or output state from outside the demod thread first raises
+ * the reconfigure gate's flag (retune_in_progress), which keeps the next block from starting, and then waits for the
+ * block in flight to end (controller_wait_for_demod_idle()). So demod state is never written while a block runs.
+ *
+ * The block's start and the gate's raise are a store then a load on each side (active then flag here, flag then
+ * active in the gate), so both sides use sequentially consistent operations: with weaker orders both loads may read 0,
+ * and the block would run beside the gate. That costs one fenced store per block.
+ *
+ * The wait ends only when the block ends, a stop or the global exit included: a retune the controller took before a
+ * stop still rewrites demod state when it lands, so it may not land beside a block. It cannot hang, because a block
+ * ends by itself once the flag is up. Inside a block the demod thread never asks for the gate (a request it applies
+ * takes the ungated path), takes only locks no gate holder holds while it waits (the gate is taken with no other lock
+ * held, and an entry nested in a holder finds the demod parked already), and waits for another thread only in the
+ * output write, which gives up once the flag is up, the stream stops or the global exit is set
+ * (demod_write_output_samples_interruptible()); a replay block's publication never waits. The demod thread leaves its
+ * loop only between blocks, so a stop that joins it first finds no block left to wait for. */
 static int
 demod_enter_processing_block(struct controller_state* s) {
     if (!s || s->retune_in_progress.load(std::memory_order_acquire)) {
         return 0;
     }
-    s->demod_processing_active.store(1, std::memory_order_release);
-    if (s->retune_in_progress.load(std::memory_order_acquire)) {
+    s->demod_processing_active.store(1, std::memory_order_seq_cst);
+    if (s->retune_in_progress.load(std::memory_order_seq_cst)) {
         s->demod_processing_active.store(0, std::memory_order_release);
         return 0;
     }
@@ -2761,15 +2985,33 @@ demod_leave_processing_block(struct controller_state* s) {
     }
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Called as a wait for an idle demod starts and returns (rtl_stream_test_set_demod_idle_wait_probe()). */
+static RtlTestHook<int> g_test_demod_idle_wait_probe;
+
+extern "C" void
+rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx) {
+    g_test_demod_idle_wait_probe.set(probe, ctx);
+}
+
+#define DEMOD_IDLE_WAIT_TEST_EVENT(event) g_test_demod_idle_wait_probe.invoke(event)
+#else
+#define DEMOD_IDLE_WAIT_TEST_EVENT(event) ((void)0)
+#endif
+
 static void
 controller_wait_for_demod_idle(struct controller_state* s) {
     if (!s) {
         return;
     }
-    while (s->demod_processing_active.load(std::memory_order_acquire) && !dsd_exitflag_load()
-           && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+    DEMOD_IDLE_WAIT_TEST_EVENT(RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN);
+    /* No exit check: see "Demod processing blocks and the reconfigure gate" above. */
+    while (s->demod_processing_active.load(std::memory_order_seq_cst)) {
         dsd_sleep_ms(1);
     }
+    DEMOD_IDLE_WAIT_TEST_EVENT(s->demod_processing_active.load(std::memory_order_acquire)
+                                   ? RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_BUSY
+                                   : RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_IDLE);
 }
 
 namespace {
@@ -3277,12 +3519,17 @@ demod_autogain_spectral_gate_ok(DemodAutogainState* st, const struct demod_state
  * already set, and only the accumulating target reaches the next entry. */
 static int
 demod_autogain_set_gain(int target_tenth_db, int* applied_target = nullptr) {
+    uint32_t generation = 0U;
+    const int cacheable = capture_writes_generation(&generation);
     int selected = 0;
     if (rtl_device_set_gain_nearest(rtl_device_handle, target_tenth_db, &selected) != 0) {
+        capture_writes_forget_gain();
         rtl_stream_publish_tuner_gain();
         return 0;
     }
     dongle_note_gain(selected);
+    /* The gain in force is now the supervisor's, so a retune profile's next gain is written. */
+    capture_writes_note_gain(cacheable, generation, 0, target_tenth_db);
     if (applied_target) {
         *applied_target = selected;
     }
@@ -4005,7 +4252,9 @@ demod_wait_for_output_space(struct output_state* o) {
     if (ret == 0) {
         return 1;
     }
-    if (dsd_exitflag_load()) {
+    /* A stop wakes this wait (dsd_rtl_stream_soft_stop()) but no decoder reads the ring any more: give up, or the stop's
+       join of the demod thread waits for room that never comes. */
+    if (demod_should_exit_requested()) {
         return 0;
     }
     o->write_timeouts.fetch_add(1);
@@ -4735,9 +4984,32 @@ optimal_settings(int freq, int rate) {
     store_dongle_rate(capture_rate_hz);
 }
 
+/* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, or
+ * goes back to @p previous when it cannot say. Returns @p rc. */
+static int
+capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz,
+                          const CaptureSettingsSnapshot* previous, int rc) {
+    capture_writes_forget_tuning();
+    LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
+    int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    if (actual > 0) {
+        if ((uint32_t)actual != capture_rate_hz) {
+            (void)apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
+        }
+    } else {
+        restore_capture_rate_settings(previous);
+    }
+    stream_refresh_watermark_for_current_rate();
+    return rc;
+}
+
 /**
  * @brief Program device to new center frequency and sample rate using a
  * single, consistent path. Applies fs/4 shift when offset_tuning is off.
+ *
+ * The rate and the tuner bandwidth are written only when they changed (issue #782 D3, CaptureWriteRecord): a hop that
+ * asks for the rate the device was last set to runs the rate chain and the fs/4 centre for the rate it read back then,
+ * as the readback after a write would, and writes the frequency alone.
  *
  * @param center_freq_hz Desired RF center frequency in Hz.
  */
@@ -4750,33 +5022,40 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     CaptureSettingsSnapshot previous =
         restore_on_frequency_failure ? *restore_on_frequency_failure : capture_settings_snapshot();
     optimal_settings((int)center_freq_hz, demod.rate_in);
+    const uint32_t requested_rate_hz = load_dongle_rate();
+    uint32_t generation = 0U;
+    const int cacheable = capture_writes_generation(&generation);
+    uint32_t kept_rate_hz = 0U;
+    const int rate_kept = capture_writes_kept_rate(requested_rate_hz, &kept_rate_hz);
+    if (rate_kept && kept_rate_hz != requested_rate_hz) {
+        run_capture_rate_chain_at(kept_rate_hz);
+        store_dongle_frequency(capture_frequency_for_rate((int64_t)center_freq_hz, kept_rate_hz));
+    }
     uint32_t capture_freq_hz = load_dongle_frequency();
     uint32_t capture_rate_hz = load_dongle_rate();
     int rc = rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     if (rc != 0) {
+        capture_writes_forget_tuning();
         restore_capture_settings(&previous);
         LOG_ERROR("Failed to apply RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
         return rc;
     }
+    capture_writes_note_frequency();
     if (out_hardware_changed) {
         *out_hardware_changed = 1;
     }
+    if (rate_kept) {
+        apply_changed_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL);
+        stream_refresh_watermark_for_current_rate();
+        return 0;
+    }
     rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
     if (rc != 0) {
-        LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
-        int actual = rtl_device_get_sample_rate(rtl_device_handle);
-        if (actual > 0) {
-            if ((uint32_t)actual != capture_rate_hz) {
-                (void)apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
-            }
-        } else {
-            restore_capture_rate_settings(&previous);
-        }
-        stream_refresh_watermark_for_current_rate();
-        return rc;
+        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc);
     }
     /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    capture_writes_note_rate(cacheable, generation, requested_rate_hz, actual > 0 ? (uint32_t)actual : 0U);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
         capture_rate_hz = apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
     }
@@ -5104,6 +5383,8 @@ controller_refused_capture_device(void) {
 static int
 controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint32_t center_freq_hz) {
     restore_capture_settings(previous);
+    /* Rolled back on another request than the record's: the next hop writes the rate again. */
+    capture_writes_forget_tuning();
     const RefusedCaptureDeviceOps* device = controller_refused_capture_device();
     if (!device) {
         return 0;
@@ -5112,6 +5393,8 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     if (frequency_rc != 0) {
         LOG_ERROR("Failed to return the RTL-SDR to center frequency %u Hz (rc=%d).\n", previous->dongle_frequency_hz,
                   frequency_rc);
+    } else {
+        capture_writes_note_frequency();
     }
     const int rate_rc = device->set_sample_rate(rtl_device_handle, previous->dongle_rate_hz);
     if (rate_rc != 0) {
@@ -5353,7 +5636,7 @@ controller_enter_reconfigure_gate(struct controller_state* s) {
         return;
     }
     (void)reconfigure_gate_take();
-    s->retune_in_progress.store(1, std::memory_order_release);
+    s->retune_in_progress.store(1, std::memory_order_seq_cst);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(s);
     g_cqpsk_reacquire_pending.store(0, std::memory_order_release);
@@ -5855,6 +6138,17 @@ controller_apply_wb_frequency_offset(struct controller_state* s) {
     }
 }
 
+/* Turn the device's offset tuning on or off and note whether it took. librtlsdr re-applies the LO offset inside
+ * rtlsdr_set_sample_rate() and widens the tuner filter for it, so what the rate and bandwidth were recorded under no
+ * longer holds: the next retune writes both again. */
+static int
+capture_set_offset_tuning(int want) {
+    const int r = rtl_device_set_offset_tuning_enabled(rtl_device_handle, want);
+    dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
+    capture_writes_forget_tuning();
+    return r;
+}
+
 /* Offset tuning, once the device holds its sample rate: librtlsdr computes the LO offset from that rate, so enabling it
  * on a fresh handle before the rate displaces nothing (B11). The stream counts on it, dropping its Fs/4 shift and
  * rotation, only when the device reports that it took (R82xx tuners and direct sampling refuse it). */
@@ -5873,16 +6167,18 @@ controller_apply_initial_offset_tuning(const dsd_opts* opts) {
     if (configured) {
         want = cfg->rtl_offset_tuning_enable ? 1 : 0;
     }
-    int r = rtl_device_set_offset_tuning_enabled(rtl_device_handle, want);
-    dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
+    int r = capture_set_offset_tuning(want);
     if (configured) {
         log_unsupported_control_if_needed("Offset tuning control", r);
     }
 }
 
+/* The rate the device read back after the start's rate write (0 when it gave none) in @p out_actual_hz; returns the
+ * rate the chain runs at. */
 static uint32_t
-controller_sync_initial_capture_rate(uint32_t capture_rate_hz) {
+controller_sync_initial_capture_rate(uint32_t capture_rate_hz, uint32_t* out_actual_hz) {
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    *out_actual_hz = actual > 0 ? (uint32_t)actual : 0U;
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
         return note_actual_capture_rate(capture_rate_hz, (uint32_t)actual);
     }
@@ -5894,6 +6190,8 @@ controller_set_initial_frequency(uint32_t capture_freq_hz) {
     int rc = rtl_device_set_frequency(rtl_device_handle, capture_freq_hz);
     if (rc != 0) {
         LOG_ERROR("Failed to apply initial RTL-SDR center frequency %u Hz (rc=%d).\n", capture_freq_hz, rc);
+    } else {
+        capture_writes_note_frequency();
     }
     return rc;
 }
@@ -5906,6 +6204,9 @@ static int
 controller_program_initial_capture_settings(const struct controller_state* s, const dsd_opts* opts) {
     const uint32_t planned_freq_hz = load_dongle_frequency();
     uint32_t capture_rate_hz = load_dongle_rate();
+    const uint32_t requested_rate_hz = capture_rate_hz;
+    uint32_t generation = 0U;
+    const int cacheable = capture_writes_generation(&generation);
     int rc = controller_set_initial_frequency(planned_freq_hz);
     if (rc != 0) {
         return rc;
@@ -5918,7 +6219,8 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
         LOG_ERROR("Failed to apply initial RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
         return rc;
     }
-    capture_rate_hz = controller_sync_initial_capture_rate(capture_rate_hz);
+    uint32_t actual_rate_hz = 0U;
+    capture_rate_hz = controller_sync_initial_capture_rate(capture_rate_hz, &actual_rate_hz);
     controller_apply_initial_offset_tuning(opts);
     const uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)s->freqs[0], capture_rate_hz);
     store_dongle_frequency(capture_freq_hz);
@@ -5931,6 +6233,9 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
             return rc;
         }
     }
+    /* Recorded once the whole order ran: offset tuning, enabled after the rate, was computed from it, and a later
+       retune that leaves the rate alone keeps the LO offset and the bandwidth set for it. */
+    capture_writes_note_rate(cacheable, generation, requested_rate_hz, actual_rate_hz);
     LOG_INFO("Demod output at %u Hz.\n", (unsigned int)demod.rate_out);
     return 0;
 }
@@ -7198,6 +7503,7 @@ static void
 stream_destroy_device(void) {
     struct rtl_device* dev = rtl_device_handle;
     rtl_device_handle = NULL;
+    capture_writes_forget();
     if (g_stream) {
         g_stream->device = NULL;
     }
@@ -7776,6 +8082,10 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
         return rc;
     }
     squelch_note_airspy_controls(source_kind == RADIO_SOURCE_AIRSPY ? &opts->airspy : NULL);
+    /* A device just opened holds none of what was recorded for the last one, whatever its backend. The record is the
+       new device's from here, so no later write claims it (wiping it) once the controller and the demod run. */
+    capture_writes_forget();
+    g_capture_writes.dev = rtl_device_handle;
     if (g_stream) {
         g_stream->device = rtl_device_handle;
     }
@@ -8378,6 +8688,23 @@ stream_open_size_airspy_input(dsd_opts* opts) {
     return 0;
 }
 
+/* The tuner gain the stream opens with, written to the device (not an Airspy's, whose gains are its own) and
+ * published. */
+static void
+stream_open_apply_initial_gain(RadioSourceKind source_kind) {
+    uint32_t gain_generation = 0U;
+    const int gain_cacheable = capture_writes_generation(&gain_generation);
+    int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
+    if (source_kind != RADIO_SOURCE_AIRSPY && gain_rc == 0) {
+        capture_writes_note_gain(gain_cacheable, gain_generation, dongle.gain == AUTO_GAIN, dongle.gain);
+    }
+    rtl_stream_publish_tuner_gain();
+    log_unsupported_control_if_needed("Gain control", gain_rc);
+    if (source_kind != RADIO_SOURCE_AIRSPY && dongle.gain == AUTO_GAIN) {
+        LOG_INFO("Setting RTL Autogain. \n");
+    }
+}
+
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded,
@@ -8415,13 +8742,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     }
     stream_open_apply_runtime_controls(opts);
     stream_open_apply_audio_filters_from_config();
-
-    int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
-    rtl_stream_publish_tuner_gain();
-    log_unsupported_control_if_needed("Gain control", gain_rc);
-    if (source_kind != RADIO_SOURCE_AIRSPY && dongle.gain == AUTO_GAIN) {
-        LOG_INFO("Setting RTL Autogain. \n");
-    }
+    stream_open_apply_initial_gain(source_kind);
     stream_open_note_ppm_capability();
     stream_open_apply_requested_ppm(opts);
 
@@ -10026,7 +10347,7 @@ rtl_stream_enter_demod_family_switch_gate(void) {
         controller_wait_for_demod_idle(&controller);
         return RTL_DEMOD_GATE_NESTED;
     }
-    controller.retune_in_progress.store(1, std::memory_order_release);
+    controller.retune_in_progress.store(1, std::memory_order_seq_cst);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(&controller);
     return RTL_DEMOD_GATE_ARMED;
@@ -11077,12 +11398,21 @@ rtl_stream_restore_retune_autogain(const RtlRetuneProfile* profile) {
                                     profile->tuner_autogain_seq);
 }
 
+/* A retune profile's gain is written only when it is not the one the device was last set to (CaptureWriteRecord): a
+ * scan target's gain applies on the hop where it changes, not on every hop. */
 static int
 rtl_stream_apply_auto_retune_gain(void) {
+    if (capture_writes_kept_gain(1, 0)) {
+        return 0;
+    }
+    uint32_t generation = 0U;
+    const int cacheable = capture_writes_generation(&generation);
     int rc = rtl_device_set_gain(rtl_device_handle, AUTO_GAIN);
     if (rc == 0) {
         dongle_note_gain(AUTO_GAIN);
+        capture_writes_note_gain(cacheable, generation, 1, 0);
     } else {
+        capture_writes_forget_gain();
         /* Rolled back, or unknown when that failed too: publish what the device now reports. */
         rtl_stream_publish_tuner_gain();
     }
@@ -11091,11 +11421,19 @@ rtl_stream_apply_auto_retune_gain(void) {
 
 static int
 rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
+    if (capture_writes_kept_gain(0, tuner_gain_tenth_db)) {
+        return 0;
+    }
+    uint32_t generation = 0U;
+    const int cacheable = capture_writes_generation(&generation);
     int selected = 0;
     int rc = rtl_device_set_gain_nearest(rtl_device_handle, tuner_gain_tenth_db, &selected);
     if (rc == 0) {
+        /* The comparison is on the gain asked for; the one that took (the nearest supported) is the stream's. */
         dongle_note_gain(selected);
+        capture_writes_note_gain(cacheable, generation, 0, tuner_gain_tenth_db);
     } else {
+        capture_writes_forget_gain();
         rtl_stream_publish_tuner_gain();
     }
     return rc;
@@ -11138,6 +11476,8 @@ test_capture_program_enter(struct rtl_device* dev, uint32_t center_hz, int direc
     saved.disable_fs4_shift = disable_fs4_shift;
 
     rtl_device_handle = dev;
+    /* A fake device may sit where an earlier one was. */
+    capture_writes_forget();
     controller.freqs[0] = center_hz;
     controller.freq_len = 1;
     controller.edge = 0;
@@ -11158,10 +11498,14 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->capture_rate_hz = load_dongle_rate();
     out->offset_tuning = dongle.offset_tuning;
     out->fs4_rotation = capture_fs4_shift_active();
+    out->rate_out_hz = demod.rate_out;
+    out->rate_forced = demod.capture_rate_device_forced;
+    out->downsample_passes = demod.downsample_passes;
 }
 
 static void
 test_capture_program_leave(const TestCaptureProgramState* saved) {
+    capture_writes_forget();
     rtl_device_handle = saved->handle;
     restore_capture_settings(&saved->capture);
     controller.freqs[0] = saved->first_freq_hz;
@@ -11209,12 +11553,94 @@ rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* o
     return 0;
 }
 
+static void rtl_stream_apply_retune_gain_profile(const RtlRetuneProfile* profile);
+
+namespace {
+/* The open capture-programming session (rtl_stream_test_capture_session_begin()). */
+struct TestCaptureSession {
+    int open;
+    TestCaptureProgramState saved;
+    int gain;
+    int squelch_gain;
+    int ppm_error;
+    int rate_out;
+};
+
+TestCaptureSession g_test_capture_session{};
+} // namespace
+
+extern "C" int
+rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* opts, uint32_t center_hz,
+                                      rtl_stream_test_capture_result* out) {
+    if (!dev || !opts || center_hz == 0U || !out || g_stream || g_test_capture_session.open) {
+        return -1;
+    }
+    g_test_capture_session.open = 1;
+    g_test_capture_session.gain = dongle.gain;
+    g_test_capture_session.squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
+    g_test_capture_session.ppm_error = load_dongle_ppm_error();
+    g_test_capture_session.rate_out = demod.rate_out;
+    g_test_capture_session.saved = test_capture_program_enter(dev, center_hz, 0);
+    store_dongle_ppm_error(0);
+    test_capture_program_result(controller_program_initial_device(&controller, opts), out);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out) {
+    if (!g_test_capture_session.open) {
+        return -1;
+    }
+    int rc = -1;
+    if (step == RTL_STREAM_TEST_CAPTURE_HOP) {
+        if (value > 0) {
+            demod.rate_in = value;
+        }
+        int hardware_changed = 0;
+        rc = program_capture_frequency_and_rate(center_hz, NULL, &hardware_changed);
+    } else if (step == RTL_STREAM_TEST_CAPTURE_GAIN_AUTO || step == RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL) {
+        RtlRetuneProfile profile{};
+        profile.active = 1;
+        profile.tuner_gain_is_set = 1;
+        profile.tuner_gain_is_auto = (step == RTL_STREAM_TEST_CAPTURE_GAIN_AUTO) ? 1 : 0;
+        profile.tuner_gain_tenth_db = value;
+        rtl_stream_apply_retune_gain_profile(&profile);
+        rc = 0;
+    } else if (step == RTL_STREAM_TEST_CAPTURE_AUTOGAIN) {
+        rc = demod_autogain_set_gain(value) ? 0 : -1;
+    } else if (step == RTL_STREAM_TEST_CAPTURE_PPM) {
+        rc = apply_ppm_setting(value);
+        store_dongle_ppm_error_if_applied(rc, value);
+    } else if (step == RTL_STREAM_TEST_CAPTURE_OFFSET) {
+        rc = capture_set_offset_tuning(value);
+    }
+    if (out) {
+        test_capture_program_result(rc, out);
+    }
+    return 0;
+}
+
+extern "C" void
+rtl_stream_test_capture_session_end(void) {
+    if (!g_test_capture_session.open) {
+        return;
+    }
+    test_capture_program_leave(&g_test_capture_session.saved);
+    dongle.gain = g_test_capture_session.gain;
+    g_squelch_tuner_gain.store(g_test_capture_session.squelch_gain, std::memory_order_relaxed);
+    store_dongle_ppm_error(g_test_capture_session.ppm_error);
+    demod.rate_out = g_test_capture_session.rate_out;
+    rtl_stream_publish_tuner_gain();
+    g_test_capture_session = TestCaptureSession{};
+}
+
 extern "C" int
 rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, int seed) {
     struct rtl_device* saved_handle = rtl_device_handle;
     const int saved_gain = dongle.gain;
     const int saved_squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
     rtl_device_handle = dev;
+    capture_writes_forget();
     DemodAutogainState st{};
     st.manual_target = initial;
     st.seed_gain_db10 = seed;
@@ -11232,6 +11658,7 @@ rtl_stream_test_autogain_target(struct rtl_device* dev, int stage, int initial, 
         /* The low-input step the spectral gate lets through. */
         demod_autogain_step_manual(&st, st.up_step_db10, rtl_device_is_auto_gain(dev), now);
     }
+    capture_writes_forget();
     rtl_device_handle = saved_handle;
     dongle.gain = saved_gain;
     g_squelch_tuner_gain.store(saved_squelch_gain, std::memory_order_relaxed);
@@ -11246,6 +11673,7 @@ rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int
     const int saved_gain = dongle.gain;
     const int saved_squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
     rtl_device_handle = dev;
+    capture_writes_forget();
     int rc = -1;
     if (caller == RTL_STREAM_TEST_GAIN_RETUNE_AUTO) {
         rc = rtl_stream_apply_auto_retune_gain();
@@ -11266,6 +11694,7 @@ rtl_stream_test_apply_gain(struct rtl_device* dev, int caller, int tenth_db, int
     if (out_published_auto) {
         *out_published_auto = is_auto;
     }
+    capture_writes_forget();
     rtl_device_handle = saved_handle;
     dongle.gain = saved_gain;
     g_squelch_tuner_gain.store(saved_squelch_gain, std::memory_order_relaxed);
@@ -11324,6 +11753,80 @@ rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), vo
 extern "C" void
 rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx) {
     g_test_controller_work_hook.set(hook, ctx);
+}
+
+static void test_stream_set(RtlSdrInternals* stream);
+
+namespace {
+/* Ends a test write that waits forever (rtl_stream_test_full_output_write_on_stop()). */
+struct FullOutputWriteWatchdog {
+    std::atomic<int> done{0};
+    std::atomic<int> fired{0};
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
+full_output_write_watchdog(void* arg) {
+    FullOutputWriteWatchdog* w = static_cast<FullOutputWriteWatchdog*>(arg);
+    const uint64_t start_ms = dsd_realtime_mono_ms();
+    while (!w->done.load(std::memory_order_acquire) && dsd_realtime_mono_ms() - start_ms < 1000U) {
+        dsd_sleep_ms(1);
+    }
+    if (!w->done.load(std::memory_order_acquire)) {
+        w->fired.store(1, std::memory_order_release);
+        dsd_exitflag_store(1);
+    }
+    DSD_THREAD_RETURN;
+}
+
+extern "C" int
+rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out) {
+    if (!out || g_stream) {
+        return -1;
+    }
+    *out = rtl_stream_test_full_output_write{};
+    int initialized_output = 0;
+    if (!output.buffer) {
+        output_init(&output);
+        initialized_output = 1;
+    }
+    if (!output.buffer || output.capacity < 2U) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -2;
+    }
+    ring_clear(&output);
+    output.tail.store(0U);
+    output.head.store(output.capacity - 1U);
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.should_exit.store(1, std::memory_order_release);
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    const int saved_retune = controller.retune_in_progress.exchange(0, std::memory_order_acq_rel);
+    FullOutputWriteWatchdog watchdog;
+    dsd_thread_t watchdog_thread{};
+    const int started = dsd_thread_create(&watchdog_thread, full_output_write_watchdog, &watchdog) == 0 ? 1 : 0;
+    int rc = started ? 0 : -3;
+    if (started) {
+        static const float samples[64] = {0.0f};
+        const uint64_t start_ms = dsd_realtime_mono_ms();
+        out->written = demod_write_output_samples_interruptible(&output, samples, NULL, 64U);
+        out->elapsed_ms = dsd_realtime_mono_ms() - start_ms;
+        watchdog.done.store(1, std::memory_order_release);
+        (void)dsd_thread_join(watchdog_thread);
+        out->exit_forced = watchdog.fired.load(std::memory_order_acquire);
+        if (out->exit_forced) {
+            dsd_exitflag_store(0);
+        }
+    }
+    controller.retune_in_progress.store(saved_retune, std::memory_order_release);
+    g_cqpsk_toggle_test_stream.should_exit.store(0, std::memory_order_release);
+    test_stream_set(NULL);
+    ring_clear(&output);
+    if (initialized_output) {
+        output_cleanup(&output);
+    }
+    return rc;
 }
 
 extern "C" struct rtl_device*

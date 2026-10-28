@@ -52,7 +52,73 @@ private fun aLabelBelongsToItsKindOfReceiver() {
     check(UsbReceiverKind.labelFor("usb", "usb", null) == null) { "nothing opened yet, no label" }
 }
 
+// #782: the receiver a start takes is read from its arguments as the engine reads "-i" (opts.h rtl/airspy specs).
+private fun aStartsReceiverComesFromItsInput() {
+    fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
+    check(of("-i", "rtl:0:851.0125M:0:0:24") == "usb" && of("-i", "rtl") == "usb") { "an RTL-SDR spec" }
+    check(of("-i", "airspy:26a464dc:0:0:0", "--airspy-serial", "26A464DC") == "airspy" && of("-iairspy") == "airspy") {
+        "an Airspy spec, separate or attached"
+    }
+    check(of("-i", "rtltcp:127.0.0.1:1234") == "" && of("-i", "rtlx") == "" && of("-i", "udp:0.0.0.0:7355") == "") {
+        "rtl_tcp and other inputs take no USB receiver"
+    }
+    check(of("-i", "rtl:0", "-i", "rtltcp:10.0.0.2:1234") == "" && of("-i", "rtltcp:h:1", "-i", "rtl:0") == "usb") {
+        "the last -i wins"
+    }
+    check(of("-i") == "" && of() == "" && of("--", "-i", "rtl:0") == "") { "no input, or none before --" }
+}
+
+// #782 gate r1 G4: another option's operand is never an input, as the engine's parser reads it: the long-option pass
+// (src/runtime/cli/compact.c) takes long options and their values out first, then getopt reads the short options.
+private fun anotherOptionsOperandIsNoInput() {
+    fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
+    check(of("-i", "rtltcp:127.0.0.1:1234", "--api-token", "-irtl") == "") { "an API token that reads like -i" }
+    check(of("-i", "rtltcp:h:1", "--api-token-file", "-iairspy") == "") { "a token file that reads like -i" }
+    check(of("--api-token=-irtl", "-i", "udp:0.0.0.0:7355") == "") { "a token attached with =" }
+    check(of("-i", "udp:0.0.0.0:7355", "--frame-log", "-irtl") == "") { "a long option's value, whatever it reads like" }
+    check(of("-i", "udp:0.0.0.0:7355", "--iq-capture", "-irtl") == "") { "a value taken whatever it starts with" }
+    check(of("--rtl-udp-control", "-irtl") == "usb") { "a value that must not start with '-' leaves an -i alone" }
+    check(of("--rtl-udp-control", "6020", "-i", "rtl") == "usb") { "and is taken when it does not" }
+    check(of("-i", "udp:0.0.0.0:7355", "-c", "-irtl") == "") { "a short option's separate value" }
+    check(of("-i", "udp:0.0.0.0:7355", "-cirtl") == "") { "a short option's attached value" }
+    check(of("-qirtl") == "usb" && of("-qi", "airspy") == "airspy") { "-i bundled behind options that take none" }
+    check(of("-i", "rtl", "-o", "-i") == "usb") { "an -i that is another option's value names no input" }
+    check(of("udp", "-i", "rtl") == "usb") { "getopt reads options past a bare argument" }
+    check(of("-i", "rtl", "--no-such-option") == "" && of("-i", "rtl", "-c") == "") {
+        "a start the engine's parser refuses opens no receiver"
+    }
+}
+
+// #782 gate r2 H1: --iq-replay replaces the input after getopt has read -i (args.c sets the replay as the input once
+// the short options are parsed), so a replay start takes no USB receiver, whichever form or order it is given in. The
+// long-option pre-scan reads it, which steps over other options' values but not over the bootstrap's own options.
+private fun anIqReplayReplacesTheInput() {
+    fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
+    check(of("-i", "rtl", "--iq-replay", "capture.iq") == "") { "a replay after -i rtl" }
+    check(of("--iq-replay", "capture.iq", "-i", "rtl:0:851.0125M") == "") { "a replay before -i rtl" }
+    check(of("-i", "rtl", "--iq-replay=capture.iq") == "" && of("--iq-replay=capture.iq", "-iairspy") == "") {
+        "a replay attached with ="
+    }
+    check(of("-i", "rtl", "--iq-replay") == "" && of("-i", "rtl", "--iq-replay=") == "") {
+        "a replay without a path is a start the engine's parser refuses"
+    }
+    check(of("-i", "rtl", "--profile", "--iq-replay", "capture.iq") == "") {
+        "the pre-scan does not step over the bootstrap's --profile value"
+    }
+    check(of("-i", "rtl", "--iq-replay-rate", "fast") == "usb" && of("-i", "rtl", "--iq-replay-rate=fast") == "usb") {
+        "the replay rate alone replays nothing"
+    }
+    check(of("-i", "rtl", "--api-token", "--iq-replay", "capture.iq") == "usb") {
+        "an API token that reads like --iq-replay is a token"
+    }
+    check(of("-i", "rtl", "--frame-log", "--iq-replay=capture.iq") == "usb") { "another option's value is a value" }
+    check(of("-i", "rtl", "--", "--iq-replay", "capture.iq") == "usb") { "nothing after -- is an option" }
+}
+
 fun main() {
+    aStartsReceiverComesFromItsInput()
+    anotherOptionsOperandIsNoInput()
+    anIqReplayReplacesTheInput()
     airspyBesideUnrelatedDevicesIsAirspy()
     twoRtlDonglesAreUsb()
     rtlAndAirspyAreBoth()

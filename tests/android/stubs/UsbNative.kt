@@ -2,8 +2,10 @@
 package io.github.arancormonk.dsdneo
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
-// The engine as the USB broker sees it: descriptor slots, whether a session uses the local receiver, and stops.
+// The engine as the USB broker sees it: descriptor slots, whether a session uses the local receiver, which
+// descriptors it holds, and stops.
 object DsdNative {
     const val STATUS_OK = 0
     const val STATUS_ERROR = -1
@@ -12,10 +14,33 @@ object DsdNative {
     @Volatile var fdInUse = false
     @Volatile var usbFd = -1
     @Volatile var airspyFd = -1
+    @Volatile var resetFirst = false
+    /** What nativeUsbResetOwed() answers: as the engine binds it, the last publish's, then whatever a test sets. */
+    @Volatile var resetOwed = -1
+    /** The reset request of every RTL-SDR publish, in order. */
+    val publishedResetFirst = CopyOnWriteArrayList<Boolean>()
+    /** What nativeHeldUsbFds() answers: { RTL-SDR, Airspy }, -1 for none. */
+    @Volatile var held = intArrayOf(-1, -1)
+    /** How many times nativeHeldUsbFds() was asked: a test waits for the deferred close to ask again, not for time. */
+    val heldQueries = AtomicInteger()
+    /** Every descriptor published to a slot, in order (clears included). */
+    val published = CopyOnWriteArrayList<Int>()
     val stopCauses = CopyOnWriteArrayList<String>()
     val diagnostics = CopyOnWriteArrayList<String>()
-    fun nativeSetUsbFd(fd: Int): Int { usbFd = fd; return STATUS_OK }
-    fun nativeSetAirspyUsbFd(fd: Int): Int { airspyFd = fd; return STATUS_OK }
+    fun nativeSetUsbFd(fd: Int, reset: Boolean): Int {
+        usbFd = fd
+        resetFirst = reset
+        resetOwed = if (reset && fd >= 0) fd else -1
+        published += fd
+        if (fd >= 0) publishedResetFirst += reset
+        return STATUS_OK
+    }
+    fun nativeSetAirspyUsbFd(fd: Int): Int { airspyFd = fd; published += fd; return STATUS_OK }
+    fun nativeUsbResetOwed() = resetOwed
+    fun nativeHeldUsbFds(): IntArray? {
+        heldQueries.incrementAndGet()
+        return held.copyOf()
+    }
     fun nativeIsRunning() = running
     fun nativeIsUsbFdInUse() = fdInUse
     fun nativeSessionUsesLocalReceiver() = sessionUsesLocalReceiver

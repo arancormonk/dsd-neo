@@ -3739,6 +3739,28 @@ dsd_engine_cleanup_close_mbe(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The session's output files other than the WAVs dsd_engine_cleanup_close_wavs() closes: the raw WAV (-6) and symbol
+   capture (-c) the options open, and the frame log, P25 SM log and MBE files the run opens. */
+static void
+dsd_engine_cleanup_close_output_files(dsd_opts* opts, dsd_state* state) {
+    if (opts->wav_out_raw != NULL) {
+        opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
+    }
+    closeSymbolOutFile(opts, state);
+    dsd_frame_log_close(opts);
+    dsd_p25_sm_log_close(opts);
+    dsd_engine_cleanup_close_mbe(opts, state);
+}
+
+void
+dsd_engine_release_outputs(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    dsd_engine_cleanup_close_wavs(opts, state);
+    dsd_engine_cleanup_close_output_files(opts, state);
+}
+
 static void
 dsd_engine_cleanup_print_stats(dsd_state* state) {
     LOG_INFO("NOTICE: \n");
@@ -3776,17 +3798,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_finalize_calls(opts, state);
     dsd_engine_cleanup_close_wavs(opts, state);
     dsd_rdio_upload_shutdown();
-
-    if (opts->wav_out_raw != NULL) {
-        opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
-    }
-
-    closeSymbolOutFile(opts, state);
-    dsd_frame_log_close(opts);
-    dsd_p25_sm_log_close(opts);
+    dsd_engine_cleanup_close_output_files(opts, state);
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
-    dsd_engine_cleanup_close_mbe(opts, state);
     // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
     if (opts->p25_bandplan_export_file[0] != '\0') {
         const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);
@@ -4111,6 +4125,8 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
 
     if (dsd_socket_init() != 0) {
         DSD_FPRINTF(stderr, "Failed to initialize socket subsystem\n");
+        /* The run never starts, so dsd_engine_cleanup() never closes what the configure opened. */
+        dsd_engine_release_outputs(opts, state);
         return 1;
     }
 

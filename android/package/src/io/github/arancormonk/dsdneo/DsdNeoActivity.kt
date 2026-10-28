@@ -12,6 +12,7 @@ import android.view.MotionEvent
 import android.view.ViewTreeObserver
 import android.os.Bundle
 import android.os.Build
+import android.os.SystemClock
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import org.qtproject.qt.android.bindings.QtActivity
@@ -47,6 +48,9 @@ import org.qtproject.qt.android.bindings.QtActivity
  * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
  * dimmed screen is swallowed, except under TalkBack's touch exploration, where it
  * brightens and passes through); and keys, generic motion and Back as interaction.
+ *
+ * For the diagnostics (#782) it tells [MainLooperWatchdog.activities] its lifecycle phase, each window attach and each
+ * touch event, and records how long each step of its teardown took.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -56,6 +60,7 @@ class DsdNeoActivity : QtActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before Qt starts: native diagnostics ask it for the process facts as soon as they start.
         ProcessFacts.attach(this)
+        trace.created(this)
         super.onCreate(savedInstanceState)
         ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -78,24 +83,38 @@ class DsdNeoActivity : QtActivity() {
     // The notification permission can change while we are away.
     override fun onResume() {
         super.onResume()
+        trace.phase(this, "resumed")
         AppSupport.refreshNotificationPermission()
     }
 
     // The screen modes: every lifecycle and input callback that matters to them goes to ScreenSupport.
     override fun onStart() {
         super.onStart()
+        trace.phase(this, "started")
         ScreenSupport.onStart(this)
     }
 
     override fun onPause() {
         super.onPause()
+        trace.phase(this, "paused")
         ScreenSupport.onPause(this)
     }
 
     // A stop that is part of a configuration change is followed at once by a start; it is not a loss.
     override fun onStop() {
         super.onStop()
+        trace.phase(this, "stopped")
         if (!isChangingConfigurations) ScreenSupport.onStop(this)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        trace.windowAttached(this)
+    }
+
+    override fun onDetachedFromWindow() {
+        trace.windowDetached(this)
+        super.onDetachedFromWindow()
     }
 
     override fun onTopResumedActivityChanged(isTopResumedActivity: Boolean) {
@@ -115,6 +134,7 @@ class DsdNeoActivity : QtActivity() {
 
     // A tap on a dimmed screen only brightens it: its whole gesture is swallowed (never under touch exploration).
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        trace.touched()
         if (ScreenSupport.dispatchTouch(this, ev)) return true
         return super.dispatchTouchEvent(ev)
     }
@@ -153,6 +173,7 @@ class DsdNeoActivity : QtActivity() {
     }
 
     override fun onDestroy() {
+        trace.phase(this, "destroying")
         ScreenSupport.detach(this)
         keyboardObserver?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
         keyboardObserver = null
@@ -165,6 +186,8 @@ class DsdNeoActivity : QtActivity() {
         // Activity, and Qt keeps the process across them (it skips its own teardown for
         // exactly this case). Quitting there would take the UI down on a rotation.
         if (!isChangingConfigurations) {
+            val uptime = HostRecordText.uptime(SystemClock.uptimeMillis())
+            HostDiagnostics.submit("teardown: activity ${trace.snapshot.activity} destroying at uptime $uptime")
             // Signal before Qt teardown. Service intents are delivered on this very
             // thread, which is about to block inside super.onDestroy() and then never
             // come back, so queued service bookkeeping cannot complete here. nativeStop()
@@ -175,7 +198,7 @@ class DsdNeoActivity : QtActivity() {
             // this override exists to prevent. It buys the decode loop a chance to close
             // its files before the process goes. A teardown, not the user's Stop: it does
             // not abandon pending rdio uploads (#718 D4).
-            EngineStop.request(StopCause.LIFECYCLE, DsdNative::nativeStop)
+            timedStage("engine stop request") { EngineStop.request(StopCause.LIFECYCLE, DsdNative::nativeStop) }
 
             // Withdraws the service's outstanding start request, and it has to happen
             // before the process goes. The engine thread is what normally calls stopSelf(),
@@ -191,12 +214,25 @@ class DsdNeoActivity : QtActivity() {
             // notification the user just swiped away. stopService() is an ActivityManager
             // call rather than a queued callback, so it lands even though this thread is
             // about to block.
-            stopService(Intent(this, DecoderService::class.java))
+            timedStage("stopService") { stopService(Intent(this, DecoderService::class.java)) }
 
-            // The process may end with Qt's teardown; make the last diagnostics durable first (bounded).
-            DsdNative.nativeFlushDiagnostics()
-            DsdNative.nativeQuitUi()
+            // The process may end with Qt's teardown; start writing the last diagnostics now, without waiting. main() in
+            // android/main.cpp makes them and everything after durable with the teardown's one bounded flush wait,
+            // once Qt's teardown is done.
+            timedStage("diagnostics flush request") { DsdNative.nativeFlushDiagnostics() }
+            timedStage("nativeQuitUi") { DsdNative.nativeQuitUi() }
+            // A held relaunch shows up here: Qt's teardown below waits for main() to return.
+            trace.phase(this, "in Qt teardown")
         }
         super.onDestroy()
+        trace.destroyed(this)
     }
+
+    private inline fun timedStage(name: String, stage: () -> Unit) {
+        val start = SystemClock.uptimeMillis()
+        stage()
+        HostDiagnostics.submit("teardown: $name took ${SystemClock.uptimeMillis() - start} ms")
+    }
+
+    private val trace get() = MainLooperWatchdog.activities
 }

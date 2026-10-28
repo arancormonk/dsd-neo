@@ -5,6 +5,7 @@
 
 package io.github.arancormonk.dsdneo
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -18,7 +19,9 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
+import java.security.SecureRandom
 import java.util.Locale
 import org.json.JSONObject
 
@@ -35,13 +38,19 @@ class DecoderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** Which instance this is; start ids mean something only to the instance they were handed to. */
+    private var serial = 0L
+
     override fun onCreate() {
         super.onCreate()
+        serial = ++instancesCreated
+        current = this
         ProcessFacts.attach(this)
         ensureNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        logReceipt(intent, startId)
         // A notification Stop must reach native cancellation before any notification binder
         // calls. The Qt sender has already signalled it; repeating the request is harmless.
         val stopping = intent?.action == ACTION_STOP && requestEngineStop(
@@ -68,10 +77,15 @@ class DecoderService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val args = intent.getStringArrayExtra(EXTRA_ARGS) ?: emptyArray()
-                startDecoding(args, startId)
+                startDecoding(
+                    args,
+                    startId,
+                    intent.getLongExtra(EXTRA_ATTEMPT, 0L),
+                    intent.getLongExtra(EXTRA_PROCESS, 0L)
+                )
             }
             ACTION_STOP -> {
-                synchronized(lock) { lastStartId = startId }
+                synchronized(lock) { lastStart = DeliveredStart(serial, startId) }
                 // Both senders say who asked: the app's Stop listening and the notification's
                 // Stop action are the user (#718 D4). Anything else drains.
                 if (stopping) showStopping()
@@ -81,7 +95,7 @@ class DecoderService : Service() {
                 stopIfIdle()
             }
             else -> {
-                synchronized(lock) { lastStartId = startId }
+                synchronized(lock) { lastStart = DeliveredStart(serial, startId) }
                 Log.w(TAG, "ignoring intent with action ${intent?.action}")
                 stopIfIdle()
             }
@@ -97,7 +111,8 @@ class DecoderService : Service() {
         // which is the state a timed-out joinEngineThread() leaves behind (onDestroy runs
         // stopDecoding() before the join, so the engine is always on its way out by then).
         // A replacement instance created in that window is fronting a session that is
-        // shutting down, and "Stopping…" is what its notification should say.
+        // shutting down, and "Stopping…" is what its notification should say. That run's
+        // worker reaches this instance when it ends: see routeSessionEnd().
         if (synchronized(lock) { state } == State.RUNNING) {
             startStatusPolling()
         }
@@ -135,10 +150,10 @@ class DecoderService : Service() {
             }
         }
         // The USB connection is deliberately not released here. onDestroy runs at the
-        // end of every session — the engine thread calls stopSelf() when nativeRun
-        // returns — so releasing would drop the descriptor after every run and leave
-        // the user reconnecting the dongle before each one. UsbSourceManager holds it
-        // for the process instead and releases it on detach; process death closes it.
+        // end of every session — the engine thread's session end calls stopSelf() when
+        // nativeRun returns — so releasing would drop the descriptor after every run and
+        // leave the user reconnecting the dongle before each one. UsbSourceManager holds
+        // it for the process instead and releases it on detach; process death closes it.
         if (stopped) {
             releaseWakeLock()
         } else {
@@ -149,16 +164,50 @@ class DecoderService : Service() {
             // nativeRun finally returns. See joinEngineThread().
             Log.e(TAG, "engine still running; keeping the wake lock until it returns")
         }
+        // Last, because the platform took the foreground notification down before it
+        // scheduled this callback (ActiveServices.bringDownServiceLocked() posts its cancel
+        // to the system server's handler, then calls scheduleStopService()), so anything
+        // posted since — stopDecoding()'s "Stopping…" above included — is an ordinary
+        // ongoing notification that nothing else would remove. Only another live instance,
+        // fronting a run of its own, keeps it.
+        val replaced = current != null && current !== this
+        if (current === this) {
+            current = null
+        }
+        if (!replaced) {
+            cancelNotification()
+        }
         super.onDestroy()
     }
 
-    private fun startDecoding(args: Array<String>, startId: Int) {
-        synchronized(lock) {
+    /**
+     * Runs one start on the main thread. [attempt] is the host's id for it (0: a start without one): the host retires
+     * an attempt it has given up on (retireAttempts()), and a retired or superseded attempt never runs (#782).
+     * [process] is the [processToken] of the process that sent it.
+     */
+    private fun startDecoding(args: Array<String>, startId: Int, attempt: Long, process: Long) {
+        var rejectedIn: State? = null
+        var foreign = false
+        val session = synchronized(lock) {
             // Publish the id with the decision to start or reject. Doing this before
             // foreground promotion lets an old worker take a new run's id while the
             // main thread is still in the notification binder call.
-            lastStartId = startId
+            lastStart = DeliveredStart(serial, startId)
+            // First: a dead process's START, which the platform redelivers into this one, belongs to a host that no
+            // longer exists, and its attempt id means nothing next to this process's own, which count from 1 again.
+            if ((attempt != 0L || process != 0L) && process != processToken) {
+                foreign = true
+                rejectedIn = state
+                return@synchronized 0L
+            }
+            // Before the busy check: a start the host has given up on is nothing to the run that holds the service.
+            if (attempt != 0L && (attempt <= retiredThrough || attempt <= newestAttempt)) {
+                rejectedIn = state
+                return@synchronized 0L
+            }
             if (state != State.IDLE) {
+                // Not a terminal failure: the run that holds the service keeps its
+                // notification and its polling, which onStartCommand re-arms below.
                 lastError = getString(R.string.error_busy)
                 Log.w(TAG, "start rejected in state $state")
                 return
@@ -168,6 +217,27 @@ class DecoderService : Service() {
             terminalReason = DsdNative.RUN_PENDING
             deviceError = 0
             lastError = ""
+            attemptId = attempt
+            if (attempt != 0L) {
+                newestAttempt = attempt
+            }
+            cancelRequested = false
+            attemptRan = false
+            failureKind = ""
+            receiverTake = UsbSessionTake()
+            sessionId
+        }
+        rejectedIn?.let { found ->
+            // The host already shows what became of it, and a later attempt may own the screen.
+            DsdNative.nativeHostDiagnostic(
+                if (foreign) {
+                    "service: start attempt $attempt rejected: sent by an earlier process (state $found)"
+                } else {
+                    "service: start attempt $attempt rejected as retired or superseded (state $found)"
+                }
+            )
+            stopIfIdle()
+            return
         }
 
         // The device is about to be opened: keep the diagnostics start window open through it.
@@ -184,10 +254,31 @@ class DecoderService : Service() {
             initialized = true
         }
 
+        // A retirement that landed since IDLE->STARTING ends the start here, before it reopens a receiver or pays for
+        // a bootstrap (#782).
+        if (cancelledBeforeConfigure(attempt)) {
+            return
+        }
+        // The start's local receiver gets a connection of its own: the first session takes the one opened for it,
+        // and every later one reopens the device (#782). Here, on the main thread with the USB broadcasts, so no
+        // detach or access request lands in the middle; the engine is idle, since the service was IDLE.
+        val receiver = UsbReceiverKind.sourceOfArgs(args)
+        if (receiver.isNotEmpty()) {
+            val take = UsbSourceManager.takeForSession(this, receiver)
+            if (take.failureKind.isNotEmpty()) {
+                failStart(take.reason, receiverFailureText(take.failureKind), take.failureKind)
+                return
+            }
+            synchronized(lock) { receiverTake = take }
+            if (cancelledBeforeConfigure(attempt)) {
+                return
+            }
+        }
+
         DsdNative.nativeHostDiagnostic("service: configuring the engine")
         // On the main thread, as is the USB receiver: a detach is handled only once this returns, when the native
         // record already names the session's receiver (nativeSessionUsesLocalReceiver(), #647).
-        val configureRc = DsdNative.nativeConfigure(args, synchronized(lock) { sessionId })
+        val configureRc = DsdNative.nativeConfigure(args, session)
         DsdNative.nativeHostDiagnostic("service: engine configuration returned $configureRc")
         if (configureRc == DsdNative.STATUS_CONFIG_EXIT) {
             // Help and other successful one-shot configuration flows did not
@@ -197,8 +288,7 @@ class DecoderService : Service() {
                 terminalReason = DsdNative.RUN_COMPLETED
                 state = State.IDLE
             }
-            stopForegroundCompat()
-            stopSelfLatest()
+            finishIdle()
             return
         }
         if (configureRc != DsdNative.STATUS_OK) {
@@ -213,11 +303,14 @@ class DecoderService : Service() {
             val rc = DsdNative.nativeRun()
             Log.i(TAG, "engine run returned $rc")
             DsdNative.nativeHostDiagnostic("engine run returned $rc")
+            // A stall can leave the RTL-SDR owing a USB reset before its next open; the broker keeps that on the
+            // attachment, across processes too (#782).
+            UsbSourceManager.noteSessionEnded()
             // Released before the state drops to IDLE. acquireWakeLock is a no-op while
             // a lock is held, so a start that observes IDLE first would find the lock
             // still ours and decode with nothing keeping the CPU awake.
             releaseWakeLock()
-            val completedStartId = synchronized(lock) {
+            val completedStart = synchronized(lock) {
                 val result = DsdNative.nativeLifecycleStatus()
                 if (result != null && result.size >= 5 && result[0] == sessionId) {
                     terminalReason = result[2].toInt()
@@ -234,15 +327,28 @@ class DecoderService : Service() {
                 if (engineThread === Thread.currentThread()) {
                     engineThread = null
                 }
-                // Capture before publishing IDLE to another start. Reading lastStartId later
+                // Capture before publishing IDLE to another start. Reading lastStart later
                 // could stop the new run instead of the one this worker just finished.
-                lastStartId
+                lastStart
             }
-            stopSelf(completedStartId)
+            routeSessionEnd(session, completedStart)
         }, "dsd-neo-engine")
-        synchronized(lock) {
-            engineThread = thread
-            state = State.RUNNING
+        // Atomic with the host's retirement: a retireAttempts() that found this attempt STARTING latched the
+        // cancellation, and one that comes after this block finds it RUNNING and leaves it running. The latch is
+        // not the native stop flag, which nativeConfigure() clears.
+        val cancelled = synchronized(lock) {
+            if (cancelRequested) {
+                true
+            } else {
+                engineThread = thread
+                state = State.RUNNING
+                attemptRan = true
+                false
+            }
+        }
+        if (cancelled) {
+            cancelConfigured(attempt)
+            return
         }
         updateNotification(getString(R.string.decoder_running))
         thread.start()
@@ -250,10 +356,59 @@ class DecoderService : Service() {
     }
 
     /**
+     * Ends a configured start whose attempt the host retired during configuration: no worker starts, the native side
+     * gives up the configuration and the receiver it named, and the session ends cancelled. The host already shows
+     * what became of the attempt.
+     */
+    private fun cancelConfigured(attempt: Long) {
+        val rc = DsdNative.nativeDiscardConfigured()
+        DsdNative.nativeHostDiagnostic(
+            "service: start attempt $attempt retired during configuration; cancelled (discard rc=$rc)"
+        )
+        releaseWakeLock()
+        synchronized(lock) {
+            terminalReason = DsdNative.RUN_CANCELLED
+            state = State.IDLE
+        }
+        finishIdle()
+    }
+
+    /**
+     * Ends a start whose attempt the host retired before configuration (#782): nothing native was configured, so
+     * there is nothing to discard. Checked under the lock retireAttempts() latches the cancellation under.
+     */
+    private fun cancelledBeforeConfigure(attempt: Long): Boolean {
+        if (!synchronized(lock) { cancelRequested }) {
+            return false
+        }
+        DsdNative.nativeHostDiagnostic("service: start attempt $attempt retired before configuration; cancelled")
+        releaseWakeLock()
+        synchronized(lock) {
+            terminalReason = DsdNative.RUN_CANCELLED
+            state = State.IDLE
+        }
+        finishIdle()
+        return true
+    }
+
+    /** What the UI shows for a start that could not take its receiver (an [UsbSessionTake] failure kind). */
+    private fun receiverFailureText(kind: String): String = getString(
+        when (kind) {
+            UsbSessionTake.USB_GONE -> R.string.error_usb_gone
+            UsbSessionTake.USB_PERMISSION -> R.string.error_usb_permission
+            UsbSessionTake.USB_OPEN_FAILED -> R.string.error_usb_open_failed
+            else -> R.string.error_busy
+        }
+    )
+
+    /**
      * Abandons a start. [reason] goes to logcat; [userMessage] is what the UI shows,
      * because dropping back to IDLE with nothing on screen reads as "nothing happened".
+     * [kind] is the attempt's failure kind for the record's "failureKind" (a wire value
+     * android/run_status.h's attempt_failure_from_wire() reads), or "" when the message
+     * alone says it.
      */
-    private fun failStart(reason: String, userMessage: String) {
+    private fun failStart(reason: String, userMessage: String, kind: String = "") {
         Log.e(TAG, reason)
         DsdNative.nativeHostDiagnostic(reason)
         // Released before IDLE, for the same reason as the engine thread does it.
@@ -262,12 +417,12 @@ class DecoderService : Service() {
             state = State.IDLE
             lastError = userMessage
             terminalReason = DsdNative.RUN_FAILED
+            failureKind = kind
         }
-        // No stopStatusPolling() here: stopForegroundCompat() does it first thing, and it
-        // has to, because stopIfIdle() reaches it by a path that does not come through
-        // here. Two calls would only make it ambiguous which one is load-bearing.
-        stopForegroundCompat()
-        stopSelfLatest()
+        // No stopStatusPolling() here: leaveForeground() does it first thing, and it has
+        // to, because stopIfIdle() reaches it by a path that does not come through here.
+        // Two calls would only make it ambiguous which one is load-bearing.
+        finishIdle()
     }
 
     private fun stopDecoding(cause: StopCause) {
@@ -589,6 +744,30 @@ class DecoderService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
     }
 
+    private fun cancelNotification() {
+        getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+    }
+
+    /**
+     * Logs an intent as it arrives, before anything acts on it: which one, its start id, the
+     * state it found, and how long it took to arrive when the sender said when it sent it.
+     * The notification's Stop is an immutable PendingIntent built once, so it carries no
+     * send time, and any stamp in it would be the time it was built rather than tapped.
+     */
+    private fun logReceipt(intent: Intent?, startId: Int) {
+        val sent = intent?.getLongExtra(EXTRA_SENT_UPTIME, 0L) ?: 0L
+        val now = SystemClock.uptimeMillis()
+        val delay = if (sent in 1L..now) "delay=${now - sent} ms" else "delay unavailable"
+        val action = when (intent?.action) {
+            ACTION_START -> "START"
+            ACTION_STOP -> "STOP"
+            null -> "no action"
+            else -> "unrecognised action"
+        }
+        val found = synchronized(lock) { state }
+        DsdNative.nativeHostDiagnostic("service: received $action id=$startId state=$found $delay")
+    }
+
     private val statusHandler = Handler(Looper.getMainLooper())
 
     /**
@@ -624,22 +803,14 @@ class DecoderService : Service() {
     private val statusPoll = object : Runnable {
         override fun run() {
             if (synchronized(lock) { state } != State.RUNNING) {
-                // Also where a session that ended by itself gets its call line taken down.
-                // Every deliberate teardown calls stopStatusPolling() first, but the engine
-                // thread drops the state to IDLE from its own thread when nativeRun returns
-                // — end of a file, a dropped rtl_tcp connection, a decode error — and
-                // cannot touch the main-thread cache. Left in place, the last polled record
-                // keeps the finished transmission on the notification with its chronometer
-                // still counting up, until Android gets round to destroying the service.
-                if (lastStatusRecord != null) {
-                    lastStatusRecord = null
-                    lastStatus = null
-                    // Not currentStatusText(): it maps IDLE to "Starting…" for the
-                    // promotion at the top of onStartCommand, where IDLE means a start is
-                    // about to happen. Here it means the run just ended and stopSelf has
-                    // been called, so the service really is on its way down.
-                    updateNotification(getString(R.string.decoder_stopping))
-                }
+                // Never a notify() here. A run that ended by itself is taken down by its
+                // session end (finishSession()), and a tick queued ahead of it must not post
+                // behind it: once the platform has dropped the foreground, a notify() is an
+                // ordinary ongoing notification that nothing removes (#782). A stop already
+                // posted "Stopping…" through showStopping(). The cache goes, so a later phase
+                // update cannot render the finished call again.
+                lastStatusRecord = null
+                lastStatus = null
                 ScreenSupport.statusStopped()
                 return
             }
@@ -702,8 +873,8 @@ class DecoderService : Service() {
      * policy's session.
      *
      * Every deliberate teardown comes through here first: [onDestroy], [stopDecoding] and
-     * [stopForegroundCompat] (and so [failStart] and [stopIfIdle]). The poll's own two
-     * tails end the screen session themselves; ending it twice is harmless.
+     * [leaveForeground] (and so every session end, [failStart] and [stopIfIdle]). The
+     * poll's own two tails end the screen session themselves; ending it twice is harmless.
      *
      * Safe against a tick that is already queued: the poll runs on the main looper, and
      * every caller of this is on the main thread too, so removeCallbacks() cannot race
@@ -716,12 +887,50 @@ class DecoderService : Service() {
         ScreenSupport.statusStopped()
     }
 
-    private fun stopForegroundCompat() {
+    private fun leaveForeground() {
         // Before dropping the notification, not after: once it is gone a queued tick that
         // re-posted would put an ongoing notification back with no foreground service
         // behind it, and nothing left alive to take it down again.
         stopStatusPolling()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        // Also removes one posted while the service was not in the foreground.
+        cancelNotification()
+    }
+
+    /**
+     * The end of [session] on the main thread: takes the notification down and stops the
+     * service against [start], the start the session was last handed.
+     *
+     * In that order, so nothing can post between the platform dropping the foreground and
+     * this instance being destroyed: stopSelf() makes ActiveServices cancel the foreground
+     * notification and only then schedule onDestroy() on this looper, so a status tick
+     * already queued there would run in between (#782). The cancel is itself asynchronous
+     * (ServiceRecord.cancelNotification() posts it to the system server's handler), so a
+     * repost could land before or after it, which made the field bug intermittent.
+     *
+     * A newer accepted run that owns the service again keeps its notification and its
+     * polling. Its start came after [start], so the platform ignores the stopSelf():
+     * stopServiceTokenLocked() stops only for the newest start id.
+     *
+     * A start handed to an earlier instance is not stopped here. Start ids restart with
+     * each service record, so that id could name one of this instance's own, newer starts;
+     * and an instance whose start came after the capture already settled it, with the
+     * state that start found.
+     */
+    private fun finishSession(session: Long, start: DeliveredStart) {
+        val newerRun = synchronized(lock) { state != State.IDLE && sessionId != session }
+        if (!newerRun) {
+            leaveForeground()
+        }
+        if (start.service == serial) {
+            stopSelf(start.id)
+        }
+    }
+
+    /** [finishSession] for a start that ends before any worker ran: failed, refused or one-shot. */
+    private fun finishIdle() {
+        val (session, start) = synchronized(lock) { sessionId to lastStart }
+        finishSession(session, start)
     }
 
     /** Notification text matching the current phase, for the unconditional promotion. */
@@ -741,22 +950,16 @@ class DecoderService : Service() {
             return
         }
         releaseWakeLock()
-        stopForegroundCompat()
-        stopSelfLatest()
-    }
-
-    /**
-     * Stops the service against the start it was last handed.
-     *
-     * Only main-thread callers use this helper, where another onStartCommand cannot
-     * interleave. The engine worker captures the id under the lock that publishes IDLE
-     * and calls stopSelf(id) directly, so a subsequent start cannot lend it a newer id.
-     */
-    private fun stopSelfLatest() {
-        stopSelf(synchronized(lock) { lastStartId })
+        // Against the start it was last handed: only main-thread callers come here, where
+        // another onStartCommand cannot interleave. The engine worker captures its id under
+        // the lock that publishes IDLE instead, so a subsequent start cannot lend it a newer id.
+        finishIdle()
     }
 
     private enum class State { IDLE, STARTING, RUNNING, STOPPING }
+
+    /** A start id, with the [serial] of the instance it was handed to. */
+    private class DeliveredStart(val service: Long, val id: Int)
 
     companion object {
         private const val TAG = "dsd-neo"
@@ -766,9 +969,9 @@ class DecoderService : Service() {
          * How long [onDestroy] waits for the engine thread before giving up on it.
          *
          * Deliberately short, because this runs on the main thread. The ordinary
-         * teardown does not spend it at all: the engine thread calls stopSelf() only
-         * after nativeRun has returned, so by the time onDestroy is delivered the
-         * thread is already at the tail of its lambda and the join is immediate. The
+         * teardown does not spend it at all: the engine thread hands its session end
+         * (and with it stopSelf()) to the main thread only after nativeRun has returned,
+         * as the last thing it does, so the join is immediate. The
          * budget is only ever drawn on when the service is destroyed *while* a run is
          * live — a swipe-away, or a stop the engine is slow to honour — and there a
          * longer wait buys nothing: joinEngineThread() already handles the timeout
@@ -803,6 +1006,20 @@ class DecoderService : Service() {
         const val EXTRA_STOP_CAUSE = "io.github.arancormonk.dsdneo.extra.STOP_CAUSE"
         /** A delivered stop must not cancel a session started after the request. Zero means an ordered pending start. */
         const val EXTRA_STOP_SESSION = "io.github.arancormonk.dsdneo.extra.STOP_SESSION"
+        /** SystemClock.uptimeMillis() as the sender dispatched the intent, so its receipt can log the delay. */
+        const val EXTRA_SENT_UPTIME = "io.github.arancormonk.dsdneo.extra.SENT_UPTIME"
+        /** The host's id for a START's attempt (#782); see [retireAttempts]. Absent or 0: a start without one. */
+        const val EXTRA_ATTEMPT = "io.github.arancormonk.dsdneo.extra.ATTEMPT"
+        /** The sending process's [processToken], beside [EXTRA_ATTEMPT]. */
+        const val EXTRA_PROCESS = "io.github.arancormonk.dsdneo.extra.PROCESS"
+
+        /**
+         * This process's token, never 0, sent with every START it dispatches (#782). Attempt ids count from 1 in every
+         * process, and the platform redelivers an undelivered START into the process it restarts after a crash or a
+         * kill: the token tells that START apart, so it neither runs a session no host follows nor makes this
+         * process's own attempts look superseded.
+         */
+        val processToken: Long = SecureRandom().let { random -> generateSequence { random.nextLong() }.first { it != 0L } }
 
         private val lock = Any()
         private var state = State.IDLE
@@ -824,8 +1041,62 @@ class DecoderService : Service() {
         /** The newest session whose receiver ending the UI acknowledged; outlives the Activity's host (#647). */
         private var endingAcknowledged = 0L
 
-        /** Newest start id handed to onStartCommand; the worker captures it before releasing IDLE. */
-        private var lastStartId = 0
+        /** Newest start handed to onStartCommand; the worker captures it before releasing IDLE. */
+        private var lastStart = DeliveredStart(0L, 0)
+
+        /*
+         * Start attempts (#782). The host gives every start an id, increasing for the life of the process, and gives
+         * up on one (its start grace ran out, the user dismissed it, retried it or started something else) by retiring
+         * every id up to it. A START carrying a retired id, or one no newer than the newest accepted, never runs.
+         */
+        /** The current session's attempt (0: started without one), published as the record's "attemptId". */
+        private var attemptId = 0L
+        /** The newest attempt accepted; an older one arriving after it is superseded. */
+        private var newestAttempt = 0L
+        /** Attempts up to this one were retired by the host. */
+        private var retiredThrough = 0L
+        /** The current attempt was retired while STARTING: checked with the RUNNING publication; it ends cancelled. */
+        private var cancelRequested = false
+        /** The current attempt was published RUNNING: a retirement after that leaves it running. */
+        private var attemptRan = false
+        /**
+         * Why the current attempt failed before nativeConfigure(), as the wire value android/run_status.h maps to a
+         * failure kind (attempt_failure_from_wire()); "" when it did not. Published as the record's "failureKind".
+         */
+        private var failureKind = ""
+        /** The USB connection the current session took, or none; see [UsbSourceManager.takeForSession]. */
+        private var receiverTake = UsbSessionTake()
+
+        /**
+         * The live service instance, which a session's end reaches; null between an
+         * instance's onDestroy() and the next one's onCreate(), so it never keeps a destroyed
+         * service alive. Read and written on the main thread only.
+         *
+         * Not always the worker's own instance: a join that timed out destroyed that one,
+         * and an instance created since — promoted while the run was still STOPPING, so it
+         * started no poll — is the one in the foreground. Its own stopSelf() is the only one
+         * that can stop it: Service.stopSelf() passes the instance's token, and
+         * ActiveServices.findServiceLocked() matches only the service record it names.
+         *
+         * Lint's StaticFieldLeak is suppressed here alone: the field is main-thread only and cleared in the instance's
+         * own onDestroy(), so it never outlives the service it names.
+         */
+        @SuppressLint("StaticFieldLeak")
+        private var current: DecoderService? = null
+
+        /** Instances created so far, for [serial]; main thread only. */
+        private var instancesCreated = 0L
+
+        private val mainHandler = Handler(Looper.getMainLooper())
+
+        /**
+         * Ends [session] from any thread: [finishSession] runs on the main thread, on the
+         * instance that is live by then. With none, the last one's onDestroy() already took
+         * the notification down, and there is no service left to stop.
+         */
+        private fun routeSessionEnd(session: Long, start: DeliveredStart) {
+            mainHandler.post { current?.finishSession(session, start) }
+        }
 
         /**
          * Cancel a configured run synchronously, also when called from the Qt thread. nativeStop
@@ -840,7 +1111,19 @@ class DecoderService : Service() {
                 stopDiagnostic("Ignoring stale stop for session $expectedSession; current session $sessionId")
                 return false
             }
+            if (state == State.STARTING) {
+                // stopDecoder() goes on to send its intent, which runs after the start and cancels what it published.
+                stopDiagnostic(
+                    "Stop session $sessionId cause=${cause.wire} state=$state: " +
+                        "deferred to the stop intent ordered behind its start"
+                )
+                return false
+            }
             if (state != State.RUNNING && state != State.STOPPING) {
+                // onDestroy() at IDLE follows every session's end: a no-op, not a stop worth a record.
+                if (cause != StopCause.LIFECYCLE) {
+                    stopDiagnostic("Stop session $sessionId cause=${cause.wire} state=$state: no run to cancel")
+                }
                 return false
             }
             // Repeated stops are deliberate: a user's Stop while a lifecycle stop is draining
@@ -869,16 +1152,30 @@ class DecoderService : Service() {
          */
         private var wakeLock: PowerManager.WakeLock? = null
 
+        /**
+         * Takes the run's wake lock. The acquire is a binder call into the power manager, so
+         * it happens outside [lock]: held under it, a slow acquire would stall
+         * [lifecycleStatus] on the Qt thread and [stopDecoder] with it. The lock is published
+         * under [lock] after a re-check, and a second one released if another got there first.
+         */
         private fun acquireWakeLock(context: Context) {
-            synchronized(lock) {
-                if (wakeLock != null) {
-                    return
+            if (synchronized(lock) { wakeLock != null }) {
+                return
+            }
+            val power = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val fresh = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dsd-neo:decode")
+            fresh.setReferenceCounted(false)
+            fresh.acquire()
+            val published = synchronized(lock) {
+                if (wakeLock == null) {
+                    wakeLock = fresh
+                    true
+                } else {
+                    false
                 }
-                val power = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-                val held = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dsd-neo:decode")
-                held.setReferenceCounted(false)
-                held.acquire()
-                wakeLock = held
+            }
+            if (!published) {
+                fresh.release()
             }
         }
 
@@ -893,13 +1190,45 @@ class DecoderService : Service() {
             }
         }
 
-        /** Called from the Qt host (DecoderHostAndroid) to start decoding. */
+        /**
+         * Called from the Qt host (DecoderHostAndroid) to start decoding. [attempt] is the host's id for this start.
+         * The host retires every earlier attempt first ([retireAttempts]), so none of them can run once this one is
+         * asked for: before it reads the service state from a published Idle or Failed phase, otherwise once that read
+         * accepted the start (the service is IDLE, so an earlier START is not delivered yet).
+         */
         @JvmStatic
-        fun startDecoder(context: Context, args: Array<String>) {
+        fun startDecoder(context: Context, args: Array<String>, attempt: Long = 0L) {
             val intent = Intent(context, DecoderService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_ARGS, args)
+                .putExtra(EXTRA_ATTEMPT, attempt)
+                .putExtra(EXTRA_PROCESS, processToken)
+            intent.putExtra(EXTRA_SENT_UPTIME, SystemClock.uptimeMillis())
             context.startForegroundService(intent)
+        }
+
+        /**
+         * Retires every start attempt up to [through], synchronously, also from the Qt thread (#782): the host gave up
+         * on it. A START for one still undelivered is rejected when it arrives. One the service is configuring is
+         * cancelled once nativeConfigure() returns: no worker starts, and it ends cancelled. One already published
+         * RUNNING keeps running.
+         *
+         * @return whether the service had already taken attempt [through] past the point a retirement can cancel it:
+         *   it runs, or it ended on its own and its record says how. False when it never will run.
+         */
+        @JvmStatic
+        fun retireAttempts(through: Long): Boolean = synchronized(lock) {
+            if (through <= 0L) {
+                return false
+            }
+            if (through > retiredThrough) {
+                retiredThrough = through
+            }
+            if (attemptId != 0L && attemptId <= through && state == State.STARTING && !attemptRan && !cancelRequested) {
+                cancelRequested = true
+                stopDiagnostic("Retiring start attempt $attemptId during configuration of session $sessionId")
+            }
+            attemptId == through && !cancelRequested
         }
 
         /**
@@ -927,6 +1256,7 @@ class DecoderService : Service() {
                 .putExtra(EXTRA_STOP_CAUSE, StopCause.USER.wire)
             requestedSession?.let { intent.putExtra(EXTRA_STOP_SESSION, it) }
             try {
+                intent.putExtra(EXTRA_SENT_UPTIME, SystemClock.uptimeMillis())
                 if (context.startService(intent) == null) {
                     stopDiagnostic("Stop session ${requestedSession ?: 0}: service dispatch returned no component")
                 }
@@ -963,7 +1293,12 @@ class DecoderService : Service() {
                 // #647: why the session ended and its receiver, published while its cleanup still runs.
                 .put("endCause", if (matches && fields.size >= 9) fields[7].toInt() else 0)
                 .put("receiverSource", if (matches && fields.size >= 9) fields[8].toInt() else 0)
-                .put("endingAcknowledged", endingAcknowledged).toString()
+                .put("endingAcknowledged", endingAcknowledged)
+                // #782: the attempt this session was started for, and its attempt-scoped failure.
+                .put("attemptId", attemptId).put("failureKind", failureKind)
+                // #782: the USB connection the session took (UsbSessionTake), which its receiver error belongs to.
+                .put("usbDevice", receiverTake.device).put("usbEpoch", receiverTake.epoch)
+                .put("usbConnection", receiverTake.connection).toString()
         }
 
         /**

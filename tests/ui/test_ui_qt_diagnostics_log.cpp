@@ -24,6 +24,8 @@
 #include <QtEnvironmentVariables>
 #include <QtGlobal>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
@@ -35,8 +37,10 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <functional>
+#include <mutex>
 #include <string.h>
 #include <thread>
 #include <utility>
@@ -46,6 +50,7 @@
 extern "C" int dsd_test_diagnostics_drain(dsd_opts*, dsd_state*);
 #include "../../src/app_control/commands_internal.h"
 #include "session_args.h"
+#include "teardown_trace.h"
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
 #include <memory>
 #include "../test_support/test_support.h"
@@ -166,6 +171,21 @@ checkMutePolicy(const dsd_opts* opts, int muteLeft, int muteRight) {
     check(opts->unmute_encrypted_p25 == 0, "key loading did not mute undecodable P25 audio");
 }
 
+static const char kHostHeading[] = "--- host and session records ---";
+static const char kAllHeading[] = "--- all records ---";
+
+// What Copy and Share export: the host records under their heading, when there are any, then the ring.
+static QByteArray
+exportOf(const DiagnosticsLog& log) {
+    QStringList rows = log.hostSnapshot();
+    if (!rows.isEmpty()) {
+        rows.prepend(QLatin1String(kHostHeading));
+        rows.append(QLatin1String(kAllHeading));
+    }
+    rows.append(log.snapshot());
+    return rows.join(QLatin1Char('\n')).toUtf8();
+}
+
 static void
 checkStoredDiagnostics(DiagnosticsLog& log, DiagnosticsLogModel& model, const QString& directory,
                        const QList<QByteArray>& representations, const QByteArray& marker) {
@@ -181,7 +201,7 @@ checkStoredDiagnostics(DiagnosticsLog& log, DiagnosticsLogModel& model, const QS
     check(displayed.join(QLatin1Char('\n')).toUtf8() == ring, "model rows do not show the captured ring");
     checkAbsent(displayed.join(QLatin1Char('\n')).toUtf8(), representations, "model rows contain a key representation");
     const auto text = model.allText().toUtf8();
-    check(text == ring, "allText does not contain the captured ring");
+    check(text == exportOf(log) && text.endsWith(ring), "allText does not contain the captured ring");
     checkAbsent(text, representations, "allText contains a key representation");
     QFile exported(directory + "/export.txt");
     check(exported.open(QIODevice::WriteOnly), "export open failed");
@@ -307,7 +327,8 @@ realKeySources() {
     checkStoredDiagnostics(log, model, directory, representations, "--- session starting ---");
     check(model.allText().contains("decoder restart marker") && model.allText().contains("host restart marker")
               && model.allText().contains("stderr restart marker")
-              && model.allText().count("--- session starting ---") == 1,
+              && log.snapshot().join('\n').count("--- session starting ---") == 1
+              && log.hostSnapshot().join('\n').count("--- session starting ---") == 1,
           "session divider must retain preceding diagnostics");
     {
         DiagnosticsLog restarted(directory);
@@ -448,7 +469,9 @@ earlyHostCaptureAndBridge() {
         auto& log = DiagnosticsLog::instance();
         DiagnosticsLogModel model(&log);
         model.refresh();
-        check(model.allText().count("usb: permission pending before init") == 1, "pre-init USB status captured once");
+        check(log.snapshot().join('\n').count("usb: permission pending before init") == 1
+                  && log.hostSnapshot().join('\n').count("usb: permission pending before init") == 1,
+              "pre-init USB status captured once");
         log.flush();
         QFile tail(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/diagnostics/tail.log");
         check(tail.open(QIODevice::ReadOnly), "pre-init USB tail uses initialized app location");
@@ -733,6 +756,74 @@ crashZeroRunIsDropped() {
     check(!rows.contains(QChar(0)) && !rows.contains(QStringLiteral("zeroed")), "a zeroed run loaded as a record");
 }
 
+// Re-review N2: the platform hears its lines are durable only from a completed flush, so it never marks lines logged
+// that a process death could still lose.
+static QString g_durablePath;
+static int g_durableCalls = 0;
+static bool g_durableOnDisk = false;
+
+static void
+durableLogged() {
+    ++g_durableCalls;
+    g_durableOnDisk = readFile(g_durablePath).contains("exit: durable platform line");
+}
+
+static void
+platformLinesReportedOnlyWhenDurable() {
+    g_durableCalls = 0;
+    {
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        check(log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "durable lines were not reported");
+        check(g_durableOnDisk, "lines were reported durable before they were written");
+    }
+    {
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "unsynced lines were reported durable");
+    }
+    // #782 gate r2 H4: another flush (a session attempt's) takes the platform lines between the publish and the
+    // report. When its write or sync fails, the lines never became durable, whatever a later flush with nothing left
+    // to write says.
+    for (const auto fault : {DiagnosticsLog::IoFault::Write, DiagnosticsLog::IoFault::Sync}) {
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        log.setIoFaultForTest(fault);
+        log.noteSessionAttempt(QStringLiteral("rtl"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+        check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1,
+              "lines another flush failed to write or sync were reported durable");
+        // Nor does a later report: the batch that held them is gone.
+        log.submit("host", "info", "a later record");
+        check(!log.reportWhenDurable(0, durableLogged) && g_durableCalls == 1, "lost lines were reported later");
+    }
+    {
+        // The other flush wrote and synced them: they are durable, and a later failure elsewhere does not undo that.
+        QTemporaryDir dir;
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        g_durablePath = dir.filePath(QStringLiteral("host.log"));
+        log.noteProcess(QStringLiteral("facts"), {QStringLiteral("exit: durable platform line")});
+        log.noteSessionAttempt(QStringLiteral("rtl"));
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::Write);
+        log.submit("host", "info", "lost after the lines");
+        check(!log.flush(), "the later write failed");
+        log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
+        check(log.reportWhenDurable(0, durableLogged) && g_durableCalls == 2 && g_durableOnDisk,
+              "lines another flush made durable were not reported");
+    }
+}
+
 static void
 flushReportsFailures() {
     QTemporaryDir dir;
@@ -745,10 +836,13 @@ flushReportsFailures() {
         check(reader.snapshot().join('\n').contains(QStringLiteral("durable record")), "flushed record not on disk");
         log.setIoFaultForTest(DiagnosticsLog::IoFault::Write);
         log.submit("host", "info", "lost record");
-        check(!log.flush(), "a failed write reported durable");
+        check(log.flushOutcome() == DiagnosticsLog::FlushOutcome::Failed, "a failed write reported durable or late");
         log.setIoFaultForTest(DiagnosticsLog::IoFault::Sync);
         log.submit("host", "info", "unsynced record");
         check(!log.flush(), "a failed sync reported durable");
+        log.submit("host", "info", "unsynced again");
+        check(log.flushOutcome(10000) == DiagnosticsLog::FlushOutcome::Failed,
+              "a failed sync within the bound reported as a timeout");
         log.noteSessionAttempt(QStringLiteral("rtl"));
         log.setIoFaultForTest(DiagnosticsLog::IoFault::None);
         log.submit("host", "info", "recovered record");
@@ -1318,6 +1412,1290 @@ rotationFailureKeepsTheBound() {
     check(readFile(dir.filePath("tail.log")).contains("seq 2999 "), "newest record lost after a failed rotation");
 }
 
+static const char kDropped[] = "[redacted sensitive diagnostic]";
+
+static void
+checkLabelled(bool ok, const QByteArray& reason) {
+    // Labels name the template or the option and form, never a value.
+    check(ok, reason.constData());
+}
+
+static QStringList
+streamRecords(const QByteArray& bytes, const QString& directory) {
+    DiagnosticsLog log(directory, manualOptions());
+    DiagnosticsLog::StreamCapture capture(log, QStringLiteral("stderr"));
+    capture.feed(bytes.constData(), static_cast<size_t>(bytes.size()));
+    capture.finish();
+    return log.snapshot();
+}
+
+/* The records that say why a USB receiver failed, as each producer writes them: librtlsdr through the stderr pump,
+ * dsd-neo's own rtl/usb lines through the runtime log, and libusb's log lines (forwarded to the runtime log with
+ * their own "libusb: " header). Each keeps its negative code verbatim, live and again when a saved tail is reloaded
+ * or shared. */
+static void
+producerErrorLinesSurvive() {
+    const QStringList stderrLines = {
+        QStringLiteral("usb_claim_interface error -1"),
+        QStringLiteral("usb_open error -3"),
+        QStringLiteral("libusb_set_option error -12"),
+        QStringLiteral("libusb_wrap_sys_device error -1"),
+        QStringLiteral("rtlsdr_read_array failed with -1"),
+        QStringLiteral("rtlsdr_write_array failed with -9"),
+        QStringLiteral("rtlsdr_read_reg failed with -7"),
+        QStringLiteral("rtlsdr_write_reg failed with -4"),
+        QStringLiteral("rtlsdr_demod_read_reg failed with -1"),
+        QStringLiteral("rtlsdr_demod_write_reg failed with -99"),
+        QStringLiteral("WARNING: Failed to read the tuner's gain table (rc=-5); gain unchanged."),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        for (const auto& line : stderrLines) {
+            bytes += line.toUtf8() + '\n';
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records.size() == stderrLines.size(), "stderr template records lost or split");
+        for (qsizetype i = 0; i < std::min(records.size(), stderrLines.size()); ++i) {
+            const QString expected = QStringLiteral("[stderr] [info] ") + stderrLines.at(i);
+            checkLabelled(records.at(i) == expected, "stderr template not verbatim: " + stderrLines.at(i).toUtf8());
+            checkLabelled(DiagnosticsLog::redact(records.at(i)) == expected,
+                          "stored stderr template not verbatim: " + stderrLines.at(i).toUtf8());
+        }
+    }
+    {
+        DiagnosticsLog reloaded(dir.path());
+        const auto previous = reloaded.snapshot();
+        for (const auto& line : stderrLines) {
+            checkLabelled(previous.contains(QStringLiteral("[stderr] [info] ") + line),
+                          "reloaded stderr template not verbatim: " + line.toUtf8());
+        }
+    }
+
+    struct DecoderLine {
+        dsd_neo_log_level_t level;
+        const char* levelName;
+        QByteArray text;
+    };
+
+    const DecoderLine decoderLines[] = {
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Failed to adjust fs/4 capture center for actual device rate: center=465975000, capture=1536000 Hz "
+         "(rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply RTL-SDR center frequency 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply RTL-SDR sample rate 1536000 Hz (rc=-9)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to return the RTL-SDR to center frequency 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to return the RTL-SDR to sample rate 1536000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error",
+         "The RTL-SDR could not be put back on 465975000 Hz after a retune refused for the analog channel width "
+         "(rc=-1); the stream stops."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply initial RTL-SDR center frequency 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_ERROR, "error", "Failed to apply initial RTL-SDR sample rate 1536000 Hz (rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Retune applied with warning: 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Retune failed: 465975000 Hz (rc=-1)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction applied but reconfigure to 465975000 Hz failed (rc=-1)."},
+        {LOG_LEVEL_WARN, "warn", "WARNING: Retune tuner gain apply failed (rc=-1); continuing retune"},
+        {LOG_LEVEL_ERROR, "error", "RTL-SDR: could not allocate USB transfer buffers (rc=-1)"},
+        {LOG_LEVEL_ERROR, "error",
+         "RTL-SDR: could not start the sample-progress monitor (rc=-1); the stream does not start"},
+        {LOG_LEVEL_ERROR, "error", "libusb: error [op_claim_interface] claim interface failed, errno=16"},
+        {LOG_LEVEL_ERROR, "error", "libusb: error [handle_events] backend handle_events failed with error -1"},
+        {LOG_LEVEL_WARN, "warn", "libusb: warning [do_close] cancel transfer failed error -5"},
+        {LOG_LEVEL_ERROR, "error",
+         "libusb: error [op_open] libusb couldn't open USB device /dev/bus/usb/001/002, errno=13"},
+    };
+    auto& log = DiagnosticsLog::instance();
+    for (const auto& line : decoderLines) {
+        dsd_neo_log_write(line.level, "%s\n", line.text.constData());
+        const auto ring = log.snapshot();
+        // The runtime log ends each record with its newline, which every record keeps as a space.
+        const QString expected =
+            QStringLiteral("[decoder] [%1] ").arg(QLatin1String(line.levelName)) + QString::fromUtf8(line.text) + ' ';
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "decoder template not verbatim: " + line.text);
+        checkLabelled(DiagnosticsLog::redact(expected) == expected,
+                      "stored decoder template not verbatim: " + line.text);
+    }
+    // The Android service's results, which name a failed run's code (#782: "engine run returned -1").
+    for (const auto& line :
+         {QStringLiteral("engine run returned -1"), QStringLiteral("service: engine configuration returned -2")}) {
+        DiagnosticsLog::submitHostDiagnostic(line);
+        const auto ring = log.snapshot();
+        const QString expected = QStringLiteral("[host] [info] ") + line;
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "host template not verbatim: " + line.toUtf8());
+        checkLabelled(DiagnosticsLog::redact(expected) == expected,
+                      "stored host template not verbatim: " + line.toUtf8());
+    }
+    // Every listed producer line has only %d and %u conversions, so each one counts.
+    const auto counts = DiagnosticsLog::producerLineCountsForTest();
+    check(counts.first == 32 && counts.second == counts.first, "a producer line was left out or the list changed");
+}
+
+/* A decimal is no option cluster (getopt stops at the '.'), so measurements keep their negative values; a digit cluster
+ * that getopt would read as options still drops. */
+static void
+negativeDecimalsSurvive() {
+    for (const auto& record :
+         {QStringLiteral("[stderr] [info] SNR -3.2 dB"), QStringLiteral("[decoder] [info] Input level -48.9 dBFS "),
+          QStringLiteral("[stderr] [info] offset -0.5 ppm")}) {
+        checkLabelled(DiagnosticsLog::redact(record) == record, "negative decimal dropped: " + record.toUtf8());
+    }
+    for (const auto& record : {QStringLiteral("[stderr] [info] level -35"), QStringLiteral("[stderr] [info] -ZT1F")}) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped, "option cluster kept: " + record.toUtf8());
+    }
+}
+
+/* #782 gate r1 G5: lines that report a signed measurement or setting keep it, as each producer writes it, though its
+ * leading digit is a key option's letter (-1, -2, -5, -9, or one bundled behind -0, -3, -4, -8): a number with a
+ * fraction, one followed by a unit that is no hex value, or by punctuation that no key value starts with, and the whole
+ * lines that end on an integer or follow it with a word. Live through the stream capture and the log tap, and again
+ * from a saved record. */
+static void
+negativeMeasurementsSurvive() {
+    const QStringList stderrLines = {
+        // rtl_device.cpp: the applied ppm and tuner gains (E4000 and FC0012 tables go below 0 dB).
+        QStringLiteral("Tuner error set to -5 ppm."),
+        QStringLiteral("Tuner error set to -12 ppm."),
+        QStringLiteral("Tuner gain set to -9.90 dB."),
+        QStringLiteral("Tuner gain set to -1.00 dB."),
+        QStringLiteral("Tuner manual gain (nearest): -9.9 dB."),
+        QStringLiteral("SoapySDR: adjusted gain LNA from -12.00 dB to -10.00 dB."),
+        // Protocol lines: P25 channel identifier offsets, a P25p2 local time offset, M17's power, DMR's offset.
+        QStringLiteral(" Channel Identifier Update; Iden: 1; BW: 5; TX Offset: -25; Spacing: 64; Base: 170200000;"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
+        QStringLiteral("  Local Time Offset: -5.0 Hours;"),
+        QStringLiteral(" PWR: -51.2 dB SQL HIT: 0;"),
+        QStringLiteral(" Offset: -5;"),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        QStringList expected;
+        for (const auto& line : stderrLines) {
+            bytes += line.toUtf8() + '\n';
+            expected << QStringLiteral("[stderr] [info] ") + line;
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records == expected, "a measurement line was dropped by the stream capture");
+        for (const auto& record : expected) {
+            checkLabelled(DiagnosticsLog::redact(record) == record, "stored measurement dropped: " + record.toUtf8());
+        }
+    }
+
+    struct DecoderLine {
+        dsd_neo_log_level_t level;
+        const char* levelName;
+        QByteArray text;
+    };
+
+    const DecoderLine decoderLines[] = {
+        // args.c: the low input warning threshold, from the CLI or the environment.
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold: -50.0 dBFS"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold (env): -35.5 dBFS"},
+        // rtl_sdr_fm.cpp and rtl_device.cpp: ppm requests, corrections and the replay resampler's ratio error.
+        {LOG_LEVEL_INFO, "info", "AUTO-PPM: src=1 pwr=-25.3 dB snr=12.0 dB df=-120.5 Hz ppm -5->-3"},
+        {LOG_LEVEL_INFO, "info",
+         "IQ replay: resampling the 2048000 Hz capture to 1536000 Hz (L/M=3/4, -5.00 ppm, 32 taps per phase, group "
+         "delay 0.50 ms)."},
+        {LOG_LEVEL_INFO, "info", "PPM correction applied: -15."},
+        {LOG_LEVEL_INFO, "info", "Requested RTL PPM Error Set to -5"},
+        {LOG_LEVEL_INFO, "info",
+         "Device does not support frequency (PPM) correction; configured ppm -25 will have no effect."},
+        // channel_scan.c and trunk_scan.c: a row's squelch, -100..0 dB.
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -50 cannot gate digital acquisition without a radio "
+         "input; here it gates only the analog input monitor (-8) and the carrier activity it stamps."},
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Trunk scan target 'site_1': --squelch-db -50 cannot gate digital acquisition without a radio input; "
+         "here it gates only the analog input monitor (-8) and the carrier activity it stamps."},
+    };
+    auto& log = DiagnosticsLog::instance();
+    for (const auto& line : decoderLines) {
+        dsd_neo_log_write(line.level, "%s\n", line.text.constData());
+        const auto ring = log.snapshot();
+        const QString expected =
+            QStringLiteral("[decoder] [%1] ").arg(QLatin1String(line.levelName)) + QString::fromUtf8(line.text) + ' ';
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "decoder measurement dropped: " + line.text);
+        checkLabelled(DiagnosticsLog::redact(expected) == expected, "stored decoder measurement dropped: " + line.text);
+    }
+}
+
+/* G5: beside those measurements, and in the forms a key option could take, a key value still drops the record: an
+ * integer with more digits than a measurement keeps, one followed by a unit that is itself hex ("dB"), by a value or by
+ * nothing, a bracket that does not close on it, and a template line with anything added or a field that is not one. */
+static void
+negativeMeasurementsDoNotCarryKeys() {
+    const QStringList records = {
+        QStringLiteral("[stderr] [info] Tuner error set to -5 ppm. -2 1A2B"),
+        QStringLiteral("[stderr] [info] Tuner error set to -5 1A2B ppm."),
+        QStringLiteral("[stderr] [info] Tuner error set to -51A2B ppm."),
+        QStringLiteral("[stderr] [info] Tuner error set to -5123 ppm."),
+        QStringLiteral("[stderr] [info] Tuner error set to -912 ppm."),
+        QStringLiteral("[stderr] [info] gain -2 dB"),
+        QStringLiteral("[stderr] [info] gain -2dB"),
+        QStringLiteral("[stderr] [info] threshold -5"),
+        QStringLiteral("[stderr] [info] threshold -5 1A2B"),
+        QStringLiteral("[stderr] [info] level -50.0 -9 12345"),
+        QStringLiteral("[stderr] [info] args: -5 ppm -9 123"),
+        QStringLiteral("[stderr] [info] TX Offset [-5, 1A2B]"),
+        QStringLiteral("[stderr] [info] Offset: -5,1A2B"),
+        QStringLiteral("[stderr] [info] Offset: -5-2 1A2B"),
+        QStringLiteral("[stderr] [info] [-5] -2 1A2B"),
+        QStringLiteral("[stderr] [info] Low input warning threshold: -50.0 dBFS key 1A2B"),
+        QStringLiteral("[stderr] [info] Requested RTL PPM Error Set to -5"),
+        QStringLiteral("[decoder] [info] Requested RTL PPM Error Set to -5 -2 1A2B\n"),
+        QStringLiteral("[decoder] [info] Requested RTL PPM Error Set to -5123\n"),
+        QStringLiteral(
+            "[decoder] [info] Device does not support frequency (PPM) correction; configured ppm -21A2B will "
+            "have no effect.\n"),
+        QStringLiteral("[decoder] [warn] WARNING: Trunk scan target '-21A2B': --squelch-db -50 cannot gate digital "
+                       "acquisition without a radio input; here it gates only the analog input monitor (-8) and the "
+                       "carrier activity it stamps.\n"),
+        QStringLiteral("[decoder] [warn] WARNING: Trunk scan target 'key1A2B': --squelch-db -50 cannot gate digital "
+                       "acquisition without a radio input; here it gates only the analog input monitor (-8) and the "
+                       "carrier activity it stamps.\n"),
+        QStringLiteral("[decoder] [warn] WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -5123 cannot gate "
+                       "digital acquisition without a radio input; here it gates only the analog input monitor (-8) "
+                       "and the carrier activity it stamps.\n"),
+    };
+    for (const auto& record : records) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      "key form beside a measurement kept: " + record.toUtf8());
+    }
+}
+
+/* #782 gate r3 J2, J3 sweep: one realistic line per producer format that prints a signed measurement, each with the
+ * negative values and every precision that producer prints. The producers were found by a format-string sweep of src/
+ * and the Android native code (the gate r3 fix report lists them); each line here is rendered from the producer's own
+ * format (file and function named beside it), stderr ones through the stream capture and runtime-log ones through the
+ * log tap, and each must reach the log unchanged, live and from a saved record. */
+static void
+measurementCorpusSurvives() {
+    const QString deg = QString::fromUtf8("\xC2\xB0");
+    const QStringList stderrLines = {
+        // rtl_device.cpp verbose_ppm_set(), the gain setters, and the SoapySDR gain step.
+        QStringLiteral("Tuner error set to -5 ppm."),
+        QStringLiteral("Tuner error set to -19 ppm."),
+        QStringLiteral("Tuner error set to -150 ppm."),
+        QStringLiteral("Tuner error set to -200 ppm."),
+        QStringLiteral("Tuner gain set to -1.00 dB."),
+        QStringLiteral("Tuner gain set to -9.90 dB."),
+        QStringLiteral("Tuner manual gain (nearest): -9.9 dB."),
+        QStringLiteral("Tuner manual gain (nearest): -5.4 dB."),
+        QStringLiteral("SoapySDR: adjusted gain LNA from -12.00 dB to -10.00 dB."),
+        QStringLiteral("SoapySDR: adjusted gain IF1 from -25.50 dB to -24.00 dB."),
+        // dsd_dibit.c and dsd_frame_sync.c: the slicer and sync statistics.
+        QStringLiteral("[SLICE-DECODE] d0:24.9% d1:25.1% d2:25.0% d3:25.0% avg:-0.12 range:[-2.95,2.91] (n=4800)"),
+        QStringLiteral("[SLICER] d0:24.9% d1:25.1% d2:25.0% d3:25.0% avg:-0.12 range:[-25.31,24.80] (n=4800)"),
+        QStringLiteral("[SYNC] range:[-2.9,2.9] dc:-0.05 ratio(1:3)=2400:2400"),
+        QStringLiteral("[SYNC] range:[-15.3,14.8] dc:-0.25 ratio(1:3)=2400:2400"),
+        // demod_pipeline.cpp: the CQPSK I/Q debug dump.
+        QStringLiteral("[IQ] (0.52,-0.25|-25") + deg + QStringLiteral(",0.58) (-0.31,-1.92|-99") + deg
+            + QStringLiteral(",1.94) "),
+        // dsd_gps.c: LIP, the three Lat/Lon reports, NMEA, Harris and NXDN, with either degree glyph.
+        QStringLiteral("Src: 1234; Lat: 32.12345") + deg + QStringLiteral("S Lon: 115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345); Spd: 0 km/h; Dir: 0") + deg,
+        QStringLiteral(" Lat: 32.12345 degS Lon: 115.12345 degW (-32.12345, -115.12345)"),
+        QStringLiteral(" Lat: -32.12345") + deg + QStringLiteral("S Lon: -115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345) "),
+        QStringLiteral(" GPS: -32.123450") + deg + QStringLiteral(", -115.123450") + deg
+            + QStringLiteral("; SPD: 0 knots; 0.000000 kph;"),
+        QStringLiteral(" Harris GPS: -32.123456 deg, -115.123456 deg; HEADING: 090 deg; TIME: 12:00:00 UTC;"),
+        QStringLiteral(" GPS: (-32.123456") + deg + QStringLiteral(", -115.123456") + deg
+            + QStringLiteral(") Speed: 0.0 k/h; COG: 0.0; Elevation: -25; Date: 2026/10/28; Time: 12:00;"),
+        // dmr_pdu.c dmr_lrrp_print_details() (J3) and the NMEA LOCN report.
+        QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)"),
+        QStringLiteral(" Altitude: -25.50m"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; 2026/10/28 12:00:00 (-32.12345") + deg
+            + QStringLiteral(", -115.12345") + deg + QStringLiteral(");"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; (-32.12345 deg, -115.12345 deg);"),
+        // m17.c: power, the UDP result, GNSS.
+        QStringLiteral(" PWR: -51.2 dB SQL HIT: 0;"),
+        QStringLiteral(" UDP IP Frame CRC: BEEF; UDP RETURN: -1: LEN: 25; SENT: 61;"),
+        QStringLiteral(" GPS: (-32.123450, -115.123450); Altitude: -25.5 m; Speed: 0.0 km/h; Bearing: 0 Degrees;"),
+        // dmr_csbk.c: the broadcast local time and offset.
+        QStringLiteral(" Date: 10.28; UTC Time: 02:15:00; Local: -3:15:00; Offset: -5;"),
+        QStringLiteral(" UTC Time: 02:15:00; Local: -10:15:00; Offset: -12;"),
+        // p25_lcw.c, p25p1_pdu_trunking.c, p25p2_vpdu.c: identifier offsets and the local time offset.
+        QStringLiteral(" Channel Identifier Update; Iden: 1; BW: 5; TX Offset: -25; Spacing: 64; Base: 851006250;"),
+        QStringLiteral(" Channel Identifier Update VU; Iden: 1; BW: 5; TX Offset: -255; Spacing: 64; Base: 851006250;"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-8191] Spacing [100]"),
+        QStringLiteral("  Local Time Offset: -5.0 Hours;"),
+        QStringLiteral("  Local Time Offset: -9.5 Hours;"),
+        // tetra_trunk_sm.c and udp_audio.c/m17_udp.c: result codes.
+        QStringLiteral("[TETRA SM] tune failed (result -1)"),
+        QStringLiteral("[TETRA SM] return failed (result -22)"),
+        QStringLiteral(" UDP Broadcast Set Error -1"),
+        // config_schema.c dsdcfg_diags_print(), with config_user_validation.cpp's range warnings.
+        QStringLiteral("/sdcard/dsd-neo.ini:12: warning [input] rtl_ppm: Value -1500 is out of range [-1000, 1000]"),
+        QStringLiteral("/sdcard/dsd-neo.ini:14: warning [input] rtl_sql: Value -150 is out of range [-120, 0]"),
+        QStringLiteral("/sdcard/dsd-neo.ini:15: warning [input] input_warn_db: Value -250.5 is out of range [-200, 0]"),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        QStringList expected;
+        for (const auto& line : stderrLines) {
+            bytes += line.toUtf8() + '\n';
+            expected << QStringLiteral("[stderr] [info] ") + line;
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records.size() == expected.size(), "a corpus line was lost or split by the stream capture");
+        for (qsizetype i = 0; i < std::min(records.size(), expected.size()); ++i) {
+            checkLabelled(records.at(i) == expected.at(i), "corpus line dropped: " + stderrLines.at(i).toUtf8());
+            checkLabelled(DiagnosticsLog::redact(expected.at(i)) == expected.at(i),
+                          "stored corpus line dropped: " + stderrLines.at(i).toUtf8());
+        }
+    }
+
+    struct DecoderLine {
+        dsd_neo_log_level_t level;
+        const char* levelName;
+        QByteArray text;
+    };
+
+    const DecoderLine decoderLines[] = {
+        // rtl_device.cpp: the replay resampler.
+        {LOG_LEVEL_INFO, "info",
+         "IQ replay: resampling the 2048000 Hz capture to 1536000 Hz (L/M=3/4, -5.25 ppm, 32 taps per phase, group "
+         "delay 0.50 ms)."},
+        {LOG_LEVEL_INFO, "info",
+         "IQ replay: resampling the 2400000 Hz capture to 1536000 Hz (L/M=16/25, -0.52 ppm, 24 taps per phase, group "
+         "delay 0.31 ms)."},
+        // rtl_sdr_fm.cpp: ppm corrections, the automatic ppm loop, the existing whole-line ppm and squelch lines.
+        {LOG_LEVEL_INFO, "info", "PPM correction applied: -19 (reconfigured 851012500 Hz)."},
+        {LOG_LEVEL_INFO, "info", "PPM correction applied: -150."},
+        {LOG_LEVEL_INFO, "info", "AUTO-PPM: src=1 pwr=-25.3 dB snr=12.0 dB df=-120.5 Hz ppm -5->-19"},
+        {LOG_LEVEL_INFO, "info", "AUTO-PPM: src=2 pwr=-51.0 dB snr=-1.5 dB df=-1520.0 Hz ppm -150->-200"},
+        {LOG_LEVEL_INFO, "info", "Requested RTL PPM Error Set to -19"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction request -150 failed (rc=-1); keeping applied value -19."},
+        {LOG_LEVEL_INFO, "info",
+         "Device does not support frequency (PPM) correction; configured ppm -150 will have no effect."},
+        {LOG_LEVEL_INFO, "info",
+         "Rate chain: capture=2048000 Hz resampled to 1536000 Hz (L/M=3/4, -5.25 ppm), base_decim=2, post=4 -> "
+         "demod=48000 Hz; resampler bypassed -> output=48000 Hz."},
+        // args.c: the low input threshold and the P25 timing options echoed as given.
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold: -50.0 dBFS"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: Low input warning threshold (env): -25.5 dBFS"},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: VC grace set to -1.50s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Min follow dwell set to -2.00s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Grant->Voice timeout set to -5.25s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: MAC hold set to -9.00s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Force-release extra set to -1.25s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25: Force-release margin set to -0.50s (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25p1: Error-hold threshold set to -12.5% (CLI)."},
+        {LOG_LEVEL_INFO, "info", "NOTICE: P25p1: Error-hold seconds set to -2.50s (CLI)."},
+        // channel_scan.c and trunk_scan.c: a row's squelch.
+        {LOG_LEVEL_WARN, "warn",
+         "WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -100 cannot gate digital acquisition without a radio "
+         "input; here it gates only the analog input monitor (-8) and the carrier activity it stamps."},
+        // rtl_demod_config.cpp, logged by rtl_sdr_fm.cpp: a negative analog width refused.
+        {LOG_LEVEL_ERROR, "error",
+         "NFM bandwidth -12500 Hz is negative; set 0 for the 12.5 kHz default or a width from 4000 to 25000 Hz. The "
+         "retune keeps the current receive profile."},
+    };
+    auto& log = DiagnosticsLog::instance();
+    for (const auto& line : decoderLines) {
+        dsd_neo_log_write(line.level, "%s\n", line.text.constData());
+        const auto ring = log.snapshot();
+        const QString expected =
+            QStringLiteral("[decoder] [%1] ").arg(QLatin1String(line.levelName)) + QString::fromUtf8(line.text) + ' ';
+        checkLabelled(!ring.isEmpty() && ring.last() == expected, "decoder corpus line dropped: " + line.text);
+        checkLabelled(DiagnosticsLog::redact(expected) == expected, "stored decoder corpus line dropped: " + line.text);
+    }
+    const auto counts = DiagnosticsLog::measurementTemplateCountsForTest();
+    check(counts.first == 44 && counts.second == counts.first,
+          "a measurement template was refused or the list changed");
+}
+
+/* J2: a number leaves the key scan only as a labelled producer field, so the forms a command line takes still drop:
+ * the reviewer's "args: -19 ppm" (-1 with RC4 key 9) and its units, punctuation and trailing text; the same with no
+ * label; every argument echo of a negative-looking key, bare, labelled, JSON, list or shell-quoted; a key beside or
+ * inside a measurement template; a template echoed on the command-line path; a field outside its producer's range or
+ * precision; and a template's field context without its label. */
+static void
+measurementExemptionsKeepKeyForms() {
+    QStringList records;
+    const QStringList tails = {QStringLiteral(" ppm"),      QStringLiteral(" dBFS"),   QStringLiteral(" dBm"),
+                               QStringLiteral(" dB"),       QStringLiteral(" Hz"),     QStringLiteral(" kHz"),
+                               QStringLiteral(" MHz"),      QStringLiteral(" ppm."),   QStringLiteral(";"),
+                               QStringLiteral(")"),         QStringLiteral(">"),       QStringLiteral("%"),
+                               QStringLiteral("-"),         QStringLiteral("."),       QStringLiteral(" s"),
+                               QStringLiteral(" ppm here"), QStringLiteral(" Hours;"), QStringLiteral(" m;"),
+                               QStringLiteral(""),          QStringLiteral(".5 dB"),   QStringLiteral(".12345")};
+    const QStringList contexts = {QString(),
+                                  QStringLiteral("args: "),
+                                  QStringLiteral("argv: "),
+                                  QStringLiteral("cmd: "),
+                                  QStringLiteral("command line: "),
+                                  QStringLiteral("dsd-neo "),
+                                  QStringLiteral("[")};
+    for (const auto& context : contexts) {
+        for (const auto& tail : tails) {
+            records << context + QStringLiteral("-19") + tail;
+            records << context + QStringLiteral("-55") + tail;
+        }
+    }
+    const QStringList keyForms = {QStringLiteral("-1 9"),      QStringLiteral("-19"),    QStringLiteral("-5 12"),
+                                  QStringLiteral("-512"),      QStringLiteral("-2 -5"),  QStringLiteral("-912"),
+                                  QStringLiteral("-25 1A2B"),  QStringLiteral("-31A2B"), QStringLiteral("-81A2B"),
+                                  QStringLiteral("-1 9 -5 12")};
+    for (const auto& form : keyForms) {
+        const QStringList parts = form.split(QLatin1Char(' '));
+        QStringList quoted;
+        QStringList single;
+        for (const auto& part : parts) {
+            quoted << QStringLiteral("\"") + part + QStringLiteral("\"");
+            single << QStringLiteral("'") + part + QStringLiteral("'");
+        }
+        records << form << QStringLiteral("args: ") + form << QStringLiteral("argv: ") + form
+                << QStringLiteral("cmd: ") + form << QStringLiteral("command line: ") + form
+                << QStringLiteral("dsd-neo -i rtl ") + form
+                << QStringLiteral("[") + quoted.join(QStringLiteral(", ")) + QStringLiteral("]")
+                << QStringLiteral("[") + parts.join(QStringLiteral(", ")) + QStringLiteral("]")
+                << single.join(QLatin1Char(' '))
+                << QStringLiteral("{\"args\": [") + quoted.join(QLatin1Char(',')) + QStringLiteral("]}");
+        // Beside or inside a measurement template, and a template echoed on the command-line path.
+        records << QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345) ") + form
+                << QStringLiteral(" PWR: -51.2 dB ") + form << QStringLiteral(" Offset: -5; ") + form
+                << QStringLiteral(" UDP Broadcast Set Error ") + form
+                << QStringLiteral("SoapySDR: adjusted gain ") + form + QStringLiteral(" from -12.00 dB to -10.00 dB.")
+                << QStringLiteral("Src: 1; Lat: 32.12345 ") + form
+                       + QStringLiteral(" Lon: 115.12345 degW (-32.12345, "
+                                        "-115.12345)")
+                << QStringLiteral("Tuner error set to -5 ppm. ") + form;
+    }
+    // A template on the command-line path, or with a field outside its producer's range or precision, or the field
+    // context without the label.
+    records << QStringLiteral("args: Tuner error set to -19 ppm.") << QStringLiteral("argv: Offset: -19;")
+            << QStringLiteral("cmd: Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)")
+            << QStringLiteral("command line: PWR: -51.2 dB") << QStringLiteral("\"-19\" Offset: -19;")
+            << QStringLiteral("Tuner error set to -201 ppm.") << QStringLiteral("Tuner error set to -912 ppm.")
+            << QStringLiteral("Tuner error set to -19 ppm") << QStringLiteral("  Local Time Offset: -5.00 Hours;")
+            << QStringLiteral(" Lat: -32.1234 Lon: -115.12345 (-32.12345, -115.12345)")
+            << QStringLiteral("  IDEN [1] TX Offset [-91234] Spacing [100]") << QStringLiteral(" [-25] Spacing [100]")
+            << QStringLiteral(" (-32.12345, -115.12345)") << QStringLiteral(" Offset: -19")
+            << QStringLiteral(" UDP Broadcast Set Error -1 9") << QStringLiteral(" UDP Broadcast Set Error -19 x")
+            << QStringLiteral(" PWR: -51.2 dB key") << QStringLiteral(" TX Offset: -19; Spacing: 64; Base: 1; secret");
+    for (const auto& record : records) {
+        checkLabelled(DiagnosticsLog::redact(QStringLiteral("[stderr] [info] ") + record) == kDropped,
+                      "key form kept beside the measurement rules: " + record.toUtf8());
+        checkLabelled(DiagnosticsLog::redact(QStringLiteral("[decoder] [info] ") + record + '\n') == kDropped,
+                      "key form kept beside the measurement rules (runtime log): " + record.toUtf8());
+    }
+    // Whole-line templates hold only for their own producer's source and level.
+    for (const auto& record : {QStringLiteral("[decoder] [info] Tuner error set to -19 ppm.\n"),
+                               QStringLiteral("[stderr] [info] PPM correction applied: -19."),
+                               QStringLiteral("[host] [info] NOTICE: Low input warning threshold: -50.0 dBFS")}) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      "whole-line template from another producer kept: " + record.toUtf8());
+    }
+}
+
+/* The decoder's frame-sync lines (printFrameSync(), print_dmr_sync_polarity()) survive in every polarity, as records and
+ * through the stream capture, though some inverted labels read as a bundled key option ("-P25p1", "-YSF", "-TETRA").
+ * Only the label itself is exempt, and only after "Sync: ": a key form beside it, or the same text elsewhere, drops. */
+static void
+syncLabelsSurvive() {
+    const QStringList labels = {
+        QStringLiteral("-DMR  "),        QStringLiteral("+DMR  "),        QStringLiteral("-M17 EOT"),
+        QStringLiteral("-M17 STR"),      QStringLiteral("-dPMR "),        QStringLiteral("-EDACS"),
+        QStringLiteral("-X2-TDMA "),     QStringLiteral("-NXDN96 "),      QStringLiteral("-P25p1 "),
+        QStringLiteral("+P25p1"),        QStringLiteral("-P25p2"),        QStringLiteral("-YSF "),
+        QStringLiteral("-TETRA NDB"),    QStringLiteral("-TETRA SB"),     QStringLiteral("-TETRA CB"),
+        QStringLiteral("-DSTAR VOICE "), QStringLiteral("-DSTAR HEADER"), QStringLiteral("-PV   "),
+        QStringLiteral("-PV_C "),        QStringLiteral("-M17 LSF"),
+    };
+    QByteArray bytes;
+    QStringList expected;
+    for (const auto& label : labels) {
+        const QString line = QStringLiteral("12:34:56 Sync: ") + label + QStringLiteral(" mod: GFSK");
+        const QString record = QStringLiteral("[stderr] [info] ") + line;
+        checkLabelled(DiagnosticsLog::redact(record) == record, "sync line dropped: " + line.toUtf8());
+        bytes += line.toUtf8() + '\n';
+        expected << record;
+    }
+    QTemporaryDir dir;
+    check(streamRecords(bytes, dir.path()) == expected, "sync lines dropped by the stream capture");
+
+    for (const auto& record : {
+             QStringLiteral("[stderr] [info] 12:34:56 Sync: -YSF -2 1A2B"),
+             QStringLiteral("[stderr] [info] Sync: -P25p1 -ZT1F"),
+             QStringLiteral("[stderr] [info] Sync: -TETRA-2 1A2B"),
+             QStringLiteral("[stderr] [info] Sync: -P25p1x"),
+             QStringLiteral("[stderr] [info] args: -P25p1"),
+             QStringLiteral("[stderr] [info] -YSF"),
+             QStringLiteral("[stderr] [info] Sync: -DMR  key 1A2B"),
+         }) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      "key form beside a sync label kept: " + record.toUtf8());
+    }
+    QDir(dir.path()).removeRecursively();
+    const auto records = streamRecords("Sync: -YSF -2\n1A2B\nSync: -YSF \n", dir.path());
+    check(records == QStringList({kDropped, kDropped, QStringLiteral("[stderr] [info] Sync: -YSF ")}),
+          "a key form beside a sync label, or its value, kept through the stream capture");
+}
+
+/* #782 gate r4 K1: a record that echoes a command line gets no exemption of any kind. A libusb log line accepts any text
+ * before its code, so "args: -197" (-1 with RC4 key 97) passed as one; a producer line's quoted name, a sync label, a
+ * measurement template's label and a SoapySDR gain's name can carry the marker as well. Each exemption kind, with each
+ * echo marker and each key form its field can hold, is dropped: as a record, live through the log tap or the stream
+ * capture, and again from a saved record. */
+static void
+everyExemptionYieldsToArgumentEcho() {
+    // Markers that stand before the key form, and the single-token ones a producer's quoted name can hold.
+    const QStringList markers = {
+        QStringLiteral("args:"), QStringLiteral("argv:"),  QStringLiteral("cmd:"), QStringLiteral("command line:"),
+        QStringLiteral("exec"),  QStringLiteral("\"-i\""), QStringLiteral("'-i'"), QStringLiteral("dsd-neo \"-i\" rtl"),
+    };
+    const QStringList tokenMarkers = {
+        QStringLiteral("args"), QStringLiteral("argv"),         QStringLiteral("cmd"), QStringLiteral("cmdline"),
+        QStringLiteral("exec"), QStringLiteral("command_line"), QStringLiteral("-i"),
+    };
+    // Each a key option with its value bundled: -1 with 97, -5 with 12, -9 with 25, -1 with 9, -2 with 5.
+    const QStringList keyForms = {
+        QStringLiteral("-197"), QStringLiteral("-512"), QStringLiteral("-925"),
+        QStringLiteral("-19"),  QStringLiteral("-25"),
+    };
+    const QStringList syncKeyLabels = {
+        QStringLiteral("-P25p1"),
+        QStringLiteral("-P25p2"),
+        QStringLiteral("-YSF"),
+        QStringLiteral("-TETRA"),
+    };
+
+    struct Kind {
+        const char* name;
+        QString body;              // %1 the marker, %2 the key form
+        dsd_neo_log_level_t level; // the runtime log's level for a decoder record
+        bool stderrSource;         // false: through the runtime log
+        bool token;                // the marker stands in a quoted name: one token, quoted by the template
+    };
+
+    const Kind kinds[] = {
+        {"libusb error code", QStringLiteral("libusb: error [op_open] %1 %2"), LOG_LEVEL_ERROR, false, false},
+        {"libusb error code after text", QStringLiteral("libusb: error [op_open] failed %1 %2"), LOG_LEVEL_ERROR, false,
+         false},
+        {"libusb warning code", QStringLiteral("libusb: warning [do_close] %1 %2"), LOG_LEVEL_WARN, false, false},
+        {"libusb errno", QStringLiteral("libusb: error [op_open] %1 %2 failed, errno=13"), LOG_LEVEL_ERROR, false,
+         false},
+        {"producer line's quoted name",
+         QStringLiteral("WARNING: Trunk scan target '%1': --squelch-db %2 cannot gate digital acquisition without a "
+                        "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                        "stamps."),
+         LOG_LEVEL_WARN, false, true},
+        {"measurement fragment", QStringLiteral("%1 Offset: %2;"), LOG_LEVEL_INFO, false, false},
+        {"measurement fragment with context", QStringLiteral("%1 TX Offset: %2; Spacing: 100"), LOG_LEVEL_INFO, false,
+         false},
+        {"measurement line's name", QStringLiteral("SoapySDR: adjusted gain %1 from %2.00 dB to -10.00 dB."),
+         LOG_LEVEL_INFO, true, false},
+    };
+
+    auto& log = DiagnosticsLog::instance();
+    QTemporaryDir dir;
+    QByteArray stderrBytes;
+    int stderrLines = 0;
+    const auto expectDropped = [&](const Kind& kind, const QString& body) {
+        const QString source = kind.stderrSource ? QStringLiteral("stderr") : QStringLiteral("decoder");
+        static const char* levels[] = {"error", "warn", "info", "debug"};
+        const QString level = kind.stderrSource ? QStringLiteral("info") : QLatin1String(levels[kind.level]);
+        // A runtime-log record ends with its newline, kept as a space once saved.
+        const QString record = QStringLiteral("[%1] [%2] ").arg(source, level) + body
+                               + (kind.stderrSource ? QString() : QStringLiteral("\n"));
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped,
+                      QByteArray("echo kept by the ") + kind.name + " exemption: " + record.toUtf8());
+        if (!kind.stderrSource) {
+            QString saved = record;
+            saved.replace(QLatin1Char('\n'), QLatin1Char(' '));
+            checkLabelled(DiagnosticsLog::redact(saved) == kDropped,
+                          QByteArray("saved echo kept by the ") + kind.name + " exemption: " + saved.toUtf8());
+            dsd_neo_log_write(kind.level, "%s\n", body.toUtf8().constData());
+            const auto ring = log.snapshot();
+            checkLabelled(!ring.isEmpty() && ring.last() == kDropped,
+                          QByteArray("live echo kept by the ") + kind.name + " exemption: " + body.toUtf8());
+        } else {
+            stderrBytes += body.toUtf8() + '\n';
+            ++stderrLines;
+        }
+    };
+    for (const auto& kind : kinds) {
+        for (const auto& marker : kind.token ? tokenMarkers : markers) {
+            for (const auto& key : keyForms) {
+                expectDropped(kind, kind.body.arg(marker, key));
+            }
+        }
+    }
+    // A sync label that reads as a key option, exempt only as the decoder prints it.
+    const Kind sync{"sync label", QString(), LOG_LEVEL_INFO, true, false};
+    for (const auto& marker : markers) {
+        for (const auto& label : syncKeyLabels) {
+            expectDropped(sync, marker + QStringLiteral(" 12:34:56 Sync: ") + label + QStringLiteral(" mod: GFSK"));
+            expectDropped(sync, QStringLiteral("12:34:56 Sync: ") + label + QStringLiteral(" ") + marker);
+        }
+    }
+    const auto records = streamRecords(stderrBytes, dir.path());
+    check(records.size() == stderrLines, "stderr echo records lost or split");
+    for (const auto& record : records) {
+        checkLabelled(record == kDropped, "stderr echo kept through the stream capture: " + record.toUtf8());
+    }
+}
+
+/* Records the Android app writes from Kotlin (#782), byte-identical to the golden records in
+ * tests/android/LooperWatchdogTest.kt and ScreenTraceTest.kt (run_jvm_tests.py checks): a watchdog incident whose
+ * stack names dispatchKeyEvent and AES, which the Kotlin side breaks up, and a screen change record. */
+#define DIAGNOSTICS_GOLDEN_WATCHDOG                                                                                    \
+    "watchdog: stall 1.1 of 3 at uptime 12.345 s: main thread blocked 1501 ms, state BLOCKED; 2 touches delivered "    \
+    "since the probe; activity 2 resumed, window 3 attached; stack of 3 frames\n"                                      \
+    "watchdog: stall 1.2 of 3: screen as of 40 ms before: mode dim_between_calls, delay 30 s, session 7, "             \
+    "visible, focused, top, not multi-window, screen on, wants dim and keep on, engaged by nothing\n"                  \
+    "watchdog: stall 1.3 of 3: main stack 1-3: android.view.ViewRootImpl.dispatchK*yEvent(ViewRootImpl.java:7012) "    \
+    "| javax.crypto.A*S.init(Native Method) | android.os.Looper.loop(Looper.java:-1)"
+#define DIAGNOSTICS_GOLDEN_SCREEN                                                                                      \
+    "screen: change 1: dim on, brightness 0.010 requested, 0.010 read back; mode dim_between_calls, delay 30 s, "      \
+    "session 7, visible, focused, top, not multi-window, screen on, wants dim and keep on, engaged by nothing; "       \
+    "activity 2 resumed, window 3 attached"
+
+/* The Android app's watchdog, screen trace and teardown records reach the log whole and within the record limit:
+ * the key rule must not drop an incident for a framework method's name, so the Kotlin side breaks such words up. */
+static void
+androidHostRecordsSurvive() {
+    QStringList records = QString::fromUtf8(DIAGNOSTICS_GOLDEN_WATCHDOG).split(QLatin1Char('\n'));
+    records << QString::fromUtf8(DIAGNOSTICS_GOLDEN_SCREEN)
+            << QStringLiteral("watchdog: stall 1.4: main thread resumed after 9200 ms; 3 touches delivered while it "
+                              "waited, 2 of them by the capture")
+            << QStringLiteral("screen: change 4 (recorded 400 ms late, replacing 2 changes not recorded): dim off, "
+                              "brightness none requested, none read back")
+            << QStringLiteral("screen: change 4: traversal after 100 ms, draw after 100 ms on window 2")
+            << QStringLiteral("screen: change 1: no draw within 2000 ms; no traversal")
+            << QStringLiteral("screen: touch while dimmed: passed on, dim still on; 2 more since, not recorded")
+            << QStringLiteral("screen: touch while dimmed: not taken: the screen policy follows another activity")
+            << QStringLiteral("diagnostics: 10 host records dropped while waiting for native diagnostics")
+            << QStringLiteral("teardown: activity 2 destroying at uptime 1234.567 s")
+            << QStringLiteral("teardown: stopService took 3 ms")
+            << QStringLiteral("teardown: Qt event loop returned at uptime 1234.890 s")
+            << QStringLiteral("teardown: ~RadioReferenceModel took 1012 ms")
+            << QStringLiteral("teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms");
+    check(records.size() == 16, "golden watchdog incident is not three records");
+    for (const auto& text : records) {
+        const QString record = QStringLiteral("[host] [info] ") + text;
+        checkLabelled(DiagnosticsLog::redact(record) == record, "Android host record changed: " + text.toUtf8());
+        checkLabelled(record.toUtf8().size() <= 512, "Android host record over 512 bytes: " + text.toUtf8());
+    }
+    // Unbroken, the same stack frame would take its whole record with it.
+    check(DiagnosticsLog::redact(QStringLiteral("[host] [info] android.view.ViewRootImpl.dispatchKeyEvent"))
+              == kDropped,
+          "the key rule no longer drops dispatchKeyEvent; the Kotlin breaking-up can be revisited");
+}
+
+/* The Android teardown's final flush is reported by the next start from a marker file, once, and only when the
+ * marker is well formed; the record survives redaction. */
+static void
+teardownFlushMarkerRoundTrip() {
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("teardown-flush.marker"));
+    check(dsd_qt::teardownFlushMarkerTake(path).isEmpty(), "a missing flush marker reported something");
+    check(dsd_qt::teardownFlushMarkerWrite(path, 37, dsd_qt::TeardownFlush::Completed),
+          "the flush marker was not written");
+    const QString completed = dsd_qt::teardownFlushMarkerTake(path);
+    check(completed == QStringLiteral("teardown: the previous process's final diagnostics flush took 37 ms"),
+          "the completed flush marker reads wrong");
+    check(!QFile::exists(path) && dsd_qt::teardownFlushMarkerTake(path).isEmpty(), "the flush marker reported twice");
+    check(dsd_qt::teardownFlushMarkerWrite(path, 500, dsd_qt::TeardownFlush::TimedOut),
+          "the flush marker was not written");
+    const QString timedOut = dsd_qt::teardownFlushMarkerTake(path);
+    check(timedOut
+              == QStringLiteral("teardown: the previous process's final diagnostics flush took 500 ms, and timed out"),
+          "the timed-out flush marker reads wrong");
+    // A flush that ended in its bound but could not write or sync is no timeout (#782).
+    check(dsd_qt::teardownFlushMarkerWrite(path, 3, dsd_qt::TeardownFlush::Failed), "the flush marker was not written");
+    const QString failed = dsd_qt::teardownFlushMarkerTake(path);
+    check(failed
+              == QStringLiteral(
+                  "teardown: the previous process's final diagnostics flush took 3 ms, and failed to write"),
+          "the failed flush marker reads wrong");
+    for (const QString& record : {completed, timedOut, failed}) {
+        const QString line = QStringLiteral("[host] [info] ") + record;
+        check(DiagnosticsLog::redact(line) == line, "the flush marker record does not survive redaction");
+    }
+    for (const QByteArray& bad : {QByteArray("flush x completed"), QByteArray("flush 12"),
+                                  QByteArray("junk 1 completed"), QByteArray("flush 12 maybe"), QByteArray()}) {
+        QFile file(path);
+        check(file.open(QIODevice::WriteOnly) && file.write(bad) == bad.size(), "could not write a bad marker");
+        file.close();
+        check(dsd_qt::teardownFlushMarkerTake(path).isEmpty() && !QFile::exists(path),
+              "a malformed flush marker was reported or kept");
+    }
+}
+
+/* Only a whole producer record is exempt: anything around or inside it, or the same text from another producer,
+ * keeps the key rule. */
+static void
+producerErrorLinesDoNotCarryKeys() {
+    const QStringList records = {
+        QStringLiteral("[stderr] [info] -b197 usb_claim_interface error -1"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1 -b197"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1-b197"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1\n-b197"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1 key"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -91234"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -9123"),
+        QStringLiteral("[stderr] [info] usb_claim_interface error -1234"),
+        QStringLiteral("[host] [info] engine run returned -1 -b197"),
+        QStringLiteral("[host] [info] engine run returned -1234"),
+        QStringLiteral("[stderr] [info] engine run returned -1"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] failed with error -91234\n"),
+        QStringLiteral("[stderr] [info] rtlsdr_i2c_write_reg failed with -1"),
+        QStringLiteral("[host] [info] usb_claim_interface error -1"),
+        QStringLiteral("[stderr] [error] usb_claim_interface error -1"),
+        QStringLiteral("[decoder] [error] usb_claim_interface error -1\n"),
+        QStringLiteral("[decoder] [error] Failed to apply RTL-SDR center frequency 465975000 Hz (rc=-1). -b197\n"),
+        QStringLiteral("[decoder] [error] Failed to apply RTL-SDR center frequency -1A2B Hz (rc=-1).\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] -b197 failed, errno=13\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] key 1A2B failed with error -1\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] failed -2 1A2B error -1\n"),
+        QStringLiteral("[decoder] [error] libusb: error [op_open] failed\n-b197 error -1\n"),
+        QStringLiteral("[decoder] [error] libusb: libusb: error [op_open] failed with error -1\n"),
+        QStringLiteral("[decoder] [info] libusb: error [op_open] failed with error -1\n"),
+        QStringLiteral("[stderr] [info] libusb: error [op_open] failed with error -1"),
+    };
+    for (const auto& record : records) {
+        checkLabelled(DiagnosticsLog::redact(record) == kDropped, "mixed producer record kept: " + record.toUtf8());
+    }
+}
+
+/* Every key-taking option of src/runtime/cli/args.c, in each form getopt and the long-option pass accept, and as a
+ * host could echo an argument list. The values are short enough that the hex rule cannot hide a miss. */
+static void
+everyKeyOptionFormIsDropped() {
+    const QStringList shortOptions = {"1", "2", "!", "@", "5", "9", "A", "S", "H", "R", "b"};
+    const QStringList longOptions = {"--dmr-baofeng-pc5",   "--dmr-csi-ee72", "--tetra-key",   "--m17-aes-key",
+                                     "--m17-scrambler-key", "--api-token",    "--rdio-api-key"};
+    const QString first = QStringLiteral("1A2B");
+    const QString second = QStringLiteral("3C4D");
+    // String-valued options (API credentials) take any text, so their values need not look like keys.
+    const QString word = QStringLiteral("s3cretValue");
+
+    struct Form {
+        const char* name;
+        QString text;
+    };
+
+    QTemporaryDir dir;
+    auto& log = DiagnosticsLog::instance();
+    const auto checkForms = [&](const QString& option, const QList<Form>& forms) {
+        for (const auto& form : forms) {
+            const QByteArray label = "key form kept: " + option.toUtf8() + " " + form.name;
+            for (const auto& context : {QString(), QStringLiteral("args: ")}) {
+                checkLabelled(DiagnosticsLog::redact(QStringLiteral("[stderr] [info] ") + context + form.text)
+                                  == kDropped,
+                              label);
+                checkLabelled(DiagnosticsLog::redact(QStringLiteral("[decoder] [error] ") + context + form.text + '\n')
+                                  == kDropped,
+                              label + " (runtime log)");
+            }
+            // The runtime log keeps a logical message whole, whatever lines it spans.
+            dsd_neo_log_write(LOG_LEVEL_ERROR, "%s\n", form.text.toUtf8().constData());
+            const auto ring = log.snapshot();
+            checkLabelled(!ring.isEmpty() && ring.last() == kDropped, label + " (through the log tap)");
+            // The stderr pump splits the stream into lines before redaction, so a value may continue on a later line.
+            QDir(dir.path()).removeRecursively();
+            const auto records = streamRecords(form.text.toUtf8() + '\n', dir.path());
+            check(!records.isEmpty(), "stream capture produced no record");
+            for (const auto& record : records) {
+                checkLabelled(record == kDropped, label + " (through the stream capture)");
+            }
+        }
+    };
+    for (const auto& option : shortOptions) {
+        const QString flag = QStringLiteral("-") + option;
+        checkForms(flag, {
+                             {"attached", flag + first},
+                             {"separated", flag + ' ' + first},
+                             {"quoted multi-word", flag + QStringLiteral(" '") + first + ' ' + second + '\''},
+                             {"bundled", QStringLiteral("-ZT") + option + first},
+                             {"bundled separated", QStringLiteral("-Z") + option + ' ' + first},
+                             {"shell-quoted", '\'' + flag + QStringLiteral("' '") + first + '\''},
+                             {"JSON list", QStringLiteral("[\"") + flag + QStringLiteral("\",\"") + first + "\"]"},
+                             {"list", '[' + flag + QStringLiteral(", ") + first + ']'},
+                             {"multiline", flag + ' ' + first + '\n' + second},
+                             {"multiline CRLF", flag + ' ' + first + QStringLiteral("\r\n") + second},
+                             {"value on the next line", flag + '\n' + first + ' ' + second},
+                             {"text value on the next line", flag + '\n' + word},
+                             {"text value split across lines", flag + ' ' + word + '\n' + word},
+                             {"quoted value on the next line", flag + QStringLiteral("\n'my ") + word + " phrase'"},
+                             {"quoted value split across lines",
+                              flag + QStringLiteral(" 'my ") + word + QStringLiteral("\nphrase ") + word + '\''},
+                         });
+    }
+    for (const auto& option : longOptions) {
+        checkForms(option,
+                   {
+                       {"attached", option + '=' + first},
+                       {"separated", option + ' ' + first},
+                       {"quoted multi-word", option + QStringLiteral(" '") + first + ' ' + second + '\''},
+                       {"list", '[' + option + QStringLiteral(", ") + first + ']'},
+                       {"multiline", option + ' ' + first + '\n' + second},
+                       {"value on the next line", option + '\n' + first + ' ' + second},
+                       {"text value on the next line", option + '\n' + word},
+                       {"text value attached and split", option + '=' + word + '\n' + word},
+                       {"text value split across lines", option + ' ' + word + '\n' + word},
+                       {"quoted value on the next line", option + QStringLiteral("\n\"my ") + word + " phrase\""},
+                       {"quoted value split across lines",
+                        option + QStringLiteral(" 'my ") + word + QStringLiteral("\nphrase ") + word + '\''},
+                   });
+    }
+}
+
+/* The stream capture keeps the pump's line rules, and the continuation rule ends at the first line that is not a
+ * key value. */
+static void
+streamCaptureLineRules() {
+    QTemporaryDir dir;
+    QByteArray bytes = "first\r\nsecond\n\nthird\r";
+    bytes += QByteArray(1100, 'x') + "\n" + "3C4D\n";
+    bytes += "-2 1A2B\n3C4D 5E6F\n0x 11, 22\n\x1b[1m3C4D\x1b[0m\tAB\nTuner gain set to 30 dB.\n5E6F\n";
+    // A quote opened in a dropped record runs on to its close, but no further than one record's bound.
+    bytes += "--api-token 'never closed\n" + QByteArray(600, 'w').replace(100, 1, " ") + "\n"
+             + QByteArray(600, 'v').replace(100, 1, " ") + "\nSampling at 1536000 S/s.\n";
+    // A line inside that quote dropped for its own sake (" -1") is still the value: the quote runs on through it.
+    bytes += "--api-token 'alpha\nbeta -1 gamma\nfinal words'\nTuner gain set to 30 dB.\n";
+    // An apostrophe inside a word opens no quote.
+    bytes += "Invalid key: don't\nTuner gain set to 30 dB.\nlast";
+    const auto records = streamRecords(bytes, dir.path());
+    const QStringList expected = {
+        QStringLiteral("[stderr] [info] first"),
+        QStringLiteral("[stderr] [info] second"),
+        QStringLiteral("[stderr] [info] third"),
+        QStringLiteral("[stderr] [info] [oversized diagnostic omitted]"),
+        kDropped,
+        kDropped,
+        kDropped,
+        kDropped,
+        kDropped,
+        QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
+        QStringLiteral("[stderr] [info] 5E6F"),
+        kDropped,
+        kDropped,
+        kDropped,
+        QStringLiteral("[stderr] [info] Sampling at 1536000 S/s."),
+        kDropped,
+        kDropped,
+        kDropped,
+        QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
+        kDropped,
+        QStringLiteral("[stderr] [info] Tuner gain set to 30 dB."),
+        QStringLiteral("[stderr] [info] last"),
+    };
+    check(records == expected, "stream capture line rules changed");
+}
+
+/* An oversized line is omitted unread, but a quote it opens or closes is followed through it: the rest of a quoted key
+ * value on the next line drops, and a quote closed inside it no longer holds the lines after. */
+static void
+oversizedLineKeepsItsQuote() {
+    const QString omitted = QStringLiteral("[stderr] [info] [oversized diagnostic omitted]");
+    const QString kept = QStringLiteral("[stderr] [info] w2 w3");
+    const QString after = QStringLiteral("[stderr] [info] Tuner gain set to 30 dB.");
+
+    struct Case {
+        const char* name;
+        QByteArray bytes;
+        QStringList expected;
+    };
+
+    const Case cases[] = {
+        {"quote opened in the cleared bytes",
+         "--api-token 'w1 " + QByteArray(1100, 'w') + "\nw2 w3'\nTuner gain set to 30 dB.\n",
+         {omitted, kDropped, after}},
+        {"quote opened in the skipped bytes",
+         QByteArray(1100, 'x') + " --api-token 'w1 abc\nw2 w3'\nTuner gain set to 30 dB.\n",
+         {omitted, kDropped, after}},
+        {"quote closed in the skipped bytes",
+         "--api-token 'w1 " + QByteArray(1100, 'w') + "' tail\nw2 w3\n",
+         {omitted, kept}},
+        {"carried quote closed inside it",
+         "--api-token 'alpha\n" + QByteArray(1100, 'y') + "' end\nw2 w3\n",
+         {kDropped, omitted, kept}},
+        {"carried quote still open after it",
+         "--api-token 'alpha\n" + QByteArray(1100, 'y') + "\nw2 w3'\nTuner gain set to 30 dB.\n",
+         {kDropped, omitted, kDropped, after}},
+    };
+    for (const auto& c : cases) {
+        QTemporaryDir dir;
+        checkLabelled(streamRecords(c.bytes, dir.path()) == c.expected, QByteArray("oversized line quote: ") + c.name);
+    }
+}
+
+// --- Host records (issue #782) ---
+
+// The host section of an export: the rows between its heading and the full log's.
+static QStringList
+hostSection(const QString& text) {
+    const auto rows = text.split('\n');
+    const auto end = rows.indexOf(QLatin1String(kAllHeading));
+    if (rows.value(0) != QLatin1String(kHostHeading) || end < 1) {
+        return {};
+    }
+    return rows.mid(1, end - 1);
+}
+
+// A fast scan's decoder output pushed every host and session line out of the 2000-line ring and the saved tail, so the
+// export that should have explained a failure had none of them, live or after a restart.
+static void
+hostRecordsOutliveABusySession() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    QStringList expected;
+    for (int i = 0; i < 10; ++i) {
+        expected.append(QStringLiteral("[host] [info] service: lifecycle step %1").arg(i));
+    }
+    // A session record the ring does not pin at its front.
+    expected.append(QStringLiteral("[session] [info] usb access requested: usb, boot 3"));
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        DiagnosticsLogModel model(&log);
+        for (int i = 0; i < 10; ++i) {
+            log.submit("host", "info", QStringLiteral("service: lifecycle step %1").arg(i));
+        }
+        log.noteSessionAttempt(QStringLiteral("usb, boot 3"), DiagnosticsLog::AttemptStage::UsbAccess);
+        for (int i = 0; i < 3000; ++i) {
+            log.submit("decoder", "info",
+                       QStringLiteral("Sync: +P25p1 hop %1 ").arg(i) + QString(150, QLatin1Char('q')));
+            if (i % 100 == 99) {
+                g_clock += DiagnosticsLog::kWriteIntervalMs;
+                log.pump();
+            }
+        }
+        check(!log.snapshot().join('\n').contains(QStringLiteral("lifecycle step 9")),
+              "the fixture did not push the host records out of the ring");
+        const auto live = hostSection(model.allText());
+        for (const auto& line : expected) {
+            check(live.contains(line), "a host record is missing from the live export's host section");
+        }
+        check(model.allText().endsWith(log.snapshot().join('\n')), "the full log does not follow the host records");
+        // Share redacts the export line by line again.
+        for (const char* heading : {kHostHeading, kAllHeading}) {
+            check(DiagnosticsLog::redact(QLatin1String(heading)) == QLatin1String(heading),
+                  "Share's redaction drops an export heading");
+        }
+        check(log.flush(), "busy session flush");
+        check(log.ioStats().rotations >= 2, "the fixture did not rotate the main tail");
+    }
+    check(!(readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log"))).contains("lifecycle step 9"),
+          "the fixture did not push the host records out of the main tail");
+    DiagnosticsLog reloaded(dir.path(), manualOptions());
+    DiagnosticsLogModel model(&reloaded);
+    model.refresh();
+    const auto previous = hostSection(model.allText());
+    check(previous.value(0) == QLatin1String("--- previous run ---"), "the previous run's host records are not marked");
+    for (const auto& line : expected) {
+        check(previous.contains(line), "a host record is missing from the previous-run export");
+    }
+}
+
+// The host store keeps the main tail's rules at its own sizes: 500 records of at most 512 bytes, redacted, in two
+// segments of at most 32 KiB that each start with their process and session lines.
+static void
+hostStoreKeepsItsBounds() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    const QString secret = QString(16, QLatin1Char('A')) + QString(16, QLatin1Char('B'));
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        log.noteProcess(QStringLiteral("1, test os, boot 7"));
+        log.noteSessionAttempt(QStringLiteral("rtltcp"));
+        log.submit("host", "info", QString(600, QChar(0x03bb)));
+        log.submit("host", "error", "Invalid key: " + secret);
+        auto rows = log.hostSnapshot();
+        check(rows.size() == 4 && rows.at(2).toUtf8().size() <= 512
+                  && !rows.at(2).contains(QChar::ReplacementCharacter),
+              "a host record over 512 bytes");
+        check(rows.value(3) == QLatin1String(kDropped), "a key-bearing host record was kept");
+        for (int i = 0; i < 700; ++i) {
+            log.submit("session", "info", QStringLiteral("seq %1 ").arg(i) + QString(300, QLatin1Char('h')));
+            if (i % 50 == 49) {
+                g_clock += DiagnosticsLog::kWriteIntervalMs;
+                log.pump();
+            }
+        }
+        rows = log.hostSnapshot();
+        check(rows.size() == DiagnosticsLog::kHostRingLimit && rows.first().contains(QStringLiteral("seq 200 "))
+                  && rows.last().contains(QStringLiteral("seq 699 ")),
+              "the host ring is not the newest 500 records");
+        check(log.flush(), "host store flush");
+    }
+    for (const char* name : {"host.log", "host.prev.log"}) {
+        const auto bytes = readFile(dir.filePath(QLatin1String(name)));
+        const auto lines = bytes.split('\n');
+        check(bytes.size() <= DiagnosticsLog::kHostSegmentLimit, "a host segment over its cap");
+        check(lines.size() > 2 && lines.at(0).startsWith("[process] [info] pid 1, test os, boot 7")
+                  && lines.at(1).contains("--- session starting: rtltcp ---"),
+              "a host segment does not start with its process and session");
+        checkAbsent(bytes, hexRepresentations(secret.toUtf8()), "a host segment contains a key representation");
+    }
+    DiagnosticsLog reloaded(dir.path(), manualOptions());
+    const auto rows = reloaded.hostSnapshot();
+    check(rows.size() <= DiagnosticsLog::kHostRingLimit && rows.value(0) == QLatin1String("--- previous run ---")
+              && rows.last().contains(QStringLiteral("seq 699 ")),
+          "the reloaded host records lost the newest");
+    // The current segment's header repeats the process and session lines the previous segment holds.
+    check(rows.join('\n').count(QStringLiteral("pid 1, test os, boot 7")) == 1
+              && rows.join('\n').count(QStringLiteral("--- session starting: rtltcp ---")) == 1,
+          "a segment header was reloaded as a record");
+    int last = -1;
+    static const QRegularExpression seq(QStringLiteral("seq (\\d+) "));
+    for (const auto& row : rows) {
+        const auto match = seq.match(row);
+        if (match.hasMatch()) {
+            check(match.captured(1).toInt() > last, "reloaded host records out of order");
+            last = match.captured(1).toInt();
+        }
+    }
+}
+
+// A segment untouched for seven days expires, a kill's temporaries go, and a reloaded record is redacted again.
+static void
+hostStoreExpiryAndReload() {
+    QTemporaryDir dir;
+    writeFile(dir.filePath("host.log.AbC123"), "orphan");
+    writeFile(dir.filePath("host.prev.log"), "[host] [info] stale host record\n");
+    QFile stale(dir.filePath("host.prev.log"));
+    check(stale.open(QIODevice::ReadWrite)
+          && stale.setFileTime(QDateTime::currentDateTimeUtc().addDays(-8), QFileDevice::FileModificationTime));
+    stale.close();
+    writeFile(dir.filePath("host.log"), "[host] [info] fresh host record\n[host] [info] -1 1A2B\n");
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    check(!QFile::exists(dir.filePath("host.log.AbC123")), "an orphaned host temporary kept");
+    check(!QFile::exists(dir.filePath("host.prev.log")), "an expired host segment kept");
+    const QStringList expected = {QStringLiteral("--- previous run ---"),
+                                  QStringLiteral("[host] [info] fresh host record"), QLatin1String(kDropped)};
+    check(log.hostSnapshot() == expected, "the saved host records did not reload, redacted");
+}
+
+// Clear removes the host records with the rest: from the ring, the queue and both host segments.
+static void
+clearRemovesTheHostRecords() {
+    QTemporaryDir dir;
+    g_clock = 0;
+    {
+        DiagnosticsLog log(dir.path(), manualOptions());
+        DiagnosticsLogModel model(&log);
+        log.submit("host", "info", "cleared host record");
+        check(log.flush(), "pre-clear flush");
+        check(readFile(dir.filePath("host.log")).contains("cleared host record"), "the host record was not saved");
+        log.submit("session", "info", "queued host record");
+        model.clear();
+        check(log.hostSnapshot().isEmpty() && !model.allText().contains("cleared host record"),
+              "Clear kept the host records");
+        log.submit("host", "info", "kept host record");
+        check(log.flush(), "post-clear flush");
+        const auto saved = readFile(dir.filePath("host.prev.log")) + readFile(dir.filePath("host.log"));
+        check(!saved.contains("cleared host record") && !saved.contains("queued host record")
+                  && saved.contains("kept host record"),
+              "Clear did not remove the saved host records");
+    }
+    DiagnosticsLog reopened(dir.path(), manualOptions());
+    const auto text = exportOf(reopened);
+    check(!text.contains("cleared host record") && !text.contains("queued host record")
+              && text.contains("kept host record"),
+          "cleared host records came back after a restart");
+}
+
+// A slow load of the saved records must not hold up a host record from another thread: Android's main thread submits
+// them through nativeHostDiagnostic, and the tap's install used to load under the lock that guards them.
+static std::mutex g_loadMutex;
+static std::condition_variable g_loadChanged;
+static bool g_loadEntered = false;
+static bool g_loadReleased = false;
+static bool g_loadDone = false;
+static std::thread::id g_loadThread;
+
+static void
+blockedLoad() {
+    std::unique_lock<std::mutex> lock(g_loadMutex);
+    g_loadEntered = true;
+    g_loadThread = std::this_thread::get_id();
+    g_loadChanged.notify_all();
+    // Bounded: where the submit below waits for the load, the load ends after this and the check reports it.
+    g_loadChanged.wait_for(lock, std::chrono::seconds(3), [] { return g_loadReleased; });
+    g_loadDone = true;
+}
+
+// Re-review N2: the platform's lines after the process line (Android: the exit records) are reported durable, so the
+// platform marks them logged, only once they are synced to the host log: on the build thread, after the publish.
+static const char kPlatformLine[] = "exit: platform line that must be durable first";
+static QString g_platformHostLog;
+static int g_platformLogged = 0;
+static bool g_platformLineOnDisk = false;
+static bool g_platformLoggedAfterPublish = false;
+
+static std::pair<QString, QStringList>
+platformFacts() {
+    return {QString(), {QString::fromLatin1(kPlatformLine)}};
+}
+
+static void
+platformLinesLogged() {
+    QFile host(g_platformHostLog);
+    const bool onDisk = host.open(QIODevice::ReadOnly) && host.readAll().contains(kPlatformLine);
+    const bool published = DiagnosticsLog::installedForTest();
+    std::lock_guard<std::mutex> lock(g_loadMutex);
+    g_platformLineOnDisk = onDisk;
+    g_platformLoggedAfterPublish = published;
+    ++g_platformLogged;
+    g_loadChanged.notify_all();
+}
+
+// installTap() runs on Android's main thread (the service's nativeInit), as do the host records, the startup-window
+// arming and the teardown flush. None of them waits for the log's construction: the tap returns at once, the records
+// and the arming are held and applied at the publish, and a flush waits for the publish only within its own bound.
+static void
+installTapDoesNotWaitForTheLoad() {
+    DiagnosticsLog::setLoadHookForTest(blockedLoad);
+    g_platformHostLog =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/diagnostics/host.log");
+    DiagnosticsLog::setPlatformFactsProvider(platformFacts, platformLinesLogged);
+    DiagnosticsLog::installTap();
+    {
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        check(!g_loadDone, "installTap() waited for the saved records to load");
+    }
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(g_loadMutex);
+        entered = g_loadChanged.wait_for(lock, std::chrono::seconds(10), [] { return g_loadEntered; });
+    }
+    check(entered, "the log's load did not start");
+    check(!DiagnosticsLog::installedForTest(), "the log was published before its load finished");
+    {
+        // On Android QStandardPaths' cache has no lock, and the Qt thread resolves its own paths meanwhile: the build
+        // thread must not resolve any.
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        check(g_loadThread != std::this_thread::get_id()
+                  && DiagnosticsLog::directoryResolvedOnForTest() == std::this_thread::get_id(),
+              "the log's directory was not resolved on installTap()'s calling thread");
+    }
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("usb: reported during the load"));
+    DiagnosticsLog::armStartupDiagnostics();
+    dsd_neo_log_write(LOG_LEVEL_INFO, "decoder line during the load\n");
+    // Held records keep the producer-line exemptions: they are formatted with their source and level, as submitted.
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("service: engine configuration returned -2"));
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("engine run returned -1"));
+    dsd_neo_log_write(LOG_LEVEL_INFO, "NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2.\n");
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "libusb: error [handle_events] backend handle_events failed with error -1\n");
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("service: args -2 1A2B"));
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "engine run returned -1 -H 1A2B\n");
+    // A thread that writes to the log directly (the stderr pump) waits for its construction: it must then write
+    // after this run's process line and the records held for it.
+    bool publishedFirst = false;
+    std::thread direct([&publishedFirst] {
+        auto& log = DiagnosticsLog::instance();
+        publishedFirst = DiagnosticsLog::installedForTest();
+        log.submit("stderr", "info", "direct line during the load");
+    });
+    check(!DiagnosticsLog::flushDiagnostics(50), "a flush reported durable before the log was published");
+    check(DiagnosticsLog::flushDiagnosticsOutcome(50) == DiagnosticsLog::FlushOutcome::TimedOut,
+          "a flush the publish outran is a timeout");
+    // #782: the quit's flush waits its whole bound, unless a final flush follows the teardown (Android's main()):
+    // then it only asks for one, so the teardown holds one bounded wait.
+    {
+        const auto timed = [] {
+            const uint64_t start = dsd_realtime_mono_ms();
+            DiagnosticsLog::flushAtQuit();
+            return dsd_realtime_mono_ms() - start;
+        };
+        check(DiagnosticsLog::quitFlushBoundMs() == DiagnosticsLog::kShutdownFlushMs
+                  && timed() + 50 >= static_cast<uint64_t>(DiagnosticsLog::kShutdownFlushMs),
+              "the quit's own flush did not wait for its bound");
+        // Its bound, not the time it took: a test thread a loaded runner preempts would make any ceiling on the
+        // elapsed time fail (#782 gate r2 H5). A bound of 0 asks for the flush and returns, the log being unpublished.
+        DiagnosticsLog::setFinalFlushAfterQuit(true);
+        check(DiagnosticsLog::quitFlushBoundMs() == 0,
+              "the quit's flush waits though a final flush follows the teardown");
+        DiagnosticsLog::flushAtQuit();
+        DiagnosticsLog::setFinalFlushAfterQuit(false);
+    }
+    // A flush asked for before the publish is honoured once it happens, within its bound.
+    bool flushed = false;
+    std::thread flusher([&flushed] { flushed = DiagnosticsLog::flushDiagnostics(10000); });
+    {
+        std::lock_guard<std::mutex> lock(g_loadMutex);
+        check(!g_loadDone, "a host record, startup-window request or flush waited for the saved records to load");
+        check(g_platformLogged == 0, "the platform was told its lines are durable while the log was loading");
+        g_loadReleased = true;
+    }
+    g_loadChanged.notify_all();
+    flusher.join();
+    direct.join();
+    check(flushed, "a flush asked for during the load was not honoured");
+    {
+        std::unique_lock<std::mutex> lock(g_loadMutex);
+        const bool logged = g_loadChanged.wait_for(lock, std::chrono::seconds(15), [] { return g_platformLogged > 0; });
+        check(logged && g_platformLogged == 1, "the platform was not told once that its lines are durable");
+        check(g_platformLoggedAfterPublish, "the platform was told its lines are durable before the publish");
+        check(g_platformLineOnDisk, "the platform was told its lines are durable before they were in the host log");
+    }
+    check(publishedFirst, "a direct writer got the log before it was published");
+    DiagnosticsLog::setLoadHookForTest(nullptr);
+    check(DiagnosticsLog::installedForTest(), "the log was not published");
+    auto& log = DiagnosticsLog::instance();
+    const auto ring = log.snapshot().join('\n');
+    const auto host = log.hostSnapshot().join('\n');
+    check(ring.count(QStringLiteral("usb: reported during the load")) == 1
+              && host.count(QStringLiteral("usb: reported during the load")) == 1,
+          "a host record that arrived during the load was not kept once");
+    check(ring.count(QStringLiteral("[decoder] [info] decoder line during the load")) == 1
+              && !host.contains(QStringLiteral("decoder line during the load")),
+          "a decoder record that arrived during the load was not kept once");
+    check(log.startupWindowOpenForTest(), "a startup-window request made during the load was lost");
+    check(host.count(QString::fromLatin1(kPlatformLine)) == 1, "the platform's line is not in the host records once");
+    const QStringList verbatim = {
+        QStringLiteral("[host] [info] service: engine configuration returned -2"),
+        QStringLiteral("[host] [info] engine run returned -1"),
+        QStringLiteral(
+            "[decoder] [info] NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2. "),
+        QStringLiteral("[decoder] [error] libusb: error [handle_events] backend handle_events failed with error -1 "),
+    };
+    const auto rows = log.snapshot();
+    for (const auto& line : verbatim) {
+        check(rows.contains(line), "a producer line held during the load was not kept verbatim");
+    }
+    check(!ring.contains(QStringLiteral("1A2B")) && !host.contains(QStringLiteral("1A2B"))
+              && ring.count(QLatin1String(kDropped)) >= 2,
+          "a key-bearing record held during the load was kept");
+    qsizetype process = -1;
+    for (qsizetype i = 0; i < rows.size() && process < 0; ++i) {
+        if (rows.at(i).startsWith(QStringLiteral("[process] [info] pid "))) {
+            process = i;
+        }
+    }
+    const auto heldAt = rows.indexOf(QStringLiteral("[host] [info] usb: reported during the load"));
+    const auto directAt = rows.indexOf(QStringLiteral("[stderr] [info] direct line during the load"));
+    check(process >= 0 && process < heldAt && heldAt < directAt,
+          "a record written during the build came before this run's process line or the held records");
+}
+
+// A host pair that cannot rotate notes it where the host records are read, so decoder output cannot evict the note.
+static void
+hostRotationFailureIsNoted() {
+    QTemporaryDir dir;
+    check(QDir(dir.path()).mkpath(QStringLiteral("host.prev.log/inner")), "fixture directory");
+    g_clock = 0;
+    DiagnosticsLog log(dir.path(), manualOptions());
+    for (int i = 0; i < 400; ++i) {
+        log.submit("host", "info", QStringLiteral("seq %1 ").arg(i) + QString(100, QLatin1Char('r')));
+    }
+    log.flush();
+    for (int i = 0; i < 2100; ++i) {
+        log.submit("decoder", "info", QStringLiteral("decoder %1").arg(i));
+    }
+    check(QFileInfo(dir.filePath("host.log")).size() <= DiagnosticsLog::kHostSegmentLimit, "host segment past its cap");
+    check(log.hostSnapshot().join('\n').count(QStringLiteral("saved host and session log could not be rotated")) == 1,
+          "a host rotation failure is not in the host records");
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir earlyDir;
@@ -1329,13 +2707,27 @@ main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     QTemporaryDir dir;
     qputenv("XDG_DATA_HOME", dir.path().toUtf8());
-    DiagnosticsLog::installTap();
+    installTapDoesNotWaitForTheLoad();
     earlyHostCaptureAndBridge();
     clearWithConcurrentSubmit();
     inactiveModelDefersResets();
     clearAndReopen();
     test_live_formatted_keys();
     realKeySources();
+    producerErrorLinesSurvive();
+    producerErrorLinesDoNotCarryKeys();
+    negativeDecimalsSurvive();
+    negativeMeasurementsSurvive();
+    negativeMeasurementsDoNotCarryKeys();
+    measurementCorpusSurvives();
+    measurementExemptionsKeepKeyForms();
+    syncLabelsSurvive();
+    everyExemptionYieldsToArgumentEcho();
+    androidHostRecordsSurvive();
+    teardownFlushMarkerRoundTrip();
+    everyKeyOptionFormIsDropped();
+    streamCaptureLineRules();
+    oversizedLineKeepsItsQuote();
     appendKeepsTheFile();
     writeVolumeIsTheLogItself();
     rotationKeepsTheBound();
@@ -1343,6 +2735,7 @@ main(int argc, char** argv) {
     crashFragmentIsDropped();
     crashZeroRunIsDropped();
     flushReportsFailures();
+    platformLinesReportedOnlyWhenDurable();
     syncCadenceAndStartupWindow();
     segmentsStartWithTheirContext();
     contextLineWrittenOnce();
@@ -1363,6 +2756,11 @@ main(int argc, char** argv) {
     unicodeDirectory();
     orphansAndExpiry();
     rotationFailureKeepsTheBound();
+    hostRecordsOutliveABusySession();
+    hostStoreKeepsItsBounds();
+    hostStoreExpiryAndReload();
+    clearRemovesTheHostRecords();
+    hostRotationFailureIsNoted();
     {
         DiagnosticsLog log(dir.path());
         DiagnosticsLogModel model(&log);
@@ -1414,7 +2812,10 @@ main(int argc, char** argv) {
         check(model.rowCount() == 0);
         log.submit("host", "info", QString(600, QChar(0x03bb)));
         model.refresh();
-        check(model.allText().toUtf8().size() <= 512 && !model.allText().contains(QChar::ReplacementCharacter));
+        for (const auto& rows : {log.snapshot(), log.hostSnapshot()}) {
+            check(rows.size() == 1 && rows.first().toUtf8().size() <= 512
+                  && !rows.first().contains(QChar::ReplacementCharacter));
+        }
     }
     QFile expired(dir.filePath("tail.log"));
     check(expired.open(QIODevice::ReadWrite));

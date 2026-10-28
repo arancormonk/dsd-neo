@@ -189,7 +189,11 @@ Item {
                 {tag: "Explore, unplugged", kind: "explore", source: "usb", state: "lost",
                     text: "RTL-SDR was unplugged, so Explore stopped. Plug it back in, then tap Reconnect."},
                 {tag: "Airspy saved system, stream failed", kind: "saved", source: "airspy", state: "failed",
-                    text: "Airspy stopped sending samples, so County P25 stopped. Check its USB connection, then tap Reconnect."},
+                    text: "Airspy stopped sending samples, so County P25 stopped. Tap Reconnect to start again."},
+                {tag: "saved system, stream failed", kind: "saved", source: "usb", state: "failed",
+                    text: "RTL-SDR stopped sending samples, so County P25 stopped. Tap Reconnect to reset it and start again."},
+                {tag: "Explore, stream failed", kind: "explore", source: "usb", state: "failed",
+                    text: "RTL-SDR stopped sending samples, so Explore stopped. Tap Reconnect to reset it and start again."},
                 {tag: "Airspy scan list, unplugged", kind: "scan", source: "airspy", state: "lost",
                     text: "Airspy was unplugged, so Night scan stopped. Plug it back in, then tap Reconnect."}
             ];
@@ -242,7 +246,7 @@ Item {
             var uid = startTarget("saved", "usb");
             failByReceiver("usb");
             tryCompare(card(), "visible", true);
-            compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Check its USB connection, then tap Reconnect.");
+            compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Tap Reconnect to reset it and start again.");
             tap(findChild(card(), "failureRetry"));
             tryCompare(app, "awaitingUsbAccess", true);
             connect("usb");
@@ -328,7 +332,7 @@ Item {
             testContext.setReceiverHealth("failed", "usb");
             compare(app.attemptedSource, null);
             tryCompare(card(), "visible", true);
-            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Check its USB connection, tap Reconnect, then start it again.");
+            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Tap Reconnect to reset it, then start it again.");
             tap(findChild(card(), "failureRetry"));
             compare(testContext.lastDeviceAccess().count, 1);
             compare(decoderHost.sessionState, 0);
@@ -361,7 +365,26 @@ Item {
         function test_recreated_stream_failure_wording() {
             testContext.setReceiverHealth("failed", "usb");
             tryCompare(card(), "visible", true);
-            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Check its USB connection, tap Reconnect, then start it again.");
+            compare(card().message, "RTL-SDR stopped sending samples, so the session stopped. Tap Reconnect to reset it, then start it again.");
+        }
+
+        // #782: only an RTL-SDR is reset on its next open; an Airspy's notice
+        // promises no reset, and none blames the cable.
+        function test_airspy_stream_failure_promises_no_reset() {
+            testContext.setReceiverHealth("failed", "airspy");
+            tryCompare(card(), "visible", true);
+            compare(card().message, "Airspy stopped sending samples, so the session stopped. Tap Reconnect, then start it again.");
+        }
+
+        function test_airspy_signal_search_stream_failure() {
+            connect("airspy");
+            app.attemptedSource = {kind: "explore", uid: "", remember: false,
+                system: {name: "Signal search", sourceType: "airspy", signalSearch: true}};
+            home().signalSearch();
+            verify(app.signalSearchOpen);
+            testContext.setReceiverHealth("failed", "airspy");
+            tryCompare(findChild(findChild(app, "signalSearchScreen"), "searchMessage"), "text",
+                "Airspy stopped sending samples, so Signal search stopped. Start the search again.");
         }
 
         function test_signal_search_says_to_start_the_search_again() {
@@ -376,7 +399,7 @@ Item {
                 "RTL-SDR was unplugged, so Signal search stopped. Plug it back in, then start the search again.");
             testContext.setReceiverHealth("failed", "usb");
             tryCompare(findChild(search, "searchMessage"), "text",
-                "RTL-SDR stopped sending samples, so Signal search stopped. Check its USB connection, then start the search again.");
+                "RTL-SDR stopped sending samples, so Signal search stopped. Start the search again to reset it.");
             // Closed, the search's ending is Listen's notice, with Reconnect.
             app.signalSearchOpen = false;
             testContext.setReceiverHealth("lost", "usb");
@@ -396,6 +419,153 @@ Item {
             var top = pill.mapToItem(app.contentItem, 0, 0);
             verify(top.y >= 0 && top.y + pill.height <= app.height, "the pill is on screen");
             compare(findChild(home(), "dongleDetailsPanel").visible, false);
+        }
+
+        // Re-review N1: a start the host refuses over a run on screen with
+        // nothing to publish (an entry point no guard covers) leaves that run
+        // as it was. When the run then fails, the card names the run, not the
+        // refused target, and Reconnect resumes the run.
+        function test_refused_start_leaves_the_run_on_screen() {
+            var uid = startTarget("saved", "usb");
+            var other = addSaved("City DMR", "usb");
+            testContext.setScanTestAcceptStart(false);
+            app.startWithMap(savedSystems.get(other), other, false);
+            compare(decoderHost.sessionState, 1, "the run on screen is still starting");
+            compare(app.startError, "");
+            compare(app.attemptedSource.uid, uid);
+            verify(!app.showFailure, "no card over the run on screen");
+            failByReceiver("usb");
+            tryCompare(card(), "visible", true);
+            compare(card().message, "RTL-SDR stopped sending samples, so County P25 stopped. Tap Reconnect to reset it and start again.");
+            testContext.setScanTestAcceptStart(true);
+            tap(findChild(card(), "failureRetry"));
+            tryCompare(app, "awaitingUsbAccess", true);
+            connect("usb");
+            verifySameSession("saved", uid);
+        }
+
+        // #782: a failed, refused or undelivered start says what happened.
+        // The host publishes the failure kind (kinds 8 and up are the
+        // attempt's own); the card words it, never the generic line.
+        function test_start_failure_says_what_happened_data() {
+            return [
+                {tag: "RTL-SDR open failed", source: "usb", kind: 7, error: "Decoder run failed (1); USB open/claim error -6",
+                    text: "The receiver could not be opened or stopped receiving. Check its USB connection and settings."},
+                {tag: "Airspy open failed", source: "airspy", kind: 7, error: "Decoder run failed (1)",
+                    text: "The receiver could not be opened or stopped receiving. Check its USB connection and settings."},
+                {tag: "refused, previous session stopping", source: "usb", kind: 8, error: "A previous session is still stopping",
+                    text: "The previous session is still stopping. Tap Retry to start this one once it has stopped."},
+                {tag: "not delivered", source: "usb", kind: 9, error: "The decoder service did not respond to the start",
+                    text: "The decoder did not respond in time, so the session was not started. Tap Retry, or open Details if this keeps happening."}
+            ];
+        }
+        function test_start_failure_says_what_happened(data) {
+            startTarget("saved", data.source);
+            testContext.setLifecycleFailureKind(data.kind);
+            testContext.setLifecycleFailure(data.error);
+            testContext.setLifecyclePhase(4);
+            tryCompare(card(), "visible", true);
+            compare(card().message, data.text);
+            var retry = findChild(card(), "failureRetry");
+            compare(retry.text, "Retry");
+            verify(retry.enabled);
+        }
+
+        // #782: a start that could not take its USB receiver before the
+        // session began, as the service reports it (kinds 10-12, with its own
+        // text) and the broker then reads it (not ready, and why), for each
+        // kind of start Listen makes.
+        function receiverTakeFailure(kind, source) {
+            var service = {10: "The USB receiver needs permission again", 11: "The USB receiver could not be reopened", 12: "The USB receiver is no longer connected"};
+            var broker = {10: 4, 11: 2, 12: 3};
+            testContext.setDongleStatus(false, broker[kind], receiverName(source) + " not ready");
+            testContext.setLifecycleFailureKind(kind);
+            testContext.setLifecycleFailure(service[kind]);
+            testContext.setLifecyclePhase(4);
+        }
+        function test_receiver_take_failure_data() {
+            var rows = [];
+            var texts = {
+                10: "%1 needs USB permission again, so the session was not started. Tap Retry, then allow access when asked.",
+                11: "%1 could not be reopened, so the session was not started. Tap Retry, or unplug it and plug it back in if this keeps happening.",
+                12: "%1 is no longer connected, so the session was not started. Plug it back in, then tap Retry."
+            };
+            for (var kind = 10; kind <= 12; ++kind) {
+                for (var target of ["saved", "scan", "explore"]) {
+                    for (var source of ["usb", "airspy"])
+                        rows.push({tag: target + " " + source + " kind " + kind, target: target, source: source, kind: kind,
+                            text: texts[kind].replace("%1", receiverName(source))});
+                }
+            }
+            return rows;
+        }
+        function test_receiver_take_failure(data) {
+            startTarget(data.target, data.source);
+            receiverTakeFailure(data.kind, data.source);
+            tryCompare(card(), "visible", true);
+            compare(card().message, data.text);
+            var retry = findChild(card(), "failureRetry");
+            compare(retry.text, "Retry");
+            verify(retry.enabled);
+        }
+        function test_receiver_take_failure_in_signal_search_data() {
+            return [
+                {tag: "permission", kind: 10, text: "RTL-SDR needs USB permission again, so Signal search was not started. Start the search again, then allow access when asked."},
+                {tag: "reopen failed", kind: 11, text: "RTL-SDR could not be reopened, so Signal search was not started. Start the search again, or unplug it and plug it back in if this keeps happening."},
+                {tag: "gone", kind: 12, text: "RTL-SDR is no longer connected, so Signal search was not started. Plug it back in, then start the search again."}
+            ];
+        }
+        function test_receiver_take_failure_in_signal_search(data) {
+            connect("usb");
+            app.attemptedSource = {kind: "explore", uid: "", remember: false,
+                system: {name: "Signal search", sourceType: "usb", signalSearch: true}};
+            home().signalSearch();
+            verify(app.signalSearchOpen);
+            receiverTakeFailure(data.kind, "usb");
+            var search = findChild(app, "signalSearchScreen");
+            tryCompare(findChild(search, "searchMessage"), "text", data.text);
+            // Closed, the failure is Listen's card, worded for its Retry.
+            app.signalSearchOpen = false;
+            tryCompare(card(), "visible", true);
+            verify(card().message.indexOf("Tap Retry") >= 0 || card().message.indexOf("tap Retry") >= 0, card().message);
+        }
+
+        // #782: a start refused while the previous session stops (8) or never answered (9) is worded for Signal
+        // search's screen too, which has no Retry or Details, never as the host's own text.
+        function test_attempt_failure_in_signal_search_data() {
+            return [
+                {tag: "previous stopping", kind: 8, host: "A previous session is still stopping",
+                    text: "The previous session is still stopping, so Signal search was not started. Start the search again once it has stopped."},
+                {tag: "undelivered", kind: 9, host: "The decoder service did not respond to the start",
+                    text: "The decoder did not respond in time, so Signal search was not started. Start the search again, or open Diagnostics in Settings if this keeps happening."}
+            ];
+        }
+        function test_attempt_failure_in_signal_search(data) {
+            connect("usb");
+            app.attemptedSource = {kind: "explore", uid: "", remember: false,
+                system: {name: "Signal search", sourceType: "usb", signalSearch: true}};
+            home().signalSearch();
+            verify(app.signalSearchOpen);
+            testContext.setLifecycleFailureKind(data.kind);
+            testContext.setLifecycleFailure(data.host);
+            testContext.setLifecyclePhase(4);
+            var search = findChild(app, "signalSearchScreen");
+            tryCompare(findChild(search, "searchMessage"), "text", data.text);
+            app.signalSearchOpen = false;
+            tryCompare(card(), "visible", true);
+            verify(card().message.indexOf("Tap Retry") >= 0, card().message);
+        }
+
+        function test_dismiss_gives_up_the_attempt() {
+            startTarget("saved", "usb");
+            testContext.setLifecycleFailureKind(9);
+            testContext.setLifecycleFailure("The decoder service did not respond to the start");
+            testContext.setLifecyclePhase(4);
+            tryCompare(card(), "visible", true);
+            var dismissals = decoderHost.dismissCalls();
+            card().dismiss();
+            compare(decoderHost.dismissCalls(), dismissals + 1, "the host hears of the dismissal");
+            tryCompare(card(), "visible", false);
         }
 
         function test_failure_reveals_the_top_data() {

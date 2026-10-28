@@ -80,6 +80,7 @@
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "signal_search_model.h"
+#include "teardown_trace_capture.h"
 
 namespace {
 
@@ -1287,6 +1288,22 @@ test_idle_after_outcome(FakeHost& host, const QString& document, const QString& 
     settle(model);
 }
 
+/** #782: the Android app's teardown times this destructor, which waits for its worker pool. */
+void
+test_destructor_marks_its_teardown_stage(FakeHost& host) {
+    TeardownCapture::lines().clear();
+    { BackupModel model(&host, {}); }
+    expect("no teardown marker while markers are off", TeardownCapture::lines().isEmpty());
+    {
+        const TeardownCapture capture;
+        { BackupModel model(&host, {}); }
+        expect("~BackupModel marks its teardown stage",
+               TeardownCapture::lines()
+                   == QStringList({QStringLiteral("teardown: ~BackupModel started"),
+                                   QStringLiteral("teardown: ~BackupModel took 7 ms")}));
+    }
+}
+
 /** The model's teardown stops a copy a document provider holds instead of waiting for it. */
 void
 test_teardown_stops_a_held_copy(FakeHost& host, const QString& document) {
@@ -1707,6 +1724,7 @@ main(int argc, char** argv) {
         quietly([&]() { test_teardown_with_undelivered_inspections(host, full); });
         quietly([&]() { test_idle_after_outcome(host, full, scratch.path()); });
         quietly([&]() { test_teardown_stops_a_held_copy(host, full); });
+        quietly([&]() { test_destructor_marks_its_teardown_stage(host); });
         quietly([&]() { test_base_host_abort(scratch.path()); });
         quietly([&]() { test_startup_outcome(host, full); });
         quietly([&]() { test_pending_at_start(full); });

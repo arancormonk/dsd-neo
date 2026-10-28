@@ -759,7 +759,6 @@ off_reasons(void) {
            == 0);
     assert(strcmp(rtl_usb_identity_off_reason(RTL_USB_ID_NO_STRINGS), "the receiver reports no serial") == 0);
     assert(strcmp(rtl_usb_identity_off_reason(RTL_USB_ID_NO_LIBUSB), "built without libusb") == 0);
-    assert(strcmp(RTL_USB_ID_OFF_REASON_ANDROID, "opened from an Android descriptor") == 0);
     assert(strcmp(rtl_usb_identity_off_reason(RTL_USB_ID_OK), "") == 0);
     const rtl_usb_id_result others[] = {RTL_USB_ID_NOT_FOUND, RTL_USB_ID_MISMATCH, RTL_USB_ID_ACCESS,
                                         RTL_USB_ID_FAILED};

@@ -54,6 +54,7 @@
 #include "scan_lists_model.h"
 #include "session_args.h"
 #include "signal_search_model.h"
+#include "teardown_trace_capture.h"
 
 namespace {
 /** A host whose session state a case moves, so the model's start on the Running edge can be observed. With
@@ -127,6 +128,22 @@ spin(int ms) {
     QEventLoop loop;
     QTimer::singleShot(ms, &loop, &QEventLoop::quit);
     loop.exec();
+}
+
+/* #782: the Android app's teardown times this destructor, which flushes the search store. */
+void
+testDestructorMarksItsTeardownStage(dsd_qt::KnownFrequencyIndex* index) {
+    SessionHost android(true);
+    TeardownCapture::lines().clear();
+    { dsd_qt::SignalSearchModel search(&android, index); }
+    assert(TeardownCapture::lines().isEmpty());
+    {
+        const TeardownCapture capture;
+        { dsd_qt::SignalSearchModel search(&android, index); }
+        assert(TeardownCapture::lines()
+               == QStringList({QStringLiteral("teardown: ~SignalSearchModel started"),
+                               QStringLiteral("teardown: ~SignalSearchModel took 7 ms")}));
+    }
 }
 
 /* Android reports Running when the engine thread raises g_running, a moment before that thread's
@@ -850,6 +867,7 @@ main(int argc, char** argv) {
 
     // A start is submitted once the decoder's command admission takes it, and never outlives its session.
     testRunningBeforeAdmission(&index);
+    testDestructorMarksItsTeardownStage(&index);
     testInitializedWhileStarting(&index);
     testArmWaitsThroughIdle(&index);
     testArmEndsWithSession(&index, false);

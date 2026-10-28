@@ -61,9 +61,6 @@ struct rtl_usb_identity {
     char manufacturer[256], product[256], serial[256];
 };
 
-/* For a receiver opened from an Android USB descriptor, which this unit cannot identify. */
-#define RTL_USB_ID_OFF_REASON_ANDROID "opened from an Android descriptor"
-
 /* Before rtlsdr_open(index). Fills out (valid only on RTL_USB_ID_OK). */
 rtl_usb_id_result rtl_usb_identity_resolve(int index, struct rtl_usb_identity* out);
 /* After rtlsdr_open(): the opened handle carries the identity's triple. */
@@ -78,6 +75,21 @@ rtl_usb_id_result rtl_usb_identity_reset(const struct rtl_usb_identity* id, int 
 int rtl_usb_identity_index(const struct rtl_usb_identity* id);
 /* The "stall recovery is off for this receiver: <reason>" text for a result ("" for RTL_USB_ID_OK). */
 const char* rtl_usb_identity_off_reason(rtl_usb_id_result r);
+
+/*
+ * libusb's own error and warning lines, in the diagnostics (#782). A receiver opened from an Android descriptor fails
+ * inside libusb (the descriptor read, CONNECTINFO, the claim), and only libusb's text says which step and with what
+ * errno. rtl_usb_log_install() sets libusb's default log callback and level (WARNING) for every libusb context created
+ * after it, which includes the ones librtlsdr and libairspy create to open from a descriptor; call it before such an
+ * open. Process-wide and idempotent. Only the Android build with the vendored libusb (DSD_HAVE_LIBUSB_LOG) installs
+ * anything; elsewhere it is a no-op.
+ *
+ * rtl_usb_log_forward() is what the callback does with one line: it writes it to the runtime log once, at LOG_ERROR
+ * (@p error nonzero) or LOG_WARN, without its line ending, and starting with libusb's own "libusb: " header (added
+ * when the text lacks it, never doubled). The diagnostics keep such a line's error code (diagnostics_log.cpp).
+ */
+void rtl_usb_log_install(void);
+void rtl_usb_log_forward(int error, const char* text);
 
 /* One enumerated USB device as the identity rules see it. */
 struct rtl_usb_device_info {

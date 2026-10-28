@@ -56,6 +56,7 @@
 #include "imported_files_model.h"
 #include "qml_gc_policy.h"
 #include "radio_reference_model.h"
+#include "teardown_trace_capture.h"
 
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
 #error "DSD_NEO_TEST_RR_FIXTURE_DIR must be defined by the build"
@@ -1227,6 +1228,25 @@ test_destroy_with_requests_in_flight(void) {
     expect("destroying mid-flight is survivable", true);
 }
 
+/* #782: the Android app's teardown times this destructor, which joins the client's worker. */
+void
+test_destructor_marks_its_teardown_stage(void) {
+    TeardownCapture::lines().clear();
+    delete new Harness;
+    expect("no teardown marker while markers are off", TeardownCapture::lines().isEmpty());
+    {
+        const TeardownCapture capture;
+        auto* h = new Harness;
+        h->model.loadSystem(6673);
+        delete h;
+        expect("~RadioReferenceModel marks its teardown stage",
+               TeardownCapture::lines()
+                   == QStringList({QStringLiteral("teardown: ~RadioReferenceModel started"),
+                                   QStringLiteral("teardown: ~RadioReferenceModel took 7 ms")}));
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+}
+
 } // namespace
 
 int
@@ -1263,6 +1283,7 @@ main(int argc, char** argv) {
     test_error_and_cancel();
     test_results_and_loaded_system_stay_exclusive();
     test_destroy_with_requests_in_flight();
+    test_destructor_marks_its_teardown_stage();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

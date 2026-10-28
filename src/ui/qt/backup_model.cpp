@@ -43,6 +43,7 @@
 #include "decoder_host.h"
 #include "json_store.h"
 #include "realtime_clock.h"
+#include "teardown_trace.h"
 
 namespace dsd_qt {
 
@@ -372,6 +373,7 @@ BackupModel::BackupModel(DecoderHost* host, const backup::ApplyResult& startup, 
 }
 
 BackupModel::~BackupModel() {
+    const TeardownStage stage("~BackupModel");
     // Every job still on the worker is the current one or a dropped one. A document copy cannot be cancelled, and a
     // slow document provider must not hold the UI thread while the app closes, so the host stops its copies first.
     if (m_host != nullptr && (m_job.kind != JobKind::None || !m_dropped.isEmpty())) {

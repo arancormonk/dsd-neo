@@ -69,6 +69,7 @@
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "teardown_trace_capture.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -2443,6 +2444,27 @@ test_frequency_search_follows_the_row(void) {
     expect("a reloaded row is found by its stored frequency", restored.count() == 1 && view.count() == 1);
 }
 
+/* #782: the Android app's teardown times this destructor, which waits for its save pool and may save. Off unless the
+ * markers are on, as everywhere but that teardown. */
+void
+test_destructor_marks_its_teardown_stage(void) {
+    resetStorage();
+    TeardownCapture::lines().clear();
+    { CallHistoryModel model; }
+    expect("no teardown marker while markers are off", TeardownCapture::lines().isEmpty());
+    {
+        const TeardownCapture capture;
+        auto model = std::make_unique<CallHistoryModel>();
+        model.reset();
+        expect("~CallHistoryModel marks its teardown stage",
+               TeardownCapture::lines()
+                   == QStringList({QStringLiteral("teardown: ~CallHistoryModel started"),
+                                   QStringLiteral("teardown: ~CallHistoryModel took 7 ms")}));
+    }
+    { CallHistoryModel model; }
+    expect("no teardown marker after the markers go off", TeardownCapture::lines().size() == 2);
+}
+
 } // namespace
 
 int
@@ -2523,6 +2545,7 @@ main(int argc, char** argv) {
     test_save_now_writes_at_once();
     test_save_now_mid_write_queues_the_next_save();
     test_leaving_the_screen_saves();
+    test_destructor_marks_its_teardown_stage();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

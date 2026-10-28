@@ -12,6 +12,7 @@
 #include "../../android/run_status.h"
 #include "../../android/session_state_map.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/runtime/input_failure.h"
 
 using dsd_android::kSessionFailed;
 using dsd_android::kSessionIdle;
@@ -85,9 +86,9 @@ test_terminal_waits_for_service_idle() {
             }
             int premature_retries = 0;
             for (const char* service_state : {"RUNNING", "STOPPING"}) {
-                // More than the start grace period: teardown must not become a
-                // failed retry simply because several status polls passed.
-                for (int poll = 0; poll < dsd_android::kStartGraceTicks + 2; ++poll) {
+                // More than the start grace period at the UI's 250 ms poll: teardown
+                // must not become a failed retry simply because several polls passed.
+                for (int poll = 0; poll < static_cast<int>(dsd_android::kStartGraceMs / 250) + 2; ++poll) {
                     const SessionPhase phase = tracker.update(service_state, false, 41, reason);
                     expect("native terminal result waits for service teardown", phase, kSessionStopping);
                     if (phase == kSessionIdle || phase == kSessionFailed) {
@@ -196,7 +197,7 @@ test_stop_request_then_failure() {
     undelivered.note_start_requested(40);
     expect_true("stop during an undelivered start", undelivered.note_stop_requested(0));
     SessionPhase phase = kSessionStopping;
-    for (int poll = 0; poll < dsd_android::kStartGraceTicks; ++poll) {
+    for (int poll = 0; poll < static_cast<int>(dsd_android::kStartGraceMs / 250); ++poll) {
         phase = undelivered.update("IDLE", false, 40, kPending, 250u * (uint64_t)(poll + 1));
     }
     expect("the start grace still fails the start", phase, kSessionFailed);
@@ -312,6 +313,95 @@ test_receiver_end_holds_stopping_through_long_running() {
     SessionPhaseTracker fresh;
     expect_true("a fresh tracker takes no ending", !fresh.note_receiver_end(41));
     expect("and stays Idle", fresh.phase(), kSessionIdle);
+}
+
+/* #782: the start grace is two seconds of real time from the request, not eight polls. A Qt thread that polls fast
+ * must not fail a start early, and one that polls late fails it on the first poll past the grace. */
+void
+test_start_grace_is_real_time() {
+    SessionPhaseTracker fast;
+    fast.note_start_requested(40);
+    for (uint64_t now = 50; now <= 1000; now += 50) {
+        expect("twenty fast polls within a second are still the grace", fast.update("IDLE", false, 40, kPending, now),
+               kSessionStarting);
+    }
+    expect_true("no expiry under the grace", !fast.take_start_expired());
+
+    SessionPhaseTracker timed;
+    expect_true("an idle service takes the start", timed.note_start_requested(40, "IDLE", 10000));
+    expect("1999 ms after the request", timed.update("IDLE", false, 40, kPending, 11999), kSessionStarting);
+    expect("2000 ms after the request", timed.update("IDLE", false, 40, kPending, 12000), kSessionFailed);
+    uint64_t waited = 0;
+    expect_true("the expiry is reported", timed.take_start_expired(&waited));
+    expect_true("with how long the start waited", waited == 2000);
+    expect_true("once", !timed.take_start_expired());
+    expect("the failure stays", timed.update("IDLE", false, 40, kPending, 20000), kSessionFailed);
+    expect_true("and expires no more", !timed.take_start_expired());
+
+    /* One late poll: the first record read after the grace fails the start. */
+    SessionPhaseTracker late;
+    (void)late.note_start_requested(40, "IDLE", 500);
+    expect("a poll 5 s late", late.update("IDLE", false, 40, kPending, 5500), kSessionFailed);
+    expect_true("reports its wait", late.take_start_expired(&waited) && waited == 5000);
+
+    /* The service showing the start ends the grace, however long it then takes. */
+    SessionPhaseTracker taken;
+    (void)taken.note_start_requested(40, "IDLE", 0);
+    expect("STARTING", taken.update("STARTING", false, 41, kPending, 500), kSessionStarting);
+    expect("a long configure", taken.update("STARTING", false, 41, kPending, 9000), kSessionStarting);
+    expect_true("never expires", !taken.take_start_expired());
+}
+
+/* #782: the host computed the expiry from an IDLE record, but the service took the start before the retirement. */
+void
+test_start_taken_after_the_snapshot() {
+    SessionPhaseTracker tracker;
+    (void)tracker.note_start_requested(40, "IDLE", 0);
+    expect("expired on the old IDLE record", tracker.update("IDLE", false, 40, kPending, 2000), kSessionFailed);
+    expect_true("expiry reported", tracker.take_start_expired());
+    tracker.note_start_taken(2000);
+    expect("Starting again", tracker.phase(), kSessionStarting);
+    expect_true("no failure latched", !tracker.failed());
+    expect("its session's STARTING", tracker.update("STARTING", false, 41, kPending, 2250), kSessionStarting);
+    expect("its session runs", tracker.update("RUNNING", true, 41, kPending, 2500), kSessionRunning);
+    expect("its session ends", tracker.update("IDLE", false, 41, dsd_android::kRunCompleted, 9000), kSessionIdle);
+}
+
+/* #782: a configured session the service cancelled ends cancelled and no longer owns its receiver. */
+void
+test_discarded_configuration() {
+    dsd_android::RunStatus status;
+    status.begin(41);
+    status.note_configured(dsd_android::kReceiverRtl);
+    expect_true("a configured session owns its receiver", status.uses_local_receiver());
+    status.discard_configured();
+    expect_true("a discarded one does not", !status.uses_local_receiver());
+    expect_true("it ended cancelled", status.reason == dsd_android::kRunCancelled && status.session_id == 41);
+    status.discard_configured();
+    expect_true("again is harmless", status.reason == dsd_android::kRunCancelled);
+
+    dsd_android::RunStatus finished;
+    finished.begin(42);
+    finished.note_configured(dsd_android::kReceiverAirspy);
+    finished.finish(1, false, -6);
+    finished.discard_configured();
+    expect_true("a finished run keeps its result", finished.reason == dsd_android::kRunFailed);
+}
+
+/* The service's "failureKind" values and the kinds Main.qml words; dsd_input_failure_kind ends at 7. */
+void
+test_attempt_failure_wire() {
+    using dsd_android::attempt_failure_from_wire;
+    expect_true("previous_stopping", attempt_failure_from_wire("previous_stopping") == 8);
+    expect_true("usb_permission", attempt_failure_from_wire("usb_permission") == 10);
+    expect_true("usb_open_failed", attempt_failure_from_wire("usb_open_failed") == 11);
+    expect_true("usb_gone", attempt_failure_from_wire("usb_gone") == 12);
+    expect_true("undelivered is the host's own", dsd_android::kAttemptUndelivered == 9);
+    expect_true("empty", attempt_failure_from_wire("") == dsd_android::kAttemptNone);
+    expect_true("null", attempt_failure_from_wire(nullptr) == dsd_android::kAttemptNone);
+    expect_true("unknown", attempt_failure_from_wire("usb_on_fire") == dsd_android::kAttemptNone);
+    expect_true("after the input failure kinds",
+                static_cast<int>(dsd_android::kAttemptPreviousStopping) > static_cast<int>(DSD_INPUT_FAILURE_DEVICE));
 }
 
 } // namespace
@@ -452,10 +542,10 @@ main(void) {
     {
         SessionPhaseTracker tracker;
         tracker.note_start_requested();
-        for (int i = 1; i < dsd_android::kStartGraceTicks; i++) {
-            expect("within grace", tracker.update("IDLE", false), kSessionStarting);
+        for (uint64_t now = 250; now < dsd_android::kStartGraceMs; now += 250) {
+            expect("within grace", tracker.update("IDLE", false, now), kSessionStarting);
         }
-        expect("grace expired", tracker.update("IDLE", false), kSessionFailed);
+        expect("grace expired", tracker.update("IDLE", false, dsd_android::kStartGraceMs), kSessionFailed);
     }
 
     /* A start the host could not even hand over is a failure immediately. */
@@ -483,6 +573,10 @@ main(void) {
     }
 
     test_failure_recovery();
+    test_start_grace_is_real_time();
+    test_start_taken_after_the_snapshot();
+    test_discarded_configuration();
+    test_attempt_failure_wire();
     test_stop_request_during_running();
     test_stop_request_during_starting();
     test_stop_request_then_failure();

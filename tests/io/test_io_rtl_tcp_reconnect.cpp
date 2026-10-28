@@ -171,6 +171,7 @@ struct conn_script {
     int send_header = 1;
     int magic_ok = 1;
     uint32_t gain_count = 29U;
+    uint32_t tuner_type = 5U;         /* the header's RTLSDR_TUNER_* (5: R820T) */
     std::vector<size_t> header_parts; /* the header in these parts (empty: whole) */
     unsigned int header_gap_ms = 0U;
     size_t first_bytes = 0U;   /* this many I/Q bytes in the "first" phase after the header */
@@ -282,6 +283,10 @@ server_serve(dsd_socket_t sock, const conn_script& sc, size_t idx) {
         if (sc.magic_ok == 0) {
             hdr[0] = 'X';
         }
+        hdr[4] = (unsigned char)(sc.tuner_type >> 24);
+        hdr[5] = (unsigned char)(sc.tuner_type >> 16);
+        hdr[6] = (unsigned char)(sc.tuner_type >> 8);
+        hdr[7] = (unsigned char)sc.tuner_type;
         hdr[8] = (unsigned char)(sc.gain_count >> 24);
         hdr[9] = (unsigned char)(sc.gain_count >> 16);
         hdr[10] = (unsigned char)(sc.gain_count >> 8);
@@ -1067,6 +1072,9 @@ test_latest_effective_settings_replayed(void) {
     assert(rtl_device_set_frequency(r.dev, 854000000U) == 0);
     assert(rtl_device_set_xtal_freq(r.dev, 28800300U, 0U) == 0);
     assert(rtl_device_set_xtal_freq(r.dev, 0U, 28800400U) == 0);
+    uint32_t settings_generation = 0U;
+    /* Nothing recorded is ever skipped on rtl_tcp (#782 gate r4 K2): the replay is the only writer here. */
+    assert(rtl_device_capture_settings_generation(r.dev, &settings_generation) == 0);
     rig_start(r);
     lose_connection(r);
     wait_generation(r, 2U);
@@ -1074,12 +1082,97 @@ test_latest_effective_settings_replayed(void) {
         return m.freq == 854000000U && m.rate == 960000U && m.ppm == 0 && m.bias == 0 && m.gain_manual == 1
                && m.gain == 280 && m.reg19 == 0x05;
     });
+    assert(rtl_device_capture_settings_generation(r.dev, &settings_generation) == 0);
     assert(server_params(1, 0x01).size() == 1U);
     const std::vector<uint32_t> rtl_xtal{28800300U};
     const std::vector<uint32_t> tuner_xtal{28800400U};
     assert(server_params(1, 0x0B) == rtl_xtal);
     assert(server_params(1, 0x0C) == tuner_xtal);
     rig_close(r);
+}
+
+/* hops_write_every_setting (#782 gate r4 K2): rtl_tcp has no acknowledgement from the hardware, so the stream cannot
+ * know a write took (a server that refuses a gain still has it recorded as sent). Its writes are never skipped: behind
+ * any tuner the header names, every same-rate hop sends the rate right after its frequency, and every repeated gain
+ * request is sent again, as before D3. Each hop still restarts the throughput watchdog's grace, and so does each hop
+ * after a reconnect. */
+void
+test_hops_write_every_setting(void) {
+    /* R820T, E4000, FC0012, FC0013, R828D (whose local USB writes are skipped), FC2580 and a tuner this build does not
+     * know. */
+    for (uint32_t tuner : {5U, 1U, 2U, 3U, 6U, 4U, 0U}) {
+        conn_script sc = default_script();
+        sc.tuner_type = tuner;
+        server_reset(sc);
+        const auto r_owner = std::make_unique<dev_rig>();
+        dev_rig& r = *r_owner;
+        rig_open(r, 0, 0);
+        uint32_t generation = 0U;
+        assert(rtl_device_capture_settings_generation(r.dev, &generation) == 0);
+        assert(rtl_device_capture_retune_resets(r.dev) == 0U);
+        dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+        assert(opts != nullptr);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtltcp:127.0.0.1:%d", g_srv.port);
+        /* The start's programming before the reader runs, as a stream's open does. */
+        rtl_stream_test_capture_result out{};
+        assert(rtl_stream_test_capture_session_begin(r.dev, opts, 851012500U, &out) == 0);
+        assert(out.rc == 0);
+        rig_start(r);
+        assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 0U, 300, &out) == 0);
+        assert(out.rc == 0);
+        (void)sync_server(r.dev, 0);
+        const size_t rates = server_params(0, 0x02).size();
+        const size_t freqs = server_params(0, 0x01).size();
+        const size_t gains = server_params(0, 0x04).size();
+        assert(rates == 1U && gains >= 1U);
+        const uint32_t hops[] = {851262500U, 852037500U, 853087500U};
+        for (uint32_t center : hops) {
+            rtl_device_test_tcp_state before{};
+            rtl_device_test_tcp_state_get(r.dev, &before);
+            dsd_sleep_ms(2U);
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, center, 0, &out) == 0);
+            assert(out.rc == 0);
+            rtl_device_test_tcp_state after{};
+            rtl_device_test_tcp_state_get(r.dev, &after);
+            assert(after.watchdog_grace_from_ns > before.watchdog_grace_from_ns);
+            /* The same gain again, as a scan target's profile asks on each hop. */
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL, 0U, 300, &out) == 0);
+            assert(out.rc == 0);
+        }
+        (void)sync_server(r.dev, 0);
+        assert(server_params(0, 0x01).size() == freqs + 3U);
+        assert(server_params(0, 0x02).size() == rates + 3U);
+        assert(server_params(0, 0x04).size() == gains + 3U);
+        /* Each rate went out right after its hop's frequency. */
+        const server_conn c = server_conn_get(0);
+        size_t hop_freqs = 0U;
+        for (size_t i = 0; i < c.cmds.size(); ++i) {
+            if (c.cmds[i].id == 0x01 && i > 0U && c.cmds[i - 1U].id != 0x01) {
+                assert(i + 1U < c.cmds.size() && c.cmds[i + 1U].id == 0x02);
+                ++hop_freqs;
+            }
+        }
+        assert(hop_freqs >= 3U);
+
+        if (tuner == 5U) {
+            /* A reconnect's replay changes nothing: each hop after it sends the rate again too. */
+            lose_connection(r);
+            wait_generation(r, 2U);
+            (void)sync_server(r.dev, 1);
+            const size_t replayed_rates = server_params(1, 0x02).size();
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[0], 0, &out) == 0);
+            assert(out.rc == 0);
+            assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_HOP, hops[1], 0, &out) == 0);
+            assert(out.rc == 0);
+            (void)sync_server(r.dev, 1);
+            assert(server_params(1, 0x02).size() == replayed_rates + 2U);
+        }
+        /* The reader stops before the session puts the stream's state back. */
+        (void)rtl_device_stop_async(r.dev);
+        rtl_stream_test_capture_session_end();
+        free(opts);
+        rig_close(r);
+    }
 }
 
 /* replay_failure_not_published: a replay that fails part way publishes nothing (no stream, setters still refused),
@@ -2124,6 +2217,99 @@ test_stop_with_handoff_queued_and_claimed(void) {
     assert(server_conn_count() == 2U);
 }
 
+/* stop_waits_for_demod_block_before_retune: a retune the controller took before a stop reaches its reconfigure gate
+ * while the stop is under way and the demod thread is still inside a block. The gate's wait for an idle demod does not
+ * end on the stop: the retune rewrites demod state only once the block has ended, and the stop still joins. */
+std::atomic<int> g_hold_demod_block{0};    /* armed: the next block stops before its output write */
+std::atomic<int> g_demod_block_held{0};    /* the demod thread is stopped inside its block */
+std::atomic<int> g_release_demod_block{0}; /* let it go on */
+std::atomic<int> g_idle_wait_begun{0};
+std::atomic<int> g_idle_wait_end{
+    0}; /* how the first wait for an idle demod ended (RTL_STREAM_TEST_DEMOD_IDLE_WAIT_*) */
+
+void
+hold_demod_block(int stage, size_t count, void* ctx) {
+    (void)count;
+    (void)ctx;
+    if (stage != RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE || g_hold_demod_block.exchange(0) == 0) {
+        return;
+    }
+    g_demod_block_held.store(1);
+    /* Bounded, so a wait that never ends fails the case rather than hanging it. */
+    (void)wait_until([] { return g_release_demod_block.load() != 0; }, 3U * kWaitMs);
+}
+
+void
+note_demod_idle_wait(int event, void* ctx) {
+    (void)ctx;
+    if (event == RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN) {
+        g_idle_wait_begun.fetch_add(1);
+        return;
+    }
+    int none = 0;
+    (void)g_idle_wait_end.compare_exchange_strong(none, event);
+}
+
+void
+test_stop_waits_for_demod_block_before_retune(void) {
+    server_reset(default_script());
+    g_hold_demod_block.store(0);
+    g_demod_block_held.store(0);
+    g_release_demod_block.store(0);
+    g_idle_wait_begun.store(0);
+    g_idle_wait_end.store(0);
+    rtl_stream_test_set_controller_work_hook(hold_retune, nullptr);
+    rtl_stream_test_set_replay_stage_hook(hold_demod_block, nullptr);
+    stream_rig r;
+    stream_open(r, 0, 0);
+    /* The demod thread stops inside a block, and the controller holds a retune it took. */
+    g_hold_demod_block.store(1);
+    assert(wait_until([] { return g_demod_block_held.load() != 0; }, kWaitMs));
+    g_hold_retune.store(1);
+    assert(dsd_rtl_stream_test_request_retune(852000000L, 0) == 0);
+    assert(wait_until([] { return g_retune_held.load() != 0; }, kWaitMs));
+    rtl_stream_test_set_demod_idle_wait_probe(note_demod_idle_wait, nullptr);
+    /* A stop starts (the stream's exit flag is set before the device's stop latch), then the retune goes on into its
+     * gate. */
+    g_stop_ctx = r.ctx;
+    g_stop_done.store(0);
+    start_thread(&g_stream_stopper, stream_stopper, nullptr);
+    assert(wait_until(
+        [&] {
+            rtl_device_test_tcp_state st{};
+            rtl_device_test_tcp_state_get(r.dev, &st);
+            return st.stop_requested != 0;
+        },
+        kWaitMs));
+    g_hold_retune.store(0);
+    assert(wait_until([] { return g_idle_wait_begun.load() != 0; }, kWaitMs));
+    /* A wait that the stop ends returns at once, with the block still running. */
+    (void)wait_until([] { return g_idle_wait_end.load() != 0; }, 250U);
+    const int end_while_block_ran = g_idle_wait_end.load();
+    g_release_demod_block.store(1);
+    assert(wait_until([] { return g_stop_done.load() != 0; }, kWaitMs));
+    dsd_thread_join(g_stream_stopper);
+    (void)rtl_stream_destroy(r.ctx);
+    r.ctx = nullptr;
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    rtl_stream_test_set_replay_stage_hook(nullptr, nullptr);
+    rtl_stream_test_set_controller_work_hook(nullptr, nullptr);
+    g_retune_held.store(0);
+    assert(end_while_block_ran == 0);
+    assert(g_idle_wait_end.load() == RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_IDLE);
+}
+
+/* full_output_write_gives_up_on_stop: a stop wakes the demod's output write, and with no decoder left to read a full
+ * ring the write gives up instead of waiting for room, so the stop's join of the demod thread returns. */
+void
+test_full_output_write_gives_up_on_stop(void) {
+    rtl_stream_test_full_output_write w{};
+    assert(rtl_stream_test_full_output_write_on_stop(&w) == 0);
+    assert(w.exit_forced == 0);
+    assert(w.written == 0U);
+    assert(w.elapsed_ms < 500U);
+}
+
 /* controller_create_failure_fails_start (B17): a controller thread that cannot start fails the rtl_tcp stream's start
  * and leaves nothing behind. */
 int g_create_calls = 0;
@@ -2255,6 +2441,7 @@ const named_test kTests[] = {
     {"stop_during_silent_header", test_stop_during_silent_header},
     {"setting_change_while_disconnected_fails", test_setting_change_while_disconnected_fails},
     {"latest_effective_settings_replayed", test_latest_effective_settings_replayed},
+    {"hops_write_every_setting", test_hops_write_every_setting},
     {"replay_failure_not_published", test_replay_failure_not_published},
     {"concurrent_partial_writes_never_interleave", test_concurrent_partial_writes_never_interleave},
     {"old_sender_does_not_touch_replacement", test_old_sender_does_not_touch_replacement},
@@ -2276,6 +2463,8 @@ const named_test kTests[] = {
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},
+    {"stop_waits_for_demod_block_before_retune", test_stop_waits_for_demod_block_before_retune},
+    {"full_output_write_gives_up_on_stop", test_full_output_write_gives_up_on_stop},
     {"controller_create_failure_fails_start", test_controller_create_failure_fails_start},
     {"quit_during_outage_exits", test_quit_during_outage_exits},
 };

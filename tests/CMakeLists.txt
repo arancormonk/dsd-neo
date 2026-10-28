@@ -6758,6 +6758,48 @@ else()
 endif()
 add_test(NAME ENGINE_CLEANUP_AUDIO COMMAND dsd-neo_test_engine_cleanup_audio)
 
+# A configured session that never runs (the Android host's discard, a failed configure) closes the output files the
+# bootstrap opened (#782 gate r2 H3).
+add_executable(
+    dsd-neo_test_engine_release_outputs
+    engine/test_engine_release_outputs.c
+)
+target_include_directories(
+    dsd-neo_test_engine_release_outputs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_release_outputs
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_release_outputs
+        PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ENGINE_RELEASE_OUTPUTS
+    COMMAND dsd-neo_test_engine_release_outputs
+)
+# The CLI's own ways of stopping before the engine runs: a parse error after -P, and --airspy-list.
+foreach(_mode PARSE_ERROR AIRSPY_LIST)
+    add_test(
+        NAME CLI_UNRUN_OUTPUTS_${_mode}
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=${_mode}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli_unrun_outputs/${_mode}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cli_unrun_outputs_check.cmake"
+    )
+endforeach()
+
 add_executable(dsd-neo_test_engine_run_setup engine/test_engine_run_setup.c)
 target_include_directories(
     dsd-neo_test_engine_run_setup
@@ -14500,11 +14542,40 @@ if(DSD_HAS_RADIO)
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
 
     add_executable(dsd-neo_test_io_rtl_fd_failure io/test_io_rtl_fd_failure.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_fd_failure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
     target_link_libraries(
         dsd-neo_test_io_rtl_fd_failure
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
+
+    # #782: which Android descriptor the engine holds, through the open, a
+    # replacement in the slot and the close; and the "reset first" request.
+    add_executable(dsd-neo_test_io_rtl_fd_held io/test_io_rtl_fd_held.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_fd_held
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_fd_held
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_FD_HELD COMMAND dsd-neo_test_io_rtl_fd_held)
+
+    # #782: libusb's own log lines reach the runtime log once, with one header.
+    add_executable(dsd-neo_test_io_rtl_usb_log io/test_io_rtl_usb_log.cpp)
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_log
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_log
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_USB_LOG COMMAND dsd-neo_test_io_rtl_usb_log)
 
     # The USB reader's return code: any return nobody asked for ends the session as a
     # device failure (after the unplug-owner grace); a stop in flight does not, and a
@@ -14698,6 +14769,57 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_RTL_USB_RECOVERY COMMAND dsd-neo_test_io_rtl_usb_recovery)
     set_tests_properties(IO_RTL_USB_RECOVERY PROPERTIES TIMEOUT 120)
+
+    # #782: a stalled RTL-SDR opened from an Android descriptor, over the fake dongle
+    # and the descriptor seams: the reset obligation bound to its descriptor, the swap
+    # through it (close, reset, reopen, replay) and each reset outcome, and the
+    # pre-recovery grace with samples, a stop and a detach inside it.
+    add_executable(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        io/test_io_rtl_usb_fd_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_usb_fd_recovery
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_USB_FD_RECOVERY
+        COMMAND dsd-neo_test_io_rtl_usb_fd_recovery
+    )
+    set_tests_properties(IO_RTL_USB_FD_RECOVERY PROPERTIES TIMEOUT 120)
+
+    # Issue #782 D3: a retune writes only the capture settings that changed. The stream's
+    # programming on a whole fake dongle: same-rate hops write the frequency alone and run the
+    # rate read back, a quantized rate or a nearest gain is never rewritten, a changed rate is
+    # written once, and a failure, a PPM or offset tuning change or a USB recovery writes again.
+    add_executable(
+        dsd-neo_test_io_rtl_capture_writes
+        io/test_io_rtl_capture_writes.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_capture_writes
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_capture_writes
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_capture_writes
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_CAPTURE_WRITES
+        COMMAND dsd-neo_test_io_rtl_capture_writes
+    )
 
     # rtl_tcp connection handling against a scripted fake rtl_tcp server on loopback:
     # the exact header parser, bounded and cancellable connects, header reads and
@@ -18910,6 +19032,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             exit_facts
     )
+    add_test(
+        NAME ANDROID_WATCHDOG_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            watchdog
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -18919,6 +19048,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM
         ANDROID_EXIT_FACTS_JVM
+        ANDROID_WATCHDOG_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

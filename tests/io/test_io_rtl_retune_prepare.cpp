@@ -2281,7 +2281,9 @@ static int
 test_soapy_gain_readback(void) {
     int failed = 0;
     for (int named = 0; named < 2; named++) {
-        rtl_device_test_soapy_gain_fake fake{19.7, 28.0, 0, 0};
+        rtl_device_test_soapy_gain_fake fake{};
+        fake.gain_db = 19.7;
+        fake.selected_db = 28.0;
         struct rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, named);
         if (!dev) {
             return failed; /* SoapySDR is optional. */

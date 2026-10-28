@@ -9,6 +9,8 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -19,29 +21,48 @@ import java.util.Locale
  * After a phone restarts, a diagnostics share has to tell whether Android restarted while a
  * session ran or only the app process ended. Android records app exits but not restarts of the
  * phone itself, so the process line carries the boot count, and each session's start line carries
- * it again. Native code calls the three static methods below (see android/decoder_host_android.cpp);
+ * it again. Native code calls the four static methods below (see android/decoder_host_android.cpp);
  * R8 keeps them by name.
  */
 object ProcessFacts {
     @Volatile
     private var appContext: Context? = null
 
-    /** Called from the Activity's and the service's onCreate, before native code can ask. */
+    /**
+     * Called from the Activity's and the service's onCreate, before native code can ask. The first call also starts the
+     * main-looper watchdog (#782), so it runs from the start of every process the app makes.
+     */
     @JvmStatic
     fun attach(context: Context) {
         if (appContext == null) {
             appContext = context.applicationContext
         }
+        MainLooperWatchdog.start()
     }
 
-    /** Extra facts for the diagnostics process line: boot count, device and SDK (native code adds the app version). */
+    /**
+     * Extra facts for the diagnostics process line: boot count, device and SDK (native code adds the app version).
+     * Native code asks as its diagnostics log installs, so from here on it takes host records ([HostDiagnostics]).
+     */
     @JvmStatic
-    fun processFacts(): String =
-        listOf(bootPart(appContext), "${Build.MANUFACTURER} ${Build.MODEL}", "SDK ${Build.VERSION.SDK_INT}").joinToString(", ")
+    fun processFacts(): String {
+        HostDiagnostics.nativeReady()
+        return listOf(bootPart(appContext), "${Build.MANUFACTURER} ${Build.MODEL}", "SDK ${Build.VERSION.SDK_INT}")
+            .joinToString(", ")
+    }
 
-    /** The newest recorded exits of this app's processes, newest first (Android 11+; empty before). */
+    /** The logged marker [exitLines] prepared, for [exitsMarker]: its file's path and its text; null when none. */
+    @Volatile
+    private var pendingMarker: Array<String>? = null
+
+    /**
+     * The newest recorded exits of this app's processes that no earlier start logged, newest first (Android 11+; empty
+     * before). The keys of the records read go to app-private storage only once these lines are durable ([exitsMarker]),
+     * so the next start skips them (#782).
+     */
     @JvmStatic
     fun exitLines(): Array<String> {
+        pendingMarker = null
         val context = appContext ?: return emptyArray()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             return emptyArray()
@@ -51,12 +72,30 @@ object ProcessFacts {
             val records = manager.getHistoricalProcessExitReasons(context.packageName, 0, ExitFacts.MAX_LINES).map {
                 ExitFacts.Record(it.timestamp, it.pid, it.reason, it.status, it.importance, it.pss, it.description)
             }
+            val marker = File(context.noBackupFilesDir, EXITS_LOGGED_FILE)
+            val logged = try {
+                marker.readLines().toSet()
+            } catch (_: IOException) {
+                emptySet()
+            }
+            val fresh = ExitFacts.unlogged(records, logged)
+            if (fresh.isNotEmpty()) {
+                pendingMarker = arrayOf(marker.path, records.joinToString("\n") { ExitFacts.key(it) })
+            }
             val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-            ExitFacts.lines(records) { format.format(Date(it)) }.toTypedArray()
+            ExitFacts.lines(fresh) { format.format(Date(it)) }.toTypedArray()
         } catch (_: RuntimeException) {
             emptyArray()
         }
     }
+
+    /**
+     * The marker for the records the last [exitLines] read: its file's path and the text it gets, or empty when that
+     * read found nothing new. Native code writes it only after the diagnostics log synced the lines, so a process that
+     * dies first logs them again at the next start rather than losing them (#782).
+     */
+    @JvmStatic
+    fun exitsMarker(): Array<String> = pendingMarker ?: emptyArray()
 
     /** What a session start line says about the attempt: source, boot count and, for a dongle, which one. */
     @JvmStatic
@@ -67,6 +106,9 @@ object ProcessFacts {
         }
         return parts.joinToString(", ")
     }
+
+    /** The keys ([ExitFacts.key]) of the exit records the last start read, one per line. */
+    private const val EXITS_LOGGED_FILE = "exit-facts-logged"
 
     private fun bootPart(context: Context?): String = try {
         if (context == null) "boot ?" else "boot ${Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT)}"

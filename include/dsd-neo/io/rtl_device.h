@@ -113,6 +113,53 @@ int rtl_device_preopened_fd_is_set(void);
 int rtl_device_preopened_fd_in_use(void);
 
 /**
+ * @brief The pre-opened descriptor the engine holds, or -1 when it holds none (#782).
+ *
+ * The descriptor rtl_device_preopened_fd_in_use() is about: taken from the slot in
+ * the same step that marks it held, so once rtl_device_set_preopened_fd() has
+ * returned, a descriptor it replaced is either reported here or can no longer be
+ * taken. An owner that retired a connection waits only while its own descriptor is
+ * held, never on a later session's.
+ *
+ * @return The held descriptor, or -1.
+ */
+int rtl_device_preopened_fd_held(void);
+
+/**
+ * @brief Hand the next USB open a descriptor, saying whether its dongle owes a USB reset first (#782).
+ *
+ * rtl_device_set_preopened_fd() with the reset obligation bound to @p sys_fd in the
+ * same step: the Android host passes @p reset_first nonzero when the attachment
+ * behind the descriptor owes a reset (a stall wedged its bulk stream, and reopening
+ * the same device does not clear that). Every publish replaces the obligation, so
+ * one never outlives the descriptor it was handed with: -1, or a descriptor with
+ * @p reset_first 0, clears it. rtl_device_set_preopened_fd() is this with 0.
+ *
+ * The open that takes @p sys_fd resets the device first (USBDEVFS_RESET, Android
+ * only) and consumes the obligation when the reset succeeded; a refused reset opens
+ * without one and keeps it.
+ *
+ * @param sys_fd Open USB file descriptor, or -1 to clear.
+ * @param reset_first Nonzero when the device owes a reset before it is opened.
+ */
+void rtl_device_publish_preopened_fd(int sys_fd, int reset_first);
+
+/**
+ * @brief The descriptor whose dongle owes a USB reset before its next open, or -1 (#782).
+ *
+ * The physical "reset before the next open" requirement, apart from how the session
+ * ended. Besides a publish (rtl_device_publish_preopened_fd()), the engine sets it
+ * for the descriptor it holds when the progress monitor's stall verdict is reached
+ * or a stall recovery retires the reader, before any grace and whatever Stop follows,
+ * and clears it once samples arrive after that verdict or a USB reset succeeded. The
+ * Android host reads it for the attachment it handed that descriptor with and keeps
+ * it across sessions and process restarts. Lock-free.
+ *
+ * @return The descriptor, or -1.
+ */
+int rtl_device_preopened_fd_reset_owed(void);
+
+/**
  * @brief Whether this build can open a device from a pre-opened descriptor.
  *
  * Requires Android and a librtlsdr providing `rtlsdr_open_fd()`. Where this is 0,
@@ -175,6 +222,12 @@ int rtl_device_airspy_controls(struct rtl_device* dev, const dsd_airspy_config* 
 int rtl_device_airspy_list(uint64_t* serials, int capacity);
 int rtl_device_airspy_set_preopened_fd(int fd);
 int rtl_device_airspy_preopened_fd_in_use(void);
+/** The descriptor the Airspy holds, or -1; as rtl_device_preopened_fd_held() is for the RTL-SDR (#782). */
+int rtl_device_airspy_preopened_fd_held(void);
+/** The Airspy's last open/claim error, as rtl_device_last_open_error() is the RTL-SDR's: 0 once an open succeeds, and
+ * cleared at session start. */
+int rtl_device_airspy_last_open_error(void);
+void rtl_device_airspy_clear_open_error(void);
 
 /**
  * @brief Create and initialize an RX source through SoapySDR.
@@ -243,6 +296,43 @@ int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested
  * @return Sample rate in Hz (non-negative) or negative on error.
  */
 int rtl_device_get_sample_rate(struct rtl_device* dev);
+
+/**
+ * @brief Whether a retune may leave a capture setting @p dev already holds unwritten (issue #782 D3).
+ *
+ * Only a USB RTL-SDR answers 1: librtlsdr reports each write's result from the dongle, and the per-tuner audit says
+ * which settings its tune keeps (rtl_device_capture_retune_resets()). An rtl_tcp server answers 0 (issue #782 gate r4
+ * K2): its protocol has no acknowledgement, so a write the server or its dongle refused (a gain it could not set)
+ * would be recorded as taken and skipped on every later hop; every hop writes every setting, as before D3. A
+ * SoapySDR device answers 0 for every driver (a driver's tune can move what was recorded, and none was checked on
+ * hardware), an Airspy skips a same-value write itself, and an I/Q replay has nothing to program.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param out_generation Receives a count that moves each time a USB recovery reopened the dongle and put its settings
+ * back without the caller. What the caller recorded under an older count no longer describes the device.
+ * @return 1 when the caller may skip a write that matches what it recorded, else 0.
+ */
+int rtl_device_capture_settings_generation(const struct rtl_device* dev, uint32_t* out_generation);
+
+/** @brief Capture settings, as rtl_device_capture_retune_resets() names them. */
+enum {
+    RTL_CAPTURE_SETTING_RATE = 1,
+    RTL_CAPTURE_SETTING_BANDWIDTH = 2,
+    RTL_CAPTURE_SETTING_GAIN = 4,
+};
+
+/**
+ * @brief The capture settings a frequency write on @p dev undoes (issue #782 gate r3 J1).
+ *
+ * A caller that skips a matching write (rtl_device_capture_settings_generation()) writes these again after every
+ * frequency write. An FC2580 tuner resets its channel filter on every tune, which only a bandwidth write restores; a
+ * tuner this build does not know resets everything. The other RTL-SDR tuners keep all three (the per-tuner audit is
+ * at the definition). Only a USB RTL-SDR skips writes, so every other backend, rtl_tcp included, answers 0.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return A mask of RTL_CAPTURE_SETTING_* bits; 0 for a device whose writes are never skipped.
+ */
+unsigned rtl_device_capture_retune_resets(const struct rtl_device* dev);
 
 /**
  * @brief Set tuner gain mode and value.
@@ -411,8 +501,9 @@ int rtl_device_stop_async(struct rtl_device* dev);
  * @brief Whether a USB device can be reset and reopened when it stops delivering samples.
  *
  * Decided at open: the device's USB port was identified uniquely (no other device carries its manufacturer, product
- * and serial strings, every candidate could be read, the build has libusb) and the opened handle carries them. When
- * not, the open logged "RTL-SDR: stall recovery is off for this receiver: <reason>".
+ * and serial strings, every candidate could be read, the build has libusb) and the opened handle carries them. A
+ * device opened from an Android descriptor is identified by that descriptor: its VID:PID and the strings readable on
+ * the opened handle (#782). When not, the open logged "RTL-SDR: stall recovery is off for this receiver: <reason>".
  *
  * @return 1 when eligible, 0 otherwise (including every non-USB device).
  */
@@ -429,6 +520,10 @@ int rtl_device_usb_recovery_eligible(const struct rtl_device* dev);
  * took is left at the fresh dongle's default; one that took and cannot be restored fails the recovery. Only then is
  * the new handle published. The reader is not restarted (rtl_device_usb_resume_reader()). While it runs, setters
  * return RTL_DEVICE_EBUSY and change nothing, and getters report no reading once the old handle is retired.
+ *
+ * A device opened from an Android descriptor (#782) is reset through that descriptor (USBDEVFS_RESET) and reopened
+ * from it, the same descriptor being its identity: a refused reset reopens without one, and one that left the
+ * descriptor unusable (ENODEV, EBADF) fails the recovery, as the device is then re-enumerating.
  *
  * @param dev RTL-SDR device handle.
  * @param why Receives the reason on failure (may be NULL).

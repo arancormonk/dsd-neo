@@ -241,6 +241,33 @@ test_watchdog_reset_on_late_sample_rate_programming(void) {
     return rc;
 }
 
+/**
+ * @brief A receive whose clock reading predates a concurrent reset never fires.
+ *
+ * The reader reads the clock after a receive and records it; a retune or a reconnect on another thread can restart
+ * the windows in between with a later reading. That receive's time must not count as a span from the new stamps:
+ * unsigned, it wrapped to centuries past the grace with a near-zero ratio, and the watchdog dropped a healthy
+ * connection (issue #782, IO_RTL_TCP_RECONNECT hops_write_every_setting).
+ */
+static int
+test_watchdog_reading_before_reset_does_not_fire(void) {
+    int rc = 0;
+    struct tcp_quality_metrics m;
+    tcp_metrics_init(&m, 1536000);
+
+    const uint64_t reset_ns = m.connection_established_ns;
+    rc |= expect_int("reading 1 ns before the reset", tcp_metrics_record_recv(&m, 65536, reset_ns - 1U), 0);
+    rc |= expect_int("reading 1 s before the reset", tcp_metrics_record_recv(&m, 65536, reset_ns - 1000000000ULL), 0);
+    rc |=
+        expect_int("stamps kept", (int)(m.connection_established_ns == reset_ns && m.watchdog_start_ns == reset_ns), 1);
+    rc |= expect_int("no latch", m.watchdog_trigger_latched, 0);
+
+    /* The grace still runs from the reset: a starved window after it fires as before. */
+    rc |= expect_int("grace +3s", tcp_metrics_record_recv(&m, 0, reset_ns + 3000000000ULL), 0);
+    rc |= expect_int("starved +6s fires", tcp_metrics_record_recv(&m, 0, reset_ns + 6000000000ULL), 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -251,5 +278,6 @@ main(void) {
     rc |= test_watchdog_exact_grace_boundary();
     rc |= test_watchdog_latch_survives_reset_until_healthy_window();
     rc |= test_watchdog_reset_on_late_sample_rate_programming();
+    rc |= test_watchdog_reading_before_reset_does_not_fire();
     return rc ? 1 : 0;
 }

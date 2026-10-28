@@ -32,6 +32,7 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "signal_search_model.h"
+#include "teardown_trace.h"
 
 namespace dsd_qt {
 static QVariantMap
@@ -293,7 +294,10 @@ SignalSearchModel::disarm() {
 
 /* The foreground service can outlive the entire QML engine on Android. Its native
    journal worker stays alive until process shutdown; a replacement model reattaches. */
-SignalSearchModel::~SignalSearchModel() { dsd_app_signal_search_store_flush(); }
+SignalSearchModel::~SignalSearchModel() {
+    const TeardownStage stage("~SignalSearchModel");
+    dsd_app_signal_search_store_flush();
+}
 
 QVariantMap
 // cppcheck-suppress functionStatic -- Q_INVOKABLE entry point on the QML context object.

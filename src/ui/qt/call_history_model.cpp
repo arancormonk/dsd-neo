@@ -44,6 +44,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
 #include "realtime_clock.h"
+#include "teardown_trace.h"
 
 namespace dsd_qt {
 
@@ -229,6 +230,7 @@ CallHistoryModel::scheduleDayRollover() {
 }
 
 CallHistoryModel::~CallHistoryModel() {
+    const TeardownStage stage("~CallHistoryModel");
     /* A debounced or coalesced save may still be owed; the queued ones (if any)
      * already carry the stores they copied. Wait them out, then flush what remains
      * synchronously — the worker must never outlive this object. */

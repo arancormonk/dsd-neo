@@ -17,6 +17,7 @@ class JSONObject(text: String = "") {
     fun optDouble(name: String) = (values[name] as? Number)?.toDouble() ?: 0.0
     fun optBoolean(name: String) = values[name] == true
     fun optString(name: String) = values[name]?.toString() ?: ""
+    fun has(name: String) = name in values
     override fun toString() = values.entries.joinToString(",", "{", "}") {
         "\"${it.key}\":" + if (it.value is String) "\"${it.value}\"" else it.value.toString()
     }

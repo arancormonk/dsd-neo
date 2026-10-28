@@ -62,14 +62,15 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         return m_notification_permission_needed;
     }
 
+    /** @brief The current attempt's own failure (#782) while it stands, else the last session's input failure. */
     int
     inputFailureKind() const override {
-        return m_input_failure;
+        return m_attempt_failed ? m_attempt_failure_kind : m_input_failure;
     }
 
     int
     inputFailureCode() const override {
-        return m_input_error;
+        return m_attempt_failed ? 0 : m_input_error;
     }
 
     int
@@ -163,6 +164,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool start(const QStringList& argv) override;
     void stop() override;
+    void dismissFailure() override;
     bool moveToBackground() override;
     void refresh() override;
     void requestLocalDeviceAccess() override;
@@ -226,6 +228,20 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLog::AttemptStage stage);
     // JNI supplies one coherent record; desktop tests exercise the same publication path.
     void applyLifecycleStatus(const QJsonObject& status, bool running);
+    /**
+     * @brief Whether @p status is a record of another start attempt than m_attempt (gate r5 L1): one this host
+     * retired or superseded, or the previous session's while the start waits. Such a record drives no phase, run
+     * result, receiver health or device error. False while the host follows no attempt, and for a record that names
+     * none.
+     */
+    bool recordOfOtherAttempt(const QJsonObject& status) const;
+    /**
+     * @brief The start grace's expiry, if the record just folded ran it out: log it, retire the attempt, and either
+     * follow it (the service took it after all) or latch it undelivered. True when it expired.
+     */
+    bool noteStartExpiry(const QByteArray& service_state, uint64_t now_ms);
+    /** @brief Publish @p phase with @p reason, or the current attempt's own failure while one stands. */
+    void publishPhase(SessionPhase phase, const QString& reason);
     bool acknowledgeFailure(const QJsonObject& status);
 
     QJsonObject readLifecycleStatus() const;
@@ -244,16 +260,42 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     void requestServiceStop();
-    /** @brief DecoderService.startDecoder() with @p argv; returns why it could not be handed over, or empty. */
-    static QString platformStartDecoder(const QStringList& argv);
+    /**
+     * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
+     * handed over, or empty.
+     */
+    static QString platformStartDecoder(const QStringList& argv, uint64_t attempt);
+    /**
+     * @brief DecoderService.retireAttempts(): no attempt up to @p through may run any more (#782). Synchronous, from
+     * the Qt thread. True when the service had already taken attempt @p through past the point a retirement cancels
+     * (it runs, or it ended on its own and its record says how); false when it never will run, and when the call
+     * failed.
+     */
+    static bool platformRetireAttempts(uint64_t through);
     /** @brief UsbSourceManager.requestAccess() / requestAccessForSource(); the answer arrives through refresh(). */
     static void platformRequestAccess();
     static void platformRequestAccessForSource(const QString& source, const QString& serial);
     /** @brief DecoderService.acknowledgeReceiverEnding(): endings up to @p session stay acknowledged past this host. */
     static void platformAcknowledgeReceiverEnding(uint64_t session);
     QString serviceFailureText() const;
+    /**
+     * @brief Refuse start attempt @p attempt because the service is @p service_state, not IDLE: logged, and published
+     * as kAttemptPreviousStopping unless a run is on screen (Starting or Running), which stays as it is. Always
+     * returns false.
+     */
+    bool refuseStart(uint64_t attempt, const QByteArray& service_state);
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);
+    /**
+     * @brief Latch the current attempt's own failure (#782): published as Failed with @p text and as
+     * inputFailureKind() @p kind (an AttemptFailureKind, or 0 for none the UI words), over whatever the service's
+     * records say, until the next start or a dismissal.
+     */
+    void setAttemptFailure(int kind, const QString& text);
+    /** @brief Drop the previous attempt's failure for a start that goes ahead or a refusal of its own. */
+    void clearAttemptFailure();
+    /** @brief Retire the current attempt and drop its failure, then publish the phase the records give. */
+    void dismissAttemptFailure();
 
     void setStatus(const QString& text);
     void refreshLocation();
@@ -272,6 +314,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool deviceErrorApplies() const;
 
     bool m_primed = false;
+    // #782: the start attempt this host follows (0: none), and its own failure while it stands. Records of older
+    // sessions never replace it; the next start or a dismissal does.
+    uint64_t m_attempt = 0;
+    bool m_attempt_failed = false;
+    int m_attempt_failure_kind = 0;
+    QString m_attempt_failure_text;
     uint64_t m_adopted_idle_session = 0;
     uint64_t m_initialized_session = 0;
     int m_device_error = 0;
@@ -279,9 +327,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     uint64_t m_device_error_session = 0;
     uint64_t m_retried_device_session = 0;
     // #647 B11: the receiver the claim error came from; it is shown only while that receiver is the ready one.
+    // #782: identified by the connection the session took (attachment and connection generation, from the session's
+    // record) when the record names one, else by source and serial as before.
     uint64_t m_device_error_owner = 0;
     QString m_device_error_source;
     QString m_device_error_serial;
+    QString m_device_error_device;
+    qint64 m_device_error_epoch = 0;
+    qint64 m_device_error_connection = 0;
     LocalDeviceState m_usb;
     // UsbSourceManager.attachedSource(), polled with the USB record.
     QString m_attached_source;

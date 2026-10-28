@@ -5,7 +5,8 @@
 # helpers remain eligible for shrinking and obfuscation. Keep signatures intact
 # while allowing R8 to optimize the method bodies.
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DecoderService {
-    public static void startDecoder(android.content.Context, java.lang.String[]);
+    public static void startDecoder(android.content.Context, java.lang.String[], long);
+    public static boolean retireAttempts(long);
     public static void stopDecoder(android.content.Context);
     public static java.lang.String lifecycleStatus();
     public static void acknowledgeReceiverEnding(long);
@@ -59,6 +60,7 @@
 -keep,allowoptimization class io.github.arancormonk.dsdneo.ProcessFacts {
     public static java.lang.String processFacts();
     public static java.lang.String[] exitLines();
+    public static java.lang.String[] exitsMarker();
     public static java.lang.String attemptContext(java.lang.String);
 }
 
@@ -67,3 +69,10 @@
 -keep,includedescriptorclasses class io.github.arancormonk.dsdneo.DsdNative {
     native <methods>;
 }
+
+# Line numbers for stack traces, the main-looper watchdog's incidents included
+# (#782): retrace maps them with the build's mapping.txt. At minSdk 29 R8 encodes
+# them as instruction offsets, so the DEX does not grow (it shrank 5.8 KB; the
+# mapping grew 57 KB). Source file names stay out of the APK.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile

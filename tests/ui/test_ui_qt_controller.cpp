@@ -932,10 +932,12 @@ main(int argc, char** argv) {
               && metrics.carrierIdentityText().isEmpty() && !metrics.carrierIdentityLive());
         check(!metrics.qualityValid() && !metrics.ccFecValid());
         check(diagnosticsModel.allText().contains("before next session"));
-        check(diagnosticsModel.allText().count("--- session starting ---") == 1);
+        check(diagnostics.snapshot().join('\n').count("--- session starting ---") == 1
+              && diagnostics.hostSnapshot().join('\n').count("--- session starting ---") == 1);
         check(network.radios().isEmpty());
         host.setPhase(phase); // Repeated state notification is not another boundary.
-        check(diagnosticsModel.allText().count("--- session starting ---") == 1);
+        check(diagnostics.snapshot().join('\n').count("--- session starting ---") == 1
+              && diagnostics.hostSnapshot().join('\n').count("--- session starting ---") == 1);
     }
     // WP-F5: an idle decoder need not request redraw for process logs to refresh.
     (void)dsd_app_frontend_redraw_consume();
@@ -948,7 +950,8 @@ main(int argc, char** argv) {
     check(diagnosticsModel.rowCount() == 3);
     host.setPhase(Host::Starting);
     diagnosticsModel.refresh();
-    check(diagnosticsModel.allText().count("--- session starting ---") == 2);
+    check(diagnostics.snapshot().join('\n').count("--- session starting ---") == 2
+          && diagnostics.hostSnapshot().join('\n').count("--- session starting ---") == 2);
     check(diagnosticsModel.allText().contains("idle diagnostic"));
     // WP-D1: real bridge -> queue -> policy, then retained completion with no redraw.
     dsd_qt::CommandBridge bridge;

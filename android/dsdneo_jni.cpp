@@ -96,8 +96,7 @@ void*
 // cppcheck-suppress constParameterCallback -- pthread_create entry point signature
 log_pump_thread(void* arg) {
     const int read_fd = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-    std::string line;
-    bool oversized = false;
+    dsd_qt::DiagnosticsLog::StreamCapture records(dsd_qt::DiagnosticsLog::instance(), QStringLiteral("stderr"));
     char buf[512];
 
     for (;;) {
@@ -108,37 +107,10 @@ log_pump_thread(void* arg) {
             }
             break;
         }
-        for (ssize_t i = 0; i < n; i++) {
-            const char c = buf[i];
-            if (c == '\n' || c == '\r') {
-                if (oversized) {
-                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
-                                                              QStringLiteral("[oversized diagnostic omitted]"));
-                    oversized = false;
-                }
-                if (!line.empty()) {
-                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
-                                                              QString::fromUtf8(line.c_str()));
-                    line.clear();
-                }
-                continue;
-            }
-            if (oversized) {
-                continue;
-            }
-            line.push_back(c);
-            if (line.size() >= 1024U) {
-                // Do not split a secret-bearing record into unlabelled fragments.
-                oversized = true;
-                line.clear();
-            }
-        }
+        records.feed(buf, static_cast<size_t>(n));
     }
 
-    if (!line.empty()) {
-        dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
-                                                  QString::fromUtf8(line.c_str()));
-    }
+    records.finish();
     (void)close(read_fd);
     return nullptr;
 }
@@ -472,7 +444,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 #ifdef USE_RADIO
     rtl_device_clear_open_error();
+    rtl_device_airspy_clear_open_error();
 #endif
+    /* A configured session that never ran still holds the output files its bootstrap opened (-c, -w, -P, -6); this
+     * configure would open its own over them (#782). A run's cleanup already closed its own. */
+    dsd_engine_release_outputs(g_opts, g_state);
     cli_argv cli = {};
     if (!build_argv(env, args, &cli)) {
         return kStatusError;
@@ -490,6 +466,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 
     g_configured = false;
+    /* What the bootstrap opened before it failed or exited, as a parse error after -c leaves (#782). */
+    dsd_engine_release_outputs(g_opts, g_state);
     if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_CONFIGURATION, exit_rc);
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
@@ -497,6 +475,30 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
     /* EXIT is not a failure: one-shot flows such as -h take it. */
     return (rc == DSD_BOOTSTRAP_EXIT && exit_rc == 0) ? kStatusConfigExit : kStatusError;
+}
+
+/**
+ * @brief Give up a configured session that will never run (#782): DecoderService cancelled its start attempt.
+ *
+ * Clears the configuration and the run record's receiver, so neither nativeRun nor a USB detach takes the session for
+ * one that owns its receiver, and closes the output files its bootstrap opened; the record ends cancelled. g_running
+ * stays false: a run already under way is refused.
+ */
+JNIEXPORT jint JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeDiscardConfigured(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (g_running.load()) {
+        return kStatusBadState;
+    }
+    g_configured = false;
+    /* No nativeRun, so no dsd_engine_cleanup(): close the output files the bootstrap opened here (#782). */
+    dsd_engine_release_outputs(g_opts, g_state);
+    std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+    g_run_status.discard_configured();
+    return kStatusOk;
 }
 
 JNIEXPORT jint JNICALL
@@ -581,9 +583,12 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
                                                        jstring cause) {
     (void)clazz;
 
-    /* Never takes g_lock. This is called from the main thread on a USB detach
-     * broadcast, and nativeConfigure holds g_lock across the whole bootstrap, which
-     * can block on an rtl_tcp connect — waiting for it here would be an ANR. There
+    /* Never takes g_lock. This is called from the main thread (a USB detach
+     * broadcast, the Activity's teardown) and from the Qt thread under the service's
+     * lock, and nativeConfigure holds g_lock across the whole bootstrap, which reads
+     * the user config and every CSV and key file the arguments name from storage.
+     * The input itself, an rtl_tcp connect included, opens later in nativeRun,
+     * outside g_lock. A stop has to land at once, not behind that file I/O, and there
      * is nothing to protect: dsd_request_shutdown() ignores both arguments and only
      * raises the process exit flag, so the guard below is purely "has the engine
      * been initialized". */
@@ -637,6 +642,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
         return kStatusBadState;
     }
     g_initialized.store(false);
+    /* A session configured and never run still holds the output files its bootstrap opened (#782). */
+    dsd_engine_release_outputs(g_opts, g_state);
     if (g_state != nullptr) {
         freeState(g_state);
     }
@@ -649,7 +656,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
 }
 
 JNIEXPORT jint JNICALL
-Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass clazz, jint sys_fd) {
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass clazz, jint sys_fd,
+                                                           jboolean reset_first) {
     (void)env;
     (void)clazz;
 
@@ -664,11 +672,13 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass c
     }
     /* Java owns the descriptor: it comes from a UsbDeviceConnection that the service
      * holds open for the engine's lifetime, and -1 clears the slot on detach. The
-     * engine reads it during input setup, so it has to be set before nativeRun. */
-    rtl_device_set_preopened_fd(static_cast<int>(sys_fd));
+     * engine reads it during input setup, so it has to be set before nativeRun. The
+     * reset obligation travels bound to it (#782). */
+    rtl_device_publish_preopened_fd(static_cast<int>(sys_fd), reset_first == JNI_TRUE ? 1 : 0);
     return kStatusOk;
 #else
     (void)sys_fd;
+    (void)reset_first;
     return kStatusError;
 #endif
 }
@@ -682,6 +692,51 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetAirspyUsbFd(JNIEnv* env, jc
 #else
     return fd < 0 ? kStatusOk : kStatusError;
 #endif
+}
+
+/**
+ * @brief The RTL-SDR descriptor whose dongle owes a USB reset before its next open, or -1 (#782).
+ *
+ * UsbSourceManager records it on the attachment it handed that descriptor with. Lock-free, so the main thread never
+ * waits behind a configure.
+ */
+JNIEXPORT jint JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeUsbResetOwed(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef USE_RADIO
+    return rtl_device_preopened_fd_reset_owed();
+#else
+    return -1;
+#endif
+}
+
+/**
+ * @brief The descriptors the engine holds: { RTL-SDR, Airspy }, each -1 when none (#782).
+ *
+ * UsbSourceManager closes a retired connection once its own descriptor is no longer held. Lock-free reads, so the
+ * closer's poll never waits behind a configure.
+ */
+JNIEXPORT jintArray JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeHeldUsbFds(JNIEnv* env, jclass clazz) {
+    (void)clazz;
+#ifdef USE_RADIO
+    const jint fields[] = {rtl_device_preopened_fd_held(), rtl_device_airspy_preopened_fd_held()};
+#else
+    const jint fields[] = {-1, -1};
+#endif
+    constexpr jsize kFieldCount = static_cast<jsize>(sizeof(fields) / sizeof(fields[0]));
+    jintArray out = env->NewIntArray(kFieldCount);
+    if (!out) {
+        clear_pending_exception(env);
+        return nullptr;
+    }
+    env->SetIntArrayRegion(out, 0, kFieldCount, fields);
+    if (clear_pending_exception(env)) {
+        env->DeleteLocalRef(out);
+        return nullptr;
+    }
+    return out;
 }
 
 JNIEXPORT jboolean JNICALL
