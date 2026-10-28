@@ -3310,20 +3310,41 @@ rtl_device_test_recoveries_in_grace(void) {
 }
 #endif
 
+/*
+ * Taking the descriptor (reading the slot, then marking it held) and replacing the
+ * slot are one step each under this lock. Once rtl_device_set_preopened_fd() has
+ * returned, either the engine holds the old descriptor (and says so) or it can no
+ * longer take it, so an owner that cleared the slot can trust the held query. A
+ * device re-arming its descriptor's reset obligation takes it too
+ * (rtl_usb_reset_owed_set()), so that store and a publish never interleave.
+ */
+static std::mutex g_preopened_usb_fd_lock;
+
 /* The descriptor whose dongle owes a USB reset before its next open, -1 when none (#782): bound to the descriptor, so
  * an obligation can never be applied to another one. Set with the slot, under its lock (the host's publish), or for
- * the held descriptor by its stall verdict or recovery; cleared by a successful reset, or by samples after the verdict
- * that set it. See rtl_device_preopened_fd_reset_owed(). */
+ * the held descriptor by its stall verdict or recovery, under the same lock and only while the host still publishes
+ * it; cleared by a successful reset, or by samples after the verdict that set it. See
+ * rtl_device_preopened_fd_reset_owed(). */
 static std::atomic<int> g_preopened_usb_fd_reset_owed{-1};
 
 /* Moves with every publish, under the slot's lock: a device that took a descriptor at one value finds the host's
  * connection replaced (or released, on a detach) when it moved since. */
 static std::atomic<uint32_t> g_preopened_usb_fd_generation{0U};
 
-/* @p fd's dongle owes a reset before its next open. */
+/* @p dev's dongle, opened from an Android descriptor, owes a reset before its next open. Only while the host still
+ * publishes the connection the device took (the generation it took it at): once the host released or replaced it, the
+ * slot's obligation is the next connection's, which the host published with its own descriptor, and a late verdict,
+ * failed recovery or reader return of the old device must not overwrite it (#782 gate r1 G3). The host read what the
+ * old descriptor owed before it moved the slot, and its detach drops it. */
 static void
-rtl_usb_reset_owed_set(int fd) {
-    g_preopened_usb_fd_reset_owed.store(fd, std::memory_order_release);
+rtl_usb_reset_owed_set(const struct rtl_device* dev) {
+    if (!dev->owns_preopened_fd) {
+        return;
+    }
+    const std::lock_guard<std::mutex> guard(g_preopened_usb_fd_lock);
+    if (g_preopened_usb_fd_generation.load(std::memory_order_acquire) == dev->preopened_generation) {
+        g_preopened_usb_fd_reset_owed.store(dev->preopened_fd, std::memory_order_release);
+    }
 }
 
 /* @p fd's dongle no longer owes one; an obligation the host bound to another descriptor since stays. Whether this
@@ -3583,9 +3604,7 @@ rtl_usb_reader_end_session(struct rtl_device* s, int rc) {
     /* A dongle behind an Android descriptor whose reader gave up owes a reset before its next open, as a stalled one
      * does (#782): the Listen notice promises Reconnect resets it, and the worst it costs is one reset that was not
      * needed. An unplug's detach drops it again on the host. */
-    if (s->owns_preopened_fd) {
-        rtl_usb_reset_owed_set(s->preopened_fd);
-    }
+    rtl_usb_reset_owed_set(s);
     char cause[96];
     DSD_SNPRINTF(cause, sizeof cause, "RTL-SDR: the USB %s; the stream stops (rc=%d)",
                  rc == -1 ? "device was lost" : "reader stopped unexpectedly", rc);
@@ -3899,7 +3918,7 @@ rtl_usb_owed_on_verdict(const struct rtl_device* s, rtl_usb_owed_watch* w, uint6
     if (!s->owns_preopened_fd) {
         return;
     }
-    rtl_usb_reset_owed_set(s->preopened_fd);
+    rtl_usb_reset_owed_set(s);
     w->set = 1;
     w->progress = progress;
 }
@@ -3917,7 +3936,7 @@ rtl_usb_owed_on_progress(const struct rtl_device* s, rtl_usb_owed_watch* w, uint
 #endif
         w->set = 0;
         if (rtl_usb_reset_owed_clear(s->preopened_fd) && s->reader_exited.load(std::memory_order_acquire)) {
-            rtl_usb_reset_owed_set(s->preopened_fd);
+            rtl_usb_reset_owed_set(s);
         }
     }
 }
@@ -8442,14 +8461,6 @@ static std::atomic<int> g_preopened_usb_fd{-1};
  */
 static std::atomic<int> g_preopened_usb_fd_held{-1};
 
-/*
- * Taking the descriptor (reading the slot, then marking it held) and replacing the
- * slot are one step each under this lock. Once rtl_device_set_preopened_fd() has
- * returned, either the engine holds the old descriptor (and says so) or it can no
- * longer take it, so an owner that cleared the slot can trust the held query.
- */
-static std::mutex g_preopened_usb_fd_lock;
-
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 static std::atomic<int (*)(int)> g_open_fd_failure_hook{nullptr};
 /* rtl_device_test_set_fd_reset_hook(): stands in for USBDEVFS_RESET on the descriptor, 0 or a negative errno. */
@@ -11303,7 +11314,7 @@ rtl_usb_swap_handle(struct rtl_device* dev, char* why, size_t why_size) {
         /* A reset that went through cleared the obligation, but what followed it failed: the session ends as a failed
          * recovery, whose notice promises that Reconnect resets the dongle (#782). */
         if (rc != 0 && rc != -ECANCELED) {
-            rtl_usb_reset_owed_set(dev->preopened_fd);
+            rtl_usb_reset_owed_set(dev);
         }
         return rc;
     }
@@ -11465,9 +11476,7 @@ rtl_usb_handoff_close(struct rtl_device* dev) {
 static void
 rtl_usb_recovery_failed(struct rtl_device* dev, int rc, const char* why) {
     /* Whatever failed ends the session the same way, so the descriptor owes its reset here too (#782). */
-    if (dev->owns_preopened_fd) {
-        rtl_usb_reset_owed_set(dev->preopened_fd);
-    }
+    rtl_usb_reset_owed_set(dev);
     char cause[320];
     DSD_SNPRINTF(cause, sizeof cause,
                  "RTL-SDR: the receiver sent no samples and resetting it failed: %s; the stream stops",

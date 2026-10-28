@@ -4631,9 +4631,13 @@ Key public headers:
     grace or Stop, and so do a reader that returned unasked (`rtl_usb_reader_end_session()`) and a recovery that failed
     after its reset went through (the swap's reopen, identity check, replay or publish, and
     `rtl_device_usb_recovery_finish()`'s failure ending for the restart), so every committed "failed" ending of such a
-    receiver owes the reset the Listen notice promises; samples after the verdict that set it, or after the monitor's
-    start when the descriptor came owing one, delivered while the reader still streams, and a successful reset clear it
-    (compare-and-swap on the descriptor). A sample clear that then finds the reader gone sets it again: the reader can
+    receiver owes the reset the Listen notice promises. Each of those re-arms (`rtl_usb_reset_owed_set()`) runs under the
+    slot's lock and only while the publish generation is still the one the device took its descriptor at: once the host
+    released or replaced the connection (a detach during the reset, then the next connection published owing its own
+    reset), a late verdict, failed recovery or reader return of the old device leaves the slot's obligation alone, so it
+    never overwrites the replacement's and the host never reads that as cleared. Samples after the verdict that set
+    it, or after the monitor's start when the descriptor came owing one, delivered while the reader still streams, and
+    a successful reset clear it (compare-and-swap on the descriptor). A sample clear that then finds the reader gone sets it again: the reader can
     deliver its last block and return unasked between the monitor's streaming read and the clear. The monitor's watch of a verdict's obligation ends when it posts the recovery,
     which owns the obligation from then on, so a block the old reader delivers before the swap cancels it cannot clear
     what a failed recovery's finish sets; it starts again from a restarted reader's baseline only when the recovery kept

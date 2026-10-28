@@ -691,6 +691,64 @@ test_swap_identity_mismatch(void) {
     rig_close(r);
 }
 
+/* Gate r1 G3: the host replaces the connection while the swap resets the old descriptor (Android detached it, and
+ * published the next one, owing its own reset), and the reset then fails as dead. The failed recovery re-arms the old
+ * descriptor's obligation only while that descriptor is still the published one: the replacement's stays bound to it,
+ * so the host never reads it as cleared and its open still resets the dongle. */
+void
+publish_replacement_owing_reset(void) {
+    rtl_device_publish_preopened_fd(47, 1);
+}
+
+void
+test_dead_reset_after_replacement_keeps_its_obligation(void) {
+    seams_reset();
+    g_reset_answer.store(-ENODEV);
+    (void)log_take();
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    (void)wait_posted(r, 1);
+    g_on_reset = publish_replacement_owing_reset;
+    char why[256] = {};
+    assert(play_controller(r, why, sizeof why) == -ENODEV);
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    expect_receiver_ending(-ENODEV);
+    assert(rtl_device_preopened_fd_reset_owed() == 47);
+    rig_close(r);
+}
+
+/* G3, the other re-arms: after the host replaced the connection, the old device's stall verdict, its failed recovery
+ * and its reader's own return never bind an obligation to the old descriptor in place of the replacement's. */
+void
+test_old_descriptor_never_rearms_after_replacement(void) {
+    seams_reset();
+    (void)log_take();
+    rig r;
+    rig_open(r);
+    deliver(r, 2, 10U);
+    rtl_device_publish_preopened_fd(47, 0);
+    deliver(r, 3, 10U);
+    (void)wait_posted(r, 1);
+    assert(rtl_device_preopened_fd_reset_owed() == -1);
+    char why[256] = {};
+    assert(play_controller(r, why, sizeof why) == -ENODEV);
+    assert(std::string(why) == "the app released the receiver's USB connection");
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    assert(g_resets.load() == 0 && rtl_device_preopened_fd_reset_owed() == -1);
+    rig_close(r);
+
+    seams_reset();
+    rig returned;
+    rig_open(returned);
+    deliver(returned, 3, 10U);
+    rtl_device_publish_preopened_fd(47, 1);
+    rtl_device_test_usb_stream_return(-1);
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    assert(rtl_device_preopened_fd_reset_owed() == 47);
+    rig_close(returned);
+}
+
 /* A stop that lands just before the reset (here, while the old handle closes) cancels the recovery silently: nothing is
  * reset or opened, and the dongle still owes its reset. */
 std::atomic<rtl_device*> g_stop_target{nullptr};
@@ -1018,6 +1076,8 @@ main(void) {
     test_swap_identity_mismatch();
     test_restart_after_reset_fails();
     test_stop_just_before_reset();
+    test_dead_reset_after_replacement_keeps_its_obligation();
+    test_old_descriptor_never_rearms_after_replacement();
 
     rtl_device_set_unplug_owner_grace_ms(kGraceMs);
     test_grace_then_recovery();
