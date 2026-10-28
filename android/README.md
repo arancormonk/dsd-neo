@@ -37,8 +37,9 @@ The encryption wizard and live entry sheet are supplied by a later UI package.
 
 ### Editing and saving talkgroups
 
-Long-press a talkgroup card to rename it, change Listening/Not tuned, or set
-priority (0/25/50/100 presets and ±5 steps). **Apply** changes only the fields you
+Long-press a talkgroup card to rename it, change Listening/Not tuned, set
+priority (0/25/50/100 presets and ±5 steps), or turn **Record** off for call recordings (see
+[Record and Listening](#record-and-listening)). **Apply** changes only the fields you
 edited; renaming or changing priority preserves custom audio/record/stream policy.
 Priority changes also update current calls immediately, preserving their dwell and cooldown ages.
 Preempt is available above priority zero: a preempt talkgroup interrupts a lower-priority call when the system
@@ -247,8 +248,9 @@ No storage permissions are involved; SAF needs none.
 
 Settings → **Call recording** → **Record calls** saves each call you hear as a WAV file, so you can play it again from
 History. It is off until you turn it on. **Only unknown talkgroups** skips talkgroups that have a row in your talkgroup
-list (radio names DSD-neo learned over the air do not count); a talkgroup you hold still records. A talkgroup's own
-**Record** switch, under **Listening** in its editor (long-press its card), keeps its calls out of the recordings.
+list, and private calls when either radio has a row of its own (radio names DSD-neo learned over the air do not count);
+a talkgroup you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
+its card), keeps its calls out of the recordings.
 
 Both switches also change a running session: Settings reads **Applying…** until the decoder confirms. A change the
 session cannot take (while Signal search runs, while the session is still starting, with no storage for recordings, or
@@ -278,11 +280,12 @@ time, system, talkgroup, radio; see [`-P`](../docs/cli.md)): 8 kHz mono for digi
 
 ### Playing a recording
 
-A History or Recent calls row whose call has a recording shows a small play mark before its time (TalkBack adds "has a
-recording"). Open the row: the **Call recording** block above Hold plays, pauses and seeks. A call heard in several
-parts (the signal faded and came back) lists each part, with **Play all parts**. **Share** opens Android's share sheet
-with read-only access to that one file, **Save to file** copies it to a place you pick, and **Delete recording** deletes
-the file; the call stays in History. A recording whose write failed part-way says the end may be missing.
+A call row (in History, the Monitor's Recent calls or Home's Recent activity) whose call has a recording shows a small
+play mark before its time (TalkBack adds "has a recording"). Open the row: the **Call recording** block above Hold
+plays, pauses and seeks. A call heard in several parts (the signal faded and came back) lists each part, with **Play all
+parts**. **Share** opens Android's share sheet with read-only access to that one file, **Save to file** copies it to a
+place you pick, and **Delete recording** deletes the file; the call stays in History. A recording whose write failed
+part-way says the end may be missing.
 
 Live audio keeps playing while a recording plays, and decoding and recording go on. Playback pauses when DSD-neo leaves
 the screen, and closing the call's sheet stops it. While another app holds the audio (a phone call), it reads **Can't
@@ -291,14 +294,14 @@ play right now**.
 ### Exporting and deleting
 
 Settings → **Manage call recordings** opens **Call recordings**: one row per system, scan list and Explore, with its
-count, size and dates. A row's menu has **Export as zip** and **Delete all for this system** (or scan list, or Explore);
-**Export all** and **Delete all** sit below the rows. An export first asks for the range: **Today**, **Yesterday**,
-**Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then Android's save
-picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice gains little
-from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count limit. A
-progress line with **Cancel export** shows while it runs, one export at a time. A recording deleted meanwhile is left
-out, and the result says how many. A recording that is playing, being exported or still waiting for an rdio-scanner
-upload is deleted once it is free.
+count, size and dates. A row's menu has **Export as zip** and **Delete all for this system** (for this scan list, or
+from Explore); **Export all** and **Delete all** sit below the rows. An export first asks for the range: **Today**,
+**Yesterday**, **Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then
+Android's save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
+gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
+limit. A progress line with **Cancel export** shows while it runs, one export at a time. A recording deleted meanwhile
+is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
+rdio-scanner upload is deleted once it is free.
 
 ### Storage limit
 
@@ -319,8 +322,8 @@ them. They cannot be played or exported in the app; copy one from a computer if 
 
 History keeps every call heard while DSD-neo is in the background or the screen is off, however busy the system. Once a
 second, a background thread reads the calls the decoder logged and writes new ones to a small file, which History takes
-in when you come back, or at the next start if Android closed DSD-neo meanwhile. Before, the decoder kept only its last
-254 calls per slot, and History lost any that scrolled out before you returned.
+in when you come back, or at the next start if Android closed DSD-neo meanwhile. While that file cannot be written (the
+phone is full), DSD-neo holds only the newest 508 calls it found, so History can miss older ones from that time.
 
 ### Extra decoder arguments the app refuses
 
@@ -346,7 +349,9 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   have its temporary files treated as unfinished recordings.
 - Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
   cannot decrypt records nothing; its History row shows ENC without a recording.
-- A backup carries the Record calls, Only unknown talkgroups and Storage limit settings, never the recordings.
+- A backup carries the Record calls, Only unknown talkgroups and Storage limit settings, never the recordings. A
+  restored Storage limit lower than what the recordings on the phone take removes the oldest of them when DSD-neo next
+  opens.
 
 ## Backup and restore
 
@@ -407,7 +412,9 @@ recording again (until then, starting it says its recording is missing). A resto
 its saved systems, scan lists, decryption profiles, settings, Signal search ranges and permanent avoids, and the
 imported files it used (generated scan-list CSVs and compiled decryption files are made again). It never deletes a
 recording or any other file the old setup did not use. When such a file holds a name an incoming file needs, the
-incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it.
+incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it. Call recordings stay, but
+the restored Storage limit applies to them: when it is lower than what they take, the oldest are removed once DSD-neo
+opens again.
 
 **Restore only backups you made or trust.** A backup carries every setting, and extra decoder options run exactly as
 typed: a crafted backup could, for example, send decoded audio to someone else's server. The confirmation therefore

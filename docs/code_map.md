@@ -1092,16 +1092,18 @@ suite runs under this compiler.
   (`dsd_app_recording_view_get()`, any thread, readable after the session stops): mode, open slot files, the counts and
   last error kind, and the last recording command's state. The queue counts recording commands as it admits them and as
   they leave it (applied, failed, refused while Signal search runs, dropped), a config apply among them when it carries
-  [recording] (`recording_command_id()`), whose outcome is its recording transition's, whatever else in the config
-  failed or needs a restart; `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot,
-  so a command reads PENDING until a view built after it shows its outcome with the mode it left (a dropped one shows at
-  once). `unknown_only` is `opts->record_unknown_only`; `journal_state` is the recording journal's (below);
-  `journal_named` is whether the run names one at all (the Qt app names one exactly when it has a folder to record
-  into). Tests: `APP_CONTROL_RECORDING` (every command case through the queue and through config applies, the transition
-  table (every from-mode to every to-mode, folder, static and raw changes, each open failing), each writer's short write
-  and close failure behind the seams in `src/core/file/wav_segment_test_support.h`, the reopen retry),
-  `EDACS_GRANT_TUNE_MATRIX` (the analog grant's reopen mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states),
-  `UI_MENU_SERVICES` (a failed open changes nothing), `UI_MENU_LABELS` (the `Per-call WAV` label follows the mode).
+  [recording] (`recording_command_id()`; the queue reports through `src/app_control/recording_view_internal.h`:
+  `dsd_app_recording_command_submitted()`/`_resolved()`, and `dsd_app_recording_view_publish()`), whose outcome is its
+  recording transition's, whatever else in the config failed or needs a restart;
+  `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command reads PENDING
+  until a view built after it shows its outcome with the mode it left (a dropped one shows at once). `unknown_only` is
+  `opts->record_unknown_only`; `journal_state` is the recording journal's (below); `journal_named` is whether the run
+  names one at all (the Qt app names one exactly when it has a folder to record into). Tests: `APP_CONTROL_RECORDING`
+  (every command case through the queue and through config applies, the transition table (every from-mode to every
+  to-mode, folder, static and raw changes, each open failing), each writer's short write and close failure behind the
+  seams in `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's
+  reopen mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states), `UI_MENU_SERVICES` (a failed open changes
+  nothing), `UI_MENU_LABELS` (the `Per-call WAV` label follows the mode).
 - Recording journal (`--wav-journal <file>`, `opts->wav_journal_file`, issue #708). The decoder appends one JSON line
   for each per-call WAV it publishes, discards or fails to keep, and for each recording a history row later claims;
   the app's call recording store reads it to tie recordings to History rows and to tell the files it manages from the
@@ -1379,8 +1381,8 @@ suite runs under this compiler.
   `CORE_TALKGROUP_POLICY`, `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_MBE_TRANSFORM_CONTEXT`,
   `CORE_MBE_FILE_IO`, `EDACS_GRANT_TUNE_MATRIX`, `TETRA_VOICE_PIPELINE`, `APP_CONTROL_RECORDING`, `APP_COMMAND_QUEUE`
   (Record after the mode in one `TG_ROW_SET`), `ENGINE_P25_POLICY_STORE_GUARD` (the switch retakes a Phase 2 verdict),
-  `RUNTIME_CLI_PARSE` and `RUNTIME_CONFIG_USER` (the option and the INI round trip), `API_COMMAND_PAYLOADS`
-  (`record_unknown_only_set`, `tg_row_set` `record`).
+  `RUNTIME_CLI_PARSE` and `RUNTIME_CONFIG_USER` (the option and the INI round trip), `API_COMMANDS`
+  (`record_unknown_only_set`), `API_COMMAND_PAYLOADS` (`tg_row_set` `record`).
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
@@ -8810,6 +8812,8 @@ Key public headers:
 - Frontend commands, history, metrics, and lifecycle: `include/dsd-neo/app_control/commands.h`,
   `include/dsd-neo/app_control/history.h`, `include/dsd-neo/app_control/frontend.h`, and
   `include/dsd-neo/app_control/frontend_runtime.h`
+- Recording state and background history (issue #708): `include/dsd-neo/app_control/recording_view.h` and
+  `include/dsd-neo/app_control/history_tap.h`
 - Terminal-only headers live under `src/ui/terminal/dsd-neo/ui/` and are private to the terminal target/tests.
 
 ### Adding Menu Items
@@ -9172,7 +9176,8 @@ Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`ap
 `apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless
 its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
 listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
-learned alias row, rewrite the group file (outside a scan row) and release the calls the edit no longer blocks; export
+learned alias row, rewrite the group file (outside a scan row) and end an active group call the edit newly blocks (by
+mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`); export
 is refused for a scan row's list, writes the list to the given path and makes it the session's group file. IDs 652/653
 are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
 `dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32
