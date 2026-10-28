@@ -134,7 +134,8 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-debug-${{ runner.os }}-${{ github.sha }}
@@ -292,6 +293,16 @@ jobs:
         shell: bash
         run: ccache --show-stats
 
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+
   package-portable-dmg:
     name: Package portable DMG
     runs-on: macos-latest
@@ -403,7 +414,8 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/.ccache"
 
       - name: Restore ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.sha }}
@@ -918,6 +930,16 @@ jobs:
         with:
           subject-path: ${{ steps.dmg.outputs.DMG_PATH }}
           sbom-path: ${{ steps.dmg.outputs.DMG_PATH }}.spdx.json
+
+      # Pull requests restore the cache main saved and never save their own: one
+      # cache per pull-request push filled the 10 GB repository limit and evicted
+      # main's caches, so every run started cold.
+      - name: Save ccache
+        if: github.event_name != 'pull_request' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
   publish-portable-dmg:
     name: Publish portable DMG
