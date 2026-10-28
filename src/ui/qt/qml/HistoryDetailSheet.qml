@@ -10,10 +10,39 @@ ModalSheet {
     readonly property bool canHold: decoderHost.running && metrics.optionsKnown && !metrics.scanRotationActive && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
     readonly property bool heldHere: metrics.heldTg > 0 && metrics.heldTg === rowTg
     readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.record.accessCodeText || "", sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.record.enc ? qsTr("Encrypted") : qsTr("Unencrypted"), sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || "", sheet.record.receivedTone ? qsTr("Received tone %1").arg(sheet.record.receivedTone) : ""]
+    // Issue #708: the row's call recordings, read again by its uid whenever the
+    // log changes, so a part folded into the call or a recording deleted shows
+    // while the sheet is open.
+    readonly property double rowUidKey: record.uid || 0
+    property int recordingsRevision: 0
+    readonly property var rowRecordings: {
+        var revision = recordingsRevision;
+        return rowUidKey > 0 && typeof callHistory.recordingsForUid === "function" ? callHistory.recordingsForUid(rowUidKey) : [];
+    }
     accessibleName: qsTr("Activity details")
     function open(value) {
+        recordingPlayer.reset();
         record = value;
+        recordingsRevision++;
         visible = true;
+    }
+    onVisibleChanged: {
+        if (!visible)
+            recordingPlayer.stopOwnPlayback();
+    }
+    Connections {
+        target: callHistory
+        enabled: sheet.visible && sheet.rowUidKey > 0
+        ignoreUnknownSignals: true
+        function onDataChanged() {
+            sheet.recordingsRevision++;
+        }
+        function onRowPositionsChanged() {
+            sheet.recordingsRevision++;
+        }
+        function onModelReset() {
+            sheet.recordingsRevision++;
+        }
     }
     Repeater {
         model: sheet.detailLines
@@ -32,6 +61,14 @@ ModalSheet {
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
         }
+    }
+    CallRecordingPlayer {
+        id: recordingPlayer
+        objectName: "historyRecording"
+        width: parent.width
+        recordingList: sheet.rowRecordings
+        dialogParent: sheet
+        title: sheet.record.when > 0 ? qsTr("%1 · %2").arg(sheet.record.name || "").arg(Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm")) : (sheet.record.name || "")
     }
     OutlineButton {
         id: holdButton

@@ -380,6 +380,12 @@ CallHistoryModel::rowForUid(qint64 uid) const {
     return -1;
 }
 
+QVariantList
+CallHistoryModel::recordingsForUid(qint64 uid) const {
+    const int row = rowForUid(uid);
+    return row >= 0 ? data(index(row), RecordingsRole).toList() : QVariantList();
+}
+
 void
 CallHistoryModel::setRecordingProvider(const CallRecordingProvider* provider) {
     if (provider == m_recordings) {

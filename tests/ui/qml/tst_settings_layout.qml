@@ -66,7 +66,8 @@ Item {
                 {tag: "imports", row: "settingsImportsRow", flag: "importsOpen", screen: "importsScreen"},
                 {tag: "account", row: "settingsAccountRow", flag: "radioReferenceAccountOpen", screen: "radioReferenceAccountScreen"},
                 {tag: "diagnostics", row: "settingsDiagnosticsRow", flag: "diagnosticsOpen", screen: "diagnosticsScreen"},
-                {tag: "licenses", row: "settingsLicensesRow", flag: "licensesOpen", screen: "licensesScreen"}
+                {tag: "licenses", row: "settingsLicensesRow", flag: "licensesOpen", screen: "licensesScreen"},
+                {tag: "call-recordings", row: "manageCallRecordingsRow", flag: "callRecordingsOpen", screen: "callRecordingsScreen"}
             ];
         }
 

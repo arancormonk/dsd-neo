@@ -124,8 +124,64 @@ Item {
             relaxedCrcAckTimer.restart();
     }
 
+    // Issue #708, D8: call recording applies to a running session as well as the
+    // next start. The switches show the preference; the line under them says how
+    // the running session took it (recordingStatus is scoped to the session).
+    readonly property bool recordingLive: decoderHost.sessionActive === true
+    readonly property var recordingNotices: {
+        var notes = [];
+        if (recordingLive) {
+            var state = recordingStatus.commandState;
+            var refusal = recordingStatus.refusal;
+            if (state === "pending")
+                notes.push({text: qsTr("Applying…"), problem: false});
+            else if (state === "refused")
+                notes.push({text: qsTr("Not applied while Signal search runs. Applies at the next start."), problem: false});
+            else if (state === "failed")
+                notes.push({text: qsTr("The decoder couldn't apply the change. Applies at the next start."), problem: true});
+            if (refusal === "storage-unavailable")
+                notes.push({text: qsTr("This session has no storage for call recordings. Applies at the next start."), problem: false});
+            else if (refusal === "static-wav")
+                notes.push({text: qsTr("This session records to one file (-w in Extra decoder arguments). Applies at the next start."), problem: false});
+            else if (refusal === "starting")
+                notes.push({text: qsTr("The session is still starting. Applies at the next start."), problem: false});
+            var failures = recordingStatus.failures;
+            if (failures > 0) {
+                var kind = recordingStatus.lastError;
+                var why = kind === "write" && recordings.lowSpace ? qsTr("This phone's storage is full.")
+                    : kind === "write" ? qsTr("Writing the file failed.")
+                    : kind === "open" ? qsTr("The file couldn't be created.")
+                    : qsTr("The file couldn't be finished. It's kept under Unfinished recordings.");
+                notes.push({text: (failures === 1 ? qsTr("A call couldn't be recorded.") : qsTr("%1 calls couldn't be recorded.").arg(Util.countText(failures))) + " " + why, problem: true});
+            }
+            if (recordingStatus.journal === "failed")
+                notes.push({text: qsTr("New call recordings can't be listed in the app this session. Stop and start listening to try again."), problem: true});
+        }
+        if (!recordings.available)
+            notes.push({text: qsTr("Storage for call recordings isn't available right now. Saved recordings are kept."), problem: true});
+        else if (recordings.lowSpace && prefs.recordCalls)
+            notes.push({text: recordings.freeBytes >= 0 ? qsTr("Only %1 free on this phone. Calls stop recording when it's full.").arg(Util.sizeText(recordings.freeBytes)) : qsTr("This phone is low on space. Calls stop recording when it's full."), problem: true});
+        if (recordings.removedByLimit > 0)
+            notes.push({text: recordings.removedByLimit === 1 ? qsTr("The storage limit removed the oldest recording.") : qsTr("The storage limit removed the %1 oldest recordings.").arg(Util.countText(recordings.removedByLimit)), problem: false});
+        return notes;
+    }
+    readonly property string recordingUsage: !recordings.indexed ? qsTr("Counting recordings…") : recordings.recordingCount + recordings.unfinishedCount === 0 ? qsTr("No recordings yet") : Util.recordingUsageText(recordings.usedBytes, prefs.recordingLimitMb, recordings.recordingCount + recordings.unfinishedCount)
+
+    function setRecordCalls(on) {
+        prefs.recordCalls = on;
+        if (recordingLive)
+            commands.setRecordCalls(on, prefs.recordUnknownOnly);
+    }
+    // Unknown-only travels with Record calls: it applies only while calls record.
+    function setRecordUnknownOnly(on) {
+        prefs.recordUnknownOnly = on;
+        if (recordingLive && prefs.recordCalls)
+            commands.setRecordUnknownOnly(on);
+    }
+
     signal openDiagnostics
     signal openImports
+    signal openCallRecordings
     signal openRadioReferenceAccount
     signal openLicenses
 
@@ -534,6 +590,107 @@ Item {
                         onEdited: function (value) {
                             prefs.hangtimeSec = Number(value);
                         }
+                    }
+                }
+            }
+
+            // CALL RECORDING (issue #708)
+            UiPanel {
+                width: parent.width
+                height: recordingColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: recordingColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsCallRecordingHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Call recording")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    ToggleRow {
+                        objectName: "recordCallsToggle"
+                        title: qsTr("Record calls")
+                        subtitle: qsTr("Saves each call you hear so you can replay it from History")
+                        checked: prefs.recordCalls
+                        showDivider: true
+                        onToggled: function (value) { screen.setRecordCalls(value); }
+                    }
+
+                    ToggleRow {
+                        objectName: "recordUnknownOnlyToggle"
+                        title: qsTr("Only unknown talkgroups")
+                        subtitle: qsTr("Skip talkgroups in your talkgroup list")
+                        checked: prefs.recordUnknownOnly
+                        enabled: prefs.recordCalls
+                        showDivider: recordingNoticeColumn.visible === false
+                        onToggled: function (value) { screen.setRecordUnknownOnly(value); }
+                    }
+
+                    Column {
+                        id: recordingNoticeColumn
+                        objectName: "recordingNotices"
+                        x: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        visible: screen.recordingNotices.length > 0
+                        topPadding: 2
+                        bottomPadding: 12
+                        spacing: 6
+
+                        Repeater {
+                            model: screen.recordingNotices
+                            Text {
+                                required property var modelData
+                                width: parent.width
+                                text: modelData.text
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(12)
+                                color: modelData.problem ? Theme.alert : Theme.textSecondary
+                                Accessible.role: modelData.problem ? Accessible.AlertMessage : Accessible.StaticText
+                                Accessible.name: text
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        x: Theme.cardPadding
+                        width: parent.width - Theme.cardPadding
+                        height: 1
+                        visible: recordingNoticeColumn.visible
+                        color: Theme.divider
+                    }
+
+                    DisclosureRow {
+                        objectName: "recordingLimitRow"
+                        title: qsTr("Storage limit")
+                        subtitle: qsTr("%1 · Oldest recordings are removed first").arg(Util.limitText(prefs.recordingLimitMb))
+                        showDivider: true
+                        onTapped: {
+                            var limits = prefs.recordingLimitChoices;
+                            screenChoices.open(title, limits.map(function (mb) {
+                                return Util.limitText(mb);
+                            }), function (index) {
+                                prefs.recordingLimitMb = limits[index];
+                            });
+                        }
+                    }
+
+                    DisclosureRow {
+                        objectName: "manageCallRecordingsRow"
+                        title: qsTr("Manage call recordings")
+                        subtitle: screen.recordingUsage
+                        onTapped: screen.openCallRecordings()
                     }
                 }
             }

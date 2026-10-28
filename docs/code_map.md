@@ -7937,7 +7937,8 @@ Qt Quick frontend (`src/ui/qt`):
   - Row identity and fragments (issue #708): every row has a uid (`Row::uid`, persisted `uid`, the `uid` role), handed
     out when the row is first logged and never again (`callHistory/nextUid`, kept past a clear); a merge keeps the
     surviving row's. `rowForUid()` finds a row wherever it moved, and `rowPositionsChanged()` fires on every insert,
-    removal, move and reset, so a view following one row (the detail sheet) looks it up again. Each row also lists the
+    removal, move and reset, so a view following one row (the detail sheet) looks it up again
+    (`recordingsForUid()` reads that row's `recordings` role). Each row also lists the
     ring fragments it absorbed (`Row::fragments`, persisted `fr`): `call_history_fragment_key()`
     (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push stamp>`, the recording journal's
     `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again add the absorbed fragments; an
@@ -8054,6 +8055,28 @@ Qt Quick frontend (`src/ui/qt`):
     at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`. `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing
     (`setPlayingPath()` from Preparing to the end), releases each transfer's selection when it finishes, rechecks the
     missing files (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`).
+  - UI (QML, spec 3.9). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only
+    unknown talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
+    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
+    them come from `recordingStatus` while a session is on (Applying..., refused during Signal search, a refusal that
+    applies at the next start, recording failures, a failed journal) and from the store (storage away, low space while
+    recording, recordings the limit removed); Storage limit (a ChoiceSheet of `recordingLimitChoices`) and Manage call
+    recordings (usage, or "Counting recordings..." until `indexed`). `CallRecordingsScreen.qml` (Main's
+    `callRecordingsOpen` layer): one row per owner with recordings, Unfinished recordings, Export as zip by date preset
+    (the selection first, then the picker; a dismissed picker releases it), progress with Cancel, the result of its own
+    selection only, deletes with confirmations, `deleteFailures`/`lastDeleteError` and `deletesWaiting`.
+    `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording` is true (History,
+    Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows its row by uid
+    (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold: play/pause,
+    position and seek, the parts with Play all (the host keeps no queue: a part that stopped at its end, path kept and
+    position at its length, plays the next; a stop clears the path and ends it), Share (`recordingShareFailed()` worded
+    there), Save to file and Delete. A part the host reports "missing" leaves the block at once; closing the sheet
+    stops what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record
+    switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only
+    where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History
+    shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`,
+    `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`,
+    `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, shared storage's `getExternalFilesDir(null)/Call recordings` first (named
     even while away, at the path Android gives the app there), then `filesDir/Call recordings`. Playback:

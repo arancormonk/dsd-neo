@@ -664,3 +664,41 @@ function fitTokens(tokens, avail, fm, sep, more) {
         return text
     return text + more
 }
+
+// Issue #708: a call recording size, decimal as the phone's own storage screens
+// count it (RecordingStore::kBytesPerMb): "820 kB", "4.2 MB", "312 MB", "1.4 GB".
+// One decimal below ten of a unit, where a whole number would hide most of it.
+function sizeText(bytes) {
+    var b = Math.max(0, Number(bytes) || 0)
+    var unit = function (value, name) {
+        var digits = value < 10 && Math.round(value * 10) % 10 !== 0 ? 1 : 0
+        return fixed(value, digits) + " " + name
+    }
+    if (b < 1e6)
+        return Math.max(b > 0 ? 1 : 0, Math.round(b / 1e3)) + " kB"
+    if (b < 1e9)
+        return unit(b / 1e6, "MB")
+    return unit(b / 1e9, "GB")
+}
+
+// The storage limit in its choices' words: 0 is no limit.
+function limitText(mb) {
+    return mb > 0 ? sizeText(mb * 1e6) : qsTr("No limit")
+}
+
+// A count with the locale's digit grouping: "1,204".
+function countText(n) {
+    return Number(n || 0).toLocaleString(Qt.locale(), "f", 0)
+}
+
+// "312 MB of 1 GB · 1,204 recordings", or without "of …" under no limit.
+function recordingUsageText(usedBytes, limitMb, count) {
+    var used = limitMb > 0 ? qsTr("%1 of %2").arg(sizeText(usedBytes)).arg(limitText(limitMb)) : sizeText(usedBytes)
+    var counted = count === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(countText(count))
+    return used + " · " + counted
+}
+
+// A player position or length in milliseconds as "m:ss".
+function playbackTimeText(ms) {
+    return fmtDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)))
+}

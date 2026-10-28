@@ -54,6 +54,7 @@
 #include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
+#include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/app_control/history_tap.h>
@@ -192,6 +193,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * detail sheet) keeps the uid and looks its row up again on rowPositionsChanged().
      */
     Q_INVOKABLE int rowForUid(qint64 uid) const;
+
+    /**
+     * @brief The call recordings of the row that has @p uid now (RecordingsRole), or none.
+     *
+     * For the detail sheet, which follows one row by its uid: it reads them again on dataChanged() and
+     * rowPositionsChanged(), so a fragment folded into the row, or a recording deleted, shows while it is open.
+     */
+    Q_INVOKABLE QVariantList recordingsForUid(qint64 uid) const;
 
     bool
     saveFailing() const {

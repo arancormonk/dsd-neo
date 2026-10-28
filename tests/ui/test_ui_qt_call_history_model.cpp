@@ -2563,6 +2563,13 @@ test_recording_roles_follow_the_provider(void) {
     recordings.recorded.remove(early);
     model.recordingFragmentsChanged({early});
     expect("a deleted recording leaves its row", changed.count() == 1 && !has_recording(model, 1));
+    // The detail sheet follows its row by uid, wherever the row has moved.
+    const qint64 newest = model.data(model.index(0), CallHistoryModel::UidRole).toLongLong();
+    expect("a row's recordings by its uid",
+           model.recordingsForUid(newest) == model.data(model.index(0), CallHistoryModel::RecordingsRole).toList()
+               && model.recordingsForUid(newest).size() == 1);
+    expect("a uid no row has has none",
+           model.recordingsForUid(newest + 1000).isEmpty() && model.recordingsForUid(0).isEmpty());
     model.setRecordingProvider(nullptr);
     expect("without the provider no row has one", !has_recording(model, 0));
 }

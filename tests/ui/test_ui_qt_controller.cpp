@@ -1101,6 +1101,24 @@ main(int argc, char** argv) {
     check(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_count(&state) == 2);
+    // Issue #708: a row added listening takes the editor's Record with it; a default add records.
+    refreshVersion();
+    check(bridge.addTalkgroup(56, 56, version, generation, "Quiet", true, 0, false, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 3 && dsd_tg_policy_entry_at(&state, 2, &entry));
+    check(entry.id_start == 56 && QString::fromUtf8(entry.mode) == "A" && entry.record == 0);
+    refreshVersion();
+    check(bridge.removeTalkgroup(56, 56, version, generation));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    refreshVersion();
+    check(bridge.addTalkgroup(57, 57, version, generation, "Kept", true, 0, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 3 && dsd_tg_policy_entry_at(&state, 2, &entry));
+    check(entry.id_start == 57 && entry.record == 1);
+    refreshVersion();
+    check(bridge.removeTalkgroup(57, 57, version, generation));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 2);
     refreshVersion();
     check(bridge.removeTalkgroup(55, 55, version, generation));
     check(dsd_app_drain_cmds(&opts, &state) == 1);

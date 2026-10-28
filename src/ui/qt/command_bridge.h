@@ -110,9 +110,11 @@ class CommandBridge : public QObject {
                                         unsigned int generation, const QVariantMap& changes) const;
     Q_INVOKABLE bool renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
                                      unsigned int generation, const QString& name) const;
+    /** Adds a row; @p record (issue #708) is its record flag, sent only for a row that listens (one that does not
+     *  records nothing). */
     Q_INVOKABLE bool addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
-                                  unsigned int generation, const QString& name, bool listen, int priority,
-                                  bool preempt) const;
+                                  unsigned int generation, const QString& name, bool listen, int priority, bool preempt,
+                                  bool record = true) const;
     Q_INVOKABLE bool removeTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
                                      unsigned int generation) const;
     Q_INVOKABLE bool saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) const;

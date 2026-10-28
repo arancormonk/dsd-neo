@@ -420,7 +420,7 @@ Window {
         property: "autoStartBlocked"
         // A backup flow counts for its whole length: its system pickers show no sheet.
         // So does a permission prompt of the host's own, until it is answered or expires (#647).
-        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || (!!decoderHost && decoderHost.localDeviceRequestPending === true) || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0 || backup.flowActive
     }
     Connections {
         target: uiController
@@ -541,6 +541,12 @@ Window {
         onLeave: mainRoot.licensesOpen = false
     }
     NavigationLayer {
+        id: callRecordingsLayer
+        surface: callRecordingsScreen
+        active: mainRoot.callRecordingsOpen
+        onLeave: mainRoot.callRecordingsOpen = false
+    }
+    NavigationLayer {
         id: radioReferenceAccountLayer
         surface: radioReferenceAccountScreen
         active: mainRoot.radioReferenceAccountOpen
@@ -556,6 +562,7 @@ Window {
     property bool exploreSetupOpen: false
     property bool signalSearchOpen: typeof signalSearch !== "undefined" && decoderHost.sessionActive && !!signalSearch.status.owned
     property bool licensesOpen: false
+    property bool callRecordingsOpen: false // issue #708
     property bool radioReferenceAccountOpen: false
     property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
@@ -661,7 +668,7 @@ Window {
         // Settings subpages can outlive a clean stop. If the failure arrives
         // afterward, leave them through navigation so Home is actually exposed
         // and their input/navigation cleanup still runs.
-        for (var layer of [importsLayer, diagnosticsLayer, licensesLayer, radioReferenceAccountLayer]) {
+        for (var layer of [importsLayer, diagnosticsLayer, licensesLayer, callRecordingsLayer, radioReferenceAccountLayer]) {
             if (layer.active)
                 layer.leave();
         }
@@ -1079,7 +1086,7 @@ Window {
         id: shell
 
         anchors.fill: safeArea
-        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
+        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.signalSearchOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.callRecordingsOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && !siteChooser.visible
 
@@ -1170,6 +1177,7 @@ Window {
             onOpenImports: mainRoot.importsOpen = true
             onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
             onOpenLicenses: mainRoot.licensesOpen = true
+            onOpenCallRecordings: mainRoot.callRecordingsOpen = true
             backupNotice: backupFlow.notice
             backupNoticeProblem: backupFlow.noticeProblem
             onExportBackupRequested: backupFlow.beginExport()
@@ -1285,7 +1293,7 @@ Window {
                 mainRoot.sessionSystem = savedSystems.getByUid(uid);
         }
         scanTargetName: mainRoot.scanTargetLabel()
-        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
+        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
             mainRoot.cancelPendingRestart();
             siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid));
@@ -1296,7 +1304,7 @@ Window {
         // grabs. Otherwise closing an overlay can deliver the same release to
         // "Stop listening" underneath. Session-menu rows keep passive grabs so
         // the sheet can scroll when a drag starts on a destination or Cancel.
-        enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
+        enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
             spectrumLoader.active = true;
@@ -1562,7 +1570,7 @@ Window {
         onEnabledChanged: restoreLayerFocus()
         anchors.fill: safeArea
         visible: mainRoot.sessionDestination.length > 0
-        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
+        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
         Rectangle {
             anchors.fill: parent
             color: Theme.bg
@@ -1619,6 +1627,7 @@ Window {
             onOpenImports: mainRoot.importsOpen = true
             onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
             onOpenLicenses: mainRoot.licensesOpen = true
+            onOpenCallRecordings: mainRoot.callRecordingsOpen = true
             backupNotice: backupFlow.notice
             backupNoticeProblem: backupFlow.noticeProblem
             onExportBackupRequested: backupFlow.beginExport()
@@ -1709,6 +1718,16 @@ Window {
         visible: mainRoot.licensesOpen
         enabled: visible
         onClosed: mainRoot.licensesOpen = false
+    }
+
+    // Issue #708: pushed from either Settings, over the tab shell and the session tools alike.
+    CallRecordingsScreen {
+        id: callRecordingsScreen
+        objectName: "callRecordingsScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.callRecordingsOpen
+        enabled: visible
+        onClosed: mainRoot.callRecordingsOpen = false
     }
 
     RadioReferenceAccountScreen {

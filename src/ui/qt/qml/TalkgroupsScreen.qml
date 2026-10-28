@@ -248,12 +248,13 @@ Item {
         delegate: TalkgroupCard {
             required property var idStart
             required property var idEnd
+            required property bool record
 
             width: ListView.view.width
             height: implicitHeight
             // Snapshot truth, not a local toggle: the decoder may refuse an edit.
             onClicked: commands.setTalkgroupListening(idStart, idEnd, !listening)
-            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration)
+            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record)
         }
 
         Text {

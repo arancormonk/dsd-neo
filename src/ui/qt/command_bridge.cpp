@@ -139,10 +139,12 @@ CommandBridge::renameTalkgroup(unsigned int idStart, unsigned int idEnd, const Q
 bool
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML submits additions through this context object.
 CommandBridge::addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context, unsigned int generation,
-                            const QString& name, bool listen, int priority, bool preempt) const {
+                            const QString& name, bool listen, int priority, bool preempt, bool record) const {
     return submitTalkgroupRow(idStart, idEnd, context, generation, name, listen, priority, preempt,
                               DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
-                                  | DSD_APP_TG_FIELD_PREEMPT);
+                                  | DSD_APP_TG_FIELD_PREEMPT
+                                  | (listen ? static_cast<uint32_t>(DSD_APP_TG_FIELD_RECORD) : 0U),
+                              record);
 }
 
 bool

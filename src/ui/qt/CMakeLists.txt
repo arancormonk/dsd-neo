@@ -88,6 +88,8 @@ qt_add_resources(
         qml/BackupResultCard.qml
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
+        qml/CallRecordingPlayer.qml
+        qml/CallRecordingsScreen.qml
         qml/PlexComboBox.qml
         qml/PlexCheckBox.qml
         qml/PlexInput.qml
@@ -100,6 +102,7 @@ qt_add_resources(
         qml/BandRail.qml
         qml/BottomNav.qml
         qml/CallRow.qml
+        qml/PlayGlyph.qml
         qml/Caret.qml
         qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml
