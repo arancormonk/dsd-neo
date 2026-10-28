@@ -129,17 +129,12 @@ typedef struct {
 } dsd_wav_owner;
 
 /**
- * Close a per-call WAV, name it from the slot's staged row and export it to rdio-scanner.
- * `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
- * 0 when unknown; see dsd_rdio_export_call(). The journal records it as no row's.
- */
-SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                   const char* dir, const Event_History_I* event_struct, time_t opened);
-/**
- * As close_and_rename_wav_file(), but with the rdio-scanner export gated by `export_call`, and journaled as
- * @p owner's (NULL: no row's). The event layer's rotation passes the row it committed or merged into, and on its drop
- * path, which rotates the recording of an epoch that gets no history row or log line, no export: that would upload
- * audio tagged with all-zero metadata that the operator has nothing local to correlate against.
+ * Close a per-call WAV, name it from @p event_struct's staged row (Items[0]) and, when `export_call` is set, export it
+ * to rdio-scanner. `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
+ * 0 when unknown; see dsd_rdio_export_call(). The recording journal records it as @p owner's (NULL: no row's).
+ * The event layer's rotation passes the row it committed or merged into, and on its drop path, which rotates the
+ * recording of an epoch that gets no history row or log line, no export: that would upload audio tagged with all-zero
+ * metadata that the operator has nothing local to correlate against.
  */
 SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                       const char* dir, const Event_History_I* event_struct, time_t opened,

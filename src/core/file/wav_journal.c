@@ -40,6 +40,7 @@ static char s_dir[1024];
    to at most 6 bytes a byte, so a record fits. */
 static char s_line[32768];
 static long s_test_writes_left = -1;
+static int s_test_pending_growth_fails;
 
 /* Recordings published before their call's row committed (the NFM call end, a WAV stop mid-call, the EDACS analog
    rotation): each waits in its slot's list for that epoch's commit, which links it, or for the row to be gone, which
@@ -84,6 +85,13 @@ void
 dsd_wav_journal_test_fail_writes_after(long successful_writes) {
     wav_journal_lock();
     s_test_writes_left = successful_writes;
+    wav_journal_unlock();
+}
+
+void
+dsd_wav_journal_test_fail_pending_growth(int fail) {
+    wav_journal_lock();
+    s_test_pending_growth_fails = fail;
     wav_journal_unlock();
 }
 
@@ -323,41 +331,79 @@ line_end_and_write_locked(wav_journal_line* l) {
 
 /* --- Paths. --- */
 
-static int
-is_sep(char c) {
+/* The host's path rules for the helpers below, which take them as a flag so a test can run the Windows forms anywhere. */
 #if DSD_PLATFORM_WIN_NATIVE
-    return c == '/' || c == '\\';
+enum { WAV_JOURNAL_WIN_PATHS = 1 };
 #else
-    return c == '/';
+enum { WAV_JOURNAL_WIN_PATHS = 0 };
 #endif
+
+static int
+is_sep(char c, int win) {
+    return c == '/' || (win && c == '\\');
 }
 
-static const char*
-path_base(const char* path) {
+const char*
+wav_journal_path_base(const char* path, int win) {
     const char* base = path;
     for (const char* p = path; *p; p++) {
-        if (is_sep(*p)) {
+        if (is_sep(*p, win)) {
             base = p + 1;
         }
     }
     return base;
 }
 
-/* @p folder (canonical) relative to the journal's folder: "" for the folder itself, "sub/dir/" inside it; NULL when
-   it lies outside. */
+void
+wav_journal_path_folder(const char* path, int win, char* out, size_t out_size) {
+    const char* base = wav_journal_path_base(path, win);
+    size_t keep = (size_t)(base - path);
+    if (keep > 1) {
+        keep--; /* the separator before the name; a file in "/" keeps it */
+    }
+    if (win && keep == 2 && path[1] == ':') {
+        keep = 3; /* and "C:\\" for a file in a drive's root: "C:" alone is that drive's current folder */
+    }
+    (void)DSD_SNPRINTF(out, out_size, "%.*s", (int)keep, path);
+}
+
+/* @p folder (canonical) relative to @p journal_dir: "" for the folder itself, "sub\\dir" below it; NULL outside. */
 static const char*
-path_inside_journal(const char* folder) {
-    const size_t n = strlen(s_dir);
-    if (n == 0 || strncmp(folder, s_dir, n) != 0) {
+path_inside(const char* journal_dir, const char* folder, int win) {
+    const size_t n = strlen(journal_dir);
+    if (n == 0 || strncmp(folder, journal_dir, n) != 0) {
         return NULL;
     }
     if (folder[n] == '\0') {
         return "";
     }
-    if (is_sep(s_dir[n - 1])) {
+    if (is_sep(journal_dir[n - 1], win)) {
         return folder + n; /* the journal sits in a root folder */
     }
-    return is_sep(folder[n]) ? folder + n + 1 : NULL;
+    return is_sep(folder[n], win) ? folder + n + 1 : NULL;
+}
+
+void
+wav_journal_path_name(const char* journal_dir, const char* folder, const char* base, int win, char* out,
+                      size_t out_size) {
+    if (!base || base[0] == '\0') {
+        out[0] = '\0';
+        return;
+    }
+    const char* inside = path_inside(journal_dir, folder, win);
+    if (inside) {
+        /* Relative names are '/'-separated on every platform. */
+        (void)DSD_SNPRINTF(out, out_size, "%s%s%s", inside, (inside[0] != '\0') ? "/" : "", base);
+        for (char* p = out; *p; p++) {
+            if (win && *p == '\\') {
+                *p = '/';
+            }
+        }
+        return;
+    }
+    const size_t n = strlen(folder);
+    const int ends_in_sep = n > 0 && is_sep(folder[n - 1], win);
+    (void)DSD_SNPRINTF(out, out_size, "%s%s%s", folder, (n == 0 || ends_in_sep) ? "" : (win ? "\\" : "/"), base);
 }
 
 /* "file" (under @p file_key) and "folder" for @p path: the folder the file is in (@p dir for a bare name), canonical,
@@ -366,12 +412,10 @@ path_inside_journal(const char* folder) {
 static void
 line_file_and_folder(wav_journal_line* l, const char* file_key, const char* path, const char* dir) {
     path = path ? path : "";
-    const char* base = path_base(path);
+    const char* base = wav_journal_path_base(path, WAV_JOURNAL_WIN_PATHS);
     char given[1024];
     if (base != path) {
-        const size_t n = (size_t)(base - path);
-        const size_t keep = (n > 1) ? n - 1 : n;
-        (void)DSD_SNPRINTF(given, sizeof given, "%.*s", (int)keep, path);
+        wav_journal_path_folder(path, WAV_JOURNAL_WIN_PATHS, given, sizeof given);
     } else {
         (void)DSD_SNPRINTF(given, sizeof given, "%s", dir ? dir : "");
     }
@@ -380,35 +424,39 @@ line_file_and_folder(wav_journal_line* l, const char* file_key, const char* path
         (void)DSD_SNPRINTF(folder, sizeof folder, "%s", given);
     }
     char file[3200];
-    const char* inside = path_inside_journal(folder);
-    if (base[0] == '\0') {
-        file[0] = '\0';
-    } else if (inside) {
-        (void)DSD_SNPRINTF(file, sizeof file, "%s%s%s", inside, (inside[0] != '\0') ? "/" : "", base);
-    } else {
-        (void)DSD_SNPRINTF(file, sizeof file, "%s/%s", folder, base);
-    }
+    wav_journal_path_name(s_dir, folder, base, WAV_JOURNAL_WIN_PATHS, file, sizeof file);
     line_key_string(l, file_key, file);
     line_key_string(l, "folder", folder);
 }
 
 /* --- Pending recordings. --- */
 
+/* Room for one more entry in @p slot's list: 0 when there is, -1 when it could not grow. */
+static int
+pending_reserve_locked(uint8_t slot) {
+    wav_journal_pending_list* list = &s_pending[slot];
+    if (list->count < list->cap) {
+        return 0;
+    }
+    if (s_test_pending_growth_fails) {
+        return -1;
+    }
+    const size_t cap = list->cap ? list->cap * 2 : 4;
+    wav_journal_pending* items = (wav_journal_pending*)realloc(list->items, cap * sizeof(*items));
+    if (!items) {
+        return -1;
+    }
+    list->items = items;
+    list->cap = cap;
+    return 0;
+}
+
+/* After pending_reserve_locked() made room. */
 static void
 pending_add_locked(uint8_t slot, const char* id, uint64_t epoch) {
-    if (slot >= WAV_JOURNAL_SLOTS || !id || id[0] == '\0') {
-        return;
-    }
     wav_journal_pending_list* list = &s_pending[slot];
-    if (list->count == list->cap) {
-        const size_t cap = list->cap ? list->cap * 2 : 4;
-        wav_journal_pending* items = (wav_journal_pending*)realloc(list->items, cap * sizeof(*items));
-        if (!items) {
-            /* The recording stays unattributed, as one whose row is gone does. */
-            return;
-        }
-        list->items = items;
-        list->cap = cap;
+    if (list->count >= list->cap) {
+        return;
     }
     wav_journal_pending* entry = &list->items[list->count++];
     (void)DSD_SNPRINTF(entry->id, sizeof entry->id, "%s", id);
@@ -496,6 +544,14 @@ wav_journal_publish(const wav_journal_publish_record* rec) {
         wav_journal_unlock();
         return;
     }
+    /* A recording is published pending only when its slot's list holds it: every pending line is resolved later by a
+       link or an unlink. One without an id (a temp name open_wav_file() did not make), a slot, or room in the list
+       (out of memory) is published as no row's instead. */
+    const uint8_t slot = rec->owner.slot;
+    int pending = rec->owner.kind == DSD_WAV_OWNER_PENDING;
+    if (pending && (!rec->id || rec->id[0] == '\0' || slot >= WAV_JOURNAL_SLOTS || pending_reserve_locked(slot) != 0)) {
+        pending = 0;
+    }
     wav_journal_line l;
     line_begin(&l, "publish", rec->id);
     line_file_and_folder(&l, "file", rec->path, rec->dir);
@@ -520,7 +576,6 @@ wav_journal_publish(const wav_journal_publish_record* rec) {
         line_key(&l, "row");
         line_raw(&l, "null");
     }
-    const int pending = rec->owner.kind == DSD_WAV_OWNER_PENDING;
     line_key_bool(&l, "pending", pending);
     line_key_u64(&l, "epoch", pending ? rec->owner.epoch : 0U);
     line_key_bool(&l, "rdio", rec->rdio_queued);
@@ -530,7 +585,7 @@ wav_journal_publish(const wav_journal_publish_record* rec) {
     line_key_string(&l, "source", rec->source);
     line_end_and_write_locked(&l);
     if (pending && wav_journal_active()) {
-        pending_add_locked(rec->owner.slot, rec->id, rec->owner.epoch);
+        pending_add_locked(slot, rec->id, rec->owner.epoch);
     }
     wav_journal_unlock();
 }
@@ -571,20 +626,9 @@ wav_journal_error(const char* id, const char* kind, const char* temp_path, const
 static int
 journal_folder(const char* path, char* out, size_t out_size) {
     char dir[1024];
-    const char* base = path_base(path);
-    if (base == path) {
+    wav_journal_path_folder(path, WAV_JOURNAL_WIN_PATHS, dir, sizeof dir);
+    if (dir[0] == '\0') {
         (void)DSD_SNPRINTF(dir, sizeof dir, "%s", ".");
-    } else {
-        const size_t n = (size_t)(base - path);
-        size_t keep = (n > 1) ? n - 1 : n; /* keep "/" for a journal in the root folder */
-        if (keep == 2 && path[1] == ':') {
-            keep = 3; /* and "C:\\" for one in a Windows drive's root */
-        }
-        if (keep >= sizeof dir) {
-            return -1;
-        }
-        DSD_MEMCPY(dir, path, keep);
-        dir[keep] = '\0';
     }
     return dsd_path_canonical(dir, out, out_size);
 }

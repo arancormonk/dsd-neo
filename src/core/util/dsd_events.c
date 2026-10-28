@@ -548,7 +548,7 @@ typedef enum {
 // per-transmission scratch that fed it, then sound the end-of-call alert when a FINAL end asked
 // for one. Every path that is done with the staged row -- commit, merge, or drop -- ends in this
 // sequence; keeping the alert inside it means the end-of-call side effects cannot drift apart
-// across call sites. The rotation must precede the clear: close_and_rename_wav_file() reads its
+// across call sites. The rotation must precede the clear: close_and_rename_wav_file_ex() reads its
 // rename metadata from Items[0]. `alert_on_final` is zero only on the drop path, whose rule is
 // that nothing the operator saw is ending -- and for the same reason its rotation skips the
 // rdio-scanner export: the recording of an epoch with no history row or log line would upload

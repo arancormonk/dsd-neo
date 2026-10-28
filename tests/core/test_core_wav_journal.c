@@ -33,9 +33,11 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +51,7 @@
 #include "trunk_scan_test_support.h"
 #include "wav_journal.h"
 #include "wav_journal_test_support.h"
+#include "wav_segment_test_support.h"
 
 static int
 expect_true(const char* what, int ok) {
@@ -1140,6 +1143,210 @@ test_strings_are_escaped(void) {
     return rc;
 }
 
+/* A pending line is always resolved later: a recording whose pending entry has no room (out of memory) or no id (a
+   temp name open_wav_file() did not make) is published as no row's, and neither a commit nor the journal's close writes
+   anything more for it. */
+static int
+test_pending_without_room_or_id_is_published_as_no_rows(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_pending_fallback");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 1200U, 12U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    char id[64];
+    slot1_id(&r, id, sizeof id);
+    dsd_wav_journal_test_fail_pending_growth(1);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    dsd_wav_journal_test_fail_pending_growth(0);
+
+    /* A file under a name of its own, closed by a pending closer while the call is still on. */
+    char foreign[DSD_TEST_PATH_MAX * 2];
+    (void)dsd_test_path_join(foreign, sizeof foreign, r.dir, "foreign-recording");
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* f = sf_open(foreign, SFM_WRITE, &info);
+    rc |= expect_true("foreign file opened", f != NULL);
+    if (f) {
+        static short pcm[800];
+        for (int i = 0; i < 800; i++) {
+            pcm[i] = (short)(i * 16);
+        }
+        (void)sf_write_short(f, pcm, 800);
+        (void)close_and_publish_call_wav(f, r.opts, r.state, 0, foreign, r.dir, r.opts->wav_out_open_time);
+    }
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    dsd_wav_journal_close();
+    reload(&r);
+    const char* no_room = NULL;
+    const char* no_id = NULL;
+    const char* line = NULL;
+    for (int i = 0; (line = record(&g_j, "publish", i)) != NULL; i++) {
+        if (strcmp(field_s(line, "id"), id) == 0) {
+            no_room = line;
+        } else if (strcmp(field_s(line, "id"), "null") == 0) {
+            no_id = line;
+        }
+    }
+    rc |= expect_true("no room: published as no row's", no_room && strcmp(field_s(no_room, "pending"), "false") == 0
+                                                            && strcmp(field_s(no_room, "row"), "null") == 0
+                                                            && field_ll(no_room, "epoch") == 0);
+    rc |= expect_true("no id: published as no row's", no_id && strcmp(field_s(no_id, "pending"), "false") == 0
+                                                          && strcmp(field_s(no_id, "row"), "null") == 0);
+    rc |= expect_int("no link for either", count_records(&g_j, "link"), 0);
+    rc |= expect_int("no unlink for either, not even at the close", count_records(&g_j, "unlink"), 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* The libsndfile seams (wav_segment_test_support.h): a write that falls short, a close that fails. */
+static long long
+short_write(SNDFILE* file, const short* samples, long long count) {
+    return (long long)sf_write_short(file, samples, (sf_count_t)(count / 2));
+}
+
+static int
+failing_close(SNDFILE* file) {
+    (void)sf_close(file);
+    return SF_ERR_SYSTEM;
+}
+
+/* The record shapes the store parses: `error` kind open and close, `"failed":true` after a short write, and
+   `"rdio":true` when an rdio-scanner API upload was queued. */
+static int
+test_error_failed_and_rdio_shapes(void) {
+    int rc = 0;
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_open_error");
+        dsd_wav_test_fail_opens_after(0);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        dsd_wav_test_fail_opens_after(-1);
+        reload(&r);
+        /* The start stops at its first open that fails. */
+        rc |= expect_int("the failed open recorded", count_records(&g_j, "error"), 1);
+        const char* err = record(&g_j, "error", 0);
+        rc |= expect_str("kind open", err ? field_s(err, "kind") : "", "open");
+        rc |= expect_true("it names the segment", err && field_s(err, "id")[16] == '-');
+        rc |= expect_true("and the temp name it would have had", err && strncmp(field_s(err, "temp"), "TEMP_", 5) == 0);
+        rc |= expect_str("in the recording folder", err ? field_s(err, "folder") : "", r.canon);
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_close_error");
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char id[64];
+        slot1_id(&r, id, sizeof id);
+        char temp[1024];
+        DSD_SNPRINTF(temp, sizeof temp, "%s", r.opts->wav_out_file);
+        voice_frames(&r, 0, 2);
+        dsd_wav_test_set_io(NULL, failing_close);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        dsd_wav_test_set_io(NULL, NULL);
+        reload(&r);
+        const char* err = NULL;
+        const char* line = NULL;
+        for (int i = 0; (line = record(&g_j, "error", i)) != NULL; i++) {
+            if (strcmp(field_s(line, "id"), id) == 0) {
+                err = line;
+            }
+        }
+        rc |= expect_str("kind close", err ? field_s(err, "kind") : "", "close");
+        rc |= expect_str("the temp name it keeps", err ? field_s(err, "temp") : "", temp + strlen(r.dir) + 1);
+        rc |= expect_int("nothing published for it", count_for_id(&g_j, "publish", id), 0);
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_short_write");
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 1300U, 13U, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_wav_test_set_io(short_write, NULL);
+        voice_frames(&r, 0, 3);
+        dsd_wav_test_set_io(NULL, NULL);
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        rc |= expect_str("a short write marks the recording failed", pub ? field_s(pub, "failed") : "", "true");
+        rc |=
+            expect_int("it ends where the write fell short: half a frame", pub ? field_ll(pub, "duration_ms") : -9, 10);
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_rdio");
+        r.opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+        r.opts->rdio_system_id = 48;
+        r.opts->rdio_upload_timeout_ms = 100;
+        r.opts->rdio_upload_retries = 1;
+        DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+        DSD_SNPRINTF(r.opts->rdio_api_key, sizeof r.opts->rdio_api_key, "%s", "test-key");
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 1400U, 14U, DSD_CALL_BOUNDARY_BEGIN);
+        voice_frames(&r, 0, 2);
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+        dsd_rdio_upload_shutdown();
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+#ifdef USE_CURL
+        rc |= expect_str("an upload was queued", pub ? field_s(pub, "rdio") : "", "true");
+#else
+        rc |= expect_str("no upload without libcurl", pub ? field_s(pub, "rdio") : "", "false");
+#endif
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* The `file` and folder forms, with POSIX and Windows rules on any host: a file in the journal's folder or below it is
+   named '/'-separated relative to it, one elsewhere by its folder; a file in a root keeps the root as its folder. */
+static int
+test_path_forms(void) {
+    int rc = 0;
+    char out[256];
+    rc |= expect_str("posix base", wav_journal_path_base("/a/b/c.wav", 0), "c.wav");
+    rc |= expect_str("posix keeps a backslash in a name", wav_journal_path_base("/a/b\\c.wav", 0), "b\\c.wav");
+    rc |= expect_str("windows base", wav_journal_path_base("C:\\a/b\\c.wav", 1), "c.wav");
+    wav_journal_path_folder("/a/b/c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix folder", out, "/a/b");
+    wav_journal_path_folder("/c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix root folder", out, "/");
+    wav_journal_path_folder("c.wav", 0, out, sizeof out);
+    rc |= expect_str("bare name", out, "");
+    wav_journal_path_folder("C:\\a\\c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows folder", out, "C:\\a");
+    wav_journal_path_folder("C:\\c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows drive root keeps its separator", out, "C:\\");
+    wav_journal_path_folder("C:/rec/c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows forward slash", out, "C:/rec");
+
+    wav_journal_path_name("/j", "/j", "c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix in the journal folder", out, "c.wav");
+    wav_journal_path_name("/j", "/j/sub/dir", "c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix below it", out, "sub/dir/c.wav");
+    wav_journal_path_name("/j", "/jx", "c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix a sibling with the same prefix is outside", out, "/jx/c.wav");
+    wav_journal_path_name("/", "/rec", "c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix journal in the root", out, "rec/c.wav");
+    wav_journal_path_name("C:\\j", "C:\\j\\sub\\dir", "c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows below the journal: '/'-separated", out, "sub/dir/c.wav");
+    wav_journal_path_name("C:\\j", "C:\\j", "c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows in the journal folder", out, "c.wav");
+    wav_journal_path_name("C:\\", "C:\\rec", "c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows journal in a drive root", out, "rec/c.wav");
+    wav_journal_path_name("C:\\j", "D:\\rec", "c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows outside", out, "D:\\rec\\c.wav");
+    wav_journal_path_name("C:\\j", "D:\\", "c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows outside, in a drive root", out, "D:\\c.wav");
+    wav_journal_path_name("/j", "/j", "", 0, out, sizeof out);
+    rc |= expect_str("no name", out, "");
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -1162,6 +1369,9 @@ main(void) {
     rc |= test_write_failure_latches_the_journal_off();
     rc |= test_no_journal_no_file();
     rc |= test_strings_are_escaped();
+    rc |= test_pending_without_room_or_id_is_published_as_no_rows();
+    rc |= test_error_failed_and_rdio_shapes();
+    rc |= test_path_forms();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

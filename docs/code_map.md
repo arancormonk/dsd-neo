@@ -633,7 +633,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
     (sparse files past 2 GiB and 4 GiB, skipped where the filesystem cannot make one)
-  - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
+  - Private file opens: `dsd_fopen_private()` creates a written file owner-only, and on POSIX its descriptor is
+    close-on-exec (`O_CLOEXEC`: logs, captures and the recording journal stay open a whole run; issue #708); `dsd_fopen_private_ex()` also says
     whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
     made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
     Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF. An `x` after a write mode
@@ -1114,7 +1115,9 @@ suite runs under this compiler.
     (`close_and_publish_call_wav()`: the NFM call's end and toggle-off, WAV_STOP and every other recording transition
     that publishes slot files, the EDACS analog rotation after it synced the grant's call, the engine's last close)
     publishes `pending` on the slot's lifecycle epoch (`dsd_call_state_pending_row_epoch()`; none when no epoch was
-    rendered or its row already committed) and joins that slot's pending list. `watchdog_event_commit_staged_row()`
+    rendered or its row already committed) and joins that slot's pending list. The entry is reserved before the line
+    is written; one that cannot be kept (no id, the list out of memory) is published as no row's instead, so every
+    `"pending":true` line is resolved by a later `link` or `unlink`. `watchdog_event_commit_staged_row()`
     writes `link` for the entries of the committed epoch (push or merge stamp); a drop
     (`wav_journal_unlink_pending_epoch()`), the epoch moving on without that commit
     (`watchdog_event_history_authoritative()`), a full history reset (`dsd_event_history_reset()`), a trunk-scan
@@ -1136,8 +1139,10 @@ suite runs under this compiler.
       token is drawn once per process), null for a name `open_wav_file()` did not make.
 
     `publish` (a recording was published under its final name):
-    - `file` (string): the final name relative to the journal's folder (`/`-separated) when it lies inside that
-      folder, else the folder plus the base name.
+    - `file` (string): the final name relative to the journal's folder, `/`-separated on every platform, when it lies
+      in that folder or below it; else the folder plus the base name, joined with the platform's separator (a folder
+      in a root keeps the root's own: `/`, `C:\`). The path forms are `wav_journal_path_*()`, which take the
+      platform's rules as a flag so `CORE_WAV_JOURNAL` checks the Windows forms on every host.
     - `folder` (string): the folder it was published in, canonical (`dsd_path_canonical()`; as given when it cannot
       be resolved).
     - `start` (number): Unix seconds the recording began (the rule above).
@@ -1167,7 +1172,9 @@ suite runs under this compiler.
   Tests: `CORE_WAV_JOURNAL` (commit, merge chain, a pending close merged, drop, 44-byte, rename failure, B3 name,
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
-  journal, string escaping), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer),
+  journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
+  path forms), `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT`
+  (close-on-exec, `dsd_path_canonical()`),
   `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a

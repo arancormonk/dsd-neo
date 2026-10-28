@@ -3296,9 +3296,9 @@ test_close_and_rename_wav_removes_header_only_files(void) {
     }
 
     rc |= expect_true("close rename null filename rejects",
-                      close_and_rename_wav_file(NULL, NULL, NULL, dir, NULL, 0) == NULL);
+                      close_and_rename_wav_file_ex(NULL, NULL, NULL, dir, NULL, 0, 1, NULL) == NULL);
     rc |= expect_true("close rename empty filename rejects",
-                      close_and_rename_wav_file(NULL, NULL, "", dir, NULL, 0) == NULL);
+                      close_and_rename_wav_file_ex(NULL, NULL, "", dir, NULL, 0, 1, NULL) == NULL);
 
     char path[DSD_TEST_PATH_MAX];
     DSD_MEMSET(path, 0, sizeof path);
@@ -3306,7 +3306,7 @@ test_close_and_rename_wav_removes_header_only_files(void) {
     rc |= expect_true("close rename source wav opened", wav != NULL);
     if (wav) {
         rc |= expect_true("close rename header-only returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, NULL, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, NULL, 0, 1, NULL) == NULL);
         rc |= expect_true("close rename header-only removed source", file_size_or_negative(path) < 0);
     }
 
@@ -3343,7 +3343,7 @@ test_close_and_rename_wav_preserves_nonempty_event_file(void) {
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "TGTUNIT");
 
         rc |= expect_true("close rename nonempty returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, &history, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 1, NULL) == NULL);
         rc |= expect_true("close rename nonempty removed temp source", file_size_or_negative(path) < 0);
 
         char renamed[DSD_TEST_PATH_MAX];
@@ -3391,7 +3391,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "SYS-N");
 
         rc |= expect_true("numeric rename returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, &history, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 1, NULL) == NULL);
         rc |= expect_true("numeric rename removed temp source", file_size_or_negative(path) < 0);
 
         char renamed[DSD_TEST_PATH_MAX];
@@ -3417,7 +3417,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
         char missing_dir[DSD_TEST_PATH_MAX];
         DSD_SNPRINTF(missing_dir, sizeof missing_dir, "%s%cmissing", dir, dsd_test_path_sep());
         rc |= expect_true("rename failure returns null",
-                          close_and_rename_wav_file(wav, NULL, fail_path, missing_dir, NULL, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, fail_path, missing_dir, NULL, 0, 1, NULL) == NULL);
         rc |= expect_true("rename failure keeps original temp wav", file_size_or_negative(fail_path) > 44);
     }
 
@@ -3428,7 +3428,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
 }
 
 // The sidecar files a recording at its call's start (event_start_time), or at the WAV's open time when per-call WAV
-// was switched on after the call began; close_and_rename_wav_file() hands the exporter that open time.
+// was switched on after the call began; close_and_rename_wav_file_ex() hands the exporter that open time.
 static int
 close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) {
     int rc = 0;
@@ -3469,7 +3469,7 @@ close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) 
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "FIRE DISP");
 
         rc |= expect_true("rdio rename returns null",
-                          close_and_rename_wav_file(wav, &opts, path, dir, &history, opened) == NULL);
+                          close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, opened, 1, NULL) == NULL);
         rc |= expect_true("rdio rename removed temp source", file_size_or_negative(path) < 0);
 
         // The file is still named for the row's last activity (event_time); only the sidecar files the call by
@@ -3549,7 +3549,7 @@ publish_unsafe_identity_case(const char* label, const char* sys, const char* tgt
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", tgt);
         DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", src);
 
-        rc |= expect_true(label, close_and_rename_wav_file(wav, &opts, path, dir, &history, 0) == NULL);
+        rc |= expect_true(label, close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, 0, 1, NULL) == NULL);
         rc |= expect_true(label, strcmp(item->sysid_string, sys) == 0 && strcmp(item->tgt_str, tgt) == 0
                                      && strcmp(item->src_str, src) == 0);
 

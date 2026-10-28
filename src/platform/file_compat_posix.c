@@ -133,6 +133,10 @@ dsd_private_open_flags(const char* mode) {
         }
         flags |= O_EXCL;
     }
+#ifdef O_CLOEXEC
+    /* Logs, captures and the recording journal stay open for a whole run; no child process may inherit them. */
+    flags |= O_CLOEXEC;
+#endif
     return flags;
 }
 

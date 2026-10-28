@@ -202,7 +202,7 @@ test_call_wav_publication_never_replaces_a_recording(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     const uint16_t nonces[] = {0x1234U, 0x5678U};
     script_nonces(nonces, 2);
-    assert(close_and_rename_wav_file(wav, &opts, temp, dir, NULL, 0) == NULL);
+    assert(close_and_rename_wav_file_ex(wav, &opts, temp, dir, NULL, 0, 1, NULL) == NULL);
 
     assert(text_is(taken, "keep"));
     assert(size_of(fresh) > 44);

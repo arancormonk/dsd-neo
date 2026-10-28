@@ -14,6 +14,9 @@ extern "C" {
    journal writes through, then fail every one as a full disk does; -1 disables. */
 void dsd_wav_journal_test_fail_writes_after(long successful_writes);
 
+/* While @p fail is set, a slot's pending list cannot grow, as when memory runs out. */
+void dsd_wav_journal_test_fail_pending_growth(int fail);
+
 #ifdef __cplusplus
 }
 #endif

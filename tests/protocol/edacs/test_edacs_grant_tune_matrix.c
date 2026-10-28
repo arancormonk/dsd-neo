@@ -122,6 +122,8 @@ static int g_close_wav_count = 0;
 /* The state and slot the last close_and_publish_call_wav() named: the closer that journals it pending (issue #708). */
 static const dsd_state* g_close_wav_state = NULL;
 static int g_close_wav_slot = -1;
+/* Closes through the event layer's rotation (close_and_rename_wav_file_ex()). */
+static int g_close_wav_ex_count = 0;
 static int g_open_wav_count = 0;
 /* Set: every per-call open fails, as on a full disk (issue #708). */
 static int g_open_wav_fail = 0;
@@ -261,10 +263,18 @@ SNDFILE*
 __wrap_close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                     const char* dir, const Event_History_I* event_struct, time_t opened,
                                     int export_call, const dsd_wav_owner* owner) {
-    (void)export_call;
+    (void)wav_file;
+    (void)opts;
+    (void)wav_out_filename;
+    (void)dir;
     (void)event_struct;
+    (void)opened;
+    (void)export_call;
     (void)owner;
-    return __wrap_close_and_publish_call_wav(wav_file, opts, NULL, 0, wav_out_filename, dir, opened);
+    /* The event layer's rotation: counted as a close, without touching the pending closer's capture. */
+    g_close_wav_count++;
+    g_close_wav_ex_count++;
+    return NULL;
 }
 
 SNDFILE*
@@ -2322,12 +2332,16 @@ edacs_run_analog_wav_reopen_mark_cases(void) {
         g_open_wav_count = 0;
         g_close_wav_state = NULL;
         g_close_wav_slot = -1;
+        g_close_wav_count = 0;
+        g_close_wav_ex_count = 0;
         edacs_start_tcp_analog_call(call);
         rc |= edacs_expect(g_open_wav_count >= 1, "analog-708", fail ? "open-fails" : "open-works",
                            "the analog grant opened slot 1's file");
         rc |= edacs_expect(g_close_wav_state == &g_state && g_close_wav_slot == 0, "analog-708",
                            fail ? "open-fails" : "open-works",
                            "the grant closed slot 1's file as the synced call's, for the recording journal");
+        rc |= edacs_expect(g_close_wav_count - g_close_wav_ex_count >= 1, "analog-708",
+                           fail ? "open-fails" : "open-works", "that close is the pending closer's, not a rotation's");
         rc |= edacs_expect((g_opts.wav_out_reopen & 1) == fail, "analog-708", fail ? "open-fails" : "open-works",
                            fail ? "a failed open is marked to reopen" : "an open clears the reopen mark");
         g_open_wav_fail = 0;

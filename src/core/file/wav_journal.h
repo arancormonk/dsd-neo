@@ -11,6 +11,7 @@
    closes the journal. Every writer returns at once while no journal is on. */
 
 #include <dsd-neo/core/file_io.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -35,6 +36,16 @@ typedef struct {
     const char* target;  /* the row's target, as shown */
     const char* source;  /* the row's source, as shown */
 } wav_journal_publish_record;
+
+/* Path forms the records use, pure string functions; @p win selects Windows rules ('\\' also separates, a drive root
+   is "C:\\") so a test can exercise them on any host. The base name of @p path: */
+const char* wav_journal_path_base(const char* path, int win);
+/* The folder part of @p path: "" for a bare name, the root ("/", "C:\\") for a file in one. */
+void wav_journal_path_folder(const char* path, int win, char* out, size_t out_size);
+/* The `file` form of @p base in @p folder: relative to @p journal_dir and '/'-separated when @p folder is it or lies
+   below it, else @p folder plus @p base. Both folders canonical. "" for an empty @p base. */
+void wav_journal_path_name(const char* journal_dir, const char* folder, const char* base, int win, char* out,
+                           size_t out_size);
 
 /* 1 while a journal is being written. */
 int wav_journal_active(void);
