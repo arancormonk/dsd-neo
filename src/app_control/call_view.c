@@ -217,7 +217,8 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
 
 /**
  * @brief The protocol's display name for @c protocol_label: the sync table's name, except where that names a frame type
- * rather than the protocol (X2-TDMA, ProVoice). Empty for analog, whose channel names its call, and for no sync.
+ * or a protocol family rather than the protocol (X2-TDMA, ProVoice, EDACS, D-STAR, M17). Empty for analog, whose
+ * channel names its call, for the generic digital sync (no protocol) and for no sync.
  */
 static void
 slot_protocol_label(int protocol, char* out, size_t out_size) {
@@ -226,7 +227,14 @@ slot_protocol_label(int protocol, char* out, size_t out_size) {
         label = "X2-TDMA";
     } else if (DSD_SYNC_IS_PROVOICE(protocol)) {
         label = "ProVoice";
-    } else if (protocol == DSD_SYNC_ANALOG || strcmp(label, "NONE") == 0 || strcmp(label, "UNKNOWN") == 0) {
+    } else if (DSD_SYNC_IS_EDACS_ONLY(protocol)) {
+        label = "EDACS";
+    } else if (DSD_SYNC_IS_DSTAR(protocol)) {
+        label = "D-STAR";
+    } else if (DSD_SYNC_IS_M17(protocol)) {
+        label = "M17";
+    } else if (protocol == DSD_SYNC_ANALOG || protocol == DSD_SYNC_DIGITAL || strcmp(label, "NONE") == 0
+               || strcmp(label, "UNKNOWN") == 0) {
         label = "";
     }
     DSD_SNPRINTF(out, out_size, "%s", label);

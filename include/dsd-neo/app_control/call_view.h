@@ -85,7 +85,7 @@ enum {
      * here for the same reason as @c DSD_APP_CALL_NAME_SIZE and pinned by a static assert.
      */
     DSD_APP_CALL_CHANNEL_SIZE = 64,
-    /** Width of @c protocol_label: the longest protocol name it holds ("X2TDMA VOICE"), plus room and a NUL. */
+    /** Width of @c protocol_label: the longest protocol name it holds ("ProVoice"), plus room and a NUL. */
     DSD_APP_CALL_PROTOCOL_SIZE = 16,
 };
 

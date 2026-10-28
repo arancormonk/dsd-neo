@@ -1004,8 +1004,8 @@ test_tetra_identityless_epoch_still_shows(void) {
 }
 
 /* Issue #773: the protocol's display name, which headlines a call no party named ("TETRA call", "ProVoice call",
- * "X2-TDMA call"). The two frame-type names of the sync table are spelled as the protocol; analog has none, its channel
- * names its call. */
+ * "X2-TDMA call"). The sync table's frame-type and family names (X2TDMA VOICE, EDACS/PV, DSTAR, M17 PKT) are spelled as
+ * the protocol; analog has none, its channel names its call, and the generic digital sync names no protocol. */
 static void
 test_protocol_label(void) {
     static const struct {
@@ -1021,6 +1021,13 @@ test_protocol_label(void) {
         {DSD_SYNC_P25P2_POS, "P25p2"},
         {DSD_SYNC_DMR_BS_VOICE_POS, "DMR"},
         {DSD_SYNC_NXDN_POS, "NXDN"},
+        {DSD_SYNC_EDACS_POS, "EDACS"},
+        {DSD_SYNC_EDACS_NEG, "EDACS"},
+        {DSD_SYNC_DSTAR_VOICE_POS, "D-STAR"},
+        {DSD_SYNC_DSTAR_HD_NEG, "D-STAR"},
+        {DSD_SYNC_M17_STR_POS, "M17"},
+        {DSD_SYNC_M17_PKT_NEG, "M17"},
+        {DSD_SYNC_DIGITAL, ""},
         {DSD_SYNC_ANALOG, ""},
     };
 
