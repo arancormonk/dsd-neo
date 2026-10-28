@@ -7903,7 +7903,8 @@ Qt Quick frontend (`src/ui/qt`):
     merged call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
-  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order).
+  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order);
+    `call_history_spill.jsonl` holds what the background capture found until a save covers it (below).
     Both are rewritten whole, so the debounce follows their size (issue #745):
     - **Debounce:** after a save, the next waits the longer of 3 s and the time the last save's bytes take at
       `kSaveBudgetBytesPerSec` (16 KiB/s). A small log still saves 3 s after a change; a full one, ~860 KB, saves about
@@ -7919,9 +7920,54 @@ Qt Quick frontend (`src/ui/qt`):
       - when a session ends, from `UiController::tick()` after that tick's final history ingest;
       - when the application turns Suspended or Hidden;
       - at `aboutToQuit`.
-    - **Destructor:** waits for the worker, then writes any owed save synchronously (`saveSync()`).
-  - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
-    (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
+    - **Destructor:** stops the background tap (below), waits for the worker, then writes any owed save
+      synchronously (`saveSync()`).
+    - **Acknowledgement (issue #708, B6):** the worker reports whether each store committed (`SaveResult`;
+      `json_store_save_array()` fails on an open, write or commit failure, a full disk). Every change is a generation
+      (`markChanged()`), a save carries the one it copied, and a generation is acknowledged only when both stores
+      committed. A failed or half-written save keeps the log owed and retries without another change, `kSaveDelayMs`
+      after the first failure and doubling up to 3 minutes; `saveFailing` (property and signal) turns true at the
+      first failure of a run, with one `qWarning`, and false at the next save that commits both. A relaunch after a
+      half-written save logs nothing twice (the rows' seeds stand in for the seen entries that did not land).
+  - Row identity and fragments (issue #708): every row has a uid (`Row::uid`, persisted `uid`, the `uid` role), handed
+    out when the row is first logged and never again (`callHistory/nextUid`, kept past a clear); a merge keeps the
+    surviving row's. `rowForUid()` finds a row wherever it moved, and `rowPositionsChanged()` fires on every insert,
+    removal, move and reset, so a view following one row (the detail sheet) looks it up again. Each row also lists the
+    ring fragments it absorbed (`Row::fragments`, persisted `fr`): `call_history_fragment_key()`
+    (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push stamp>`, the recording journal's
+    `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again add the absorbed fragments; an
+    index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and clear. Rows older builds wrote
+    have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a `CallRecordingProvider` (the
+    call recording store; none, and so no recordings, until one is set with `setRecordingProvider()`) by the row's
+    fragments; the provider names the fragments whose recordings changed through `recordingFragmentsChanged()`, and
+    the rows holding them re-read the two roles. A recording the store knows before its row exists shows when the row
+    arrives.
+  - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
+    background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
+    overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
+    starts `CallHistoryTap` (a `std::thread`; only when the app wired `setHistoryTapSource(&dsd_app_history_tap_copy)`)
+    with copies of its seen map, session, labels and clear mark. Once a second it copies each slot whose committed
+    rows changed through the History tap (`<dsd-neo/app_control/history_tap.h>`), into two 3.75 MB buffers allocated
+    at start, and walks the copy outside every lock with the model's own rules (`walkRing()`, `noteSeen()`, the clear
+    mark settled as `settleClear()` would, attribution from the tap's options fields). Rows it finds new or advanced
+    are appended as JSON lines (`spillLine()`: the row with its `fr`, its seen key and entry, the verdict) to
+    `call_history_spill.jsonl` (`CallHistorySpill`, one mutex), at most once every five polls and at stop; a torn last
+    line gets a newline before the next append. Any other application state owes the handoff
+    (`backgroundCaptureHandoffOwed()`): the next `refresh()`, which `UiController::tick()` forces with
+    `flushHistory()` when no redraw would, stops the tap (a last poll, then its last append), adopts the clear mark the
+    tap bound if the model's was still pending, and folds the spill in before its own ring walk (`foldSpill()`). The
+    fold also runs at load, so a process killed in the background loses nothing its batches wrote. It is idempotent by
+    fragment: a line whose fragment a row already holds can only refine it, and its seen entry joins the model's as a
+    fresh read would; lines a clear covers are skipped. The spill is emptied only after a save of the generation the
+    fold made is acknowledged, and only if it still holds exactly what the fold read, so a tap appending meanwhile
+    loses nothing. `clearAll()` while the tap runs stops it, takes its read position into the mark, empties the spill
+    and starts it again. Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs
+    about 210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy
+    does); a minimal row spills as about 440 bytes (a named row about a kilobyte).
+  - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
+    while suspended, a spill across a process death, a stop and a clear while away, write volume; the real publisher,
+    tap and consumer), `UI_QT_CONTROLLER` (the handoff on a tick with no redraw), `UI_QT_TALKGROUP_LIST_MODEL`,
+    `UI_QT_QML_CALL_LISTS` (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
   carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
   `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,

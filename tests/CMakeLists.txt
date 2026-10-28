@@ -4139,6 +4139,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
@@ -4179,6 +4180,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -18908,6 +18910,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -18941,6 +18944,40 @@ if(DSD_ENABLE_QT_UI)
         UI_QT_CONTROLLER
         PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
+
+    # Issue #708, B1: History's background capture against the real publisher, History tap and GUI consumer: commits
+    # while suspended, the spill across a process death, a stop and a clear while away, and the spill's write volume.
+    add_executable(
+        dsd-neo_test_ui_qt_call_history_tap
+        ui/test_ui_qt_call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_call_history_tap
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_call_history_tap
+        PRIVATE Qt6::Core Qt6::Gui ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_call_history_tap
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_call_history_tap
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_CALL_HISTORY_TAP
+        COMMAND dsd-neo_test_ui_qt_call_history_tap
+    )
+    set_tests_properties(
+        UI_QT_CALL_HISTORY_TAP
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()
 

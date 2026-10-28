@@ -244,6 +244,11 @@ UiController::tick() {
         flushHistory();
         m_history->saveNow();
     }
+    /* Back from the background: the first ingest takes over from History's background tap, whether or
+     * not this tick had a redraw to ingest (a session that ended while the app was away publishes none). */
+    if (m_history != nullptr && m_history->backgroundCaptureHandoffOwed()) {
+        flushHistory();
+    }
 }
 
 void

@@ -17,6 +17,7 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <functional>
 #include <qqml.h>
@@ -218,6 +219,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = new CallHistoryModel(&engine);
+    // Issue #708: History keeps reading the published rings while Qt is paused in the background.
+    history->setHistoryTapSource(&dsd_app_history_tap_copy);
     auto* talkgroups = new TalkgroupListModel(history, &engine);
     auto* talkgroupView = new TalkgroupFilterModel(&engine);
     talkgroupView->setSourceModel(talkgroups);
