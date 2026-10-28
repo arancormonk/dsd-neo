@@ -367,11 +367,30 @@ wav_journal_path_folder(const char* path, int win, char* out, size_t out_size) {
     (void)DSD_SNPRINTF(out, out_size, "%.*s", (int)keep, path);
 }
 
-/* @p folder (canonical) relative to @p journal_dir: "" for the folder itself, "sub\\dir" below it; NULL outside. */
+/* Whether @p folder starts with the @p n bytes of @p prefix: without ASCII case under Windows rules, whose file
+   systems ignore it (a canonical folder keeps the case it was typed in). */
+static int
+path_has_prefix(const char* folder, const char* prefix, size_t n, int win) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char a = (unsigned char)folder[i];
+        unsigned char b = (unsigned char)prefix[i];
+        if (win) {
+            a = (a >= 'A' && a <= 'Z') ? (unsigned char)(a - 'A' + 'a') : a;
+            b = (b >= 'A' && b <= 'Z') ? (unsigned char)(b - 'A' + 'a') : b;
+        }
+        if (a != b || a == '\0') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* @p folder (canonical) relative to @p journal_dir: "" for the folder itself, "sub\\dir" below it (in @p folder's own
+   case); NULL outside. */
 static const char*
 path_inside(const char* journal_dir, const char* folder, int win) {
     const size_t n = strlen(journal_dir);
-    if (n == 0 || strncmp(folder, journal_dir, n) != 0) {
+    if (n == 0 || !path_has_prefix(folder, journal_dir, n, win)) {
         return NULL;
     }
     if (folder[n] == '\0') {

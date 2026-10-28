@@ -173,6 +173,23 @@ field_s(const char* line, const char* key) {
     return out;
 }
 
+/* A segment id as the journal writes it: 16 uppercase hex digits, '-', a decimal sequence. */
+static int
+is_segment_id(const char* id) {
+    const size_t len = strlen(id);
+    if (len < 18 || id[16] != '-') {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        const char c = id[i];
+        const int ok = i < 16 ? ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) : i == 16 || (c >= '0' && c <= '9');
+        if (!ok) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* The @p nth (0-based) record of @p type, or NULL. */
 static const char*
 record(const journal* j, const char* type, int nth) {
@@ -1229,7 +1246,7 @@ test_error_failed_and_rdio_shapes(void) {
         rc |= expect_int("the failed open recorded", count_records(&g_j, "error"), 1);
         const char* err = record(&g_j, "error", 0);
         rc |= expect_str("kind open", err ? field_s(err, "kind") : "", "open");
-        rc |= expect_true("it names the segment", err && field_s(err, "id")[16] == '-');
+        rc |= expect_true("it names the segment", err && is_segment_id(field_s(err, "id")));
         rc |= expect_true("and the temp name it would have had", err && strncmp(field_s(err, "temp"), "TEMP_", 5) == 0);
         rc |= expect_str("in the recording folder", err ? field_s(err, "folder") : "", r.canon);
         rig_close(&r);
@@ -1340,6 +1357,10 @@ test_path_forms(void) {
     rc |= expect_str("windows journal in a drive root", out, "rec/c.wav");
     wav_journal_path_name("C:\\j", "D:\\rec", "c.wav", 1, out, sizeof out);
     rc |= expect_str("windows outside", out, "D:\\rec\\c.wav");
+    wav_journal_path_name("C:\\Rec\\J", "c:\\rec\\j\\Sub", "c.wav", 1, out, sizeof out);
+    rc |= expect_str("windows compares folders without case, keeps the file's", out, "Sub/c.wav");
+    wav_journal_path_name("/Rec/J", "/rec/j/Sub", "c.wav", 0, out, sizeof out);
+    rc |= expect_str("posix folders differing in case are different folders", out, "/rec/j/Sub/c.wav");
     wav_journal_path_name("C:\\j", "D:\\", "c.wav", 1, out, sizeof out);
     rc |= expect_str("windows outside, in a drive root", out, "D:\\c.wav");
     wav_journal_path_name("/j", "/j", "", 0, out, sizeof out);
