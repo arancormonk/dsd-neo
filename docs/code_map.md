@@ -7999,6 +7999,32 @@ Qt Quick frontend (`src/ui/qt`):
     UI was recreated reads as Idle until then. A first known state with no session, or a session ending, frees every
     folder; a session that turns active with no `beginSession()` before it (that one) holds every folder until it ends;
     an Idle report between a start's mark and its Starting changes nothing.
+  - Session argv and preferences (`session_args.{h,cpp}`, `scan_list_starter.cpp`, `app_prefs.{h,cpp}`): AppPrefs
+    `recordCalls`, `recordUnknownOnly` and `recordingLimitMb` (keys `recording/*`, portable; the limit one of
+    `recordingLimitChoices`, 1000 by default) map to `SessionArgPrefs`; the starter puts the folder `beginSession()`
+    returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after `-t`/`-F` and before the
+    extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra `-P` records into a managed
+    folder), then `-P` and `--record-unknown-only` as the preferences say; no folder (no root available, or a
+    validation-only build) names no recording at all. A scan list passes it through its tuner build, once. The caller
+    says what a start is (`SessionArgsBuilder::start(system, host, kind)`: "saved", "explore", "search"), since an edited
+    Explore map can carry a saved system's uid. Extra options naming `-7`, `--wav-journal` or
+    `--rdio-api-delete-after-upload` refuse the start (`SessionArgsError::CallRecordingOption`), and `-w` does while
+    Record calls is on (`CallRecordingStaticWav`); `session_args_recording_extra_error()` reads a token after a short
+    option that takes a value as that value, and a number after a long option as its value (decided limit: a flag-only
+    long option followed by a bare `-7 <folder>` is not caught). `qt_ui.cpp` hands the store `recordingLimitMb` before
+    `start()` and on every change. Live changes: `CommandBridge::setRecordCalls()` (WAV start/stop) and
+    `setRecordUnknownOnly()`, confirmed through `recording_view`.
+  - Host surface (`DecoderHost`): playback (`playbackSupported`, `playRecording(path)`, pause/resume/seek/stop, the
+    `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
+    and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
+    reference and ends in exactly one `recordingTransferFinished(selection, result, missing)`, a refusal included; one
+    at a time; `recordingTransfer*` progress) and share (`shareRecording()`, indexed recordings only). The base host
+    has no player and no zip, and saves one file synchronously through `copyFileToDocument()`; a platform overrides
+    `beginPlayback()`, `beginRecordingTransfer()` and `shareRecordingFile()` and reports through `publishPlayback()`,
+    `publishRecordingTransferProgress()` and `finishRecordingTransfer()`. A play, export or share that finds a file gone
+    emits `recordingFilesMissing(paths)`. `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing
+    (`setPlayingPath()` from Preparing to the end), releases each transfer's selection when it finishes, rechecks the
+    missing files (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`).
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
     reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
     true and a session may start; only after that does it read each folder whole (one directory listing, the journal
@@ -8053,7 +8079,9 @@ Qt Quick frontend (`src/ui/qt`):
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file),
-    `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls).
+    `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
+    `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
+    bridge and queue), the host surface in `UI_QT_RECORDING_STORE`, the preferences in `UI_QT_PERSISTENCE`.
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
   carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
   `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,

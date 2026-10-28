@@ -162,18 +162,21 @@ wire_screen_policy(DecoderHost* host, const AppPrefs* prefs) {
 
 // Issue #708: the call recording store indexes the recordings, History asks it which rows have one, and the session
 // starters ask it for each session's folder. It follows the host's session reports, holding every journal until the
-// host knows its state (a decoder that kept running while the UI was recreated is only learnt at the first poll).
+// host knows its state (a decoder that kept running while the UI was recreated is only learnt at the first poll), and
+// serves the host's playback, export and share.
 static RecordingStore*
-wire_recordings(QQmlApplicationEngine& engine, DecoderHost* host, CallHistoryModel* history,
+wire_recordings(QQmlApplicationEngine& engine, DecoderHost* host, const AppPrefs* prefs, CallHistoryModel* history,
                 SessionArgsBuilder* sessionArgs, ScanListStarter* scanListStarter) {
     auto* recordings = new RecordingStore(&engine);
     recordings->setRoots(host->recordingRoots());
+    recording_store_follow_limit(recordings, prefs);
     history->setRecordingProvider(recordings);
     QObject::connect(recordings, &RecordingStore::recordingFragmentsChanged, history,
                      &CallHistoryModel::recordingFragmentsChanged);
     sessionArgs->setRecordingSessions(recordings);
     scanListStarter->setRecordingSessions(recordings);
     recording_store_follow_host(recordings, host);
+    recording_store_serve_host(recordings, host);
     recordings->start();
     return recordings;
 }
@@ -241,7 +244,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     // Issue #708: History keeps reading the published rings while Qt is paused in the background.
     history->setHistoryTapSource(&dsd_app_history_tap_copy);
     // Created after History so it outlives it: History holds it as its recording provider.
-    auto* recordings = wire_recordings(engine, host, history, sessionArgs, scanListStarter);
+    auto* recordings = wire_recordings(engine, host, prefs, history, sessionArgs, scanListStarter);
     auto* talkgroups = new TalkgroupListModel(history, &engine);
     auto* talkgroupView = new TalkgroupFilterModel(&engine);
     talkgroupView->setSourceModel(talkgroups);

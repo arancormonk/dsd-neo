@@ -227,6 +227,18 @@ CommandBridge::setRelaxedCrc(bool on) const {
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
+CommandBridge::setRecordCalls(bool on) const {
+    return accepted(dsd_app_command_submit(on ? DSD_APP_CMD_WAV_START : DSD_APP_CMD_WAV_STOP, nullptr, 0));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
+CommandBridge::setRecordUnknownOnly(bool on) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, on ? 1 : 0));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
 CommandBridge::clearTemporaryTgAvoids(const QString& context) const {
     bool valid = false;
     const uint64_t value = context.toULongLong(&valid);

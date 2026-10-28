@@ -346,6 +346,7 @@ jobs:
             dsd-neo_test_ui_qt_recording_store \
             dsd-neo_test_ui_qt_frequency_query \
             dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_session_args_parse \
             dsd-neo_test_ui_qt_scan_list_targets \
             dsd-neo_test_ui_qt_scan_list_roundtrip \
             dsd-neo_test_engine_trunk_scan_scan_list \

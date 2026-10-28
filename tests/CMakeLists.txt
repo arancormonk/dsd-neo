@@ -18988,6 +18988,7 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_recording_store
         ui/test_ui_qt_recording_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -19129,6 +19130,40 @@ if(DSD_ENABLE_QT_UI)
                 dsd-neo_test_support
         )
     endif()
+endif()
+
+# Issue #708: each start path's call recording argv through the real CLI parser, and Settings' live recording
+# switches through the real command bridge and queue.
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_session_args_parse
+        ui/test_ui_qt_session_args_parse.cpp
+    )
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_ui_qt_session_args_parse
+            PRIVATE
+                dsd-neo_ui_qt
+                "-Wl,--start-group"
+                ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_ui_qt_session_args_parse
+            PRIVATE
+                dsd-neo_ui_qt
+                ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME UI_QT_SESSION_ARGS_PARSE
+        COMMAND dsd-neo_test_ui_qt_session_args_parse
+    )
 endif()
 
 # The FFT wrapper is usable without radio hardware or an enabled SDR backend.

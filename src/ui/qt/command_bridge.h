@@ -128,6 +128,16 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setPersistTgLockouts(bool persist) const;
     /** @brief Set Relaxed CRC (-F) on or off: the configured value, beneath a scan row's own while one is on air. */
     Q_INVOKABLE bool setRelaxedCrc(bool on) const;
+    /**
+     * @brief Start or stop recording each call in the running session (issue #708, D8): WAV start or stop, which
+     * records into the folder the session was started with.
+     *
+     * Queued like every command; the decoder holds it while a carrier loop of its own runs and refuses it during
+     * Signal search, and its recording view (<dsd-neo/app_control/recording_view.h>) says when it applied.
+     */
+    Q_INVOKABLE bool setRecordCalls(bool on) const;
+    /** @brief Record only calls no talkgroup row knows, or every call (issue #708); held and refused as above. */
+    Q_INVOKABLE bool setRecordUnknownOnly(bool on) const;
     Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
 
     /** @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added. */

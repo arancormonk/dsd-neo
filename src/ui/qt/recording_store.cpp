@@ -19,6 +19,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QMap>
+#include <QPointer>
 #include <QSaveFile>
 #include <QStorageInfo>
 #include <QVariant>
@@ -33,8 +34,10 @@
 #include <qflags.h>
 #include <stdint.h>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
+#include "app_prefs.h"
 #include "decoder_host.h"
 #include "realtime_clock.h"
 #include "recording_journal.h"
@@ -43,7 +46,7 @@ namespace dsd_qt {
 
 namespace {
 
-constexpr QLatin1String kJournalName("recordings.jsonl");
+constexpr QLatin1String kJournalName(kRecordingJournalFileName);
 constexpr QLatin1String kFolderFile("folder.json");
 constexpr QLatin1String kExplore("explore");
 /* Folder names stay short enough for every filesystem and a phone's file browser. */
@@ -322,6 +325,35 @@ recording_store_follow_host(RecordingStore* store, DecoderHost* host) {
     report();
     QObject::connect(host, &DecoderHost::sessionStateChanged, store, report);
     QObject::connect(host, &DecoderHost::sessionStateKnownChanged, store, report);
+}
+
+void
+recording_store_serve_host(RecordingStore* store, DecoderHost* host) {
+    const QPointer<RecordingStore> guarded(store);
+    host->setRecordingIndex([guarded](const QString& path) { return guarded && guarded->isIndexedPath(path); });
+    QObject::connect(host, &DecoderHost::recordingFilesMissing, store, &RecordingStore::recheckPaths);
+    QObject::connect(host, &DecoderHost::recordingTransferFinished, store,
+                     [store](int selection, int result, int missing) {
+                         (void)result;
+                         (void)missing;
+                         store->releaseSelection(selection);
+                     });
+    // Held from Preparing until the player lets it go: a delete waits rather than pulling the file from under it.
+    const auto follow = [store, host]() {
+        const int state = host->playbackState();
+        const bool open = state == DecoderHost::PlaybackPreparing || state == DecoderHost::PlaybackPlaying
+                          || state == DecoderHost::PlaybackPaused;
+        store->setPlayingPath(open ? host->playbackPath() : QString());
+    };
+    follow();
+    QObject::connect(host, &DecoderHost::playbackChanged, store, follow);
+}
+
+void
+recording_store_follow_limit(RecordingStore* store, const AppPrefs* prefs) {
+    store->setLimitMb(prefs->recordingLimitMb());
+    QObject::connect(prefs, &AppPrefs::recordingLimitMbChanged, store,
+                     [store, prefs]() { store->setLimitMb(prefs->recordingLimitMb()); });
 }
 
 /* --- Worker. --- */
@@ -1841,6 +1873,21 @@ RecordingStore::recheckRecordings(const QStringList& ids) {
         m_passRequested = true;
     }
     m_wake.notify_all();
+}
+
+void
+RecordingStore::recheckPaths(const QStringList& paths) {
+    QStringList ids;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        for (const QString& path : paths) {
+            const auto id = path.isEmpty() ? m_byPath.cend() : m_byPath.constFind(clean_absolute(path));
+            if (id != m_byPath.cend()) {
+                ids.append(id.value());
+            }
+        }
+    }
+    recheckRecordings(ids);
 }
 
 /* --- Tests. --- */

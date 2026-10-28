@@ -25,6 +25,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <functional>
 #include <utility>
 
 namespace dsd_qt {
@@ -59,6 +60,17 @@ class DecoderHost : public QObject {
     Q_PROPERTY(QVariantMap receiverHealth READ receiverHealth NOTIFY runResultChanged)
     Q_PROPERTY(QString audioRoute READ audioRoute NOTIFY audioRouteChanged)
     Q_PROPERTY(bool notificationPermissionNeeded READ notificationPermissionNeeded NOTIFY notificationPermissionChanged)
+    /* Call recordings (issue #708): playback, export and share. */
+    Q_PROPERTY(bool playbackSupported READ playbackSupported CONSTANT)
+    Q_PROPERTY(QString playbackPath READ playbackPath NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackState READ playbackState NOTIFY playbackChanged)
+    Q_PROPERTY(qint64 playbackPositionMs READ playbackPositionMs NOTIFY playbackPositionChanged)
+    Q_PROPERTY(qint64 playbackDurationMs READ playbackDurationMs NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackError READ playbackError NOTIFY playbackChanged)
+    Q_PROPERTY(bool recordingExportSupported READ recordingExportSupported CONSTANT)
+    Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
+    Q_PROPERTY(qint64 recordingTransferBytes READ recordingTransferBytes NOTIFY recordingTransferChanged)
+    Q_PROPERTY(qint64 recordingTransferTotalBytes READ recordingTransferTotalBytes NOTIFY recordingTransferChanged)
 
   public:
     /**
@@ -87,6 +99,33 @@ class DecoderHost : public QObject {
      * opened, written or committed).
      */
     enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2, DocumentLocalFailed = 3 };
+
+    /**
+     * @brief What the call recording player is doing (issue #708). Stopped: nothing open. Preparing: opening
+     * playbackPath. Failed: it could not play; playbackError says why.
+     */
+    enum PlaybackState {
+        PlaybackStopped = 0,
+        PlaybackPreparing = 1,
+        PlaybackPlaying = 2,
+        PlaybackPaused = 3,
+        PlaybackFailed = 4
+    };
+    Q_ENUM(PlaybackState)
+
+    /**
+     * @brief How a recording export or save ended (recordingTransferFinished()). Missing: every file it named was
+     * gone. Busy: another transfer was running. Unsupported: this host cannot write it (the base host has no zip).
+     */
+    enum RecordingTransferResult {
+        TransferDone = 0,
+        TransferFailed = 1,
+        TransferCancelled = 2,
+        TransferMissing = 3,
+        TransferBusy = 4,
+        TransferUnsupported = 5
+    };
+    Q_ENUM(RecordingTransferResult)
 
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
@@ -229,6 +268,115 @@ class DecoderHost : public QObject {
      * The base host keeps them in one root, "Call recordings" in the app data folder.
      */
     virtual QStringList recordingRoots() const;
+
+    /*
+     * Call recording playback (issue #708, D6/D7/D10). One recording plays at a time, beside the live audio. The
+     * platform's player runs it and publishes what it does through publishPlayback(); a host without one answers
+     * playbackSupported() false and every play fails with "unsupported".
+     *
+     * playbackError is empty, or why the play failed, for the UI to word: "missing" (the file is gone; the recording
+     * store is told), "unavailable" (the platform would not give the app audio now, e.g. during a phone call),
+     * "unsupported", or "failed" (it could not be read).
+     */
+    virtual bool
+    playbackSupported() const {
+        return false;
+    }
+
+    QString
+    playbackPath() const {
+        return m_playbackPath;
+    }
+
+    int
+    playbackState() const {
+        return m_playbackState;
+    }
+
+    qint64
+    playbackPositionMs() const {
+        return m_playbackPositionMs;
+    }
+
+    qint64
+    playbackDurationMs() const {
+        return m_playbackDurationMs;
+    }
+
+    QString
+    playbackError() const {
+        return m_playbackError;
+    }
+
+    /** @brief Play the call recording at @p path from its start, replacing the one playing. */
+    Q_INVOKABLE void playRecording(const QString& path);
+
+    Q_INVOKABLE virtual void
+    pausePlayback() {}
+
+    Q_INVOKABLE virtual void
+    resumePlayback() {}
+
+    Q_INVOKABLE virtual void
+    seekPlayback(qint64 positionMs) {
+        (void)positionMs;
+    }
+
+    /** @brief Close the recording playing. A host with a player stops it and calls this base, which publishes it. */
+    Q_INVOKABLE virtual void stopPlayback();
+
+    /*
+     * Call recording export, save and share (issue #708, D9). The recording store resolves what to send and holds
+     * those files (RecordingStore::selectForExport() / selectRecordings()); the host writes them into the document the
+     * user picked (@p reference, a file:// URL or a platform document URI) and then emits recordingTransferFinished()
+     * with that selection, exactly once for every call, a refused one included, so the store can let the files go.
+     * One transfer runs at a time.
+     */
+    virtual bool
+    recordingExportSupported() const {
+        return false;
+    }
+
+    bool
+    recordingTransferActive() const {
+        return m_transferSelection >= 0;
+    }
+
+    qint64
+    recordingTransferBytes() const {
+        return m_transferBytes;
+    }
+
+    qint64
+    recordingTransferTotalBytes() const {
+        return m_transferTotalBytes;
+    }
+
+    /**
+     * @brief Write the recordings of @p selection into one zip, @p reference.
+     * @return Whether the export began; recordingTransferFinished() follows either way.
+     */
+    Q_INVOKABLE bool exportRecordings(const QVariantMap& selection, const QString& reference);
+    /**
+     * @brief Copy the one recording of @p selection, as it is, into @p reference.
+     * @return Whether the save began; recordingTransferFinished() follows either way.
+     */
+    Q_INVOKABLE bool saveRecording(const QVariantMap& selection, const QString& reference);
+
+    /** @brief Stop the running export or save; it finishes as TransferCancelled. Hosts that run one override it. */
+    Q_INVOKABLE virtual void
+    cancelRecordingTransfer() {}
+
+    /**
+     * @brief Hand the call recording at @p path to another app (shareSupported()), titled @p title.
+     *
+     * Only a finished recording the store manages (setRecordingIndex()) is shared; a missing one is reported.
+     * @return Whether the platform took it.
+     */
+    Q_INVOKABLE bool shareRecording(const QString& path, const QString& title);
+
+    /** @brief Which paths are call recordings the store manages (shareRecording() shares nothing else). */
+    void setRecordingIndex(std::function<bool(const QString&)> indexed);
 
     virtual QString
     audioRoute() const {
@@ -596,8 +744,46 @@ class DecoderHost : public QObject {
     void sessionStateChanged();
     void sessionStateKnownChanged();
     void localDeviceChanged();
+    void playbackChanged();
+    void playbackPositionChanged();
+    void recordingTransferChanged();
+    /** @brief The export or save of @p selection ended (a RecordingTransferResult); @p missing files were gone. */
+    void recordingTransferFinished(int selection, int result, int missing);
+    /** @brief Playback, an export or a share found these call recordings gone: the store looks at them again. */
+    void recordingFilesMissing(const QStringList& paths);
 
   protected:
+    /** @brief Start playing @p path, a file that exists, published Preparing. The base host has no player. */
+    virtual void beginPlayback(const QString& path);
+
+    /**
+     * @brief Begin writing @p paths into @p reference: one zip with entries named @p names when @p zip, else the one
+     * file as it is. The host reports progress through publishRecordingTransferProgress() and its end, once, through
+     * finishRecordingTransfer(), on the GUI thread.
+     *
+     * The base host saves a single file synchronously through copyFileToDocument(), and has no zip.
+     * @return false when it could not begin (finished as TransferFailed).
+     */
+    virtual bool beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
+                                        bool zip);
+
+    /** @brief Share @p path, a recording the store manages, through the platform; the base host cannot. */
+    virtual bool
+    shareRecordingFile(const QString& path, const QString& title) {
+        (void)path;
+        (void)title;
+        return false;
+    }
+
+    /** @brief What the player is doing now; emits the change signals for what changed. */
+    void publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error);
+    void publishRecordingTransferProgress(qint64 bytes, qint64 totalBytes);
+    /** @brief The running transfer ended with @p result (a RecordingTransferResult); @p missing of its files were
+     * gone (reported to the store too). */
+    void finishRecordingTransfer(int result, const QStringList& missing);
+    /** @brief Tell the recording store these call recordings were found gone. */
+    void reportRecordingsMissing(const QStringList& paths);
+
     /** Whether abortDocumentTransfers() was called; document copies check it before every chunk. */
     bool
     documentTransfersAborted() const {
@@ -605,7 +791,23 @@ class DecoderHost : public QObject {
     }
 
   private:
+    bool beginTransfer(const QVariantMap& selection, const QString& reference, bool zip);
+    /* recordingTransferFinished() for @p selection, queued: a caller sees its call return first. */
+    void announceTransferEnd(int selection, int result, int missing);
+
     std::atomic<bool> m_documentTransfersAborted{false};
+    QString m_playbackPath;
+    int m_playbackState = PlaybackStopped;
+    qint64 m_playbackPositionMs = 0;
+    qint64 m_playbackDurationMs = 0;
+    QString m_playbackError;
+    /* The running transfer's selection, -1 with none. */
+    int m_transferSelection = -1;
+    /* Files the running transfer's selection named that were gone before it began. */
+    int m_transferMissing = 0;
+    qint64 m_transferBytes = 0;
+    qint64 m_transferTotalBytes = 0;
+    std::function<bool(const QString&)> m_recordingIndexed;
 };
 
 } // namespace dsd_qt

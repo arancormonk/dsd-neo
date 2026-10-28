@@ -50,6 +50,7 @@ class QFileInfo;
 
 namespace dsd_qt {
 
+class AppPrefs;
 class DecoderHost;
 
 struct RecordingJournalRecord;
@@ -81,6 +82,17 @@ class RecordingStore;
  * the store holds every journal until the host does.
  */
 void recording_store_follow_host(RecordingStore* store, DecoderHost* host);
+
+/**
+ * @brief Let @p host play, export and share the recordings @p store manages: the file playing is held
+ * (RecordingStore::setPlayingPath()), an export's or save's selection is released when it ends, files the host found
+ * gone are looked at again (RecordingStore::recheckPaths()), and only indexed recordings are shared.
+ */
+void recording_store_serve_host(RecordingStore* store, DecoderHost* host);
+
+/** @brief Give @p store the user's storage limit (AppPrefs::recordingLimitMb()) now and at every change: it applies
+ * none until it has one, so this comes before RecordingStore::start(). */
+void recording_store_follow_limit(RecordingStore* store, const AppPrefs* prefs);
 
 class RecordingStore : public QObject, public CallRecordingProvider, public RecordingSessions {
     Q_OBJECT
@@ -207,6 +219,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * or no longer a regular file, leaves the index, its fragments announced; one still there has its size read again.
      */
     Q_INVOKABLE void recheckRecordings(const QStringList& ids);
+    /** @brief recheckRecordings() for the recordings at @p paths (playback, an export or a share names files). */
+    void recheckPaths(const QStringList& paths);
 
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */

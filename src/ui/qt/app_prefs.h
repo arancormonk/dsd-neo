@@ -83,6 +83,12 @@ class AppPrefs : public QObject {
      * phone's screen was arranged, so it stays on the device and out of backups. */
     Q_PROPERTY(bool monitorDetailsExpanded READ monitorDetailsExpanded WRITE setMonitorDetailsExpanded NOTIFY
                    monitorDetailsExpandedChanged)
+    /* Call recording (issue #708). Every session the app starts records per call while recordCalls is on; Settings
+     * also applies both switches to a running session. The limit is the recording store's, in decimal MB. */
+    Q_PROPERTY(bool recordCalls READ recordCalls WRITE setRecordCalls NOTIFY recordCallsChanged)
+    Q_PROPERTY(bool recordUnknownOnly READ recordUnknownOnly WRITE setRecordUnknownOnly NOTIFY recordUnknownOnlyChanged)
+    Q_PROPERTY(int recordingLimitMb READ recordingLimitMb WRITE setRecordingLimitMb NOTIFY recordingLimitMbChanged)
+    Q_PROPERTY(QVariantList recordingLimitChoices READ recordingLimitChoices CONSTANT)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -236,6 +242,22 @@ class AppPrefs : public QObject {
     bool monitorDetailsExpanded() const;
     void setMonitorDetailsExpanded(bool on);
 
+    /** @brief Record each call of every session the app starts (-P); off by default. */
+    bool recordCalls() const;
+    void setRecordCalls(bool on);
+
+    /** @brief Record only calls no talkgroup row knows (--record-unknown-only); off by default. */
+    bool recordUnknownOnly() const;
+    void setRecordUnknownOnly(bool on);
+
+    /** @brief The call recordings' storage limit in decimal MB, 0 for none; one of recordingLimitChoices(), else
+     *         1000 (1 GB). */
+    int recordingLimitMb() const;
+    void setRecordingLimitMb(int mb);
+
+    /** @brief The limits offered, in MB: 250, 500, 1000, 2000, 5000 and 0 (no limit). */
+    QVariantList recordingLimitChoices() const;
+
   Q_SIGNALS:
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
@@ -263,6 +285,9 @@ class AppPrefs : public QObject {
     void exploreChanged();
     void searchChanged();
     void monitorDetailsExpandedChanged();
+    void recordCallsChanged();
+    void recordUnknownOnlyChanged();
+    void recordingLimitMbChanged();
 
   private:
     void expireLocation() const;

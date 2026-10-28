@@ -704,6 +704,31 @@ class CommandRecorder : public QObject {
         return m_relaxed_crc_requests;
     }
 
+    /* Issue #708: Record calls and unknown-only applied to a running session, each request as {kind, on}. */
+    Q_INVOKABLE bool
+    setRecordCalls(bool on) {
+        m_recording_requests.append(
+            QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")}, {QStringLiteral("on"), on}});
+        return m_recording_accepted;
+    }
+
+    Q_INVOKABLE bool
+    setRecordUnknownOnly(bool on) {
+        m_recording_requests.append(
+            QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordUnknownOnly")}, {QStringLiteral("on"), on}});
+        return m_recording_accepted;
+    }
+
+    Q_INVOKABLE void
+    setRecordingAccepted(bool accepted) {
+        m_recording_accepted = accepted;
+    }
+
+    Q_INVOKABLE QVariantList
+    recordingRequests() const {
+        return m_recording_requests;
+    }
+
     Q_INVOKABLE bool
     clearTemporaryTgAvoids(const QString& context) {
         m_avoid_clear_requests.append(context);
@@ -1007,6 +1032,8 @@ class CommandRecorder : public QObject {
         m_lockout_requests.clear();
         m_relaxed_crc_accepted = true;
         m_relaxed_crc_requests.clear();
+        m_recording_accepted = true;
+        m_recording_requests.clear();
         m_avoid_clear_requests.clear();
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
@@ -1257,6 +1284,8 @@ class CommandRecorder : public QObject {
     QVariantList m_lockout_requests;
     bool m_relaxed_crc_accepted = true;
     QVariantList m_relaxed_crc_requests;
+    bool m_recording_accepted = true;
+    QVariantList m_recording_requests;
     QStringList m_avoid_clear_requests;
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
@@ -2917,6 +2946,17 @@ class Setup : public QObject {
         host[QStringLiteral("receiverHealth")] = dsd_qt::DecoderHost::healthyReceiver();
         host[QStringLiteral("sessionState")] = 0;
         host[QStringLiteral("keyboardTop")] = -1;
+        /* Issue #708: no player and no zip, as the base host; a case scripts the playback and transfer states. */
+        host[QStringLiteral("playbackSupported")] = false;
+        host[QStringLiteral("playbackPath")] = QString();
+        host[QStringLiteral("playbackState")] = 0;
+        host[QStringLiteral("playbackPositionMs")] = 0;
+        host[QStringLiteral("playbackDurationMs")] = 0;
+        host[QStringLiteral("playbackError")] = QString();
+        host[QStringLiteral("recordingExportSupported")] = false;
+        host[QStringLiteral("recordingTransferActive")] = false;
+        host[QStringLiteral("recordingTransferBytes")] = 0;
+        host[QStringLiteral("recordingTransferTotalBytes")] = 0;
         m_host = host;
         m_host_readings = new ReadingMap(engine);
         for (auto it = host.cbegin(); it != host.cend(); ++it) {

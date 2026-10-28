@@ -518,6 +518,54 @@ test_units_preference() {
     expect("switching back to imperial persists", !restored.metricUnits());
 }
 
+/* Issue #708: call recording's preferences. Off by default; the storage limit is one of the choices Settings offers
+ * (decimal MB, 0 for no limit), 1 GB unless chosen, and a damaged value reads as the default. */
+void
+test_recording_prefs() {
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    const QString limitKey = QStringLiteral("recording/limitMb");
+    stored.remove(QStringLiteral("recording/recordCalls"));
+    stored.remove(QStringLiteral("recording/recordUnknownOnly"));
+    stored.remove(limitKey);
+    {
+        AppPrefs prefs;
+        int limitChanges = 0;
+        QObject::connect(&prefs, &AppPrefs::recordingLimitMbChanged, &prefs, [&limitChanges]() { ++limitChanges; });
+        expect("call recording is off by default", !prefs.recordCalls() && !prefs.recordUnknownOnly());
+        expect("the storage limit defaults to 1 GB", prefs.recordingLimitMb() == 1000);
+        expect("the limits Settings offers",
+               prefs.recordingLimitChoices() == QVariantList({250, 500, 1000, 2000, 5000, 0}));
+        prefs.setRecordCalls(true);
+        prefs.setRecordUnknownOnly(true);
+        prefs.setRecordingLimitMb(0);
+        expect("no limit is a choice", prefs.recordingLimitMb() == 0 && limitChanges == 1);
+        prefs.setRecordingLimitMb(0);
+        expect("a repeated limit does not notify", limitChanges == 1);
+        prefs.setRecordingLimitMb(750);
+        expect("an off-list limit is written as 1 GB",
+               prefs.recordingLimitMb() == 1000 && stored.value(limitKey).toInt() == 1000 && limitChanges == 2);
+        prefs.setRecordingLimitMb(2000);
+    }
+    {
+        AppPrefs reloaded;
+        expect("the switches persist", reloaded.recordCalls() && reloaded.recordUnknownOnly());
+        expect("the limit persists", reloaded.recordingLimitMb() == 2000);
+        stored.setValue(limitKey, -5);
+        expect("a negative stored limit reads as 1 GB", reloaded.recordingLimitMb() == 1000);
+        stored.setValue(limitKey, QStringLiteral("abc"));
+        expect("an unparsable stored limit reads as 1 GB", reloaded.recordingLimitMb() == 1000);
+        int limitChanges = 0;
+        QObject::connect(&reloaded, &AppPrefs::recordingLimitMbChanged, &reloaded,
+                         [&limitChanges]() { ++limitChanges; });
+        reloaded.setRecordingLimitMb(1000);
+        expect("a corrective limit write replaces the damage",
+               stored.value(limitKey).toString() == QStringLiteral("1000") && limitChanges == 1);
+    }
+    stored.remove(QStringLiteral("recording/recordCalls"));
+    stored.remove(QStringLiteral("recording/recordUnknownOnly"));
+    stored.remove(limitKey);
+}
+
 /* Issue #574: the screen mode and its delay, which replaced the keep-awake switch.
  * The mode codes are a contract with the Android policy (ScreenPolicy.Mode). */
 void
@@ -869,6 +917,9 @@ test_prefs_key_table(void) {
         {"searchHost", QStringLiteral("host"), "search/host"},
         {"searchPort", 4321, "search/port"},
         {"monitorDetailsExpanded", true, "monitor/detailsExpanded"},
+        {"recordCalls", true, "recording/recordCalls"},
+        {"recordUnknownOnly", true, "recording/recordUnknownOnly"},
+        {"recordingLimitMb", 5000, "recording/limitMb"},
     };
     QStringList covered;
     int writable = 0;
@@ -961,7 +1012,10 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("rr/appKey"))
                && portable.contains(QStringLiteral("explore/sourceType"))
                && portable.contains(QStringLiteral("search/sourceType"))
-               && portable.contains(QStringLiteral("search/host")) && portable.contains(QStringLiteral("search/port")));
+               && portable.contains(QStringLiteral("search/host")) && portable.contains(QStringLiteral("search/port"))
+               && portable.contains(QStringLiteral("recording/recordCalls"))
+               && portable.contains(QStringLiteral("recording/recordUnknownOnly"))
+               && portable.contains(QStringLiteral("recording/limitMb")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys",
@@ -1102,6 +1156,7 @@ main(int argc, char** argv) {
     test_app_prefs();
     test_receiver_prefs();
     test_screen_policy_prefs();
+    test_recording_prefs();
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();

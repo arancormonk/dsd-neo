@@ -2,11 +2,11 @@
 #ifndef DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #define DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #include <QObject>
+#include <QString>
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
 #include <utility>
-class QString;
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -43,8 +43,9 @@ class ScanListStarter : public QObject {
   private:
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
-    QVariantMap prepare(const QVariantMap& list, bool materialize) const;
-    QVariantMap prepareCsv(const QVariantMap& list, bool materialize) const;
+    /* @p recordingFolder: the folder the session records into (SessionArgPrefs::recordingFolder); empty for none. */
+    QVariantMap prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder = QString()) const;
+    QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder) const;
     std::function<bool(const QString&)> m_targetFileLookup;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;

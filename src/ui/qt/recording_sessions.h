@@ -20,6 +20,9 @@
 
 namespace dsd_qt {
 
+/** @brief The journal a session writes in its recording folder (--wav-journal <folder>/recordings.jsonl). */
+constexpr char kRecordingJournalFileName[] = "recordings.jsonl";
+
 class RecordingSessions {
   public:
     virtual ~RecordingSessions() = default;

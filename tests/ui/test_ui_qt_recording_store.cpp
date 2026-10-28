@@ -37,6 +37,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -58,6 +59,7 @@
 #include <thread>
 #include <time.h>
 #include "../test_support/qt_test_paths.h"
+#include "app_prefs.h"
 #include "call_history_model.h"
 #include "call_recording_provider.h"
 #include "decoder_host.h"
@@ -1284,6 +1286,212 @@ test_player_release_wakes_a_waiting_delete(void) {
     s.store.setPlayingPath(QString());
 }
 
+/* A host with a player, share and a transfer it finishes when the test says (Android's run on their own threads). */
+class ServedHost : public dsd_qt::DecoderHost {
+  public:
+    QStringList played;
+    QStringList shared;
+    QStringList transferred;
+    bool zipTransfers = true;
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        (void)argv;
+        return false;
+    }
+
+    void
+    stop() override {}
+
+    bool
+    playbackSupported() const override {
+        return true;
+    }
+
+    bool
+    shareSupported() const override {
+        return true;
+    }
+
+    bool
+    recordingExportSupported() const override {
+        return zipTransfers;
+    }
+
+    void
+    playing(const QString& path) {
+        publishPlayback(path, PlaybackPlaying, 1000, 4000, QString());
+    }
+
+    void
+    finish(int result, const QStringList& missing = {}) {
+        finishRecordingTransfer(result, missing);
+    }
+
+  protected:
+    void
+    beginPlayback(const QString& path) override {
+        played.append(path);
+    }
+
+    bool
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
+                           bool zip) override {
+        if (!zip) {
+            return DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+        }
+        transferred = paths;
+        return true;
+    }
+
+    bool
+    shareRecordingFile(const QString& path, const QString& title) override {
+        (void)title;
+        shared.append(path);
+        return true;
+    }
+};
+
+/* Issue #708: the host's playback, export, save and share through the store: the file playing and the files a
+ * transfer selected are held until the player and the transfer let them go, every transfer releases its selection,
+ * only indexed recordings are shared, and whatever the host finds gone is looked at again. */
+void
+test_host_surface(void) {
+    Roots roots;
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    for (int i = 1; i <= 4; i++) {
+        record(folder, QStringLiteral("0000000000000099-%1").arg(i), QStringLiteral("h%1.wav").arg(i), 1754714000 + i,
+               900 + i);
+    }
+    s.pass();
+    const auto path = [&folder](int i) { return folder + QStringLiteral("/h%1.wav").arg(i); };
+    const auto id = [](int i) { return QStringLiteral("0000000000000099-%1").arg(i); };
+    const auto waitGone = [&s](const QString& file) {
+        const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+        while (QFileInfo::exists(file) && dsd_realtime_mono_ms() < deadline) {
+            s.pass();
+        }
+        return !QFileInfo::exists(file);
+    };
+
+    // Playback holds its file from Preparing until it stops.
+    host.playRecording(path(1));
+    expect("a play is published Preparing before the player is asked",
+           host.played == QStringList{path(1)} && host.playbackState() == dsd_qt::DecoderHost::PlaybackPreparing
+               && host.playbackPath() == path(1));
+    host.playing(path(1));
+    s.store.deleteRecording(id(1));
+    s.pass();
+    expect("the file playing waits for its delete", QFileInfo::exists(path(1)) && s.store.deletesWaiting() == 1);
+    host.stopPlayback();
+    expect("stopped", host.playbackState() == dsd_qt::DecoderHost::PlaybackStopped && host.playbackPath().isEmpty());
+    expect("and deleted once it stops", waitGone(path(1)));
+
+    // A file gone behind the store's back: the play fails as missing, and the store looks again.
+    QFile::remove(path(2));
+    host.playRecording(path(2));
+    expect("a missing file fails as missing, never reaching the player",
+           host.playbackState() == dsd_qt::DecoderHost::PlaybackFailed
+               && host.playbackError() == QStringLiteral("missing") && host.played.size() == 1);
+    s.pass();
+    expect("and leaves the index", !s.store.isIndexedPath(path(2)) && s.store.recordingCount() == 2);
+
+    // A save copies one recording and releases its selection; a delete asked meanwhile waits for it.
+    const QString dest = roots.dir.path() + QStringLiteral("/saved.wav");
+    QSignalSpy finished(&host, &dsd_qt::DecoderHost::recordingTransferFinished);
+    const QVariantMap one = s.store.selectRecordings({id(3)});
+    expect("a save begins", host.saveRecording(one, QUrl::fromLocalFile(dest).toString()));
+    s.store.deleteRecording(id(3));
+    s.pass();
+    expect("the save wrote the file", read_all(dest) == read_all(path(3)) && !read_all(dest).isEmpty());
+    expect("it finished, once, done", finished.count() == 1
+                                          && finished.at(0).at(0).toInt() == one.value("selection").toInt()
+                                          && finished.at(0).at(1).toInt() == dsd_qt::DecoderHost::TransferDone);
+    expect("and the delete it held ran after", waitGone(path(3)));
+
+    // An export runs on the host's own time; a second one meanwhile is refused as busy, releasing its own selection.
+    record(folder, id(5), QStringLiteral("h5.wav"), 1754714005, 905);
+    s.pass();
+    finished.clear();
+    const QVariantMap all = s.store.selectForExport(kUidA, QStringLiteral("all"));
+    const QVariantMap again = s.store.selectRecordings({id(4)});
+    expect("an export begins", host.exportRecordings(all, QStringLiteral("content://picked/zip"))
+                                   && host.recordingTransferActive() && host.transferred.size() == 2);
+    expect("a second is refused", !host.saveRecording(again, QStringLiteral("content://picked/one")));
+    s.pass();
+    expect("as busy, with its own selection",
+           finished.count() == 1 && finished.at(0).at(0).toInt() == again.value("selection").toInt()
+               && finished.at(0).at(1).toInt() == dsd_qt::DecoderHost::TransferBusy && host.recordingTransferActive());
+    s.store.deleteRecording(id(4));
+    s.pass();
+    expect("the export still holds its files", QFileInfo::exists(path(4)));
+    QFile::remove(path(5));
+    host.finish(dsd_qt::DecoderHost::TransferDone, {path(5)});
+    s.pass();
+    expect("its end counts the file it found gone",
+           finished.count() == 2 && finished.at(1).at(0).toInt() == all.value("selection").toInt()
+               && finished.at(1).at(2).toInt() == 1 && !host.recordingTransferActive());
+    expect("which leaves the index", !s.store.isIndexedPath(path(5)));
+    expect("and lets the waiting delete run", waitGone(path(4)));
+
+    // A host with no zip refuses an export, and the selection is still released.
+    host.zipTransfers = false;
+    record(folder, id(6), QStringLiteral("h6.wav"), 1754714006, 906);
+    s.pass();
+    finished.clear();
+    expect("no zip here", !host.exportRecordings(s.store.selectForExport(kUidA, QStringLiteral("all")),
+                                                 QStringLiteral("content://picked/zip")));
+    s.store.deleteRecording(id(6));
+    s.pass();
+    expect("refused as unsupported",
+           finished.count() == 1 && finished.at(0).at(1).toInt() == dsd_qt::DecoderHost::TransferUnsupported);
+    expect("and released", waitGone(path(6)));
+
+    // Share: indexed recordings only; a missing one is looked at again.
+    record(folder, id(7), QStringLiteral("h7.wav"), 1754714007, 907);
+    s.pass();
+    const QString stray = folder + QStringLiteral("/stray.wav");
+    make_file(stray, 100);
+    expect("an indexed recording is shared", host.shareRecording(path(7), QStringLiteral("County")));
+    expect("anything else is not",
+           !host.shareRecording(stray, QStringLiteral("County")) && host.shared == QStringList{path(7)});
+    QFile::remove(path(7));
+    expect("a missing one is not shared", !host.shareRecording(path(7), QStringLiteral("County")));
+    s.pass();
+    expect("and leaves the index", !s.store.isIndexedPath(path(7)));
+}
+
+/* Issue #708: the store has the user's storage limit before its first pass, and every change after. */
+void
+test_limit_follows_the_preference(void) {
+    Roots roots;
+    dsd_qt::AppPrefs prefs;
+    prefs.setRecordingLimitMb(250);
+    Store s(roots.list(), false);
+    dsd_qt::recording_store_follow_limit(&s.store, &prefs);
+    expect("the user's limit before the store starts", s.store.limitMb() == 250);
+    s.start();
+    prefs.setRecordingLimitMb(0);
+    expect("no limit, as soon as it is chosen", s.store.limitMb() == 0);
+    prefs.setRecordingLimitMb(5000);
+    expect("and every change after", s.store.limitMb() == 5000);
+    prefs.setRecordingLimitMb(1000);
+}
+
 } // namespace
 
 int
@@ -1313,6 +1521,8 @@ main(int argc, char** argv) {
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
     test_player_release_wakes_a_waiting_delete();
+    test_host_surface();
+    test_limit_follows_the_preference();
 
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

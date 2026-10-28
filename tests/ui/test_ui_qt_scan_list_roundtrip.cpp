@@ -14,6 +14,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -262,8 +263,8 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     check(csvStarter.validate(csvList).value("warnings").toStringList().isEmpty());
 }
 
-/* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, and
- * frees it when the start did not happen. */
+/* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, names
+ * it in the argv, and frees it when the start did not happen. */
 static void
 checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
     struct Sessions : RecordingSessions {
@@ -283,6 +284,7 @@ checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
 
     struct Host : DecoderHost {
         QStringList* calls = nullptr;
+        QStringList received;
         bool accept = true;
 
         bool
@@ -297,7 +299,7 @@ checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
 
         bool
         start(const QStringList& argv) override {
-            (void)argv;
+            received = argv;
             calls->append(QStringLiteral("start"));
             return accept;
         }
@@ -312,6 +314,9 @@ checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
         QStringLiteral("begin scan %1 %2").arg(list.value("uid").toString(), list.value("name").toString());
     check(starter.start(list, &host).value("started").toBool());
     check(sessions.calls == QStringList({begin, QStringLiteral("start")}));
+    const qsizetype folderAt = host.received.indexOf(QStringLiteral("-7"));
+    check(folderAt >= 0 && host.received.value(folderAt + 1) == QStringLiteral("/recordings/folder")
+          && host.received.count(QStringLiteral("--wav-journal")) == 1);
     sessions.calls.clear();
     host.accept = false;
     check(!starter.start(list, &host).value("started").toBool());
