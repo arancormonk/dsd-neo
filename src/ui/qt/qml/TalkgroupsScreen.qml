@@ -249,12 +249,15 @@ Item {
             required property var idStart
             required property var idEnd
             required property bool record
+            required property int tableIndex
+            required property string pattern
 
             width: ListView.view.width
             height: implicitHeight
             // Snapshot truth, not a local toggle: the decoder may refuse an edit.
-            onClicked: commands.setTalkgroupListening(idStart, idEnd, !listening)
-            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record)
+            // The row token (table index, pattern) names this row, so a duplicate or a pattern row is the one edited.
+            onClicked: commands.setTalkgroupListening(idStart, idEnd, !listening, talkgroups.policyContext, talkgroups.policyGeneration, tableIndex, pattern)
+            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record, tableIndex, pattern)
         }
 
         Text {

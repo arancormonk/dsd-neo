@@ -185,6 +185,45 @@ Item {
             compare(commands.selectionRows()[0].first, 1002);
         }
 
+        // A digit-pattern row is a card like a range's, with its canonical text as the ID, and its Listening toggle
+        // names the row (table index and pattern) with the captured list version.
+        function test_pattern_card_renders_and_toggle_submits_token() {
+            verify(testContext.pushPatternTalkgroup("12*", "A", "Twelve hundreds", "FIRE"));
+            tryCompare(tc.grid, "count", 4);
+            tc.search.text = "12*";
+            tryCompare(tc.grid, "count", 1);
+            var card = null;
+            tryVerify(function () {
+                card = tc.grid.itemAtIndex(0);
+                return card !== null && card.idText === "12*";
+            }, 5000, "the pattern card is missing");
+            tc.waitForRendering(tc.grid);
+            compare(card.name, "Twelve hundreds");
+            compare(findChild(card, "talkgroupBadge").text, "12*");
+            verify(card.listening && card.listed);
+
+            var toggle = findChild(card, "talkgroupListeningSwitch");
+            verify(toggle !== null);
+            mouseClick(toggle, toggle.width / 2, toggle.height / 2);
+            compare(testContext.talkgroupListenCalls(), 1);
+            compare(testContext.lastTalkgroupListenOn(), false);
+            var token = testContext.lastTalkgroupListenToken();
+            compare(token.tableIndex, 3);
+            compare(token.pattern, "12*");
+            compare(token.context, talkgroups.policyContext);
+            compare(token.generation, talkgroups.policyGeneration);
+            compare(testContext.lastTalkgroupListenIdStart(), 0);
+            compare(testContext.lastTalkgroupListenIdEnd(), 0);
+
+            // A typed number finds the pattern row that matches it.
+            tc.search.text = "1234";
+            tryCompare(tc.grid, "count", 1);
+            tryVerify(function () {
+                var only = tc.grid.itemAtIndex(0);
+                return only !== null && only.idText === "12*";
+            });
+        }
+
         function test_session_note_tracks_group_file_configuration() {
             var note = findChild(screenLoader.item, "sessionOnlyNote");
             verify(note !== null, "the session-only persistence note is missing");

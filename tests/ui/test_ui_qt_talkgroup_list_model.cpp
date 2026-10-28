@@ -97,6 +97,17 @@ struct Fixture {
     }
 
     void
+    appendPattern(const char* pattern, const char* mode, const char* name, const char* tags) {
+        dsd_tg_policy_entry entry;
+        expect("create pattern row",
+               dsd_tg_policy_make_exact_entry(0, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+        entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+        DSD_SNPRINTF(entry.pattern, sizeof(entry.pattern), "%s", pattern);
+        DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", tags);
+        expect("append pattern row", dsd_tg_policy_add_pattern_entry(state, &entry) == 0);
+    }
+
+    void
     commit(uint32_t tg, time_t when, bool voice = true) {
         Event_History_I* ring = &rings[0];
         DSD_MEMMOVE(&ring->Event_History_Items[2], &ring->Event_History_Items[1],
@@ -457,6 +468,109 @@ test_overlapping_ranges_cover_heard_talkgroups() {
     }
 }
 
+QModelIndex
+findText(const TalkgroupListModel& model, const QString& text) {
+    for (int i = 0; i < model.count(); ++i) {
+        const QModelIndex idx = model.index(i, 0);
+        if (model.data(idx, TalkgroupListModel::IdTextRole).toString() == text) {
+            return idx;
+        }
+    }
+    return {};
+}
+
+/* A pattern row is listed with its canonical text as its ID, covers the heard talkgroups it matches, is found by
+ * any typed number it matches, counts the session avoids it matches, and names its row (kind, pattern, table index)
+ * for the edits a card submits. */
+void
+test_pattern_rows() {
+    Fixture fixture;
+    fixture.append(1001, 1001, "A", "Dispatch", "Fire");
+    fixture.appendPattern("12*", "B", "Twelves", "Fire");
+    fixture.append(1300, 1399, "A", "Range", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    fixture.commit(1234, now);
+    fixture.commit(5000, now + 120);
+    fixture.commit(12, now + 240);
+    history.refresh(fixture.state);
+    expect("avoid 1234", dsd_tg_policy_session_avoid_add(fixture.state, 1234) == 0);
+    expect("avoid 1299", dsd_tg_policy_session_avoid_add(fixture.state, 1299) == 0);
+    expect("avoid 5000", dsd_tg_policy_session_avoid_add(fixture.state, 5000) == 0);
+    model.refresh(fixture.opts, fixture.state);
+
+    const QModelIndex pattern = findText(model, QStringLiteral("12*"));
+    const auto roles = model.roleNames();
+    expect("pattern row listed with its text as the ID", pattern.isValid());
+    expect("listed rows plus the uncovered heard talkgroup", model.count() == 4);
+    expect("a heard talkgroup the pattern matches is not listed separately",
+           !find(model, 1234).isValid() && !findText(model, QStringLiteral("12")).isValid());
+    expect("an unmatched heard talkgroup is listed", find(model, 5000).isValid());
+    expect("pattern row kind", model.data(pattern, roles.key("kind", -1)).toString() == QStringLiteral("pattern"));
+    expect("pattern row text", model.data(pattern, roles.key("pattern", -1)).toString() == QStringLiteral("12*"));
+    expect("pattern row table index", model.data(pattern, roles.key("tableIndex", -1)).toInt() == 1);
+    expect("pattern row listed and not tuned", model.data(pattern, TalkgroupListModel::ListedRole).toBool()
+                                                   && !model.data(pattern, TalkgroupListModel::ListeningRole).toBool());
+    expect("exact and range kinds",
+           model.data(find(model, 1001), roles.key("kind", -1)).toString() == QStringLiteral("exact")
+               && model.data(find(model, 1300), roles.key("kind", -1)).toString() == QStringLiteral("range")
+               && model.data(find(model, 1300), roles.key("pattern", -1)).toString().isEmpty()
+               && model.data(find(model, 1300), roles.key("tableIndex", -1)).toInt() == 2);
+    expect("heard row has no table index", model.data(find(model, 5000), roles.key("tableIndex", -1)).toInt() == -1);
+    expect("avoids the pattern matches are counted",
+           model.data(pattern, TalkgroupListModel::TemporaryAvoidCountRole).toULongLong() == 2);
+    expect("the range counts its own avoids",
+           model.data(find(model, 1300), TalkgroupListModel::TemporaryAvoidCountRole).toULongLong() == 0);
+
+    TalkgroupFilterModel view;
+    view.setSourceModel(&model);
+    view.setFilterText(QStringLiteral("1234"));
+    expect("a typed number finds the pattern that matches it",
+           view.count() == 1
+               && view.data(view.index(0, 0), TalkgroupListModel::IdTextRole).toString() == QStringLiteral("12*"));
+    view.setFilterText(QStringLiteral("12*"));
+    expect("the pattern text finds its row", view.count() == 1);
+    view.setFilterText(QStringLiteral("77"));
+    expect("a number the pattern does not match leaves it out", view.count() == 0);
+    view.setFilterText(QString());
+    const QVariantList selection = view.snapshotSelection();
+    bool patternSelected = false;
+    for (const QVariant& value : selection) {
+        const QVariantMap row = value.toMap();
+        patternSelected |= row.value("index").toInt() == 1 && row.value("pattern").toString() == QStringLiteral("12*")
+                           && row.value("first").toULongLong() == 0 && row.value("last").toULongLong() == 0;
+    }
+    expect("the selection names the pattern row", patternSelected);
+}
+
+/* Row equality includes kind and pattern: another pattern in the same place is a different row, never a field edit of
+ * the old one (both have 0/0 bounds). */
+void
+test_pattern_row_equality() {
+    Fixture fixture;
+    fixture.appendPattern("12*", "A", "Rule", "");
+    TalkgroupListModel model(nullptr);
+    model.refresh(fixture.opts, fixture.state);
+    expect("first pattern listed", findText(model, QStringLiteral("12*")).isValid());
+    int resets = 0;
+    QObject::connect(&model, &QAbstractItemModel::modelReset, &model, [&]() { ++resets; });
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(fixture.state, &context, &generation);
+    dsd_tg_policy_row_key key = {};
+    key.table_index = 0;
+    key.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(key.pattern, sizeof(key.pattern), "%s", "12*");
+    expect("remove the pattern row", dsd_tg_policy_remove_key(fixture.state, context, generation, &key) == 0);
+    fixture.appendPattern("13*", "A", "Rule", "");
+    model.refresh(fixture.opts, fixture.state);
+    expect("the other pattern is listed", model.count() == 1 && findText(model, QStringLiteral("13*")).isValid());
+    expect("another pattern resets the rows", resets == 1);
+}
+
 } // namespace
 
 int
@@ -481,6 +595,8 @@ main(int argc, char** argv) {
     test_replay_heard_again_lists_its_talkgroups();
     test_heard_rows_read_history_storage_directly();
     test_overlapping_ranges_cover_heard_talkgroups();
+    test_pattern_rows();
+    test_pattern_row_equality();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {
         return 1;

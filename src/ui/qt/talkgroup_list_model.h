@@ -63,9 +63,11 @@ class TalkgroupListModel : public QAbstractListModel {
         ListedRole,
         PriorityRole,
         PreemptRole,
-        PolicyIndexRole,
+        TableIndexRole, /**< The row's index in the effective table, -1 for a heard talkgroup: part of its edit token. */
         TemporaryAvoidCountRole,
         RecordRole, /**< The row's record flag (issue #708): off while not listening, as the decoder keeps it. */
+        KindRole,    /**< "exact", "range" or "pattern" */
+        PatternRole, /**< A pattern row's canonical text (its ID); empty on other rows. */
     };
 
     explicit TalkgroupListModel(QAbstractItemModel* history, QObject* parent = nullptr);
@@ -149,7 +151,7 @@ class TalkgroupListModel : public QAbstractListModel {
     void observeDecryption(const dsd_state* snapshot);
 
     struct Row {
-        uint32_t idStart = 0;
+        uint32_t idStart = 0; /* 0/0 on a pattern row, which is matched by its pattern, never by these bounds. */
         uint32_t idEnd = 0;
         QString name;
         QString tags;
@@ -158,11 +160,21 @@ class TalkgroupListModel : public QAbstractListModel {
         int priority = 0;
         bool preempt = false;
         bool record = false;
-        int policyIndex = -1;
+        int tableIndex = -1;
         qulonglong temporaryAvoidCount = 0;
+        uint8_t kind = 0; /* dsd_tg_policy_row_kind */
+        QString pattern;
+
+        bool
+        isPattern() const {
+            return !pattern.isEmpty();
+        }
 
         QString
         idText() const {
+            if (isPattern()) {
+                return pattern;
+            }
             return idStart == idEnd ? QString::number(idStart) : QStringLiteral("%1–%2").arg(idStart).arg(idEnd);
         }
 
@@ -170,6 +182,11 @@ class TalkgroupListModel : public QAbstractListModel {
         QVariant value(int role) const;
         /** @brief Whether anything but the bounds differs from @p other. */
         bool fieldsDiffer(const Row& other) const;
+        /* The same listed row: kind, bounds and pattern (a heard row has no pattern). */
+        bool
+        sameRow(const Row& other) const {
+            return kind == other.kind && idStart == other.idStart && idEnd == other.idEnd && pattern == other.pattern;
+        }
     };
 
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);

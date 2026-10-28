@@ -10,9 +10,9 @@ Item {
         property int edits: 0
         property int removes: 0
         property var last: []
-        function setTalkgroupPolicy(a, b, c, g, changes) {
+        function setTalkgroupPolicy(a, b, c, g, changes, index, pattern) {
             edits++;
-            last = [a, b, c, g, changes];
+            last = [a, b, c, g, changes, index, pattern];
             return true;
         }
         function addTalkgroup(a, b, c, g, n, l, p, e, r) {
@@ -24,9 +24,9 @@ Item {
                 record: r
             });
         }
-        function removeTalkgroup(a, b, c, g) {
+        function removeTalkgroup(a, b, c, g, index, pattern) {
             removes++;
-            last = [a, b, c, g];
+            last = [a, b, c, g, index, pattern];
             return true;
         }
     }
@@ -277,6 +277,32 @@ Item {
             mouseClick(findChild(sheet, "saveTalkgroup"));
             compare(recorder.last[4].listening, true);
             compare(recorder.last[4].record, false);
+        }
+        // A pattern row is edited and removed like a range row, by its token; it has no decryption key of its own.
+        function test_pattern_row_edits_by_token() {
+            var sheet = loader.item;
+            sheet.openRow(0, 0, "Twelves", true, true, 0, false, "7", 3, true, 2, "12*");
+            compare(findChild(sheet, "talkgroupEditHeading").text, "Talkgroup 12*");
+            verify(!sheet.canAssignDmrKey);
+            findChild(sheet, "talkgroupName").text = "Twelve hundreds";
+            mouseClick(findChild(sheet, "saveTalkgroup"));
+            compare(recorder.edits, 1);
+            compare(recorder.last[4].name, "Twelve hundreds");
+            compare(recorder.last[5], 2);
+            compare(recorder.last[6], "12*");
+            sheet.openRow(0, 0, "Twelves", true, true, 0, false, "7", 4, true, 2, "12*");
+            var remove = findChild(sheet, "removeTalkgroup");
+            verify(remove.visible);
+            mouseClick(remove);
+            mouseClick(remove);
+            compare(recorder.removes, 1);
+            compare(recorder.last.slice(2), ["7", 4, 2, "12*"]);
+            // A listed exact row carries its index, and no pattern.
+            sheet.openRow(42, 42, "Dispatch", true, true, 0, false, "7", 5, true, 0);
+            findChild(sheet, "talkgroupName").text = "Renamed";
+            mouseClick(findChild(sheet, "saveTalkgroup"));
+            compare(recorder.last[5], 0);
+            compare(recorder.last[6], "");
         }
 
         function test_heard_add_and_backend_toast() {

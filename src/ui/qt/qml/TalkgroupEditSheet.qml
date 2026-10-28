@@ -12,6 +12,9 @@ ModalSheet {
     property string localMessage: ""
     property var idStart: 0
     property var idEnd: 0
+    // The listed row's token: its table index (-1 for a heard talkgroup) and, on a pattern row, its pattern.
+    property int tableIndex: -1
+    property string pattern: ""
     property string policyContext: "0"
     property double policyGeneration: 0
     property int priorityValue: 0
@@ -27,17 +30,20 @@ ModalSheet {
         var count = decryptionProfiles.count;
         return decryptionProfiles.forRuntimeReference(observedCrypto.profileRef || metrics.keyProfileRef || "");
     }
-    readonly property bool canAssignDmrKey: idStart === idEnd && (keyProfile.uid || "").length > 0 && keyProfile.mode === "automatic" && (observedCrypto.dmr === true || (listed && keyProfile.protocol === "dmr"))
+    readonly property bool canAssignDmrKey: pattern.length === 0 && idStart === idEnd && (keyProfile.uid || "").length > 0 && keyProfile.mode === "automatic" && (observedCrypto.dmr === true || (listed && keyProfile.protocol === "dmr"))
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested
 
     // @p record is the row's record flag (issue #708); a heard talkgroup without a
     // row records whenever it is tuned, so it reads as listening.
-    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record) {
-        observedCrypto = typeof talkgroups !== "undefined" && typeof talkgroups.observedDecryption === "function" ? talkgroups.observedDecryption(Number(start)) : ({});
+    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record, index, rowPattern) {
+        var patternText = rowPattern || "";
+        observedCrypto = patternText.length === 0 && typeof talkgroups !== "undefined" && typeof talkgroups.observedDecryption === "function" ? talkgroups.observedDecryption(Number(start)) : ({});
         idStart = start;
         idEnd = end;
+        tableIndex = index === undefined ? -1 : index;
+        pattern = patternText;
         policyContext = context;
         policyGeneration = generation;
         original = {
@@ -92,7 +98,7 @@ ModalSheet {
             localMessage = qsTr("No changes to apply");
             return;
         }
-        var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, changes) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked, recordToggle.checked);
+        var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, changes, tableIndex, pattern) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked, recordToggle.checked);
         localMessage = ok ? qsTr("Update requested") : qsTr("Update refused. Use a name shorter than 50 UTF-8 bytes.");
         if (ok) {
             // A submitted edit can advance generation; reopen from fresh model state.
@@ -104,7 +110,7 @@ ModalSheet {
 
     Text {
         objectName: "talkgroupEditHeading"
-        text: qsTr("Talkgroup %1").arg(sheet.idStart === sheet.idEnd ? Util.idText(sheet.idStart) : Util.idText(sheet.idStart) + "–" + Util.idText(sheet.idEnd))
+        text: qsTr("Talkgroup %1").arg(sheet.pattern.length > 0 ? sheet.pattern : sheet.idStart === sheet.idEnd ? Util.idText(sheet.idStart) : Util.idText(sheet.idStart) + "–" + Util.idText(sheet.idEnd))
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
@@ -229,7 +235,7 @@ ModalSheet {
                 return;
             }
             sheet.removeArmed = false;
-            var ok = sheet.bridge.removeTalkgroup(sheet.idStart, sheet.idEnd, sheet.policyContext, sheet.policyGeneration);
+            var ok = sheet.bridge.removeTalkgroup(sheet.idStart, sheet.idEnd, sheet.policyContext, sheet.policyGeneration, sheet.tableIndex, sheet.pattern);
             sheet.localMessage = ok ? qsTr("Removal requested") : qsTr("Removal refused");
             if (ok) {
                 sheet.submitted = true;

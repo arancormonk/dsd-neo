@@ -13,6 +13,7 @@
 #include <QVariant>
 #include <algorithm>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -71,9 +72,14 @@ TalkgroupListModel::Row::value(int role) const {
         case ListedRole: return listed;
         case PriorityRole: return priority;
         case PreemptRole: return preempt;
-        case PolicyIndexRole: return policyIndex;
+        case TableIndexRole: return tableIndex;
         case TemporaryAvoidCountRole: return QVariant::fromValue(temporaryAvoidCount);
         case RecordRole: return record;
+        case KindRole:
+            return kind == DSD_TG_POLICY_ROW_PATTERN ? QStringLiteral("pattern")
+                   : kind == DSD_TG_POLICY_ROW_RANGE ? QStringLiteral("range")
+                                                     : QStringLiteral("exact");
+        case PatternRole: return pattern;
         default: return {};
     }
 }
@@ -82,7 +88,7 @@ bool
 TalkgroupListModel::Row::fieldsDiffer(const Row& other) const {
     return name != other.name || tags != other.tags || listening != other.listening || listed != other.listed
            || priority != other.priority || preempt != other.preempt || record != other.record
-           || policyIndex != other.policyIndex || temporaryAvoidCount != other.temporaryAvoidCount;
+           || tableIndex != other.tableIndex || temporaryAvoidCount != other.temporaryAvoidCount;
 }
 
 QHash<int, QByteArray>
@@ -96,9 +102,11 @@ TalkgroupListModel::roleNames() const {
             {ListedRole, "listed"},
             {PriorityRole, "priority"},
             {PreemptRole, "preempt"},
-            {PolicyIndexRole, "policyIndex"},
+            {TableIndexRole, "tableIndex"},
             {TemporaryAvoidCountRole, "temporaryAvoidCount"},
-            {RecordRole, "record"}};
+            {RecordRole, "record"},
+            {KindRole, "kind"},
+            {PatternRole, "pattern"}};
 }
 
 void
@@ -182,9 +190,18 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     QVector<Row> rows = listedRows(snapshot, categoryTags);
     appendHeardRows(rows, allowListedOnly);
     for (Row& row : rows) {
-        row.temporaryAvoidCount = dsd_tg_policy_session_avoid_count(snapshot, row.idStart, row.idEnd);
+        row.temporaryAvoidCount =
+            row.isPattern() ? dsd_tg_policy_session_avoid_count_pattern(snapshot, row.pattern.toLatin1().constData())
+                            : dsd_tg_policy_session_avoid_count(snapshot, row.idStart, row.idEnd);
     }
+    // Numeric rows by their IDs, then pattern rows in list order.
     std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+        if (a.isPattern() != b.isPattern()) {
+            return b.isPattern();
+        }
+        if (a.isPattern()) {
+            return a.tableIndex < b.tableIndex;
+        }
         return a.idStart < b.idStart || (a.idStart == b.idStart && a.idEnd < b.idEnd);
     });
     replaceRows(std::move(rows));
@@ -199,15 +216,27 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
     rows.reserve(static_cast<qsizetype>(entries));
     for (size_t i = 0; i < entries; ++i) {
         dsd_tg_policy_entry entry;
-        // Rows here are addressed and covered by their bounds, which a pattern row does not have: patterns are not
-        // listed yet.
         if (!dsd_tg_policy_entry_at(snapshot, i, &entry) || entry.source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS
-            || strcmp(entry.mode, "D") == 0 || entry.kind == DSD_TG_POLICY_ROW_PATTERN) {
+            || strcmp(entry.mode, "D") == 0) {
             continue;
         }
-        rows.push_back({entry.id_start, entry.id_end, QString::fromUtf8(entry.name), QString::fromUtf8(entry.tags),
-                        strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0, true, entry.priority,
-                        entry.preempt != 0, entry.record != 0, static_cast<int>(i)});
+        Row row;
+        row.idStart = entry.id_start;
+        row.idEnd = entry.id_end;
+        row.name = QString::fromUtf8(entry.name);
+        row.tags = QString::fromUtf8(entry.tags);
+        row.listening = strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0;
+        row.listed = true;
+        row.priority = entry.priority;
+        row.preempt = entry.preempt != 0;
+        row.record = entry.record != 0;
+        row.tableIndex = static_cast<int>(i);
+        row.kind = entry.kind;
+        if (entry.kind == DSD_TG_POLICY_ROW_PATTERN) {
+            row.pattern = QString::fromLatin1(entry.pattern,
+                                              static_cast<qsizetype>(strnlen(entry.pattern, sizeof(entry.pattern))));
+        }
+        rows.push_back(std::move(row));
         if (!rows.back().tags.isEmpty()) {
             categoryTags.insert(rows.back().tags);
         }
@@ -261,9 +290,16 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
     };
 
     QVector<Span> spans;
+    /* A pattern row covers the heard talkgroups it matches, never by its 0/0 bounds. */
+    QVector<dsd_id_pattern> patterns;
     spans.reserve(rows.size());
     for (const Row& row : rows) {
-        spans.push_back({row.idStart, row.idEnd});
+        dsd_id_pattern parsed;
+        if (!row.isPattern()) {
+            spans.push_back({row.idStart, row.idEnd});
+        } else if (dsd_id_pattern_parse(row.pattern.toLatin1().constData(), &parsed) == 0) {
+            patterns.push_back(parsed);
+        }
     }
     std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) { return a.start < b.start; });
     for (qsizetype i = 1; i < spans.size(); ++i) {
@@ -272,10 +308,18 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
     for (const uint32_t tg : heard) {
         const auto after = std::upper_bound(spans.cbegin(), spans.cend(), tg,
                                             [](uint32_t id, const Span& span) { return id < span.start; });
-        const bool covered = after != spans.cbegin() && std::prev(after)->reach >= tg;
+        const bool covered = (after != spans.cbegin() && std::prev(after)->reach >= tg)
+                             || std::any_of(patterns.cbegin(), patterns.cend(), [tg](const dsd_id_pattern& pattern) {
+                                    return dsd_id_pattern_match(&pattern, tg) != 0;
+                                });
         if (!covered) {
+            Row row;
+            row.idStart = tg;
+            row.idEnd = tg;
+            row.listening = !allowListedOnly;
             /* A heard talkgroup has no row: it records whenever it would be tuned, as a row added for it would. */
-            rows.push_back({tg, tg, {}, {}, !allowListedOnly, false, 0, false, !allowListedOnly});
+            row.record = !allowListedOnly;
+            rows.push_back(std::move(row));
         }
     }
 }
@@ -285,11 +329,10 @@ TalkgroupListModel::replaceRows(QVector<Row> rows) {
     const int oldCount = count();
     const int notTuned =
         static_cast<int>(std::count_if(rows.cbegin(), rows.cend(), [](const Row& row) { return !row.listening; }));
-    const bool sameBounds = rows.size() == m_rows.size()
-                            && std::equal(rows.cbegin(), rows.cend(), m_rows.cbegin(), [](const Row& a, const Row& b) {
-                                   return a.idStart == b.idStart && a.idEnd == b.idEnd;
-                               });
-    if (sameBounds) {
+    const bool sameRows = rows.size() == m_rows.size()
+                          && std::equal(rows.cbegin(), rows.cend(), m_rows.cbegin(),
+                                        [](const Row& a, const Row& b) { return a.sameRow(b); });
+    if (sameRows) {
         for (int i = 0; i < count(); ++i) {
             const Row& row = rows.at(i);
             Row& old = m_rows[i];

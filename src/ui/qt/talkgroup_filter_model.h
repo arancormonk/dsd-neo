@@ -11,6 +11,7 @@
 #include <QString>
 #include <QVariantList>
 #include <QtGlobal>
+#include <stdint.h>
 
 namespace dsd_qt {
 
@@ -66,6 +67,8 @@ class TalkgroupFilterModel : public QSortFilterProxyModel {
 
     QString m_filterText;
     QString m_filterTag;
+    bool m_filterIdValid = false; /* The filter text is a decimal ID (m_filterId) that pattern rows are matched with. */
+    uint32_t m_filterId = 0;
 };
 
 } // namespace dsd_qt
