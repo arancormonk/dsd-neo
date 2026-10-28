@@ -8302,6 +8302,49 @@ test_ysf_textual_private_target_keeps_its_text(void) {
     return rc;
 }
 
+/* D4: a call of any other kind (data, or voice of no known kind) is labelled by the group list's exact row only: a range
+ * covering its target never names it, and an exact row without a name is no label (0, both outputs empty). */
+static int
+test_other_kind_target_labelled_by_exact_row_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    int rc = expect_int("range row", append_policy_range(&state, 5000U, 5099U, "A", "Data Range"), 0);
+    rc |= expect_int("unnamed exact row", append_policy_label(&state, 5001U, "A", ""), 0);
+    rc |= expect_int("named exact row", append_policy_label(&state, 5002U, "A", "Telemetry"), 0);
+
+    static const dsd_call_kind kinds[] = {DSD_CALL_KIND_DATA, DSD_CALL_KIND_VOICE, DSD_CALL_KIND_UNKNOWN};
+    for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        char mode[8] = "x";
+        char name[DSD_SOURCE_ALIAS_NAME_MAX] = "x";
+        rc |=
+            expect_int("range-only target has no label",
+                       dsd_call_target_label_lookup(&state, kinds[i], 5050U, mode, sizeof mode, name, sizeof name), 0);
+        rc |= expect_int("range-only: no name", name[0], '\0');
+        rc |= expect_int("range-only: no mode", mode[0], '\0');
+        DSD_SNPRINTF(mode, sizeof mode, "%s", "x");
+        DSD_SNPRINTF(name, sizeof name, "%s", "x");
+        rc |=
+            expect_int("unnamed exact row is no label",
+                       dsd_call_target_label_lookup(&state, kinds[i], 5001U, mode, sizeof mode, name, sizeof name), 0);
+        rc |= expect_int("unnamed exact: no name", name[0], '\0');
+        rc |= expect_int("unnamed exact: no mode", mode[0], '\0');
+        rc |=
+            expect_int("named exact row labels",
+                       dsd_call_target_label_lookup(&state, kinds[i], 5002U, mode, sizeof mode, name, sizeof name), 1);
+        rc |= expect_str_eq("named exact: name", name, "Telemetry");
+        rc |= expect_str_eq("named exact: mode", mode, "A");
+    }
+
+    /* Rendered: a voice call of no known kind on the range-only target carries no TName. */
+    const Event_History* item = render_labelled_call(&opts, &state, DSD_CALL_KIND_VOICE, 5050U, 77U);
+    rc |= expect_int("no label staged", item->t_name[0], '\0');
+    rc |= expect_int("no TName for a range-only target", strstr(item->event_string, "TName:") == NULL, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -8472,6 +8515,7 @@ main(void) {
     rc |= test_private_target_labelled_as_radio();
     rc |= test_commit_caches_target_label();
     rc |= test_ysf_textual_private_target_keeps_its_text();
+    rc |= test_other_kind_target_labelled_by_exact_row_only();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

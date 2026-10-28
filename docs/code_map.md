@@ -3157,7 +3157,17 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   edit or config set, a shadowed edit under an nfm row and its save, a P25 row's live acquisition kept, the warning),
   `UI_QT_CONTROLLER` (through the Qt bridge).
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
-  `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
+  `src/app_control/call_view.c` fold the canonical call state into a per-slot line (`dsd_app_slot_call`): the
+  headline `name`, the target as decoded (`tg_text`, empty -- never `0` -- when no target decoded) and its own label
+  (`tg_label`: the talkgroup's, a private call's target radio's, from the staged row or the label cached on the ended
+  epoch, whatever headlines the call), the source (`src_text` with its label, `src_id`, `src_label` alone), the call
+  `kind`, crypto and service metadata, with the 3 s ended hold. An epoch with no identity reads idle, except on the
+  protocols whose identity-less voice is a real transmission: X2-TDMA, ProVoice, analog, and TETRA, which publishes a
+  call only from a CRC-checked carrier and publishes speech no D-SETUP named as a voice call with no parties (issue
+  #773). The Qt hero and second-slot strip, the Android notification, the API `call` feed and the terminal's TETRA
+  call block (`ui_format_tetra_call_lines()`) read it; the terminal's P25/DMR slot rows do not -- they read the
+  call-state snapshot directly because they mix the call with per-slot decoder state (burst type, payload crypto,
+  embedded GPS, talker alias). Also
   `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
   `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
   running, and which of dwell/hold/hang is worth printing (issue #508), including `Carrier` for an analog row's carrier
@@ -3166,7 +3176,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   deadline; these views only difference it against the caller's reading of the
   decode clock's monotonic time, the clock the deadline was stamped on, which is what keeps the terminal row, the Qt
   panel and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
-  `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
+  `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS` (the TETRA call block
+  included).
   `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue #521) pair the squelch in
   force with the configured default, say whether a scan row overrides it and whether each level is off: the terminal SQL
   field and M17 VOX field (`-60.0 dB (row; default -80.0 dB)`), the DSP panel's `(row)` mark, the shadowed-edit toast,
@@ -8605,7 +8616,12 @@ Qt Quick frontend (`src/ui/qt`):
   `monitorTetraCodec`) only while `tetraVisible`, each part only while its text is set, coloured from the flags
   (magenta for encryption, cyan on a traffic channel, the alert colour for a codec fault). The terminal shows the same
   view as Call Info lines (`TETRA:`, `Network:`, `Trunk:`, `Control:`, `Traffic:`, `MM status:`, `Codec:`,
-  `ui_format_tetra_lines()`), with no protocol call and no environment variable. The TETRA decode chip (`-fT`, `qml/Util.js`) carries no `trunked` suggestion: it covers
+  `ui_format_tetra_lines()`), with no protocol call and no environment variable, headed by the live call on canonical
+  slot 0 from the shared call view (`ui_format_tetra_call_lines()`, issue #773): `CALL   - TGT: [..] SRC: [..]` with
+  the `[EM][PR:n]` tags and the `Group`/`Private`/`Voice`/`Data` (`Encrypted`) banner in the P25/DMR slot header's
+  columns, then the `|        | ` continuation with `[target label] SRC: [radio label]`; blank brackets for an unknown
+  party, and blank brackets over an empty continuation when idle, so the rows below never move. The TETRA decode
+  chip (`-fT`, `qml/Util.js`) carries no `trunked` suggestion: it covers
   direct mode too, whose speech call following would mute. Tests: `UI_QT_METRICS_MODEL` (`test_tetra_rows()`),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_tetra.qml`, `tst_wizard_decode_chip.qml`), `UI_NCURSES_PRINTER_HELPERS`.
 - `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active

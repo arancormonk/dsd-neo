@@ -11,8 +11,10 @@
  * reacquisition window, the terminator heal and the history layer all read it after
  * the transmission is over, and nothing ages it out. A status surface wants the
  * opposite: it is about what is on the air now, so it has to decide for itself when a
- * retained epoch stops being news. This is that decision, shared so the terminal, the
- * Qt panel and the Android notification cannot drift apart.
+ * retained epoch stops being news. This is that decision, shared so the Qt panel, the
+ * Android notification, the API call feed and the terminal's TETRA call block cannot drift
+ * apart. The terminal's P25/DMR slot rows read the call-state snapshot themselves: they mix
+ * the call with per-slot decoder state (burst type, payload crypto, embedded GPS).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_CALL_VIEW_H_
@@ -20,6 +22,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -98,9 +101,21 @@ typedef struct {
      * the call was heard on (@c channel), else @c tg_text.
      */
     char name[DSD_APP_CALL_NAME_SIZE];
+    /**
+     * The target as decoded: its text, else the OTA id in decimal. Empty when neither decoded -- never "0", which
+     * would read as a talkgroup numbered zero.
+     */
     char tg_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    /**
+     * The target's own label: the talkgroup's (a private call's: the target radio's) as the event layer staged it for
+     * this call, or cached it on the ended epoch. Independent of @c name, which a service label or the scan channel can
+     * headline instead. Empty when no row names the target.
+     */
+    char tg_label[DSD_APP_CALL_NAME_SIZE];
     /** Resolved source label with the OTA identity, or the OTA identity alone. */
     char src_text[DSD_APP_CALL_SOURCE_SIZE];
+    /** The source radio's label alone, without its id (see @c src_text). Empty when none names it. */
+    char src_label[DSD_SOURCE_ALIAS_NAME_MAX];
     /**
      * The scan channel the epoch was heard on: the @c -Y row name or the trunk-scan target
      * id, as staged on the slot's active history row. Empty when the receiver is not
@@ -111,10 +126,12 @@ typedef struct {
     char service[DSD_SERVICE_LABEL_SIZE];
     dsd_receive_identity receive_identity;
     uint64_t tg_id;      /**< OTA target when one decoded, else the policy-resolved id. */
+    uint64_t src_id;     /**< OTA source id; 0 when none decoded. */
     double started_m;    /**< Exact monotonic epoch start for ACTIVE and ENDED lines; 0 on other lines. */
     uint32_t elapsed_ms; /**< Since the epoch started; frozen at the end for ENDED. */
     uint16_t kid;
     uint8_t algid;
+    uint8_t kind; /**< dsd_call_kind of the call: a frontend words a private call or speech of no known kind apart. */
     uint8_t emergency;
     uint8_t priority;
     uint8_t has_service_metadata; /**< Distinguishes an observed zero from unknown service metadata. */

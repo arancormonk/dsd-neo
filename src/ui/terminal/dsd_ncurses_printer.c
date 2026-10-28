@@ -24,6 +24,7 @@
 
 #include <curses.h>
 #include <dsd-neo/app_control/analog_width_view.h>
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
@@ -3708,8 +3709,13 @@ ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int
 
     char group_mode[8];
     char group_name[50];
-    /* The slot's target is the call's while one is open; otherwise it is the decoder's last talkgroup. */
-    const dsd_call_kind kind = slot->call.phase == DSD_CALL_PHASE_ACTIVE ? slot->call.kind : DSD_CALL_KIND_GROUP_VOICE;
+    /* The slot's target is the call's while one is open, or while the slot still holds the ended call it names; then
+       the call's kind decides how it is labelled (a private call's target is a radio). Otherwise it is the decoder's
+       last talkgroup. */
+    const int names_call = slot->call.phase == DSD_CALL_PHASE_ACTIVE
+                           || (slot->call.epoch != 0U && slot->target > 0
+                               && ui_call_snapshot_target(&slot->call) == (uint32_t)slot->target);
+    const dsd_call_kind kind = names_call ? slot->call.kind : DSD_CALL_KIND_GROUP_VOICE;
     if (ui_lookup_target_label(state, kind, (unsigned long)slot->target, group_mode, sizeof(group_mode), group_name,
                                sizeof(group_name))) {
         attron(COLOR_PAIR(4));
@@ -3891,12 +3897,119 @@ ui_format_tetra_lines(const dsd_opts* opts, const dsd_state* state, ui_tetra_lin
     return lines->count;
 }
 
+/* The live TETRA call (issue #773), in the P25/DMR slot header's grammar: `CALL   ` takes the place of `SLOT n ` so the
+   TGT/SRC pair, the call tags and the banner column line up with a slot row's, then the active-channels line's
+   `|        | ` continuation carries the target's and the talker's labels. No burst column: TETRA has no DMR burst
+   type. Fixed height: an idle slot keeps both lines, blank. */
+enum {
+    UI_TETRA_CALL_LINE_SIZE = 32 + 2 * DSD_CALL_IDENTITY_TEXT_SIZE + DSD_APP_CALL_NAME_SIZE + DSD_SOURCE_ALIAS_NAME_MAX
+};
+
+typedef struct {
+    char text[2][UI_TETRA_CALL_LINE_SIZE];
+    int ids_start;   /* text[0]: where the TGT/SRC pair begins */
+    int ids_end;     /* text[0]: where the pair and its call tags end and the banner begins */
+    int label_start; /* text[1]: where the labels begin */
+    int ended;       /* the call has ended and is held: its IDs take the terminated-call colour */
+} ui_tetra_call_lines;
+
+static const char*
+ui_tetra_call_banner(uint8_t kind) {
+    switch (kind) {
+        case DSD_CALL_KIND_GROUP_VOICE: return "Group";
+        case DSD_CALL_KIND_PRIVATE_VOICE: return "Private";
+        case DSD_CALL_KIND_DATA: return "Data";
+        default: return "Voice";
+    }
+}
+
+/* Fill @p out with the two lines of slot 0's call, without the "| " each is printed after. Pure, for the goldens: built
+   from the shared call view alone at @p now_m (its 3 s ended hold included). Returns 2. */
+static int
+ui_format_tetra_call_lines(const dsd_state* state, double now_m, ui_tetra_call_lines* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    dsd_app_slot_call call;
+    dsd_app_slot_call_view(state, 0U, now_m, &call);
+    const int shown = call.state == DSD_APP_CALL_LINE_ACTIVE || call.state == DSD_APP_CALL_LINE_ENDED;
+
+    char src[24] = {0};
+    char tags[16] = {0};
+    char banner[32] = {0};
+    if (shown) {
+        if (call.src_id != 0U) {
+            DSD_SNPRINTF(src, sizeof src, "%llu", (unsigned long long)call.src_id);
+        }
+        char priority_tag[12] = {0};
+        if (call.priority > 0U) {
+            DSD_SNPRINTF(priority_tag, sizeof priority_tag, "[PR:%u]", (unsigned)call.priority);
+        }
+        if (call.emergency || priority_tag[0] != '\0') {
+            DSD_SNPRINTF(tags, sizeof tags, " %s%s", call.emergency ? "[EM]" : "", priority_tag);
+        }
+        DSD_SNPRINTF(banner, sizeof banner, " %s%s", ui_tetra_call_banner(call.kind), call.enc ? " Encrypted" : "");
+    }
+    int banner_width = UI_SLOT_CALL_STATUS_WIDTH - (int)strlen(tags);
+    if (banner_width < 0) {
+        banner_width = 0;
+    }
+    static const char k_head[] = "CALL   - ";
+    out->ids_start = (int)sizeof(k_head) - 1;
+    const int ids = DSD_SNPRINTF(out->text[0], sizeof out->text[0], "%sTGT: [%8s] SRC: [%8s]%s", k_head,
+                                 shown ? call.tg_text : "", src, tags);
+    out->ids_end = (ids > 0 && (size_t)ids < sizeof out->text[0]) ? ids : (int)strlen(out->text[0]);
+    DSD_SNPRINTF(out->text[0] + out->ids_end, sizeof out->text[0] - (size_t)out->ids_end, "%-*.*s", banner_width,
+                 banner_width, banner);
+
+    static const char k_continuation[] = "       | ";
+    out->label_start = (int)sizeof(k_continuation) - 1;
+    DSD_SNPRINTF(out->text[1], sizeof out->text[1], "%s", k_continuation);
+    if (shown) {
+        size_t used = strlen(out->text[1]);
+        if (call.tg_label[0] != '\0') {
+            DSD_SNPRINTF(out->text[1] + used, sizeof out->text[1] - used, "[%s]", call.tg_label);
+            used = strlen(out->text[1]);
+        }
+        if (call.src_label[0] != '\0') {
+            DSD_SNPRINTF(out->text[1] + used, sizeof out->text[1] - used, "%sSRC: [%s]",
+                         call.tg_label[0] != '\0' ? " " : "", call.src_label);
+        }
+    }
+    out->ended = call.state == DSD_APP_CALL_LINE_ENDED;
+    return 2;
+}
+
+/* The call block in the slot rows' colours: the IDs in the section colour while the call is live and in the
+   terminated-call colour through the ended hold (as a slot row's IDs on a non-voice burst), the labels in cyan. */
+static void
+ui_render_tetra_call_block(const dsd_state* state) {
+    ui_tetra_call_lines call;
+    (void)ui_format_tetra_call_lines(state, dsd_decode_now_mono_s(), &call);
+    const int highlight_ids = call.ended && state->carrier == 1;
+    printw("| %.*s", call.ids_start, call.text[0]);
+    if (highlight_ids) {
+        attron(COLOR_PAIR(2));
+    }
+    printw("%.*s", call.ids_end - call.ids_start, call.text[0] + call.ids_start);
+    if (highlight_ids) {
+        attroff(COLOR_PAIR(2));
+    }
+    ui_restore_call_info_color(state);
+    printw("%s\n", call.text[0] + call.ids_end);
+
+    printw("| %.*s", call.label_start, call.text[1]);
+    attron(COLOR_PAIR(4));
+    printw("%s", call.text[1] + call.label_start);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
 static void
 ui_render_call_info_tetra(const dsd_opts* opts, const dsd_state* state) {
     ui_tetra_lines lines;
     if (ui_format_tetra_lines(opts, state, &lines) <= 0) {
         return;
     }
+    ui_render_tetra_call_block(state);
     for (int i = 0; i < lines.count; i++) {
         printw("| ");
         attron(COLOR_PAIR(4));

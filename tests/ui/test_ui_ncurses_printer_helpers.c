@@ -4234,7 +4234,10 @@ test_tetra_rows_follow_the_view(void) {
 
     reset_printw_capture();
     ui_render_call_info_tetra(opts, state);
-    assert_capture_starts_with("| TETRA: TMO downlink - clear - TEA1\n| Network: ");
+    /* The call block (issue #773) heads the rows: idle here, so blank brackets and an empty second line. */
+    assert_capture_starts_with("| CALL   - TGT: [        ] SRC: [        ]                               \n"
+                               "|        | \n"
+                               "| TETRA: TMO downlink - clear - TEA1\n| Network: ");
 
     /* An uplink whose network named no algorithm, and whose radios' clear registrations proposed one. */
     state->tetra_pub.mode = DSD_TETRA_MODE_TMO_CONTROL_UPLINK;
@@ -4255,6 +4258,208 @@ test_tetra_rows_follow_the_view(void) {
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
+}
+
+/* Issue #773: the TETRA call block's first line, padded as the P25/DMR slot header pads its banner column. */
+static void
+assert_tetra_call_line0(const ui_tetra_call_lines* lines, const char* head) {
+    char want[UI_TETRA_CALL_LINE_SIZE];
+    DSD_SNPRINTF(want, sizeof want, "%-71s", head);
+    if (strcmp(lines->text[0], want) != 0) {
+        DSD_FPRINTF(stderr, "line 0:\n'%s'\nwant:\n'%s'\n", lines->text[0], want);
+        assert(0);
+    }
+}
+
+static void
+assert_tetra_call_line1(const ui_tetra_call_lines* lines, const char* want) {
+    if (strcmp(lines->text[1], want) != 0) {
+        DSD_FPRINTF(stderr, "line 1:\n'%s'\nwant:\n'%s'\n", lines->text[1], want);
+        assert(0);
+    }
+}
+
+/* A TETRA call on canonical slot 0 as tetra_calls.c publishes it, observed at @p now_m. */
+static void
+tetra_observe_call(dsd_state* state, dsd_call_kind kind, uint64_t target, uint64_t source, double now_m) {
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 0U, source, target);
+    observation.kind = kind;
+    observation.policy_target_id = target;
+    observation.observed_m = now_m;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
+/* The labels the event layer stages on the slot's active history row. */
+static void
+tetra_stage_labels(dsd_state* state, uint32_t target, const char* t_name, uint32_t source, const char* s_name) {
+    Event_History* item = &state->event_history_s[0].Event_History_Items[0];
+    item->target_id = target;
+    DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", t_name);
+    item->source_id = source;
+    DSD_SNPRINTF(item->s_name, sizeof item->s_name, "%s", s_name);
+}
+
+static dsd_state*
+tetra_call_state(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->event_history_s = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(state->event_history_s != NULL);
+    return state;
+}
+
+static void
+tetra_call_state_free(dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    free(state->event_history_s);
+    free(state);
+}
+
+/* Issue #773 D9: the live TETRA call in Call Info, in the P25/DMR slot header's grammar: the group and its talker with
+   their labels on the continuation line; an unknown talker, an unknown target and an idle slot as blank brackets. */
+static void
+test_tetra_call_block(void) {
+    ui_tetra_call_lines lines;
+
+    /* tetra_call_idle: nothing on the slot. */
+    dsd_state* state = tetra_call_state();
+    assert(ui_format_tetra_call_lines(state, 10.0, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [        ] SRC: [        ]");
+    assert_tetra_call_line1(&lines, "       | ");
+
+    /* tetra_call_group */
+    tetra_observe_call(state, DSD_CALL_KIND_GROUP_VOICE, 100601U, 100702U, 10.0);
+    tetra_stage_labels(state, 100601U, "Fire Dispatch", 100702U, "Engine 21");
+    assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [  100601] SRC: [  100702] Group");
+    assert_tetra_call_line1(&lines, "       | [Fire Dispatch] SRC: [Engine 21]");
+    tetra_call_state_free(state);
+
+    /* tetra_call_unknown_talker: the group is known, its talker is not. */
+    state = tetra_call_state();
+    tetra_observe_call(state, DSD_CALL_KIND_GROUP_VOICE, 100601U, 0U, 10.0);
+    tetra_stage_labels(state, 100601U, "Fire Dispatch", 0U, "");
+    assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [  100601] SRC: [        ] Group");
+    assert_tetra_call_line1(&lines, "       | [Fire Dispatch]");
+    tetra_call_state_free(state);
+
+    /* tetra_call_private: the other party as the target, labelled as a radio. */
+    state = tetra_call_state();
+    tetra_observe_call(state, DSD_CALL_KIND_PRIVATE_VOICE, 2001U, 100702U, 10.0);
+    tetra_stage_labels(state, 2001U, "Dispatcher 7", 100702U, "Engine 21");
+    assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [    2001] SRC: [  100702] Private");
+    assert_tetra_call_line1(&lines, "       | [Dispatcher 7] SRC: [Engine 21]");
+    tetra_call_state_free(state);
+
+    /* tetra_call_anonymous_encrypted: speech before any D-SETUP named a party, on an encrypted carrier. */
+    state = tetra_call_state();
+    tetra_observe_call(state, DSD_CALL_KIND_VOICE, 0U, 0U, 10.0);
+    dsd_call_crypto_update crypto;
+    DSD_MEMSET(&crypto, 0, sizeof crypto);
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+    crypto.observed_m = 10.1;
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+    assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [        ] SRC: [        ] Voice Encrypted");
+    assert_tetra_call_line1(&lines, "       | ");
+    tetra_call_state_free(state);
+
+    /* tetra_call_em_pr: emergency and priority take their tags left of the banner, which keeps the column width. */
+    state = tetra_call_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 0U, 100702U, 100601U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.has_service_metadata = 1U;
+    observation.emergency = 1U;
+    observation.priority = 3U;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [  100601] SRC: [  100702] [EM][PR:3] Group");
+    tetra_call_state_free(state);
+
+    /* tetra_call_ended_hold: the ended call stays for the shared view's hold, then the block reads idle. */
+    state = tetra_call_state();
+    tetra_observe_call(state, DSD_CALL_KIND_GROUP_VOICE, 100601U, 100702U, 10.0);
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    assert(ui_format_tetra_call_lines(state, 14.9, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [  100601] SRC: [  100702] Group");
+    assert(ui_format_tetra_call_lines(state, 15.1, &lines) == 2);
+    assert_tetra_call_line0(&lines, "CALL   - TGT: [        ] SRC: [        ]");
+    assert_tetra_call_line1(&lines, "       | ");
+    tetra_call_state_free(state);
+}
+
+/* The block renders at the top of the TETRA rows, only while they render, in the slot rows' colours: the section
+   colour for a live call's IDs, the terminated-call colour for an ended one's, cyan labels. */
+static void
+test_tetra_call_block_renders_above_the_rows(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = tetra_call_state();
+    tetra_publish_control_channel(state);
+    tetra_observe_call(state, DSD_CALL_KIND_GROUP_VOICE, 100601U, 100702U, dsd_decode_now_mono_s());
+    tetra_stage_labels(state, 100601U, "Fire Dispatch", 100702U, "Engine 21");
+    state->carrier = 1;
+
+    reset_printw_capture();
+    ui_render_call_info_tetra(opts, state); /* not the TETRA preset: no rows, no call block */
+    assert_capture_equals("");
+
+    opts->frame_tetra = 1;
+    g_unicode_stub = 0;
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_starts_with("| CALL   - TGT: [  100601] SRC: [  100702] Group                         \n"
+                               "|        | [Fire Dispatch] SRC: [Engine 21]\n"
+                               "| TETRA: TMO downlink - clear\n");
+    assert(strncmp(g_color_trace, "+3+4+3", 6) == 0);
+
+    assert(dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR) > 0);
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_tetra(opts, state);
+    assert_capture_starts_with("| CALL   - TGT: [  100601] SRC: [  100702] Group");
+    assert(strncmp(g_color_trace, "+2-2+3+4+3", 10) == 0);
+
+    g_unicode_stub = 1;
+    tetra_call_state_free(state);
+    free(opts);
+}
+
+/* Issue #773 (Task 10 review): a slot row naming the target of the ended call it still holds labels it by that call's
+   kind -- a private call's target as a radio -- and a target the call does not hold as a talkgroup. */
+static void
+test_slot_label_follows_ended_call_kind(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation obs = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 99U, 1234U);
+    obs.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    obs.policy_target_id = 1234U;
+    obs.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_end_ex(state, 0U, 2.0, DSD_CALL_END_TERMINATOR) > 0);
+    ui_slot_view slot;
+    DSD_MEMSET(&slot, 0, sizeof slot);
+    assert(dsd_call_state_get(state, 0U, &slot.call) == 1);
+    assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
+
+    g_source_alias_stub = "Radio 1234";
+    slot.target = 1234;
+    reset_printw_capture();
+    ui_render_slot_group_label(state, &slot, 1);
+    assert_capture_contains("[Radio 1234]");
+    assert(strstr(g_printw_capture, "Dispatch") == NULL);
+
+    slot.target = 1250; /* the decoder's last talkgroup, not the ended call's target */
+    reset_printw_capture();
+    ui_render_slot_group_label(state, &slot, 1);
+    assert_capture_contains("[Ops][A]");
+    g_source_alias_stub = NULL;
+    dsd_state_ext_free_all(state);
+    free(state);
 }
 
 /* Issue #637: data the receive policy withholds (an LRRP fix, an alias) shows nowhere, a data-only transmission with no
@@ -4564,6 +4769,9 @@ test_identity_lines_read_the_received_record(void) {
 int
 main(void) {
     test_tetra_rows_follow_the_view();
+    test_tetra_call_block();
+    test_tetra_call_block_renders_above_the_rows();
+    test_slot_label_follows_ended_call_kind();
     test_nxdn_and_analog_live_service_names();
     test_dmr_and_dcs_live_service_names();
     test_withheld_data_without_a_call();

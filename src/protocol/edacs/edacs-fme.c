@@ -35,6 +35,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -85,7 +86,7 @@ edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t samp
 
 static void
 edacs_print_group_label(const dsd_state* state, uint32_t id) {
-    char name[50];
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
     if (id != 0U && dsd_tg_policy_lookup_group_label(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }

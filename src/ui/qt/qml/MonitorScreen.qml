@@ -868,7 +868,7 @@ Item {
                 anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
                 anchors.rightMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
-                text: screen.otherTgId > 0 && screen.otherName === screen.otherTg ? Util.talkgroupHeadline(screen.otherName, screen.otherTg, screen.otherTgId) : screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
+                text: screen.otherTgId > 0 && screen.otherName === screen.otherTg ? Util.talkgroupHeadline(screen.otherName, screen.otherTg, screen.otherTgId) : screen.otherTg.length === 0 ? screen.otherName : screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(14)
                 font.weight: Font.DemiBold

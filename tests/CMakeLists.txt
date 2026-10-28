@@ -3258,9 +3258,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing, squelch, received-tone and TETRA views come in as sources rather
-    # than stubs: the Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything if they
-    # run through the real display rules.
+    # The shared call, scan-timing, squelch, received-tone and TETRA views come in as sources rather
+    # than stubs: the TETRA call, Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything
+    # if they run through the real display rules.
     # Built twice: as a radio-off build compiles the printer, and as a radio build
     # does (USE_RADIO, whichever SDR backend), which draws the Visual Aids section.
     foreach(
@@ -3275,6 +3275,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c

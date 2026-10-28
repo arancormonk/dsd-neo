@@ -128,9 +128,9 @@ test_tg_id_falls_back_to_policy_target_id(void) {
     /* No OTA target ever decoded, so tg_id falls back to the policy-resolved id
        instead of staying 0. */
     assert(view.tg_id == 654321U);
-    /* tg_text still falls back to the (zero) OTA numeric id: policy resolution
-       feeds tg_id/name lookups, not the OTA display text. */
-    assert(strcmp(view.tg_text, "0") == 0);
+    /* tg_text stays the OTA display text: policy resolution feeds tg_id/name lookups, and with no OTA target decoded
+       the text is empty, never "0" (issue #773). */
+    assert(view.tg_text[0] == '\0');
     destroy_state(state);
 }
 
@@ -387,8 +387,8 @@ test_staged_channel_label_names_a_call_with_no_name_of_its_own(void) {
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
     assert(strcmp(view.channel, "Fire Dispatch") == 0);
     assert(strcmp(view.name, "Fire Dispatch") == 0);
-    /* The channel names the call; it does not pose as its talkgroup. */
-    assert(strcmp(view.tg_text, "0") == 0);
+    /* The channel names the call; it does not pose as its talkgroup, and no talkgroup decoded reads as none. */
+    assert(view.tg_text[0] == '\0');
     destroy_state(state);
 }
 
@@ -837,6 +837,172 @@ test_ended_hold_keeps_target_name(void) {
     destroy_state(state);
 }
 
+/* Issue #773: the view carries the call's kind for a frontend to word it (a private call is not a talkgroup). */
+static void
+test_view_carries_call_kind(void) {
+    static const struct {
+        int protocol;
+        dsd_call_kind kind;
+    } cases[] = {
+        {DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE},       {DSD_SYNC_NXDN_POS, DSD_CALL_KIND_PRIVATE_VOICE},
+        {DSD_SYNC_DMR_BS_DATA_POS, DSD_CALL_KIND_DATA},        {DSD_SYNC_TETRA_NDB_POS, DSD_CALL_KIND_VOICE},
+        {DSD_SYNC_TETRA_NDB_POS, DSD_CALL_KIND_PRIVATE_VOICE},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_state* state = make_state();
+        dsd_call_observation observation = dsd_call_observation_data(cases[i].protocol, 0U, 7001U, 4001U);
+        observation.kind = cases[i].kind;
+        observation.observed_m = 10.0;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        dsd_app_slot_call view;
+        dsd_app_slot_call_view(state, 0U, 10.5, &view);
+        assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+        assert(view.kind == (uint8_t)cases[i].kind);
+        destroy_state(state);
+    }
+}
+
+/* Issue #773: the radio's id and its label alone, beside the combined src_text, from the staged row while it names
+ * this source and from the label cached on the ended epoch after it commits. */
+static void
+test_source_id_and_label_split(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 100601U, 100702U, 10.0);
+    Event_History* item = &history[0].Event_History_Items[0];
+    item->source_id = 100702U;
+    DSD_SNPRINTF(item->s_name, sizeof item->s_name, "%s", "Engine 21");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 11.0, &view);
+    assert(view.src_id == 100702U);
+    assert(strcmp(view.src_label, "Engine 21") == 0);
+    assert(strcmp(view.src_text, "Engine 21 (100702)") == 0);
+
+    /* A staged label for another radio never names this one. */
+    item->source_id = 100703U;
+    dsd_app_slot_call_view(state, 0U, 11.0, &view);
+    assert(view.src_id == 100702U);
+    assert(view.src_label[0] == '\0');
+    assert(strcmp(view.src_text, "100702") == 0);
+
+    /* After the commit: the label cached on the epoch for this source. */
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    DSD_MEMSET(item, 0, sizeof *item);
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    assert(ext != NULL);
+    DSD_SNPRINTF(ext->calls.slots[0].source_label, sizeof ext->calls.slots[0].source_label, "%s", "Engine 21");
+    ext->calls.slots[0].source_label_id = 100702U;
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.src_label, "Engine 21") == 0);
+    destroy_state(state);
+}
+
+/* Issue #773: tg_label is the target's own label, whatever headlines the call -- a service label, the scan channel, or
+ * (once the row has committed) the label cached on the ended epoch; empty for a target no row names. */
+static void
+test_target_label_independent_of_headline(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 100601U, 100702U, 10.0);
+    stage_group_name(history, 0U, 100601U, "Fire Dispatch");
+    stage_channel_label(history, 0U, "North site");
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    assert(ext != NULL);
+    DSD_SNPRINTF(ext->calls.slots[0].service_label, sizeof ext->calls.slots[0].service_label, "%s", "Hospital");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 11.0, &view);
+    assert(strcmp(view.name, "Hospital") == 0);
+    assert(strcmp(view.tg_label, "Fire Dispatch") == 0);
+
+    /* No service label: the group name headlines, and tg_label still names the talkgroup. */
+    ext->calls.slots[0].service_label[0] = '\0';
+    dsd_app_slot_call_view(state, 0U, 11.0, &view);
+    assert(strcmp(view.name, "Fire Dispatch") == 0);
+    assert(strcmp(view.tg_label, "Fire Dispatch") == 0);
+
+    /* A staged name for another talkgroup: the channel headlines, and the target has no label. */
+    stage_group_name(history, 0U, 100602U, "Elsewhere");
+    dsd_app_slot_call_view(state, 0U, 11.0, &view);
+    assert(strcmp(view.name, "North site") == 0);
+    assert(view.tg_label[0] == '\0');
+
+    /* Ended and committed: the cached label names the target. */
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    DSD_MEMSET(&history[0].Event_History_Items[0], 0, sizeof(history[0].Event_History_Items[0]));
+    cache_target_label(state, 0U, 100601U, "Fire Dispatch");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.tg_label, "Fire Dispatch") == 0);
+    destroy_state(state);
+
+    /* A private call: the target radio's label, as the event layer stages it. */
+    state = make_state_with_history(&history);
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 0U, 100702U, 2001U);
+    observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    stage_group_name(history, 0U, 2001U, "Dispatcher 7");
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.kind == (uint8_t)DSD_CALL_KIND_PRIVATE_VOICE);
+    assert(strcmp(view.tg_label, "Dispatcher 7") == 0);
+    destroy_state(state);
+}
+
+/* Issue #773: a call whose target has not decoded (a private call heard source-first) has no target text: empty, never
+ * "0", while the source names it. */
+static void
+test_unknown_numeric_target_has_no_text(void) {
+    dsd_state* state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 0U);
+    observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(view.tg_text[0] == '\0');
+    assert(view.tg_id == 0U);
+    assert(view.name[0] == '\0');
+    assert(view.src_id == 4242U);
+    destroy_state(state);
+}
+
+/* Issue #773: TETRA publishes a call only on a CRC-proven carrier, and speech before a D-SETUP names nobody. That
+ * identity-less voice epoch is a real transmission: ACTIVE while it runs, ENDED through the hold -- not IDLE. */
+static void
+test_tetra_identityless_epoch_still_shows(void) {
+    dsd_state* state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 0U);
+    observation.kind = DSD_CALL_KIND_VOICE;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(view.kind == (uint8_t)DSD_CALL_KIND_VOICE);
+    assert(view.tg_text[0] == '\0');
+    assert(view.tg_label[0] == '\0' && view.src_label[0] == '\0' && view.src_id == 0U);
+
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    destroy_state(state);
+
+    /* The inverted sync is TETRA too. */
+    state = make_state();
+    observation.protocol = DSD_SYNC_TETRA_NDB_NEG;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    destroy_state(state);
+}
+
 static void
 test_service_metadata(void) {
     dsd_state* state = make_state();
@@ -860,6 +1026,11 @@ test_service_metadata(void) {
 int
 main(void) {
     test_service_metadata();
+    test_view_carries_call_kind();
+    test_source_id_and_label_split();
+    test_target_label_independent_of_headline();
+    test_unknown_numeric_target_has_no_text();
+    test_tetra_identityless_epoch_still_shows();
     test_source_labels_keep_identity();
     test_ended_hold_keeps_target_name();
     test_idle_slot_reports_none();

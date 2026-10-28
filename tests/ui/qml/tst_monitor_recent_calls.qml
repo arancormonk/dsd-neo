@@ -78,7 +78,11 @@ Item {
                 {tag: "number", name: "4001", tg: "4001", id: 4001, headline: "TG 4001", ids: "SRC 7001", other: "TG 4001"},
                 {tag: "callsign", name: "KC1ABC", tg: "KC1ABC", id: 0, headline: "KC1ABC", ids: "TG KC1ABC · SRC 7001", other: "KC1ABC · TG KC1ABC"},
                 {tag: "alias", name: "Fire", tg: "4001", id: 4001, headline: "Fire", ids: "TG 4001 · SRC 7001", other: "Fire · TG 4001"},
-                {tag: "empty-name", name: "", tg: "4001", id: 4001, headline: "4001", ids: "TG 4001 · SRC 7001", other: "TG 4001"}
+                {tag: "empty-name", name: "", tg: "4001", id: 4001, headline: "4001", ids: "TG 4001 · SRC 7001", other: "TG 4001"},
+                // No target decoded (#773): the view leaves tg_text empty, and nothing reads "TG " with nothing after it.
+                {tag: "no-target", name: "", tg: "", id: 0, headline: "", ids: "SRC 7001", other: ""},
+                {tag: "no-target-channel", name: "Fire Dispatch", tg: "", id: 0, headline: "Fire Dispatch", ids: "SRC 7001", other: "Fire Dispatch"},
+                {tag: "policy-target-only", name: "", tg: "", id: 654321, headline: "", ids: "SRC 7001", other: ""}
             ]
         }
 

@@ -1006,6 +1006,8 @@ stands while trunking is on, the control and traffic channels, the last MM statu
 line only once the decoder has something for it, and under them the latest decoded messages:
 
 ```text
+| CALL   - TGT: [  100601] SRC: [  100702] Group Encrypted
+|        | [Fire Dispatch] SRC: [Engine 21]
 | TETRA: TMO downlink · encrypted (TEA1)
 | Network: MCC 262 · MNC 1001 · LA 4097 · CC 25 · carrier 654
 | Security: class 2 · SCKN 3 · authentication · TEA1 reduced key
@@ -1015,6 +1017,17 @@ line only once the decoder has something for it, and under them the latest decod
 | Codec: ready · 18 frames · 2 errors
 | TETRA messages
 | SDS ...
+```
+
+The live call heads those lines, in the P25/DMR slot rows' columns: the group (or, for a private call, the other
+party) and the talker with the call's emergency and priority tags and its kind (`Group`, `Private`, `Data`, or `Voice`
+for speech no call set-up has named yet, then `Encrypted` for an encrypted call), then their labels from the group
+and radio lists. A party not yet decoded has blank brackets, an ended call stays for 3 seconds, and with no call both
+lines stay in place with blank brackets so the lines below do not move:
+
+```text
+| CALL   - TGT: [  100601] SRC: [  100702] Group
+|        | [Fire Dispatch] SRC: [Engine 21]
 ```
 
 A terminal without UTF-8 gets ` - ` between the parts. Message text from the air is shown without control

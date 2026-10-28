@@ -2700,7 +2700,8 @@ main(int argc, char** argv) {
             model.refresh(&opts, &state);
             expect("the slot exposes its scan channel", model.slot1Channel() == QStringLiteral("Fire Dispatch"));
             expect("a nameless call is named by its channel", model.slot1CallName() == QStringLiteral("Fire Dispatch"));
-            expect("the talkgroup text stays the number", model.slot1TgText() == QStringLiteral("0"));
+            /* No talkgroup decoded: no talkgroup text, never "0" (issue #773). */
+            expect("the talkgroup text stays empty", model.slot1TgText().isEmpty());
         }
     }
 

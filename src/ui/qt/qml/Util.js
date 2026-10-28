@@ -3,8 +3,9 @@
 .pragma library
 
 // Only numeric talkgroups get the TG prefix; callsigns remain names in their own right.
+// An empty tgText is a target that has not decoded: no "TG " with nothing after it.
 function talkgroupHeadline(name, tgText, tgId) {
-    return tgId > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
+    return tgId > 0 && tgText.length > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
 }
 
 // String.arg(double) uses QString's six-significant-digit formatting. Convert
