@@ -496,6 +496,80 @@ test_policy_gating(void) {
 }
 
 static void
+open_voice_epoch_proto(gate_fixture* fix, int protocol, double t, double span, dsd_call_kind kind, uint64_t src,
+                       uint64_t dst) {
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = protocol;
+    obs.slot = 0U;
+    obs.kind = kind;
+    obs.ota_source_id = src;
+    obs.ota_target_id = dst;
+    obs.policy_target_id = dst;
+    obs.observed_m = t;
+    (void)dsd_call_state_observe(fix->state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(fix->state, 0U, 1, t);
+    (void)dsd_call_state_update_media(fix->state, 0U, 1, t + span);
+}
+
+/* M17 addresses calls by callsign, so talkgroup policy never applies: a 48-bit callsign value must not be
+ * truncated into a policy lookup (issue #773). The stub evaluator refuses every call while the allow list is on. */
+static void
+test_m17_voice_ignores_talkgroup_policy(void) {
+    static const uint64_t callsign_targets[] = {0x100000064ULL, 0x2A5B6C7D8E9FULL};
+    for (size_t i = 0; i < sizeof(callsign_targets) / sizeof(callsign_targets[0]); i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+            g_failures++;
+            return;
+        }
+        fix.opts->trunk_use_allow_list = 1;
+        open_voice_epoch_proto(&fix, DSD_SYNC_M17_STR_POS, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 0x1234ULL,
+                               callsign_targets[i]);
+        CHECK("M17 holds voice under allow list", probe_voice(&fix).retained_media_m > 0.0);
+        fixture_free(&fix);
+    }
+}
+
+/* Outside M17, a target or source that does not fit 32 bits is unknown, not its truncated low half. */
+static void
+test_wide_ids_read_as_unknown(void) {
+    gate_fixture wide_target;
+    if (fixture_init(&wide_target) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    wide_target.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&wide_target, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 0x100000064ULL);
+    CHECK("wide target is unknown and holds", probe_voice(&wide_target).retained_media_m > 0.0);
+    fixture_free(&wide_target);
+
+    gate_fixture narrow;
+    if (fixture_init(&narrow) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    narrow.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&narrow, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 100);
+    CHECK("known target still policy gated", probe_voice(&narrow).retained_media_m < 0.0);
+    fixture_free(&narrow);
+
+    gate_fixture wide_source;
+    if (fixture_init(&wide_source) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    wide_source.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&wide_source, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 0x100000064ULL, 22);
+    CHECK("wide source leaves a known target gated", probe_voice(&wide_source).retained_media_m < 0.0);
+    fixture_free(&wide_source);
+}
+
+static void
 test_operator_hold_and_visit_reset(void) {
     gate_fixture fix;
     if (fixture_init(&fix) != 0) {
@@ -1631,6 +1705,8 @@ main(void) {
     test_non_media_updates_do_not_extend_hold();
     test_probe_tracks_active_and_retained_slots_independently();
     test_policy_gating();
+    test_m17_voice_ignores_talkgroup_policy();
+    test_wide_ids_read_as_unknown();
     test_operator_hold_and_visit_reset();
     test_stale_epoch_cannot_rearm();
     test_zero_ms_falls_back_to_defaults();
