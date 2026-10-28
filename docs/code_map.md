@@ -4638,10 +4638,10 @@ Key public headers:
     that takes a descriptor owing a reset resets it first: `rtl_preopened_fd_take()` reads the slot, the obligation and
     the publish generation in one step under the slot's lock and marks the descriptor held
     (`rtl_device_preopened_fd_held()`, -1 again once the device lets go of it, also after a failed open or recovery);
-    Airspy's open does the same under its own lock (`rtl_device_airspy_preopened_fd_held()`). A refused reset at open
-    opens without one and keeps the obligation; one that leaves the descriptor unusable lets the open fail with its own
-    code. The host side (the broker's per-attachment record, storage and the swap) is in "Android foundation integration
-    contracts" below ("USB broker") and in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
+    Airspy's open marks its descriptor held the same way (`rtl_device_airspy_preopened_fd_held()`). A refused reset at
+    open opens without one and keeps the obligation; one that leaves the descriptor unusable lets the open fail with its
+    own code. The host side (the broker's per-attachment record, storage and the swap) is in "Android foundation
+    integration contracts" below ("USB broker") and in `android/README.md` "USB-OTG". Test seams: the open-fd hook,
     `rtl_device_test_set_fd_reset_hook()`, `rtl_device_test_set_fd_identity_hook()`,
     `rtl_device_test_recoveries_in_grace()`. Tests: `IO_RTL_USB_FD_RECOVERY`, `IO_RTL_FD_HELD`.
   - A retune writes only the capture settings that changed (#782 D3; `rtl_sdr_fm.cpp` `CaptureWriteRecord`). The
