@@ -3619,6 +3619,63 @@ test_grant_naming_blocked_radio_not_tuned(void) {
     return 0;
 }
 
+/* A patched call (supergroup unlisted, its member listed, -W on) is judged on its member. A talker the radio list
+   blocks, learned mid-call, keeps the call on the member (never released, never judged back on the unlisted
+   supergroup) and mutes it; a grant from that radio for the patch is refused. */
+static int
+test_patched_call_radio_block(void) {
+    reset_test_state();
+    g_opts.trunk_use_allow_list = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.synctype = DSD_SYNC_P25P1_POS;
+    p25_patch_update(&g_state, 9000, 1, 1);
+    p25_patch_add_wgid(&g_state, 9000, 1001);
+    if (seed_exact(1001, "A", "MEMBER") != 0 || dsd_test_install_radio_policy(&g_state, 303, "B", 0, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not seed the patched radio case\n");
+        return 1;
+    }
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 9000, 0, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.tune_count != 1 || !ctx.slots[0].voice_active
+        || ctx.slots[0].target_id != 1001) {
+        DSD_FPRINTF(stderr, "FAIL: The patch was not followed on its listed member\n");
+        return 1;
+    }
+    ev = p25_sm_ev_active_call(0, 9000, 0, 303, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].voice_active || ctx.slots[0].src != 303
+        || ctx.slots[0].target_id != 1001) {
+        DSD_FPRINTF(stderr, "FAIL: A blocked talker on a patched call released it or left its member (target %d)\n",
+                    ctx.slots[0].target_id);
+        return 1;
+    }
+    int muted = -1;
+    if (dsd_audio_group_gate_mono(&g_opts, &g_state, 9000, 0, &muted) != 0 || muted != 1) {
+        DSD_FPRINTF(stderr, "FAIL: The kept patched call with a blocked talker was not muted\n");
+        return 1;
+    }
+
+    p25_sm_ctx_t fresh;
+    p25_sm_init_ctx(&fresh, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 9000, 303, 0);
+    p25_sm_event(&fresh, &g_opts, &g_state, &ev);
+    if (fresh.state == P25_SM_TUNED || fresh.tune_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: A patch grant from a blocked radio was tuned\n");
+        return 1;
+    }
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 9000, 304, 0);
+    p25_sm_event(&fresh, &g_opts, &g_state, &ev);
+    if (fresh.state != P25_SM_TUNED || fresh.tune_count != 1) {
+        DSD_FPRINTF(stderr, "FAIL: A patch grant from another radio was not tuned\n");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int fail = 0;
@@ -3693,6 +3750,7 @@ main(void) {
     fail += test_enrichment_radio_block_keeps_call_p1();
     fail += test_enrichment_radio_block_keeps_call_p2();
     fail += test_grant_naming_blocked_radio_not_tuned();
+    fail += test_patched_call_radio_block();
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);
