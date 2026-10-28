@@ -609,7 +609,16 @@ test_group_file_append_helper(void) {
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append to policy header", dsd_tg_policy_append_group_file_row(opts, &e, "hello,\nworld") == 0);
     rc |= expect_true("read policy file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
-    rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,hello  world") == l2);
+    // This header models a tags column, so the metadata goes to the next, unmodelled column, never into tags.
+    rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,,hello  world") == l2);
+    {
+        dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+        dsd_tg_policy_entry row;
+        rc |= expect_true("reload policy-header append", loaded && csvGroupImportPath(path_template, loaded) == 0);
+        rc |= expect_true("policy-header append keeps tags empty",
+                          dsd_tg_policy_entry_at(loaded, 0, &row) == 1 && row.tags[0] == '\0');
+        free_test_state(loaded);
+    }
     (void)remove(path_template);
 
     // A policy-looking header with odd ordering still writes the full schema.
@@ -665,6 +674,143 @@ test_group_file_append_helper(void) {
     (void)remove(path_template);
 
     free(opts);
+    return rc;
+}
+
+/* Write @p content verbatim to a fresh temporary file named into @p path (a mkstemp template). */
+static int
+write_temp_group_file(char* path, size_t path_sz, const char* content) {
+    DSD_SNPRINTF(path, path_sz, "%s", "dsd-neo-test-tg-append-XXXXXX");
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        return 1;
+    }
+    (void)dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        (void)remove(path);
+        return 1;
+    }
+    const int failed = DSD_FPRINTF(fp, "%s", content) < 0;
+    if (fclose(fp) != 0 || failed) {
+        (void)remove(path);
+        return 1;
+    }
+    return 0;
+}
+
+/* Append an alias row with metadata to a file of @p content and reload it into @p loaded. */
+static int
+append_alias_and_reload(const char* tag, const char* content, const char* expected_row, dsd_state* loaded) {
+    int rc = 0;
+    char path[64];
+    char l1[256];
+    char l2[256];
+    char l3[256];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_entry e;
+    if (!opts || write_temp_group_file(path, sizeof(path), content) != 0) {
+        free(opts);
+        return expect_true(tag, 0);
+    }
+    init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true(tag, dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
+    rc |= expect_true(tag, read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true(tag, strcmp(l3, expected_row) == 0);
+    rc |= expect_true(tag, csvGroupImportPath(path, loaded) == 0);
+    (void)remove(path);
+    free(opts);
+    return rc;
+}
+
+/* An appended alias row's metadata never lands in a column the header models as tags (it would reload as the row's
+ * category); it goes to the next, unmodelled column instead. */
+static int
+test_append_metadata_not_tags(void) {
+    int rc = 0;
+    dsd_tg_policy_entry row;
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    if (!loaded) {
+        return 1;
+    }
+    rc |= append_alias_and_reload("append basic tags header", "id,mode,name,tags\n500,A,Existing,FIRE\n",
+                                  "100,D,Alias,,VEND\n", loaded);
+    rc |= expect_true("basic tags reload count", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("basic tags existing row keeps tags",
+                      dsd_tg_policy_entry_at(loaded, 0, &row) == 1 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("basic tags alias row has no tags",
+                      dsd_tg_policy_entry_at(loaded, 1, &row) == 1 && row.id_start == 100 && row.tags[0] == '\0');
+
+    dsd_state_ext_free_all(loaded);
+    rc |=
+        append_alias_and_reload("append extended header",
+                                "id,mode,name,priority,preempt,audio,record,stream,tags\n500,A,Existing,0,false,on,on,"
+                                "on,FIRE\n",
+                                "100,D,Alias,0,false,on,on,on,,VEND\n", loaded);
+    rc |= expect_true("extended reload count", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("extended existing row keeps tags",
+                      dsd_tg_policy_entry_at(loaded, 0, &row) == 1 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("extended alias row has no tags",
+                      dsd_tg_policy_entry_at(loaded, 1, &row) == 1 && row.id_start == 100 && row.tags[0] == '\0');
+
+    free_test_state(loaded);
+    return rc;
+}
+
+/* The importer accepts a final line without a newline; an append must start its row on a line of its own. */
+static int
+test_append_after_unterminated_line(void) {
+    int rc = 0;
+    char path[64];
+    char l1[256];
+    char l2[256];
+    char l3[256];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_entry e;
+    if (!opts || !loaded || write_temp_group_file(path, sizeof(path), "id,mode,name\n1201,A,X") != 0) {
+        free(opts);
+        free_test_state(loaded);
+        return 1;
+    }
+    init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("append after unterminated row", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("read unterminated append",
+                      read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true("unterminated row now ends its line", strcmp(l2, "1201,A,X\n") == 0);
+    rc |= expect_true("appended row on its own line", strcmp(l3, "100,D,Alias\n") == 0);
+    rc |= expect_true("reload unterminated append", csvGroupImportPath(path, loaded) == 0);
+    rc |= expect_true("both rows reload", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("existing row reloads", dsd_tg_policy_lookup_id(loaded, 1201, &lookup) == 0
+                                                  && lookup.match == DSD_TG_POLICY_MATCH_EXACT
+                                                  && strcmp(lookup.entry.name, "X") == 0);
+    rc |= expect_true("appended row reloads", dsd_tg_policy_lookup_id(loaded, 100, &lookup) == 0
+                                                  && lookup.match == DSD_TG_POLICY_MATCH_EXACT
+                                                  && strcmp(lookup.entry.name, "Alias") == 0);
+    (void)remove(path);
+
+    // A header-only file without a newline keeps its header line too.
+    dsd_state_ext_free_all(loaded);
+    if (write_temp_group_file(path, sizeof(path), "id,mode,name") != 0) {
+        free(opts);
+        free_test_state(loaded);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("append after unterminated header", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("read unterminated header append",
+                      read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
+    rc |= expect_true("unterminated header kept", strcmp(l1, "id,mode,name\n") == 0);
+    rc |= expect_true("row after unterminated header", strcmp(l2, "100,D,Alias\n") == 0);
+    rc |= expect_true("reload after unterminated header",
+                      csvGroupImportPath(path, loaded) == 0 && dsd_tg_policy_entry_count(loaded) == 1);
+    (void)remove(path);
+
+    free(opts);
+    free_test_state(loaded);
     return rc;
 }
 
@@ -2238,6 +2384,8 @@ main(void) {
     rc |= test_upsert_modes();
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();
+    rc |= test_append_metadata_not_tags();
+    rc |= test_append_after_unterminated_line();
     rc |= test_preemption_helpers();
     rc |= test_preemption_same_call_by_class();
     rc |= test_live_active_priority();

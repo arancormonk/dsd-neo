@@ -132,8 +132,10 @@ static void tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx);
 #ifdef DSD_NEO_TEST_HOOKS
 static long s_alloc_fail_after = -1;
 static long s_alloc_calls = 0;
+static int s_fail_next_append_close = 0;
 void dsd_tg_policy_test_alloc_reset(void);
 void dsd_tg_policy_test_alloc_fail_after(long fail_after);
+void dsd_tg_policy_test_fail_next_append_close(void);
 #endif
 static dsd_atomic_u64 s_next_context_id = {1u};
 
@@ -181,7 +183,26 @@ dsd_tg_policy_test_alloc_fail_after(long fail_after) {
     s_alloc_calls = 0;
     s_alloc_fail_after = fail_after;
 }
+
+/* The next group-file append's final close reports failure, as a full disk does when the buffered row is flushed. */
+void
+dsd_tg_policy_test_fail_next_append_close(void) {
+    s_fail_next_append_close = 1;
+}
 #endif
+
+/* Close a group-file append stream: 0 when every buffered byte reached the file. */
+static int
+tg_policy_close_append(FILE* fp) {
+    int rc = fclose(fp);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (s_fail_next_append_close) {
+        s_fail_next_append_close = 0;
+        rc = EOF;
+    }
+#endif
+    return rc;
+}
 
 static int
 tg_policy_is_ascii_space(unsigned char c) {
@@ -1859,70 +1880,91 @@ tg_policy_ascii_casecmp(const char* a, const char* b) {
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
 
-static int
-tg_policy_header_is_policy(const char* header_line) {
+/* What a group file's header models, read as the importer reads it: an extended policy header (column 4 is
+ * "priority"), and whether some column is the tags column the importer loads as a row's category. */
+typedef struct {
+    int policy;
+    int tags_modelled;
+} tg_policy_header_info;
+
+static tg_policy_header_info
+tg_policy_parse_header(const char* header_line) {
+    tg_policy_header_info info = {0, 0};
     char buf[512];
     char* fields[16];
     static const char* expected[] = {"preempt", "audio", "record", "stream", "tags"};
+    const size_t expected_count = sizeof(expected) / sizeof(expected[0]);
     size_t n = 0;
     size_t idx = 0;
 
     if (!header_line) {
-        return 0;
+        return info;
     }
     DSD_SNPRINTF(buf, sizeof(buf), "%s", header_line);
     n = tg_policy_split_csv_preserve_empty(buf, fields, sizeof(fields) / sizeof(fields[0]));
     if (n < 4) {
-        return 0;
+        return info;
     }
-    if (tg_policy_ascii_casecmp(tg_policy_trim_inplace(fields[3]), "priority") != 0) {
-        return 0;
+    const char* col = tg_policy_trim_inplace(fields[3]);
+    if (tg_policy_ascii_casecmp(col, "priority") != 0) {
+        info.tags_modelled = tg_policy_ascii_casecmp(col, "tag") == 0 || tg_policy_ascii_casecmp(col, "tags") == 0
+                             || tg_policy_ascii_casecmp(col, "category") == 0;
+        return info;
     }
-    for (size_t i = 4; i < n && idx < (sizeof(expected) / sizeof(expected[0])); i++) {
+    info.policy = 1;
+    for (size_t i = 4; i < n && idx < expected_count; i++) {
         if (tg_policy_ascii_casecmp(tg_policy_trim_inplace(fields[i]), expected[idx]) != 0) {
             break;
         }
         idx++;
     }
-    return 1;
+    info.tags_modelled = idx == expected_count;
+    return info;
 }
 
+typedef struct {
+    int has_header;
+    int missing_or_empty;
+    int needs_newline; /* The file's last line has no newline, so an append must end it first. */
+    tg_policy_header_info header;
+} tg_policy_group_file_probe;
+
 static int
-tg_policy_probe_group_file(const char* path, int* has_existing_header, int* existing_policy_header,
-                           int* file_missing_or_empty) {
+tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
     char first_line[512];
     FILE* rf = NULL;
 
-    if (has_existing_header) {
-        *has_existing_header = 0;
+    if (!out) {
+        return -1;
     }
-    if (existing_policy_header) {
-        *existing_policy_header = 0;
-    }
-    if (file_missing_or_empty) {
-        *file_missing_or_empty = 0;
-    }
-    if (!path || !file_missing_or_empty) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path) {
         return -1;
     }
 
-    rf = dsd_fopen_existing_regular_file(path, "r");
+    rf = dsd_fopen_existing_regular_file(path, "rb");
     if (!rf) {
-        *file_missing_or_empty = 1;
+        out->missing_or_empty = 1;
         return errno == ENOENT ? 0 : -1;
     }
 
+    int failed = 0;
     if (fgets(first_line, sizeof(first_line), rf) != NULL) {
-        if (has_existing_header) {
-            *has_existing_header = 1;
-        }
-        if (existing_policy_header) {
-            *existing_policy_header = tg_policy_header_is_policy(first_line);
+        out->has_header = 1;
+        out->header = tg_policy_parse_header(first_line);
+        if (fseek(rf, -1L, SEEK_END) != 0) {
+            failed = 1;
+        } else {
+            const int last = fgetc(rf);
+            failed = last == EOF;
+            out->needs_newline = last != '\n';
         }
     } else {
-        *file_missing_or_empty = 1;
+        out->missing_or_empty = 1;
     }
-    int failed = ferror(rf);
+    if (ferror(rf)) {
+        failed = 1;
+    }
     if (fclose(rf) != 0) {
         failed = 1;
     }
@@ -1930,12 +1972,11 @@ tg_policy_probe_group_file(const char* path, int* has_existing_header, int* exis
 }
 
 static int
-tg_policy_write_group_file_header(FILE* wf, int file_missing_or_empty, int has_existing_header,
-                                  const char* clean_meta) {
-    if (!wf) {
+tg_policy_write_group_file_header(FILE* wf, const tg_policy_group_file_probe* probe, const char* clean_meta) {
+    if (!wf || !probe) {
         return -1;
     }
-    if (file_missing_or_empty) {
+    if (probe->missing_or_empty) {
         if (clean_meta && clean_meta[0] != '\0') {
             if (DSD_FPRINTF(wf, "id,mode,name,metadata\n") < 0) {
                 return -1;
@@ -1945,8 +1986,9 @@ tg_policy_write_group_file_header(FILE* wf, int file_missing_or_empty, int has_e
                 return -1;
             }
         }
-    } else if (!has_existing_header) {
-        if (DSD_FPRINTF(wf, "id,mode,name\n") < 0) {
+    } else if (probe->needs_newline) {
+        // The importer accepts a last line without a newline; end it so the appended row stays a row of its own.
+        if (DSD_FPRINTF(wf, "\n") < 0) {
             return -1;
         }
     }
@@ -1980,16 +2022,20 @@ tg_policy_write_group_row(FILE* wf, const dsd_tg_policy_entry* entry, const char
 }
 
 static int
-tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, int has_existing_header,
-                                 int existing_policy_header, const char* clean_mode, const char* clean_name,
-                                 const char* clean_meta) {
-    if (!wf || !entry || !clean_mode || !clean_name || !clean_meta) {
+tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, const tg_policy_group_file_probe* probe,
+                                 const char* clean_mode, const char* clean_name, const char* clean_meta) {
+    if (!wf || !entry || !probe || !clean_mode || !clean_name || !clean_meta) {
         return -1;
     }
     char id_text[24];
+    char extra[258];
     DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
-    return tg_policy_write_group_row(wf, entry, id_text, has_existing_header && existing_policy_header,
-                                     clean_meta[0] != '\0', clean_mode, clean_name, clean_meta);
+    // Alias metadata is not a category: under a header that models a tags column it goes one column further, past an
+    // empty tags field, where the importer does not read it.
+    DSD_SNPRINTF(extra, sizeof(extra), "%s%s", (probe->header.tags_modelled && clean_meta[0] != '\0') ? "," : "",
+                 clean_meta);
+    return tg_policy_write_group_row(wf, entry, id_text, probe->has_header && probe->header.policy, extra[0] != '\0',
+                                     clean_mode, clean_name, extra);
 }
 
 static int
@@ -2034,13 +2080,11 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const char* path = opts->group_in_file;
-    int has_header = 0;
-    int policy_header = 0;
-    int missing = 0;
-    if (tg_policy_probe_group_file(path, &has_header, &policy_header, &missing) != 0) {
+    tg_policy_group_file_probe probe;
+    if (tg_policy_probe_group_file(path, &probe) != 0) {
         return -1;
     }
-    int use_policy = has_header && policy_header;
+    int use_policy = probe.has_header && probe.header.policy;
     int any_tags = 0;
     const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
     size_t count = ctx ? ctx->table.count : 0;
@@ -2074,9 +2118,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
     char clean_mode[16];
     char clean_name[128];
     char clean_meta[256];
-    int has_existing_header = 0;
-    int existing_policy_header = 0;
-    int file_missing_or_empty = 0;
+    tg_policy_group_file_probe probe;
     FILE* wf = NULL;
     const char* path = NULL;
 
@@ -2095,7 +2137,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
     tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
     tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), metadata ? metadata : "");
 
-    if (tg_policy_probe_group_file(path, &has_existing_header, &existing_policy_header, &file_missing_or_empty) != 0) {
+    if (tg_policy_probe_group_file(path, &probe) != 0) {
         return -1;
     }
 
@@ -2104,19 +2146,13 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
         return -1;
     }
 
-    if (tg_policy_write_group_file_header(wf, file_missing_or_empty, has_existing_header, clean_meta) != 0) {
+    if (tg_policy_write_group_file_header(wf, &probe, clean_meta) != 0
+        || tg_policy_write_group_file_entry(wf, entry, &probe, clean_mode, clean_name, clean_meta) != 0) {
         fclose(wf);
         return -1;
     }
-    if (tg_policy_write_group_file_entry(wf, entry, has_existing_header, existing_policy_header, clean_mode, clean_name,
-                                         clean_meta)
-        != 0) {
-        fclose(wf);
-        return -1;
-    }
-
-    fclose(wf);
-    return 0;
+    // The row is buffered until the close: a close failure (a full disk) means it never reached the file.
+    return tg_policy_close_append(wf) == 0 ? 0 : -1;
 }
 
 static double

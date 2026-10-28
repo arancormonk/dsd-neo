@@ -183,6 +183,15 @@ typedef enum {
  * table and its generation alone while a renamed radio's new alias replaces the old one.
  */
 dsd_tg_policy_learn_result dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
+/**
+ * @brief Append one exact row to opts->group_in_file in the file's own schema, creating the file when missing.
+ *
+ * A last line without a newline is ended first. @p metadata (free text, may be NULL) never lands in a column the
+ * header models as tags: it goes one column further, past an empty tags field.
+ *
+ * @return 0 written or nothing to write (NULL opts/entry, empty path), 1 not an exact row, -1 on I/O failure
+ *         (including a failed final close).
+ */
 int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
 
 int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,

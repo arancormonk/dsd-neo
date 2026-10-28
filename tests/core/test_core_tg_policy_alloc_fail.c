@@ -3,9 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <limits.h>
 #include <stdint.h>
@@ -18,6 +20,7 @@
 void dsd_tg_policy_test_alloc_reset(void);
 void dsd_tg_policy_test_alloc_fail_after(long fail_after);
 void dsd_tg_policy_test_set_generation(dsd_state* state, unsigned int generation, unsigned int structural_generation);
+void dsd_tg_policy_test_fail_next_append_close(void);
 
 static int
 expect_true(const char* tag, int cond) {
@@ -195,6 +198,29 @@ test_edit_version_wrap(void) {
     return rc;
 }
 
+/* A group-file append whose final close fails (the buffered row never reached the disk) reports the failure. */
+static int
+test_append_reports_close_failure(void) {
+    int rc = 0;
+    char path[] = "dsd-neo-test-tg-append-close-XXXXXX";
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_entry e;
+    int fd = dsd_mkstemp(path);
+    if (!opts || fd < 0) {
+        free(opts);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    dsd_tg_policy_test_fail_next_append_close();
+    rc |= expect_true("append reports close failure", dsd_tg_policy_append_group_file_row(opts, &e, "") == -1);
+    rc |= expect_true("append succeeds once close works", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    (void)remove(path);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -223,6 +249,7 @@ main(void) {
 
     rc |= test_snapshot_reuses_unchanged_policy_table();
     rc |= test_session_avoid_allocation_failure();
+    rc |= test_append_reports_close_failure();
 
     dsd_tg_policy_test_alloc_reset();
     free_test_state(st);
