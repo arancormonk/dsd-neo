@@ -48,32 +48,151 @@ internal object UsbReceiverKind {
     fun isKnown(vendorId: Int, productId: Int): Boolean = KNOWN_IDS.contains(id(vendorId, productId))
 
     /**
+     * The engine's option tables (#782 gate r1 G4), so that another option's operand is never read as an input. Kept
+     * equal to the native ones, which the usb_receiver suite of tests/android/run_jvm_tests.py checks against the
+     * sources: [SHORT_OPTIONS] is the getopt string of dsd_parse_short_opts() in src/runtime/cli/args.c, and the long
+     * tables are those dsd_cli_compact_args() in src/runtime/cli/compact.c uses to take long options and their values
+     * out before getopt runs (named after them below).
+     */
+    private const val SHORT_OPTIONS =
+        ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:89:Ek:I:J:O^Nj"
+
+    /** Long options that take no value. `k_skip_exact_no_arg`. */
+    private val LONG_NO_VALUE: Set<String> = setOf(
+        "--airspy-list", "--auto-ppm", "--rtltcp-autotune", "--iq-loop", "--tetra-uplink",
+        "--rdio-api-delete-after-upload", "--enc-lockout", "--enc-follow", "--tg-lockout-session",
+        "--tg-lockout-persist", "--no-config", "--print-config", "--interactive-setup", "--dump-config-template",
+        "--strict-config", "--list-profiles", "--no-force-key", "--no-decryption-keys", "--dmr-tg-key-clear",
+        "--strict-crc", "--no-scan-voice-only", "--dmr-debug-burst", "--dmr-debug-unsynced", "--show-keys",
+        "--scan-voice-only", "--no-tone-filter", "--no-slot-filter", "--no-dcc-filter", "--no-ran-filter",
+        "--no-nac-filter", "--no-service-names",
+    )
+
+    /** Long options that take the next argument as their value, whatever it is. `k_skip_exact_next_any`. */
+    private val LONG_NEXT_ANY: Set<String> = setOf(
+        "--airspy-serial", "--airspy-sample-rate", "--airspy-gain-mode", "--airspy-sensitivity-gain",
+        "--airspy-linearity-gain", "--airspy-lna-gain", "--airspy-mixer-gain", "--airspy-vga-gain", "--airspy-lna-agc",
+        "--airspy-mixer-agc", "--airspy-bias-tee", "--input-volume", "--input-level-warn-db", "--frame-log",
+        "--p25-sm-log", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
+        "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--dmr-baofeng-pc5", "--dmr-csi-ee72",
+        "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--p25-bandplan", "--src-csv", "--p25-bandplan-export",
+        "--dmr-force-algid", "--m17-signature-public-key", "--m17-scrambler-key", "--m17-aes-key", "--key-profile-ref",
+        "--auto-ppm-snr", "--frontend", "--profile", "--p25-vc-grace", "--p25-min-follow-dwell",
+        "--p25-grant-voice-timeout", "--p25-mac-hold", "--p25-cc-grace", "--p25-force-release-extra",
+        "--p25-force-release-margin", "--p25-p1-err-hold-pct", "--p25-p1-err-hold-sec", "--trunk-scan",
+        "--trunk-scan-dwell-ms", "--trunk-scan-activity-hold-ms", "--scan-voice-qualify-ms", "--scan-voice-hold-ms",
+        "--scan-max-visit-ms", "--nfm-bandwidth-hz", "--am-bandwidth-hz", "--squelch", "--tone-allow", "--slot-allow",
+        "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block", "--nac-allow", "--nac-block",
+        "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name", "--tone-block", "--calc-lcn",
+        "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn",
+    )
+
+    /** Long options that take the next argument, whatever it starts with. `k_skip_exact_next_nonnull`. */
+    private val LONG_NEXT_PRESENT: Set<String> = setOf(
+        "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format", "--iq-replay",
+        "--iq-replay-rate", "--iq-info",
+    )
+
+    /** Long options whose value is free text, taken whatever it starts with: an API token may begin with '-'. `k_free_value_options`. */
+    private val LONG_FREE_VALUE: Set<String> = setOf(
+        "--api-token", "--api-token-file",
+    )
+
+    /** Long options that take the next argument only when it does not start with '-'. `k_skip_exact_next_nonopt`. */
+    private val LONG_NEXT_NON_OPTION: Set<String> = setOf(
+        "--lrrp-extra-port", "--dmr-udp-comp-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config",
+        "--validate-config", "--api", "--api-bind", "--tetra-net", "--tetra-key",
+    )
+
+    /** Long options given with their value attached ("--name=value"), as prefixes. `k_skip_prefix`. */
+    private val LONG_ATTACHED_PREFIXES: Set<String> = setOf(
+        "--airspy-serial=", "--airspy-sample-rate=", "--airspy-gain-mode=", "--airspy-sensitivity-gain=",
+        "--airspy-linearity-gain=", "--airspy-lna-gain=", "--airspy-mixer-gain=", "--airspy-vga-gain=",
+        "--airspy-lna-agc=", "--airspy-mixer-agc=", "--airspy-bias-tee=", "--lrrp-extra-port=", "--dmr-udp-comp-port=",
+        "--rtl-udp-control=", "--rtl-udp-control-bind=", "--api=", "--api-bind=", "--api-token=", "--api-token-file=",
+        "--iq-capture=", "--iq-capture-format=", "--iq-capture-max-mb=", "--symbol-capture-format=", "--iq-replay=",
+        "--iq-replay-rate=", "--iq-info=", "--tetra-net=", "--tetra-key=", "--dmr-baofeng-pc5=", "--dmr-csi-ee72=",
+        "--dmr-vertex-ks-csv=", "--dmr-tg-key-csv=", "--p25-bandplan=", "--src-csv=", "--p25-bandplan-export=",
+        "--dmr-force-algid=", "--m17-signature-public-key=", "--m17-scrambler-key=", "--m17-aes-key=",
+        "--key-profile-ref=", "--config=", "--trunk-scan=", "--trunk-scan-dwell-ms=", "--trunk-scan-activity-hold-ms=",
+        "--scan-voice-qualify-ms=", "--scan-voice-hold-ms=", "--scan-max-visit-ms=", "--nfm-bandwidth-hz=",
+        "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=", "--dcc-allow=",
+        "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=", "--dcc-name=",
+        "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=",
+    )
+    /**
      * The local receiver a start's arguments name: "usb" for an RTL-SDR, "airspy", or empty for any other input
-     * (rtl_tcp included). Read as the engine's option parser reads "-i": the last one wins, separate or attached, and
-     * nothing after "--" is an option. The engine's own classifier is dsd_opts_audio_in_dev_is_rtl_spec() and
-     * _is_airspy_spec() (include/dsd-neo/core/opts.h): the exact name, or the name and a colon.
+     * (rtl_tcp included), or for arguments the engine's parser refuses. Read as the engine reads them: the long-option
+     * pass takes long options and their values out ([longOptionsRemoved]), then getopt reads "-i" among the short
+     * options ([lastInput]), separate, attached or bundled, the last one winning, past bare arguments, and never as
+     * another option's value; nothing after "--" is an option. The engine's own classifier is
+     * dsd_opts_audio_in_dev_is_rtl_spec() and _is_airspy_spec() (include/dsd-neo/core/opts.h): the exact name, or the
+     * name and a colon.
      */
     fun sourceOfArgs(args: Array<String>): String {
-        var input: String? = null
-        var index = 0
-        while (index < args.size) {
-            val arg = args[index]
-            when {
-                arg == "--" -> break
-                arg == "-i" -> {
-                    input = args.getOrNull(index + 1)
-                    index += 1
-                }
-                arg.startsWith("-i") -> input = arg.substring(2)
-            }
-            index += 1
-        }
+        val input = lastInput(longOptionsRemoved(args))
         return when {
             input == null -> ""
             input == "rtl" || input.startsWith("rtl:") -> RTL
             input == "airspy" || input.startsWith("airspy:") -> AIRSPY
             else -> ""
         }
+    }
+
+    /** What dsd_cli_compact_args() leaves for getopt: [args] without the long options it knows and their values. */
+    private fun longOptionsRemoved(args: Array<String>): List<String> {
+        val left = ArrayList<String>(args.size)
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            if (arg == "--") {
+                left.addAll(args.copyOfRange(index, args.size))
+                break
+            }
+            val hasNext = index + 1 < args.size
+            index += when {
+                LONG_ATTACHED_PREFIXES.any { arg.startsWith(it) } -> 1
+                arg in LONG_NO_VALUE -> 1
+                arg in LONG_NEXT_NON_OPTION -> if (hasNext && !args[index + 1].startsWith("-")) 2 else 1
+                arg in LONG_FREE_VALUE || arg in LONG_NEXT_PRESENT || arg in LONG_NEXT_ANY -> if (hasNext) 2 else 1
+                else -> {
+                    left += arg
+                    1
+                }
+            }
+        }
+        return left
+    }
+
+    /**
+     * The value of the last "-i" getopt reads from [args] with [SHORT_OPTIONS], or null when there is none, or when
+     * getopt meets an option it does not know or one missing its value: the engine refuses that start before it opens
+     * anything.
+     */
+    private fun lastInput(args: List<String>): String? {
+        var input: String? = null
+        var index = 0
+        while (index < args.size) {
+            val arg = args[index]
+            index += 1
+            if (arg == "--") break
+            // A bare argument: getopt reads on past it.
+            if (arg.length < 2 || arg[0] != '-') continue
+            var at = 1
+            while (at < arg.length) {
+                val option = arg[at]
+                at += 1
+                val spec = if (option == ':') -1 else SHORT_OPTIONS.indexOf(option, startIndex = 1)
+                if (spec < 0) return null
+                if (SHORT_OPTIONS.getOrNull(spec + 1) != ':') continue
+                // It takes a value: the rest of this argument, or else the next one, whatever it is.
+                val value = if (at < arg.length) arg.substring(at) else args.getOrNull(index)?.also { index += 1 }
+                if (value == null) return null
+                if (option == 'i') input = value
+                break
+            }
+        }
+        return input
     }
 
     /** "airspy" for an Airspy, else "usb"; meaningful only for a device [isKnown] accepts. */

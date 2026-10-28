@@ -8835,7 +8835,10 @@ from; `connection`, a process-wide generation); while a session's `reopen()` run
 reopen (`reopening`), so the poll never reads the gap between the old connection's close and the new one's publish as
 not ready, and a failed reopen then publishes its own. Every session gets a connection of its own:
 `DecoderService.startDecoding()`, after IDLE→STARTING and before `nativeConfigure()`, classifies the start's `-i` as
-getopt would (`UsbReceiverKind.sourceOfArgs()`: the last one, before any `--`) and calls `takeForSession()`. A start
+the engine's parser would (`UsbReceiverKind.sourceOfArgs()`: the long-option pass's tables from `compact.c` take long
+options and their values out, then getopt's string from `args.c` reads the short options, so another option's operand,
+such as an API token `-irtl`, is never an input; the last `-i` before any `--` wins, and arguments getopt refuses take
+nothing; `ANDROID_USB_RECEIVER_JVM` checks the Kotlin copies against both sources) and calls `takeForSession()`. A start
 with no broker connection of its kind takes nothing, and the native open then fails as kind 7. The first session on a
 connection takes it; a later one runs `reopen()`: the old connection is closed through `detachConnection()`, the same
 `UsbDevice` is opened again and published (`UsbSessionTake` carries device, epoch and connection into the lifecycle

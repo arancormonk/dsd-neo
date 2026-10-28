@@ -214,6 +214,54 @@ def native_lifecycle_contract():
     return None
 
 
+def receiver_option_tables_match():
+    """UsbReceiverKind.sourceOfArgs() reads a start's input as the engine's parser does, from copies of its tables.
+
+    The getopt string in src/runtime/cli/args.c and dsd_cli_compact_args()'s long-option tables in
+    src/runtime/cli/compact.c must equal the Kotlin ones, or an option's operand could be read as an input (#782)."""
+    kotlin_path = REPO / APP_SOURCES / "UsbReceiverKind.kt"
+    args_path = REPO / "src/runtime/cli/args.c"
+    compact_path = REPO / "src/runtime/cli/compact.c"
+    try:
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        args = args_path.read_text(encoding="utf-8")
+        compact = compact_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the option tables: {error}"
+    native_short = re.search(r"getopt\(argc, argv,\s*((?:\"[^\"]*\"\s*)+)\)", args)
+    kotlin_short = re.search(r"const val SHORT_OPTIONS =\s*((?:\"[^\"]*\"\s*\+?\s*)+)", kotlin)
+    if not native_short or not kotlin_short:
+        return f"cannot find the getopt string in {args_path.relative_to(REPO)} or SHORT_OPTIONS in {APP_SOURCES}"
+    joined = ["".join(re.findall(r'"([^"]*)"', match.group(1))) for match in (native_short, kotlin_short)]
+    if joined[0] != joined[1]:
+        return f"SHORT_OPTIONS in UsbReceiverKind.kt must equal the getopt string of args.c: {joined[0]!r}"
+    pairs = (
+        ("k_skip_exact_no_arg", "LONG_NO_VALUE"),
+        ("k_skip_exact_next_any", "LONG_NEXT_ANY"),
+        ("k_skip_exact_next_nonnull", "LONG_NEXT_PRESENT"),
+        ("k_free_value_options", "LONG_FREE_VALUE"),
+        ("k_skip_exact_next_nonopt", "LONG_NEXT_NON_OPTION"),
+        ("k_skip_prefix", "LONG_ATTACHED_PREFIXES"),
+    )
+    for native_name, kotlin_name in pairs:
+        native = re.search(rf"\b{native_name}\[\] = \{{(.*?)\}};", compact, re.S)
+        jvm = re.search(rf"val {kotlin_name}: Set<String> = setOf\((.*?)\n    \)", kotlin, re.S)
+        if not native or not jvm:
+            return f"cannot find {native_name} in compact.c or {kotlin_name} in UsbReceiverKind.kt"
+        native_items = re.findall(r'"([^"]*)"', native.group(1))
+        jvm_items = re.findall(r'"([^"]*)"', jvm.group(1))
+        if sorted(native_items) != sorted(jvm_items):
+            missing = sorted(set(native_items) - set(jvm_items))
+            extra = sorted(set(jvm_items) - set(native_items))
+            return f"{kotlin_name} in UsbReceiverKind.kt must equal {native_name} in compact.c: missing {missing}, extra {extra}"
+    # Any other long-option table in compact.c would be one this copy does not know.
+    tables = set(re.findall(r"static const char\* const (k_\w+)\[\]", compact)) | {"k_free_value_options"}
+    unknown = sorted(tables - {native for native, _ in pairs})
+    if unknown:
+        return f"compact.c has long-option tables UsbReceiverKind.kt does not mirror: {unknown}"
+    return None
+
+
 def ready_branch_rewrites_status(source):
     """Whether every `if (isReady()) {` branch writes "Ready: …" as its first statement, past any comment lines.
 
@@ -337,7 +385,11 @@ SUITES = {
         ),
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.
-    "usb_receiver": Suite(builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),)),
+    # Which receiver a start's arguments name, read with copies of the engine's option tables, which the check compares.
+    "usb_receiver": Suite(
+        builds=(Build(sources=("UsbReceiverKind.kt",), tests=("UsbReceiverKindTest.kt",)),),
+        checks=(receiver_option_tables_match,),
+    ),
     # The USB broker's permission requests, detach and attach bookkeeping, the attachment's kind and the USB resets
     # attachments owe: the plain-Kotlin state with no stubs, then UsbSourceManager itself against stubs of the USB
     # service, prompts and engine.
