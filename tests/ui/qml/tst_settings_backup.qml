@@ -897,7 +897,7 @@ Item {
 
         function test_confirm_message_data() {
             var day = Qt.formatDate(new Date(1760000000 * 1000), "MMM d, yyyy");
-            var head = "Replace this phone's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings with the backup from " + day + " (DSD-neo 1.4.0)? Call history, call recordings and replay recordings on this phone are kept.";
+            var head = "Replace this phone's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings with the backup from " + day + " (DSD-neo 1.4.0)? Call history and replay recordings on this phone are kept. Call recordings are kept up to the backup's Storage limit; oldest recordings are removed first.";
             var close = "DSD-neo will close; open it again to finish.";
             return [
                 {tag: "every note", summary: fullSummary, has: [head, "2 replay systems will need their recording chosen again.", "1 system carries extra decoder options.", close], lacks: ["Your settings carry"]},
