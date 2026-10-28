@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# A dsd-neo run that stops before decoding leaves no per-call recording behind (#782 gate r2 H3). The -P option opens
-# each slot's WAV under a TEMP_ name while the options are parsed; only the engine's cleanup closed it, and a recording
-# with no audio is removed then. MODE names how the run stops before the engine: PARSE_ERROR (an unknown option after
-# -P) or AIRSPY_LIST (--airspy-list, which lists and exits).
+# A dsd-neo run that stops before decoding leaves no per-call recording behind (#782 gate r2 H3). The -P option once
+# opened each slot's WAV under a TEMP_ name while the options were parsed, and only the engine's cleanup closed it; it
+# now opens them at the run's start (issue #708), and the CLI still releases what a stopped parse opened. MODE names
+# how the run stops before the engine: PARSE_ERROR (an unknown option after -P) or AIRSPY_LIST (--airspy-list, which
+# lists and exits).
 #
 # Expected -D inputs: DSD_BIN, MODE, WORK_DIR.
 foreach(_var DSD_BIN MODE WORK_DIR)

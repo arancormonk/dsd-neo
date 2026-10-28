@@ -45,13 +45,14 @@ Generated (do not edit/commit):
     as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
     frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
     repeats the step, which then finds nothing left to do
-  - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV,
-    `-P` per-call WAVs and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them.
-    `dsd_engine_release_outputs()` closes them (and any log or MBE file) with the same helpers the cleanup uses,
-    removing an empty per-call WAV as a run's end does. The Android host calls it on every path that gives up a
-    configured session (`nativeDiscardConfigured()`, a failed or exiting `nativeConfigure()` and the configure after
-    one never run, `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list`, and
-    `dsd_engine_run_with_lifecycle()` when the socket layer fails to start before the run
+  - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
+    and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
+    at the run's start (issue #708), so a configure leaves none. `dsd_engine_release_outputs()` closes them (and any
+    log or MBE file, or a per-call WAV left open, removed when empty as a run's end does) with the same helpers the
+    cleanup uses. The Android host calls it on every path that gives up a configured session
+    (`nativeDiscardConfigured()`, a failed or exiting `nativeConfigure()` and the configure after one never run,
+    `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list`, and `dsd_engine_run_with_lifecycle()`
+    when the socket layer fails to start before the run
   - Protocol/frame dispatch glue
   - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
     capture measurement, tagged asynchronous tuning, identification and listening on
