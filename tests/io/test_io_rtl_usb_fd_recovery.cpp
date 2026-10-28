@@ -36,6 +36,8 @@
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 
+struct rtl_device;
+
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
@@ -711,7 +713,8 @@ stop_on_close(void* ctx, int op) {
         return;
     }
     rtl_device* dev = g_stop_target.load();
-    assert(dsd_thread_create(&g_stopper, stop_device, dev) == 0);
+    const int created = dsd_thread_create(&g_stopper, stop_device, dev);
+    assert(created == 0);
     /* The stop latches first, then waits for the swap's lock. */
     rtl_device_test_usb_swap_state st{};
     for (uint64_t waited = 0; waited < kWaitMs; ++waited) {
@@ -742,6 +745,63 @@ test_stop_just_before_reset(void) {
     assert(g_resets.load() == 0 && g_opens.load() == 1);
     assert(rtl_device_preopened_fd_reset_owed() == kFd);
     assert(dsd_input_failure_receiver_ended() == 0);
+    rig_close(r);
+}
+
+/* Re-review N4: the reader delivers its last block and returns by itself after the monitor read it as streaming, before
+ * the monitor clears the obligation the descriptor came with. The return's ending set the obligation for itself, so the
+ * clear must not take it: Reconnect still resets the dongle. The hook makes the return land in that window. */
+struct owed_clear_race {
+    std::atomic<int> armed{0};
+    std::atomic<int> returned{0};
+    std::atomic<int> done{0};
+};
+
+owed_clear_race g_owed_race;
+
+void
+reader_returns_before_clear(const rtl_device* dev, void* ctx) {
+    (void)dev;
+    auto* race = static_cast<owed_clear_race*>(ctx);
+    if (race->armed.exchange(0) == 0) {
+        return;
+    }
+    const unsigned int returns = rtl_device_test_usb_reader_returns();
+    rtl_device_test_usb_stream_return(-1);
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_test_usb_reader_returns() == returns; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    race->returned.store(rtl_device_test_usb_reader_returns() != returns ? 1 : 0);
+    race->done.store(1);
+}
+
+void
+test_reader_return_inside_the_clear_keeps_obligation(void) {
+    seams_reset();
+    g_reset_answer.store(-EACCES);
+    rig r;
+    rig_open(r, 1);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    g_owed_race.returned.store(0);
+    g_owed_race.done.store(0);
+    g_owed_race.armed.store(1);
+    rtl_device_test_set_owed_clear_hook(reader_returns_before_clear, &g_owed_race);
+    /* Until the monitor, watching, sees samples. */
+    for (uint64_t waited = 0; waited < kWaitMs && g_owed_race.armed.load() == 1; waited += 10U) {
+        deliver(r, 1, 0U);
+        dsd_sleep_ms(10U);
+    }
+    for (uint64_t waited = 0; waited < kWaitMs && g_owed_race.done.load() == 0; ++waited) {
+        dsd_sleep_ms(1);
+    }
+    assert(g_owed_race.done.load() == 1 && g_owed_race.returned.load() == 1);
+    expect_receiver_ending(-1);
+    /* The monitor is joined: its clear, right after the hook, has run. */
+    rtl_device_destroy(r.dev);
+    r.dev = nullptr;
+    rtl_device_test_set_owed_clear_hook(nullptr, nullptr);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    assert(r.posted.count.load() == 0);
     rig_close(r);
 }
 
@@ -952,6 +1012,7 @@ main(void) {
     test_swap_reset_refused_stall_persists();
     test_published_obligation_cleared_by_samples();
     test_reader_return_owes_reset();
+    test_reader_return_inside_the_clear_keeps_obligation();
     test_swap_descriptor_dead();
     test_swap_reopen_fails();
     test_swap_identity_mismatch();

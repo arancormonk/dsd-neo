@@ -571,6 +571,9 @@ void rtl_device_test_set_recovery_take_hook(void (*hook)(struct rtl_device*, voi
  * of the restarted reader's hand-off (on the controller's thread); NULL removes it. */
 void rtl_device_test_set_recovery_finish_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
 void rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*), void* ctx);
+/* Call @p hook(dev, @p ctx) on the progress monitor's thread once samples decided it clears the reset obligation its
+ * watch holds (#782), before it clears it; NULL removes it. */
+void rtl_device_test_set_owed_clear_hook(void (*hook)(const struct rtl_device*, void*), void* ctx);
 
 /* ---- rtl_tcp (issue #518 WP3) ---- */
 

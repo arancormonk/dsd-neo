@@ -4925,6 +4925,25 @@ optimal_settings(int freq, int rate) {
     store_dongle_rate(capture_rate_hz);
 }
 
+/* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, or
+ * goes back to @p previous when it cannot say. Returns @p rc. */
+static int
+capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz,
+                          const CaptureSettingsSnapshot* previous, int rc) {
+    capture_writes_forget_tuning();
+    LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
+    int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    if (actual > 0) {
+        if ((uint32_t)actual != capture_rate_hz) {
+            (void)apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
+        }
+    } else {
+        restore_capture_rate_settings(previous);
+    }
+    stream_refresh_watermark_for_current_rate();
+    return rc;
+}
+
 /**
  * @brief Program device to new center frequency and sample rate using a
  * single, consistent path. Applies fs/4 shift when offset_tuning is off.
@@ -4972,18 +4991,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     }
     rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
     if (rc != 0) {
-        capture_writes_forget_tuning();
-        LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
-        int actual = rtl_device_get_sample_rate(rtl_device_handle);
-        if (actual > 0) {
-            if ((uint32_t)actual != capture_rate_hz) {
-                (void)apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
-            }
-        } else {
-            restore_capture_rate_settings(&previous);
-        }
-        stream_refresh_watermark_for_current_rate();
-        return rc;
+        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc);
     }
     /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
@@ -8616,6 +8624,23 @@ stream_open_size_airspy_input(dsd_opts* opts) {
     return 0;
 }
 
+/* The tuner gain the stream opens with, written to the device (not an Airspy's, whose gains are its own) and
+ * published. */
+static void
+stream_open_apply_initial_gain(RadioSourceKind source_kind) {
+    uint32_t gain_generation = 0U;
+    const int gain_cacheable = capture_writes_generation(&gain_generation);
+    int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
+    if (source_kind != RADIO_SOURCE_AIRSPY && gain_rc == 0) {
+        capture_writes_note_gain(gain_cacheable, gain_generation, dongle.gain == AUTO_GAIN, dongle.gain);
+    }
+    rtl_stream_publish_tuner_gain();
+    log_unsupported_control_if_needed("Gain control", gain_rc);
+    if (source_kind != RADIO_SOURCE_AIRSPY && dongle.gain == AUTO_GAIN) {
+        LOG_INFO("Setting RTL Autogain. \n");
+    }
+}
+
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded,
@@ -8653,18 +8678,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     }
     stream_open_apply_runtime_controls(opts);
     stream_open_apply_audio_filters_from_config();
-
-    uint32_t gain_generation = 0U;
-    const int gain_cacheable = capture_writes_generation(&gain_generation);
-    int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
-    if (source_kind != RADIO_SOURCE_AIRSPY && gain_rc == 0) {
-        capture_writes_note_gain(gain_cacheable, gain_generation, dongle.gain == AUTO_GAIN, dongle.gain);
-    }
-    rtl_stream_publish_tuner_gain();
-    log_unsupported_control_if_needed("Gain control", gain_rc);
-    if (source_kind != RADIO_SOURCE_AIRSPY && dongle.gain == AUTO_GAIN) {
-        LOG_INFO("Setting RTL Autogain. \n");
-    }
+    stream_open_apply_initial_gain(source_kind);
     stream_open_note_ppm_capability();
     stream_open_apply_requested_ppm(opts);
 

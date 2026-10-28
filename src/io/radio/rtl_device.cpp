@@ -3223,6 +3223,9 @@ static RtlTestHook<struct rtl_device*> g_test_recovery_take_hook;
 /* rtl_device_test_set_recovery_finish_hook(): called inside rtl_device_usb_recovery_finish(), between the request's
  * move to idle and the hand-off's close, the window a restarted reader's return must not fall through. */
 static RtlTestHook<struct rtl_device*> g_test_recovery_finish_hook;
+/* rtl_device_test_set_owed_clear_hook(): called by the progress monitor once samples decided it clears the reset
+ * obligation its watch holds, before it clears it. */
+static RtlTestHook<const struct rtl_device*> g_test_owed_clear_hook;
 /* rtl_device_test_refuse_progress_monitor(): the RTL or SoapySDR monitor's thread creation fails as a refused one
  * does. */
 static std::atomic<int> g_test_refuse_progress_monitor{0};
@@ -3277,6 +3280,11 @@ rtl_device_test_set_reader_restart_hook(void (*hook)(struct rtl_device*, void*),
 }
 
 extern "C" void
+rtl_device_test_set_owed_clear_hook(void (*hook)(const struct rtl_device*, void*), void* ctx) {
+    g_test_owed_clear_hook.set(hook, ctx);
+}
+
+extern "C" void
 rtl_device_test_pause_next_verdict_ms(uint32_t ms) {
     g_test_verdict_pause_ms.store(ms, std::memory_order_release);
 }
@@ -3318,12 +3326,15 @@ rtl_usb_reset_owed_set(int fd) {
     g_preopened_usb_fd_reset_owed.store(fd, std::memory_order_release);
 }
 
-/* @p fd's dongle no longer owes one; an obligation the host bound to another descriptor since stays. */
-static void
+/* @p fd's dongle no longer owes one; an obligation the host bound to another descriptor since stays. Whether this
+ * cleared it. */
+static int
 rtl_usb_reset_owed_clear(int fd) {
     int expected = fd;
-    (void)g_preopened_usb_fd_reset_owed.compare_exchange_strong(expected, -1, std::memory_order_acq_rel,
-                                                                std::memory_order_acquire);
+    return g_preopened_usb_fd_reset_owed.compare_exchange_strong(expected, -1, std::memory_order_acq_rel,
+                                                                 std::memory_order_acquire)
+               ? 1
+               : 0;
 }
 
 /* Whether the host replaced or released the connection behind @p dev's descriptor since the device took it: a detach
@@ -3895,12 +3906,29 @@ rtl_usb_owed_on_verdict(const struct rtl_device* s, rtl_usb_owed_watch* w, uint6
 
 /* Samples verified since the verdict that set the obligation clear it: the dongle streams without a reset. Only while
  * the reader still streams (@p streaming): one that returned set the obligation for its own ending, whatever it
- * delivered before. */
+ * delivered before. The reader can still deliver its last block and return after @p streaming was read, setting the
+ * obligation for its ending just before the clear takes it, so a clear that finds the reader gone sets it again: the
+ * worst that costs, for a reader a stop or a recovery cancelled, is one reset that was not needed. */
 static void
 rtl_usb_owed_on_progress(const struct rtl_device* s, rtl_usb_owed_watch* w, uint64_t progress, int streaming) {
     if (w->set && streaming && progress != w->progress) {
-        rtl_usb_reset_owed_clear(s->preopened_fd);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        g_test_owed_clear_hook.invoke(s);
+#endif
         w->set = 0;
+        if (rtl_usb_reset_owed_clear(s->preopened_fd) && s->reader_exited.load(std::memory_order_acquire)) {
+            rtl_usb_reset_owed_set(s->preopened_fd);
+        }
+    }
+}
+
+/* An obligation @p s's descriptor owes now (one it came with, or one a recovery that reopened without its reset kept)
+ * is cleared by samples from @p progress on, as one this monitor set would be. */
+static void
+rtl_usb_owed_adopt(const struct rtl_device* s, rtl_usb_owed_watch* w, uint64_t progress) {
+    if (s->owns_preopened_fd && rtl_device_preopened_fd_reset_owed() == s->preopened_fd) {
+        w->set = 1;
+        w->progress = progress;
     }
 }
 
@@ -3920,7 +3948,7 @@ enum rtl_usb_grace_result : int {
  * verdict (made at @p verdict_progress), a stop, an exit request or the monitor's own stop, and the connection's
  * publish each end it early. Desktop receivers, and a host with no grace, recover at once. */
 static rtl_usb_grace_result
-rtl_usb_recovery_grace(struct rtl_device* s, uint64_t verdict_progress) {
+rtl_usb_recovery_grace(const struct rtl_device* s, uint64_t verdict_progress) {
     const uint32_t grace_ms = rtl_device_unplug_owner_grace_ms();
     if (!s->owns_preopened_fd || grace_ms == 0U) {
         return RTL_USB_GRACE_PASSED;
@@ -3965,6 +3993,120 @@ rtl_usb_recovery_post(struct rtl_device* s, uint64_t silence_ms) {
     }
 }
 
+/* The RTL-SDR's progress monitor's state, owned by its thread. */
+namespace {
+struct rtl_usb_monitor {
+    struct rtl_device* s;
+    rtl_progress_watch watch;
+    rtl_recovery_budget budget;
+    rtl_usb_owed_watch owed;
+    char cause[192];
+};
+} // namespace
+
+/* A recovery request still pending: withdrawn once the controller has not taken it in time, which ends the session.
+ * Whether the monitor stops (it ended the session). */
+static int
+rtl_usb_monitor_withdraw_request(rtl_usb_monitor* m) {
+    struct rtl_device* s = m->s;
+    if (dsd_realtime_mono_ms() - m->budget.requested_ms < rtl_recovery_take_ms()) {
+        return 0;
+    }
+    int expected = RTL_USB_RECOVERY_REQUESTED;
+    if (!s->recovery_request.compare_exchange_strong(expected, RTL_USB_RECOVERY_IDLE, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire)) {
+        return 0;
+    }
+    DSD_SNPRINTF(m->cause, sizeof m->cause,
+                 "RTL-SDR: the receiver sent no samples for %llu"
+                 " ms and its reset did not start within %u ms; the stream stops",
+                 (unsigned long long)s->recovery_silence_ms.load(std::memory_order_relaxed),
+                 (unsigned)rtl_recovery_take_ms());
+    if (rtl_device_end_for_receiver(s, -ETIMEDOUT, s->progress.load(std::memory_order_relaxed), m->cause)) {
+        (void)rtl_usb_cancel_async(s);
+        return 1;
+    }
+    return 0;
+}
+
+/* A recovery that restarted the reader moved watch_rearm_seq: the watch restarts from the reader's baseline. */
+static void
+rtl_usb_monitor_follow_rearm(rtl_usb_monitor* m) {
+    const struct rtl_device* s = m->s;
+    const uint32_t rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
+    if (rearm_seq == m->budget.rearm_seq) {
+        return;
+    }
+    /* Callbacks since the baseline, taken before the reader thread started, are progress already. */
+    m->budget.rearm_seq = rearm_seq;
+    m->budget.rearmed = 1;
+    m->budget.baseline = s->progress_baseline.load(std::memory_order_relaxed);
+    rtl_progress_watch_begin(&m->watch, m->budget.baseline);
+    /* A recovery that reopened without its reset kept the obligation: the restarted reader's samples clear it, as a
+     * session's first samples do. */
+    rtl_usb_owed_adopt(s, &m->owed, m->budget.baseline);
+}
+
+/* A silence verdict on the monitor's device: handed to a stall recovery when one may be requested and the grace
+ * passes, or the session ends for its receiver (cause written). Whether the monitor stops (it ended the session). */
+static int
+rtl_usb_monitor_on_silence(rtl_usb_monitor* m) {
+    struct rtl_device* s = m->s;
+    rtl_usb_owed_on_verdict(s, &m->owed, m->watch.progress);
+    if (!rtl_usb_recovery_refusal(s, &m->budget, &m->watch, dsd_realtime_mono_ms(), m->cause, sizeof m->cause)) {
+        const rtl_usb_grace_result grace = rtl_usb_recovery_grace(s, m->watch.progress);
+        if (grace == RTL_USB_GRACE_RESUMED) {
+            const uint64_t resumed = s->progress.load(std::memory_order_relaxed);
+            rtl_usb_owed_on_progress(s, &m->owed, resumed, !s->reader_exited.load(std::memory_order_acquire));
+            rtl_progress_watch_begin(&m->watch, resumed);
+            return 0;
+        }
+        if (grace == RTL_USB_GRACE_LEFT) {
+            return 0;
+        }
+        if (grace == RTL_USB_GRACE_PASSED) {
+            m->budget.requested = 1;
+            m->budget.requested_ms = dsd_realtime_mono_ms();
+            /* The recovery owns the obligation from here: a block the old reader delivers before the swap cancels it
+             * must not clear what a failed recovery's finish sets. */
+            m->owed.set = 0;
+            rtl_usb_recovery_post(s, m->watch.silence_ms);
+            return 0;
+        }
+        DSD_SNPRINTF(m->cause, sizeof m->cause,
+                     "RTL-SDR: the receiver sent no samples for %llu"
+                     " ms and its USB connection was released, so it was not reset; the stream stops",
+                     (unsigned long long)m->watch.silence_ms);
+    }
+    if (rtl_device_end_for_receiver(s, -ETIMEDOUT, m->watch.progress, m->cause)) {
+        (void)rtl_usb_cancel_async(s);
+        return 1;
+    }
+    return 0;
+}
+
+/* One period of the monitor. Whether it stops (it ended the session). */
+static int
+rtl_usb_monitor_step(rtl_usb_monitor* m) {
+    const struct rtl_device* s = m->s;
+    const int request = s->recovery_request.load(std::memory_order_acquire);
+    if (request == RTL_USB_RECOVERY_REQUESTED) {
+        return rtl_usb_monitor_withdraw_request(m);
+    }
+    if (request == RTL_USB_RECOVERY_TAKEN) {
+        return 0;
+    }
+    rtl_usb_monitor_follow_rearm(m);
+    const int streaming =
+        s->reader_entered.load(std::memory_order_acquire) && !s->reader_exited.load(std::memory_order_acquire);
+    const uint64_t progress = s->progress.load(std::memory_order_relaxed);
+    rtl_usb_owed_on_progress(s, &m->owed, progress, streaming);
+    if (!rtl_progress_watch_step(&m->watch, progress, streaming)) {
+        return 0;
+    }
+    return rtl_usb_monitor_on_silence(m);
+}
+
 /* The RTL-SDR's progress monitor, started with the reader. Silence accrues while the reader is inside
  * rtlsdr_read_async() (a reader that returned is rtl_usb_reader_finished()'s). At the limit, an eligible receiver
  * within its budget (one recovery per stall, none within the cooldown of the previous request) is handed to its
@@ -3974,97 +4116,19 @@ rtl_usb_recovery_post(struct rtl_device* s, uint64_t silence_ms) {
  * receiver and cancels the reader, as nothing else would make it return. */
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 rtl_usb_progress_monitor(void* arg) {
-    struct rtl_device* s = static_cast<rtl_device*>(arg);
-    rtl_progress_watch watch;
-    rtl_progress_watch_begin(&watch, s->progress.load(std::memory_order_relaxed));
-    rtl_recovery_budget budget{};
-    budget.rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
-    rtl_usb_owed_watch owed{};
+    rtl_usb_monitor m{};
+    m.s = static_cast<rtl_device*>(arg);
+    rtl_progress_watch_begin(&m.watch, m.s->progress.load(std::memory_order_relaxed));
+    m.budget.rearm_seq = m.s->watch_rearm_seq.load(std::memory_order_acquire);
     /* An obligation the descriptor came with, whose reset at open was refused, is cleared by this session's first
      * samples as one this monitor set would be. */
-    if (s->owns_preopened_fd && rtl_device_preopened_fd_reset_owed() == s->preopened_fd) {
-        owed.set = 1;
-        owed.progress = watch.progress;
-    }
-    while (rtl_monitor_running(s)) {
-        rtl_monitor_wait(s);
-        if (!rtl_monitor_running(s)) {
+    rtl_usb_owed_adopt(m.s, &m.owed, m.watch.progress);
+    while (rtl_monitor_running(m.s)) {
+        rtl_monitor_wait(m.s);
+        if (!rtl_monitor_running(m.s)) {
             break;
         }
-        char cause[192];
-        const int request = s->recovery_request.load(std::memory_order_acquire);
-        if (request == RTL_USB_RECOVERY_REQUESTED) {
-            if (dsd_realtime_mono_ms() - budget.requested_ms < rtl_recovery_take_ms()) {
-                continue;
-            }
-            int expected = RTL_USB_RECOVERY_REQUESTED;
-            if (!s->recovery_request.compare_exchange_strong(expected, RTL_USB_RECOVERY_IDLE, std::memory_order_acq_rel,
-                                                             std::memory_order_acquire)) {
-                continue;
-            }
-            DSD_SNPRINTF(cause, sizeof cause,
-                         "RTL-SDR: the receiver sent no samples for %llu"
-                         " ms and its reset did not start within %u ms; the stream stops",
-                         (unsigned long long)s->recovery_silence_ms.load(std::memory_order_relaxed),
-                         (unsigned)rtl_recovery_take_ms());
-            if (rtl_device_end_for_receiver(s, -ETIMEDOUT, s->progress.load(std::memory_order_relaxed), cause)) {
-                (void)rtl_usb_cancel_async(s);
-                break;
-            }
-            continue;
-        }
-        if (request == RTL_USB_RECOVERY_TAKEN) {
-            continue;
-        }
-        const uint32_t rearm_seq = s->watch_rearm_seq.load(std::memory_order_acquire);
-        if (rearm_seq != budget.rearm_seq) {
-            /* Callbacks since the baseline, taken before the reader thread started, are progress already. */
-            budget.rearm_seq = rearm_seq;
-            budget.rearmed = 1;
-            budget.baseline = s->progress_baseline.load(std::memory_order_relaxed);
-            rtl_progress_watch_begin(&watch, budget.baseline);
-            /* A recovery that reopened without its reset kept the obligation: the restarted reader's samples clear it,
-             * as a session's first samples do. */
-            if (s->owns_preopened_fd && rtl_device_preopened_fd_reset_owed() == s->preopened_fd) {
-                owed.set = 1;
-                owed.progress = budget.baseline;
-            }
-        }
-        const int streaming =
-            s->reader_entered.load(std::memory_order_acquire) && !s->reader_exited.load(std::memory_order_acquire);
-        const uint64_t progress = s->progress.load(std::memory_order_relaxed);
-        rtl_usb_owed_on_progress(s, &owed, progress, streaming);
-        if (!rtl_progress_watch_step(&watch, progress, streaming)) {
-            continue;
-        }
-        rtl_usb_owed_on_verdict(s, &owed, watch.progress);
-        if (!rtl_usb_recovery_refusal(s, &budget, &watch, dsd_realtime_mono_ms(), cause, sizeof cause)) {
-            const rtl_usb_grace_result grace = rtl_usb_recovery_grace(s, watch.progress);
-            if (grace == RTL_USB_GRACE_RESUMED) {
-                const uint64_t resumed = s->progress.load(std::memory_order_relaxed);
-                rtl_usb_owed_on_progress(s, &owed, resumed, !s->reader_exited.load(std::memory_order_acquire));
-                rtl_progress_watch_begin(&watch, resumed);
-                continue;
-            }
-            if (grace == RTL_USB_GRACE_LEFT) {
-                continue;
-            }
-            if (grace == RTL_USB_GRACE_PASSED) {
-                budget.requested = 1;
-                budget.requested_ms = dsd_realtime_mono_ms();
-                /* The recovery owns the obligation from here: a block the old reader delivers before the swap cancels
-                 * it must not clear what a failed recovery's finish sets. */
-                owed.set = 0;
-                rtl_usb_recovery_post(s, watch.silence_ms);
-                continue;
-            }
-            DSD_SNPRINTF(cause, sizeof cause,
-                         "RTL-SDR: the receiver sent no samples for %llu"
-                         " ms and its USB connection was released, so it was not reset; the stream stops",
-                         (unsigned long long)watch.silence_ms);
-        }
-        if (rtl_device_end_for_receiver(s, -ETIMEDOUT, watch.progress, cause)) {
-            (void)rtl_usb_cancel_async(s);
+        if (rtl_usb_monitor_step(&m)) {
             break;
         }
     }
@@ -8505,7 +8569,7 @@ static rtl_usb_fd_reset_result
 rtl_usb_fd_reset(int fd, const char* before) {
     const int rc = rtl_usb_fd_reset_raw(fd);
     if (rc == 0) {
-        rtl_usb_reset_owed_clear(fd);
+        (void)rtl_usb_reset_owed_clear(fd);
         LOG_INFO("RTL-SDR: reset the USB device through descriptor %d %s\n", fd, before);
         return RTL_USB_FD_RESET_DONE;
     }
@@ -8607,13 +8671,6 @@ rtl_usb_recovery_off(struct rtl_device* dev, const char* reason) {
     LOG_WARN("RTL-SDR: stall recovery is off for this receiver: %s\n", reason);
 }
 
-/**
- * @brief Create and initialize an RTL-SDR device.
- *
- * @param dev_index Device index to open.
- * @param input_ring Pointer to input ring for USB data.
- * @return Pointer to rtl_device handle, or NULL on failure.
- */
 #if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
     || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 static int
@@ -8635,22 +8692,9 @@ rtl_usb_open_preopened_fd(rtlsdr_dev_t** out, int fd) {
 }
 #endif
 
-struct rtl_device*
-rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
-    rtl_device_clear_open_error();
-    if (!input_ring) {
-        return NULL;
-    }
-
-    struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
-    if (!dev) {
-        return NULL;
-    }
-    if (rtl_device_init_common_state(dev) != 0) {
-        free(dev);
-        return nullptr;
-    }
-
+/* The USB backend's fields of a new @p dev, for @p dev_index feeding @p input_ring. */
+static void
+rtl_device_init_usb_fields(struct rtl_device* dev, int dev_index, struct input_ring_state* input_ring) {
     dev->dev_index = dev_index;
     dev->input_ring = input_ring;
     dev->thread_started = 0;
@@ -8672,67 +8716,77 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->rtl_xtal_hz = 0;
     dev->tuner_xtal_hz = 0;
     dev->if_gain_count = 0;
+}
 
-    int r = 0;
 #if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
     || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
-    /* An injected descriptor means the app already picked and opened the device and
-     * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
-     * project patch on the vendored tree; the configure step proves it is there. */
-    // cppcheck-suppress knownConditionTrueFalse -- Native Android supports this; the desktop test seam can disable it.
-    const rtl_preopened_take taken =
-        rtl_device_preopened_fd_supported() ? rtl_preopened_fd_take() : rtl_preopened_take{};
-    const int preopened_fd = taken.fd;
-    if (preopened_fd >= 0) {
-        /* Claimed (held) before the wrap, not after: the owner must not be told the
-         * descriptor is free while libusb is part way through taking it. libusb's own
-         * error text reaches the diagnostics from here on (#782). */
-        rtl_usb_log_install();
-        /* A dongle a stall wedged streams nothing after a plain reopen; the reset through this descriptor clears it
-         * (#782). A refused reset opens without one and keeps the obligation, and one that left the descriptor
-         * unusable lets the open below fail with its own error. */
-        if (taken.reset_first) {
-            (void)rtl_usb_fd_reset(preopened_fd, "before opening it");
-        }
-        r = rtl_usb_open_preopened_fd(&dev->dev, preopened_fd);
-        if (r < 0) {
-            g_last_usb_open_error.store(r, std::memory_order_release);
-            g_preopened_usb_fd_held.store(-1, std::memory_order_release);
-            /* The session's failure, as Airspy's open reports its own: the UI words a device failure from it (#782). */
-            dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
-            DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
-            rtl_device_cleanup_common_state(dev);
-            free(dev);
-            return NULL;
-        }
-        /* Opened: an earlier open's failure is not this session's, as Airspy's open clears it. */
-        dsd_input_failure_clear();
-        dev->owns_preopened_fd = 1;
-        dev->preopened_fd = preopened_fd;
-        dev->preopened_generation = taken.generation;
-        /* The descriptor is the identity (#782): its VID:PID and the strings on the handle, checked again after a
-         * stall recovery reopened it. */
-        const int id_rc = rtl_usb_fd_identity_read(preopened_fd, dev->dev, &dev->identity);
-        if (id_rc == 0) {
-            dev->usb_recovery_on.store(1, std::memory_order_release);
-        } else {
-            char reason[96];
-            DSD_SNPRINTF(reason, sizeof reason, "its descriptor's USB identity could not be read (errno %d)", -id_rc);
-            rtl_usb_recovery_off(dev, reason);
-        }
-        return dev;
-    }
+/* The descriptor the host published, taken from the slot when this build opens from one (fd -1 otherwise). A native
+ * Android build always does; a desktop test build does only while its open seam is installed
+ * (rtl_device_preopened_fd_supported()). */
+static rtl_preopened_take
+rtl_preopened_fd_take_supported(void) {
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    return rtl_preopened_fd_take();
+#else
+    return rtl_device_preopened_fd_supported() ? rtl_preopened_fd_take() : rtl_preopened_take{};
 #endif
+}
+
+/* Open @p dev from the descriptor @p taken from the slot: 0, or the open's negative error, reported as the session's
+ * failure with the descriptor released (the caller frees @p dev). */
+static int
+rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* taken) {
+    const int preopened_fd = taken->fd;
+    /* Claimed (held) before the wrap, not after: the owner must not be told the
+     * descriptor is free while libusb is part way through taking it. libusb's own
+     * error text reaches the diagnostics from here on (#782). */
+    rtl_usb_log_install();
+    /* A dongle a stall wedged streams nothing after a plain reopen; the reset through this descriptor clears it
+     * (#782). A refused reset opens without one and keeps the obligation, and one that left the descriptor
+     * unusable lets the open below fail with its own error. */
+    if (taken->reset_first) {
+        (void)rtl_usb_fd_reset(preopened_fd, "before opening it");
+    }
+    const int r = rtl_usb_open_preopened_fd(&dev->dev, preopened_fd);
+    if (r < 0) {
+        g_last_usb_open_error.store(r, std::memory_order_release);
+        g_preopened_usb_fd_held.store(-1, std::memory_order_release);
+        /* The session's failure, as Airspy's open reports its own: the UI words a device failure from it (#782). */
+        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
+        DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
+        return r;
+    }
+    /* Opened: an earlier open's failure is not this session's, as Airspy's open clears it. */
+    dsd_input_failure_clear();
+    dev->owns_preopened_fd = 1;
+    dev->preopened_fd = preopened_fd;
+    dev->preopened_generation = taken->generation;
+    /* The descriptor is the identity (#782): its VID:PID and the strings on the handle, checked again after a
+     * stall recovery reopened it. */
+    const int id_rc = rtl_usb_fd_identity_read(preopened_fd, dev->dev, &dev->identity);
+    if (id_rc == 0) {
+        dev->usb_recovery_on.store(1, std::memory_order_release);
+    } else {
+        char reason[96];
+        DSD_SNPRINTF(reason, sizeof reason, "its descriptor's USB identity could not be read (errno %d)", -id_rc);
+        rtl_usb_recovery_off(dev, reason);
+    }
+    return 0;
+}
+#endif
+
+/* Open @p dev by its index: 0, or the open's negative error, reported as the session's failure (the caller frees
+ * @p dev). */
+static int
+rtl_device_open_by_index(struct rtl_device* dev, int dev_index) {
     /* The USB device behind the index, read before the open (D3); the opened handle is checked against it below. */
     const rtl_usb_id_result identified = rtl_usb_identity_resolve(dev_index, &dev->identity);
-    r = rtl_usb_open_index(&dev->dev, (uint32_t)dev_index);
+    const int r = rtl_usb_open_index(&dev->dev, (uint32_t)dev_index);
     if (r < 0) {
         g_last_usb_open_error.store(r, std::memory_order_release);
         dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
-        rtl_device_cleanup_common_state(dev);
-        free(dev);
-        return NULL;
+        return r;
     }
     dsd_input_failure_clear();
     const rtl_usb_id_result verified =
@@ -8742,7 +8796,53 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     } else {
         rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified));
     }
+    return 0;
+}
 
+/**
+ * @brief Create and initialize an RTL-SDR device.
+ *
+ * @param dev_index Device index to open.
+ * @param input_ring Pointer to input ring for USB data.
+ * @return Pointer to rtl_device handle, or NULL on failure.
+ */
+struct rtl_device*
+rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
+    rtl_device_clear_open_error();
+    if (!input_ring) {
+        return NULL;
+    }
+
+    struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
+    if (!dev) {
+        return NULL;
+    }
+    if (rtl_device_init_common_state(dev) != 0) {
+        free(dev);
+        return nullptr;
+    }
+    rtl_device_init_usb_fields(dev, dev_index, input_ring);
+
+#if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
+    || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    /* An injected descriptor means the app already picked and opened the device and
+     * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
+     * project patch on the vendored tree; the configure step proves it is there. */
+    const rtl_preopened_take taken = rtl_preopened_fd_take_supported();
+    if (taken.fd >= 0) {
+        if (rtl_device_open_preopened(dev, &taken) < 0) {
+            rtl_device_cleanup_common_state(dev);
+            free(dev);
+            return NULL;
+        }
+        return dev;
+    }
+#endif
+    if (rtl_device_open_by_index(dev, dev_index) < 0) {
+        rtl_device_cleanup_common_state(dev);
+        free(dev);
+        return NULL;
+    }
     return dev;
 }
 
@@ -11344,6 +11444,37 @@ rtl_device_usb_recovery_take(struct rtl_device* dev) {
     return 1;
 }
 
+/* Close the restarted reader's hand-off in one compare-and-swap, against the one it makes when it returns
+ * (rtl_usb_recovery_reader_handoff()). FAILED: it returned first, so the finish reports it. PENDING: nothing returned,
+ * and a return from now on finds CLOSED and reports itself, the request being idle already. Whether it had failed. */
+static int
+rtl_usb_handoff_close(struct rtl_device* dev) {
+    uint64_t handoff = dev->recovery_handoff.load(std::memory_order_acquire);
+    while (rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_PENDING
+           || rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_FAILED) {
+        const uint64_t closed = rtl_usb_handoff_word((uint32_t)(handoff >> 32), RTL_USB_HANDOFF_CLOSED);
+        if (dev->recovery_handoff.compare_exchange_weak(handoff, closed, std::memory_order_acq_rel,
+                                                        std::memory_order_acquire)) {
+            break;
+        }
+    }
+    return (rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_FAILED) ? 1 : 0;
+}
+
+/* A recovery that failed after the swap (@p rc, @p why): the reader's restart, or the stream boundary around it. */
+static void
+rtl_usb_recovery_failed(struct rtl_device* dev, int rc, const char* why) {
+    /* Whatever failed ends the session the same way, so the descriptor owes its reset here too (#782). */
+    if (dev->owns_preopened_fd) {
+        rtl_usb_reset_owed_set(dev->preopened_fd);
+    }
+    char cause[320];
+    DSD_SNPRINTF(cause, sizeof cause,
+                 "RTL-SDR: the receiver sent no samples and resetting it failed: %s; the stream stops",
+                 (why && why[0] != '\0') ? why : "unknown error");
+    (void)rtl_device_end_for_receiver(dev, rc, rtl_device_sample_progress(dev), cause);
+}
+
 int
 rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) {
     if (!dev || dev->backend != RTL_BACKEND_USB) {
@@ -11355,19 +11486,8 @@ rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     g_test_recovery_finish_hook.invoke(dev);
 #endif
-    /* Then close the restarted reader's hand-off in one compare-and-swap, against the one it makes when it returns
-     * (rtl_usb_recovery_reader_handoff()). FAILED: it returned first, so this reports it. PENDING: nothing returned,
-     * and a return from now on finds CLOSED and reports itself, the request being idle already. */
-    uint64_t handoff = dev->recovery_handoff.load(std::memory_order_acquire);
-    while (rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_PENDING
-           || rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_FAILED) {
-        const uint64_t closed = rtl_usb_handoff_word((uint32_t)(handoff >> 32), RTL_USB_HANDOFF_CLOSED);
-        if (dev->recovery_handoff.compare_exchange_weak(handoff, closed, std::memory_order_acq_rel,
-                                                        std::memory_order_acquire)) {
-            break;
-        }
-    }
-    const int restarted_failed = (rtl_usb_handoff_state_of(handoff) == RTL_USB_HANDOFF_FAILED) ? 1 : 0;
+    /* Then close the restarted reader's hand-off. */
+    const int restarted_failed = rtl_usb_handoff_close(dev);
     if (rc == 0 && !restarted_failed) {
         LOG_INFO("RTL-SDR: the USB device was reset and reopened; the stream resumes\n");
         return 1;
@@ -11381,16 +11501,7 @@ rtl_device_usb_recovery_finish(struct rtl_device* dev, int rc, const char* why) 
         rtl_usb_reader_end_session(dev, dev->recovery_reader_rc.load(std::memory_order_relaxed));
         return 0;
     }
-    /* Whatever failed after the swap (the reader's restart, or the stream boundary around it) ends the session the same
-     * way, so the descriptor owes its reset here too (#782). */
-    if (dev->owns_preopened_fd) {
-        rtl_usb_reset_owed_set(dev->preopened_fd);
-    }
-    char cause[320];
-    DSD_SNPRINTF(cause, sizeof cause,
-                 "RTL-SDR: the receiver sent no samples and resetting it failed: %s; the stream stops",
-                 (why && why[0] != '\0') ? why : "unknown error");
-    (void)rtl_device_end_for_receiver(dev, rc, rtl_device_sample_progress(dev), cause);
+    rtl_usb_recovery_failed(dev, rc, why);
     return 0;
 }
 
