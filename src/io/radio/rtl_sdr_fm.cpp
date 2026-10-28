@@ -2947,13 +2947,31 @@ extern "C" void rtl_stream_set_tuner_autogain(int onoff);
 /* Spectrum updater used in demod thread (implemented in rtl_metrics.cpp). */
 extern "C" void rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interleaved, int out_rate_hz);
 
+/* ---------------- Demod processing blocks and the reconfigure gate ----------------
+ * The demod thread runs each block between demod_enter_processing_block() and demod_leave_processing_block(), with
+ * demod_processing_active up. A thread that rewrites demod or output state from outside the demod thread first raises
+ * the reconfigure gate's flag (retune_in_progress), which keeps the next block from starting, and then waits for the
+ * block in flight to end (controller_wait_for_demod_idle()). So demod state is never written while a block runs.
+ *
+ * The block's start and the gate's raise are a store then a load on each side (active then flag here, flag then
+ * active in the gate), so both sides use sequentially consistent operations: with weaker orders both loads may read 0,
+ * and the block would run beside the gate. That costs one fenced store per block.
+ *
+ * The wait ends only when the block ends, a stop or the global exit included: a retune the controller took before a
+ * stop still rewrites demod state when it lands, so it may not land beside a block. It cannot hang, because a block
+ * ends by itself once the flag is up. Inside a block the demod thread never asks for the gate (a request it applies
+ * takes the ungated path), takes only locks no gate holder holds while it waits (the gate is taken with no other lock
+ * held, and an entry nested in a holder finds the demod parked already), and waits for another thread only in the
+ * output write, which gives up once the flag is up, the stream stops or the global exit is set
+ * (demod_write_output_samples_interruptible()); a replay block's publication never waits. The demod thread leaves its
+ * loop only between blocks, so a stop that joins it first finds no block left to wait for. */
 static int
 demod_enter_processing_block(struct controller_state* s) {
     if (!s || s->retune_in_progress.load(std::memory_order_acquire)) {
         return 0;
     }
-    s->demod_processing_active.store(1, std::memory_order_release);
-    if (s->retune_in_progress.load(std::memory_order_acquire)) {
+    s->demod_processing_active.store(1, std::memory_order_seq_cst);
+    if (s->retune_in_progress.load(std::memory_order_seq_cst)) {
         s->demod_processing_active.store(0, std::memory_order_release);
         return 0;
     }
@@ -2967,15 +2985,33 @@ demod_leave_processing_block(struct controller_state* s) {
     }
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Called as a wait for an idle demod starts and returns (rtl_stream_test_set_demod_idle_wait_probe()). */
+static RtlTestHook<int> g_test_demod_idle_wait_probe;
+
+extern "C" void
+rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx) {
+    g_test_demod_idle_wait_probe.set(probe, ctx);
+}
+
+#define DEMOD_IDLE_WAIT_TEST_EVENT(event) g_test_demod_idle_wait_probe.invoke(event)
+#else
+#define DEMOD_IDLE_WAIT_TEST_EVENT(event) ((void)0)
+#endif
+
 static void
 controller_wait_for_demod_idle(struct controller_state* s) {
     if (!s) {
         return;
     }
-    while (s->demod_processing_active.load(std::memory_order_acquire) && !dsd_exitflag_load()
-           && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+    DEMOD_IDLE_WAIT_TEST_EVENT(RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN);
+    /* No exit check: see "Demod processing blocks and the reconfigure gate" above. */
+    while (s->demod_processing_active.load(std::memory_order_seq_cst)) {
         dsd_sleep_ms(1);
     }
+    DEMOD_IDLE_WAIT_TEST_EVENT(s->demod_processing_active.load(std::memory_order_acquire)
+                                   ? RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_BUSY
+                                   : RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_IDLE);
 }
 
 namespace {
@@ -4216,7 +4252,9 @@ demod_wait_for_output_space(struct output_state* o) {
     if (ret == 0) {
         return 1;
     }
-    if (dsd_exitflag_load()) {
+    /* A stop wakes this wait (dsd_rtl_stream_soft_stop()) but no decoder reads the ring any more: give up, or the stop's
+       join of the demod thread waits for room that never comes. */
+    if (demod_should_exit_requested()) {
         return 0;
     }
     o->write_timeouts.fetch_add(1);
@@ -5598,7 +5636,7 @@ controller_enter_reconfigure_gate(struct controller_state* s) {
         return;
     }
     (void)reconfigure_gate_take();
-    s->retune_in_progress.store(1, std::memory_order_release);
+    s->retune_in_progress.store(1, std::memory_order_seq_cst);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(s);
     g_cqpsk_reacquire_pending.store(0, std::memory_order_release);
@@ -10309,7 +10347,7 @@ rtl_stream_enter_demod_family_switch_gate(void) {
         controller_wait_for_demod_idle(&controller);
         return RTL_DEMOD_GATE_NESTED;
     }
-    controller.retune_in_progress.store(1, std::memory_order_release);
+    controller.retune_in_progress.store(1, std::memory_order_seq_cst);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(&controller);
     return RTL_DEMOD_GATE_ARMED;
@@ -11715,6 +11753,80 @@ rtl_stream_test_set_stream_boundary_probe(void (*probe)(int step, void* ctx), vo
 extern "C" void
 rtl_stream_test_set_controller_work_hook(void (*hook)(int kind, void* ctx), void* ctx) {
     g_test_controller_work_hook.set(hook, ctx);
+}
+
+static void test_stream_set(RtlSdrInternals* stream);
+
+namespace {
+/* Ends a test write that waits forever (rtl_stream_test_full_output_write_on_stop()). */
+struct FullOutputWriteWatchdog {
+    std::atomic<int> done{0};
+    std::atomic<int> fired{0};
+};
+} // namespace
+
+static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
+full_output_write_watchdog(void* arg) {
+    FullOutputWriteWatchdog* w = static_cast<FullOutputWriteWatchdog*>(arg);
+    const uint64_t start_ms = dsd_realtime_mono_ms();
+    while (!w->done.load(std::memory_order_acquire) && dsd_realtime_mono_ms() - start_ms < 1000U) {
+        dsd_sleep_ms(1);
+    }
+    if (!w->done.load(std::memory_order_acquire)) {
+        w->fired.store(1, std::memory_order_release);
+        dsd_exitflag_store(1);
+    }
+    DSD_THREAD_RETURN;
+}
+
+extern "C" int
+rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out) {
+    if (!out || g_stream) {
+        return -1;
+    }
+    *out = rtl_stream_test_full_output_write{};
+    int initialized_output = 0;
+    if (!output.buffer) {
+        output_init(&output);
+        initialized_output = 1;
+    }
+    if (!output.buffer || output.capacity < 2U) {
+        if (initialized_output) {
+            output_cleanup(&output);
+        }
+        return -2;
+    }
+    ring_clear(&output);
+    output.tail.store(0U);
+    output.head.store(output.capacity - 1U);
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.should_exit.store(1, std::memory_order_release);
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    const int saved_retune = controller.retune_in_progress.exchange(0, std::memory_order_acq_rel);
+    FullOutputWriteWatchdog watchdog;
+    dsd_thread_t watchdog_thread{};
+    const int started = dsd_thread_create(&watchdog_thread, full_output_write_watchdog, &watchdog) == 0 ? 1 : 0;
+    int rc = started ? 0 : -3;
+    if (started) {
+        static const float samples[64] = {0.0f};
+        const uint64_t start_ms = dsd_realtime_mono_ms();
+        out->written = demod_write_output_samples_interruptible(&output, samples, NULL, 64U);
+        out->elapsed_ms = dsd_realtime_mono_ms() - start_ms;
+        watchdog.done.store(1, std::memory_order_release);
+        (void)dsd_thread_join(watchdog_thread);
+        out->exit_forced = watchdog.fired.load(std::memory_order_acquire);
+        if (out->exit_forced) {
+            dsd_exitflag_store(0);
+        }
+    }
+    controller.retune_in_progress.store(saved_retune, std::memory_order_release);
+    g_cqpsk_toggle_test_stream.should_exit.store(0, std::memory_order_release);
+    test_stream_set(NULL);
+    ring_clear(&output);
+    if (initialized_output) {
+        output_cleanup(&output);
+    }
+    return rc;
 }
 
 extern "C" struct rtl_device*

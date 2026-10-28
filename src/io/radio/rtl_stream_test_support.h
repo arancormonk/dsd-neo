@@ -650,6 +650,31 @@ typedef struct {
 
 void rtl_device_test_tcp_state_get(struct rtl_device* dev, rtl_device_test_tcp_state* out);
 
+/* A wait for the demod thread to leave its processing block (controller_wait_for_demod_idle(), which every holder of
+ * the reconfigure gate runs before it rewrites demod state), as rtl_stream_test_set_demod_idle_wait_probe() reports
+ * it. */
+enum {
+    RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN = 1,    /* the wait starts */
+    RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_IDLE = 2, /* it returned with no demod block running */
+    RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_BUSY = 3, /* it returned while a demod block still ran */
+};
+
+/* Call @p probe(event, @p ctx) on the waiting thread as each such wait starts and returns; NULL removes it. */
+void rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx);
+
+/* A live block's output write into a full output ring once the stream stops, with no decoder reading
+ * (rtl_stream_test_full_output_write_on_stop()). */
+typedef struct {
+    size_t written;      /* samples the write put in the ring */
+    uint64_t elapsed_ms; /* how long the write took to return */
+    int exit_forced;     /* it returned only because the test's 1 s watchdog set the global exit */
+} rtl_stream_test_full_output_write;
+
+/* Write a block's output into a full output ring while the stream is stopping (should_exit set, no reconfigure gate,
+ * no global exit) on a stand-in stream. A watchdog sets the global exit after 1 s and clears it again, so a write that
+ * waits for room forever still returns. Run with no stream open; returns 0, or a negative value when it cannot run. */
+int rtl_stream_test_full_output_write_on_stop(rtl_stream_test_full_output_write* out);
+
 /* The controller's work items (rtl_stream_test_set_controller_work_hook()). */
 enum {
     RTL_STREAM_TEST_WORK_USB_RECOVERY = 1,

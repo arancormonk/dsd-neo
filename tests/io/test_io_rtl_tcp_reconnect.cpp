@@ -2220,6 +2220,99 @@ test_stop_with_handoff_queued_and_claimed(void) {
     assert(server_conn_count() == 2U);
 }
 
+/* stop_waits_for_demod_block_before_retune: a retune the controller took before a stop reaches its reconfigure gate
+ * while the stop is under way and the demod thread is still inside a block. The gate's wait for an idle demod does not
+ * end on the stop: the retune rewrites demod state only once the block has ended, and the stop still joins. */
+std::atomic<int> g_hold_demod_block{0};    /* armed: the next block stops before its output write */
+std::atomic<int> g_demod_block_held{0};    /* the demod thread is stopped inside its block */
+std::atomic<int> g_release_demod_block{0}; /* let it go on */
+std::atomic<int> g_idle_wait_begun{0};
+std::atomic<int> g_idle_wait_end{
+    0}; /* how the first wait for an idle demod ended (RTL_STREAM_TEST_DEMOD_IDLE_WAIT_*) */
+
+void
+hold_demod_block(int stage, size_t count, void* ctx) {
+    (void)count;
+    (void)ctx;
+    if (stage != RTL_STREAM_TEST_REPLAY_DEMOD_BEFORE_OUTPUT_WRITE || g_hold_demod_block.exchange(0) == 0) {
+        return;
+    }
+    g_demod_block_held.store(1);
+    /* Bounded, so a wait that never ends fails the case rather than hanging it. */
+    (void)wait_until([] { return g_release_demod_block.load() != 0; }, 3U * kWaitMs);
+}
+
+void
+note_demod_idle_wait(int event, void* ctx) {
+    (void)ctx;
+    if (event == RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN) {
+        g_idle_wait_begun.fetch_add(1);
+        return;
+    }
+    int none = 0;
+    (void)g_idle_wait_end.compare_exchange_strong(none, event);
+}
+
+void
+test_stop_waits_for_demod_block_before_retune(void) {
+    server_reset(default_script());
+    g_hold_demod_block.store(0);
+    g_demod_block_held.store(0);
+    g_release_demod_block.store(0);
+    g_idle_wait_begun.store(0);
+    g_idle_wait_end.store(0);
+    rtl_stream_test_set_controller_work_hook(hold_retune, nullptr);
+    rtl_stream_test_set_replay_stage_hook(hold_demod_block, nullptr);
+    stream_rig r;
+    stream_open(r, 0, 0);
+    /* The demod thread stops inside a block, and the controller holds a retune it took. */
+    g_hold_demod_block.store(1);
+    assert(wait_until([] { return g_demod_block_held.load() != 0; }, kWaitMs));
+    g_hold_retune.store(1);
+    assert(dsd_rtl_stream_test_request_retune(852000000L, 0) == 0);
+    assert(wait_until([] { return g_retune_held.load() != 0; }, kWaitMs));
+    rtl_stream_test_set_demod_idle_wait_probe(note_demod_idle_wait, nullptr);
+    /* A stop starts (the stream's exit flag is set before the device's stop latch), then the retune goes on into its
+     * gate. */
+    g_stop_ctx = r.ctx;
+    g_stop_done.store(0);
+    start_thread(&g_stream_stopper, stream_stopper, nullptr);
+    assert(wait_until(
+        [&] {
+            rtl_device_test_tcp_state st{};
+            rtl_device_test_tcp_state_get(r.dev, &st);
+            return st.stop_requested != 0;
+        },
+        kWaitMs));
+    g_hold_retune.store(0);
+    assert(wait_until([] { return g_idle_wait_begun.load() != 0; }, kWaitMs));
+    /* A wait that the stop ends returns at once, with the block still running. */
+    (void)wait_until([] { return g_idle_wait_end.load() != 0; }, 250U);
+    const int end_while_block_ran = g_idle_wait_end.load();
+    g_release_demod_block.store(1);
+    assert(wait_until([] { return g_stop_done.load() != 0; }, kWaitMs));
+    dsd_thread_join(g_stream_stopper);
+    (void)rtl_stream_destroy(r.ctx);
+    r.ctx = nullptr;
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    rtl_stream_test_set_replay_stage_hook(nullptr, nullptr);
+    rtl_stream_test_set_controller_work_hook(nullptr, nullptr);
+    g_retune_held.store(0);
+    assert(end_while_block_ran == 0);
+    assert(g_idle_wait_end.load() == RTL_STREAM_TEST_DEMOD_IDLE_WAIT_END_IDLE);
+}
+
+/* full_output_write_gives_up_on_stop: a stop wakes the demod's output write, and with no decoder left to read a full
+ * ring the write gives up instead of waiting for room, so the stop's join of the demod thread returns. */
+void
+test_full_output_write_gives_up_on_stop(void) {
+    rtl_stream_test_full_output_write w{};
+    assert(rtl_stream_test_full_output_write_on_stop(&w) == 0);
+    assert(w.exit_forced == 0);
+    assert(w.written == 0U);
+    assert(w.elapsed_ms < 500U);
+}
+
 /* controller_create_failure_fails_start (B17): a controller thread that cannot start fails the rtl_tcp stream's start
  * and leaves nothing behind. */
 int g_create_calls = 0;
@@ -2373,6 +2466,8 @@ const named_test kTests[] = {
     {"unavailable_server_command_applies", test_unavailable_server_command_applies},
     {"preconfig_backlog_discarded", test_preconfig_backlog_discarded},
     {"stop_with_handoff_queued_and_claimed", test_stop_with_handoff_queued_and_claimed},
+    {"stop_waits_for_demod_block_before_retune", test_stop_waits_for_demod_block_before_retune},
+    {"full_output_write_gives_up_on_stop", test_full_output_write_gives_up_on_stop},
     {"controller_create_failure_fails_start", test_controller_create_failure_fails_start},
     {"quit_during_outage_exits", test_quit_during_outage_exits},
 };

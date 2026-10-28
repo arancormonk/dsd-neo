@@ -4943,6 +4943,17 @@ Notes:
     family switch or CQPSK toggle a retune profile applies) only counts on its own thread. It is taken with no other
     lock held, and its holders wait only for the demod thread, which never asks for it and cuts an output write short
     while the flag is up.
+    A holder's wait for the demod (`controller_wait_for_demod_idle()`) ends only when the block in flight ends
+    (`demod_processing_active` down), during a stop or after the global exit too: a retune the controller took before
+    a stop still rewrites demod state when it lands, and it must not land beside a running block. The wait cannot
+    hang, since a block ends by itself once the flag is up: inside a block the demod thread never asks for the gate,
+    takes only locks no holder keeps while it waits, and waits for another thread only in its live output write,
+    which gives up on the flag, on the stream's stop (`should_exit`, so a stop's join of the demod thread never waits
+    for ring room no decoder will make) or on the global exit; a replay block's publication never waits. The block's
+    start (`demod_processing_active` up, then the flag read) and the gate's raise (the flag up, then
+    `demod_processing_active` read) use sequentially consistent operations, so the two cannot both miss each other.
+    Tests: `IO_RTL_TCP_RECONNECT` (`stop_waits_for_demod_block_before_retune`: a retune taken before a stop waits at
+    its gate for the demod block a stop is joining; `full_output_write_gives_up_on_stop`).
     Receive-family requests are queued and applied by the demod thread between blocks; a retune profile's
     family fields apply with the rest of the retune under the reconfigure gate, as its symbol profile and CQPSK toggle
     always have, and an analog one applies no symbol profile, CQPSK toggle or timing queued for the same target. A live
