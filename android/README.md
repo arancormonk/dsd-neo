@@ -1358,7 +1358,8 @@ Settings → Diagnostics shows current-process decoder and host diagnostics plus
 bounded redacted persistent tail from previous runs, including how Android says
 recent app processes ended. It captures no crash stacks or tombstones; the one
 stack it records is the main thread's during a stall (see "Main-thread watchdog").
-The process ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause freezes the displayed list while capture continues; Copy and Share
+The process ring holds at most 2000 entries, each at most 512 UTF-8 bytes. Pause
+freezes the displayed list while capture continues; Copy and Share
 include the current ring, after the host records (see below). Clear removes the ring, the host records, pending earlier
 records and both persistent stores; records captured after Clear remain available, and each saved store starts again
 with the running process's `process:` line (never the cleared session's). Diagnostics deliberately survive decoder
