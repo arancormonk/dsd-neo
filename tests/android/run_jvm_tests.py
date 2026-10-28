@@ -211,6 +211,18 @@ def native_lifecycle_contract():
     init = re.search(r"DsdNative_nativeInit\(.*?\n\}", jni, re.S)
     if not init or "dsd_android::install_receiver_policy();" not in init.group(0):
         return "android/dsdneo_jni.cpp: nativeInit must call dsd_android::install_receiver_policy()"
+    # #782 gate r2 H3: only a run's dsd_engine_cleanup() closes the files the bootstrap opens (-c, -w, -P, -6), so
+    # every way a configured session ends without nativeRun() closes them: a discard, a failed or exiting configure (and
+    # the next configure over one never run), and nativeDestroy() before it frees the options.
+    release = "dsd_engine_release_outputs(g_opts, g_state);"
+    for name, count in (("nativeDiscardConfigured", 1), ("nativeConfigure", 2), ("nativeDestroy", 1)):
+        body = re.search(rf"DsdNative_{name}\(.*?\n\}}", jni, re.S)
+        if not body or body.group(0).count(release) < count:
+            return f"android/dsdneo_jni.cpp: {name} must call {release} ({count} time(s)) for a session that never ran"
+    configure = re.search(r"DsdNative_nativeConfigure\(.*?\n\}", jni, re.S).group(0)
+    tail = configure.split("g_configured = false;", 1)
+    if len(tail) != 2 or release not in tail[1] or configure.find(release) > configure.find("dsd_runtime_bootstrap("):
+        return "android/dsdneo_jni.cpp: nativeConfigure must release before the bootstrap and after a failed one"
     return None
 
 

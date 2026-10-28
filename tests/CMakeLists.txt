@@ -6758,6 +6758,48 @@ else()
 endif()
 add_test(NAME ENGINE_CLEANUP_AUDIO COMMAND dsd-neo_test_engine_cleanup_audio)
 
+# A configured session that never runs (the Android host's discard, a failed configure) closes the output files the
+# bootstrap opened (#782 gate r2 H3).
+add_executable(
+    dsd-neo_test_engine_release_outputs
+    engine/test_engine_release_outputs.c
+)
+target_include_directories(
+    dsd-neo_test_engine_release_outputs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_release_outputs
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_release_outputs
+        PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ENGINE_RELEASE_OUTPUTS
+    COMMAND dsd-neo_test_engine_release_outputs
+)
+# The CLI's own ways of stopping before the engine runs: a parse error after -P, and --airspy-list.
+foreach(_mode PARSE_ERROR AIRSPY_LIST)
+    add_test(
+        NAME CLI_UNRUN_OUTPUTS_${_mode}
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=${_mode}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli_unrun_outputs/${_mode}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cli_unrun_outputs_check.cmake"
+    )
+endforeach()
+
 add_executable(dsd-neo_test_engine_run_setup engine/test_engine_run_setup.c)
 target_include_directories(
     dsd-neo_test_engine_run_setup

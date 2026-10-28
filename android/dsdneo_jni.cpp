@@ -446,6 +446,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     rtl_device_clear_open_error();
     rtl_device_airspy_clear_open_error();
 #endif
+    /* A configured session that never ran still holds the output files its bootstrap opened (-c, -w, -P, -6); this
+     * configure would open its own over them (#782). A run's cleanup already closed its own. */
+    dsd_engine_release_outputs(g_opts, g_state);
     cli_argv cli = {};
     if (!build_argv(env, args, &cli)) {
         return kStatusError;
@@ -463,6 +466,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 
     g_configured = false;
+    /* What the bootstrap opened before it failed or exited, as a parse error after -c leaves (#782). */
+    dsd_engine_release_outputs(g_opts, g_state);
     if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
         dsd_input_failure_report(DSD_INPUT_FAILURE_CONFIGURATION, exit_rc);
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
@@ -476,7 +481,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
  * @brief Give up a configured session that will never run (#782): DecoderService cancelled its start attempt.
  *
  * Clears the configuration and the run record's receiver, so neither nativeRun nor a USB detach takes the session for
- * one that owns its receiver; the record ends cancelled. g_running stays false: a run already under way is refused.
+ * one that owns its receiver, and closes the output files its bootstrap opened; the record ends cancelled. g_running
+ * stays false: a run already under way is refused.
  */
 JNIEXPORT jint JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeDiscardConfigured(JNIEnv* env, jclass clazz) {
@@ -488,6 +494,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDiscardConfigured(JNIEnv* env,
         return kStatusBadState;
     }
     g_configured = false;
+    /* No nativeRun, so no dsd_engine_cleanup(): close the output files the bootstrap opened here (#782). */
+    dsd_engine_release_outputs(g_opts, g_state);
     std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
     g_run_status.discard_configured();
     return kStatusOk;
@@ -634,6 +642,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
         return kStatusBadState;
     }
     g_initialized.store(false);
+    /* A session configured and never run still holds the output files its bootstrap opened (#782). */
+    dsd_engine_release_outputs(g_opts, g_state);
     if (g_state != nullptr) {
         freeState(g_state);
     }

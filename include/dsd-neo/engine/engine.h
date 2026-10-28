@@ -39,6 +39,14 @@ typedef struct {
  */
 int dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks);
 void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
+/**
+ * Close the output files of a session that will not run: the symbol capture (-c), static WAV (-w), per-call WAVs (-P)
+ * and raw WAV (-6) dsd_runtime_bootstrap() opens while it parses the options, which otherwise only the run's
+ * dsd_engine_cleanup() closes, and any log or MBE file a run left open. For a host that configured a session and
+ * then gives it up, fails its configure, or frees the options without running it (#782). A per-call WAV that holds
+ * no audio is removed, as at a run's end. Each stream it closes is left NULL, so a second call does nothing.
+ */
+void dsd_engine_release_outputs(dsd_opts* opts, dsd_state* state);
 /** End calls under their old receive policy before a live edit (decoder thread). */
 /** The effective receive policy has just changed (issue #637): a call it no longer admits ends; one it still admits is
  * relabelled and carries on. Codes a voice channel inherited from its control channel are forgotten when filters come

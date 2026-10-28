@@ -45,6 +45,13 @@ Generated (do not edit/commit):
     as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
     frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
     repeats the step, which then finds nothing left to do
+  - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV,
+    `-P` per-call WAVs and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them.
+    `dsd_engine_release_outputs()` closes them (and any log or MBE file) with the same helpers the cleanup uses,
+    removing an empty per-call WAV as a run's end does. The Android host calls it on every path that gives up a
+    configured session (`nativeDiscardConfigured()`, a failed or exiting `nativeConfigure()` and the configure after
+    one never run, `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list`, and
+    `dsd_engine_run_with_lifecycle()` when the socket layer fails to start before the run
   - Protocol/frame dispatch glue
   - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
     capture measurement, tagged asynchronous tuning, identification and listening on
@@ -8803,7 +8810,8 @@ a host diagnostic, before it touches `newestAttempt`; that also keeps such a STA
 follows. It then rejects a retired or superseded attempt and logs it; one retired while STARTING latches
 `cancelRequested`, which is checked under the service lock with the STARTING→RUNNING publication after
 `nativeConfigure()`, so no worker starts, `nativeDiscardConfigured()` clears `g_configured` and the run record's
-receiver (`RunStatus::discard_configured()`), and the session ends cancelled. `retireAttempts()` answers whether the
+receiver (`RunStatus::discard_configured()`), closes the output files the bootstrap opened
+(`dsd_engine_release_outputs()`), and the session ends cancelled. `retireAttempts()` answers whether the
 attempt was already taken past that point (it runs, or ended on its own). The record publishes `attemptId` and
 `failureKind`, a wire value for a failure of the attempt before its configure that `attempt_failure_from_wire()` maps.
 The start grace is `kStartGraceMs` (2 s) of `dsd_realtime_mono_ms()` from the request, not a count of polls; at its
