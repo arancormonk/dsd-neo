@@ -1411,9 +1411,11 @@ test_android_recovery_off_logged_as_warning(void) {
     rtl_device* dev = rtl_device_create(0, ring.get());
     assert(dev != nullptr);
     const std::string log = log_take();
-    assert(log.find("RTL-SDR: stall recovery is off for this receiver: its descriptor's USB identity could not be "
-                    "read (errno 95)")
-           != std::string::npos);
+    /* ENOTSUP differs between C libraries (95 on glibc, 45 on macOS, 129 in the MSVC UCRT). */
+    const std::string unidentified = "RTL-SDR: stall recovery is off for this receiver: its descriptor's USB identity "
+                                     "could not be read (errno "
+                                     + std::to_string(ENOTSUP) + ")";
+    assert(log.find(unidentified) != std::string::npos);
     const int descriptor_level = log_off_level_take();
     assert(descriptor_level == (int)LOG_LEVEL_WARN);
     assert(rtl_device_usb_recovery_eligible(dev) == 0);

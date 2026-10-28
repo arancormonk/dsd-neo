@@ -197,6 +197,13 @@ log_has(const std::string& log, const char* needle) {
     return false;
 }
 
+/* The logs print a native errno value, which differs between C libraries (ENOTSUP is 95 on glibc, 45 on macOS, 129
+ * in the MSVC UCRT), so the expected text is built from the constant. */
+std::string
+with_errno(const char* head, int err, const char* tail) {
+    return std::string(head) + "(errno " + std::to_string(err) + ")" + tail;
+}
+
 /* ---- Session ---- */
 
 void
@@ -418,8 +425,9 @@ test_open_reset_outcomes(void) {
     rtl_device* dev = rtl_device_create(0, ring.get());
     assert(dev != nullptr && g_resets.load() == 1 && g_opens.load() == 1);
     assert(rtl_device_preopened_fd_reset_owed() == kFd);
-    assert(log_has(log_take(), "RTL-SDR: the USB reset through descriptor 31 before opening it was refused (errno 13); "
-                               "opening it without one"));
+    assert(log_has(log_take(), with_errno("RTL-SDR: the USB reset through descriptor 31 before opening it was refused ",
+                                          EACCES, "; opening it without one")
+                                   .c_str()));
     rtl_device_destroy(dev);
 
     g_reset_answer.store(-ENODEV);
@@ -428,8 +436,10 @@ test_open_reset_outcomes(void) {
     rtl_device_publish_preopened_fd(kFd, 1);
     dev = rtl_device_create(0, ring.get());
     assert(dev == nullptr && g_resets.load() == 2);
-    assert(log_has(log_take(), "RTL-SDR: the USB reset through descriptor 31 before opening it left it unusable "
-                               "(errno 19)"));
+    assert(log_has(
+        log_take(),
+        with_errno("RTL-SDR: the USB reset through descriptor 31 before opening it left it unusable ", ENODEV, "")
+            .c_str()));
     dsd_input_failure failure{};
     dsd_input_failure_get(&failure);
     assert(failure.kind == DSD_INPUT_FAILURE_DEVICE && failure.native_code == -4);
@@ -454,8 +464,10 @@ test_unidentified_descriptor_not_recovered(void) {
     rtl_device* dev = rtl_device_create(0, ring.get());
     assert(dev != nullptr);
     assert(rtl_device_usb_recovery_eligible(dev) == 0);
-    assert(log_has(log_take(), "RTL-SDR: stall recovery is off for this receiver: its descriptor's USB identity could "
-                               "not be read (errno 95)"));
+    assert(log_has(log_take(), with_errno("RTL-SDR: stall recovery is off for this receiver: its descriptor's USB "
+                                          "identity could not be read ",
+                                          ENOTSUP, "")
+                                   .c_str()));
     rtl_device_destroy(dev);
     rtl_device_test_usb_dongle_install(nullptr);
     rtl_device_set_preopened_fd(-1);
@@ -518,8 +530,9 @@ test_swap_reset_refused(void) {
     expect_running();
     assert(g_resets.load() == 1 && g_opens.load() == 2);
     assert(rtl_device_preopened_fd_reset_owed() == kFd);
-    assert(log_has(log_take(), "RTL-SDR: the USB reset through descriptor 31 to recover it was refused (errno 16); "
-                               "opening it without one"));
+    assert(log_has(log_take(), with_errno("RTL-SDR: the USB reset through descriptor 31 to recover it was refused ",
+                                          EBUSY, "; opening it without one")
+                                   .c_str()));
     deliver(r, 3, 10U);
     for (uint64_t waited = 0; waited < kWaitMs && rtl_device_preopened_fd_reset_owed() != -1; ++waited) {
         dsd_sleep_ms(1);
@@ -853,6 +866,70 @@ test_grace_connection_released(void) {
     rig_close(r);
 }
 
+/* Task 6 rereview: the old reader delivers a block after the recovery was posted, before the swap cancels it, and the
+ * recovery then fails. The finish sets the obligation, and the session's ending waits out the unplug-owner grace while
+ * the monitor still runs: that block is no proof the dongle streams, so the obligation stays. */
+void
+test_block_after_post_keeps_failed_recovery_obligation(void) {
+    seams_reset();
+    (void)log_take();
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    (void)wait_posted(r, 1);
+    deliver(r, 1, 0U);
+    g_open_answer.store(-4);
+    char why[256] = {};
+    assert(play_controller(r, why, sizeof why) == -4);
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    expect_receiver_ending(-4);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    rig_close(r);
+}
+
+/* After a recovery that reset the dongle, the restarted reader delivers a block and returns by itself: its ending owes
+ * the reset, and the block it delivered first does not clear that while the ending waits out the grace. */
+void
+test_restarted_reader_return_keeps_obligation(void) {
+    seams_reset();
+    (void)log_take();
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    (void)wait_posted(r, 1);
+    char why[256] = {};
+    assert(play_controller(r, why, sizeof why) == 0);
+    assert(rtl_device_preopened_fd_reset_owed() == -1);
+    deliver(r, 1, 0U);
+    rtl_device_test_usb_stream_return(-1);
+    assert(wait_receiver_ended(kWaitMs) != 0U);
+    expect_receiver_ending(-1);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    rig_close(r);
+}
+
+/* A recovery that reopened without its reset (refused) keeps the obligation into the restarted reader, which the grace
+ * does not change: its samples clear it, as after test_swap_reset_refused without a grace. */
+void
+test_refused_reset_cleared_by_restarted_samples_in_grace(void) {
+    seams_reset();
+    g_reset_answer.store(-EBUSY);
+    rig r;
+    rig_open(r);
+    deliver(r, 5, 10U);
+    (void)wait_posted(r, 1);
+    char why[256] = {};
+    assert(play_controller(r, why, sizeof why) == 0);
+    assert(rtl_device_preopened_fd_reset_owed() == kFd);
+    for (uint64_t waited = 0; waited < kWaitMs && rtl_device_preopened_fd_reset_owed() != -1; waited += 10U) {
+        deliver(r, 1, 0U);
+        dsd_sleep_ms(10U);
+    }
+    assert(rtl_device_preopened_fd_reset_owed() == -1);
+    expect_running();
+    rig_close(r);
+}
+
 } // namespace
 
 int
@@ -885,6 +962,9 @@ main(void) {
     test_grace_then_recovery();
     test_grace_samples_resume();
     test_grace_stop_keeps_obligation();
+    test_block_after_post_keeps_failed_recovery_obligation();
+    test_restarted_reader_return_keeps_obligation();
+    test_refused_reset_cleared_by_restarted_samples_in_grace();
     test_grace_detach();
     test_grace_connection_released();
     rtl_device_set_unplug_owner_grace_ms(0U);

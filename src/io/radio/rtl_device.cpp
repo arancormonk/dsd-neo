@@ -3871,7 +3871,9 @@ rtl_usb_recovery_refusal(const struct rtl_device* s, const rtl_recovery_budget* 
 }
 
 /* The reset obligation the RTL-SDR's progress monitor set for its descriptor (#782): at the progress count of the
- * verdict that set it, so samples after it clear it again. Owned by the monitor thread. */
+ * verdict that set it, so samples after it clear it again. Owned by the monitor thread. A posted recovery owns the
+ * obligation from then on (it resets, or keeps it), so the watch ends there, and it starts again from a restarted
+ * reader's baseline only if that recovery kept it. */
 namespace {
 struct rtl_usb_owed_watch {
     int set;           /* this monitor's verdict set it */
@@ -3891,10 +3893,12 @@ rtl_usb_owed_on_verdict(const struct rtl_device* s, rtl_usb_owed_watch* w, uint6
     w->progress = progress;
 }
 
-/* Samples verified since the verdict that set the obligation clear it: the dongle streams without a reset. */
+/* Samples verified since the verdict that set the obligation clear it: the dongle streams without a reset. Only while
+ * the reader still streams (@p streaming): one that returned set the obligation for its own ending, whatever it
+ * delivered before. */
 static void
-rtl_usb_owed_on_progress(const struct rtl_device* s, rtl_usb_owed_watch* w, uint64_t progress) {
-    if (w->set && progress != w->progress) {
+rtl_usb_owed_on_progress(const struct rtl_device* s, rtl_usb_owed_watch* w, uint64_t progress, int streaming) {
+    if (w->set && streaming && progress != w->progress) {
         rtl_usb_reset_owed_clear(s->preopened_fd);
         w->set = 0;
     }
@@ -4019,11 +4023,17 @@ rtl_usb_progress_monitor(void* arg) {
             budget.rearmed = 1;
             budget.baseline = s->progress_baseline.load(std::memory_order_relaxed);
             rtl_progress_watch_begin(&watch, budget.baseline);
+            /* A recovery that reopened without its reset kept the obligation: the restarted reader's samples clear it,
+             * as a session's first samples do. */
+            if (s->owns_preopened_fd && rtl_device_preopened_fd_reset_owed() == s->preopened_fd) {
+                owed.set = 1;
+                owed.progress = budget.baseline;
+            }
         }
         const int streaming =
             s->reader_entered.load(std::memory_order_acquire) && !s->reader_exited.load(std::memory_order_acquire);
         const uint64_t progress = s->progress.load(std::memory_order_relaxed);
-        rtl_usb_owed_on_progress(s, &owed, progress);
+        rtl_usb_owed_on_progress(s, &owed, progress, streaming);
         if (!rtl_progress_watch_step(&watch, progress, streaming)) {
             continue;
         }
@@ -4032,7 +4042,7 @@ rtl_usb_progress_monitor(void* arg) {
             const rtl_usb_grace_result grace = rtl_usb_recovery_grace(s, watch.progress);
             if (grace == RTL_USB_GRACE_RESUMED) {
                 const uint64_t resumed = s->progress.load(std::memory_order_relaxed);
-                rtl_usb_owed_on_progress(s, &owed, resumed);
+                rtl_usb_owed_on_progress(s, &owed, resumed, !s->reader_exited.load(std::memory_order_acquire));
                 rtl_progress_watch_begin(&watch, resumed);
                 continue;
             }
@@ -4042,6 +4052,9 @@ rtl_usb_progress_monitor(void* arg) {
             if (grace == RTL_USB_GRACE_PASSED) {
                 budget.requested = 1;
                 budget.requested_ms = dsd_realtime_mono_ms();
+                /* The recovery owns the obligation from here: a block the old reader delivers before the swap cancels
+                 * it must not clear what a failed recovery's finish sets. */
+                owed.set = 0;
                 rtl_usb_recovery_post(s, watch.silence_ms);
                 continue;
             }
@@ -8692,6 +8705,8 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
             free(dev);
             return NULL;
         }
+        /* Opened: an earlier open's failure is not this session's, as Airspy's open clears it. */
+        dsd_input_failure_clear();
         dev->owns_preopened_fd = 1;
         dev->preopened_fd = preopened_fd;
         dev->preopened_generation = taken.generation;
@@ -8719,6 +8734,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
         free(dev);
         return NULL;
     }
+    dsd_input_failure_clear();
     const rtl_usb_id_result verified =
         (identified == RTL_USB_ID_OK) ? rtl_usb_identity_verify_handle(dev->dev, &dev->identity) : identified;
     if (verified == RTL_USB_ID_OK) {
@@ -11087,8 +11103,6 @@ rtl_usb_publish_restored(struct rtl_device* dev, rtlsdr_dev_t* handle) {
 static int
 rtl_usb_fd_reset_and_reopen(struct rtl_device* dev, rtlsdr_dev_t** out, char* why, size_t why_size) {
     const int fd = dev->preopened_fd;
-    /* The descriptor's dongle owes its reset from the moment the reader is retired for one, whatever comes next. */
-    rtl_usb_reset_owed_set(fd);
     if (rtl_usb_stop_latched(dev)) {
         return -ECANCELED;
     }

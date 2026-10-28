@@ -56,6 +56,17 @@ main() {
         check(rtl_device_preopened_fd_is_set(), "host still owns descriptor setting");
     }
     check(calls == 3, "every open reached descriptor driver path");
+    /* A later open that succeeds clears the failure an earlier one latched, as Airspy's does: the session's input ends
+     * by its own result, not a failed open it recovered from. */
+    result = 0;
+    {
+        std::unique_ptr<rtl_device, decltype(&rtl_device_destroy)> dev(rtl_device_create(0, ring.get()),
+                                                                       rtl_device_destroy);
+        check(dev != nullptr, "a descriptor open succeeds");
+        dsd_input_failure failure = {};
+        dsd_input_failure_get(&failure);
+        check(failure.kind == DSD_INPUT_FAILURE_NONE, "a descriptor open clears an earlier open's failure");
+    }
     rtl_device_set_preopened_fd(-1);
     rtl_device_clear_open_error();
     rtl_device_test_set_open_fd_failure_hook(nullptr);
@@ -72,6 +83,15 @@ main() {
         check(dongle->calls[RTL_TEST_DONGLE_OPEN] == 1, "the open reached the dongle");
         check(rtl_device_last_open_error() == -6, "index error classification retained");
         check(reported_device_failure(-6), "an index open failure is the session's device failure");
+    }
+    dongle->faults[RTL_TEST_DONGLE_OPEN].fail_from_call = 0;
+    {
+        std::unique_ptr<rtl_device, decltype(&rtl_device_destroy)> dev(rtl_device_create(0, ring.get()),
+                                                                       rtl_device_destroy);
+        check(dev != nullptr, "an index open succeeds");
+        dsd_input_failure failure = {};
+        dsd_input_failure_get(&failure);
+        check(failure.kind == DSD_INPUT_FAILURE_NONE, "an index open clears an earlier open's failure");
     }
     rtl_device_test_usb_dongle_install(nullptr);
     rtl_device_clear_open_error();

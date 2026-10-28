@@ -77,10 +77,11 @@ receive(airspy_transfer* transfer) {
         return -1;
     }
     auto* s = static_cast<airspy_source*>(transfer->ctx);
-    s->progress.fetch_add(1, std::memory_order_relaxed);
     if (!transfer->samples || transfer->sample_count <= 0 || transfer->sample_type != AIRSPY_SAMPLE_FLOAT32_IQ) {
         return -1;
     }
+    // Only a payload of samples is progress, counted before anything downstream may discard it (#782).
+    s->progress.fetch_add(1, std::memory_order_relaxed);
     s->drops.fetch_add(transfer->dropped_samples, std::memory_order_relaxed);
     s->callback(s->context, static_cast<const float*>(transfer->samples), (size_t)transfer->sample_count,
                 transfer->dropped_samples);
