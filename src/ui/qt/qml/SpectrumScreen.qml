@@ -31,6 +31,10 @@ Item {
     // defaulted to the safe answer so the screen is inert wherever it is loaded
     // without one.
     property bool exploring: false
+    // Whether the session was started as a scan list. Its spectrum watches like
+    // a saved system's, but the scan owning the tuner is the only thing in the
+    // way of a typed frequency (issue #671).
+    property bool scanList: false
 
     // Two different refusals, and the difference matters to the user. An
     // automatic controller holding the tuner is temporary and has a name; a saved
@@ -41,6 +45,17 @@ Item {
     // the tuner release, whatever this session's intent.
     readonly property bool replayInput: metrics ? metrics.replayInput : false
     readonly property bool viewOnly: !screen.exploring || screen.tunerHeld || screen.replayInput
+
+    // A scan running, and one the operator paused (issue #671). Read apart from
+    // tunerHeld because a scan gives way to a typed frequency: Go to pauses it,
+    // and Resume scan hands the tuner back.
+    readonly property bool scanOwnsTuner: metrics ? metrics.scanRotationActive : false
+    readonly property bool scanPaused: metrics ? metrics.scanPaused : false
+    // Go to has its own answer, wider than the picture's: a frequency typed on
+    // purpose wins over a scan (it pauses), where a tap or a drag does not. A
+    // saved system's scan is still that system and stays watched until Explore
+    // from here; anything else holding the tuner, or a replay, refuses it.
+    readonly property bool goToAllowed: !screen.replayInput && ((screen.exploring && !screen.tunerHeld) || (screen.scanList && screen.scanOwnsTuner) || (screen.scanPaused && !screen.tunerHeld))
 
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.
@@ -106,6 +121,17 @@ Item {
         }
     }
 
+    // The same for anything else that takes the tuner while Go to is open: a
+    // Tune that could only be refused is closed now, with the reason, rather
+    // than answered "Cannot tune to ..." later. A replay says why on its own.
+    onGoToAllowedChanged: {
+        if (goToAllowed || !goToSheet.visible)
+            return;
+        goToSheet.visible = false;
+        if (!replayInput)
+            screen.hint = screen.scanOwnsTuner ? qsTr("Go to closed: the scan has the tuner") : metrics.trunkingEnabled ? qsTr("Go to closed: trunking has the tuner") : qsTr("Go to closed: the tuner is in use");
+    }
+
     // Gesture state and the steps that act on it live here rather than inside
     // the handlers: a handler body cannot be called from a test, and these are
     // the parts that decide where the receiver ends up.
@@ -166,6 +192,19 @@ Item {
             return false;
         screen.hint = "";
         commands.manualTuneHz(Math.round(hz));
+        return true;
+    }
+
+    /**
+     * Go to @a hz: the frequency entry every frontend shares (issue #671), not
+     * a tap's tune. It pauses a running scan, which stays paused for the next
+     * one; tuneTo()'s uint bound holds for the same reason.
+     */
+    function goTo(hz) {
+        if (!screen.goToAllowed || !(hz > 0) || !(hz < 4294967296))
+            return false;
+        screen.hint = "";
+        commands.tuneHz(Math.round(hz));
         return true;
     }
 
@@ -365,14 +404,14 @@ Item {
                 // entirely. Only marked as a control when it is one.
                 Caret {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: !screen.viewOnly
+                    visible: screen.goToAllowed
                     color: Theme.cyan
                 }
             }
 
             TapHandler {
                 objectName: "spectrumGoToOpen"
-                enabled: !screen.viewOnly
+                enabled: screen.goToAllowed
                 onTapped: goToSheet.open(screen.tunedHz)
             }
         }
@@ -621,8 +660,8 @@ Item {
             anchors.topMargin: 4
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : (replayReason.visible ? replayReason.top : parent.bottom))
-            anchors.bottomMargin: (tuning.visible || exploreButton.visible || replayReason.visible) ? Theme.gap : 0
+            anchors.bottom: resumeButton.visible ? resumeButton.top : tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : (replayReason.visible ? replayReason.top : parent.bottom))
+            anchors.bottomMargin: (resumeButton.visible || tuning.visible || exploreButton.visible || replayReason.visible) ? Theme.gap : 0
 
             SpectrumTrace {
                 id: trace
@@ -1130,12 +1169,34 @@ Item {
                     width: 200
                     height: Math.max(48, Theme.fontSize(14) + 24)
                     text: qsTr("Follow this system")
-                    visible: decoderHost.sessionActive && metrics && metrics.trunkableSync
+                    // A trunk scan keeps its targets while paused and has no
+                    // trunking of its own to hand over: Resume scan is the way back.
+                    visible: decoderHost.sessionActive && metrics && metrics.trunkableSync && metrics.scanKind !== 2
                     onClicked: {
                         screen.stopSweep();
                         commands.setTrunking(true);
                     }
                 }
+            }
+        }
+
+        // The way back to a scan the operator paused (issue #671), over whichever
+        // controls the session has below it: the scan's list, cursor and avoids
+        // are all still there.
+        OutlineButton {
+            id: resumeButton
+
+            objectName: "spectrumResumeScan"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : parent.bottom)
+            anchors.bottomMargin: tuning.visible || exploreButton.visible ? Theme.gap : 0
+            visible: screen.scanPaused && !screen.replayInput && decoderHost.sessionActive
+            text: qsTr("Resume scan")
+            enabled: metrics.scanResumable
+            onClicked: {
+                screen.stopSweep();
+                commands.resumeScan();
             }
         }
 
@@ -1187,7 +1248,7 @@ Item {
             objectName: "spectrumToast"
 
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : (replayReason.visible ? replayReason.top : parent.bottom))
+            anchors.bottom: resumeButton.visible ? resumeButton.top : tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : (replayReason.visible ? replayReason.top : parent.bottom))
             anchors.bottomMargin: Theme.gap
             // Suppressed while sweeping: every step draws an "Applied" message
             // with a three-second life, so at this cadence it would never leave
@@ -1276,13 +1337,13 @@ Item {
             goToSheet.visible = false;
             Qt.inputMethod.hide();
             screen.stopSweep();
-            // The field's validator accepts up to 99999 MHz and tuneTo() refuses
+            // The field's validator accepts up to 99999 MHz and goTo() refuses
             // anything past its own uint bound, so a number this sheet took can
             // still be turned down. Reported rather than dropped: the sheet
             // vanishing with the receiver where it was reads as the app ignoring
             // the entry. Said after the dismissal because the toast sits under
             // the sheet.
-            if (!screen.tuneTo(mhz * 1.0e6))
+            if (!screen.goTo(mhz * 1.0e6))
                 screen.hint = qsTr("Cannot tune to %1 MHz").arg(Util.mhzText(mhz * 1.0e6));
         }
 
@@ -1321,6 +1382,18 @@ Item {
                     onClicked: goToField.text = Util.mhzValueText(modelData.start)
                 }
             }
+        }
+
+        // What Tune costs while a scan has the tuner, said before it is paid.
+        Text {
+            objectName: "spectrumGoToScanNote"
+            width: parent.width
+            visible: screen.scanOwnsTuner
+            text: qsTr("Tuning pauses the scan until you resume it.")
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(14)
+            color: Theme.textSecondary
+            wrapMode: Text.Wrap
         }
 
         OutlineButton {
@@ -1363,10 +1436,12 @@ Item {
         }
 
         // Names what stops, and — the part people actually worry about —
-        // what does not.
+        // what does not. A scan pauses rather than stops (issue #671), and
+        // Resume scan is the way back.
         Text {
+            objectName: "spectrumExploreConfirmText"
             width: parent.width
-            text: metrics.scannerMode ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.") : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
+            text: metrics.scanKind === 2 ? qsTr("This pauses the scan. Resume scan picks it up again; the scan list itself is unchanged.") : metrics.scanKind === 1 ? qsTr("This pauses stepping through the channel list. Resume scan picks it up again; the saved system itself is unchanged.") : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary

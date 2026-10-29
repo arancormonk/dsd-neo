@@ -258,6 +258,7 @@ Item {
                 testContext.setMetric("replayInput", true)
                 tryVerify(function () { return !sheet.visible }, 2000, "Go to outlived the replay starting")
                 compare(testContext.manualTuneCalls(), 0)
+                compare(testContext.tuneHzCalls(), 0)
                 compare(screen.hint, "", "a replay start left a tuning hint behind")
             } finally {
                 sheet.visible = false
@@ -349,6 +350,227 @@ Item {
 
             testContext.setMetric("uiMessage", "")
             tryVerify(function () { return !toast.visible })
+        }
+
+        // Issue #671: the scan readings a case sets, put back to "no scan".
+        function setScan(kind, running, paused, resumable) {
+            testContext.setMetric("scanKind", kind)
+            testContext.setMetric("scanRotationActive", running)
+            testContext.setMetric("scanPaused", paused)
+            testContext.setMetric("scanResumable", resumable)
+            testContext.setMetric("operatorTuned", paused)
+        }
+        function clearScan() {
+            setScan(0, false, false, false)
+            testContext.setMetric("tunerControlled", false)
+            testContext.setMetric("trunkingEnabled", false)
+            testContext.setMetric("scannerMode", false)
+            testContext.setMetric("scanEntryCount", 0)
+            var screen = screenLoader.item
+            findChild(screen, "spectrumGoToSheet").visible = false
+            findChild(screen, "spectrumExploreConfirm").visible = false
+            screen.scanList = false
+            screen.exploring = true
+            screen.hint = ""
+        }
+
+        // A scan list's spectrum watches, as a saved system's does, and a tap
+        // still cannot move the receiver. A typed frequency can: the scan
+        // owning the tuner is all that stands in the way, Go to says what Tune
+        // will cost, and Tune sends the frequency entry, which pauses the scan.
+        function test_03j_go_to_pauses_a_running_scan_list() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            var opener = findChild(screen, "spectrumGoToOpen")
+            var note = findChild(screen, "spectrumGoToScanNote")
+            verify(opener !== null && note !== null, "a Go to part is missing")
+            try {
+                screen.exploring = false
+                screen.scanList = true
+                // A trunked target parked by the scan has trunking on.
+                testContext.setMetric("tunerControlled", true)
+                testContext.setMetric("trunkingEnabled", true)
+                setScan(2, true, false, false)
+                tryVerify(function () { return screen.viewOnly })
+                verify(opener.enabled, "Go to was not offered with only the scan in the way")
+
+                mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
+                tc.wait(50)
+                compare(testContext.manualTuneCalls(), 0, "a tap tuned under the scan")
+
+                sheet.open(851015625)
+                verify(note.visible, "Tune did not say it pauses the scan")
+                compare(note.text, "Tuning pauses the scan until you resume it.")
+                findChild(screen, "spectrumGoToField").text = "154.0000"
+                findChild(screen, "spectrumGoToConfirm").clicked()
+                verify(!sheet.visible)
+                compare(testContext.tuneHzCalls(), 1)
+                compare(testContext.lastTuneHz(), 154000000)
+                compare(testContext.manualTuneCalls(), 0)
+                compare(screen.hint, "", "an accepted Go to was answered as refused")
+
+                // The decoder pauses the scan: Go to stays, with nothing more to warn about.
+                testContext.setMetric("tunerControlled", false)
+                testContext.setMetric("trunkingEnabled", false)
+                setScan(2, false, true, true)
+                tryVerify(function () { return screen.goToAllowed })
+                sheet.open(154000000)
+                verify(!note.visible, "a paused scan has nothing left to pause")
+            } finally {
+                clearScan()
+            }
+        }
+
+        // A saved system that scans its channels is still that system: its scan
+        // keeps Go to closed until Explore from here, as before. Once the
+        // operator has paused it (from the monitor's Go to, the terminal or the
+        // API) a typed frequency only moves the paused session, and Resume scan
+        // is offered here too, and only while there is something to resume.
+        function test_03k_a_saved_systems_scan_and_resume_scan() {
+            var screen = screenLoader.item
+            var opener = findChild(screen, "spectrumGoToOpen")
+            var resume = findChild(screen, "spectrumResumeScan")
+            var explore = findChild(screen, "spectrumExploreFromHere")
+            verify(resume !== null, "the resume button is missing")
+            try {
+                screen.exploring = false
+                testContext.setMetric("tunerControlled", true)
+                testContext.setMetric("scannerMode", true)
+                setScan(1, true, false, false)
+                tryVerify(function () { return screen.viewOnly })
+                verify(!opener.enabled, "a saved system's scan offered Go to")
+                verify(!resume.visible, "a running scan offered a resume")
+                verify(explore.visible, "the way out of view-only is missing")
+
+                testContext.setMetric("tunerControlled", false)
+                testContext.setMetric("scannerMode", false)
+                setScan(1, false, true, true)
+                tryVerify(function () { return resume.visible })
+                verify(opener.enabled, "a paused scan kept Go to closed")
+                verify(screen.viewOnly, "a paused saved system took taps")
+                verify(explore.visible, "Explore from here went with the pause")
+                compare(resume.text, "Resume scan")
+                verify(resume.enabled)
+                resume.clicked()
+                compare(testContext.resumeScanCalls(), 1)
+
+                // A -Y resume already waiting on its first channel: nothing to ask for twice.
+                testContext.setMetric("scanResumable", false)
+                tryVerify(function () { return !resume.enabled })
+
+                // Exploring the paused session: the resume sits over the tuning controls.
+                testContext.setMetric("scanResumable", true)
+                screen.exploring = true
+                var tuning = findChild(screen, "spectrumTuning")
+                tryVerify(function () { return tuning.visible })
+                verify(resume.visible, "the resume went with the tuning controls")
+                var r = resume.mapToItem(screen, 0, 0)
+                var t = tuning.mapToItem(screen, 0, 0)
+                verify(r.y + resume.height <= t.y, "the resume overlaps the tuning controls")
+            } finally {
+                clearScan()
+            }
+        }
+
+        // B19: another owner taking the tuner under an open Go to closes it and
+        // says why, rather than leaving a Tune that answers "Cannot tune to ...".
+        function test_03l_go_to_closes_with_the_reason_when_trunking_takes_the_tuner() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            try {
+                verify(!screen.viewOnly, "the fixture is not exploring")
+                sheet.open(spectrum.centerFreqHz)
+                verify(sheet.visible)
+                // One snapshot carries both; the fake publishes them one at a time, the owner first.
+                testContext.setMetric("trunkingEnabled", true)
+                testContext.setMetric("tunerControlled", true)
+                tryVerify(function () { return !sheet.visible }, 2000, "Go to outlived trunking taking the tuner")
+                compare(screen.hint, "Go to closed: trunking has the tuner")
+                compare(testContext.tuneHzCalls(), 0)
+            } finally {
+                clearScan()
+            }
+        }
+
+        // A scan changing hands under the sheet is not that: a scan list's own
+        // scan resuming leaves Go to open, now with the line about the pause it
+        // would cause. A saved system's scan resuming closes it, as it was never
+        // Go to's to override.
+        function test_03m_go_to_under_a_scan_changing_hands() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            var note = findChild(screen, "spectrumGoToScanNote")
+            try {
+                screen.exploring = false
+                screen.scanList = true
+                setScan(2, false, true, true)
+                tryVerify(function () { return screen.goToAllowed })
+                sheet.open(spectrum.centerFreqHz)
+                verify(!note.visible)
+                // One snapshot carries these; the fake publishes them one at a time, the scan first.
+                setScan(2, true, false, false)
+                testContext.setMetric("tunerControlled", true)
+                tryVerify(function () { return note.visible }, 2000, "the resumed scan's pause was not named")
+                verify(sheet.visible, "a scan list's own scan resuming closed Go to")
+                compare(screen.hint, "")
+                sheet.visible = false
+
+                screen.scanList = false
+                testContext.setMetric("tunerControlled", false)
+                setScan(1, false, true, true)
+                tryVerify(function () { return screen.goToAllowed })
+                sheet.open(spectrum.centerFreqHz)
+                setScan(1, true, false, false)
+                testContext.setMetric("scannerMode", true)
+                testContext.setMetric("tunerControlled", true)
+                tryVerify(function () { return !sheet.visible }, 2000, "a saved system's resumed scan left Go to open")
+                compare(screen.hint, "Go to closed: the scan has the tuner")
+            } finally {
+                clearScan()
+            }
+        }
+
+        // Explore from here under a running scan pauses it now, and the confirm
+        // says so -- and how to get it back.
+        function test_03n_the_explore_confirm_names_the_pause() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumExploreConfirm")
+            var text = findChild(screen, "spectrumExploreConfirmText")
+            verify(text !== null, "the confirm text is missing")
+            try {
+                screen.exploring = false
+                testContext.setMetric("tunerControlled", true)
+                setScan(2, true, false, false)
+                tryVerify(function () { return screen.tunerHeld })
+                findChild(screen, "spectrumExploreFromHere").clicked()
+                tryVerify(function () { return sheet.visible })
+                compare(text.text, "This pauses the scan. Resume scan picks it up again; the scan list itself is unchanged.")
+                setScan(1, true, false, false)
+                compare(text.text, "This pauses stepping through the channel list. Resume scan picks it up again; the saved system itself is unchanged.")
+                setScan(0, false, false, false)
+                testContext.setMetric("trunkingEnabled", true)
+                compare(text.text, "This stops following calls across channels for now. The saved system itself is unchanged.")
+            } finally {
+                clearScan()
+            }
+        }
+
+        // A trunk scan keeps its targets while paused: handing its tuner to
+        // trunking is not on offer, Resume scan is.
+        function test_03o_follow_this_system_waits_out_a_paused_trunk_scan() {
+            var screen = screenLoader.item
+            var button = findChild(screen, "spectrumFollowSystem")
+            try {
+                testContext.setMetric("trunkableSync", true)
+                tryVerify(function () { return button.visible })
+                setScan(2, false, true, true)
+                tryVerify(function () { return !button.visible }, 2000, "a paused trunk scan offered trunking")
+                setScan(1, false, true, true)
+                tryVerify(function () { return button.visible }, 2000, "a paused -Y list lost Follow this system")
+            } finally {
+                testContext.setMetric("trunkableSync", false)
+                clearScan()
+            }
         }
 
         // Panning inside the span is free; only a pan that ran out of capture
@@ -592,8 +814,10 @@ Item {
             findChild(screen, "spectrumGoToConfirm").clicked()
 
             verify(!sheet.visible, "the sheet stayed open after tuning")
-            compare(testContext.manualTuneCalls(), 1)
-            compare(testContext.lastManualTuneHz(), 154000000)
+            // The frequency entry every frontend shares (issue #671), not a tap's tune.
+            compare(testContext.tuneHzCalls(), 1)
+            compare(testContext.lastTuneHz(), 154000000)
+            compare(testContext.manualTuneCalls(), 0, "Go to sent a tap's tune")
         }
 
         // Go to opens on the tuned frequency to the Hz, so confirming it without
@@ -606,8 +830,8 @@ Item {
                 sheet.open(851015625)
                 compare(findChild(screen, "spectrumGoToField").text, "851.015625")
                 findChild(screen, "spectrumGoToConfirm").clicked()
-                compare(testContext.manualTuneCalls(), 1)
-                compare(testContext.lastManualTuneHz(), 851015625)
+                compare(testContext.tuneHzCalls(), 1)
+                compare(testContext.lastTuneHz(), 851015625)
             } finally {
                 sheet.visible = false
             }
@@ -652,6 +876,7 @@ Item {
                 verify(cancel !== null && cancel.visible, "Go to offers a visible Cancel")
                 verify(cancel.height >= Ui.Theme.minimumTouchSize)
                 compare(testContext.manualTuneCalls(), 0)
+                compare(testContext.tuneHzCalls(), 0)
             } finally {
                 sheet.visible = false
             }
@@ -684,6 +909,7 @@ Item {
                 findChild(shownDiscard(sheet), "discardDialogDiscard").activate()
                 verify(!sheet.visible)
                 compare(testContext.manualTuneCalls(), 0, "a discarded frequency never tunes")
+                compare(testContext.tuneHzCalls(), 0, "a discarded frequency never tunes")
                 // Asked, then closed by a replay starting: the question goes too.
                 sheet.open(spectrum.centerFreqHz)
                 findChild(screen, "spectrumGoToField").text = "154.0000"

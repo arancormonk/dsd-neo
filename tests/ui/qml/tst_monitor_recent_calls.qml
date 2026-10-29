@@ -327,6 +327,55 @@ Item {
             tryVerify(function () { return !row.visible })
         }
 
+        // Issue #671: a scan the operator paused has nothing on air to hold,
+        // avoid or step past, so the row offers the one thing left: Resume scan,
+        // across the width the three took. A -Y resume already waiting on its
+        // first channel has nothing to ask for twice. The avoided count waits
+        // with the scan, out of sight, since Clear is refused while it is paused.
+        function test_03d_a_paused_scan_offers_resume_in_place_of_the_controls() {
+            var row = findChild(screenLoader.item, "scanControlsRow")
+            var resume = findChild(screenLoader.item, "scanResumeButton")
+            var hold = findChild(screenLoader.item, "scanHoldButton")
+            var avoid = findChild(screenLoader.item, "scanAvoidButton")
+            var next = findChild(screenLoader.item, "scanNextButton")
+            var badge = findChild(screenLoader.item, "scanAvoidRow")
+            verify(resume !== null, "the resume button is missing")
+            testContext.setHostRunning(true)
+            try {
+                testContext.setMetric("scanRotationActive", true)
+                tryVerify(function () { return row.visible })
+                verify(!resume.visible, "a running scan offered a resume")
+
+                testContext.setMetric("scanAvoidCount", 2)
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setMetric("scanPaused", true)
+                testContext.setMetric("scanResumable", true)
+                tryVerify(function () { return resume.visible })
+                verify(row.visible, "the row went with the rotation")
+                verify(!hold.visible && !avoid.visible && !next.visible, "a paused scan kept its rotation controls")
+                verify(!badge.visible, "a paused scan offered Clear")
+                compare(resume.text, "Resume scan")
+                verify(resume.enabled)
+                compare(resume.width, 3 * hold.width + 2 * row.spacing, "the resume does not span the row")
+                verify(resume.height >= 48, "the resume is under a touch target")
+                resume.clicked()
+                compare(testContext.resumeScanCalls(), 1)
+
+                testContext.setMetric("scanResumable", false)
+                tryVerify(function () { return !resume.enabled }, 2000, "a pending resume could be asked again")
+
+                testContext.setMetric("scanPaused", false)
+                testContext.setMetric("scanRotationActive", true)
+                tryVerify(function () { return hold.visible && !resume.visible })
+            } finally {
+                testContext.setMetric("scanPaused", false)
+                testContext.setMetric("scanResumable", false)
+                testContext.setMetric("scanRotationActive", false)
+                testContext.setMetric("scanAvoidCount", 0)
+                testContext.setHostRunning(false)
+            }
+        }
+
         // The hero's subline says which scan channel the call was heard on, but
         // only when that is not already the name above it: a talkgroup-0 call is
         // headlined by its channel, so repeating it underneath would say nothing.

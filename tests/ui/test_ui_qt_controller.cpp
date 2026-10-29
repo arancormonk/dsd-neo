@@ -224,6 +224,9 @@ test_history_receives_effective_scan_options() {
             item.source_id = 8001;
             item.event_start_time = 1754500000 + mode * 20 + (flush ? 10 : 0);
             item.event_time = item.event_start_time + 4;
+            // The decoder stamps a call heard under a running scan (issue #671); the history reads the stamp, and
+            // grants the saved-system UID to the no-scan rows only when the controller hands it the options.
+            item.scan_member = mode != 2 ? 1U : 0U;
             ++ring.push_seq;
             ++ring.commit_rev;
             ++ring.revision;

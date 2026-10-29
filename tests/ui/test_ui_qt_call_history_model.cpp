@@ -292,7 +292,8 @@ test_scanning_rows_never_gain_hold_identity(void) {
             // A saved system can carry -Y or --trunk-scan in extra arguments.
             model.setSessionLabel("Saved source");
             model.setSessionUid("saved-source");
-            ring.commit(0, 1001, 2001, when, when + 4);
+            // Heard under the running scan: the decoder stamps the row a scan member (issue #671).
+            ring.commit(0, 1001, 2001, when, when + 4)->scan_member = 1U;
             model.refresh(ring.state, opts.get());
             expect("effective scanning excludes row identity even without a channel label",
                    model.count() == 1
@@ -321,6 +322,54 @@ test_scanning_rows_never_gain_hold_identity(void) {
                restored.count() == 4
                    && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
     }
+}
+
+/* Issue #671: who held the tuner is the row's own stamp, frozen by the decoder at the call's first render, never the
+ * session label or scan flags at the moment the UI happens to ingest the row. A call heard while the operator held the
+ * tuner (a paused scan, a tuner release) is Exploring with no saved-system identity, whatever the session is called and
+ * however late the row is read; a call begun before the release keeps the session's identity though the release ended
+ * it; a call heard under a running scan never gains the saved-system UID, even when the scan stopped before the UI read
+ * the row (N11); and a call heard before a scan started keeps it, though the scan runs when the row is read. */
+void
+test_tuner_owner_stamps_set_row_identity(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    const time_t when = 1754501000;
+    {
+        CallHistoryModel model;
+        model.setSessionLabel("Saved site");
+        model.setSessionUid("saved-site");
+        ring.commit(0, 1001, 2001, when, when + 4)->operator_tuned = 1U;
+        model.refresh(ring.state, opts.get());
+        expect("a call heard while the operator held the tuner is Exploring",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SystemNameRole) == "Exploring"
+                   && model.data(model.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 1002, 2002, when + 10, when + 14);
+        model.refresh(ring.state, opts.get());
+        expect("a call the release ended but did not begin keeps the session's identity",
+               model.count() == 2 && model.data(model.index(0), CallHistoryModel::SystemNameRole) == "Saved site"
+                   && model.data(model.index(0), CallHistoryModel::SystemUidRole) == "saved-site");
+        ring.commit(0, 1003, 2003, when + 20, when + 24)->scan_member = 1U;
+        model.refresh(ring.state, opts.get());
+        expect("a call heard under a scan that stopped before the read gains no UID (N11)",
+               model.count() == 3 && model.data(model.index(0), CallHistoryModel::SystemNameRole) == "Saved site"
+                   && model.data(model.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 1004, 2004, when + 30, when + 34);
+        opts->scanner_mode = 1;
+        model.refresh(ring.state, opts.get());
+        expect("a call heard before the scan started keeps the UID while the scan runs",
+               model.count() == 4 && model.data(model.index(0), CallHistoryModel::SystemUidRole) == "saved-site");
+        opts->scanner_mode = 0;
+        /* Rows the UI never read before it went away: a relaunched model ingests them with the identity they carry. */
+        ring.commit(0, 1005, 2005, when + 40, when + 44)->operator_tuned = 1U;
+    }
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring.state, opts.get());
+    expect("an unread operator-tuned row keeps its identity across a relaunch",
+           relaunched.count() == 5
+               && relaunched.data(relaunched.index(0), CallHistoryModel::SystemNameRole) == "Exploring"
+               && relaunched.data(relaunched.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
 }
 
 void
@@ -2832,6 +2881,7 @@ main(int argc, char** argv) {
 
     test_system_identity_persistence();
     test_scanning_rows_never_gain_hold_identity();
+    test_tuner_owner_stamps_set_row_identity();
     test_source_labels_survive_merge_and_relaunch();
     test_source_label_is_independent_of_refresh_timing();
     test_source_label_provenance_survives_merged_span_and_relaunch();

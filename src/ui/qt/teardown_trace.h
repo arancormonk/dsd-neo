@@ -28,6 +28,7 @@
 #include <QIODevice>
 #include <QList>
 #include <QString>
+#include <QtGlobal>
 #include <atomic>
 #include <cstdint>
 

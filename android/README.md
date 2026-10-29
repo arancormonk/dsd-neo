@@ -1867,6 +1867,20 @@ The Spectrum view is view-only during an I/Q replay: the replay plays the tuning
 capture recorded, so tapping, stepping, **Go to** and **Explore from here** are not
 offered, and the view says **An I/Q replay cannot retune.**
 
+A typed frequency wins over a scan; a tap or a drag does not. While a scan list runs,
+its Spectrum view stays **VIEW ONLY** for taps and drags, but **Go to** is offered and
+says that tuning pauses the scan; **Tune** pauses it and the receiver stays on the
+frequency until you resume. A saved system that scans its channel list stays view-only
+until **Explore from here**, whose confirmation says it pauses the scan rather than
+ending it. A paused scan, of either kind, takes **Go to** and stays paused. While a scan
+is paused, Spectrum and Monitor offer **Resume scan**: a channel list carries on from
+the channel it stopped on, a scan list returns to the target it left. Monitor's header
+reads **SCAN PAUSED · 3 targets** (or **channels**) instead of the scan position, the
+session is named **Exploring** until the resume, and **Resume scan** takes the place of
+**Hold scan**, **Avoid** and **Next**. A pause made from the terminal or the API shows
+the same way. If trunking or anything else takes the tuner while **Go to** is open, the
+sheet closes and says why.
+
 The line under the Spectrum view's sync and SNR names the system on the carrier
 being decoded, from the same received identity as the Monitor's site row: the
 access code first (**CC 1 · Rest LSN 3**, **NAC 293 · SYS 348 · RFSS 3 · SITE 21
@@ -1901,6 +1915,9 @@ the effective session settings to arrive after startup. Rows heard during
 those sessions or saved before system identities were recorded remain ineligible,
 even after starting a single saved system. A running session can still release an
 existing hold, including from a different system's row with the same talkgroup ID.
+Calls heard while you hold the tuner a scan or trunking had (a paused scan, **Explore
+from here**) are filed under **Exploring**, however late History reads them; the call
+the pause or release cut off keeps the system it began on.
 
 The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
 menu with **Hold TG** (**Hold radio** on a private call) and **Avoid TG**/**Lock out** (off on a
@@ -1958,8 +1975,9 @@ Validate checks a draft without saving. Save validates first; Save draft retains
 
 USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only
-after engine initialization. Monitor shows the active target ID, ordinal/count
-and hold state. System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
+after engine initialization; an **Explore from here** taken while the list is
+still starting does not change what is recorded. Monitor shows the active target ID,
+ordinal/count and hold state, or **SCAN PAUSED** with **Resume scan** while paused. System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 

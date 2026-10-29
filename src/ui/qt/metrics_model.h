@@ -202,6 +202,12 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
     Q_PROPERTY(bool optionsKnown READ optionsKnown NOTIFY controlChanged)
     Q_PROPERTY(bool scanRotationActive READ scanRotationActive NOTIFY controlChanged)
+    /* Issue #671: the session's scan and whether the operator paused it, from the app-control scan-state view. */
+    Q_PROPERTY(int scanKind READ scanKind NOTIFY controlChanged)
+    Q_PROPERTY(bool scanPaused READ scanPaused NOTIFY controlChanged)
+    Q_PROPERTY(bool scanResumable READ scanResumable NOTIFY controlChanged)
+    Q_PROPERTY(int scanEntryCount READ scanEntryCount NOTIFY controlChanged)
+    Q_PROPERTY(bool operatorTuned READ operatorTuned NOTIFY controlChanged)
     Q_PROPERTY(int configuredForce READ configuredForce NOTIFY controlChanged)
     Q_PROPERTY(int effectiveForce READ effectiveForce NOTIFY controlChanged)
     Q_PROPERTY(QString keyProfileRef READ keyProfileRef NOTIFY controlChanged)
@@ -854,7 +860,8 @@ class MetricsModel : public QObject {
      * the front end on their own, and the engine refuses manual retunes under
      * either. Deliberately not named for trunking — a view that gated only on
      * that would offer a control which appears to work and is then undone by
-     * the scanner's next step.
+     * the scanner's next step. A running --trunk-scan owns it too; a paused scan
+     * owns nothing (scanPaused(), issue #671).
      */
     bool
     tunerControlled() const {
@@ -1447,11 +1454,56 @@ class MetricsModel : public QObject {
      *
      * The -Y scan list or the --trunk-scan target list. Plain trunking follows one
      * system and is not a rotation, and tunerControlled() is true for it too, so the
-     * scan controls gate on this rather than on the tuner gate.
+     * scan controls gate on this rather than on the tuner gate. False while the
+     * operator has the scan paused (scanPaused()): there is nothing on air to hold.
      */
     bool
     scanRotationActive() const {
         return m_view.scan_rotation_active;
+    }
+
+    /**
+     * @brief Which scan the session has, running or paused: 0 none, 1 the -Y channel scan, 2 --trunk-scan
+     * (dsd_app_scan_kind, issue #671). A trunk scan lives until shutdown, so it stays 2 through a pause.
+     */
+    int
+    scanKind() const {
+        return m_view.scan_kind;
+    }
+
+    /**
+     * @brief The operator paused the scan: a frequency entry, Go to or a tuner release took the tuner from it.
+     *
+     * The scan keeps its list, cursor, avoids and session edits and waits for a resume; it owns nothing meanwhile, so
+     * tunerControlled() and scanRotationActive() are false. A -Y resume still waiting on its row's tune reads paused
+     * too (see scanResumable()).
+     */
+    bool
+    scanPaused() const {
+        return m_view.scan_paused;
+    }
+
+    /** @brief A paused scan a resume would act on now: false while a -Y resume already waits on its row's tune. */
+    bool
+    scanResumable() const {
+        return m_view.scan_resumable;
+    }
+
+    /** @brief The scan's size, running or paused: the trunk scan's targets or the -Y list's rows; 0 with no scan. */
+    int
+    scanEntryCount() const {
+        return m_view.scan_entry_count;
+    }
+
+    /**
+     * @brief The operator holds the tuner its automatic owner had: a paused scan, or a tuner release (Explore).
+     *
+     * Set by the decoder and cleared only by a resume or a new session, so it outlives a paused scan that is then
+     * stopped. Calls heard meanwhile are stamped with it, and history files them as Exploring.
+     */
+    bool
+    operatorTuned() const {
+        return m_view.operator_tuned;
     }
 
     /** @brief Effective options have arrived; cleared scan flags alone are not authoritative. */
@@ -2195,6 +2247,8 @@ class MetricsModel : public QObject {
         int scan_avoid_count = 0;
         int scan_target_ordinal = 0;
         int scan_target_count = 0;
+        int scan_kind = 0;
+        int scan_entry_count = 0;
         int scan_stay_reason = 0;
         int scan_timer_remaining_ds = 0;
         quint32 scan_timer_span_ms = 0;
@@ -2255,6 +2309,9 @@ class MetricsModel : public QObject {
         bool scanner_mode = false;
         bool options_known = false;
         bool scan_rotation_active = false;
+        bool scan_paused = false;
+        bool scan_resumable = false;
+        bool operator_tuned = false;
         bool scan_hold = false;
         bool scan_target_avoided = false;
         bool scan_timing_visible = false;
@@ -2331,7 +2388,10 @@ class MetricsModel : public QObject {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
                    && scan_target_ordinal == other.scan_target_ordinal && scan_target_count == other.scan_target_count
                    && scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
-                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided;
+                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided
+                   && scan_kind == other.scan_kind && scan_paused == other.scan_paused
+                   && scan_resumable == other.scan_resumable && scan_entry_count == other.scan_entry_count
+                   && operator_tuned == other.operator_tuned;
         }
 
         /* Countdown updates notify only the scan timing row. */

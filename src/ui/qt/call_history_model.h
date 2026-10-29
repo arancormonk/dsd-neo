@@ -256,8 +256,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * (insert/change/remove), never a model reset — a reset would destroy every
      * delegate and the reader's scroll position per ingest.
      *
-     * Options must accompany the snapshot to attribute hold-eligible rows.
-     * Scanning enabled through extra arguments also excludes that attribution.
+     * Options must accompany the snapshot to attribute hold-eligible rows. Which
+     * rows are eligible is each row's own stamp (issue #671): a call heard under a
+     * running scan, including one enabled through extra arguments, never is, and a
+     * call heard while the operator held the tuner is filed as Exploring.
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
 

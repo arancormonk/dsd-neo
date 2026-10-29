@@ -34,6 +34,7 @@
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/site_identity_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -495,19 +496,41 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
  * Scan hold and avoids (#380) read whichever rotation owns the tuner: the coordinator's
  * publication under --trunk-scan, the scan-list flags under -Y. Plain trunking is not
  * a rotation, so the controls have nothing to act on and the gate stays false.
+ *
+ * Which scan the session has, and whether it runs or the operator paused it (issue #671),
+ * is the app-control scan-state view's answer, the one the terminal and the API read: a
+ * paused --trunk-scan keeps trunk_scan_enabled (its configured setting), so reading that
+ * flag here would keep the tuner gate, the scan controls and the target live through the
+ * pause. Only a running scan owns the tuner or has a target on air; a paused one keeps its
+ * list, so its size is still published for the paused header.
  */
 void
 MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
-    const bool trunk_scan = opts_snapshot->trunk_scan_enabled != 0;
+    dsd_app_scan_state_view scan{};
+    (void)dsd_app_scan_state_view_get(opts_snapshot, snapshot, &scan);
+    const bool trunk_scan = scan.kind == DSD_APP_SCAN_KIND_TRUNK;
+    const bool running = scan.running != 0U;
+    next.scan_kind = scan.kind;
+    next.scan_paused = scan.paused != 0U;
+    /* A -Y resume waiting on its row's tune reads paused until it lands; asking again changes nothing. */
+    next.scan_resumable = next.scan_paused && scan.resume_pending == 0U;
+    next.operator_tuned = scan.operator_tuned != 0U;
+    next.scan_entry_count = scan.target_count;
     if (trunk_scan) {
-        next.scan_target_id = QString::fromUtf8(snapshot->trunk_scan_active_id);
-        next.scan_target_ordinal = snapshot->trunk_scan_active_ordinal;
+        if (running) {
+            next.scan_target_id = QString::fromUtf8(snapshot->trunk_scan_active_id);
+            next.scan_target_ordinal = snapshot->trunk_scan_active_ordinal;
+        }
         next.scan_target_count = snapshot->trunk_scan_target_count;
     }
-    next.scan_rotation_active = opts_snapshot->scanner_mode != 0 || trunk_scan;
+    next.scan_rotation_active = running;
+    /* Scanner mode counts alongside trunking: it owns the tuner too, stepping the channel map once the hangtime
+     * expires. A running trunk scan is a third owner even though it has no reading of its own: it steps targets from
+     * the engine loop, so an affordance gated only on the other two offers a tune the scan then undoes. */
+    next.tuner_controlled = next.trunking_enabled || next.scanner_mode || running;
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
     next.scan_avoid_count = trunk_scan ? snapshot->trunk_scan_avoided_count : snapshot->lcn_avoid_count;
-    next.scan_target_avoided = trunk_scan && snapshot->trunk_scan_active_avoided != 0;
+    next.scan_target_avoided = trunk_scan && running && snapshot->trunk_scan_active_avoided != 0;
 }
 
 /**
@@ -1195,10 +1218,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     fillAnalogChannel(next, opts_snapshot, snapshot, metrics);
     next.trunking_enabled = opts_snapshot->trunk_enable != 0;
     next.scanner_mode = opts_snapshot->scanner_mode != 0;
-    /* Trunk scan counts as a third owner even though it has no reading of its own:
-     * it steps targets from the engine loop and a release cannot clear it, so an
-     * affordance gated only on the other two offers a tune the scan then undoes. */
-    next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
+    /* tuner_controlled joins these with the scan-state view's running scan in fillScanControlView(). */
     /* An I/Q replay refuses every tune and the tuner release (issue #575): the predicate app-control refuses on, read
      * from the same snapshot as radio_input, so a view never offers a tune the command queue then turns down. */
     next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;

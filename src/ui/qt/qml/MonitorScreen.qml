@@ -139,6 +139,21 @@ Item {
     readonly property bool muted: metrics ? metrics.audioMuted : false
     readonly property bool holding: metrics ? metrics.heldTg > 0 : false
     readonly property bool scanHeld: metrics ? metrics.scanHold : false
+    // Issue #671: a scan the operator paused, by a typed frequency or Explore.
+    // It owns nothing until resumed, so the header says so in place of the
+    // rotation, and the scan controls give way to Resume scan.
+    readonly property bool scanPaused: metrics ? metrics.scanPaused : false
+    readonly property string pausedScanText: {
+        if (!screen.scanPaused)
+            return "";
+        // A -Y resume waits on its first channel's tune before the scan runs.
+        var state = metrics.scanResumable ? qsTr("SCAN PAUSED") : qsTr("RESUMING SCAN");
+        var n = metrics.scanEntryCount;
+        if (n <= 0)
+            return state;
+        var size = metrics.scanKind === 2 ? (n === 1 ? qsTr("1 target") : qsTr("%1 targets").arg(n)) : (n === 1 ? qsTr("1 channel") : qsTr("%1 channels").arg(n));
+        return state + " · " + size;
+    }
 
     // #647 D1a: the session's USB receiver, where the host brokers it (Android).
     // LOST as soon as the host says the session's receiver was unplugged or
@@ -214,7 +229,7 @@ Item {
         var parts = [];
         if (stripVisible)
             parts.push(otherSlotPanel.height);
-        if (metrics.scanRotationActive)
+        if (metrics.scanRotationActive || screen.scanPaused)
             parts.push(scanControls.height);
         return columnHeight(parts);
     }
@@ -403,7 +418,7 @@ Item {
                 Text {
                     width: parent.width
                     objectName: "scanTargetHeader"
-                    text: metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
+                    text: screen.scanPaused ? screen.pausedScanText : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -1011,7 +1026,9 @@ Item {
         // tuner gate: plain trunking owns the tuner too and has nothing to hold
         // or avoid at channel scope. Hold reads the engine back like Hold TG
         // does, and the engine's refusals ("Cannot avoid the last usable scan
-        // channel") arrive through uiMessage below.
+        // channel") arrive through uiMessage below. While the operator has the
+        // scan paused (issue #671) there is nothing on air to hold, avoid or
+        // step past, and the one thing to do is resume it.
         Row {
             id: scanControls
             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
@@ -1019,7 +1036,7 @@ Item {
 
             width: parent.width
             spacing: 10
-            visible: metrics.scanRotationActive
+            visible: metrics.scanRotationActive || screen.scanPaused
             // Whole pixels: a cell ending on a fraction loses its right border to
             // the list's clip when the strip is in the list.
             readonly property real cell: Math.floor((width - 20) / 3)
@@ -1044,6 +1061,19 @@ Item {
             }
 
             OutlineButton {
+                objectName: "scanResumeButton"
+
+                // The three cells' width, so the row keeps its edges.
+                width: 3 * scanControls.cell + 2 * scanControls.spacing
+                height: scanControls.cellHeight
+                visible: screen.scanPaused
+                text: qsTr("Resume scan")
+                // Not twice: a -Y resume already waiting on its tune reads paused.
+                enabled: decoderHost.running && metrics.scanResumable
+                onClicked: commands.resumeScan()
+            }
+
+            OutlineButton {
                 objectName: "scanHoldButton"
 
                 width: scanControls.cell
@@ -1054,6 +1084,7 @@ Item {
                 accessibleName: qsTr("Hold the scan here")
                 checkable: true
                 checked: screen.scanHeld
+                visible: !screen.scanPaused
                 enabled: decoderHost.running
                 onClicked: commands.toggleScanHold()
             }
@@ -1064,6 +1095,7 @@ Item {
                 width: scanControls.cell
                 height: scanControls.cellHeight
                 text: qsTr("Avoid")
+                visible: !screen.scanPaused
                 enabled: decoderHost.running
                 onClicked: commands.avoidCurrentChannel()
             }
@@ -1074,6 +1106,7 @@ Item {
                 width: scanControls.cell
                 height: scanControls.cellHeight
                 text: qsTr("Next")
+                visible: !screen.scanPaused
                 enabled: decoderHost.running
                 onClicked: commands.nextChannel()
             }

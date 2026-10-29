@@ -29,7 +29,6 @@
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/crc_provenance.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
@@ -794,10 +793,20 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
      * the system filter keeps listing what the Home screen lists. The scan channel
      * the row was heard on (a -Y row name or a trunk-scan target id) rides its own
      * role: the row's meta line shows it, search matches it, and a talkgroup heard
-     * on two channels stays two rows. */
-    row.systemName = sessionLabel;
-    // Retained scan rows remain ineligible even if rotation has since stopped.
-    row.systemUid = item->channel_label[0] == '\0' ? systemUid : QString();
+     * on two channels stays two rows.
+     *
+     * Who held the tuner is the row's own stamp, frozen at the call's first render (issue #671), never the session
+     * label or scan flags when the UI reads the row: a call heard while the operator held the receiver (a paused scan,
+     * a tuner release) is Exploring with no saved-system identity, and a call heard under a running scan never gains
+     * the saved system's UID, even once the scan has stopped. A call the release ended but did not begin keeps the
+     * session's identity. */
+    if (item->operator_tuned != 0U) {
+        row.systemName = CallHistoryModel::tr("Exploring");
+    } else {
+        row.systemName = sessionLabel;
+        // A scan-labelled row was heard under a scan whichever flag says so.
+        row.systemUid = item->scan_member == 0U && item->channel_label[0] == '\0' ? systemUid : QString();
+    }
     row.channel = QString::fromUtf8(item->channel_label);
     row.service = QString::fromUtf8(item->service_label);
     row.analog = item->systype == DSD_SYNC_ANALOG;
@@ -1501,10 +1510,10 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     m_ringRead = true;
     settleClear(pushSeq, ring);
 
-    // The effective options cover scans started from a saved system's extra
-    // arguments as well as the list UI. Unknown options cannot establish identity.
-    const bool singleSystem = opts_snapshot && !opts_snapshot->scanner_mode && !opts_snapshot->trunk_scan_enabled;
-    const QList<FreshRow> fresh = collectFresh(snapshot, scan, singleSystem ? m_sessionUid : QString());
+    // Whether a row may carry the saved system's UID is its own stamp (row_from_item()), which covers scans started
+    // from a saved system's extra arguments as well as the list UI. A snapshot read without its options cannot
+    // establish identity.
+    const QList<FreshRow> fresh = collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString());
 
     if (fresh.isEmpty()) {
         return;
