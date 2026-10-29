@@ -27,9 +27,6 @@
 
 #include "manual_tune_pending.h"
 
-/* How long the failure toast stays up, as the frequency entry's own failure toast does. */
-#define DSD_MANUAL_TUNE_FAILED_TOAST_S 4
-
 typedef struct {
     uint64_t id;
     dsd_manual_tune_kind kind;

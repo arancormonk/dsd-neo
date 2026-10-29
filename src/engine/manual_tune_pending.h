@@ -15,6 +15,10 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <stdint.h>
 
+/* How long a tune's failure toast stays up, as the frequency entry's own failure toast does: a manual tune's late
+   failure, and a -Y resume's (issue #671). */
+#define DSD_MANUAL_TUNE_FAILED_TOAST_S 4
+
 /* What a noted tune was, as the poll that settled it took it. */
 typedef struct {
     dsd_manual_tune_kind kind; /* 0 before any tune settled */

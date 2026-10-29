@@ -2709,24 +2709,33 @@ tuner release) it then forgets the carrier's decoding as a boundary would. The c
 rigctl passband come back as at a leave, then the row keys and the hold go. The typed extension stays with its session
 edits and session; its row in flight or on air goes (request, retry, owed commit, row on air, staged options and keys),
 so `service_sync()` gates no manual frame and no rigctl request reads the staged row. The cursor and the avoids stay.
-A resume first finds a row from the kept cursor (`dsd_engine_scan_untyped_find_row()` skipping placeholders, typed or
-not). With none it never starts (`DSD_SCAN_RESUME_NO_ROW`, toasted). Otherwise it ends the manual session's calls,
-keeps trunking off, forgets the legacy tune caches, moves the session, and tunes the row as a step would. Until the
-row lands the scan is resume-pending (`lcn_scan_resume_pending`): still paused, `scanner_mode` 0, no row named, so a
-call heard meanwhile keeps the manual attribution. A typed row's tune and commit run with `scanner_mode` 1 for the
-duration (the dual-leg tune and the row's receive profile read it); no frame decodes while it is outstanding. The
-typed commit gate and the untyped landing poll accept a resume-pending scan as current. The landing runs the outgoing
-boundary, installs the row, and only then publishes the scan (`scanner_mode` 1, `lcn_scan_paused` and
-`operator_tuned` 0). A refused tune, or a late failure, runs the pause again over what the attempt began (scopes,
-staged options, the cursor it moved) and toasts `Scan stays paused: tune to <MHz> MHz failed`. A resume while one is
-pending changes nothing. Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run inside the
-guarded scanner commands. The services record a pause's return to the monitor, and a refused typed resume's undo
-(`dsd_engine_channel_scan_resume_monitor()`), as `svc_leave_channel_scan()` records a leave's (issue #578). That stop
-also ends a pause and a pending resume, and leaves `operator_tuned` set; the engine's shutdown leave clears neither
-flag, so the exit autosave sees the pause. Tests: `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place,
-untyped, no row, a refused and a pending typed resume, a pause while one is pending), `ENGINE_NO_CARRIER_RESET` (the
-untyped resume through the real step: a step's landing after a pause, a pending resume's reception, landing and late
-failure), `APP_COMMAND_QUEUE` (the services, the monitor reconciliation, the caller's guard).
+A resume first finds a row from the kept cursor: in a typed list one a step can land on (`channel_scan_row_reachable()`,
+which also skips an analog row whose width the front end refuses, since a resume that failed on it would keep its cursor
+and try it again), in an untyped one any row with a frequency that is not avoided
+(`dsd_engine_scan_untyped_find_row()`). With none it never starts (`DSD_SCAN_RESUME_NO_ROW`, toasted). Otherwise it ends
+the manual session's calls, keeps trunking off, forgets the legacy tune caches, moves the session, and tunes the row as
+a step would. Until the row lands the scan is resume-pending (`lcn_scan_resume_pending`): still paused, `scanner_mode`
+0, no row named, so a call heard meanwhile keeps the manual attribution. A typed row's tune and commit run with
+`scanner_mode` 1 for the duration (the dual-leg tune and the row's receive profile read it); no frame decodes while it
+is outstanding. The typed commit gate and the untyped landing poll accept a resume-pending scan as current. The landing
+runs the outgoing boundary, installs the row, and only then publishes the scan (`scanner_mode` 1, `lcn_scan_paused` and
+`operator_tuned` 0). A row that never lands (its tune refused, deferred or failed late, or its settings not set up
+around it) leaves the scan paused with the reason toasted (`dsd_engine_channel_scan_resume_failed()`; `Scan stays
+paused: tune to <MHz> MHz failed`, `... deferred; retry`, `scan channel <MHz> MHz could not be set up`). A typed list
+runs the pause again over what the attempt began, through the pause app-control installs for its session
+(`<dsd-neo/runtime/channel_scan_hooks.h>`, `svc_pause_channel_scan()`; the engine's own pause without one), so the
+return to the configured monitor is recorded for the command drain (issue #578) whether the refusal came at once or in
+the engine loop's pass. An untyped list began nothing to undo: only the flags go back, so a transmission heard on the
+manual frequency while its row was outstanding stays one call. A resume while one is pending, or of a scan already
+running, changes nothing; one of a scan neither paused nor running, or under a trunk scan, is refused with a toast.
+Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run inside the guarded scanner commands. The
+pause service records its return to the monitor as `svc_leave_channel_scan()` records a leave's. That stop also ends a
+pause and a pending resume, and leaves `operator_tuned` set; the engine's shutdown leave clears neither flag, so the
+exit autosave sees the pause. Tests: `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a
+row every visit skips, a refused, deferred, unprepared and pending typed resume, the pause hook at once and late, a
+pause while one is pending), `ENGINE_NO_CARRIER_RESET` (the untyped resume through the real step: a step's landing after
+a pause, a pending resume's reception, landing and late failure, which keeps the call heard), `APP_COMMAND_QUEUE` (the
+services, the monitor reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
 
 ## App-Control
 

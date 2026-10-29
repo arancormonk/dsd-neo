@@ -9,12 +9,14 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 
 #include "commands_internal.h"
+#include "services.h"
 #include "snapshot_internal.h"
 
 static atomic_int g_redraw_requested = 0;
@@ -56,6 +58,9 @@ dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* in
     dsd_runtime_set_control_pump(dsd_app_frontend_control_pump);
     dsd_runtime_set_controls_pending(dsd_app_commands_pending);
     dsd_runtime_set_controls_need_frame_loop(dsd_app_commands_need_frame_loop);
+    /* A -Y scan the engine pauses again on its own (a resume whose row never landed) records its return to the monitor
+       as an interactive pause does (issue #671). */
+    dsd_channel_scan_pause_hook_set(svc_pause_channel_scan);
     /* Whatever an earlier session left in the slot is not this session's; cleared before the sink can fill it. */
     dsd_app_stream_notice_clear();
     dsd_runtime_stream_notice_set(dsd_app_stream_notice_post);
@@ -67,6 +72,7 @@ dsd_app_frontend_runtime_stop(void) {
     dsd_runtime_set_control_pump(NULL);
     dsd_runtime_set_controls_pending(NULL);
     dsd_runtime_set_controls_need_frame_loop(NULL);
+    dsd_channel_scan_pause_hook_set(NULL);
     /* A notice the session did not get to show is not the next session's. The sink is removed first: a post still
        delivering to it finishes before the removal returns, so the clear after it is the last word. */
     dsd_runtime_stream_notice_set(NULL);

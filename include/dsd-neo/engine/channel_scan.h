@@ -55,22 +55,22 @@ enum {
     DSD_SCAN_RESUME_REFUSED = 3, /**< The row's tune was refused: the scan stays paused, its row attempt undone. */
 };
 
-/** Resume a paused -Y scan on the next row from the kept cursor that has a frequency and is not avoided (issue #671).
- * With none it never starts: NO_ROW, toasted, and the manual session's calls go on. Otherwise the manual session's
- * calls end first under no row's name, trunking stays off and the legacy tune caches are forgotten, then the row is
- * tuned as a step would tune it (a typed row through its staged scope, an untyped one through the untyped step), with
- * a new lcn_scan_session. Its landing runs the outgoing boundary, installs the row with fresh scan clocks, and only
- * then publishes the running flags (scanner_mode 1, lcn_scan_paused and operator_tuned 0). Until then the scan is
- * resume-pending: still paused, no row named. A refused tune leaves it paused (REFUSED, toasted): every scope the
- * attempt began is detached and the configured front end requested back (dsd_engine_channel_scan_resume_monitor()),
- * keeping the session edits and the cursor. A resume already pending answers PENDING and changes nothing. A scan not
- * paused changes nothing either: LANDED while it runs, REFUSED while it is off. Safe under the P25 SM tick guard the
- * guarded scanner commands hold: nothing under it takes the guard again. Decoder thread. */
+/** Resume a paused -Y scan on the next row from the kept cursor that a step can land on (issue #671): one with a
+ * frequency, not avoided, and in a typed list not an analog row the front end refuses before any backend moves. With
+ * none it never starts: NO_ROW, and the manual session's calls go on. Otherwise the manual session's calls end first
+ * under no row's name, trunking stays off and the legacy tune caches are forgotten, then the row is tuned as a step
+ * would tune it (a typed row through its staged scope, an untyped one through the untyped step), with a new
+ * lcn_scan_session. Its landing runs the outgoing boundary, installs the row with fresh scan clocks, and only then
+ * publishes the running flags (scanner_mode 1, lcn_scan_paused and operator_tuned 0). Until then the scan is
+ * resume-pending: still paused, no row named. A refused tune, or settings that could not be set up, leave it paused
+ * (REFUSED): a typed attempt is undone by the pause, through the hook app-control installs to record its return to
+ * the monitor (<dsd-neo/runtime/channel_scan_hooks.h>), keeping the session edits and the cursor. A resume already
+ * pending answers PENDING and changes nothing; a scan already running answers LANDED and changes nothing. NO_ROW and
+ * every REFUSED, a scan neither paused nor running and one under a trunk scan included, put the reason on the status
+ * line. Safe under the P25 SM tick guard the guarded scanner commands hold: nothing under it takes the guard again.
+ * Decoder thread. */
 int dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state);
 
-/** What the last refused resume's undo asked of the monitor, as dsd_engine_channel_scan_leave() returns it: for
- * svc_resume_channel_scan(), which records it as a leave's (issue #578). 0 when it asked nothing. */
-int dsd_engine_channel_scan_resume_monitor(const dsd_state* state);
 /** Count the analog (nfm or am) rows of the loaded channel map whose width the RTL front end refuses at DSP rate
  * @p dsp_rate_hz (issue #526): the row's own width of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), else the
  * configured width of its kind it runs (the AM default, 6 kHz, included), which that rate cannot filter, and any held

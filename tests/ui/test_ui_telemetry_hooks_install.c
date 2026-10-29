@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -15,6 +16,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "services.h"
 #include "snapshot_internal.h"
 
 static dsd_telemetry_hooks g_hooks;
@@ -60,6 +62,25 @@ dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn) { // NOLINT(misc-us
 void
 dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn) { // NOLINT(misc-use-internal-linkage)
     g_controls_need_frame_loop = fn;
+}
+
+/* The engine's own re-pause of a -Y scan goes through app-control's recording pause while a session runs (issue
+   #671). */
+static dsd_channel_scan_pause_fn g_channel_scan_pause;
+static int g_channel_scan_pause_sets;
+
+void
+dsd_channel_scan_pause_hook_set(dsd_channel_scan_pause_fn fn) { // NOLINT(misc-use-internal-linkage)
+    g_channel_scan_pause = fn;
+    g_channel_scan_pause_sets++;
+}
+
+int
+svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    (void)in_place;
+    return 0;
 }
 
 static dsd_stream_notice_fn g_stream_notice_sink;
@@ -146,7 +167,9 @@ main(void) {
        empty slot: whatever an earlier session left there was cleared first. */
     assert(g_stream_notice_sink == dsd_app_stream_notice_post);
     assert(g_stream_notice_clears == 1);
+    assert(g_channel_scan_pause == svc_pause_channel_scan && g_channel_scan_pause_sets == 1);
     dsd_app_frontend_runtime_stop();
+    assert(g_channel_scan_pause == NULL && g_channel_scan_pause_sets == 2);
     /* ... and none is left for the next session. */
     assert(g_stream_notice_sink == NULL);
     assert(g_stream_notice_clears == 2);

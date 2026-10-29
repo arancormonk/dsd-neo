@@ -8108,6 +8108,7 @@ if(
             "LINKER:--wrap=rtl_stream_replay_checkpoint"
             "LINKER:--wrap=p25_sm_tick_guard_enter"
             "LINKER:--wrap=p25_sm_tick_guard_leave"
+            "LINKER:--wrap=rtl_stream_tune_tagged"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

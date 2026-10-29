@@ -1580,7 +1580,7 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
         untyped_install_row(state, settled.row, now);
         dsd_engine_channel_scan_resume_landed(opts, state);
     } else if (state->lcn_scan_resume_pending) {
-        dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled.requested_hz);
+        dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled.requested_hz, DSD_SCAN_RESUME_FAILED_TUNE);
     } else {
         no_carrier_rearm_abandoned_scan(opts, state, now);
     }

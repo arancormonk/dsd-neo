@@ -503,20 +503,8 @@ svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place) {
 
 int
 svc_resume_channel_scan(dsd_opts* opts, dsd_state* state) {
-#ifdef USE_RADIO
-    int earlier_not_run = 0;
-    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
-    const int result = dsd_engine_channel_scan_resume(opts, state);
-    /* A refused typed row's undo detached the scope its attempt began and asked the configured front end back, as a
-       leave does. */
-    if (result == DSD_SCAN_RESUME_REFUSED) {
-        symbol_profile_scan_release_record(opts, running, earlier_not_run,
-                                           dsd_engine_channel_scan_resume_monitor(state));
-    }
-    return result;
-#else
+    /* A refused typed row's undo runs svc_pause_channel_scan() through the engine's pause hook, which records it. */
     return dsd_engine_channel_scan_resume(opts, state);
-#endif
 }
 
 #ifdef USE_RADIO

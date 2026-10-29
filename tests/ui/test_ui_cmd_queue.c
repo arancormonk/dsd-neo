@@ -8929,6 +8929,24 @@ __wrap_p25_sm_tick_guard_leave(void) {
     __real_p25_sm_tick_guard_leave();
 }
 
+/* A scan row's tagged RTL tune (issue #671): the real controller unless a case scripts the answer (an
+   rtl_stream_tune_result), keeping the ledger ID it was tagged with so the case can complete it later. */
+static int g_rtl_tune_tagged_scripted;
+static int g_rtl_tune_tagged_answer;
+static uint64_t g_rtl_tune_tagged_id;
+
+int __real_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
+int __wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
+
+int
+__wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
+    if (!g_rtl_tune_tagged_scripted) {
+        return __real_rtl_stream_tune_tagged(ctx, center_freq_hz, request_id);
+    }
+    g_rtl_tune_tagged_id = request_id;
+    return g_rtl_tune_tagged_answer;
+}
+
 /* The rate a radio row told the RTL output rescale the symbol timing is in (issue #634); -1 when none was noted. */
 static int g_noted_timing_rate = -1;
 static int g_noted_timing_calls = 0;
@@ -15564,10 +15582,11 @@ test_scan_leave_record_goes_with_its_stream(void) {
 
 /*
  * Issue #671: a -Y pause asks the front end back onto the configured monitor as a stop does, so a refusal of that
- * return is reported and reconciled as the stop's is (issue #578), and the pause stands. A resume whose row's tune is
- * refused (an nfm row whose own 20 kHz the 16 kHz DSP rate cannot filter) undoes what it began the same way: its
- * return to the monitor is recorded and reconciled. Both run inside the guarded scanner commands, so nothing under them
- * takes the tick guard again.
+ * return is reported and reconciled as the stop's is (issue #578), and the pause stands. A resume whose DMR row's tune
+ * is refused (no stream behind the radio context) undoes what it began the same way, and so does one whose row's tune
+ * timed out and then failed in the engine loop's pass: the engine pauses again through the pause app-control installed
+ * for the session. Both commands run under the tick guard the guarded scanner commands hold, so
+ * nothing under them takes it again.
  */
 static int
 test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
@@ -15578,15 +15597,7 @@ test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
                                      DSD_SCAN_MODE_NXDN48, NULL, "pause");
     state.lcn_freq_count = 1;
     *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
-    rc |= expect_int("pause: nfm row", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_NFM), 0);
-    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
-    if (!profile) {
-        finish_scan_row_on_analog(&opts, &state);
-        return 1;
-    }
-    profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
-    profile->values.channel_bw_hz = 20000;
-    rc |= expect_int("pause: row width", dsd_channel_profile_set(&state, 0, profile), 0);
+    rc |= expect_int("pause: dmr row", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
     g_fake_analog_req_max_hz = 13200;
 #ifdef DSD_NEO_TEST_RTL_WRAP
     guard_probe_arm(&opts);
@@ -15623,6 +15634,8 @@ test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
     rc |= expect_int("resume: still paused",
                      opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
     rc |= expect_int("resume: the undo asked for the monitor", g_analog_req_calls > requests, 1);
+    /* The front end settles what the failed tune queued before the undo's refused request. */
+    demod_thread_lands(0);
     state.ui_msg[0] = '\0';
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("resume: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
@@ -15630,6 +15643,27 @@ test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
                        "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
 #ifdef DSD_NEO_TEST_RTL_WRAP
     guard_probe_disarm();
+
+    /* The row's tune times out, and fails in the engine loop's next pass. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    g_rtl_tune_tagged_scripted = 1;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_TIMEOUT;
+    p25_sm_tick_guard_enter();
+    rc |= expect_int("late: resume pending", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_PENDING);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_tagged_scripted = 0;
+    rc |= expect_int("late: still paused", state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 1, 1);
+    dsd_trunk_tuning_request_publish(g_rtl_tune_tagged_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(&opts, &state);
+    rc |= expect_int("late: paused again",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
+    demod_thread_lands(0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("late: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("late: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
 #endif
     finish_scan_row_on_analog(&opts, &state);
     return rc;

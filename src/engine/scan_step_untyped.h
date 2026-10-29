@@ -52,9 +52,19 @@ int dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state);
    paused, and the operator no longer holds the tuner. Nothing without a resume pending. Decoder thread. */
 void dsd_engine_channel_scan_resume_landed(dsd_opts* opts, dsd_state* state);
 
-/* A resume's row never landed (issue #671): its tune, to @p freq Hz, was refused or failed late. The scan stays paused:
-   the pause runs again over what the attempt began (dsd_engine_channel_scan_pause(), not in place), and the status line
-   says why. Decoder thread. */
-void dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long freq);
+/* Why a resume's row never landed (dsd_engine_channel_scan_resume_failed()). */
+enum {
+    DSD_SCAN_RESUME_FAILED_TUNE = 0,     /* Its tune was refused, or failed late. */
+    DSD_SCAN_RESUME_FAILED_DEFERRED = 1, /* Its tune was deferred behind another owner's. */
+    DSD_SCAN_RESUME_FAILED_SETUP = 2,    /* Its settings could not be set up, before its tune or after it landed. */
+};
+
+/* A resume's row, on @p freq Hz, never landed (issue #671), for the reason @p why (DSD_SCAN_RESUME_FAILED_*). The scan
+   stays paused, and the status line says why. A typed list runs the pause again over what the attempt began (its
+   scopes, staged options and keys), through the pause app-control installed (dsd_channel_scan_pause_hook_get()), which
+   records the return to the configured monitor for the decoder; the engine's own pause without one. An untyped list
+   began nothing to undo: only the flags go back, so a transmission heard on the manual frequency while the row was
+   outstanding goes on as one call. Decoder thread. */
+void dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long freq, int why);
 
 #endif /* DSD_NEO_SRC_ENGINE_SCAN_STEP_UNTYPED_H */

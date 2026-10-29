@@ -32,6 +32,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
@@ -3001,7 +3002,6 @@ test_resume_without_a_landing_stays_paused(void) {
     assert(!dsd_engine_channel_scan_waiting(state) && dsd_engine_scan_tuning_row_options(opts, state) == NULL);
     assert(!dsd_scan_mode_configured_view(state) && state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_NONE);
     assert(state->R == 999 && opts->scan_voice_hold_ms == 2000 && opts->frame_dmr == 0);
-    assert(dsd_engine_channel_scan_resume_monitor(state) == 0); /* audio input: no monitor to ask */
     assert(dsd_channel_modes_rigctl_request_is_session(opts, state) == 1);
     open_manual_call(state);
     assert(no_row_named(opts, state));
@@ -3009,6 +3009,32 @@ test_resume_without_a_landing_stays_paused(void) {
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0 && opts->frame_p25p1 == 1);
     dsd_scan_mode_leave(opts, state);
     assert(opts->frame_p25p1 == 0 && opts->frame_dmr == 0 && opts->scan_voice_hold_ms == 2000);
+
+    /* Every refusal says why: a tune deferred behind another owner's, and a row whose keys could not be prepared, which
+       never reached its tune (no "tune failed" for a tune that did not fail). */
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    assert(strcmp(state->ui_msg, "Scan stays paused: tune to 150.000000 MHz deferred; retry") == 0);
+    assert(state->lcn_scan_paused == 1 && state->lcn_freq_roll == 1);
+    /* Row 0's keys gain a key-table entry, whose copy the row's preparation allocates. */
+    dsd_key_set entry_keys = {0};
+    entry_keys.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*entry_keys.entries));
+    assert(entry_keys.entries);
+    entry_keys.count = 1U;
+    entry_keys.present = 1;
+    entry_keys.entries[0].index = 9U;
+    entry_keys.entries[0].value = 999ULL;
+    entry_keys.entries[0].loaded = 1U;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &entry_keys) == 0);
+    state->lcn_freq_roll = 0;
+    const int tunes_before_setup = tunes;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_key_set_test_alloc_fail_after(0);
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    dsd_key_set_test_alloc_fail_after(-1);
+    assert(tunes == tunes_before_setup);
+    assert(strcmp(state->ui_msg, "Scan stays paused: scan channel 150.000000 MHz could not be set up") == 0);
+    assert(state->lcn_scan_paused == 1 && state->lcn_freq_roll == 0 && !dsd_scan_mode_configured_view(state));
     typed_pause_fixture_free(opts, state);
 }
 
@@ -3094,20 +3120,42 @@ test_untyped_resume_results(void) {
     assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
     assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0 && state->operator_tuned == 0);
     assert(state->lcn_freq_roll == 3 && state->lcn_scan_resume_pending == 0);
-    /* Not paused: nothing to resume. */
+    /* Not paused: nothing to resume. A running scan is left alone; a refusal says why. */
     assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && g_untyped_enter_calls == 3);
     opts->scanner_mode = 0;
+    state->ui_msg[0] = '\0';
     assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED && g_untyped_enter_calls == 3);
+    assert(strcmp(state->ui_msg, "Not scanning: no paused scan to resume") == 0);
+    opts->trunk_scan_enabled = 1;
+    state->ui_msg[0] = '\0';
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED && g_untyped_enter_calls == 3);
+    assert(strcmp(state->ui_msg, "Trunk scan active: conventional scanner unavailable") == 0);
+    opts->trunk_scan_enabled = 0;
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
 }
 
+/* The pause app-control installs, which records the return to the monitor (issue #578): called with what the engine
+   asks, and pausing as the engine does. */
+static int g_pause_hook_calls;
+static int g_pause_hook_in_place = -1;
+static int g_pause_hook_result;
+
+static int
+record_pause_hook(dsd_opts* opts, dsd_state* state, int in_place) {
+    g_pause_hook_calls++;
+    g_pause_hook_in_place = in_place;
+    g_pause_hook_result = dsd_engine_channel_scan_pause(opts, state, in_place);
+    return g_pause_hook_result;
+}
+
 /* A refused typed resume under an analog session on a radio input asks the front end back onto the configured analog
-   monitor, as a leave does, and says what it asked (issue #578), for svc_resume_channel_scan() to record. */
+   monitor, as a leave does, and does it through the pause app-control installs, which records that request for the
+   decoder (issue #578): at once, and when the row's tune fails late in the engine loop. */
 static void
-test_refused_resume_reports_its_monitor_request(void) {
+test_refused_resume_undoes_through_the_pause_hook(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
@@ -3121,6 +3169,7 @@ test_refused_resume_reports_its_monitor_request(void) {
         .apply_analog_profile = record_analog_restore,
     };
     dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_channel_scan_pause_hook_set(record_pause_hook);
     state->lcn_freq_count = 1;
     *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
     assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
@@ -3128,14 +3177,77 @@ test_refused_resume_reports_its_monitor_request(void) {
     opts->scanner_mode = 1;
     (void)dsd_engine_channel_scan_pause(opts, state, 0);
     reset_frontend_records();
+    g_pause_hook_calls = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
-    assert(dsd_engine_channel_scan_resume_monitor(state) == 1);
+    assert(g_pause_hook_calls == 1 && g_pause_hook_in_place == 0 && g_pause_hook_result == 1);
     assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG
            && analog_restore_width_hz == 12500);
     assert(opts->analog_only == 1 && state->lcn_scan_paused == 1 && !dsd_scan_mode_configured_view(state));
+
+    /* Late: the row's tune is outstanding, then fails; the engine loop's pass undoes it through the same hook. */
+    reset_frontend_records();
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    assert(g_pause_hook_calls == 1 && state->lcn_scan_resume_pending == 1);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(g_pause_hook_calls == 2 && g_pause_hook_in_place == 0 && g_pause_hook_result == 1);
+    assert(analog_restore_calls == 1 && analog_restore_width_hz == 12500);
+    assert(state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0 && !dsd_scan_mode_configured_view(state));
+    dsd_channel_scan_pause_hook_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* A typed resume lands only on a row a step can land on (channel_scan_row_reachable()). A row the running scan skips
+   at every visit (here an nfm row whose own 20 kHz the 16 kHz DSP rate cannot filter) never blocks it: a resume that
+   failed on it would keep its cursor and try it again at every resume. With no other row there is nowhere to resume. */
+static void
+test_resume_skips_a_row_every_visit_skips(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_BANDWIDTH, 20000, 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_scan_dsp_rate_hz = 16000;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    const int tunes_before = tunes;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
+    assert(tunes == tunes_before + 1 && state->lcn_freq_roll == 3 && state->scan_row_index == 2);
+
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 0, 1) == 0 && dsd_state_trunk_lcn_avoid_set(state, 2, 1) == 0);
+    state->lcn_freq_roll = 1;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_NO_ROW);
+    assert(tunes == tunes_before + 1 && state->lcn_scan_paused == 1 && opts->scanner_mode == 0);
+    assert(strcmp(state->ui_msg, "Scan stays paused: no scan channel to resume on") == 0);
+    g_scan_dsp_rate_hz = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
@@ -3182,7 +3294,8 @@ main(void) {
     test_resume_without_a_landing_stays_paused();
     test_resume_pending_waits_for_its_row();
     test_untyped_resume_results();
-    test_refused_resume_reports_its_monitor_request();
+    test_refused_resume_undoes_through_the_pause_hook();
+    test_resume_skips_a_row_every_visit_skips();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

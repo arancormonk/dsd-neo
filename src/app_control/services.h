@@ -675,10 +675,11 @@ int svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place);
 /**
  * @brief Resume the paused -Y scan (dsd_engine_channel_scan_resume(), issue #671) from a command.
  *
- * A resume that finds no row (NO_ROW) or whose row's tune is refused (REFUSED) leaves the scan paused, with the reason
- * on the status line; the undo of a refused typed row's attempt is recorded as a leave's return to the monitor (issue
- * #578). A resume still pending answers PENDING and does nothing more. Decoder thread only; safe under the P25 SM tick
- * guard the guarded scanner commands hold.
+ * A resume that finds no row (NO_ROW) or whose row is refused (REFUSED) leaves the scan paused, with the reason on the
+ * status line; the undo of a refused typed row's attempt goes through svc_pause_channel_scan(), installed as the
+ * engine's pause hook, which records its return to the monitor (issue #578), whether the refusal comes now or late. A
+ * resume still pending answers PENDING and does nothing more. Decoder thread only; safe under the P25 SM tick guard the
+ * guarded scanner commands hold.
  *
  * @return A DSD_SCAN_RESUME_* result.
  */

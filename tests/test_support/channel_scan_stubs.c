@@ -34,12 +34,6 @@ dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
     return DSD_SCAN_RESUME_NO_ROW;
 }
 
-int
-dsd_engine_channel_scan_resume_monitor(const dsd_state* state) {
-    (void)state;
-    return 0;
-}
-
 /* Nor a -Y tune or retry staged: a rigctl follow (issue #621) is not left to one. */
 int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {

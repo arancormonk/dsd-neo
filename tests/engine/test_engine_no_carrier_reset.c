@@ -2237,9 +2237,15 @@ test_untyped_resume_waits_for_its_row(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_last_applied_hz = 976012500U;
     state->ui_msg[0] = '\0';
+    /* A transmission heard on the manual frequency while the row was outstanding: the receiver never left it. */
+    const dsd_call_observation heard = {.protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+    rc |= expect_true("resume-pending-call-heard", dsd_call_state_observe(state, &heard, DSD_CALL_BOUNDARY_BEGIN) == 1);
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
     rc |=
         expect_true("resume-late-failure-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    dsd_call_snapshot heard_call;
+    rc |= expect_true("resume-late-failure-keeps-the-call-heard",
+                      dsd_call_state_get(state, 0U, &heard_call) > 0 && heard_call.phase == DSD_CALL_PHASE_ACTIVE);
     rc |= expect_true("resume-late-failure-stays-paused",
                       opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0
                           && state->operator_tuned == 1 && state->lcn_freq_roll == 1);
