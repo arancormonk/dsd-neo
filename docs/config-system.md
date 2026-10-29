@@ -421,13 +421,13 @@ is lost, since the call may still resume; a terminator alerts immediately.
 | `rdio_api_key` | STRING | rdio API key | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
-| `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload | `false` |
+| `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; off in a run with `--wav-journal`, whose owner manages retention | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact or range row; a private call when
 either radio has an exact row) as that row's `record=off`: the per-call and static WAVs and MBE capture skip it, and a
-held talkgroup still records. Learned radio aliases do not count as rows. Tuning and playback are unchanged. Applying a
-config in a running session changes it at once.
+held talkgroup still records. Learned radio-ID aliases and mode `D` rows do not count as rows. Tuning and playback are
+unchanged. Applying a config in a running session changes it at once.
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.

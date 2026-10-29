@@ -248,8 +248,8 @@ No storage permissions are involved; SAF needs none.
 
 Settings → **Call recording** → **Record calls** saves each call you hear as a WAV file, so you can play it again from
 History. It is off until you turn it on. **Only unknown talkgroups** skips talkgroups that have a row in your talkgroup
-list, and private calls when either radio has a row of its own (radio names DSD-neo learned over the air do not count);
-a talkgroup you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
+list, and private calls when either radio has a row of its own (radio names learned over the air, and talkgroup rows in
+mode D, do not count); a talkgroup you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
 its card), keeps its calls out of the recordings.
 
 Both switches also change a running session: Settings reads **Applying…** until the decoder confirms. A change the
@@ -260,7 +260,7 @@ reported under the switches.
 
 ### Where the files are
 
-Recordings go to the phone's shared storage, in DSD-neo's own folder:
+Recordings go to DSD-neo's own folder on the phone's storage (reachable over USB):
 `Android/data/io.github.arancormonk.dsdneo/files/Call recordings/`. Each saved system and scan list has a folder named
 after it with a short ID, for example `County P25 (1a2b3c4d)`; Explore and Signal search sessions share `Explore`.
 Renaming a system keeps its folder, and the folder keeps its first name. A file is named like any per-call WAV (date,
@@ -271,7 +271,7 @@ time, system, talkgroup, radio; see [`-P`](../docs/cli.md)): 8 kHz mono for digi
   manager apps on the phone cannot open that folder; use Share, Save to file or Export as zip instead.
 - No storage permission is needed. Uninstalling DSD-neo, or clearing its storage in Android's app settings, deletes
   every recording: export the ones you want to keep first.
-- When shared storage is not available, new recordings go to DSD-neo's private storage instead, which a computer cannot
+- When that storage is not available, new recordings go to DSD-neo's private storage instead, which a computer cannot
   reach (Share, Save to file and Export still can). Recordings on storage that is away stay listed and are never
   deleted; Settings and **Call recordings** say the storage is not available.
 - DSD-neo manages only the recordings it made. A file you copy into these folders is never listed, counted or deleted,
@@ -316,7 +316,8 @@ starts again with the next call once there is room.
 A recording that was still open when DSD-neo ended without stopping (it crashed, was force-stopped, or the phone shut
 down) keeps its temporary `TEMP_…` name and may be cut short. **Call recordings** lists these under **Unfinished
 recordings**: they count towards the storage limit, which removes them oldest first, and **Delete unfinished** deletes
-them. They cannot be played or exported in the app; copy one from a computer if you need it.
+them. They cannot be played or exported in the app; copy one from a computer if you need it. A recording that couldn't
+be finished while DSD-neo ran (Settings says so) keeps its `TEMP_…` name too, and shows here after DSD-neo restarts.
 
 ### History in the background
 

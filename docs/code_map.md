@@ -630,6 +630,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   compatibility, run-time library loading)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
+  - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes only (`statvfs()`, `GetDiskFreeSpaceExW()`),
+    never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
+    store and the backup export and restore use it. Test: `PLATFORM_FILE_COMPAT`
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
@@ -1051,10 +1054,12 @@ suite runs under this compiler.
   take the tick guard in `apply_cmd()`, so one process never publishes two recordings at once.
   `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, so a recording opened before a
   replay moves the clock is never dated after its calls. `-P` opens nothing while it is parsed (issue #708, B2: `-P -7
-  <dir>` opened its first files in the folder set before `-7`): it sets the mode and `opts->cli_wav_mode`
-  (`dsd_cli_wav_mode`, which `-P` and `-w` read to refuse each other in either order while still replacing a config's
-  mode), and the engine opens the slot files at start (`open_recording_outputs_if_needed()`, creating the folder), after
-  the replay clock is set and in the folder the whole command line names (`RUNTIME_CLI_PARSE`, `ENGINE_RUN_SETUP`).
+  <dir>` opened its first files in the folder set before `-7`): it sets the mode, and the parser keeps which WAV mode
+  the command line chose (`cli_wav_mode`, local to `dsd_parse_short_opts()`, which `-P` and `-w` read to refuse each
+  other in either order while still replacing a config's mode). The engine creates the folder before it opens the
+  recording journal (`create_per_call_folder_if_needed()`, so a journal inside a new `-7` folder opens) and opens the
+  slot files at start (`open_recording_outputs_if_needed()`), after the replay clock is set and in the folder the whole
+  command line names (`RUNTIME_CLI_PARSE`, `ENGINE_RUN_SETUP`).
   `event_time` is the row's last activity, the segment's end by the time its WAV closes. It is only the fallback for a
   row with no start (a `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it),
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
@@ -1110,7 +1115,8 @@ suite runs under this compiler.
   the app's call recording store reads it to tie recordings to History rows and to tell the files it manages from the
   rest. Writer: `src/core/file/wav_journal.c` (private writers in `wav_journal.h`, open, close and state in
   `<dsd-neo/core/wav_journal.h>`). One journal per process: `dsd_engine_run_common_setup()` opens it (or turns it
-  off) before the run's first recording, `dsd_engine_cleanup()` closes it after the last close. It is appended
+  off) before the run's first recording, `dsd_engine_cleanup()` closes it after the last close (`ENGINE_RUN_SETUP`
+  pins both ends through a real run). It is appended
   through file_compat (`dsd_fopen_private(path, "a+b")`), each record built whole and written with one `fwrite()`
   plus `fflush()`, under the journal's own lock (taken last; the event layer writes under the call-state lock). No
   fsync. A journal whose last byte is not `\n` gets one at open, so a line torn by a crash never swallows the next
@@ -2285,7 +2291,10 @@ suite runs under this compiler.
     `dsd_rdio_upload_names_same_file()` in `src/runtime/rdio_export_internal.h`, which takes the platform's rules as a
     flag), so another spelling of the folder still matches, under the queue's mutex, which for that reason lives for
     the process (the worker's condition variable is still created and destroyed with the worker; a failed mutex init
-    is final: no worker starts and nothing is held). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
+    is final: no worker starts and nothing is held). `dsd_rdio_keep_journaled_uploads()` turns
+    `rdio_api_delete_after_upload` off (one LOG_WARN) in a run that names a recording journal, whose owner manages
+    retention; the bootstrap calls it once the config and the command line are applied, and a live config apply
+    after staging (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
     during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
     rule under POSIX and Windows rules on every host),
     `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
@@ -8094,8 +8103,9 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
     `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
-    D10). Roots: `RecordingShare.roots()`, shared storage's `getExternalFilesDir(null)/Call recordings` first (named
-    even while away, at the path Android gives the app there), then `filesDir/Call recordings`. Playback:
+    D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
+    `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
+    there), then `filesDir/Call recordings`. Playback:
     `RecordingPlayback.kt` runs the pure `RecordingPlayer.kt` state machine on one looper thread with a `MediaPlayer`
     and the transient speech audio focus; the player starts only when prepared, wanted, in the foreground and with the
     focus, and a pause, the background or a focus change while preparing only change what is wanted. Each play has a
@@ -8166,8 +8176,10 @@ Qt Quick frontend (`src/ui/qt`):
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
     the total is at 95%; a file already gone is taken off the total without counting as removed. Decided limit: the
     journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
-    first. Free space where new folders go is read at start, after each publish and every minute while a
-    session records; under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
+    first. Free space where new folders go is read (`dsd_path_free_bytes()`) at start, after each publish and every
+    minute while a session records; under 200 MB is `lowSpace`. A root that goes away, at a pass's start or within it
+    (a tailed journal or a folder.json found gone, the root checked again), is marked away and its recordings'
+    fragments are announced, so History rows read them as away; nothing in it leaves the index. `isIndexedPath()` is the share check.
   - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
     pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
     start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass
