@@ -220,7 +220,6 @@ static void
 init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->dmr_stereo_wav = 0;  //flag for per call dmr stereo wav recordings
     opts->static_wav_file = 0; //single static wav file for decoding duration
-    opts->cli_wav_mode = DSD_CLI_WAV_MODE_NONE;
     opts->rdio_mode = 0;
     opts->rdio_system_id = 0;
     opts->rdio_upload_timeout_ms = 5000;

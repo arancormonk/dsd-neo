@@ -712,6 +712,17 @@ cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
    options, 1 << dsd_analog_demod. */
 enum { CLI_TONE_FILTER_SEEN = 1 << 8 };
 
+/**
+ * The WAV recording mode the command line chose. -P and -w refuse each other on one command line but each replaces a
+ * mode a config file chose, so the parser keeps which one the command line gave. -P opens nothing while it is parsed:
+ * the engine opens the per-call files at start, in the folder the whole command line names (issue #708).
+ */
+enum cli_wav_mode {
+    CLI_WAV_MODE_NONE = 0,     ///< neither -P nor -w: a config's mode, if any, stands
+    CLI_WAV_MODE_STATIC = 1,   ///< -w <file>
+    CLI_WAV_MODE_PER_CALL = 2, ///< -P
+};
+
 /* A tone-policy switch (issue #527): --tone-allow and --tone-block take a '/'-separated tone list, --no-tone-filter
  * turns the policy off and keeps the list. One of the three per command line, as on a scan row, where the three share
  * one option. A refused list is named by entry number, never echoed. */
@@ -2894,7 +2905,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         case 'P':                                                                                                      \
             /* Per-call WAV mode only: the engine opens the slot files at start, in the folder the whole command       \
                line names (issue #708). Opened here, they went into the folder set when -P was read. */                \
-            if (opts->cli_wav_mode == DSD_CLI_WAV_MODE_STATIC) {                                                       \
+            if (cli_wav_mode == CLI_WAV_MODE_STATIC) {                                                       \
                 LOG_ERROR("-P cannot be used with -w (static WAV output)\n");                                          \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
@@ -2906,7 +2917,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             LOG_INFO("NOTICE: Per Call Wav File Enabled.\n");                                                          \
             opts->dmr_stereo_wav = 1;                                                                                  \
-            opts->cli_wav_mode = DSD_CLI_WAV_MODE_PER_CALL;                                                            \
+            cli_wav_mode = CLI_WAV_MODE_PER_CALL;                                                            \
             break;                                                                                                     \
         case '7':                                                                                                      \
             /* Set custom directory for per-call WAV saving; one that does not fit is refused, never cut short. */     \
@@ -3044,7 +3055,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         }                                                                                                              \
         case 'w':                                                                                                      \
-            if (opts->cli_wav_mode == DSD_CLI_WAV_MODE_PER_CALL) {                                                     \
+            if (cli_wav_mode == CLI_WAV_MODE_PER_CALL) {                                                     \
                 LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                        \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
@@ -3054,7 +3065,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             opts->wav_out_file[1023] = '\0';                                                                           \
             opts->dmr_stereo_wav = 0;                                                                                  \
             opts->static_wav_file = 1;                                                                                 \
-            opts->cli_wav_mode = DSD_CLI_WAV_MODE_STATIC;                                                              \
+            cli_wav_mode = CLI_WAV_MODE_STATIC;                                                              \
             openWavOutFileLR(opts, state);                                                                             \
             LOG_INFO("NOTICE: Static WAV output: %s\n", opts->wav_out_file);                                           \
             break;                                                                                                     \
@@ -3673,6 +3684,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     int cli_dmr_mono_override_seen = 0;
     int cli_source_monitor_seen = 0;
+    enum cli_wav_mode cli_wav_mode = CLI_WAV_MODE_NONE;
     while ((c = getopt(argc, argv, dsd_cli_short_options())) != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }
