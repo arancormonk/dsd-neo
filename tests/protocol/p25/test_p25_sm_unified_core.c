@@ -11,10 +11,12 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -3619,9 +3621,9 @@ test_grant_naming_blocked_radio_not_tuned(void) {
     return 0;
 }
 
-/* A patched call (supergroup unlisted, its member listed, -W on) is judged on its member. A talker the radio list
-   blocks, learned mid-call, keeps the call on the member (never released, never judged back on the unlisted
-   supergroup) and mutes it; a grant from that radio for the patch is refused. */
+/* A patched call (supergroup unlisted, its member listed, -W on) is judged on its member, and plays while its talker
+   is unknown. A talker the radio list blocks, learned mid-call, keeps the call on the member (never released, never
+   judged back on the unlisted supergroup) and mutes it; a grant from that radio for the patch is refused. */
 static int
 test_patched_call_radio_block(void) {
     reset_test_state();
@@ -3645,6 +3647,11 @@ test_patched_call_radio_block(void) {
         DSD_FPRINTF(stderr, "FAIL: The patch was not followed on its listed member\n");
         return 1;
     }
+    int muted = -1;
+    if (dsd_audio_group_gate_mono(&g_opts, &g_state, 9000, 0, &muted) != 0 || muted != 0) {
+        DSD_FPRINTF(stderr, "FAIL: The patched call was muted before its talker was known\n");
+        return 1;
+    }
     ev = p25_sm_ev_active_call(0, 9000, 0, 303, 1, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].voice_active || ctx.slots[0].src != 303
@@ -3653,7 +3660,7 @@ test_patched_call_radio_block(void) {
                     ctx.slots[0].target_id);
         return 1;
     }
-    int muted = -1;
+    muted = -1;
     if (dsd_audio_group_gate_mono(&g_opts, &g_state, 9000, 0, &muted) != 0 || muted != 1) {
         DSD_FPRINTF(stderr, "FAIL: The kept patched call with a blocked talker was not muted\n");
         return 1;
@@ -3671,6 +3678,80 @@ test_patched_call_radio_block(void) {
     p25_sm_event(&fresh, &g_opts, &g_state, &ev);
     if (fresh.state != P25_SM_TUNED || fresh.tune_count != 1) {
         DSD_FPRINTF(stderr, "FAIL: A patch grant from another radio was not tuned\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* The grant_block line of the SM diagnostic log at @p path, NUL-terminated in @p out (empty when there is none). */
+static void
+read_grant_block_line(const char* path, char* out, size_t out_size) {
+    out[0] = '\0';
+    char text[8192];
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return;
+    }
+    const size_t n = fread(text, 1, sizeof(text) - 1U, fp);
+    (void)fclose(fp);
+    text[n] = '\0';
+    const char* line = strstr(text, "event=grant_block ");
+    if (!line) {
+        return;
+    }
+    const size_t len = strcspn(line, "\n");
+    DSD_SNPRINTF(out, out_size, "%.*s", (int)(len < out_size ? len : out_size - 1U), line);
+}
+
+/* A clear grant for an encryption-locked patch supergroup plans the lockout release (a reprobe) and judges the
+   supergroup as the release leaves it: its talkgroup part is admitted again, so it stays the decision ahead of its
+   equally ranked member, and the grant's blocked radio refuses it (the planned release never lifts a radio block). The
+   refused grant spends nothing: the ledger keeps its entry. A grant from another radio tunes as a reprobe. */
+static int
+test_planned_release_keeps_supergroup_under_radio_block(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.synctype = DSD_SYNC_P25P1_POS;
+    p25_patch_update(&g_state, 9000, 1, 1);
+    p25_patch_add_wgid(&g_state, 9000, 1001);
+    if (dsd_test_install_radio_policy(&g_state, 303, "B", 0, 0, 0) != 0
+        || dsd_enc_lockout_note(&g_state, 9000, 1, 0x84, 0x1234) != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Could not seed the planned release case\n");
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_p25_planned_release");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not create the SM log\n");
+        return 1;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(g_opts.p25_sm_log_file, sizeof g_opts.p25_sm_log_file, "%s", path);
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 9000, 303, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    dsd_p25_sm_log_close(&g_opts);
+    g_opts.p25_sm_log_file[0] = '\0';
+    char line[1024];
+    read_grant_block_line(path, line, sizeof line);
+    (void)remove(path);
+    if (ctx.state == P25_SM_TUNED || ctx.tune_count != 0 || !encrypted_call_cache_has(9000, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: A reprobe grant from a blocked radio was tuned or spent the lockout entry\n");
+        return 1;
+    }
+    if (strstr(line, "reason=grant-blocked-radio ") == NULL || strstr(line, " policy_tg=9000 ") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: The refused reprobe was not judged on its released supergroup: \"%s\"\n", line);
+        return 1;
+    }
+
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 9000, 304, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.tune_count != 1 || encrypted_call_cache_has(9000, 1)
+        || !ctx.slots[0].enc_lockout_reprobe) {
+        DSD_FPRINTF(stderr, "FAIL: A reprobe grant from another radio was not followed as a reprobe\n");
         return 1;
     }
     return 0;
@@ -3751,6 +3832,7 @@ main(void) {
     fail += test_enrichment_radio_block_keeps_call_p2();
     fail += test_grant_naming_blocked_radio_not_tuned();
     fail += test_patched_call_radio_block();
+    fail += test_planned_release_keeps_supergroup_under_radio_block();
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);
