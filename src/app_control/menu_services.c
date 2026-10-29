@@ -146,7 +146,9 @@ svc_recording_discard(svc_recording_opened* o, const svc_recording_target* targe
 }
 
 /* Publish the per-call files under their slots' rows in the folder they were opened in (the options' folder until a
-   transition installs another), and the NFM call's recording in its own, the call going on unrecorded. */
+   transition installs another), and the NFM call's recording in its own folder. With per-call recording still on
+   (a folder change), the NFM call's next block opens a new recording in the target's folder; with it off, the call
+   goes on unrecorded. */
 static void
 svc_publish_per_call_files(dsd_opts* opts, dsd_state* state) {
     if (opts->wav_out_f != NULL) {

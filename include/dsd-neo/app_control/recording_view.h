@@ -69,8 +69,8 @@ typedef struct {
 /**
  * @brief The latest published view, with @c command_state PENDING for a command submitted since.
  *
- * Any thread. Returns 1 once the decoder has published one, 0 before (@p out is then zero but for a pending command),
- * -1 for a NULL @p out. Like the snapshots, the view stays readable after the session stops, at its last values.
+ * Any thread. Returns 1 once the decoder has published one, 0 before (@p out then holds no recording state, only the
+ * last command's pending or dropped outcome), -1 for a NULL @p out. Like the snapshots, the view stays readable after the session stops, at its last values.
  */
 int dsd_app_recording_view_get(dsd_app_recording_view* out);
 
