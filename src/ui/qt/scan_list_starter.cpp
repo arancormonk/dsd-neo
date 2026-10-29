@@ -204,27 +204,39 @@ ScanListStarter::build(const QVariantMap& list) const {
 }
 
 QVariantMap
-ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
+ScanListStarter::prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording) const {
     // The list's call recording folder goes into its argv (issue #708), so a start that can record checks the list
     // first and asks for the folder only for a list that can start; the build that writes the CSV then names it. A
     // draft never can (only that build refuses it), so it asks for none.
     const bool canRecord = host && m_recordingSessions && !list.value("isDraft").toBool();
     auto result = prepare(list, !canRecord);
-    bool recording = false;
+    *recording = false;
     if (canRecord && result.value("ok").toBool()) {
-        recording = true;
+        *recording = true;
         const QString folder = m_recordingSessions->beginSession(QStringLiteral("scan"), list.value("uid").toString(),
                                                                  list.value("name").toString());
         result = prepare(list, true, folder, folder.isEmpty());
     }
+    return result;
+}
+
+void
+ScanListStarter::endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const {
+    if (recording && !started && !host->sessionActive()) {
+        m_recordingSessions->endSession();
+    }
+}
+
+QVariantMap
+ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
+    bool recording = false;
+    auto result = prepareForStart(list, host, &recording);
     const auto args = result.take("args").toStringList();
     if (result.value("ok").toBool() && host) {
         host->noteStartAttempt(list.value("sourceType").toString());
     }
     const bool started = result.value("ok").toBool() && host && host->start(args);
-    if (recording && !started && !host->sessionActive()) {
-        m_recordingSessions->endSession();
-    }
+    endUnstartedRecording(recording, started, host);
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {
         for (const auto& value : list.value("entries").toList()) {

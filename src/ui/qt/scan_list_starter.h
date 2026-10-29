@@ -48,6 +48,11 @@ class ScanListStarter : public QObject {
                         bool recordingUnavailable = false) const;
     QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
                            bool recordingUnavailable) const;
+    /* start()'s prepare: with the list's call recording folder when @p host can record it (@p recording set, the
+       folder's session begun). */
+    QVariantMap prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording) const;
+    /* The recording session prepareForStart() began ends when the start did not happen and no session runs. */
+    void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     std::function<bool(const QString&)> m_targetFileLookup;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;
