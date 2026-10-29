@@ -8,6 +8,7 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_wav.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -2137,6 +2138,16 @@ rate_plan_fill(dsd_iq_replay_rate_plan* plan, uint32_t capture_hz, uint32_t dsp_
     plan->resample = dsp_in_hz != capture_hz ? 1 : 0;
 }
 
+/* 1 when a chain delivering @p rate_hz to the demodulator meets @p required_hz. TETRA's 18 kHz is the symbol rate, which
+ * runs only over its DSP domain (dsd_tetra_dsp_rate_runs()); any other requirement is a plain multiple. */
+static int
+rate_meets_required(uint32_t rate_hz, uint32_t required_hz) {
+    if (required_hz == (uint32_t)DSD_TETRA_SYMBOL_RATE_HZ) {
+        return rate_hz <= (uint32_t)INT_MAX && dsd_tetra_dsp_rate_runs((int)rate_hz);
+    }
+    return (rate_hz % required_hz) == 0U;
+}
+
 /* KEEP (dsd_iq_replay_plan_rate()): 1 when the sidecar's recorded chain runs as captured, with @p plan filled. A TETRA
  * chain that misses the requirement only through a power-of-two post_downsample is folded into the half-band chain. */
 static int
@@ -2149,13 +2160,13 @@ rate_plan_keep(const dsd_iq_replay_config* cfg, uint32_t required_hz, dsd_iq_rep
         return 0;
     }
     /* The CQPSK path runs at fs / base: it skips post_downsample. */
-    if (required_hz == 0U || (post == 1U && ((fs / base) % required_hz) == 0U)) {
+    if (required_hz == 0U || (post == 1U && rate_meets_required(fs / base, required_hz))) {
         rate_plan_fill(plan, fs, fs, base, post, 0U, 1);
         return 1;
     }
     const uint64_t folded = (uint64_t)base * post;
     if (post > 1U && is_power_of_two_u32(post) && folded <= DSD_IQ_REPLAY_MAX_BASE_DECIMATION
-        && ((fs / (uint32_t)folded) % required_hz) == 0U) {
+        && rate_meets_required(fs / (uint32_t)folded, required_hz)) {
         rate_plan_fill(plan, fs, fs, (uint32_t)folded, 1U, (uint32_t)(fs / folded), 0);
         return 1;
     }

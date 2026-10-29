@@ -229,6 +229,16 @@ test_tetra_post_fold(void) {
     /* The fold keeps the recorded demod rate: a 36 kHz target would have the general rule decimate by 4. */
     rc |= expect_plan("TETRA sidecar 144k post 2 folds whatever the target", sidecar_cfg(144000U, 1U, 2U, 72), 36000U,
                       18000U, 0, 144000U, 2U, 1U, 72000U, 0);
+    /* TETRA runs 36..144 kHz only: a recorded chain at 18 kHz or at 162 kHz is not kept, direct or folded, and
+       re-plans to 72 kHz. */
+    rc |= expect_plan("TETRA sidecar 18k direct is not kept", sidecar_cfg(18000U, 1U, 1U, 18), 72000U, 18000U, 0,
+                      72000U, 1U, 1U, 72000U, 0);
+    rc |= expect_plan("TETRA sidecar 162k direct is not kept", sidecar_cfg(162000U, 1U, 1U, 162), 72000U, 18000U, 0,
+                      144000U, 2U, 1U, 72000U, 0);
+    rc |= expect_plan("TETRA sidecar 36k post 2 folded to 18k is not kept", sidecar_cfg(36000U, 1U, 2U, 36), 72000U,
+                      18000U, 0, 72000U, 1U, 1U, 72000U, 0);
+    rc |= expect_plan("TETRA sidecar 324k post 2 folded to 162k is not kept", sidecar_cfg(324000U, 1U, 2U, 162), 72000U,
+                      18000U, 0, 288000U, 4U, 1U, 72000U, 0);
     /* Without TETRA the post-demod decimation is kept. */
     rc |= expect_plan("144k base 1 post 2 kept without TETRA", sidecar_cfg(144000U, 1U, 2U, 72), 72000U, 0U, 0, 144000U,
                       1U, 2U, 72000U, 1);
