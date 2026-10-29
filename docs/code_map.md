@@ -4600,34 +4600,35 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     inactive: ...`: the rate out of the domain, a TED override that does not match the rate,
     `DSD_NEO_CHANNEL_LPF=0`) and runs the generic CQPSK path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1).
   - Uplink. A trunked mode uplink session (`--tetra-uplink`, `demod_state::tetra_uplink`, which
-    `rtl_demod_init_for_mode()` writes on every open) never runs the chain: on `tetra_uplink_bursts_72k` the chain
-    lost bursts the generic path decoded. Its predicate is false, nothing is warned, and the stream keeps the generic
-    path with the TETRA channel filter in place of WIDE wherever the rate domain admits the rate and the channel LPF
-    is on (`dsd_demod_tetra_channel_runs()`). On that stage (`dsd_demod_tetra_uplink_timing_runs()`, sps 2 to 8) the
-    Gardner and Costas loops take each burst's timing and carrier phase from its training sequence
-    (`include/dsd-neo/dsp/tetra_uplink_timing.h`, `src/dsp/tetra_uplink_timing.c`): both loops free-run on noise
-    between bursts and pull in too slowly for a 103- or 231-symbol burst. The Gardner input passes through a
-    128-symbol look-ahead that correlates every sample's differential phasor against the extended (control burst) and
-    normal (normal burst) training sequences, normalized by the Cauchy-Schwarz bound and the larger of each sequence
-    and its conjugate; a peak of at least 0.85 places the burst's grid and rotation (a normal burst only once the two
-    symbols after it showed no extended sequence, a control burst only when the extended sequence's four outer
-    symbols agree; overlapping bursts keep the higher score). When the strobe comes within two symbols of a burst's
-    first symbol it moves onto the grid by less than half a symbol, and the Costas loop takes the burst's rotation
-    within a quarter turn, frequency and smoothing reset, from the symbol after. `op25_gardner_cc()` and
-    `op25_costas_loop_cc()` run separate template instantiations for it, so every other stream runs the loops
-    unchanged; `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the stage and every block
-    a signal search drops (what it held would reach the decoder after the gap), starts the look-ahead over with the
-    TED. The look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the Gardner's input stops it
-    is pushed out as zeros through Gardner, differential, Costas and the phase demodulator: a level-squelched block
-    runs that way while signal is held (`full_demod()`), so a burst's end reaches the decoder before the squelch's
-    silence, and at the end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()` as a block of its
-    own once the input ended and the decoder took every block (`demod_replay_flush_uplink()`);
+    `rtl_demod_init_for_mode()` writes on every open) never runs the chain: on `tetra_uplink_bursts_72k` the chain lost
+    bursts the generic path decoded. Its predicate is false, and the stream keeps the generic path with the TETRA
+    channel filter in place of WIDE wherever the rate domain admits the rate and the channel LPF is on
+    (`dsd_demod_tetra_channel_runs()`); where either fails it warns once per stream per cause
+    (`TETRA uplink channel filter inactive: ...`), and a TED override, which the uplink's filter does not depend on, is
+    not warned about. On that stage (`dsd_demod_tetra_uplink_timing_runs()`, sps 2 to 8) the Gardner and Costas loops
+    take each burst's timing and carrier phase from its training sequence (`include/dsd-neo/dsp/tetra_uplink_timing.h`,
+    `src/dsp/tetra_uplink_timing.c`): both loops free-run on noise between bursts and pull in too slowly for a 103- or
+    231-symbol burst. The Gardner input passes through a 128-symbol look-ahead that correlates every sample's
+    differential phasor against the extended (control burst) and normal (normal burst) training sequences, normalized by
+    the Cauchy-Schwarz bound and the larger of each sequence and its conjugate; a peak of at least 0.85 places the
+    burst's grid and rotation (a normal burst only once the two symbols after it showed no extended sequence, a control
+    burst only when the extended sequence's four outer symbols agree; overlapping bursts keep the higher score). When
+    the strobe comes within two symbols of a burst's first symbol it moves onto the grid by less than half a symbol, and
+    the Costas loop takes the burst's rotation within a quarter turn, frequency and smoothing reset, from the symbol
+    after. `op25_gardner_cc()` and `op25_costas_loop_cc()` run separate template instantiations for it, so every other
+    stream runs the loops unchanged; `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the
+    stage and every block a signal search drops (what it held would reach the decoder after the gap), starts the
+    look-ahead over with the TED. The look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the
+    Gardner's input stops it is pushed out as zeros through Gardner, differential, Costas and the phase demodulator: a
+    level-squelched block runs that way while signal is held (`full_demod()`), so a burst's end reaches the decoder
+    before the squelch's silence, and at the end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()`
+    as a block of its own once the input ended and the decoder took every block (`demod_replay_flush_uplink()`);
     `replay_demod_flush_owed`, set after every replay block, keeps both drain decisions (`replay_demod_drain_decide()`,
     `replay_mark_input_drained()`) from counting the demod drained before that, so the end-of-capture notice still
-    follows the last burst. An `--iq-loop` pass end does the same before its rewind: the reader sets
-    `replay_pass_end` while it waits for the rewind's idle boundary, the demod flushes on it as on EOF, and
-    `replay_pipeline_idle_locked()` is not idle while that flush is owed, so the pass's last burst is decoded on its
-    own pass rather than dropped by the rewind. While such a flush is owed the demod waits for the next chunk in
+    follows the last burst. An `--iq-loop` pass end does the same before its rewind: the reader sets `replay_pass_end`
+    while it waits for the rewind's idle boundary, the demod flushes on it as on EOF, and
+    `replay_pipeline_idle_locked()` is not idle while that flush is owed, so the pass's last burst is decoded on its own
+    pass rather than dropped by the rewind. While such a flush is owed the demod waits for the next chunk in
     `demod_replay_input_or_flush()`, not in the input ring, whose wait returns only with data: paced in real time the
     demod is already waiting there when the input ends, and would never reach the flush. A live stream's stop drops it
     with the rest of the pipeline's in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`,

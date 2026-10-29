@@ -80,12 +80,14 @@ expect_int(const char* what, int got, int want) {
     return 0;
 }
 
-/* The warnings a stream logs about a TETRA profile whose chain cannot run, counted by cause. */
+/* The warnings a stream logs about a TETRA profile whose chain (or on the uplink, channel filter) cannot run, counted
+ * by cause; uplink counts the uplink's. */
 struct WarnCounts {
     int total;
     int rate;
     int ted;
     int lpf;
+    int uplink;
 };
 
 WarnCounts g_warns;
@@ -93,10 +95,15 @@ WarnCounts g_warns;
 void
 count_tetra_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
-    if (level != LOG_LEVEL_WARN || !text || !std::strstr(text, "TETRA receive chain inactive")) {
+    if (level != LOG_LEVEL_WARN || !text) {
+        return;
+    }
+    const bool uplink = std::strstr(text, "TETRA uplink channel filter inactive") != nullptr;
+    if (!uplink && !std::strstr(text, "TETRA receive chain inactive")) {
         return;
     }
     g_warns.total++;
+    g_warns.uplink += uplink ? 1 : 0;
     if (std::strstr(text, "DSP rate")) {
         g_warns.rate++;
     }
@@ -786,6 +793,17 @@ test_uplink_keeps_channel_filter_only(void) {
         rc |= fail("uplink: no symbols");
     }
 
+    /* A TED override does not reach the uplink's channel filter, so nothing is said of one. */
+    const std::vector<float> quiet = constant_block(1440, 0.01f, 0.0f);
+    DSD_MEMSET(s, 0, sizeof(*s));
+    configure_tetra(s, 72000);
+    s->tetra_uplink = 1;
+    s->ted_sps_override = 8;
+    g_warns = WarnCounts{};
+    (void)run_block(s, quiet.data(), 1440);
+    rc |= expect_int("uplink, override 8: channel filter", dsd_demod_tetra_channel_runs(s), 1);
+    rc |= expect_int("uplink, override 8: nothing warned", g_warns.total, 0);
+
     /* The AGC averages with the earlier path's 0.45: from 1.0, after 8 samples of |x|^2 = 0.25 the average is
        0.25 + 0.75 * 0.55^8, where the chain's 0.1 would leave 0.25 + 0.75 * 0.9^8. */
     DSD_MEMSET(s, 0, sizeof(*s));
@@ -802,28 +820,34 @@ test_uplink_keeps_channel_filter_only(void) {
     dsd_demod_test_cqpsk_rms_agc(s);
     rc |= expect_near("uplink: AGC average at 0.45", s->cqpsk_agc_avg, 0.25 + 0.75 * std::pow(0.55, 8.0), 1e-5);
 
-    /* Off the domain (48 kHz) the uplink runs WIDE, as a downlink stream there does, and is not warned about either. */
+    /* Off the domain (48 kHz) the uplink runs WIDE, as a downlink stream there does, and says so once per stream. */
     DSD_MEMSET(s, 0, sizeof(*s));
     configure_cqpsk(s, 48000, DSD_CH_LPF_PROFILE_TETRA, 18000, 3);
     s->tetra_uplink = 1;
     g_warns = WarnCounts{};
     const std::vector<float> b48 = constant_block(960, 0.01f, 0.0f);
     (void)run_block(s, b48.data(), 960);
+    (void)run_block(s, b48.data(), 960);
     rc |= expect_int("uplink at 48 kHz: channel filter", dsd_demod_tetra_channel_runs(s), 0);
     rc |= expect_int("uplink at 48 kHz: WIDE plan key", s->channel_lpf_plan_tetra, 0);
     rc |= expect_int("uplink at 48 kHz: stage", dsd_demod_tetra_stage(s), DSD_SNR_TETRA_STAGE_WIDE);
-    rc |= expect_int("uplink at 48 kHz: nothing warned", g_warns.total, 0);
+    rc |= expect_int("uplink at 48 kHz: one warning", g_warns.total, 1);
+    rc |= expect_int("uplink at 48 kHz: names the DSP rate", g_warns.rate, 1);
+    rc |= expect_int("uplink at 48 kHz: an uplink warning", g_warns.uplink, 1);
 
-    /* With the channel LPF off (DSD_NEO_CHANNEL_LPF=0) no TETRA filter runs either, and nothing is warned. */
+    /* With the channel LPF off (DSD_NEO_CHANNEL_LPF=0) no TETRA filter runs either, and that is said once too. */
     DSD_MEMSET(s, 0, sizeof(*s));
     configure_tetra(s, 72000);
     s->tetra_uplink = 1;
     s->channel_lpf_enable = 0;
     g_warns = WarnCounts{};
     (void)run_block(s, iq.data(), 1440);
+    (void)run_block(s, iq.data(), 1440);
     rc |= expect_int("uplink, LPF off: channel filter", dsd_demod_tetra_channel_runs(s), 0);
     rc |= expect_int("uplink, LPF off: stage", dsd_demod_tetra_stage(s), DSD_SNR_TETRA_STAGE_WIDE);
-    rc |= expect_int("uplink, LPF off: nothing warned", g_warns.total, 0);
+    rc |= expect_int("uplink, LPF off: one warning", g_warns.total, 1);
+    rc |= expect_int("uplink, LPF off: names the channel filter", g_warns.lpf, 1);
+    rc |= expect_int("uplink, LPF off: an uplink warning", g_warns.uplink, 1);
     free_demod(s);
     return rc;
 }

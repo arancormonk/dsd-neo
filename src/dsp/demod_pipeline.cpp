@@ -1520,33 +1520,49 @@ full_demod_drain_uplink_on_squelch(struct demod_state* d) {
     return 1;
 }
 
+/* What a stream with the TETRA profile on CQPSK decodes on when its TETRA stage cannot run: the downlink's chain, or
+   the uplink's TETRA channel filter (and the burst timing behind it, dsd_demod_tetra_channel_runs()). */
+static const char*
+tetra_inactive_what(const struct demod_state* d) {
+    return d->tetra_uplink ? "TETRA uplink channel filter inactive" : "TETRA receive chain inactive";
+}
+
+/* Says @p cause once per stream (demod_state::tetra_chain_warned): 0 when it was said already. */
+static int
+tetra_warn_once(struct demod_state* d, int cause) {
+    if (d->tetra_chain_warned & cause) {
+        return 0;
+    }
+    d->tetra_chain_warned |= cause;
+    return 1;
+}
+
 /* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
-   chain of its own; say why, once per cause and stream. Nothing is said for a chain the mode does not ask for. */
+   chain of its own; say why, once per cause and stream. An uplink session never runs the chain, but its TETRA channel
+   filter falls back the same way on a rate outside the domain or the channel filter off; the TED override does not
+   reach it. Nothing is said for a chain the mode does not ask for. */
 static void
 tetra_chain_warn_inactive(struct demod_state* d) {
-    if (!tetra_chain_requested(d) || d->tetra_uplink) {
+    if (!tetra_chain_requested(d)) {
         return;
     }
+    const char* what = tetra_inactive_what(d);
     const int rate = d->rate_out;
-    if (rate > 0 && !dsd_tetra_dsp_rate_runs(rate) && !(d->tetra_chain_warned & DSD_TETRA_CHAIN_WARN_RATE)) {
-        d->tetra_chain_warned |= DSD_TETRA_CHAIN_WARN_RATE;
-        LOG_WARN("TETRA receive chain inactive: DSP rate %d Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA "
-                 "decodes on the generic CQPSK path.\n",
-                 rate);
+    if (rate > 0 && !dsd_tetra_dsp_rate_runs(rate) && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_RATE)) {
+        LOG_WARN("%s: DSP rate %d Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA decodes on the generic "
+                 "CQPSK path.\n",
+                 what, rate);
     }
     const int ted = d->ted_sps_override;
-    if (ted > 0 && (rate % DSD_TETRA_SYMBOL_RATE_HZ != 0 || ted != rate / DSD_TETRA_SYMBOL_RATE_HZ)
-        && !(d->tetra_chain_warned & DSD_TETRA_CHAIN_WARN_TED)) {
-        d->tetra_chain_warned |= DSD_TETRA_CHAIN_WARN_TED;
-        LOG_WARN("TETRA receive chain inactive: the TED override of %d samples per symbol does not match the %d Hz DSP "
-                 "rate; TETRA decodes on the generic CQPSK path.\n",
-                 ted, rate);
+    if (!d->tetra_uplink && ted > 0 && (rate % DSD_TETRA_SYMBOL_RATE_HZ != 0 || ted != rate / DSD_TETRA_SYMBOL_RATE_HZ)
+        && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_TED)) {
+        LOG_WARN("%s: the TED override of %d samples per symbol does not match the %d Hz DSP rate; TETRA decodes on "
+                 "the generic CQPSK path.\n",
+                 what, ted, rate);
     }
-    if (!d->channel_lpf_enable && !(d->tetra_chain_warned & DSD_TETRA_CHAIN_WARN_LPF)) {
-        d->tetra_chain_warned |= DSD_TETRA_CHAIN_WARN_LPF;
-        LOG_WARN(
-            "TETRA receive chain inactive: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); TETRA decodes on the "
-            "generic CQPSK path.\n");
+    if (!d->channel_lpf_enable && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_LPF)) {
+        LOG_WARN("%s: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); TETRA decodes on the generic CQPSK path.\n",
+                 what);
     }
 }
 
