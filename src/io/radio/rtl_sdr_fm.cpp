@@ -2387,7 +2387,7 @@ demod_refresh_fll_band_edge_state(struct demod_state* s, int reset_retained_fll,
     dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
     const float pre_limit = s->tetra_chain ? dsd_tetra_pre_limit_rad(s->rate_out) : 0.0f;
     dsd_fll_band_edge_split_total(f, total, pre_limit);
-    if (debug_cqpsk_enabled()) {
+    if (s->tetra_chain && debug_cqpsk_enabled()) {
         const float kept = dsd_fll_band_edge_total_freq(f);
         if (fabsf(kept - total) > 1e-6f) {
             const float hz_per_rad = (float)s->rate_out / 6.28318530717958647692f;

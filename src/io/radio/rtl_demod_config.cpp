@@ -1342,9 +1342,9 @@ rtl_demod_reset_resampler_state(struct demod_state* demod) {
 }
 
 /* A fresh open starts the carrier and timing loops from nothing: Costas and the band-edge FLL (and the TETRA mixer
- * ahead of it) at zero frequency and phase with empty delay lines, the Gardner TED uninitialised (it seeds itself from the SPS on its first block), and
- * the CQPSK differential and AGC state at their open values. A family switch carries none of the old session's
- * loop state over. */
+ * ahead of it) at zero frequency and phase with empty delay lines, the Gardner TED uninitialised (it seeds itself
+ * from the SPS on its first block), and the CQPSK differential and AGC state at their open values. A family switch
+ * carries none of the old session's loop state over. */
 static void
 demod_family_switch_reset_loops(struct demod_state* demod) {
     ted_init_state(&demod->ted_state);

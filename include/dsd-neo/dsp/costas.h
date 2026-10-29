@@ -319,7 +319,10 @@ void dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f);
 void dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit);
 
 /**
- * @brief Rotate a block by the TETRA mixer: x[n] * p, with the phasor p advanced by exp(-j * pre_freq) per sample.
+ * @brief Rotate a block by the TETRA mixer: x[n] * p, with the phasor p advanced by exp(+j * pre_freq) per sample.
+ *
+ * The sign is the FLL NCO's: like freq, pre_freq is minus the carrier offset, so a carrier at -pre_freq comes out at
+ * DC and pre_freq + freq is one estimate.
  *
  * Two complex multiplies per sample and no per-sample sin/cos; the phasor's magnitude is renormalized once per
  * block, so the rotation is phase continuous across any partition of the stream into blocks.
@@ -349,7 +352,7 @@ float dsd_tetra_pre_limit_rad(int rate_out);
  * Signal flow:
  *   Input: AGC'd complex samples at sample rate
  *   Processing:
- *     1. NCO rotation: out = in * exp(-j*phase)
+ *     1. NCO rotation: out = in * exp(+j*phase); freq converges to minus the carrier offset
  *     2. Band-edge filtering (upper and lower)
  *     3. Error computation: |x_lower|^2 - |x_upper|^2
  *     4. Loop filter update (frequency only, no phase term)

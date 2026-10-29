@@ -4473,7 +4473,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA, OP25's 0.45 otherwise. `DSP_FLL_BAND_EDGE` pins the P25
   design (taps, loop bandwidth, gains) to its values before the parameters existed.
   The FLL state also holds the TETRA tracking mixer (`pre_freq` and a phasor; `dsd_tetra_premix_block()` rotates a
-  block by it, bounded by `dsd_tetra_pre_limit_rad()`, 8 kHz either side). The carrier estimate is the sum,
+  block by it, bounded by `dsd_tetra_pre_limit_rad()`, 8 kHz either side, with the FLL NCO's sign: both parts are
+  minus the carrier offset). The carrier estimate is the sum,
   `dsd_fll_band_edge_total_freq()` = `pre_freq + freq`, and every reader that means the receiver's offset reads that
   sum: the metrics CFO and band-edge exports (so auto-PPM, the terminal, Qt and the API), the retune seed cache and the
   retune debug logs. `freq` alone is the FLL's residual: its loop, and the carrier-lock heuristic's saturation test

@@ -610,7 +610,8 @@ check_split_fold(void) {
     return 0;
 }
 
-/* premix_block() of a tone at the mixer frequency leaves DC: residual power at least 60 dB under the tone. */
+/* premix_block() of a +6 kHz tone with pre_freq at minus its frequency (the FLL's sign: an estimate is minus the
+ * carrier offset) leaves DC: residual power at least 60 dB under the tone. */
 static int
 check_premix_cancels_tone(void) {
     const int rate = 72000;
@@ -628,7 +629,7 @@ check_premix_cancels_tone(void) {
     }
     dsd_fll_band_edge_state_t f;
     DSD_MEMSET(&f, 0, sizeof(f)); /* a zeroed phasor reads as (1, 0) */
-    f.pre_freq = w;
+    f.pre_freq = -w;
     for (int off = 0; off < n; off += 512) {
         const int len = (n - off) < 512 ? (n - off) : 512;
         dsd_tetra_premix_block(&f, iq + 2 * off, len);
@@ -654,7 +655,7 @@ check_premix_cancels_tone(void) {
 }
 
 /* The rotation is phase continuous across block boundaries: blocks of 1, 7, 256 and irregular pairs all give the
- * one-block rotation x[n] * exp(-j*w*n). */
+ * one-block rotation x[n] * exp(+j*w*n), the FLL NCO's sign. */
 static int
 check_premix_partitions(void) {
     const int n = 4096;
@@ -685,7 +686,7 @@ check_premix_partitions(void) {
         }
         double worst = 0.0;
         for (int i = 0; i < n; i++) {
-            const double ph = -(double)w * (double)i;
+            const double ph = (double)w * (double)i;
             const double c = cos(ph);
             const double s = sin(ph);
             const double wr = in[2 * i] * c - in[2 * i + 1] * s;
@@ -734,6 +735,104 @@ check_premix_partitions(void) {
     if (!closef(f.pre_re, 0.6f, 0.0f) || !closef(f.pre_im, 0.8f, 0.0f)) {
         DSD_FPRINTF(stderr, "TETRA premix: an empty block moved the phasor\n");
         return 1;
+    }
+    return 0;
+}
+
+/* A QPSK-like stream: random (+-1, +-j) symbols held for sps samples, carried at an offset of w rad/sample. */
+struct qpsk_source {
+    uint32_t seed;
+    double phase;
+};
+
+static void
+qpsk_block(qpsk_source* src, float* buf, int pairs, int sps, double w) {
+    for (int n = 0; n < pairs; n++) {
+        if (n % sps == 0) {
+            src->seed = src->seed * 1664525U + 1013904223U;
+        }
+        const double sr = ((src->seed >> 30) & 1U) ? 1.0 : -1.0;
+        const double si = ((src->seed >> 29) & 1U) ? 1.0 : -1.0;
+        const double c = cos(src->phase);
+        const double s = sin(src->phase);
+        buf[2 * n] = (float)(0.5 * (sr * c - si * s));
+        buf[2 * n + 1] = (float)(0.5 * (sr * s + si * c));
+        src->phase += w;
+    }
+}
+
+/* Run the band-edge FLL on the stream block by block, alone or as the TETRA chain runs it (mixer, FLL, transfer), and
+ * report the mean mixer and FLL frequencies over the last quarter of the blocks, in Hz. */
+static int
+run_fll_loop(int with_mixer, double offset_hz, int blocks, double* out_pre_hz, double* out_freq_hz) {
+    const int rate = 72000;
+    const int sps = 4;
+    const int pairs = 512;
+    static float buf[2 * 512];
+    demod_state* d = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
+    if (!d) {
+        return 1;
+    }
+    DSD_MEMSET(d, 0, sizeof(*d));
+    d->cqpsk_enable = 1;
+    d->ted_sps = sps;
+    d->rate_out = rate;
+    d->tetra_chain = 1;
+    qpsk_source src = {1U, 0.0};
+    const double w = 2.0 * 3.14159265358979323846 * offset_hz / (double)rate;
+    const double hz_per_rad = (double)rate / (2.0 * 3.14159265358979323846);
+    double pre_sum = 0.0;
+    double freq_sum = 0.0;
+    int counted = 0;
+    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
+    for (int b = 0; b < blocks; b++) {
+        qpsk_block(&src, buf, pairs, sps, w);
+        if (with_mixer) {
+            dsd_tetra_premix_block(f, buf, pairs);
+        }
+        d->lowpassed = buf;
+        d->lp_len = pairs * 2;
+        op25_fll_band_edge_cc(d);
+        if (with_mixer) {
+            dsd_fll_band_edge_transfer(f, dsd_tetra_pre_limit_rad(rate));
+        }
+        if (b >= blocks - blocks / 4) {
+            pre_sum += (double)f->pre_freq * hz_per_rad;
+            freq_sum += (double)f->freq * hz_per_rad;
+            counted++;
+        }
+    }
+    dsd_neo_aligned_free(d);
+    *out_pre_hz = pre_sum / (double)counted;
+    *out_freq_hz = freq_sum / (double)counted;
+    return 0;
+}
+
+/* Closed loop: with the mixer ahead of the FLL and the residual moved into it each block, the loop settles on the
+ * estimate the FLL alone reaches (minus the carrier offset), carried by the mixer, with the FLL's residual near 0. A
+ * mixer of the opposite sign to the FLL's NCO runs away to its bound instead. */
+static int
+check_premix_closed_loop(void) {
+    const double offsets[] = {600.0, -3000.0, 5000.0};
+    for (double offset : offsets) {
+        double alone_pre = 0.0;
+        double alone_freq = 0.0;
+        double mix_pre = 0.0;
+        double mix_freq = 0.0;
+        if (run_fll_loop(0, offset, 2000, &alone_pre, &alone_freq) != 0
+            || run_fll_loop(1, offset, 2000, &mix_pre, &mix_freq) != 0) {
+            return 1;
+        }
+        const double alone = alone_pre + alone_freq;
+        const double mixed = mix_pre + mix_freq;
+        if (fabs(alone + offset) > 30.0 || fabs(mixed - alone) > 30.0 || fabs(mix_freq) > 30.0
+            || fabs(mix_pre - mixed) > 30.0) {
+            DSD_FPRINTF(stderr,
+                        "TETRA mixer loop: offset %+.0f Hz: FLL alone %.1f Hz; with mixer pre %.1f Hz freq %.1f Hz "
+                        "(total %.1f Hz)\n",
+                        offset, alone, mix_pre, mix_freq, mixed);
+            return 1;
+        }
     }
     return 0;
 }
@@ -790,7 +889,7 @@ main(void) {
         return 1;
     }
     if (check_pre_limit() != 0 || check_total_accessor() != 0 || check_transfer() != 0 || check_split_fold() != 0
-        || check_premix_cancels_tone() != 0 || check_premix_partitions() != 0) {
+        || check_premix_cancels_tone() != 0 || check_premix_partitions() != 0 || check_premix_closed_loop() != 0) {
         return 1;
     }
     return check_convolution();

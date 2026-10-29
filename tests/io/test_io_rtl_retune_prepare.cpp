@@ -2327,9 +2327,10 @@ clamp_double(double x, double lo, double hi) {
 
 /* Every frequency decision a retune reset makes applies to the combined estimate pre_freq + freq, by the existing
  * reset plan: a hop with no seed and a PPM correction or a rate jump of 4x clear both parts; a stream gap, a CQPSK
- * reacquire, a failed retune (back on the same centre) and a moderate rate change keep the combined value (rescaled to
- * the new rate) and split it again: up to the bound at the new rate in the mixer, the rest in the FLL. Off the TETRA
- * chain the whole value goes to the FLL. Every reset but a CQPSK reacquire restarts the mixer phasor. */
+ * reacquire, a retune that stays on its centre and rate (where a refused retune finalizes) and a moderate rate change
+ * keep the combined value (rescaled to the new rate) and split it again: up to the bound at the new rate in the
+ * mixer, the rest in the FLL. Off the TETRA chain the whole value goes to the FLL. Every reset but a CQPSK reacquire
+ * restarts the mixer phasor. */
 static int
 expect_fll_mixer_retune_policy(void) {
     int failed = 0;
@@ -2381,7 +2382,7 @@ expect_fll_mixer_retune_policy(void) {
 
     const keep_case keeps[] = {
         {"TETRA stream gap keeps the combined estimate", RTL_STREAM_GAP_REASON_USB_RECOVERY, 1, 72000, 72000, 0},
-        {"TETRA failed retune restores the combined estimate", "frequency", 1, 72000, 72000, 0},
+        {"TETRA same-centre same-rate retune keeps the combined estimate", "frequency", 1, 72000, 72000, 0},
         {"TETRA CQPSK reacquire keeps the combined estimate", "cqpsk-reacquire", 1, 72000, 72000, 1},
         {"TETRA rate change rescales and splits at the new rate", "frequency", 1, 72000, 36000, 0},
         {"TETRA rate change up rescales and splits", "frequency", 1, 72000, 144000, 0},

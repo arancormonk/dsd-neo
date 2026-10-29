@@ -1371,10 +1371,10 @@ dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs) {
         f->pre_im = 0.0f;
         return;
     }
-    /* The phasor is renormalized once per block, here, so the stored float's rounding never accumulates into a gain;
-     * a zeroed phasor (a state never reset) or a corrupt one starts from (1, 0). Within the block the recurrence runs in
-     * double: a float recurrence drifts in magnitude and phase by ~1e-7 per sample, which over a long block would
-     * leave the -60 dB the mixer must hold. */
+    /* The phasor is renormalized once per block, here, so the stored float's rounding never accumulates into a
+     * gain; a zeroed phasor (a state never reset) or a corrupt one starts from (1, 0). Within the block the
+     * recurrence runs in double: a float recurrence drifts in magnitude and phase by ~1e-7 per sample, which over a
+     * long block would leave the -60 dB the mixer must hold. */
     double pr = 1.0;
     double pi = 0.0;
     if (stored_float_is_finite(&f->pre_re) && stored_float_is_finite(&f->pre_im)) {
@@ -1385,9 +1385,11 @@ dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs) {
             pi = (double)f->pre_im * inv;
         }
     }
-    /* exp(-j * pre_freq): the mixer removes a carrier at +pre_freq, as the FLL's NCO removes one at +freq. */
+    /* exp(+j * pre_freq), the FLL NCO's sign (fll_process_sample() multiplies by exp(+j * phase), phase advancing by
+     * freq): both estimates are minus the carrier offset, so pre_freq + freq is one estimate and a carrier at
+     * -pre_freq comes out at DC. */
     const double step_r = std::cos((double)f->pre_freq);
-    const double step_i = -std::sin((double)f->pre_freq);
+    const double step_i = std::sin((double)f->pre_freq);
     for (int n = 0; n < pairs; n++) {
         const size_t nn = (size_t)n;
         const double xr = (double)iq[nn * 2];
