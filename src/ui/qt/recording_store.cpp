@@ -1082,13 +1082,13 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
             return DeleteResult::Removed;
         }
     }
+    // Missing, not a recording the store may remove any more, or a refused unlink: each drops the entry or the
+    // request, so each waits for its root to be checked again. One that went away since the pass began explains all
+    // three; it is marked away, and the entry and the request wait for it to come back.
+    if (!rootStillAvailable(root, pass)) {
+        return DeleteResult::Held;
+    }
     if (found != OnDisk::Removable) {
-        // Missing, or not a recording the store may remove any more: either drops the entry, which waits for its root
-        // to be checked again. One that went away since the pass began explains both; it is marked away, and the entry
-        // and the request wait for it to come back.
-        if (!rootStillAvailable(root, pass)) {
-            return DeleteResult::Held;
-        }
         const std::lock_guard<std::mutex> lock(m_mutex);
         const auto it = m_entries.constFind(id);
         if (it == m_entries.cend()) {

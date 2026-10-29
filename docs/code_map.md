@@ -8184,7 +8184,8 @@ Qt Quick frontend (`src/ui/qt`):
     (`setPlayingPath()`) or a selection (`selectForExport()`, `selectRecordings()`, until `releaseSelection()`) holds
     the file. Right before the unlink, under the lock: inside an available root by canonical folder and component
     (`recording_path_inside_root()`), not a symlink, a regular file; one that fails leaves the index and stays on disk.
-    A removal the filesystem refuses keeps the recording indexed and drops the request; it counts in `deleteFailures`
+    A removal the filesystem refuses with the root still there (checked again after the refusal: a root gone keeps the
+    request queued, below) keeps the recording indexed and drops the request; it counts in `deleteFailures`
     with its reason in `lastDeleteError`, and is logged once per run for each cause (asked for, the limit). History
     rows stay. `recheckRecordings(ids)` (the player, an export or a share found a file missing) stats them on the
     worker: a file gone or no longer regular leaves the index, its fragments announced; one still there has its size
@@ -8225,7 +8226,7 @@ Qt Quick frontend (`src/ui/qt`):
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
-    lost while a root is listed, a folder read, a journal tailed or the limit runs),
+    lost while a root is listed, a folder read, a journal tailed, an unlink runs or the limit runs),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in

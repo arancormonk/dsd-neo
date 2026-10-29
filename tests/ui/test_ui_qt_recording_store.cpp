@@ -1536,6 +1536,43 @@ test_root_gone_during_the_limit(void) {
                                                               && s.store.removedByLimit() == 1);
 }
 
+/* Issue #708: an unlink that fails because the storage went as it ran is not a refused delete: the root is marked
+ * away, the recording stays indexed, its delete stays queued and no failure is counted; the delete runs once the
+ * storage is back. */
+void
+test_root_gone_during_an_unlink(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list(), false);
+    std::atomic<bool> moved{false};
+    s.store.setRemoveForTest([&](const QString& path, QString* error) {
+        if (!moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+            *error = QStringLiteral("Input/output error");
+            return false;
+        }
+        return QFile::remove(path);
+    });
+    s.start();
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000F4-1"), QStringLiteral("a.wav"), 1754705000, 60);
+    s.store.endSession();
+    s.pass();
+    expect("unlink: the recording is indexed", s.store.recordingCount() == 1);
+    s.store.deleteRecording(QStringLiteral("00000000000000F4-1"));
+    s.pass();
+    expect("unlink: the storage went as it ran", moved.load() && !QFileInfo::exists(folder));
+    expect("unlink: the recording stays indexed, its delete waiting, no failure counted",
+           s.store.recordingCount() == 1 && s.store.deletesWaiting() == 1 && s.store.deleteFailures() == 0);
+    expect("unlink: its folder reads as away", folder_away(s.store, kUidA));
+    expect("unlink: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("unlink: the delete runs once it is back",
+           !QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.recordingCount() == 0
+               && s.store.deletesWaiting() == 0 && s.store.deleteFailures() == 0);
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -2029,6 +2066,7 @@ main(int argc, char** argv) {
     test_root_gone_as_a_journal_is_read_again();
     test_root_gone_as_a_journal_is_tailed();
     test_root_gone_during_the_limit();
+    test_root_gone_during_an_unlink();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
