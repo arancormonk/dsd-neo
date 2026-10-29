@@ -966,17 +966,32 @@ RecordingStore::processRechecks(Pass* pass) {
     }
     for (const QString& id : std::as_const(ids)) {
         yieldToReaders();
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        const auto it = m_entries.find(id);
-        if (it == m_entries.end() || !folderAvailableLocked(it->folder)) {
-            continue; // gone already, or its storage is away (never read as deleted)
+        int root = -1;
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            const auto it = m_entries.find(id);
+            if (it == m_entries.end() || !folderAvailableLocked(it->folder)) {
+                continue; // gone already, or its storage is away (never read as deleted)
+            }
+            const FileStat stat = statOf(QFileInfo(it->path), false);
+            if (stat.regular) {
+                if (stat.size != it->bytes) {
+                    it->bytes = stat.size;
+                    pass->dirty = true;
+                }
+                continue;
+            }
+            root = m_folders.value(it->folder).root;
         }
-        const FileStat stat = statOf(QFileInfo(it->path), false);
-        if (!stat.regular) {
+        // Missing: gone with a root that went away since the pass began, which marks the root away and leaves the
+        // index as it is, or deleted behind the store's back.
+        if (!rootStillAvailable(root, pass)) {
+            continue;
+        }
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        const auto it = m_entries.constFind(id);
+        if (it != m_entries.cend() && !statOf(QFileInfo(it->path), false).regular) {
             removeEntryLocked(id, pass);
-        } else if (stat.size != it->bytes) {
-            it->bytes = stat.size;
-            pass->dirty = true;
         }
     }
 }
