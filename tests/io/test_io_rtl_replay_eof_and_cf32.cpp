@@ -121,6 +121,19 @@ is_end_notice(const std::string& line) {
     return line.compare(0, sizeof(kEndNoticePrefix) - 1U, kEndNoticePrefix) == 0 ? 1 : 0;
 }
 
+/* The rewind lines among @p lines: counted from one snapshot, since a notice logged between two would make their
+ * difference wrap. */
+static size_t
+rewind_line_count(const std::vector<std::string>& lines) {
+    size_t rewinds = 0U;
+    for (const std::string& line : lines) {
+        if (!is_end_notice(line)) {
+            rewinds++;
+        }
+    }
+    return rewinds;
+}
+
 /* The end-of-capture notices alone. */
 static std::vector<std::string>
 end_notices(void) {
@@ -3626,6 +3639,7 @@ test_loop_pass_that_submits_nothing_ends(void) {
         const char* label = passes_delivered ? "loop, second pass submits nothing" : "loop, first pass submits nothing";
         char what[160];
         dsd_input_failure_clear();
+        clear_end_notices();
         BlockLog& log = fresh_hook_context<BlockLog>();
         rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
         rtl_device_test_replay_override_conversion(passes_delivered, 0);
@@ -3661,6 +3675,11 @@ test_loop_pass_that_submits_nothing_ends(void) {
             DSD_SNPRINTF(what, sizeof(what), "%s: the first pass reached the decoder", label);
             rc |= expect_true(what, delivered > 0U);
         }
+        /* A pass that delivered nothing did not decode the capture to its end: only a delivering pass's rewind says
+           so. */
+        DSD_SNPRINTF(what, sizeof(what), "%s: end-of-capture notices", label);
+        rc |= expect_end_notices(what, (uint64_t)kReplayChunkBytes / 2U, (size_t)passes_delivered,
+                                 (size_t)passes_delivered);
     }
     return rc;
 }
@@ -3916,7 +3935,7 @@ test_loop_replay_end_notice_each_pass(void) {
     size_t rewinds = 0U;
     for (unsigned int waited = 0U; waited < 5000U && rewinds < 3U; waited++) {
         dsd_sleep_ms(1U);
-        rewinds = end_and_rewind_lines().size() - end_notices().size();
+        rewinds = rewind_line_count(end_and_rewind_lines());
     }
     stop_loop_reader(&reader);
     stop_and_destroy_stream(ctx);

@@ -4574,9 +4574,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     own once the input ended and the decoder took every block (`demod_replay_flush_uplink()`);
     `replay_demod_flush_owed`, set after every replay block, keeps both drain decisions (`replay_demod_drain_decide()`,
     `replay_mark_input_drained()`) from counting the demod drained before that, so the end-of-capture notice still
-    follows the last burst. A live stream's stop drops it with the rest of the pipeline's in-flight blocks. Tests:
-    `DSP_TETRA_UPLINK_TIMING`, `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`,
-    `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`.
+    follows the last burst. An `--iq-loop` pass end does the same before its rewind: the reader sets
+    `replay_pass_end` while it waits for the rewind's idle boundary, the demod flushes on it as on EOF, and
+    `replay_pipeline_idle_locked()` is not idle while that flush is owed, so the pass's last burst is decoded on its
+    own pass rather than dropped by the rewind. A live stream's stop drops it with the rest of the pipeline's
+    in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`, `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`,
+    `DECODE_IQ_TETRA_UPLINK_SQUELCH`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP`.
   - Published profile. The stream publishes TETRA as the running channel profile
     (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag and so
     the UI channel width) only while the TETRA channel filter runs, WIDE otherwise;
@@ -5899,9 +5902,10 @@ Notes:
     is logged only once the decoder has read everything the pass decoded to, so it never lands among the decoder's
     lines: under `--iq-loop` by the reader after the rewind's idle boundary, before the rewound line; otherwise the
     reader leaves it in `rtl_replay_eof_state::replay_end_notice` and `dsd_rtl_stream_soft_stop()` logs it when the
-    decoder found the output drained. A stop, a read failure or a chunk that could not be handed on logs none. Tests:
-    `IO_RTL_REPLAY_EOF_AND_CF32` (the count for cu8 and cf32, once a loop pass, none on a stop before or after the
-    reader's end, a read failure or a file cut short).
+    decoder found the output drained. A stop, a read failure, a chunk that could not be handed on or an `--iq-loop`
+    pass that handed the demod nothing logs none. Tests: `IO_RTL_REPLAY_EOF_AND_CF32` (the count for cu8 and cf32,
+    once a loop pass, none on a stop before or after the reader's end, a read failure, a file cut short or a loop
+    pass that submitted nothing).
   - I/Q replay tuned frequency (issue #575). A replayed RETUNE moves the demod, but `opts->rtlsdr_center_freq` keeps
     the capture's opening centre: a live retune is deferred during a replay before it writes the field, and the DMR,
     NXDN, EDACS and P25/DMR trunking paths read it as the control or current channel, so moving it would change how a

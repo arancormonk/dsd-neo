@@ -16721,6 +16721,26 @@ if(DSD_HAS_RADIO)
         "${_dsd_tetra_ul_mode}"
         "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
     )
+    # The same capture under --iq-loop: each pass ends 20 symbols after the last burst, and the rewind pushes the
+    # look-ahead out as the capture's end does, so every pass decodes both bursts (before, the last one decoded on no
+    # pass).
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/iq_loop_passes_check.py
+                --dsd-bin $<TARGET_FILE:dsd-neo> --fixture
+                ${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_uplink_bursts_short_tail_72k.iq.json
+                --mode "${_dsd_tetra_ul_mode}" --passes 3 --count
+                "MAC-DATA enc=0 ssi=2015" --count "MAC-ACCESS enc=0 ssi=2016"
+                --min-count 1 --timeout 100
+        )
+        set_tests_properties(
+            DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endif()
     unset(_dsd_tetra_ul_each)
     unset(_dsd_tetra_ul_squelched)
     unset(_dsd_tetra_ul_2015)

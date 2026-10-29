@@ -521,14 +521,15 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   CQPSK change it asked for, where a live stream discards the samples read across such a change.
 - `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass. A pass that handed
   the demodulator no samples is not rewound: the replay logs a warning and ends there, as it does at the end without
-  `--iq-loop`.
+  `--iq-loop`, but without the end-of-capture notice below.
 - A pass that reads to the end of the capture with every chunk handed to the demodulator logs
   `IQ replay: end of capture after N samples`, where N is the capture's end position in complex samples at its own
   rate (before any resampling), counted from the capture's start: the whole capture, also for a replay that resumed
   partway through after a re-plan. It is logged once the decoder has read everything the pass decoded to: when the
   stream stops after a replay the decoder read to its end, just before `soft stopping...`, and under `--iq-loop` once
   per pass, just before the `--iq-loop rewound` line. A replay that stops early, fails to read, or cannot hand a chunk
-  on does not log it, so a log without it did not replay the whole capture.
+  on does not log it, nor does an `--iq-loop` pass that handed the demodulator nothing, so a log without it did not
+  replay the whole capture.
 - Only the metadata-scheduled replay events retune a replay. The retunes a user asks for are refused during one, from
   the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
   than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control

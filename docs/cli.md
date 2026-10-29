@@ -649,7 +649,7 @@ Notes
   rates), and takes each burst's symbol timing and carrier phase from the burst's training sequence, since every burst
   comes from another radio, short and after silence or noise, too soon for the loops to pull in. That timing reads
   128 symbols ahead, so a burst reaches the decoder about 7 ms after it ends (and still before a closing squelch's
-  silence or the end of a replay). An uplink carries no network identity, so give the one
+  silence, the end of a replay or an `--iq-loop` rewind). An uplink carries no network identity, so give the one
   its cell scrambles with as `--tetra-net mcc,mnc,colour` (MCC 0-1023, MNC 0-16383, colour code 0-63 in decimal or
   `0x` hexadecimal; the downlink's Network row shows all three). `--tetra-net` also lets a downlink session descramble
   before its first BSCH, whose identity replaces it; it shows on no row until a block descrambled with it passed its
