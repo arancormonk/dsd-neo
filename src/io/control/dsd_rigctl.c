@@ -1028,6 +1028,14 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
             if (out_pending_id) {
                 *out_pending_id = request_id;
             }
+        } else if (tune_result == RTL_STREAM_TUNE_FAILED) {
+            /* The receiver stays where the controller last applied, as the stream reconciles its own copy: a target an
+             * earlier tune's timeout cached here, which this request may have coalesced over, was never reached
+             * (issue #671). */
+            uint32_t controller_freq = 0U;
+            if (rtl_stream_get_last_applied_freq(&controller_freq) == 0 && controller_freq != 0U) {
+                opts->rtlsdr_center_freq = controller_freq;
+            }
         }
         return tune_result;
     }

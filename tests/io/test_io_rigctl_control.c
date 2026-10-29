@@ -2926,6 +2926,17 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
         assert(pending_id == 0U);
     }
 
+    /* A failure leaves the receiver where the controller last applied: a target an earlier timeout cached goes, as the
+       stream reconciles its own copy; with no applied centre known the cache stays. */
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    opts.rtlsdr_center_freq = 851150000U;
+    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == RTL_STREAM_TUNE_FAILED);
+    assert(opts.rtlsdr_center_freq == 851000000U);
+    g_rtl_last_applied_freq = 0U;
+    opts.rtlsdr_center_freq = 851150000U;
+    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == RTL_STREAM_TUNE_FAILED);
+    assert(opts.rtlsdr_center_freq == 851150000U);
+
     /* A refusal before any backend runs says no request either. */
     pending_id = UINT64_MAX;
     assert(io_control_set_freq_tagged(&opts, &state, 0U, &pending_id) == -1);

@@ -25,6 +25,8 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -227,6 +229,48 @@ test_second_entry_coalesces_into_a_queued_one(fixture* f) {
     fixture_end();
 }
 
+/* The controller thread's part in a failed coalesced request: once the second entry has queued over the first, take the
+   request and fail it while that entry still waits. */
+static DSD_THREAD_RETURN_TYPE
+fail_the_coalesced_request(void* arg) {
+    uint64_t* taken_token = (uint64_t*)arg;
+    uint32_t hz = 0U;
+    dsd_sleep_ms(100U);
+    if (rtl_stream_test_manual_tune_standin_take(taken_token, &hz) == 0) {
+        (void)rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ);
+    }
+    DSD_THREAD_RETURN;
+}
+
+/* Timeout A, then entry B coalesces into A's queued request, which fails inside B's wait: B's synchronous failure
+   supersedes A's record, so it must put the cached centre back itself. A's target, which the receiver never reached,
+   must not stay. */
+static void
+test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(fixture* f) {
+    fixture_begin(f);
+    (void)enter_frequency(f, ENTRY_A_HZ);
+    uint64_t taken_token = 0U;
+    dsd_thread_t controller_thread;
+    assert(dsd_thread_create(&controller_thread, fail_the_coalesced_request, &taken_token) == 0);
+    uint64_t pending_id = UINT64_MAX;
+    const int rc = io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &pending_id);
+    assert(dsd_thread_join(controller_thread) == 0);
+    assert(rc == RTL_STREAM_TUNE_FAILED);
+    assert(pending_id == 0U);
+    assert((taken_token & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+    /* As svc_rtl_tune() does with a result that reached the controller: nothing pending, the record superseded. */
+    dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_ENTRY, pending_id, ENTRY_B_HZ, ENTRY_A_HZ, -1, 0U,
+                                        0U);
+    if (f->opts->rtlsdr_center_freq != APPLIED_HZ) {
+        DSD_FPRINTF(stderr, "coalesced failure: cached centre %u Hz (want %u Hz)\n", f->opts->rtlsdr_center_freq,
+                    APPLIED_HZ);
+    }
+    assert(f->opts->rtlsdr_center_freq == APPLIED_HZ);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    assert(f->opts->rtlsdr_center_freq == APPLIED_HZ);
+    fixture_end();
+}
+
 /* The stream stops with the tune queued: the stop fails it under its tag, but the session it was asked of is gone, so
    the record is dropped and the cached centre stays for the next stream to open on. */
 static void
@@ -284,6 +328,7 @@ main(void) {
     test_late_success_keeps_the_cached_centre(&f);
     test_newer_entry_supersedes_a_late_failure(&f);
     test_second_entry_coalesces_into_a_queued_one(&f);
+    test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(&f);
     test_stream_stop_drops_the_record(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
 

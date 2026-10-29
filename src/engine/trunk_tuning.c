@@ -870,6 +870,12 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
         opts->rtlsdr_center_freq = (uint32_t)freq;
         return DSD_TRUNK_TUNE_RESULT_PENDING;
     }
+    /* The receiver stays where the controller last applied: a target a timed-out tune cached, which this request may
+       have coalesced over, was never reached (issue #671). */
+    uint32_t applied = 0U;
+    if (rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) {
+        opts->rtlsdr_center_freq = applied;
+    }
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 #endif

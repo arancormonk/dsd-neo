@@ -36,6 +36,7 @@
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
 static uint32_t g_io_control_tune_freq = 0U;
+static int g_manual_tune_supersedes = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -54,6 +55,16 @@ __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32
     return g_io_control_tune_result;
 }
 
+/* The import's tune supersedes a pending manual tune (issue #671): counted, and superseded for real. */
+void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
+
+void
+__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
+    g_manual_tune_supersedes++;
+    __real_dsd_engine_manual_tune_supersede(state);
+}
+
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 
 static void
@@ -61,6 +72,7 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0U;
+    g_manual_tune_supersedes = 0;
 }
 #endif
 
@@ -547,6 +559,13 @@ test_apply_requests_the_tune(void) {
     rc |= expect_int("tune apply drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tune requested once", g_io_control_tune_calls, 1);
     rc |= expect_int("tune requested at plan frequency", (int)g_io_control_tune_freq, 851012500);
+    rc |= expect_int("the tune supersedes a pending manual tune", g_manual_tune_supersedes, 1);
+
+    /* A deferred tune never reached the tuner: a manual tune still pending keeps it. */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    rc |= expect_int("deferred apply queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("deferred apply drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a deferred tune supersedes nothing", g_manual_tune_supersedes, 0);
 
     /* A backend that owns no tuner answers -1; the apply still succeeds. */
     reset_io_control_tune_stub(-1);
@@ -623,6 +642,7 @@ test_apply_tune_forgets_the_carrier_codes(void) {
     rc |= expect_int("tuneless import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tuneless import drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tuneless import asks no tune", g_io_control_tune_calls, 0);
+    rc |= expect_int("tuneless import supersedes nothing", g_manual_tune_supersedes, 0);
     rc |= expect_carrier_codes("tuneless import", &state, 0);
     freeState(&state);
 

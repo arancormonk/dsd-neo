@@ -735,6 +735,17 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     return g_rtl_tune_result;
 }
 
+/* A scan step's tune supersedes a pending manual tune (issue #671): counted, and superseded for real. */
+static int g_manual_tune_supersedes = 0;
+void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
+
+void
+__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
+    g_manual_tune_supersedes++;
+    __real_dsd_engine_manual_tune_supersede(state);
+}
+
 int
 __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
@@ -1708,8 +1719,10 @@ test_visit_cap_scanner_hops(void) {
     rc |= expect_true("visit-cap-legacy-seeds-call",
                       dsd_call_state_observe(state, &capped_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     g_rtl_tune_calls = 0;
+    g_manual_tune_supersedes = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-legacy-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 952012500U);
+    rc |= expect_true("visit-cap-legacy-step-supersedes-a-manual-tune", g_manual_tune_supersedes == 1);
     rc |= expect_true("visit-cap-legacy-advanced", state->lcn_freq_roll == 1);
     dsd_call_snapshot capped_snapshot;
     rc |= expect_true("visit-cap-legacy-retains-snapshot", dsd_call_state_get(state, 0U, &capped_snapshot) == 1);

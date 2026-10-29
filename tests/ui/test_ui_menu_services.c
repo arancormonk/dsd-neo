@@ -518,29 +518,44 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
 }
 
 static int g_io_control_set_freq_result = -1;
+/* The ID a timed-out tune hands back (issue #671). */
+static uint64_t g_io_control_pending_id = 0U;
 
 int
 io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
-    (void)opts;
     (void)state;
-    (void)freq_hz;
     if (out_pending_id) {
-        *out_pending_id = 0U;
+        *out_pending_id = g_io_control_set_freq_result == RTL_STREAM_TUNE_TIMEOUT ? g_io_control_pending_id : 0U;
+    }
+    /* As the real one: an applied or accepted tune caches its target. */
+    if (opts
+        && (g_io_control_set_freq_result == RTL_STREAM_TUNE_OK
+            || g_io_control_set_freq_result == RTL_STREAM_TUNE_TIMEOUT)) {
+        opts->rtlsdr_center_freq = freq_hz;
     }
     return g_io_control_set_freq_result;
 }
+
+/* The pending manual tune svc_rtl_tune() notes (issue #671), recorded. */
+static int g_note_pending_calls = 0;
+static int g_note_pending_kind = 0;
+static uint64_t g_note_pending_id = 0U;
+static uint32_t g_note_pending_requested_hz = 0U;
+static uint32_t g_note_pending_prior_hz = 0U;
+static int g_note_pending_row = 0;
 
 void
 dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
                                     uint32_t prior_applied_hz, int row, uint32_t scan_session, uint32_t map_seq) {
     (void)state;
-    (void)kind;
-    (void)id;
-    (void)requested_hz;
-    (void)prior_applied_hz;
-    (void)row;
     (void)scan_session;
     (void)map_seq;
+    g_note_pending_calls++;
+    g_note_pending_kind = (int)kind;
+    g_note_pending_id = id;
+    g_note_pending_requested_hz = requested_hz;
+    g_note_pending_prior_hz = prior_applied_hz;
+    g_note_pending_row = row;
 }
 
 /* The engine's carrier boundary and the stream-start source note (issue #575), recorded: these services call them at
@@ -1297,6 +1312,49 @@ test_rtl_restart_quiesces_p25_retunes(void) {
     rc |= expect_int("start failure clears replacement context", state.rtl_ctx == NULL, 1);
 
     reset_rtl_restart_stubs();
+    return rc;
+}
+
+/* Issue #671: a frequency entry's tune that timed out is noted with the ID it handed back, the frequency asked for and
+   the centre cached before the tune; any other result that reached the tuner notes nothing pending (ID 0), which
+   supersedes an older record; a deferred tune never reached it and leaves the record alone. */
+static int
+test_tune_notes_a_timed_out_tune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+    g_io_control_pending_id = UINT64_C(0x8000000000000005);
+
+    g_note_pending_calls = 0;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_int("pending tune", svc_rtl_set_freq(&opts, &state, 853000000U), RTL_STREAM_TUNE_TIMEOUT);
+    rc |= expect_int("a pending tune is noted", g_note_pending_calls, 1);
+    rc |= expect_int("as an entry", g_note_pending_kind, DSD_MANUAL_TUNE_ENTRY);
+    rc |= expect_int("under the ID it handed back", g_note_pending_id == g_io_control_pending_id, 1);
+    rc |= expect_int("naming the frequency asked for", g_note_pending_requested_hz == 853000000U, 1);
+    rc |= expect_int("and the centre before the tune", g_note_pending_prior_hz == 851000000U, 1);
+    rc |= expect_int("with no row", g_note_pending_row, -1);
+
+    const int done[] = {RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_FAILED};
+    for (size_t i = 0; i < sizeof done / sizeof done[0]; i++) {
+        g_note_pending_calls = 0;
+        g_note_pending_id = UINT64_MAX;
+        g_io_control_set_freq_result = done[i];
+        (void)svc_rtl_set_freq(&opts, &state, 855000000U);
+        rc |= expect_int("a tune that reached the tuner supersedes", g_note_pending_calls, 1);
+        rc |= expect_int("with nothing pending", g_note_pending_id == 0U, 1);
+    }
+
+    g_note_pending_calls = 0;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_DEFERRED;
+    rc |= expect_int("deferred tune", svc_rtl_set_freq(&opts, &state, 857000000U), RTL_STREAM_TUNE_DEFERRED);
+    rc |= expect_int("a deferred tune leaves the record", g_note_pending_calls, 0);
+    g_io_control_set_freq_result = -1;
+    g_io_control_pending_id = 0U;
     return rc;
 }
 
@@ -2981,6 +3039,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_tune_and_start_run_the_carrier_boundary();
+    rc |= test_tune_notes_a_timed_out_tune();
     rc |= test_locked_restarts();
     rc |= test_replay_restart_notice();
     rc |= test_stop_clears_the_replay_centre();

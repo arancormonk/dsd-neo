@@ -1488,6 +1488,19 @@ test_backend_tune_updates_center_freq_cache(void) {
     assert(g_manual_tune_supersedes == supersedes + 1);
     rtl_stream_clear_pending_retune_profile();
 
+    /* A failure leaves the receiver where the controller last applied: the target a timed-out manual tune cached, which
+       this owner tune superseded (and may have coalesced over), goes (issue #671). */
+    opts->rtlsdr_center_freq = 456318750U;
+    g_rtl_last_applied_freq = 451000000U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 457000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (opts->rtlsdr_center_freq != 451000000U) {
+        DSD_FPRINTF(stderr, "owner tune failure: cached centre %u Hz (want 451000000 Hz)\n", opts->rtlsdr_center_freq);
+    }
+    assert(opts->rtlsdr_center_freq == 451000000U);
+    g_rtl_last_applied_freq = 0U;
+    rtl_stream_clear_pending_retune_profile();
+
     opts->rtlsdr_center_freq = 111111100U;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
