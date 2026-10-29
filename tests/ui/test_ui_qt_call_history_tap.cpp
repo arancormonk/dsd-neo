@@ -760,7 +760,7 @@ test_very_long_spill_folds_in_bounded_memory(void) {
            model.count() == 1000 && rows_in_tg_range(model, tg + spilled - 1000, tg + spilled - 1) == 1000);
     expect("the seen map never holds the backlog while it folds", model.peakFoldSeenForTest() <= 4097);
     expect("the reader holds one line at most",
-           model.peakSpillReadBytesForTest() <= dsd_qt::CallHistorySpillReader::kMaxLineBytes + 32 * 1024);
+           model.peakSpillReadBytesForTest() <= dsd_qt::CallHistorySpillReader::kMaxLineBytes + qsizetype{32} * 1024);
 }
 
 /* A notice heard again takes the logged one as its twin. The twins taken are pruned with the seen entries that record
@@ -787,7 +787,7 @@ test_long_spill_of_repeated_notices_folds_bounded(void) {
            model.count() == 1000 && rows_in_tg_range(model, tg + notices - 999, tg + notices) == 1000);
     expect("the seen map never holds the notice backlog", model.peakFoldSeenForTest() <= 4097);
     expect("the twins taken never hold the notice backlog", model.peakFoldTwinsForTest() <= 4097);
-    expect("the reader holds one short line and a chunk", model.peakSpillReadBytesForTest() <= 32 * 1024);
+    expect("the reader holds one short line and a chunk", model.peakSpillReadBytesForTest() <= qsizetype{32} * 1024);
 }
 
 } // namespace

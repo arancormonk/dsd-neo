@@ -20,9 +20,7 @@
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_TAP_H_
 
 #include <QByteArray>
-#include <QFile>
 #include <QHash> // IWYU pragma: keep -- Context holds the seen map (a QHash) by value.
-#include <QIODevice>
 #include <QList>
 #include <QString>
 #include <QtGlobal>
@@ -34,6 +32,9 @@
 #include <thread>
 
 #include "call_history_model.h"
+
+class QFile;
+class QIODevice;
 
 namespace dsd_qt {
 
