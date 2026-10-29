@@ -9,14 +9,16 @@
  *
  * `no-process-writes` (RUNTIME_ENV_NO_PROCESS_WRITES): every path that used to setenv() runs -- a config apply's
  * [dsp], a bootstrap with every option that sets a variable plus an INI with [dsp] and an RTL [input], the
- * --calc-lcn one-shot, and, with the radio pipeline, the Auto PPM and rtl_tcp autotune services and the two I/Q DSP
+ * --calc-lcn one-shot, --interactive-setup over an exported DSD_NEO_NO_BOOTSTRAP (which it used to unsetenv()), and,
+ * with the radio pipeline, the Auto PPM and rtl_tcp autotune services and the two I/Q DSP
  * toggles. The process environment must stay exactly as it was: the same `environ` array, the same entries and the
  * same bytes. On Android adding an entry can free the array another thread's getenv() or localtime_r() is walking.
  * Each value must still reach the runtime config.
  *
  * `session-reset` (RUNTIME_SESSION_OVERRIDES_RESET): an embedding host bootstraps one session after another in the
  * same process (the Android service). A later session without an option must not inherit the earlier session's value
- * of it, while a variable the user exported still applies.
+ * of it, while a variable the user exported still applies, and so does a host override (the service's nativeInit
+ * sets DSD_NEO_NO_SIGNAL_HANDLERS once per process).
  */
 
 #include <dsd-neo/app_control/commands.h>
@@ -317,6 +319,36 @@ calc_lcn_writes_nothing(const env_snapshot* before, const char* csv) {
     return rc;
 }
 
+/* --interactive-setup runs the wizard even when the user exported DSD_NEO_NO_BOOTSTRAP: it hides the variable for the
+   session (it used to unsetenv() it), so the config reads it as unset while the environment keeps it. Stdin comes
+   from an empty file, so the wizard itself, which needs a terminal, returns at once. */
+static int
+interactive_setup_hides_no_bootstrap(const env_snapshot* before, const char* empty) {
+    FILE* in = dsd_fopen_private(empty, "rb");
+    if (!in) {
+        return expect_true("empty stdin", 0);
+    }
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDIN_FILENO);
+    if (saved < 0 || dsd_dup2(dsd_fileno(in), DSD_STDIN_FILENO) < 0) {
+        (void)fclose(in);
+        return expect_true("redirect stdin", 0);
+    }
+    char* argv[] = {"dsd-neo", "--interactive-setup", NULL};
+    int rc = expect_true("bootstrap with --interactive-setup", bootstrap(2, argv, DSD_BOOTSTRAP_CONTINUE) == 0);
+    rc |= expect_true("restore stdin", dsd_dup2(saved, DSD_STDIN_FILENO) >= 0);
+    (void)dsd_close(saved);
+    (void)fclose(in);
+
+    rc |= snapshot_differs("--interactive-setup", before);
+    const dsdneoRuntimeConfig* c = dsd_neo_get_config();
+    rc |= expect_true("the session reads DSD_NEO_NO_BOOTSTRAP as unset", c != NULL && c->no_bootstrap_is_set == 0);
+    rc |= expect_true("the store hides it", dsd_env_copy("DSD_NEO_NO_BOOTSTRAP", NULL, 0) == 0);
+    const char* exported = getenv("DSD_NEO_NO_BOOTSTRAP");
+    rc |= expect_true("the environment keeps it", exported != NULL && strcmp(exported, "1") == 0);
+    return rc;
+}
+
 #ifdef USE_RADIO
 /* The terminal's and the control API's RTL services, and the I/Q DSP toggles, on the decoder thread. */
 static int
@@ -356,8 +388,10 @@ run_no_process_writes(void) {
     char dir[DSD_TEST_PATH_MAX];
     char ini[DSD_TEST_PATH_MAX];
     char csv[DSD_TEST_PATH_MAX];
+    char empty[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_env_writes") || dsd_test_path_join(ini, sizeof ini, dir, "c.ini")
-        || dsd_test_path_join(csv, sizeof csv, dir, "lcn.csv")) {
+        || dsd_test_path_join(csv, sizeof csv, dir, "lcn.csv")
+        || dsd_test_path_join(empty, sizeof empty, dir, "empty.txt")) {
         return expect_true("temp paths", 0);
     }
     const char* ini_text = "[dsp]\niq_balance = true\niq_dc_block = true\n"
@@ -365,7 +399,8 @@ run_no_process_writes(void) {
                            "[input]\nsource = \"rtl\"\nauto_ppm = true\n"
 #endif
         ;
-    if (write_text_file(ini, ini_text) != 0 || write_text_file(csv, "lcn,freq\n1,851.0125\n2,851.0250\n") != 0) {
+    if (write_text_file(ini, ini_text) != 0 || write_text_file(csv, "lcn,freq\n1,851.0125\n2,851.0250\n") != 0
+        || write_text_file(empty, "") != 0) {
         return expect_true("temp files", 0);
     }
 
@@ -396,6 +431,10 @@ run_no_process_writes(void) {
     for (size_t i = 0; kNames[i] != NULL; i++) {
         (void)dsd_test_unsetenv(kNames[i]);
     }
+    /* Exported, as a user would, for --interactive-setup to override. */
+    if (dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1) != 0) {
+        return expect_true("export DSD_NEO_NO_BOOTSTRAP", 0);
+    }
 
     env_snapshot before;
     if (snapshot_take(&before) != 0) {
@@ -405,12 +444,14 @@ run_no_process_writes(void) {
     int rc = config_apply_writes_nothing(&before);
     rc |= bootstrap_writes_nothing(&before, ini);
     rc |= calc_lcn_writes_nothing(&before, csv);
+    rc |= interactive_setup_hides_no_bootstrap(&before, empty);
 #ifdef USE_RADIO
     rc |= radio_services_write_nothing(&before);
 #endif
     snapshot_free(&before);
 
-    static const char* const kFiles[] = {"c.ini", "lcn.csv", NULL};
+    (void)dsd_test_unsetenv("DSD_NEO_NO_BOOTSTRAP");
+    static const char* const kFiles[] = {"c.ini", "lcn.csv", "empty.txt", NULL};
     rc |= expect_true("temp dir removed", dsd_test_remove_temp_dir(dir, kFiles) == 0);
     return rc;
 }
@@ -422,9 +463,14 @@ run_session_reset(void) {
     (void)dsd_test_unsetenv("DSD_NEO_AUTO_PPM");
     (void)dsd_test_unsetenv("DSD_NEO_P25_VC_GRACE");
     (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_unsetenv("DSD_NEO_NO_SIGNAL_HANDLERS");
     /* A variable the user exported, which an option overrides for one session only. */
     if (dsd_test_setenv("DSD_NEO_INPUT_VOLUME", "2", 1) != 0) {
         return expect_true("export", 0);
+    }
+    /* What the Android service's nativeInit sets once per process: it must outlive every session's bootstrap. */
+    if (dsd_env_set(DSD_ENV_LAYER_HOST, "DSD_NEO_NO_SIGNAL_HANDLERS", "1") != 0) {
+        return expect_true("host override", 0);
     }
 
     char* first[] = {"dsd-neo", "--auto-ppm", "--input-volume", "3", "--p25-vc-grace", "1.5", NULL};
@@ -447,9 +493,14 @@ run_session_reset(void) {
         rc |= expect_true("second session: the exported input volume",
                           c->input_volume_is_set && c->input_volume_multiplier == 2);
         rc |= expect_true("second session: no vc grace", c->p25_vc_grace_is_set == 0);
+        rc |= expect_true("second session: the host's no-signal-handlers override",
+                          c->no_signal_handlers_is_set && c->no_signal_handlers_enable == 1);
     }
     rc |= expect_true("second session: auto ppm reads unset", dsd_env_copy("DSD_NEO_AUTO_PPM", NULL, 0) == 0);
     rc |= expect_value("second session: exported input volume", "DSD_NEO_INPUT_VOLUME", "2");
+    rc |= expect_value("second session: host override", "DSD_NEO_NO_SIGNAL_HANDLERS", "1");
+    rc |= expect_true("the host override never reached the environment", getenv("DSD_NEO_NO_SIGNAL_HANDLERS") == NULL);
+    dsd_env_clear_layer(DSD_ENV_LAYER_HOST);
     (void)dsd_test_unsetenv("DSD_NEO_INPUT_VOLUME");
     return rc;
 }
