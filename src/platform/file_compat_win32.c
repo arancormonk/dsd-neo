@@ -106,6 +106,19 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
     return _stat64(path, st);
 }
 
+/* The POSIX errno for a GetDiskFreeSpaceExW() failure, as statvfs() would set it for the same path. */
+static int
+dsd_free_space_errno(DWORD err) {
+    switch (err) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND: return ENOENT;
+        case ERROR_ACCESS_DENIED: return EACCES;
+        case ERROR_DIRECTORY: return ENOTDIR;
+        case ERROR_INVALID_NAME: return EINVAL;
+        default: return EIO;
+    }
+}
+
 int64_t
 dsd_path_free_bytes(const char* path) {
     if (!path || path[0] == '\0') {
@@ -122,13 +135,19 @@ dsd_path_free_bytes(const char* path) {
         errno = ENOMEM;
         return -1;
     }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) <= 0) {
+        free(wide);
+        errno = EINVAL;
+        return -1;
+    }
     ULARGE_INTEGER available;
     available.QuadPart = 0;
-    const BOOL ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) > 0
-                    && GetDiskFreeSpaceExW(wide, &available, NULL, NULL);
+    /* GetDiskFreeSpaceExW() takes a folder: a file's path fails with ERROR_DIRECTORY (ENOTDIR). */
+    const BOOL ok = GetDiskFreeSpaceExW(wide, &available, NULL, NULL);
+    const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     free(wide);
     if (!ok) {
-        errno = EIO;
+        errno = dsd_free_space_errno(err);
         return -1;
     }
     return available.QuadPart > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)available.QuadPart;

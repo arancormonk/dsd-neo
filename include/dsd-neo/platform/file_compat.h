@@ -259,8 +259,9 @@ int dsd_path_canonical(const char* path, char* out, size_t out_size);
  * read (no label, no mount table), so on Android it makes no request the app's SELinux policy denies, as QStorageInfo's
  * label lookup does.
  *
- * @param path  An existing file or folder, in UTF-8.
- * @return The free bytes (capped at INT64_MAX), or -1 when they cannot be read, with errno set.
+ * @param path  A folder on the volume, in UTF-8 (Windows refuses a file's path: ENOTDIR).
+ * @return The free bytes (capped at INT64_MAX), or -1 when they cannot be read, with errno set (ENOENT for a missing
+ *         folder, EINVAL for NULL or an empty path).
  */
 int64_t dsd_path_free_bytes(const char* path);
 

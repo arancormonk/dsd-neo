@@ -96,26 +96,25 @@ expect_path_canonical(void) {
     return rc;
 }
 
-/* Issue #708: dsd_path_free_bytes() reads the free space of an existing folder or file's volume, and refuses a missing
-   path, an empty one and NULL. */
+/* Issue #708: dsd_path_free_bytes() reads the free space of a folder's volume, and refuses a missing folder (ENOENT),
+   an empty path and NULL. Only folders are passed, which is the contract on every platform (Windows refuses a file). */
 static int
 expect_path_free_bytes(void) {
     int rc = 0;
-    const int64_t here = dsd_path_free_bytes(".");
-    if (here < 0) {
-        DSD_FPRINTF(stderr, "free bytes: . read %lld\n", (long long)here);
+    const char* folder = "dsd_neo_free_bytes_dir";
+    (void)dsd_test_rmdir(folder);
+    if (dsd_mkdir(folder, 0700) != 0) {
+        DSD_FPRINTF(stderr, "free bytes: mkdir %s failed\n", folder);
+        return 1;
+    }
+    const int64_t free_bytes = dsd_path_free_bytes(folder);
+    if (free_bytes < 0) {
+        DSD_FPRINTF(stderr, "free bytes: %s read %lld (errno %d)\n", folder, (long long)free_bytes, errno);
         rc = 1;
     }
-    const char* name = "dsd_neo_free_bytes_test.tmp";
-    (void)remove(name);
-    FILE* fp = dsd_fopen_private(name, "wb");
-    if (fp) {
-        (void)fclose(fp);
-        rc |= dsd_path_free_bytes(name) >= 0 ? 0 : 1;
-    }
-    (void)remove(name);
+    (void)dsd_test_rmdir(folder);
     errno = 0;
-    rc |= dsd_path_free_bytes("dsd_neo_free_bytes_missing_dir") == -1 && errno != 0 ? 0 : 1;
+    rc |= dsd_path_free_bytes("dsd_neo_free_bytes_missing_dir") == -1 && errno == ENOENT ? 0 : 1;
     errno = 0;
     rc |= dsd_path_free_bytes("") == -1 && errno == EINVAL ? 0 : 1;
     errno = 0;

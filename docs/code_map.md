@@ -630,7 +630,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   compatibility, run-time library loading)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
-  - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes only (`statvfs()`, `GetDiskFreeSpaceExW()`),
+  - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes of a folder's volume only (`statvfs()`,
+    `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
     never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
     store and the backup export and restore use it. Test: `PLATFORM_FILE_COMPAT`
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
