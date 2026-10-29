@@ -136,7 +136,7 @@ jobs:
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
             libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev \
-            portaudio19-dev
+            portaudio19-dev python3-numpy
 
       # The ANDROID_*_JVM tests compile Kotlin. The x86-64 runner image has Java and
       # kotlinc; the arm64 one has only Java, so the pinned compiler is fetched
