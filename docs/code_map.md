@@ -1068,8 +1068,10 @@ suite runs under this compiler.
   `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
   on `event_time`. Its service, system, target and source components are made file-safe
   (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces
-  become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file), on the
-  name's copies only: the row, the recording journal and the rdio sidecar keep the identity as received
+  become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file; every
+  byte that is no part of a well-formed UTF-8 character becomes `_` too, by the journal's own test
+  (`wav_journal_utf8_seq_len()`), so the `file` a `publish` names is the file on disk, not a name with U+FFFD in it),
+  on the name's copies only: the row, the recording journal and the rdio sidecar keep the identity as received
   (`CORE_WAV_JOURNAL`). The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into
   the row fingerprint. Tests: `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
 - WAV recording commands and failures (issue #708, B4 and B5). The recording outputs (per-call WAVs and their folder,

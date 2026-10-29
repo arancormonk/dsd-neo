@@ -649,6 +649,60 @@ test_b3_name_and_raw_identity(void) {
     return rc;
 }
 
+/* The one .wav a folder listing finds; its name in @p out. */
+typedef struct {
+    int count;
+    char name[512];
+} wav_names;
+
+static int
+collect_wav_cb(const char* name, void* user) {
+    wav_names* names = (wav_names*)user;
+    const size_t n = strlen(name);
+    if (n > 4 && strcmp(name + n - 4, ".wav") == 0) {
+        names->count++;
+        DSD_SNPRINTF(names->name, sizeof names->name, "%s", name);
+    }
+    return 0;
+}
+
+/* A radio identity can hold a byte that starts no UTF-8 character (a D-STAR callsign is 8-bit text off the air). The
+   journal writes such a byte as U+FFFD, so a file name keeping it would not be the one the journal names: the name has
+   '_' there instead, and the journal's `file` is exactly the file published. The row keeps the identity as received. */
+static int
+test_non_utf8_identity_names_the_file_published(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_utf8");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    dsd_call_observation call = {.protocol = DSD_SYNC_DSTAR_VOICE_POS, .slot = 0U, .kind = DSD_CALL_KIND_GROUP_VOICE};
+    DSD_SNPRINTF(call.source_text, sizeof call.source_text, "%s",
+                 "N0C\xFF"
+                 "LL \xC3\xA9");
+    DSD_SNPRINTF(call.target_text, sizeof call.target_text, "%s", "CQCQCQ");
+    (void)dsd_call_state_observe(r.state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(r.opts, r.state, 0);
+    voice_frames(&r, 0, 2);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("utf8: published", pub != NULL);
+    wav_names names;
+    DSD_MEMSET(&names, 0, sizeof names);
+    (void)dsd_dir_list(r.dir, collect_wav_cb, &names);
+    rc |= expect_int("utf8: one recording", names.count, 1);
+    if (pub && names.count == 1) {
+        rc |= expect_str("utf8: the journal names the file published", field_s(pub, "file"), names.name);
+        rc |= expect_true("utf8: the stray byte is '_' in the name, the UTF-8 kept",
+                          strstr(names.name, "SRC_N0C_LL_\xC3\xA9.wav") != NULL);
+    }
+    const Event_History* row = &r.state->event_history_s[0].Event_History_Items[1];
+    rc |= expect_str("utf8: the row keeps the identity as received", row->src_str,
+                     "N0C\xFF"
+                     "LL \xC3\xA9");
+    rig_close(&r);
+    return rc;
+}
+
 static void
 setup_nfm(dsd_opts* opts, dsd_state* state) {
     opts->analog_only = 1;
@@ -1413,6 +1467,7 @@ main(void) {
     rc |= test_empty_segment_is_discarded();
     rc |= test_rename_failure_is_an_error_record();
     rc |= test_b3_name_and_raw_identity();
+    rc |= test_non_utf8_identity_names_the_file_published();
     rc |= test_pending_closers_are_linked_at_the_commit();
     rc |= test_epoch_moving_on_unlinks();
     rc |= test_full_reset_unlinks_pending();

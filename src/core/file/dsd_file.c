@@ -1074,14 +1074,28 @@ wav_rename_get_event_item(const Event_History_I* event_struct) {
 }
 
 /* Replace, in a component of a recording's file name, every character a file name on some platform cannot hold
-   (path separators, control characters, the Windows reserved set) and the dots and spaces, with '_'. */
+   (path separators, control characters, the Windows reserved set) and the dots and spaces, with '_'; so too every
+   byte that is no part of a well-formed UTF-8 character (8-bit radio text), which the journal would write as U+FFFD
+   and so name a file that is not there. */
 static void
 wav_rename_sanitize_component(char* text) {
-    for (char* p = text; *p; p++) {
-        const unsigned char c = (unsigned char)*p;
+    unsigned char* p = (unsigned char*)text;
+    const unsigned char* end = p + strlen(text);
+    while (p < end) {
+        const unsigned char c = *p;
+        if (c >= 0x80U) {
+            const size_t seq = wav_journal_utf8_seq_len(p, end);
+            if (seq == 0) {
+                *p++ = '_';
+            } else {
+                p += seq;
+            }
+            continue;
+        }
         if (c < 32 || c == 127 || strchr("/\\:*?\"<>|. ", c)) {
             *p = '_';
         }
+        p++;
     }
 }
 

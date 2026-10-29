@@ -183,9 +183,8 @@ line_u_escape(wav_journal_line* l, unsigned int cp) {
     line_raw(l, esc);
 }
 
-/* Length of the well-formed UTF-8 sequence at p, or 0 when the bytes there are not one. */
-static size_t
-utf8_seq_len(const unsigned char* p, const unsigned char* end) {
+size_t
+wav_journal_utf8_seq_len(const unsigned char* p, const unsigned char* end) {
     const unsigned char c = p[0];
     unsigned char lo = 0x80U;
     unsigned char hi = 0xBFU;
@@ -242,7 +241,7 @@ line_string(wav_journal_line* l, const char* text) {
             line_put(l, (const char*)p, 1);
             p++;
         } else {
-            const size_t seq = utf8_seq_len(p, end);
+            const size_t seq = wav_journal_utf8_seq_len(p, end);
             if (seq == 0) {
                 line_raw(l, "\xEF\xBF\xBD");
                 p++;

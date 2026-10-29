@@ -11,6 +11,7 @@
    closes the journal. Every writer returns at once while no journal is on. */
 
 #include <dsd-neo/core/file_io.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -45,6 +46,11 @@ void wav_journal_path_folder(const char* path, int win, char* out, size_t out_si
    below it, else @p folder plus @p base. Both folders canonical. "" for an empty @p base. */
 void wav_journal_path_name(const char* journal_dir, const char* folder, const char* base, int win, char* out,
                            size_t out_size);
+
+/* Length of the well-formed UTF-8 sequence at @p p (before @p end), or 0 when the bytes there are not one: what the
+   records keep of a string, a byte that starts none being written as U+FFFD. A file name the records name holds only
+   such sequences (dsd_file.c), so the name written is the name on disk. */
+size_t wav_journal_utf8_seq_len(const unsigned char* p, const unsigned char* end);
 
 /* 1 while a journal is being written. */
 int wav_journal_active(void);
