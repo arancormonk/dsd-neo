@@ -3738,7 +3738,8 @@ p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int 
     // are sane (non-zero) and we have a valid frequency mapping.
     p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
 
-    if (seed_lcn0 && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
+    if (seed_lcn0 && !dsd_state_trunk_lcn_user_list_present(opts, state)
+        && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
         state->trunk_lcn_freq[0] = state->p25_cc_freq;
     }
     p25_confirm_idens_for_current_site(state);

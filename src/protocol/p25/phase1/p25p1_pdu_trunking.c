@@ -360,7 +360,8 @@ p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const u
     }
 
     if (accepted_cc) {
-        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+        if (!dsd_state_trunk_lcn_user_list_present(opts, state)
+            && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
             state->trunk_lcn_freq[0] = state->p25_cc_freq;
         }
 

@@ -8933,6 +8933,21 @@ target_link_libraries(
 )
 add_test(NAME P25_SEARCH_SITE_NOTES COMMAND dsd-neo_test_p25_search_site_notes)
 
+# An imported channel list keeps row 0 when a valid network status names the control channel
+add_executable(
+    dsd-neo_test_p25_user_list_seed
+    protocol/p25/test_p25_user_list_seed.c
+)
+target_include_directories(
+    dsd-neo_test_p25_user_list_seed
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_user_list_seed
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_USER_LIST_SEED COMMAND dsd-neo_test_p25_user_list_seed)
+
 # P25 P1 MBT negative clamps (invalid CHAN-T)
 add_executable(
     dsd-neo_test_p25_p1_mbtx_clamp

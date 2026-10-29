@@ -253,6 +253,13 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     (void)reason;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    return (opts != NULL && opts->chan_in_file[0] != '\0') ? 1 : 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
@@ -1699,6 +1706,22 @@ test_network_status_state_policy(void) {
     rc |= expect_long("neighbor update freq", g_neighbor_update_last_freq, 851012500);
     rc |= expect_long("lcn zero learned", state.trunk_lcn_freq[0], 851012500);
     rc |= expect_int("iden confirmation", g_confirm_idens_count, 1);
+
+    // An imported channel list keeps its first row; the learned control channel is still recorded.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_SNPRINTF(opts.chan_in_file, sizeof(opts.chan_in_file), "%s", "channels.csv");
+    state.trunk_lcn_freq[0] = 460125000;
+    state.trunk_lcn_freq[1] = 460350000;
+    state.lcn_freq_count = 2;
+    reset_calls();
+    g_channel_freq = 851012500;
+    tsbk_handle_network_status(&opts, &state, tsbk);
+    rc |= expect_long("listed p25 cc learned", state.p25_cc_freq, 851012500);
+    rc |= expect_long("listed row 0 kept", state.trunk_lcn_freq[0], 460125000);
+    rc |= expect_long("listed row 1 kept", state.trunk_lcn_freq[1], 460350000);
+    rc |= expect_int("listed count kept", state.lcn_freq_count, 2);
+    rc |= expect_int("listed neighbor recorded", g_neighbor_update_count, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));

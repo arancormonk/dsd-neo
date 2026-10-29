@@ -344,6 +344,12 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     (void)reason;
 }
 
+int
+dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state) {
+    (void)state;
+    return (opts != NULL && opts->chan_in_file[0] != '\0') ? 1 : 0;
+}
+
 void
 p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
