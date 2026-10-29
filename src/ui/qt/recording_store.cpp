@@ -989,10 +989,9 @@ RecordingStore::insertEntryLocked(Entry entry, Pass* pass) {
         // recording deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated); that
         // id goes, so it never comes back on its History row, its file counts once, and deleting it cannot unlink
         // the newer recording.
-        const auto owner = m_byPath.constFind(entry.path);
-        if (owner != m_byPath.cend() && owner.value() != entry.id) {
-            const QString evicted = owner.value();
-            removeEntryLocked(evicted, pass);
+        const QString owner = m_byPath.value(entry.path);
+        if (!owner.isEmpty() && owner != entry.id) {
+            removeEntryLocked(owner, pass);
         }
         m_byPath.insert(entry.path, entry.id);
     }
@@ -1837,11 +1836,11 @@ RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const Q
 QString
 RecordingStore::folderLocked(const QString& kind, const QString& uid, const QString& name) {
     QList<bool> usable = usableRootsLocked();
-    const QString existing = existingFolderLocked(kind, uid, name, &usable);
-    if (!existing.isEmpty()) {
-        return existing;
+    QString path = existingFolderLocked(kind, uid, name, &usable);
+    if (path.isEmpty()) {
+        path = newFolderLocked(kind, uid, name, usable);
     }
-    return newFolderLocked(kind, uid, name, usable);
+    return path;
 }
 
 QString
