@@ -33,7 +33,8 @@ test_int_env_defaults_and_validation(void) {
     /* An edit wins over it and leaves the exported text alone. */
     env_set_int("DSD_NEO_TEST_MENU_INT", 5);
     assert(env_get_int("DSD_NEO_TEST_MENU_INT", 17) == 5);
-    assert(strcmp(getenv("DSD_NEO_TEST_MENU_INT"), "12junk") == 0);
+    const char* exported = getenv("DSD_NEO_TEST_MENU_INT");
+    assert(exported != NULL && strcmp(exported, "12junk") == 0);
 
     dsd_env_clear_layer(DSD_ENV_LAYER_SESSION);
     (void)dsd_test_unsetenv("DSD_NEO_TEST_MENU_INT");

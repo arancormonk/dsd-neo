@@ -103,8 +103,11 @@ static int
 snapshot_take(env_snapshot* s) {
     DSD_MEMSET(s, 0, sizeof *s);
     char** env = TEST_ENVIRON;
+    if (env == NULL) {
+        return -1;
+    }
     s->base = env;
-    while (env && env[s->count]) {
+    while (env[s->count]) {
         s->count++;
     }
     s->entries = (char**)calloc(s->count + 1U, sizeof *s->entries);
@@ -126,8 +129,12 @@ snapshot_take(env_snapshot* s) {
 static int
 snapshot_differs(const char* stage, const env_snapshot* s) {
     char** env = TEST_ENVIRON;
+    if (env == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the environment is gone\n", stage);
+        return 1;
+    }
     size_t count = 0;
-    while (env && env[count]) {
+    while (env[count]) {
         count++;
     }
     if (count != s->count) {
