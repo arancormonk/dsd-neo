@@ -8215,7 +8215,10 @@ Qt Quick frontend (`src/ui/qt`):
     (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. One
     path has one owner, the newest publish in journal order: a journal not yet compacted can still name a recording
     deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated), and the later publish
-    evicts that id, its fragment and its size (`insertEntryLocked()`). Temp
+    evicts that id, its fragment and its size (`insertEntryLocked()`). Decided limit: a delete of the old id that runs
+    after the later file is written but before its publish is read can remove the later file; the reuse already needs
+    the same second, talkgroup and source and a repeat of a 16-bit random suffix, so the store does not compare file
+    identity before an unlink. Temp
     files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
     unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
     journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
