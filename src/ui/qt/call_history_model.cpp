@@ -71,6 +71,10 @@ constexpr const char kClearRingKey[] = "callHistory/clear/ring";
 /* Older builds persisted Clear as a decode-time watermark; read once to retire it. */
 constexpr const char kLegacyClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
+/* How far past kMaxRows a spill fold lets the log grow before it trims. A long stretch in the background spills far
+ * more rows than the log keeps; trimmed as they fold, the log never holds the whole backlog, each ingest scans no
+ * more than a live one, and each trim's pass is shared by this many rows. */
+constexpr int kSpillFoldTrimSlack = kMaxRows / 4;
 /* Bound on the persisted seen map. The ring holds at most DSD_EVENT_HISTORY_LEN-1
  * rows per slot, so anything beyond the newest ~4x that can no longer be
  * re-ingested and is dead weight in the store. */
@@ -1276,6 +1280,9 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     beginInsertRows(QModelIndex(), pos, pos);
     m_rows.insert(pos, logged);
     endInsertRows();
+#ifdef DSD_NEO_TEST_HOOKS
+    m_peakRowsForTest = qMax(m_peakRowsForTest, static_cast<int>(m_rows.size()));
+#endif
     return true;
 }
 
@@ -1368,28 +1375,54 @@ CallHistoryModel::trimToCapacity() {
     // Trimmed rows keep their seen entry: the ring may still hold them, and
     // forgetting the key would re-ingest (and re-trim) each one every tick. The
     // map itself is bounded by pruneSeen() instead.
-    bool trimmed = false;
-    while (m_rows.size() > kMaxRows) {
-        // The oldest session's oldest row, not the bottom of the list. A replay's calls
-        // sort below every live one by their stamps, and trimming the bottom would drop
-        // them as they land.
-        int victim = static_cast<int>(m_rows.size()) - 1;
-        for (int i = victim - 1; i >= 0; i--) {
-            const Row& row = m_rows.at(i);
-            const Row& oldest = m_rows.at(victim);
-            if (retained_older(row.session, row.when, oldest.session, oldest.when)) {
-                victim = i;
+    const qsizetype excess = m_rows.size() - kMaxRows;
+    if (excess <= 0) {
+        return false;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    m_trimRowsScannedForTest += m_rows.size();
+#endif
+    // The oldest session's oldest rows, not the bottom of the list. A replay's calls
+    // sort below every live one by their stamps, and trimming the bottom would drop
+    // them as they land. Of rows alike in both, the lower one goes first. One pass picks
+    // every row that goes: the same rows as taking the oldest one at a time.
+    QList<int> order(m_rows.size());
+    for (int i = 0; i < static_cast<int>(order.size()); i++) {
+        order[i] = i;
+    }
+    const auto goesFirst = [this](int a, int b) {
+        const Row& ra = m_rows.at(a);
+        const Row& rb = m_rows.at(b);
+        if (retained_older(ra.session, ra.when, rb.session, rb.when)) {
+            return true;
+        }
+        return !retained_older(rb.session, rb.when, ra.session, ra.when) && a > b;
+    };
+    std::nth_element(order.begin(), order.begin() + (excess - 1), order.end(), goesFirst);
+    QList<bool> victim(m_rows.size(), false);
+    for (qsizetype i = 0; i < excess; i++) {
+        victim[order.at(i)] = true;
+    }
+    // Each run of adjacent victims goes in one removal, from the bottom up so the indices above stay valid.
+    for (int last = static_cast<int>(m_rows.size()) - 1; last >= 0; last--) {
+        if (!victim.at(last)) {
+            continue;
+        }
+        int first = last;
+        while (first > 0 && victim.at(first - 1)) {
+            first--;
+        }
+        for (int i = first; i <= last; i++) {
+            for (const QString& fragment : m_rows.at(i).fragments) {
+                m_fragmentIndex.remove(fragment);
             }
         }
-        for (const QString& fragment : m_rows.at(victim).fragments) {
-            m_fragmentIndex.remove(fragment);
-        }
-        beginRemoveRows(QModelIndex(), victim, victim);
-        m_rows.removeAt(victim);
+        beginRemoveRows(QModelIndex(), first, last);
+        m_rows.remove(first, last - first + 1);
         endRemoveRows();
-        trimmed = true;
+        last = first;
     }
-    return trimmed;
+    return true;
 }
 
 void
@@ -2127,6 +2160,9 @@ CallHistoryModel::foldSpill() {
         const bool again = obj.value(QLatin1String("again")).toBool() && !known;
         rowsChanged = ingestRow(row, isUpdate, again) || rowsChanged;
         folded = true;
+        if (m_rows.size() > kMaxRows + kSpillFoldTrimSlack) {
+            rowsChanged = trimToCapacity() || rowsChanged;
+        }
     }
     rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();

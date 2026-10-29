@@ -15,7 +15,9 @@
  * stopped decoder left published are captured; a clear made while the tap runs keeps its rows cleared, and one made
  * after the app returned but before its first ingest hands the tap off instead of restarting it; the spill is written
  * in batches of about a kilobyte a row; and a spill that cannot be written holds a bounded backlog, the newest rows,
- * reported once. Notices fold once like calls. The deliberate failures' warnings are counted, not printed. */
+ * reported once. Notices fold once like calls. A spill far longer than the log folds bounded: the newest rows stay, the
+ * oldest session's oldest go first, and the log never holds the whole backlog. The deliberate failures' warnings are
+ * counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -24,7 +26,11 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLatin1String>
+#include <QModelIndex>
 #include <QObject>
 #include <QSet>
 #include <QSettings>
@@ -503,6 +509,88 @@ test_sustained_write_volume(void) {
            lines > 0 && qint64{10} * bytes / lines < qint64{16} * 1024);
 }
 
+/* A spill line as the tap writes one (CallHistoryModel::spillLine()) for a voice call first read on slot 0 of ring
+ * 0x708 at push stamp @p seq, 4 s long. */
+QByteArray
+spill_line(qulonglong seq, qint64 when, qulonglong tg, qint64 session) {
+    const QString key = QStringLiteral("0|%1|%2|%3|%4").arg(seq).arg(when).arg(tg).arg(CallHistoryModel::KindVoice);
+    QJsonObject seen;
+    seen.insert(QStringLiteral("when"), when);
+    seen.insert(QStringLiteral("end"), when + 4);
+    seen.insert(QStringLiteral("src"), 7);
+    seen.insert(QStringLiteral("srcName"), QString());
+    seen.insert(QStringLiteral("enc"), false);
+    seen.insert(QStringLiteral("session"), session);
+    seen.insert(QStringLiteral("ring"), QStringLiteral("708"));
+    QJsonObject row;
+    row.insert(QStringLiteral("when"), when);
+    row.insert(QStringLiteral("name"), QString());
+    row.insert(QStringLiteral("tg"), static_cast<qint64>(tg));
+    row.insert(QStringLiteral("src"), 7);
+    row.insert(QStringLiteral("durationSecs"), 4);
+    row.insert(QStringLiteral("kind"), CallHistoryModel::KindVoice);
+    row.insert(QStringLiteral("slot"), 0);
+    row.insert(QStringLiteral("seq"), static_cast<qint64>(seq));
+    row.insert(QStringLiteral("session"), session);
+    row.insert(QStringLiteral("fr"), QJsonArray{QStringLiteral("0000000000000708:0:%1").arg(seq)});
+    QJsonObject obj;
+    obj.insert(QStringLiteral("v"), 1);
+    obj.insert(QStringLiteral("key"), key);
+    obj.insert(QStringLiteral("seen"), seen);
+    obj.insert(QStringLiteral("row"), row);
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
+}
+
+/* @p rows distinct calls, 30 s apart from @p when, talkgroups from @p tg up; with @p alternate the odd ones are a
+ * second session's. */
+bool
+write_spill(int rows, qint64 when, qulonglong tg, bool alternate) {
+    QByteArray data;
+    for (int i = 0; i < rows; i++) {
+        const qint64 session = alternate && i % 2 != 0 ? 2 : 1;
+        data += spill_line(static_cast<qulonglong>(i + 1), when + 30 * static_cast<qint64>(i),
+                           tg + static_cast<qulonglong>(i), session);
+    }
+    QFile file(spill_path());
+    return QDir().mkpath(QFileInfo(spill_path()).absolutePath()) && file.open(QIODevice::WriteOnly)
+           && file.write(data) == data.size();
+}
+
+/* A long stretch in the background spills far more calls than History keeps (1,000 rows). The fold keeps the newest
+ * 1,000 and never holds the whole backlog: it trims as it goes, each trim one pass over the log. Folding 50,000 rows
+ * into the log and then trimming them one at a time, each a scan of the log, blocked the GUI thread for seconds. */
+void
+test_long_spill_folds_bounded(void) {
+    resetStorage();
+    const int spilled = 50000;
+    const qulonglong tg = 100000U;
+    expect("the long spill is written", write_spill(spilled, 1754900000, tg, false));
+    CallHistoryModel model;
+    expect("the fold keeps the newest 1,000 calls",
+           model.count() == 1000 && rows_in_tg_range(model, tg + spilled - 1000, tg + spilled - 1) == 1000);
+    expect("the log never grows far past its capacity while it folds", model.peakRowsForTest() <= 1500);
+    expect("the trims' work is linear in the spill", model.trimRowsScannedForTest() <= qint64{10} * spilled);
+}
+
+/* The trims keep the oldest session's oldest rows as the first to go, as the log always has: a fold spanning two
+ * sessions keeps the newer session's newest rows wherever they sort in the list. */
+void
+test_spill_fold_trims_oldest_session_first(void) {
+    resetStorage();
+    const int spilled = 5000;
+    const qulonglong tg = 200000U;
+    expect("the two-session spill is written", write_spill(spilled, 1754900000, tg, true));
+    CallHistoryModel model;
+    bool newest = model.count() == 1000;
+    for (int i = 0; i < model.count(); i++) {
+        const QModelIndex idx = model.index(i);
+        const qulonglong rowTg = model.data(idx, CallHistoryModel::TgRole).toULongLong();
+        newest = newest && model.data(idx, CallHistoryModel::SessionRole).toLongLong() == 2
+                 && rowTg >= tg + spilled - 2000 && (rowTg - tg) % 2 != 0;
+    }
+    expect("the newer session's newest 1,000 calls stay", newest);
+}
+
 } // namespace
 
 int
@@ -530,6 +618,8 @@ main(int argc, char** argv) {
     test_sustained_write_volume();
     test_clear_before_the_first_ingest_after_return();
     test_unwritable_spill_keeps_a_bounded_backlog();
+    test_long_spill_folds_bounded();
+    test_spill_fold_trims_oldest_session_first();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -323,6 +323,18 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief How many times the tap has tried to, written or not. */
     int spillAppendAttemptsForTest() const;
+
+    /** @brief The most rows the log has held since this model was built. */
+    int
+    peakRowsForTest() const {
+        return m_peakRowsForTest;
+    }
+
+    /** @brief How many rows the trims have looked at since this model was built. */
+    qint64
+    trimRowsScannedForTest() const {
+        return m_trimRowsScannedForTest;
+    }
 #endif
 
   Q_SIGNALS:
@@ -615,7 +627,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
     /** @brief Rebuild m_noticeTwinsTaken for the rings now read, from the twins their seen entries record. */
     void restoreNoticeTwinsTaken();
-    /** @brief Trim m_rows to kMaxRows, oldest session's oldest row first; returns whether any row went. */
+    /** @brief Trim m_rows to kMaxRows in one pass, oldest session's oldest row first; returns whether any row went. */
     bool trimToCapacity();
 
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
@@ -699,6 +711,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * from the current date, and nothing else re-reads them when it rolls over. */
     QTimer m_dayTimer;
     QSettings m_settings;
+#ifdef DSD_NEO_TEST_HOOKS
+    int m_peakRowsForTest = 0;
+    qint64 m_trimRowsScannedForTest = 0;
+#endif
 };
 
 } // namespace dsd_qt
