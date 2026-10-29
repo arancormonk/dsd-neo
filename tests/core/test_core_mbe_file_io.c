@@ -3640,6 +3640,87 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
     return rc;
 }
 
+// Issue #773 D7: a row whose stream verdict is off keeps its recording but is not exported to rdio-scanner -- no
+// DirWatch sidecar and no upload, which share the one export call -- on both close entry points: the event layer's
+// rotation (close_and_rename_wav_file_ex()) and the closes before the row commits (close_and_publish_call_wav(): WAV
+// stop, analog calls, EDACS, the last close), which read the slot's staged row.
+static int
+close_and_rename_stream_case(const char* label, uint8_t stream_export, int use_ex) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_stream")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 8000, 0);
+    rc |= expect_true(label, wav != NULL);
+    if (wav) {
+        rc |= expect_true(label, write_wav_test_samples(wav));
+
+        static dsd_opts opts;
+        static Event_History_I history;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&history, 0, sizeof history);
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_system_id = 48;
+
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_start_time = (time_t)1700003990;
+        item->event_time = (time_t)1700004000;
+        item->gi = 0;
+        item->source_id = 42U;
+        item->target_id = 1201U;
+        item->policy_target_id = 1201U;
+        item->stream_blocked = stream_export ? 0U : 1U;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "DMR_TEST");
+
+        dsd_state* state = calloc(1, sizeof(*state));
+        rc |= expect_true(label, state != NULL);
+        if (state) {
+            state->event_history_s = &history;
+        }
+        SNDFILE* closed = use_ex ? close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, 0, 1, NULL)
+                                 : close_and_publish_call_wav(wav, &opts, state, 0, path, dir, 0);
+        free(state);
+        rc |= expect_true(label, closed == NULL);
+        rc |= expect_true(label, file_size_or_negative(path) < 0);
+
+        char renamed[DSD_TEST_PATH_MAX];
+        const int published = find_wav_rename_output_for_numeric_event(renamed, sizeof renamed, dir, item);
+        char want[160];
+        DSD_SNPRINTF(want, sizeof want, "%s: the recording is published", label);
+        rc |= expect_true(want, published && file_size_or_negative(renamed) > 44);
+        if (published) {
+            char sidecar[DSD_TEST_PATH_MAX];
+            if (make_rdio_sidecar_path(renamed, sidecar, sizeof sidecar) != 0) {
+                rc = 1;
+            } else {
+                DSD_SNPRINTF(want, sizeof want, "%s: the rdio-scanner sidecar is %s", label,
+                             stream_export ? "written" : "not written");
+                rc |= expect_true(want, (file_size_or_negative(sidecar) >= 0) == (stream_export != 0U));
+                (void)remove(sidecar);
+            }
+            (void)remove(renamed);
+        }
+    }
+
+    (void)remove(path);
+    (void)remove_dir(dir);
+    return rc;
+}
+
+static int
+test_close_and_rename_wav_stream_off_skips_export(void) {
+    int rc = close_and_rename_stream_case("stream off, event rotation close", 0U, 1);
+    rc |= close_and_rename_stream_case("stream off, toggle/shutdown/analog/EDACS close", 0U, 0);
+    rc |= close_and_rename_stream_case("stream on, event rotation close", 1U, 1);
+    rc |= close_and_rename_stream_case("stream on, toggle/shutdown/analog/EDACS close", 1U, 0);
+    return rc;
+}
+
 // Baofeng DM-32 captures from tylerwatt12/known-key-mbe-samples, revision
 // 2e15b86e305b7a3c71d52873518e2908747f6e09. Expected AMBE bits independently
 // checked with OpenSSL-backed AES/OFB and an RFC 6229-checked RC4 reference.
@@ -3855,6 +3936,7 @@ main(void) {
     rc |= test_close_and_rename_wav_numeric_and_failure_paths();
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
     rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
+    rc |= test_close_and_rename_wav_stream_off_skips_export();
 
     if (rc == 0) {
         printf("CORE_MBE_FILE_IO: OK\n");

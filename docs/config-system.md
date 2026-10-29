@@ -76,7 +76,7 @@ data = true
 enabled = true
 chan_csv = "~/dsd-neo/dmr_t3_chan.csv"   # path expansion supported
 group_csv = "$HOME/dsd-neo/group.csv"
-src_csv = "$HOME/dsd-neo/src.csv"         # source radio ID names; labels only
+src_csv = "$HOME/dsd-neo/src.csv"         # source radio ID names (and optional radio policy)
 p25_bandplan_csv = "~/dsd-neo/p25_bandplan.csv"
 allow_list = true
 
@@ -344,7 +344,7 @@ small subset is exposed as config keys for convenience (for example
 | `enabled` | BOOL | Enable trunking | `false` |
 | `chan_csv` | PATH | Channel map CSV | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
-| `src_csv` | PATH | Source ID alias list CSV (`--src-csv`; labels only, loads regardless of trunking) | (empty) |
+| `src_csv` | PATH | Source ID list CSV (`--src-csv`; names, optional radio policy columns; loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |
 | `tune_group_calls` | BOOL | Follow group calls | `true` |
@@ -424,9 +424,10 @@ is lost, since the call may still resume; a terminator alerts immediately.
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
-`unknown_talkgroups_only` treats every call a group list row matches (an exact or range row; a private call when
-either radio has an exact row) as that row's `record=off`: the per-call and static WAVs and MBE capture skip it, and a
-held talkgroup still records. Learned radio-ID aliases and mode `D` rows do not count as rows. Tuning and playback are
+`unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
+than the `*` catch-all; a private call when either radio has an exact row) as that row's `record=off`: the per-call
+and static WAVs and MBE capture skip it, and a held talkgroup still records. Learned radio-ID aliases, mode `D` rows
+and radio ID list (`--src-csv`) rows do not count as rows. Tuning and playback are
 unchanged. Applying a config in a running session changes it at once.
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
@@ -773,8 +774,10 @@ is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 ### Trunking
 
 `[trunking] src_csv` is the global source ID alias list, equivalent to `--src-csv <file>`. When set, it loads
-regardless of whether trunking is enabled, so conventional decode also gets source names. It supplies labels only;
-source labels prefer this list and fall back to the active group list's exact row, with OTA alias text untouched.
+regardless of whether trunking is enabled, so conventional decode also gets source names. A plain `id,name[,tags]`
+file supplies labels only; one whose header has `mode` as its third column also blocks, mutes or stops recording
+calls by radio (`docs/csv-formats.md`). Source labels prefer this list and fall back to the active group list's
+exact row, with OTA alias text untouched.
 A load failure logs a warning and lets decoding continue. A successfully read file with zero usable rows installs
 an empty list, matching live imports from the terminal and Qt/Android.
 

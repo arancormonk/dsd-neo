@@ -389,10 +389,10 @@ dsd_app_notification_encode(char* out, size_t out_size) {
        whole record: a reader must never be handed a prefix it could parse as a complete,
        shorter record. */
     char scratch[DSD_APP_NOTIFICATION_RECORD_SIZE];
-    /* v3: version, protocol, radio, trunking, tuned, cc, vc, centre, lead slot, audible stamp, audible age (11 header
-       fields), then 11 per slot. The stamp is unsigned and the age signed (-1 for none), each in decimal. */
+    /* v4: version, protocol, radio, trunking, tuned, cc, vc, centre, lead slot, audible stamp, audible age (11 header
+       fields), then 14 per slot. The stamp is unsigned and the age signed (-1 for none), each in decimal. */
     int used =
-        DSD_SNPRINTF(scratch, sizeof(scratch), "v3\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d\t%llu\t%ld", protocol,
+        DSD_SNPRINTF(scratch, sizeof(scratch), "v4\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d\t%llu\t%ld", protocol,
                      (unsigned)status.radio_input, (unsigned)status.trunking, (unsigned)status.trunk_tuned,
                      (long long)status.cc_freq_hz, (long long)status.vc_freq_hz, (long long)status.center_freq_hz,
                      (int)status.lead_slot, (unsigned long long)status.audible_stamp, (long)status.audible_age_ms);
@@ -408,14 +408,22 @@ dsd_app_notification_encode(char* out, size_t out_size) {
         char name[DSD_APP_CALL_NAME_SIZE];
         char tg[DSD_CALL_IDENTITY_TEXT_SIZE];
         char src[DSD_APP_CALL_SOURCE_SIZE];
+        char tg_label[DSD_APP_CALL_NAME_SIZE];
+        char protocol_label[DSD_APP_CALL_PROTOCOL_SIZE];
         sanitize_field(name, sizeof(name), call->name);
         sanitize_field(tg, sizeof(tg), call->tg_text);
         sanitize_field(src, sizeof(src), call->src_text);
+        sanitize_field(tg_label, sizeof(tg_label), call->tg_label);
+        sanitize_field(protocol_label, sizeof(protocol_label), call->protocol_label);
 
-        const int added = DSD_SNPRINTF(
-            scratch + used, sizeof(scratch) - (size_t)used, "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u",
-            call->state, name, tg, src, (unsigned long long)call->tg_id, (unsigned)call->enc, (unsigned)call->algid,
-            (unsigned)call->kid, (unsigned)call->elapsed_ms, (unsigned)call->emergency, (unsigned)call->priority);
+        /* v4 (issue #773) added kind, tg_label and protocol_label after priority: the notification words a private
+           call by its other party and a call no party named by its protocol, as the Qt hero does. */
+        const int added =
+            DSD_SNPRINTF(scratch + used, sizeof(scratch) - (size_t)used,
+                         "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%s", call->state, name, tg, src,
+                         (unsigned long long)call->tg_id, (unsigned)call->enc, (unsigned)call->algid,
+                         (unsigned)call->kid, (unsigned)call->elapsed_ms, (unsigned)call->emergency,
+                         (unsigned)call->priority, (unsigned)call->kind, tg_label, protocol_label);
         if (added < 0 || (size_t)added >= sizeof(scratch) - (size_t)used) {
             return 0;
         }

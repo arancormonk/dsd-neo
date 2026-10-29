@@ -284,7 +284,7 @@ two threads, and delivery that never holds the lock a class initializer (`DsdNat
 `UI_QT_DIAGNOSTICS_LOG` passes through the native redaction (`DIAGNOSTICS_GOLDEN_SCREEN`,
 `DIAGNOSTICS_GOLDEN_WATCHDOG`), so a record the native key rule would drop fails a test. Each suite
 compiles its own files, each build in a suite its own set, and the CTest entries share a resource lock so two Kotlin
-compiles never run at once. `DecoderStatusTest.kt` parses the same golden v3 record literal that
+compiles never run at once. `DecoderStatusTest.kt` parses the same golden v4 record literal that
 `APP_CONTROL_NOTIFICATION_STATUS` makes the C encoder write; the `decoder_status` suite reads both literals before
 compiling (and before looking for the tools) and fails when they differ. The runner uses `kotlinc` or a cached Gradle
 Kotlin compiler plus Java; missing tools skip the CTest entries. Android CI runs
@@ -337,7 +337,7 @@ sink's converter mutes, at a rate it cannot take or with no memory, which never 
 `DMR_BS_SYNC_TIMES` and `ENGINE_NO_CARRIER_RESET` the discards. The stamp runs on the real-time clock, so
 `CORE_AUDIO_ACTIVITY` and `APP_CONTROL_NOTIFICATION_STATUS` hold its time through
 `dsd_audio_activity_set_clock_for_test()` (module-private, built only with `DSD_NEO_TEST_HOOKS`) rather than the decode
-clock's TEST source. `APP_CONTROL_NOTIFICATION_STATUS` also checks the v3 record's stamp and age fields and that only
+clock's TEST source. `APP_CONTROL_NOTIFICATION_STATUS` also checks the v4 record's stamp and age fields and that only
 `dsd_app_notification_encode()` arms the stamp.
 
 `CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come

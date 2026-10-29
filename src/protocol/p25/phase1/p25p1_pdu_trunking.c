@@ -14,6 +14,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -56,10 +57,11 @@ p25p1_pdu_publish_activity(dsd_state* state, dsd_call_kind kind, uint64_t target
     (void)dsd_recent_activity_publish(state, 0U, &observation, notice, 0U);
 }
 
+/* The label of a call's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void DSD_ATTR_USED
-p25p1_pdu_print_group_label(const dsd_state* state, uint32_t id) {
-    char name[50];
-    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+p25p1_pdu_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_call_target_label_lookup(state, kind, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -491,7 +493,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
     p25p1_pdu_publish_activity(state, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)group, (uint64_t)src, (uint16_t)channelt,
                                freq1, (uint16_t)svc_bits, notice);
 
-    p25p1_pdu_print_group_label(state, (uint32_t)group);
+    p25p1_pdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
 
     p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1,
                                    P25_SM_GRANT_PROVENANCE_UPDATE);
@@ -559,7 +561,7 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     DSD_SNPRINTF(notice, sizeof notice, "Active UU Ch: %04X%s SRC: %u TGT: %u; ", channelt, suf2, source, target);
     p25p1_pdu_publish_activity(state, DSD_CALL_KIND_PRIVATE_VOICE, target, source, channelt, freq1, svc, notice);
 
-    p25p1_pdu_print_group_label(state, (uint32_t)target);
+    p25p1_pdu_print_target_label(state, DSD_CALL_KIND_PRIVATE_VOICE, (uint32_t)target);
 
     dsd_tg_policy_decision decision;
     if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target,
@@ -786,7 +788,7 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
                                    (uint16_t)svc, notice);
     }
 
-    p25p1_pdu_print_group_label(state, target);
+    p25p1_pdu_print_target_label(state, DSD_CALL_KIND_PRIVATE_VOICE, target);
 
     if (!p25_telephone_call_policy_allows(opts, state, target, svc)) {
         return;
@@ -839,7 +841,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
     p25p1_pdu_publish_activity(state, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)group, (uint64_t)src, (uint16_t)channelt,
                                freq1, (uint16_t)svc_bits, notice);
 
-    p25p1_pdu_print_group_label(state, (uint32_t)group);
+    p25p1_pdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
 
     p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1,
                                    P25_SM_GRANT_PROVENANCE_ASSIGNMENT);

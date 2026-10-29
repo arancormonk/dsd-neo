@@ -1204,6 +1204,83 @@ test_group_import_invalid_ids_and_required_fields(void) {
 }
 
 static int
+group_pattern_is(const dsd_state* state, uint32_t id, const char* pattern, const char* name) {
+    dsd_tg_policy_lookup lookup;
+    return dsd_tg_policy_lookup_group(state, id, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_PATTERN
+           && lookup.entry.kind == DSD_TG_POLICY_ROW_PATTERN && strcmp(lookup.entry.pattern, pattern) == 0
+           && strcmp(lookup.entry.name, name) == 0;
+}
+
+/* Digit-pattern rows load with their canonical text; a bad pattern is skipped with a warning naming it. */
+static int
+test_group_import_patterns(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-group-patterns-XXXXXX";
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    if (write_text_file(tmpl, "id,mode,name\n"
+                              "1XXX,A,Thousands\n"
+                              "12**,B,Twelve\n"
+                              " *05 ,A,Ends05\n"
+                              "05x,A,LeadingZero\n"
+                              "1x-2x,A,PatternRange\n"
+                              "4294967296*,A,TooBig\n"
+                              "*,A,All\n"
+                              "300,A,Exact\n")
+        != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "grouppatterns") != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    const int rc = csvGroupImport(opts, state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    failed |= fixture_check(dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0, "read pattern import log");
+    failed |= fixture_check(rc == 0, "import pattern list");
+    failed |= fixture_check(dsd_tg_policy_entry_count(state) == 5 && dsd_tg_policy_pattern_count(state) == 4,
+                            "pattern rows accepted, bad ones skipped");
+    failed |= fixture_check(strstr(log, "invalid pattern '05x'") != NULL, "warning names the bad pattern");
+    failed |= fixture_check(strstr(log, "invalid pattern '1x-2x'") != NULL, "warning names the pattern range");
+    failed |= fixture_check(group_pattern_is(state, 1500, "1xxx", "Thousands"), "1xxx canonical");
+    failed |= fixture_check(group_pattern_is(state, 125, "12*", "Twelve"), "12* collapsed and more specific than *");
+    failed |= fixture_check(group_pattern_is(state, 1206, "12*", "Twelve"), "more literals beat 1xxx");
+    failed |= fixture_check(group_pattern_is(state, 905, "*05", "Ends05"), "trimmed *05");
+    failed |= fixture_check(group_pattern_is(state, 77, "*", "All"), "catch-all");
+    dsd_tg_policy_lookup lookup;
+    failed |=
+        fixture_check(dsd_tg_policy_lookup_group(state, 300, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_EXACT,
+                      "exact row still exact");
+    if (failed) {
+        DSD_FPRINTF(stderr, "group pattern import log:\n%s\n", log);
+    }
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
 test_group_import_range_after_many_exact_rows(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -3059,6 +3136,9 @@ main(void) {
         return 1;
     }
     if (test_group_import_range_after_many_exact_rows() != 0) {
+        return 1;
+    }
+    if (test_group_import_patterns() != 0) {
         return 1;
     }
     if (test_vertex_import_missing_file() != 0) {

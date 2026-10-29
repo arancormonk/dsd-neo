@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 
 #include "fuzz_support.h"
 
@@ -16,6 +17,25 @@ static int
 set_path(char* dst, size_t dst_size, const char* path) {
     int n = DSD_SNPRINTF(dst, dst_size, "%s", path);
     return (n < 0 || (size_t)n >= dst_size) ? -1 : 0;
+}
+
+/* Run the group-list lookups and evaluation over the imported rows on IDs taken from the input, plus the edges, so
+ * pattern, range and exact rows are matched against IDs the input itself chose. */
+static void
+fuzz_group_lookups(const dsd_opts* opts, const dsd_state* state, const uint8_t* data, size_t size) {
+    uint32_t ids[10] = {0U, UINT32_MAX};
+    size_t count = 2U;
+    for (size_t off = 0; off + 4U <= size && count < sizeof(ids) / sizeof(ids[0]); off += 4U) {
+        ids[count++] = (uint32_t)data[off] | ((uint32_t)data[off + 1U] << 8) | ((uint32_t)data[off + 2U] << 16)
+                       | ((uint32_t)data[off + 3U] << 24);
+    }
+    for (size_t i = 0; i < count; i++) {
+        dsd_tg_policy_lookup lookup;
+        dsd_tg_policy_decision decision;
+        (void)dsd_tg_policy_lookup_id(state, ids[i], &lookup);
+        (void)dsd_tg_policy_lookup_group(state, ids[i], &lookup);
+        (void)dsd_tg_policy_evaluate_group_call(opts, state, ids[i], 1U, 0, 0, &decision);
+    }
 }
 
 int
@@ -47,7 +67,10 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
 
     switch (selector % 8U) {
-        case 0: (void)csvGroupImportPath(path, state); break;
+        case 0:
+            (void)csvGroupImportPath(path, state);
+            fuzz_group_lookups(opts, state, data, size);
+            break;
         case 1:
             if (set_path(opts->chan_in_file, sizeof(opts->chan_in_file), path) == 0) {
                 (void)csvChanImport(opts, state);

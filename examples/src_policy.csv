@@ -1,0 +1,5 @@
+id,name,mode,audio,record,stream,tags
+1234567,Engine 21,A,on,on,on,Fire
+12345xx,Fire units,A,on,off,on,Fire
+1234599,,B
+9*,Test radios,B

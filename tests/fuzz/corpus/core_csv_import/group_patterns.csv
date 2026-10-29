@@ -1,0 +1,8 @@
+Hid,mode,name,priority,preempt,audio,record,stream,tags
+1xxx,A,Thousands,5,true,on,on,on,FIRE
+12*,B,Twelve
+*05,A,Ends05
+*,B,All
+1200-1299,A,Range
+1234,A,Exact
+05x,A,Bad

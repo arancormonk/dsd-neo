@@ -266,6 +266,12 @@ main(void) {
     history[1].Event_History_Items[1].source_id = 456U;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "RADIO-123");
+    /* The staged row's rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7) ride the
+       snapshot with the row. */
+    history[0].Event_History_Items[0].policy_target_id = 123U;
+    history[0].Event_History_Items[0].stream_blocked = 1U;
+    history[1].Event_History_Items[0].policy_target_id = 0U;
+    history[1].Event_History_Items[0].stream_blocked = 0U;
     mark_history(&history[0]);
     mark_history(&history[1]);
 
@@ -339,6 +345,10 @@ main(void) {
            == (DSD_RXID_P25_WACN | DSD_RXID_P25_SITE | DSD_RXID_CC_FREQ));
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
+    assert(snap->event_history_s[0].Event_History_Items[0].policy_target_id == 123U);
+    assert(snap->event_history_s[0].Event_History_Items[0].stream_blocked == 1U);
+    assert(snap->event_history_s[1].Event_History_Items[0].policy_target_id == 0U);
+    assert(snap->event_history_s[1].Event_History_Items[0].stream_blocked == 0U);
     /* A shared pointer would let the next reserve() on either side realloc the other's
        buffer, and would republish the live mutation above as if it had been snapshotted. */
     assert(snap->trunk_lcn_name != NULL);

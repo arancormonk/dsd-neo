@@ -29,8 +29,10 @@
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "../test_support/radio_policy_test.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/source_alias.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
@@ -1981,6 +1983,32 @@ test_receive_rejection_overrides_the_hold(void) {
     return rc;
 }
 
+/* The radio list is part of a waiting call's verdict: a reload that blocks its radio, made with no note, mutes the
+   frames it queued (the key carries the radio list's store); a clear lets frames queued while it was blocked play. */
+static int
+test_radio_list_reload_retakes_the_verdict(void) {
+    int rc = 0;
+    setup(0, 2);
+    seed_call(&g_state, 0U, 100U, 1000U);
+    g_state.p25_p2_audio_allowed[1] = 0;
+    burst(0, 0, DSD_P25P2_BURST_4V, 1000);
+    rc |= expect_int("radio blocked", dsd_test_install_radio_policy(&g_state, 1000U, "B", 0, 0, 0), 0);
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("a reload blocking the radio mutes the waiting frames", g_block_count, 0);
+
+    setup(0, 2);
+    rc |= expect_int("radio blocked first", dsd_test_install_radio_policy(&g_state, 1000U, "B", 0, 0, 0), 0);
+    seed_call(&g_state, 0U, 100U, 1000U);
+    g_state.p25_p2_audio_allowed[1] = 0;
+    burst(0, 0, DSD_P25P2_BURST_4V, 1000);
+    dsd_p25p2_playout_note_policy(&g_opts, &g_state);
+    rc |= expect_int("the blocked radio's verdict", g_state.p25p2_playout.slot[0].live_verdict.blocked, 1);
+    rc |= expect_int("radio list cleared", dsd_source_alias_clear(&g_state), 0);
+    dsd_p25p2_playout_pair_done(&g_opts, &g_state);
+    rc |= expect_int("a clear lets the waiting frames play", g_block_count, 4);
+    return rc;
+}
+
 int
 main(void) {
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_blast});
@@ -2036,6 +2064,7 @@ main(void) {
     rc |= test_close_after_covered_superframe_keeps_18();
     rc |= test_sacch_at_voice_position_fills();
     rc |= test_receive_rejection_overrides_the_hold();
+    rc |= test_radio_list_reload_retakes_the_verdict();
     dsd_state_ext_free_all(&g_state);
     if (rc != 0) {
         return 1;

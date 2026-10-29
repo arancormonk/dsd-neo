@@ -54,6 +54,7 @@ Item {
                 testContext.setMetric("slot" + slot + "CallName", "");
                 testContext.setMetric("slot" + slot + "TgId", 0);
             }
+            testContext.setMetric("slot2CallKind", 0);
             testContext.setMetric("leadSlot", 0);
             testContext.setMetric("twoSlotCarrier", false);
             testContext.setMetric("heldTg", 0);
@@ -97,6 +98,23 @@ Item {
             compare(testContext.holdCalls(), 2);
             compare(testContext.lastHoldTg(), 0);
             verify(!menu.visible);
+        }
+        // A private call on the other slot holds its radio and has no talkgroup to lock out.
+        function test_private_call_menu() {
+            testContext.setMetric("slot2CallKind", 3);
+            var menu = openMenu();
+            var hold = item("otherSlotHold");
+            compare(hold.text, "Hold radio 1234567");
+            compare(item("actionMenuDescription0").text, "Only calls with this radio are heard; the other slot goes quiet");
+            verify(hold.enabled);
+            var avoid = item("otherSlotAvoid");
+            verify(!avoid.enabled);
+            compare(item("actionMenuDescription1").text, "A private call has no talkgroup to lock out");
+            menu.activate(1);
+            compare(testContext.lockoutSlotCalls(), 0);
+            menu.activate(0);
+            compare(testContext.holdCalls(), 1);
+            compare(testContext.lastHoldTg(), 1234567);
         }
         function test_hold_requires_numeric_talkgroup() {
             testContext.setMetric("slot2TgId", 0);

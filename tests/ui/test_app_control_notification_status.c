@@ -36,7 +36,8 @@
 enum {
     /** version, protocol, 3 flags, 3 frequencies, lead slot, audible stamp, audible age. */
     NOTIFICATION_HEADER_FIELDS = 11,
-    NOTIFICATION_SLOT_FIELDS = 11, /**< state, name, tg, src, tg_id, enc, algid, kid, elapsed, emergency, priority. */
+    /** state, name, tg, src, tg_id, enc, algid, kid, elapsed, emergency, priority, kind, tg_label, protocol_label. */
+    NOTIFICATION_SLOT_FIELDS = 14,
     NOTIFICATION_TOTAL_FIELDS = NOTIFICATION_HEADER_FIELDS + NOTIFICATION_SLOT_FIELDS * DSD_CALL_STATE_SLOT_COUNT,
 };
 
@@ -49,13 +50,13 @@ enum {
 };
 
 /* The record test_encode_matches_expected_record_field_order() publishes, as the encoder must write it.
-   tests/android/DecoderStatusTest.kt parses the same literal as its golden v3 record. The two must stay byte-identical,
+   tests/android/DecoderStatusTest.kt parses the same literal as its golden v4 record. The two must stay byte-identical,
    so the C encoder and the Kotlin reader pin one format between them: tests/android/run_jvm_tests.py's decoder_status
    suite reads both and fails when they differ, so keep this a #define of adjacent plain string literals. */
-#define NOTIFICATION_GOLDEN_V3_RECORD                                                                                  \
-    "v3\tP25p2\t1\t0\t1\t851006250\t851012500\t851500000\t0\t5000000000\t250"                                          \
-    "\t2\tRiverside Fire\t51023\t7654321\t51023\t1\t170\t4660\t1500\t1\t3"                                             \
-    "\t0\t\t\t\t0\t0\t0\t0\t0\t0\t0"
+#define NOTIFICATION_GOLDEN_V4_RECORD                                                                                  \
+    "v4\tP25p2\t1\t0\t1\t851006250\t851012500\t851500000\t0\t5000000000\t250"                                          \
+    "\t2\tRiverside Fire\t51023\t7654321\t51023\t1\t170\t4660\t1500\t1\t3\t2\tRiverside Fire\tP25p2"                   \
+    "\t0\t\t\t\t0\t0\t0\t0\t0\t0\t0\t0\t\t"
 
 /* The audible-audio stamp's clock while a test holds it (dsd_audio_activity_set_clock_for_test()). */
 static uint64_t g_audio_now_ms = 0U;
@@ -451,7 +452,7 @@ test_encode_has_version_and_field_count(void) {
     char record[1024];
     const size_t written = dsd_app_notification_encode(record, sizeof(record));
     assert(written > 0);
-    assert(strncmp(record, "v3\t", 3) == 0);
+    assert(strncmp(record, "v4\t", 3) == 0);
     assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
     /* One line: a newline would break the reader's single-record assumption. */
     assert(strchr(record, '\n') == NULL);
@@ -682,7 +683,7 @@ test_encode_rejects_a_short_buffer(void) {
    Both clocks the record reads are held for the test -- the decode clock that ages the
    call (elapsed_ms) and the audible-audio stamp's -- so every field is a fixed function
    of the inputs set here, and the whole record is a literal,
-   NOTIFICATION_GOLDEN_V3_RECORD, that the Kotlin reader's test parses as well. */
+   NOTIFICATION_GOLDEN_V4_RECORD, that the Kotlin reader's test parses as well. */
 static void
 test_encode_matches_expected_record_field_order(void) {
     /* 1000 s, then 1.5 s later: both exact in a double, so elapsed_ms is exactly 1500. */
@@ -750,25 +751,87 @@ test_encode_matches_expected_record_field_order(void) {
     assert(status.audible_age_ms == 250);
 
     char expected[DSD_APP_NOTIFICATION_RECORD_SIZE];
-    const int n =
-        DSD_SNPRINTF(expected, sizeof(expected),
-                     "v3\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d\t%llu\t%ld"
-                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u"
-                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u",
-                     "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, 5000000000ULL, 250L,
-                     DSD_APP_CALL_LINE_ACTIVE, "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
-                     1500U, 1U, 3U, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U, 0U, 0U);
+    const int n = DSD_SNPRINTF(expected, sizeof(expected),
+                               "v4\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d\t%llu\t%ld"
+                               "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%s"
+                               "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%s",
+                               "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, 5000000000ULL, 250L,
+                               DSD_APP_CALL_LINE_ACTIVE, "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU,
+                               0x1234U, 1500U, 1U, 3U, (unsigned)DSD_CALL_KIND_GROUP_VOICE, "Riverside Fire", "P25p2",
+                               DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U, 0U, 0U, 0U, "", "");
     assert(n > 0 && (size_t)n < sizeof(expected));
 
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
     assert(strcmp(record, expected) == 0);
     /* The same record, pinned as the literal the Kotlin side reads. */
-    assert(strcmp(record, NOTIFICATION_GOLDEN_V3_RECORD) == 0);
+    assert(strcmp(record, NOTIFICATION_GOLDEN_V4_RECORD) == 0);
 
     dsd_audio_activity_set_clock_for_test(NULL);
     dsd_audio_activity_reset();
     dsd_decode_clock_use_system();
+    destroy_state(state);
+}
+
+/* Issue #773 (B17): the record carries what the notification needs to word a private call apart from a talkgroup --
+   the call kind and the target's own label -- and a call no party named apart from nothing at all: the protocol's
+   name, with neither party's text ("0" would read as a unit numbered zero). */
+static void
+test_encode_carries_private_and_unidentified_calls(void) {
+    publish_any_opts();
+
+    enum { SLOT0 = NOTIFICATION_HEADER_FIELDS };
+
+    /* A private call heard source-first: the kind says so, the target is still unknown. */
+    dsd_state* state = make_state();
+    state->event_history_s = (Event_History_I*)calloc(DSD_CALL_STATE_SLOT_COUNT, sizeof(Event_History_I));
+    assert(state->event_history_s != NULL);
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 0U);
+    observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    observation.observed_m = dsd_decode_now_mono_s();
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_notification_publish_state(state);
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
+    assert(record_field_is(record, SLOT0 + 2, ""));
+    assert(record_field_is(record, SLOT0 + 3, "4242"));
+    assert(record_field_is(record, SLOT0 + 11, "3")); /* DSD_CALL_KIND_PRIVATE_VOICE */
+    assert(record_field_is(record, SLOT0 + 12, ""));
+    assert(record_field_is(record, SLOT0 + 13, "NXDN"));
+    destroy_state(state);
+
+    /* The same call once its target is known and labelled: the target radio's label, independent of the headline. */
+    state = make_state();
+    state->event_history_s = (Event_History_I*)calloc(DSD_CALL_STATE_SLOT_COUNT, sizeof(Event_History_I));
+    assert(state->event_history_s != NULL);
+    observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 2001U);
+    observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    observation.observed_m = dsd_decode_now_mono_s();
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    state->event_history_s[0].Event_History_Items[0].target_id = 2001U;
+    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].t_name,
+                 sizeof(state->event_history_s[0].Event_History_Items[0].t_name), "%s", "Dispatcher 7");
+    dsd_app_notification_publish_state(state);
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(record_field_is(record, SLOT0 + 2, "2001"));
+    assert(record_field_is(record, SLOT0 + 12, "Dispatcher 7"));
+    destroy_state(state);
+
+    /* Speech no D-SETUP named: no party's text at all, and the protocol to headline it with. */
+    state = make_state();
+    observation = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 0U, 0U, 0U);
+    observation.kind = DSD_CALL_KIND_VOICE;
+    observation.observed_m = dsd_decode_now_mono_s();
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_notification_publish_state(state);
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(record_field_is(record, SLOT0, "2"));
+    assert(record_field_is(record, SLOT0 + 1, ""));
+    assert(record_field_is(record, SLOT0 + 2, ""));
+    assert(record_field_is(record, SLOT0 + 3, ""));
+    assert(record_field_is(record, SLOT0 + 11, "1")); /* DSD_CALL_KIND_VOICE */
+    assert(record_field_is(record, SLOT0 + 13, "TETRA"));
     destroy_state(state);
 }
 
@@ -997,6 +1060,7 @@ main(void) {
     test_encode_round_trips_a_long_group_name();
     test_encode_rejects_a_short_buffer();
     test_encode_matches_expected_record_field_order();
+    test_encode_carries_private_and_unidentified_calls();
     test_encode_writes_the_audible_stamp_unsigned();
     test_concurrent_publish_and_get_never_tears();
     test_reset_forgets_the_published_status();

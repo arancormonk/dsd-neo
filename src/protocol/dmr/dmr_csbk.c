@@ -28,6 +28,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -73,10 +74,11 @@ dmr_csbk_note_brand(dsd_state* state, const char* brand) {
     }
 }
 
+/* The label of a grant's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
-dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
-    char name[50];
-    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+dmr_csbk_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_call_target_label_lookup(state, kind, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -494,7 +496,11 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         return;
     }
 
-    dmr_csbk_print_group_label(state, target);
+    dmr_csbk_print_target_label(state,
+                                data_call       ? DSD_CALL_KIND_DATA
+                                : is_group_call ? DSD_CALL_KIND_GROUP_VOICE
+                                                : DSD_CALL_KIND_PRIVATE_VOICE,
+                                target);
 
     struct dmr_csbk_result res;
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {
@@ -2175,7 +2181,8 @@ dmr_cspdu_cap_plus_3e_lsn_freq(const dsd_opts* opts, const dsd_state* state, con
     const int is_group_call = (ctx->pch[j] == 1) ? 0 : 1;
     int policy_allowed = 0;
 
-    dmr_csbk_print_group_label(state, (uint32_t)ctx->t_tg[j]);
+    dmr_csbk_print_target_label(state, is_group_call ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
+                                (uint32_t)ctx->t_tg[j]);
     policy_allowed = dmr_policy_tune_allowed(opts, state, ctx->t_tg[j], 0, is_group_call, 0, decision);
     if (ctx->t_tg[j] == 0 || !trunking || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, j & 1)) {
         return 0;
@@ -2498,7 +2505,7 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
         state->trunk_vc_freq[1] = state->trunk_chan_map[g.lcn];
     }
 
-    dmr_csbk_print_group_label(state, g.grp_addr);
+    dmr_csbk_print_target_label(state, kind, g.grp_addr);
     if (dmr_cspdu_con_plus_skip_voice_tune(opts, g.opt)) {
         return;
     }
@@ -2561,7 +2568,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
         state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
     }
 
-    dmr_csbk_print_group_label(state, dtarget);
+    dmr_csbk_print_target_label(state, DSD_CALL_KIND_DATA, dtarget);
     if (opts->trunk_tune_data_calls != 1 || (now - state->last_vc_sync_time <= 2)) {
         return;
     }
@@ -2726,6 +2733,14 @@ dmr_xpt_unknown_private_decision(const dsd_opts* opts, const dsd_state* state, d
     out->audio_allowed = out->tune_allowed;
     out->record_allowed = out->tune_allowed;
     out->stream_allowed = out->tune_allowed;
+    // No radio is named, so the radio part allows everything and the talkgroup part is the whole answer.
+    out->tg_tune_allowed = out->tune_allowed;
+    out->tg_audio_allowed = out->tune_allowed;
+    out->tg_record_allowed = out->tune_allowed;
+    out->tg_stream_allowed = out->tune_allowed;
+    out->radio_audio_allowed = 1;
+    out->radio_record_allowed = 1;
+    out->radio_stream_allowed = 1;
 }
 
 /* The candidate an XPT entry is: a group status with a talkgroup (XPT talkgroups are 8-bit, so the value is the real
@@ -2735,7 +2750,7 @@ static int
 dmr_cspdu_xpt_entry_decision(const dsd_opts* opts, const dsd_state* state, const dmr_xpt_entry* e,
                              dsd_tg_policy_decision* out, int* allowed) {
     if (e->kind == DMR_XPT_KIND_GROUP && e->id8 != 0U) {
-        dmr_csbk_print_group_label(state, e->id8);
+        dmr_csbk_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, e->id8);
         *allowed = dmr_policy_tune_allowed(opts, state, e->id8, 0, 1, 0, out);
         return 1;
     }

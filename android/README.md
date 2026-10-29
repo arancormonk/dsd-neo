@@ -46,7 +46,10 @@ Preempt is available above priority zero: a preempt talkgroup interrupts a lower
 announces it on the channel being received (P25, TETRA, DMR trunking, NXDN; see
 [Priority and preemption](../docs/csv-formats.md#priority-and-preemption)). The sheet says so, and says that a Not tuned
 row's priority does nothing. The card shows `P<n>` and a lightning badge when preempt is set. Heard-only rows offer
-**Add to list**; listed rows require two taps on **Remove**. An accepted submit closes the sheet; a decoder refusal
+**Add to list**; listed rows require two taps on **Remove**. A digit-pattern row (such as `12xx` or `*`, see
+[Digit patterns](../docs/csv-formats.md#digit-patterns)) shows its pattern as its ID and is edited like a range;
+patterns come only from the imported file. Heard talkgroups a pattern matches have no card of their own, except
+beside the `*` catch-all, which leaves each its card, showing whether the `*` row tunes and records it. An accepted submit closes the sheet; a decoder refusal
 appears in the screen's message line. Over-the-air radio aliases learned while the sheet is open do not make an edit
 stale; a list reload, an edit from another frontend or a scan rotation does, and then the sheet must be reopened.
 
@@ -99,6 +102,8 @@ last 15 s from the tap in this version; ProVoice has no skip.
 **Lock out** saves the block to the configured talkgroup list. **Settings → Listening
 → Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
+A private call has no talkgroup to avoid, so both are off for it; its **Hold** holds
+calls with that radio, and a radio is blocked from the radio ID list.
 **Skip** is unaffected by this setting and never saves. Avoids and unexpired call
 skips survive scan-target revisits; **Clear temporary avoids and call skips — current
 list** clears both in the active list. List reload/replacement or stopping the decoder
@@ -240,7 +245,9 @@ row per stored file, with dry-run validation counts from
 surfaced as Settings → Imported files and the wizard's Trunking data pickers.
 The imported-file kinds include `chan`, `group`, `keysDec`, `keysHex`, `p25Bandplan`,
 `src` (the **Radio IDs** picker), and `trunkTargets` (**Trunk scan targets**). Source
-ID lists use `id,name[,tags]` and supply labels only; they can be applied or cleared in a running session. A group
+ID lists use `id,name[,tags]` and supply labels; a list whose header is `id,name,mode,...` also blocks, mutes or stops
+recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
+They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved; SAF needs none.
 
@@ -248,8 +255,9 @@ No storage permissions are involved; SAF needs none.
 
 Settings → **Call recording** → **Record calls** saves each call you hear as a WAV file, so you can play it again from
 History. It is off until you turn it on. **Only unknown talkgroups** skips talkgroups that have a row in your talkgroup
-list, and private calls when either radio has a row of its own (radio names learned over the air, and talkgroup rows in
-mode D, do not count); a talkgroup you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
+list (a `*` row that catches every other talkgroup does not count), and private calls when either radio has a row of
+its own (radio names learned over the air, radio ID list rows and talkgroup rows in mode D do not count); a talkgroup
+you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
 its card), keeps its calls out of the recordings.
 
 Both switches also change a running session: Settings reads **Applying…** until the decoder confirms. A change the
@@ -1750,10 +1758,11 @@ and failure clear it too. Unknown fields are omitted; the row is hidden when no
 identity fields are available.
 Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
 slot), recent calls, and history. The notification title prefixes the lead call
-with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v3:
-each of the two slot records ends with emergency and priority (11 slot fields),
-and the header carries the audible-audio stamp and its age at indices 9 and 10,
-which the screen modes read (see [Screen](#screen)).
+with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v4:
+each of the two slot records ends with emergency, priority, the call kind, the
+target's own label and the protocol's name (14 slot fields), and the header carries
+the audible-audio stamp and its age at indices 9 and 10, which the screen modes read
+(see [Screen](#screen)).
 Call-history JSON stores `"em": true` only for emergency rows; older history
 without that optional key remains readable. Emergency indication persists when
 later fragments enrich a history row. The notification channel remains
@@ -1894,12 +1903,21 @@ even after starting a single saved system. A running session can still release a
 existing hold, including from a different system's row with the same talkgroup ID.
 
 The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
-menu with **Hold TG** and **Avoid TG**/**Lock out**. Holding that talkgroup replaces any
+menu with **Hold TG** (**Hold radio** on a private call) and **Avoid TG**/**Lock out** (off on a
+private call). Holding that talkgroup replaces any
 existing hold and silences the other slot; **Release hold** clears it. The menu closes
 if its slot or talkgroup changes or the call ends.
 
 The hero stays on the earliest-started identified active call when the other slot
 starts; the notification uses the same rule.
+
+A private (radio-to-radio) call carries a **PRIVATE** tag and headlines the other
+radio: its name from the radio list, else its callsign, else **ID** and its number,
+else **Private call** while the destination is unknown. The talker stays on the line
+below. A call no radio was named on headlines its protocol: **TETRA call** (with
+"identity not decoded", since TETRA normally names both parties), **ProVoice call** or
+**X2-TDMA call**. The SLOT n strip and the notification follow the same rules; the
+notification says **Private** or **Identity not decoded** beside the talker.
 
 ### Scan lists
 

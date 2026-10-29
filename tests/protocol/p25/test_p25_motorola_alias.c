@@ -659,6 +659,37 @@ test_late_alias_names_the_committed_call(void) {
     fixture_close(&f);
 }
 
+/* Issue #773 B11, through the real event layer and call view: once the row commits, the held view of the ended call
+ * still names the group (here from a range row, D4), from the label cached on the epoch rather than a lookup. */
+static void
+test_ended_hold_names_the_group(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(900U, "A", "Fireground", DSD_TG_POLICY_SOURCE_IMPORTED, &range) != 0) {
+        DSD_FPRINTF(stderr, "range row not built\n");
+        exit(2);
+    }
+    range.id_end = 999U;
+    range.kind = DSD_TG_POLICY_ROW_RANGE;
+    if (dsd_tg_policy_add_range_entry(f.st, &range) != 0) {
+        DSD_FPRINTF(stderr, "range row not stored\n");
+        exit(2);
+    }
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 950U, 0x00F010U);
+    end_call_and_commit(&f, 0U);
+    expect_true("group row committed", committed_row(&f, 0U)->target_id == 950U);
+    expect_true("committed row named by the range", strcmp(committed_row(&f, 0U)->t_name, "Fireground") == 0);
+    dsd_app_slot_call view;
+    held_view(&f, 0U, &view);
+    expect_true("held view of the ended group call", view.state == DSD_APP_CALL_LINE_ENDED);
+    expect_true("held view names the group", strcmp(view.name, "Fireground") == 0);
+    (void)dsd_tg_policy_clear(f.st);
+    held_view(&f, 0U, &view);
+    expect_true("held view needs no group lookup per render", strcmp(view.name, "Fireground") == 0);
+    fixture_close(&f);
+}
+
 /* An imported name keeps precedence over the learned alias on the committed row: a source alias list entry, then an
  * imported group-list row. */
 static void
@@ -739,6 +770,7 @@ main(void) {
     test_stored_name_is_utf8();
     test_learned_alias_row();
     test_late_alias_names_the_committed_call();
+    test_ended_hold_names_the_group();
     test_late_alias_keeps_imported_names();
     test_late_alias_renames_a_learned_name();
     if (g_fail) {

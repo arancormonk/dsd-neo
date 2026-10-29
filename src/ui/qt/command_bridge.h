@@ -104,19 +104,24 @@ class CommandBridge : public QObject {
     ~CommandBridge() override;
 
     // WP-D1: callers capture the model version when opening an edit sheet.
+    // B14: a listed row's edit also names the row (its tableIndex and, on a pattern row, its pattern with 0/0 bounds),
+    // so a duplicate or a pattern row is edited as listed; tableIndex -1 is the bounds-only edit.
     /** Changed fields only: name, listening, priority, preempt, record. One map is one atomic edit; the decoder applies
      *  record after listening, and a row that does not listen records nothing. */
     Q_INVOKABLE bool setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, const QString& context,
-                                        unsigned int generation, const QVariantMap& changes) const;
+                                        unsigned int generation, const QVariantMap& changes, int tableIndex = -1,
+                                        const QString& pattern = QString()) const;
     Q_INVOKABLE bool renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
-                                     unsigned int generation, const QString& name) const;
-    /** Adds a row; @p record (issue #708) is its record flag, sent only for a row that listens (one that does not
-     *  records nothing). */
+                                     unsigned int generation, const QString& name, int tableIndex = -1,
+                                     const QString& pattern = QString()) const;
+    /** Adds a heard talkgroup (never a listed row) to the list; @p record (issue #708) is its record flag, sent only for
+     *  a row that listens (one that does not records nothing). */
     Q_INVOKABLE bool addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
                                   unsigned int generation, const QString& name, bool listen, int priority, bool preempt,
                                   bool record = true) const;
     Q_INVOKABLE bool removeTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
-                                     unsigned int generation) const;
+                                     unsigned int generation, int tableIndex = -1,
+                                     const QString& pattern = QString()) const;
     Q_INVOKABLE bool saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) const;
 
     /** @brief Toggle audio mute. @return true when the command was accepted. */
@@ -160,8 +165,15 @@ class CommandBridge : public QObject {
 
     Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
 
-    /** @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added. */
-    Q_INVOKABLE bool setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen) const;
+    /**
+     * @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added.
+     *
+     * A listed row passes the captured @p context / @p generation and its row token (@p tableIndex, @p pattern); a
+     * stale capture is refused by the decoder. Without a context the edit is bounds-only and unchecked.
+     */
+    Q_INVOKABLE bool setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen,
+                                           const QString& context = QString(), unsigned int generation = 0,
+                                           int tableIndex = -1, const QString& pattern = QString()) const;
 
     /** @brief Edit every listed talkgroup, or only those tagged @p tag when non-empty. */
     Q_INVOKABLE bool setAllTalkgroupsListening(bool listen, const QString& tag) const;

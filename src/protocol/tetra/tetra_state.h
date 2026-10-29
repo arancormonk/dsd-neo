@@ -160,6 +160,7 @@ typedef struct {
     double seen_m;          /**< decode clock: the last CRC-passed PDU that named the call, or its speech */
     double alloc_m;         /**< decode clock: when its channel allocation was last set; 0 for none */
     double followed_m;      /**< decode clock: when the state machine started following it; 0 never followed */
+    double pair_m;          /**< decode clock: when the floor PDU @c pair_kind names came */
     tetra_chan_alloc alloc; /**< the traffic channel it was last allocated; no timeslots for none */
     uint32_t called_ssi;    /**< called party: the GSSI of a group call, the ISSI of an individual one; 0 unknown */
     uint32_t calling_ssi;   /**< calling party; 0 unknown */
@@ -180,6 +181,8 @@ typedef struct {
     tetra_air_cand air_key; /**< the key whose decrypted signalling gave @c alloc, when it was ciphertext */
     uint8_t usage_marker_before; /**< 1 + the usage marker the last allocation ended, 0 for none: one it assigns again
                                       is no new marker (tetra_calls.c) */
+    uint8_t pair_kind;           /**< 1 + the kind of the last floor PDU, when a group-addressed one may pair with it
+                                      (floor_transition() in tetra_calls.c); 0 for none */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the
@@ -225,9 +228,23 @@ typedef struct {
     uint8_t circuit_known;
 } tetra_dmo_call_t;
 
+/* The D-CONNECTs of calls no record holds that are remembered for the D-SETUP that may follow them (tetra_calls.c). */
+#define TETRA_PENDING_CONNECTS 4
+
+/** A D-CONNECT granting transmission to the calling party of a call no record holds yet (EN 300 392-2 clause
+ * 14.5.2.1.2 NOTE 1: the SwMI may send it before the D-SETUP). */
+typedef struct {
+    double seen_m;    /**< decode clock: when it came */
+    uint32_t caller;  /**< its MAC address: the calling party */
+    uint32_t net;     /**< the network it came on (MCC << 14 | MNC), TETRA_CALL_NET_UNKNOWN when not known */
+    uint16_t call_id; /**< call identifier */
+    uint8_t used;     /**< the entry holds one */
+} tetra_pending_connect;
+
 /** Calls (tetra_calls.c): the trunked mode call table, the direct mode call and what the decoder publishes. */
 typedef struct {
     tetra_call_t call[TETRA_CALLS_MAX];
+    tetra_pending_connect pending[TETRA_PENDING_CONNECTS]; /* connect-first set-ups whose D-SETUP has not come */
     tetra_dmo_call_t dmo;
     double heard_m;             /* decode clock: the last good speech of the heard timeslot (not trunking) */
     double held_m;              /* decode clock: its last good speech that played (held) */

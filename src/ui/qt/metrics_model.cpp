@@ -113,8 +113,9 @@ frameEquals(const dsd_app_frame_errs& a, const dsd_app_frame_errs& b) {
  * @brief Structured identity for one slot, display-ready for the hero panel.
  *
  * Thin adapter over the shared app-control view: it owns the ended-hold decay, the
- * identity-less-epoch suppression and the staged CSV group name lookup, so the
- * terminal, this panel and the Android notification cannot drift apart on any of them.
+ * identity-less-epoch suppression and the staged CSV group name lookup, so this panel,
+ * the Android notification and the terminal's TETRA call block cannot drift apart on any
+ * of them. (The terminal's P25/DMR slot rows read the call-state snapshot directly.)
  */
 MetricsModel::SlotCall
 MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m) {
@@ -130,6 +131,10 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     out.tg_text = QString::fromUtf8(view.tg_text);
     out.tg_id = static_cast<qulonglong>(view.tg_id);
     out.src_text = QString::fromUtf8(view.src_text);
+    out.tg_label = QString::fromUtf8(view.tg_label);
+    out.src_label = QString::fromUtf8(view.src_label);
+    out.protocol_label = QString::fromUtf8(view.protocol_label);
+    out.kind = view.kind;
     out.name = QString::fromUtf8(view.name);
     out.channel = QString::fromUtf8(view.channel);
     out.enc = view.enc != 0U;
@@ -728,6 +733,11 @@ struct DecryptionView {
             if (policy.block_reasons) {
                 block = QString::fromUtf8(dsd_tg_policy_block_reason_label(policy.block_reasons));
             }
+        } else if ((call.kind == DSD_CALL_KIND_GROUP_VOICE || call.kind == DSD_CALL_KIND_PRIVATE_VOICE)
+                   && call.ota_source_id > 0 && call.ota_source_id <= UINT32_MAX
+                   && dsd_tg_policy_radio_blocked(state, static_cast<uint32_t>(call.ota_source_id))) {
+            // Its target is not known yet, but its radio is: the radio list's block applies once the radio is known.
+            block = QString::fromUtf8(dsd_tg_policy_block_reason_label(DSD_TG_POLICY_BLOCK_SOURCE));
         }
         return block;
     }

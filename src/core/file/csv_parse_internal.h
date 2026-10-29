@@ -17,6 +17,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -185,24 +186,27 @@ csv_parse_u32_token(const char* token, uint32_t* out) {
     return 1;
 }
 
+/* The ID kinds csv_parse_id_field() reports; equal to dsd_tg_policy_row_kind's values. */
+enum { CSV_ID_EXACT = 0, CSV_ID_RANGE = 1, CSV_ID_PATTERN = 2 };
+
 static inline int
-csv_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
+csv_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_kind) {
+    if (!token || !out_start || !out_end || !out_kind) {
         return 0;
     }
     if (!csv_parse_u32_token(token, out_start)) {
         return 0;
     }
     *out_end = *out_start;
-    *out_is_range = 0;
+    *out_kind = CSV_ID_EXACT;
     return 1;
 }
 
 static inline int
-csv_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
+csv_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_kind) {
     uint32_t start = 0;
     uint32_t end = 0;
-    if (!token || !dash || !out_start || !out_end || !out_is_range) {
+    if (!token || !dash || !out_start || !out_end || !out_kind) {
         return 0;
     }
     if (strchr(dash + 1, '-') != NULL) {
@@ -223,25 +227,39 @@ csv_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_e
     }
     *out_start = start;
     *out_end = end;
-    *out_is_range = (start != end) ? 1 : 0;
+    *out_kind = (start != end) ? CSV_ID_RANGE : CSV_ID_EXACT;
     return 1;
 }
 
+/*
+ * Parse an id cell: one decimal ID, a start-end range, or a digit pattern (<dsd-neo/core/id_pattern.h>; any cell with
+ * x, X or *). A pattern sets *out_kind to CSV_ID_PATTERN, both bounds to 0 and @p out_pattern to its canonical form;
+ * with a NULL @p out_pattern the caller takes no patterns and a pattern cell is rejected. Returns 1 when parsed.
+ */
 static inline int
-csv_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
+csv_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_kind, dsd_id_pattern* out_pattern) {
+    if (!token || !out_start || !out_end || !out_kind) {
         return 0;
     }
     token = trim_ws(token);
     if (!token || token[0] == '\0') {
         return 0;
     }
+    if (dsd_id_pattern_is_candidate(token)) {
+        if (!out_pattern || dsd_id_pattern_parse(token, out_pattern) != 0) {
+            return 0;
+        }
+        *out_start = 0;
+        *out_end = 0;
+        *out_kind = CSV_ID_PATTERN;
+        return 1;
+    }
 
     char* dash = strchr(token, '-');
     if (!dash) {
-        return csv_parse_single_id(token, out_start, out_end, out_is_range);
+        return csv_parse_single_id(token, out_start, out_end, out_kind);
     }
-    return csv_parse_range_id(token, dash, out_start, out_end, out_is_range);
+    return csv_parse_range_id(token, dash, out_start, out_end, out_kind);
 }
 
 static inline const char*
@@ -376,6 +394,85 @@ csv_ascii_casecmp(const char* a, const char* b) {
         b++;
     }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
+}
+
+/* What csv_parse_bool_cell() found in a cell. */
+enum { CSV_CELL_INVALID = -1, CSV_CELL_MISSING = 0, CSV_CELL_OK = 1 };
+
+/* An on/off policy cell (group list, radio list): true/yes/on/1 or false/no/off/0, case-insensitive and trimmed in
+ * place. An empty cell is CSV_CELL_MISSING (the default applies); anything else is CSV_CELL_INVALID. */
+static inline int
+csv_parse_bool_cell(char* token, int* out) {
+    if (!token || !out) {
+        return CSV_CELL_INVALID;
+    }
+    const char* p = trim_ws(token);
+    if (!p || p[0] == '\0') {
+        return CSV_CELL_MISSING;
+    }
+    if (csv_ascii_casecmp(p, "true") == 0 || csv_ascii_casecmp(p, "yes") == 0 || csv_ascii_casecmp(p, "on") == 0
+        || strcmp(p, "1") == 0) {
+        *out = 1;
+        return CSV_CELL_OK;
+    }
+    if (csv_ascii_casecmp(p, "false") == 0 || csv_ascii_casecmp(p, "no") == 0 || csv_ascii_casecmp(p, "off") == 0
+        || strcmp(p, "0") == 0) {
+        *out = 0;
+        return CSV_CELL_OK;
+    }
+    return CSV_CELL_INVALID;
+}
+
+/* Where a policy row came from, for its diagnostics ("<file_kind> file '<filename>' row N ..."), and whether to keep
+ * them quiet. */
+typedef struct {
+    const char* file_kind;
+    const char* filename;
+    unsigned int row;
+    int quiet;
+} csv_row_origin;
+
+/* One row's media cells and which of them the row set (has_*). */
+typedef struct {
+    uint8_t* audio;
+    uint8_t* record;
+    uint8_t* stream;
+    int has_audio;
+    int has_record;
+    int has_stream;
+} csv_media_cells;
+
+/* Whether the row set record or stream on. */
+static inline int
+csv_media_cells_set_record_or_stream(const csv_media_cells* m) {
+    return (m->has_record && *m->record) || (m->has_stream && *m->stream);
+}
+
+/* Apply the mode rules to one row's media cells: a blocking mode forces audio, record and stream off, and audio off
+ * forces record and stream off. Overriding a cell the row set warns unless the origin is quiet. */
+static inline void
+csv_enforce_media_cells(const csv_row_origin* origin, int mode_blocking, const csv_media_cells* m) {
+    if (!origin || !m || !m->audio || !m->record || !m->stream) {
+        return;
+    }
+    if (mode_blocking) {
+        if (!origin->quiet && ((m->has_audio && *m->audio) || csv_media_cells_set_record_or_stream(m))) {
+            LOG_WARN("WARNING: %s file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
+                     origin->file_kind, origin->filename, origin->row);
+        }
+        *m->audio = 0u;
+        *m->record = 0u;
+        *m->stream = 0u;
+        return;
+    }
+    if (*m->audio == 0u && csv_media_cells_set_record_or_stream(m)) {
+        if (!origin->quiet) {
+            LOG_WARN("WARNING: %s file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
+                     origin->file_kind, origin->filename, origin->row);
+        }
+        *m->record = 0u;
+        *m->stream = 0u;
+    }
 }
 
 /*

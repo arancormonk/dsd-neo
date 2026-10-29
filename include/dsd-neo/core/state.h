@@ -352,6 +352,15 @@ typedef struct {
     // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
     // of the same epoch would stamp whichever channel the scanner has since hopped to.
     uint8_t channel_label_resolved;
+    // Set when the recording of the row's call must not be exported to rdio-scanner (DirWatch sidecar and API upload):
+    // the talkgroup and radio policy's `stream` flags, judged by the event layer as the media gates judge the call each
+    // time it resolves the row's labels (issue #773 D7). 0 for a row never judged, however it was built
+    // (init_event_history(), a zeroed row), so it exports as before. Decoder-thread bookkeeping; not shown or persisted.
+    uint8_t stream_blocked;
+    // The talkgroup the row's call was judged on for that export: a patched P25 call's member talkgroup while its
+    // membership is current, else the call's policy target, else target_id (a private call: target_id); 0 while the
+    // call has not been judged. Bookkeeping as stream_blocked is.
+    uint32_t policy_target_id;
     uint32_t channel; // If this occurs on a trunking channel, which channel
     // Frequency in Hz the call was heard on, or 0 when unknown. The call's own frequency (a grant's
     // channel, the followed voice channel) whenever the call has one; otherwise the receiver's tuned

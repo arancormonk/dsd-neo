@@ -6,9 +6,11 @@
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -24,14 +26,28 @@
 #include <string.h>
 #include "talkgroup_policy_internal.h"
 
+/* What the lookups scan, one small key per row, so a scan of a long list reads 12 bytes a row rather than the whole
+ * entry. keys[i] describes entries[i]; tg_policy_table_sync_keys() and the append path keep them in step. */
 typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    uint8_t kind;  /* dsd_tg_policy_row_kind */
+    uint8_t alias; /* tg_policy_entry_is_learned_alias() */
+} tg_policy_row_key;
+
+typedef struct {
+    /* One allocation of `capacity` entries followed by `capacity` keys (tg_policy_table_block_size()); freeing the
+     * entries frees the keys. */
     dsd_tg_policy_entry* entries;
+    tg_policy_row_key* keys;
     size_t count;
     size_t capacity;
     unsigned int generation;
     /* The generation after the last change to rows a frontend edits (anything but learned aliases): an edit captured
      * at or after it still addresses the same rows. */
     unsigned int structural_generation;
+    /* Pattern rows in the table: 0 skips the pattern pass of every lookup (no formatting, no scan). */
+    size_t pattern_count;
 } dsd_tg_policy_table;
 
 const char*
@@ -65,6 +81,9 @@ dsd_tg_policy_block_reason_label(uint32_t block_reasons) {
     }
     if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
         return "mode";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_SOURCE) {
+        return "radio blocked";
     }
     if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
         return "audio";
@@ -128,12 +147,15 @@ struct dsd_tg_policy_store {
 typedef struct dsd_tg_policy_store dsd_tg_policy_context;
 
 static void tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx);
+static int tg_policy_entry_is_learned_alias(const dsd_tg_policy_entry* entry);
 
 #ifdef DSD_NEO_TEST_HOOKS
 static long s_alloc_fail_after = -1;
 static long s_alloc_calls = 0;
+static int s_fail_next_append_close = 0;
 void dsd_tg_policy_test_alloc_reset(void);
 void dsd_tg_policy_test_alloc_fail_after(long fail_after);
+void dsd_tg_policy_test_fail_next_append_close(void);
 #endif
 static dsd_atomic_u64 s_next_context_id = {1u};
 
@@ -181,7 +203,26 @@ dsd_tg_policy_test_alloc_fail_after(long fail_after) {
     s_alloc_calls = 0;
     s_alloc_fail_after = fail_after;
 }
+
+/* The next group-file append's final close reports failure, as a full disk does when the buffered row is flushed. */
+void
+dsd_tg_policy_test_fail_next_append_close(void) {
+    s_fail_next_append_close = 1;
+}
 #endif
+
+/* Close a group-file append stream: 0 when every buffered byte reached the file. */
+static int
+tg_policy_close_append(FILE* fp) {
+    int rc = fclose(fp);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (s_fail_next_append_close) {
+        s_fail_next_append_close = 0;
+        rc = EOF;
+    }
+#endif
+    return rc;
+}
 
 static int
 tg_policy_is_ascii_space(unsigned char c) {
@@ -217,17 +258,34 @@ tg_policy_safe_copy(char* dst, size_t dst_sz, const char* src) {
     DSD_SNPRINTF(dst, dst_sz, "%s", src);
 }
 
-static int
-tg_policy_mode_is_blocking(const char* mode) {
+int
+dsd_tg_policy_mode_blocks(const char* mode) {
     if (!mode) {
         return 0;
     }
     return (strcmp(mode, "B") == 0 || strcmp(mode, "DE") == 0);
 }
 
+void
+dsd_tg_policy_media_normalize(const char* mode, uint8_t* audio, uint8_t* record, uint8_t* stream) {
+    if (!audio || !record || !stream) {
+        return;
+    }
+    *audio = (*audio != 0u) ? 1u : 0u;
+    *record = (*record != 0u) ? 1u : 0u;
+    *stream = (*stream != 0u) ? 1u : 0u;
+    if (dsd_tg_policy_mode_blocks(mode)) {
+        *audio = 0u;
+    }
+    if (!*audio) {
+        *record = 0u;
+        *stream = 0u;
+    }
+}
+
 static void
 tg_policy_defaults_from_mode(const char* mode, uint8_t* audio, uint8_t* record, uint8_t* stream) {
-    uint8_t on = tg_policy_mode_is_blocking(mode) ? 0u : 1u;
+    uint8_t on = dsd_tg_policy_mode_blocks(mode) ? 0u : 1u;
     if (audio) {
         *audio = on;
     }
@@ -245,22 +303,12 @@ tg_policy_normalize_entry(dsd_tg_policy_entry* e) {
         return;
     }
     e->preempt = (e->preempt != 0u) ? 1u : 0u;
-    e->audio = (e->audio != 0u) ? 1u : 0u;
-    e->record = (e->record != 0u) ? 1u : 0u;
-    e->stream = (e->stream != 0u) ? 1u : 0u;
     if (e->priority < 0) {
         e->priority = 0;
     } else if (e->priority > 100) {
         e->priority = 100;
     }
-    if (tg_policy_mode_is_blocking(e->mode)) {
-        e->audio = 0;
-        e->record = 0;
-        e->stream = 0;
-    } else if (!e->audio) {
-        e->record = 0;
-        e->stream = 0;
-    }
+    dsd_tg_policy_media_normalize(e->mode, &e->audio, &e->record, &e->stream);
 }
 
 static int
@@ -291,9 +339,12 @@ tg_policy_copy_entry_normalized(dsd_tg_policy_entry* dst, const dsd_tg_policy_en
     dst->audio = src->audio;
     dst->record = src->record;
     dst->stream = src->stream;
-    dst->is_range = src->is_range ? 1u : 0u;
+    dst->kind = src->kind;
     dst->source = src->source;
     dst->row = src->row;
+    if (src->kind == DSD_TG_POLICY_ROW_PATTERN) {
+        DSD_SNPRINTF(dst->pattern, sizeof(dst->pattern), "%.*s", (int)(sizeof(src->pattern) - 1U), src->pattern);
+    }
     tg_policy_normalize_entry(dst);
 }
 
@@ -302,7 +353,7 @@ tg_policy_entry_valid_exact(const dsd_tg_policy_entry* e) {
     if (!e) {
         return 0;
     }
-    if (e->is_range != 0u) {
+    if (e->kind != DSD_TG_POLICY_ROW_EXACT) {
         return 0;
     }
     return e->id_start == e->id_end;
@@ -313,13 +364,49 @@ tg_policy_entry_valid_range(const dsd_tg_policy_entry* e) {
     if (!e) {
         return 0;
     }
-    if (e->is_range == 0u) {
+    if (e->kind != DSD_TG_POLICY_ROW_RANGE) {
         return 0;
     }
     if (e->id_start > e->id_end) {
         return 0;
     }
     return e->id_start != e->id_end;
+}
+
+/* A pattern row: placeholder 0/0 bounds and a terminated pattern that parses. @p out (may be NULL) takes it parsed. */
+static int
+tg_policy_entry_valid_pattern(const dsd_tg_policy_entry* e, dsd_id_pattern* out) {
+    dsd_id_pattern parsed;
+    if (!e || e->kind != DSD_TG_POLICY_ROW_PATTERN || e->id_start != 0u || e->id_end != 0u
+        || !memchr(e->pattern, '\0', sizeof(e->pattern))) {
+        return 0;
+    }
+    if (dsd_id_pattern_parse(e->pattern, &parsed) != 0) {
+        return 0;
+    }
+    if (out) {
+        *out = parsed;
+    }
+    return 1;
+}
+
+static int
+tg_policy_entry_valid(const dsd_tg_policy_entry* e) {
+    if (!e) {
+        return 0;
+    }
+    switch (e->kind) {
+        case DSD_TG_POLICY_ROW_EXACT: return tg_policy_entry_valid_exact(e);
+        case DSD_TG_POLICY_ROW_RANGE: return tg_policy_entry_valid_range(e);
+        case DSD_TG_POLICY_ROW_PATTERN: return tg_policy_entry_valid_pattern(e, NULL);
+        default: return 0;
+    }
+}
+
+/* A stored pattern row's text as a dsd_id_pattern, with its rank. The text was validated canonical on insertion. */
+static void
+tg_policy_entry_pattern(const dsd_tg_policy_entry* e, dsd_id_pattern* out) {
+    dsd_id_pattern_from_canonical(e->pattern, out);
 }
 
 static uint64_t
@@ -354,6 +441,7 @@ tg_policy_context_free(void* ptr) {
     }
     free(ctx->table.entries);
     ctx->table.entries = NULL;
+    ctx->table.keys = NULL;
     ctx->table.count = 0;
     ctx->table.capacity = 0;
     free(ctx->session_avoids);
@@ -392,6 +480,30 @@ tg_policy_ctx_get_const(const dsd_state* state) {
     return (const dsd_tg_policy_context*)dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_TG_POLICY);
 }
 
+/* Bytes per row of a table block: the entry and its key. */
+#define TG_POLICY_ROW_BYTES (sizeof(dsd_tg_policy_entry) + sizeof(tg_policy_row_key))
+
+static void
+tg_policy_key_from_entry(tg_policy_row_key* key, const dsd_tg_policy_entry* e) {
+    key->id_start = e->id_start;
+    key->id_end = e->id_end;
+    key->kind = e->kind;
+    key->alias = tg_policy_entry_is_learned_alias(e) ? 1U : 0U;
+}
+
+/* Point the keys after @p capacity entries of the table's block and recompute every row's key. */
+static void
+tg_policy_table_sync_keys(dsd_tg_policy_table* table) {
+    if (!table->entries) {
+        table->keys = NULL;
+        return;
+    }
+    table->keys = (tg_policy_row_key*)(void*)(table->entries + table->capacity);
+    for (size_t i = 0; i < table->count; i++) {
+        tg_policy_key_from_entry(&table->keys[i], &table->entries[i]);
+    }
+}
+
 static int
 tg_policy_table_reserve(dsd_tg_policy_context* ctx, size_t needed) {
     size_t target = 0;
@@ -408,11 +520,21 @@ tg_policy_table_reserve(dsd_tg_policy_context* ctx, size_t needed) {
         target *= 2u;
     }
 
-    next = (dsd_tg_policy_entry*)tg_policy_realloc(ctx->table.entries, target * sizeof(*next));
+    if (target > SIZE_MAX / TG_POLICY_ROW_BYTES) {
+        return -1;
+    }
+    const size_t old_capacity = ctx->table.capacity;
+    next = (dsd_tg_policy_entry*)tg_policy_realloc(ctx->table.entries, target * TG_POLICY_ROW_BYTES);
     if (!next) {
         return -1;
     }
+    // The keys sat after the old capacity's entries: move them after the new capacity's.
+    tg_policy_row_key* keys = (tg_policy_row_key*)(void*)(next + target);
+    if (ctx->table.count > 0) {
+        DSD_MEMMOVE(keys, (void*)(next + old_capacity), ctx->table.count * sizeof(*keys));
+    }
     ctx->table.entries = next;
+    ctx->table.keys = keys;
     ctx->table.capacity = target;
     return 0;
 }
@@ -424,7 +546,7 @@ tg_policy_find_policy_exact_idx_first(const dsd_tg_policy_context* ctx, uint32_t
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->is_range == 0u && e->id_start == id && e->id_end == id) {
+        if (e->kind == DSD_TG_POLICY_ROW_EXACT && e->id_start == id && e->id_end == id) {
             return (int)i;
         }
     }
@@ -438,7 +560,8 @@ tg_policy_entry_is_learned_alias(const dsd_tg_policy_entry* entry) {
     return entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS || strcmp(entry->mode, "D") == 0;
 }
 
-/* The first row with these bounds that is (@p alias 0) or is not (@p alias 1) a learned alias. */
+/* The first exact or range row with these bounds that is (@p alias 1) or is not (@p alias 0) a learned alias. A
+ * pattern row's 0/0 bounds are a placeholder, never an address. */
 static int
 tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end, int alias) {
     if (!ctx) {
@@ -446,7 +569,8 @@ tg_policy_find_bounds_idx_kind(const dsd_tg_policy_context* ctx, uint32_t id_sta
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
         const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->id_start == id_start && e->id_end == id_end && tg_policy_entry_is_learned_alias(e) == (alias != 0)) {
+        if (e->kind != DSD_TG_POLICY_ROW_PATTERN && e->id_start == id_start && e->id_end == id_end
+            && tg_policy_entry_is_learned_alias(e) == (alias != 0)) {
             return (int)i;
         }
     }
@@ -463,6 +587,8 @@ tg_policy_find_edit_idx(const dsd_tg_policy_context* ctx, uint32_t id_start, uin
     return tg_policy_find_bounds_idx_kind(ctx, id_start, id_end, 1);
 }
 
+static int tg_policy_lookup_exact_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out);
+
 static int DSD_ATTR_USED
 tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* out) {
     dsd_tg_policy_lookup lookup;
@@ -470,10 +596,8 @@ tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_e
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (dsd_tg_policy_lookup_id(state, id, &lookup) != 0) {
-        return 0;
-    }
-    if (lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &lookup)) {
         return 0;
     }
     *out = lookup.entry;
@@ -483,7 +607,7 @@ tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_e
 /* Every mutation advances the generation (snapshots re-copy). A structural one also moves the edit anchor; a wrap is
  * structural so the edit interval stays bounded. */
 static void
-tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
+tg_policy_table_note_changed(dsd_tg_policy_context* ctx, int structural) {
     if (!ctx) {
         return;
     }
@@ -497,6 +621,17 @@ tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
         ctx->lazy = 0;
     }
     tg_policy_refresh_active_priorities(ctx);
+}
+
+/* A mutation that edited, replaced, removed or reordered rows: every key is recomputed (O(rows), at edit pace).
+ * Appends set their own key and call tg_policy_table_note_changed(). */
+static void
+tg_policy_table_note_mutation_kind(dsd_tg_policy_context* ctx, int structural) {
+    if (!ctx) {
+        return;
+    }
+    tg_policy_table_sync_keys(&ctx->table);
+    tg_policy_table_note_changed(ctx, structural);
 }
 
 static void
@@ -534,6 +669,20 @@ dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32
     }
     const size_t after = end == UINT32_MAX ? ctx->session_avoid_count : tg_policy_avoid_lower_bound(ctx, end + 1U);
     return after - tg_policy_avoid_lower_bound(ctx, start);
+}
+
+size_t
+dsd_tg_policy_session_avoid_count_pattern(const dsd_state* state, const char* pattern) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    dsd_id_pattern parsed;
+    if (!ctx || dsd_id_pattern_parse(pattern, &parsed) != 0) {
+        return 0;
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < ctx->session_avoid_count; i++) {
+        count += dsd_id_pattern_match(&parsed, ctx->session_avoids[i]) ? 1U : 0U;
+    }
+    return count;
 }
 
 static int
@@ -589,7 +738,8 @@ dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id) {
                 (ctx->session_avoid_count - index) * sizeof(*ctx->session_avoids));
     ctx->session_avoids[index] = id;
     ++ctx->session_avoid_count;
-    tg_policy_table_note_mutation_kind(ctx, 0);
+    /* The avoids sit outside the rows, so the row keys stay as they are. */
+    tg_policy_table_note_changed(ctx, 0);
     return 0;
 }
 
@@ -598,7 +748,7 @@ dsd_tg_policy_session_avoid_clear(dsd_state* state) {
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
     if (ctx && ctx->session_avoid_count) {
         ctx->session_avoid_count = 0;
-        tg_policy_table_note_mutation_kind(ctx, 0);
+        tg_policy_table_note_changed(ctx, 0);
     }
 }
 
@@ -728,7 +878,7 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
     out->priority = 0;
     out->preempt = 0;
     tg_policy_defaults_from_mode(out->mode, &out->audio, &out->record, &out->stream);
-    out->is_range = 0;
+    out->kind = DSD_TG_POLICY_ROW_EXACT;
     out->source = (uint8_t)source;
     out->row = 0;
     return 0;
@@ -736,20 +886,26 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
 
 static int
 tg_policy_store_append_kind(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int structural) {
-    if (!store || !entry
-        || !(entry->is_range ? tg_policy_entry_valid_range(entry) : tg_policy_entry_valid_exact(entry))) {
+    if (!store || !tg_policy_entry_valid(entry)) {
         return 1;
     }
     dsd_tg_policy_entry normalized;
     tg_policy_copy_entry_normalized(&normalized, entry);
-    if (!entry->is_range) {
-        normalized.id_end = normalized.id_start;
+    if (normalized.kind == DSD_TG_POLICY_ROW_PATTERN) {
+        // Stored, keyed and exported in canonical form.
+        dsd_id_pattern parsed;
+        (void)tg_policy_entry_valid_pattern(&normalized, &parsed);
+        DSD_SNPRINTF(normalized.pattern, sizeof(normalized.pattern), "%s", parsed.text);
     }
     if (tg_policy_table_reserve(store, store->table.count + 1) != 0) {
         return -1;
     }
+    tg_policy_key_from_entry(&store->table.keys[store->table.count], &normalized);
     store->table.entries[store->table.count++] = normalized;
-    tg_policy_table_note_mutation_kind(store, structural);
+    if (normalized.kind == DSD_TG_POLICY_ROW_PATTERN) {
+        store->table.pattern_count++;
+    }
+    tg_policy_table_note_changed(store, structural);
     return 0;
 }
 
@@ -761,6 +917,15 @@ dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry
 int
 dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry) {
     if (!state || !entry || !tg_policy_entry_valid_range(entry)) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    return ctx ? dsd_tg_policy_store_append(ctx, entry) : -1;
+}
+
+int
+dsd_tg_policy_add_pattern_entry(dsd_state* state, const dsd_tg_policy_entry* entry) {
+    if (!state || !tg_policy_entry_valid_pattern(entry, NULL)) {
         return 1;
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
@@ -830,8 +995,6 @@ dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, d
         return 1;
     }
     tg_policy_copy_entry_normalized(&normalized, entry);
-    normalized.is_range = 0;
-    normalized.id_end = normalized.id_start;
 
     ctx = tg_policy_ctx_get_mut(state, mode != DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
     policy_idx = tg_policy_find_policy_exact_idx_first(ctx, normalized.id_start);
@@ -996,13 +1159,50 @@ tg_policy_apply_fields(dsd_tg_policy_entry* entry, const dsd_tg_policy_entry* va
     }
 }
 
+static int
+tg_policy_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask) {
+    const uint32_t all = DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
+                         | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_RECORD;
+    return !values || !mask || (mask & ~all) || tg_policy_listen_fields_invalid(values, mask)
+           || tg_policy_other_fields_invalid(values, mask);
+}
+
+/* Whether @p e is the row a token or captured selection names: the same kind, and the same bounds (exact, range) or
+ * the same canonical pattern text (pattern; @p pattern is the token's text, canonicalised here). */
+static int
+tg_policy_entry_has_key(const dsd_tg_policy_entry* e, uint8_t kind, uint32_t id_start, uint32_t id_end,
+                        const char* pattern) {
+    if (e->kind != kind) {
+        return 0;
+    }
+    if (kind != DSD_TG_POLICY_ROW_PATTERN) {
+        // An exact or range token carries no pattern text: stray text names no row.
+        return pattern[0] == '\0' && e->id_start == id_start && e->id_end == id_end;
+    }
+    dsd_id_pattern parsed;
+    return memchr(pattern, '\0', DSD_ID_PATTERN_TEXT_MAX) != NULL && dsd_id_pattern_parse(pattern, &parsed) == 0
+           && strcmp(parsed.text, e->pattern) == 0;
+}
+
+/* The row a token names, or -1 when the index is out of the table, the row there has another kind or key, or it is a
+ * learned alias (frontends never list one for editing). */
+static int
+tg_policy_find_key_idx(const dsd_tg_policy_context* ctx, const dsd_tg_policy_row_key* key) {
+    if (!ctx || key->table_index < 0 || (size_t)key->table_index >= ctx->table.count) {
+        return -1;
+    }
+    const dsd_tg_policy_entry* e = &ctx->table.entries[key->table_index];
+    if (!tg_policy_entry_has_key(e, key->kind, key->id_start, key->id_end, key->pattern)
+        || !tg_policy_row_editable(e)) {
+        return -1;
+    }
+    return (int)key->table_index;
+}
+
 int
 dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, const dsd_tg_policy_entry* values,
                          uint32_t mask) {
-    const uint32_t all = DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
-                         | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_RECORD;
-    if (!state || !values || id_start > id_end || !mask || (mask & ~all)
-        || tg_policy_listen_fields_invalid(values, mask) || tg_policy_other_fields_invalid(values, mask)) {
+    if (!state || id_start > id_end || tg_policy_fields_invalid(values, mask)) {
         return 1;
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
@@ -1020,13 +1220,46 @@ dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, c
     } else {
         dsd_tg_policy_make_exact_entry(id_start, "A", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry);
         entry.id_end = id_end;
-        entry.is_range = id_start != id_end;
+        entry.kind = id_start != id_end ? DSD_TG_POLICY_ROW_RANGE : DSD_TG_POLICY_ROW_EXACT;
     }
     tg_policy_apply_fields(&entry, values, mask);
     if (index < 0) {
         return dsd_tg_policy_store_append(ctx, &entry);
     }
     ctx->table.entries[index] = entry;
+    tg_policy_table_note_mutation(ctx);
+    return 0;
+}
+
+/* A token checked before it addresses anything: a capture still valid, and an index or a bounds-only (-1) edit of an
+ * exact or range row. */
+static int
+tg_policy_key_usable(const dsd_state* state, uint64_t context, unsigned int generation,
+                     const dsd_tg_policy_row_key* key) {
+    if (!state || !key || key->table_index < -1 || (key->table_index == -1 && key->kind == DSD_TG_POLICY_ROW_PATTERN)) {
+        return 0;
+    }
+    return dsd_tg_policy_edit_version_valid(state, context, generation);
+}
+
+int
+dsd_tg_policy_set_fields_key(dsd_state* state, uint64_t context, unsigned int generation,
+                             const dsd_tg_policy_row_key* key, const dsd_tg_policy_entry* values, uint32_t mask) {
+    if (tg_policy_fields_invalid(values, mask) || !tg_policy_key_usable(state, context, generation, key)) {
+        return 1;
+    }
+    if (key->table_index == -1) {
+        return dsd_tg_policy_set_fields(state, key->id_start, key->id_end, values, mask);
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (!ctx) {
+        return 1;
+    }
+    const int index = tg_policy_find_key_idx(ctx, key);
+    if (index < 0) {
+        return 1;
+    }
+    tg_policy_apply_fields(&ctx->table.entries[index], values, mask);
     tg_policy_table_note_mutation(ctx);
     return 0;
 }
@@ -1062,18 +1295,20 @@ selection_has_duplicates(const dsd_tg_policy_selection* selection, size_t count)
 static int
 prepare_selection_entry(const dsd_tg_policy_context* ctx, dsd_tg_policy_entry* entries, size_t old_count, size_t* used,
                         const dsd_tg_policy_selection* item, int listening) {
-    if (!item->id_start || item->id_start > item->id_end || item->policy_index < -1) {
+    if (item->policy_index < -1) {
         return 1;
     }
     size_t row;
     if (item->policy_index >= 0) {
+        // A listed row is named by its key, so a range starting at 0 and a pattern row (0/0 bounds) are rows like any.
         row = (size_t)item->policy_index;
-        if (row >= old_count || entries[row].id_start != item->id_start || entries[row].id_end != item->id_end
+        if (row >= old_count
+            || !tg_policy_entry_has_key(&entries[row], item->kind, item->id_start, item->id_end, item->pattern)
             || !tg_policy_row_editable(&entries[row])) {
             return 1;
         }
     } else {
-        if (item->id_start != item->id_end) {
+        if (item->kind != DSD_TG_POLICY_ROW_EXACT || !item->id_start || item->id_start != item->id_end) {
             return 1;
         }
         if (tg_policy_find_bounds_idx_kind(ctx, item->id_start, item->id_end, 0) >= 0) {
@@ -1129,11 +1364,11 @@ dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsign
         return duplicates;
     }
     const size_t old_count = ctx ? ctx->table.count : 0;
-    if (count > SIZE_MAX / sizeof(dsd_tg_policy_entry) - old_count) {
+    if (count > SIZE_MAX / TG_POLICY_ROW_BYTES - old_count) {
         return -1;
     }
     const size_t capacity = old_count + count;
-    dsd_tg_policy_entry* entries = tg_policy_calloc(capacity, sizeof(*entries));
+    dsd_tg_policy_entry* entries = tg_policy_calloc(capacity, TG_POLICY_ROW_BYTES);
     if (!entries) {
         return -1;
     }
@@ -1162,6 +1397,18 @@ dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsign
     return 0;
 }
 
+/* Remove row @p index, keeping the pattern fast-path count in step. */
+static void
+tg_policy_remove_at(dsd_tg_policy_context* ctx, size_t index) {
+    if (ctx->table.entries[index].kind == DSD_TG_POLICY_ROW_PATTERN && ctx->table.pattern_count > 0) {
+        --ctx->table.pattern_count;
+    }
+    DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
+                (ctx->table.count - index - 1) * sizeof(*ctx->table.entries));
+    --ctx->table.count;
+    tg_policy_table_note_mutation(ctx);
+}
+
 int
 dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end) {
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
@@ -1172,10 +1419,28 @@ dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end
     if (index < 0) {
         return 1;
     }
-    DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
-                (ctx->table.count - (size_t)index - 1) * sizeof(*ctx->table.entries));
-    --ctx->table.count;
-    tg_policy_table_note_mutation(ctx);
+    tg_policy_remove_at(ctx, (size_t)index);
+    return 0;
+}
+
+int
+dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int generation,
+                         const dsd_tg_policy_row_key* key) {
+    if (!tg_policy_key_usable(state, context, generation, key)) {
+        return 1;
+    }
+    if (key->table_index == -1) {
+        return dsd_tg_policy_remove_bounds(state, key->id_start, key->id_end);
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (!ctx) {
+        return 1;
+    }
+    const int index = tg_policy_find_key_idx(ctx, key);
+    if (index < 0) {
+        return 1;
+    }
+    tg_policy_remove_at(ctx, (size_t)index);
     return 0;
 }
 
@@ -1188,13 +1453,13 @@ tg_policy_lookup_exact_in_ctx_kind(const dsd_tg_policy_context* ctx, uint32_t id
         return 0;
     }
     for (size_t i = 0; i < ctx->table.count; i++) {
-        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
-        if (e->is_range != 0u || e->id_start != id || e->id_end != id) {
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->kind != DSD_TG_POLICY_ROW_EXACT || k->id_start != id || k->id_end != id) {
             continue;
         }
-        if (!tg_policy_entry_is_learned_alias(e)) {
+        if (!k->alias) {
             out->match = DSD_TG_POLICY_MATCH_EXACT;
-            out->entry = *e;
+            out->entry = ctx->table.entries[i];
             return 1;
         }
         if (alias_idx < 0) {
@@ -1224,15 +1489,15 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     }
 
     for (size_t i = 0; i < ctx->table.count; i++) {
-        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
+        const tg_policy_row_key* k = &ctx->table.keys[i];
         uint64_t span = 0;
-        if (e->is_range == 0u || tg_policy_entry_is_learned_alias(e)) {
+        if (k->kind != DSD_TG_POLICY_ROW_RANGE || k->alias) {
             continue;
         }
-        if (id < e->id_start || id > e->id_end) {
+        if (id < k->id_start || id > k->id_end) {
             continue;
         }
-        span = (uint64_t)e->id_end - (uint64_t)e->id_start;
+        span = (uint64_t)k->id_end - (uint64_t)k->id_start;
         if (best_idx < 0 || span < best_span || (span == best_span && (int)i > best_idx)) {
             best_idx = (int)i;
             best_span = span;
@@ -1242,8 +1507,57 @@ tg_policy_find_best_range_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
     return best_idx;
 }
 
-/* A talkgroup's row: a non-alias exact row, else the narrowest range. A learned radio alias names a radio, so it never
- * decides a talkgroup's mode, priority, preemption or media. */
+/* The most specific pattern row matching @p id (more literal digits, then no star; the last row wins ties), skipping
+ * learned aliases as the range pass does. Free when the table has no pattern rows; otherwise the ID is formatted once
+ * for the whole scan. */
+static int
+tg_policy_find_best_pattern_idx(const dsd_tg_policy_context* ctx, uint32_t id) {
+    if (!ctx || ctx->table.pattern_count == 0) {
+        return -1;
+    }
+    char digits[DSD_ID_DECIMAL_MAX];
+    const size_t len = dsd_id_decimal(id, digits, sizeof(digits));
+    int best_idx = -1;
+    dsd_id_pattern best;
+    DSD_MEMSET(&best, 0, sizeof(best));
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->kind != DSD_TG_POLICY_ROW_PATTERN || k->alias) {
+            continue;
+        }
+        dsd_id_pattern candidate;
+        tg_policy_entry_pattern(&ctx->table.entries[i], &candidate);
+        if (!dsd_id_pattern_match_decimal(&candidate, digits, len)) {
+            continue;
+        }
+        if (best_idx < 0 || !dsd_id_pattern_more_specific(&best, &candidate)) {
+            best_idx = (int)i;
+            best = candidate;
+        }
+    }
+    return best_idx;
+}
+
+/* After the exact pass: the narrowest range, else the most specific pattern. */
+static int
+tg_policy_lookup_span_in_ctx(const dsd_tg_policy_context* ctx, uint32_t id, dsd_tg_policy_lookup* out) {
+    const int range = tg_policy_find_best_range_idx(ctx, id);
+    if (range >= 0) {
+        out->match = DSD_TG_POLICY_MATCH_RANGE;
+        out->entry = ctx->table.entries[range];
+        return 1;
+    }
+    const int pattern = tg_policy_find_best_pattern_idx(ctx, id);
+    if (pattern >= 0) {
+        out->match = DSD_TG_POLICY_MATCH_PATTERN;
+        out->entry = ctx->table.entries[pattern];
+        return 1;
+    }
+    return 0;
+}
+
+/* A talkgroup's row: a non-alias exact row, else the narrowest range, else the most specific pattern. A learned radio
+ * alias names a radio, so it never decides a talkgroup's mode, priority, preemption or media. */
 static int
 tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd_tg_policy_lookup* out) {
     if (!ctx || !ctx->table.entries || ctx->table.count == 0) {
@@ -1252,13 +1566,7 @@ tg_policy_lookup_group_in_ctx(const dsd_tg_policy_context* ctx, uint32_t tg, dsd
     if (tg_policy_lookup_exact_in_ctx_kind(ctx, tg, 0, out)) {
         return 1;
     }
-    const int range = tg_policy_find_best_range_idx(ctx, tg);
-    if (range < 0) {
-        return 0;
-    }
-    out->match = DSD_TG_POLICY_MATCH_RANGE;
-    out->entry = ctx->table.entries[range];
-    return 1;
+    return tg_policy_lookup_span_in_ctx(ctx, tg, out);
 }
 
 static void
@@ -1271,8 +1579,9 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
         dsd_tg_policy_lookup lookup = {0};
         int matched = 0;
         if (call->private_call) {
-            matched = tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup)
-                      || tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup);
+            // As private evaluation: the target's row, else the source's; an endpoint of 0 is unknown.
+            matched = (call->tg != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->tg, &lookup))
+                      || (call->src != 0U && tg_policy_lookup_exact_in_ctx(ctx, call->src, &lookup));
         } else {
             matched = tg_policy_lookup_group_in_ctx(ctx, call->tg, &lookup);
         }
@@ -1284,7 +1593,6 @@ tg_policy_refresh_active_priorities(dsd_tg_policy_context* ctx) {
 int
 dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out) {
     const dsd_tg_policy_context* ctx = NULL;
-    int best_idx = -1;
     if (!out) {
         return -1;
     }
@@ -1304,13 +1612,25 @@ dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_looku
     if (tg_policy_lookup_exact_in_ctx(ctx, id, out)) {
         return 0;
     }
-
-    best_idx = tg_policy_find_best_range_idx(ctx, id);
-    if (best_idx >= 0) {
-        out->match = DSD_TG_POLICY_MATCH_RANGE;
-        out->entry = ctx->table.entries[best_idx];
-    }
+    (void)tg_policy_lookup_span_in_ctx(ctx, id, out);
     return 0;
+}
+
+int
+dsd_tg_policy_lookup_group(const dsd_state* state, uint32_t tg, dsd_tg_policy_lookup* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->match = DSD_TG_POLICY_MATCH_NONE;
+    (void)tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, out);
+    return 0;
+}
+
+size_t
+dsd_tg_policy_pattern_count(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    return ctx ? ctx->table.pattern_count : 0;
 }
 
 int
@@ -1336,7 +1656,27 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
     if (name && name_sz > 0) {
         name[0] = '\0';
     }
-    if (dsd_tg_policy_lookup_id(state, id, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (!tg_policy_lookup_exact_in_ctx(tg_policy_ctx_get_const(state), id, &lookup)) {
+        return 0;
+    }
+    tg_policy_safe_copy(mode, mode_sz, lookup.entry.mode);
+    tg_policy_safe_copy(name, name_sz, lookup.entry.name);
+    return 1;
+}
+
+int
+dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
+                                 size_t name_sz) {
+    dsd_tg_policy_lookup lookup;
+    if (mode && mode_sz > 0) {
+        mode[0] = '\0';
+    }
+    if (name && name_sz > 0) {
+        name[0] = '\0';
+    }
+    DSD_MEMSET(&lookup, 0, sizeof(lookup));
+    if (!tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, &lookup) || lookup.entry.name[0] == '\0') {
         return 0;
     }
     tg_policy_safe_copy(mode, mode_sz, lookup.entry.mode);
@@ -1362,6 +1702,7 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
     clone->table.structural_generation = src->table.structural_generation;
+    clone->table.pattern_count = src->table.pattern_count;
     clone->lazy = src->lazy;
     clone->active = src->active;
     clone->call_skips = src->call_skips;
@@ -1379,12 +1720,14 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->snapshot_source_context_id = src->snapshot_source_context_id;
     clone->snapshot_parent_context_id = src->context_id;
     if (src->table.count > 0) {
-        clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, sizeof(*clone->table.entries));
+        clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, TG_POLICY_ROW_BYTES);
         if (!clone->table.entries) {
             tg_policy_context_free(clone);
             return -1;
         }
         DSD_MEMCPY(clone->table.entries, src->table.entries, src->table.count * sizeof(*clone->table.entries));
+        clone->table.keys = (tg_policy_row_key*)(void*)(clone->table.entries + clone->table.capacity);
+        DSD_MEMCPY(clone->table.keys, src->table.keys, src->table.count * sizeof(*clone->table.keys));
     }
     *out = clone;
     return 0;
@@ -1449,6 +1792,92 @@ tg_policy_init_decision(dsd_tg_policy_decision* out, uint32_t target_id, uint32_
     out->preempt_requested = 0;
     out->block_reasons = DSD_TG_POLICY_BLOCK_NONE;
     out->match = DSD_TG_POLICY_MATCH_NONE;
+    out->radio_audio_allowed = 1;
+    out->radio_record_allowed = 1;
+    out->radio_stream_allowed = 1;
+}
+
+/* One known radio's row with policy restricts the radio part (an ID of 0 is unknown, never looked up). */
+static void
+tg_policy_radio_restrict(const dsd_state* state, uint32_t radio, dsd_tg_policy_decision* out) {
+    dsd_source_policy_match m;
+    if (radio == 0U || !dsd_source_policy_lookup(state, radio, &m)) {
+        return;
+    }
+    out->radio_match = 1;
+    if (dsd_tg_policy_mode_blocks(m.entry.mode)) {
+        out->radio_blocked = 1;
+        out->radio_audio_allowed = 0;
+        out->radio_record_allowed = 0;
+        out->radio_stream_allowed = 0;
+        return;
+    }
+    if (!m.entry.audio) {
+        out->radio_audio_allowed = 0;
+        out->radio_record_allowed = 0;
+        out->radio_stream_allowed = 0;
+    }
+    if (!m.entry.record) {
+        out->radio_record_allowed = 0;
+    }
+    if (!m.entry.stream) {
+        out->radio_stream_allowed = 0;
+    }
+}
+
+/* The talkgroup evaluation in @p out is complete: keep it as the talkgroup part, then restrict the combined answer by
+ * the radio list's rows for the known parties @p a and @p b (D5: radio rows only restrict). Without radio policy the
+ * radio list is never consulted. */
+static void
+tg_policy_apply_radio_parts(const dsd_state* state, uint32_t a, uint32_t b, dsd_tg_policy_decision* out) {
+    out->tg_tune_allowed = out->tune_allowed;
+    out->tg_audio_allowed = out->audio_allowed;
+    out->tg_record_allowed = out->record_allowed;
+    out->tg_stream_allowed = out->stream_allowed;
+    if (!dsd_source_policy_loaded(state)) {
+        return;
+    }
+    tg_policy_radio_restrict(state, a, out);
+    if (b != a) {
+        tg_policy_radio_restrict(state, b, out);
+    }
+    if (!out->radio_match) {
+        return;
+    }
+    if (out->radio_blocked) {
+        out->tune_allowed = 0;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_SOURCE;
+    } else if (!out->radio_audio_allowed) {
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_AUDIO;
+    } else {
+        if (!out->radio_record_allowed) {
+            out->block_reasons |= DSD_TG_POLICY_BLOCK_RECORD;
+        }
+        if (!out->radio_stream_allowed) {
+            out->block_reasons |= DSD_TG_POLICY_BLOCK_STREAM;
+        }
+    }
+    out->audio_allowed = out->audio_allowed && out->radio_audio_allowed;
+    out->record_allowed = out->record_allowed && out->radio_record_allowed;
+    out->stream_allowed = out->stream_allowed && out->radio_stream_allowed;
+}
+
+/* Reasons that deny tuning; the rest restrict media only. */
+#define TG_POLICY_TUNE_DENY_REASONS                                                                                    \
+    (~((uint32_t)DSD_TG_POLICY_BLOCK_AUDIO | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD                                      \
+       | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM))
+
+int
+dsd_tg_policy_decision_only_radio_blocks(const dsd_tg_policy_decision* decision) {
+    return decision && !decision->tune_allowed && decision->tg_tune_allowed && decision->radio_blocked
+           && (decision->block_reasons & TG_POLICY_TUNE_DENY_REASONS & ~(uint32_t)DSD_TG_POLICY_BLOCK_SOURCE) == 0U;
+}
+
+int
+dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id) {
+    dsd_source_policy_match m;
+    return radio_id != 0U && dsd_source_policy_loaded(state) && dsd_source_policy_lookup(state, radio_id, &m)
+           && dsd_tg_policy_mode_blocks(m.entry.mode);
 }
 
 static void
@@ -1509,6 +1938,13 @@ tg_policy_record_unknown_only(const dsd_opts* opts) {
     return opts && opts->record_unknown_only != 0;
 }
 
+/* Whether a talkgroup row a lookup found makes the talkgroup known to that rule. The `*` catch-all pattern row is the
+ * list's "every other talkgroup", so the talkgroups only it matches stay unknown (issue #773). */
+static int
+tg_policy_lookup_knows_talkgroup(const dsd_tg_policy_lookup* lookup) {
+    return lookup->match != DSD_TG_POLICY_MATCH_PATTERN || strcmp(lookup->entry.pattern, "*") != 0;
+}
+
 static void DSD_ATTR_USED
 tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out,
                              int* mode_blocking, int* explicit_audio_block, int* explicit_record_block,
@@ -1522,10 +1958,12 @@ tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint3
     DSD_MEMSET(&lookup, 0, sizeof(lookup));
     if (tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), tg, &lookup)) {
         tg_policy_decision_apply_entry(out, &lookup.entry, lookup.match);
-        local_mode_blocking = tg_policy_mode_is_blocking(lookup.entry.mode);
+        local_mode_blocking = dsd_tg_policy_mode_blocks(lookup.entry.mode);
         local_audio_block = (!local_mode_blocking && lookup.entry.audio == 0u);
-        local_record_block = (!local_mode_blocking && lookup.entry.audio != 0u
-                              && (lookup.entry.record == 0u || tg_policy_record_unknown_only(opts)));
+        local_record_block =
+            (!local_mode_blocking && lookup.entry.audio != 0u
+             && (lookup.entry.record == 0u
+                 || (tg_policy_record_unknown_only(opts) && tg_policy_lookup_knows_talkgroup(&lookup))));
         local_stream_block = (!local_mode_blocking && lookup.entry.audio != 0u && lookup.entry.stream == 0u);
     }
 
@@ -1661,33 +2099,40 @@ tg_policy_choose_private_entry(const dsd_tg_policy_entry* src_entry, int src_mat
 static int
 tg_policy_private_mode_is_blocking(int src_match, const dsd_tg_policy_entry* src_entry, int dst_match,
                                    const dsd_tg_policy_entry* dst_entry) {
-    return (src_match && tg_policy_mode_is_blocking(src_entry->mode))
-           || (dst_match && tg_policy_mode_is_blocking(dst_entry->mode));
+    return (src_match && dsd_tg_policy_mode_blocks(src_entry->mode))
+           || (dst_match && dsd_tg_policy_mode_blocks(dst_entry->mode));
 }
 
-int
-dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
-                                  int encrypted, int data_call, dsd_tg_policy_decision* out) {
+/* A group call on @p tg judged by the row of @p row_id (@p tg itself, or the NXDN Type-C source fallback's source).
+ * The final blocks (encryption lockout, session avoid, call skip) of both IDs apply, and a Hold on either matches. */
+static void
+tg_policy_evaluate_group(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t row_id, uint32_t src,
+                         int encrypted, int data_call, dsd_tg_policy_decision* out) {
     int mode_blocking = 0;
     int explicit_audio_block = 0;
     int explicit_record_block = 0;
     int explicit_stream_block = 0;
     int hold_mismatch = 0;
 
-    if (!out) {
-        return -1;
-    }
     tg_policy_init_decision(out, tg, src, encrypted, data_call);
 
-    tg_policy_group_apply_lookup(opts, state, tg, out, &mode_blocking, &explicit_audio_block, &explicit_record_block,
-                                 &explicit_stream_block);
+    tg_policy_group_apply_lookup(opts, state, row_id, out, &mode_blocking, &explicit_audio_block,
+                                 &explicit_record_block, &explicit_stream_block);
     tg_policy_group_set_hold_state(state, tg, out, &hold_mismatch);
+    if (hold_mismatch && row_id != tg && state->tg_hold == row_id) {
+        out->tg_hold_match = 1;
+        hold_mismatch = 0;
+    }
     tg_policy_apply_group_tune_blocks(opts, encrypted, data_call, out);
     tg_policy_apply_enc_lockout_block(opts, state, tg, 1, data_call, out);
-    if (dsd_tg_policy_session_avoid_contains(state, tg)) {
+    if (row_id != tg) {
+        tg_policy_apply_enc_lockout_block(opts, state, row_id, 1, data_call, out);
+    }
+    if (dsd_tg_policy_session_avoid_contains(state, tg)
+        || (row_id != tg && dsd_tg_policy_session_avoid_contains(state, row_id))) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
     }
-    if (tg_policy_call_skip_blocking(state, tg)) {
+    if (tg_policy_call_skip_blocking(state, tg) || (row_id != tg && tg_policy_call_skip_blocking(state, row_id))) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
     }
 
@@ -1701,7 +2146,34 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     if (!mode_blocking && !hold_mismatch) {
         tg_policy_apply_explicit_media_blocks(out, explicit_audio_block, explicit_record_block, explicit_stream_block);
     }
+    tg_policy_apply_radio_parts(state, src, src, out);
+}
 
+int
+dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
+                                  int encrypted, int data_call, dsd_tg_policy_decision* out) {
+    if (!out) {
+        return -1;
+    }
+    tg_policy_evaluate_group(opts, state, tg, tg, src, encrypted, data_call, out);
+    return 0;
+}
+
+int
+dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
+                                             int encrypted, int data_call, dsd_tg_policy_decision* out) {
+    if (!out) {
+        return -1;
+    }
+    tg_policy_evaluate_group(opts, state, tg, tg, src, encrypted, data_call, out);
+    if (src == 0U || src == tg || out->match != DSD_TG_POLICY_MATCH_NONE) {
+        return 0;
+    }
+    dsd_tg_policy_lookup source_row;
+    if (!tg_policy_lookup_group_in_ctx(tg_policy_ctx_get_const(state), src, &source_row)) {
+        return 0;
+    }
+    tg_policy_evaluate_group(opts, state, tg, src, src, encrypted, data_call, out);
     return 0;
 }
 
@@ -1721,10 +2193,14 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
     }
     decision->block_reasons |= final;
     decision->tune_allowed = 0;
+    decision->tg_tune_allowed = 0;
     if (final & ~(uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT) {
         decision->audio_allowed = 0;
         decision->record_allowed = 0;
         decision->stream_allowed = 0;
+        decision->tg_audio_allowed = 0;
+        decision->tg_record_allowed = 0;
+        decision->tg_stream_allowed = 0;
     }
     return 1;
 }
@@ -1740,11 +2216,30 @@ tg_policy_private_call_known(const dsd_opts* opts, int src_match, const dsd_tg_p
                || (dst_match && !tg_policy_entry_is_learned_alias(dst_entry)));
 }
 
+// A private call's endpoint row: the first exact row for @p id. An endpoint of 0 is unknown, never an ID: no row (a
+// `0` row included) decides, admits or prioritises it.
+static int
+tg_policy_lookup_private_endpoint(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* entry) {
+    return id != 0U && tg_policy_lookup_exact_only(state, id, entry);
+}
+
+// The session's own blocks on either party of a private call: a temporary avoid or a call skip.
+static void
+tg_policy_apply_private_session_blocks(const dsd_state* state, uint32_t src, uint32_t dst,
+                                       dsd_tg_policy_decision* out) {
+    if (dsd_tg_policy_session_avoid_contains(state, src) || dsd_tg_policy_session_avoid_contains(state, dst)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+    }
+    if (tg_policy_call_skip_blocking(state, src) || tg_policy_call_skip_blocking(state, dst)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
+    }
+}
+
 static int
 tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst, int encrypted,
                                 int data_call, int allow_unlisted, dsd_tg_policy_decision* out) {
-    dsd_tg_policy_entry src_entry;
-    dsd_tg_policy_entry dst_entry;
+    dsd_tg_policy_entry src_entry = {0};
+    dsd_tg_policy_entry dst_entry = {0};
     const dsd_tg_policy_entry* chosen = NULL;
     int src_match = 0;
     int dst_match = 0;
@@ -1757,8 +2252,8 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_init_decision(out, dst, src, encrypted, data_call);
     out->private_call = 1;
 
-    src_match = tg_policy_lookup_exact_only(state, src, &src_entry);
-    dst_match = tg_policy_lookup_exact_only(state, dst, &dst_entry);
+    src_match = tg_policy_lookup_private_endpoint(state, src, &src_entry);
+    dst_match = tg_policy_lookup_private_endpoint(state, dst, &dst_entry);
     chosen = tg_policy_choose_private_entry(&src_entry, src_match, &dst_entry, dst_match);
     if (chosen) {
         tg_policy_decision_apply_entry(out, chosen, DSD_TG_POLICY_MATCH_EXACT);
@@ -1768,12 +2263,7 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_private_set_hold_state(state, src, dst, out, &hold_mismatch);
     tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, src_match, dst_match, allow_unlisted, out);
     tg_policy_apply_enc_lockout_block(opts, state, dst, 0, data_call, out);
-    if (dsd_tg_policy_session_avoid_contains(state, src) || dsd_tg_policy_session_avoid_contains(state, dst)) {
-        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
-    }
-    if (tg_policy_call_skip_blocking(state, src) || tg_policy_call_skip_blocking(state, dst)) {
-        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_CALL_SKIP);
-    }
+    tg_policy_apply_private_session_blocks(state, src, dst, out);
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
     }
@@ -1786,6 +2276,7 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
                                               chosen->audio != 0u && (chosen->record == 0u || known),
                                               chosen->audio != 0u && chosen->stream == 0u);
     }
+    tg_policy_apply_radio_parts(state, src, dst, out);
 
     return 0;
 }
@@ -1859,70 +2350,91 @@ tg_policy_ascii_casecmp(const char* a, const char* b) {
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
 
-static int
-tg_policy_header_is_policy(const char* header_line) {
+/* What a group file's header models, read as the importer reads it: an extended policy header (column 4 is
+ * "priority"), and whether some column is the tags column the importer loads as a row's category. */
+typedef struct {
+    int policy;
+    int tags_modelled;
+} tg_policy_header_info;
+
+static tg_policy_header_info
+tg_policy_parse_header(const char* header_line) {
+    tg_policy_header_info info = {0, 0};
     char buf[512];
     char* fields[16];
     static const char* expected[] = {"preempt", "audio", "record", "stream", "tags"};
+    const size_t expected_count = sizeof(expected) / sizeof(expected[0]);
     size_t n = 0;
     size_t idx = 0;
 
     if (!header_line) {
-        return 0;
+        return info;
     }
     DSD_SNPRINTF(buf, sizeof(buf), "%s", header_line);
     n = tg_policy_split_csv_preserve_empty(buf, fields, sizeof(fields) / sizeof(fields[0]));
     if (n < 4) {
-        return 0;
+        return info;
     }
-    if (tg_policy_ascii_casecmp(tg_policy_trim_inplace(fields[3]), "priority") != 0) {
-        return 0;
+    const char* col = tg_policy_trim_inplace(fields[3]);
+    if (tg_policy_ascii_casecmp(col, "priority") != 0) {
+        info.tags_modelled = tg_policy_ascii_casecmp(col, "tag") == 0 || tg_policy_ascii_casecmp(col, "tags") == 0
+                             || tg_policy_ascii_casecmp(col, "category") == 0;
+        return info;
     }
-    for (size_t i = 4; i < n && idx < (sizeof(expected) / sizeof(expected[0])); i++) {
+    info.policy = 1;
+    for (size_t i = 4; i < n && idx < expected_count; i++) {
         if (tg_policy_ascii_casecmp(tg_policy_trim_inplace(fields[i]), expected[idx]) != 0) {
             break;
         }
         idx++;
     }
-    return 1;
+    info.tags_modelled = idx == expected_count;
+    return info;
 }
 
+typedef struct {
+    int has_header;
+    int missing_or_empty;
+    int needs_newline; /* The file's last line has no newline, so an append must end it first. */
+    tg_policy_header_info header;
+} tg_policy_group_file_probe;
+
 static int
-tg_policy_probe_group_file(const char* path, int* has_existing_header, int* existing_policy_header,
-                           int* file_missing_or_empty) {
+tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
     char first_line[512];
     FILE* rf = NULL;
 
-    if (has_existing_header) {
-        *has_existing_header = 0;
+    if (!out) {
+        return -1;
     }
-    if (existing_policy_header) {
-        *existing_policy_header = 0;
-    }
-    if (file_missing_or_empty) {
-        *file_missing_or_empty = 0;
-    }
-    if (!path || !file_missing_or_empty) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path) {
         return -1;
     }
 
-    rf = dsd_fopen_existing_regular_file(path, "r");
+    rf = dsd_fopen_existing_regular_file(path, "rb");
     if (!rf) {
-        *file_missing_or_empty = 1;
+        out->missing_or_empty = 1;
         return errno == ENOENT ? 0 : -1;
     }
 
+    int failed = 0;
     if (fgets(first_line, sizeof(first_line), rf) != NULL) {
-        if (has_existing_header) {
-            *has_existing_header = 1;
-        }
-        if (existing_policy_header) {
-            *existing_policy_header = tg_policy_header_is_policy(first_line);
+        out->has_header = 1;
+        out->header = tg_policy_parse_header(first_line);
+        if (fseek(rf, -1L, SEEK_END) != 0) {
+            failed = 1;
+        } else {
+            const int last = fgetc(rf);
+            failed = last == EOF;
+            out->needs_newline = last != '\n';
         }
     } else {
-        *file_missing_or_empty = 1;
+        out->missing_or_empty = 1;
     }
-    int failed = ferror(rf);
+    if (ferror(rf)) {
+        failed = 1;
+    }
     if (fclose(rf) != 0) {
         failed = 1;
     }
@@ -1930,12 +2442,11 @@ tg_policy_probe_group_file(const char* path, int* has_existing_header, int* exis
 }
 
 static int
-tg_policy_write_group_file_header(FILE* wf, int file_missing_or_empty, int has_existing_header,
-                                  const char* clean_meta) {
-    if (!wf) {
+tg_policy_write_group_file_header(FILE* wf, const tg_policy_group_file_probe* probe, const char* clean_meta) {
+    if (!wf || !probe) {
         return -1;
     }
-    if (file_missing_or_empty) {
+    if (probe->missing_or_empty) {
         if (clean_meta && clean_meta[0] != '\0') {
             if (DSD_FPRINTF(wf, "id,mode,name,metadata\n") < 0) {
                 return -1;
@@ -1945,8 +2456,9 @@ tg_policy_write_group_file_header(FILE* wf, int file_missing_or_empty, int has_e
                 return -1;
             }
         }
-    } else if (!has_existing_header) {
-        if (DSD_FPRINTF(wf, "id,mode,name\n") < 0) {
+    } else if (probe->needs_newline) {
+        // The importer accepts a last line without a newline; end it so the appended row stays a row of its own.
+        if (DSD_FPRINTF(wf, "\n") < 0) {
             return -1;
         }
     }
@@ -1980,16 +2492,20 @@ tg_policy_write_group_row(FILE* wf, const dsd_tg_policy_entry* entry, const char
 }
 
 static int
-tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, int has_existing_header,
-                                 int existing_policy_header, const char* clean_mode, const char* clean_name,
-                                 const char* clean_meta) {
-    if (!wf || !entry || !clean_mode || !clean_name || !clean_meta) {
+tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, const tg_policy_group_file_probe* probe,
+                                 const char* clean_mode, const char* clean_name, const char* clean_meta) {
+    if (!wf || !entry || !probe || !clean_mode || !clean_name || !clean_meta) {
         return -1;
     }
     char id_text[24];
+    char extra[258];
     DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
-    return tg_policy_write_group_row(wf, entry, id_text, has_existing_header && existing_policy_header,
-                                     clean_meta[0] != '\0', clean_mode, clean_name, clean_meta);
+    // Alias metadata is not a category: under a header that models a tags column it goes one column further, past an
+    // empty tags field, where the importer does not read it.
+    DSD_SNPRINTF(extra, sizeof(extra), "%s%s", (probe->header.tags_modelled && clean_meta[0] != '\0') ? "," : "",
+                 clean_meta);
+    return tg_policy_write_group_row(wf, entry, id_text, probe->has_header && probe->header.policy, extra[0] != '\0',
+                                     clean_mode, clean_name, extra);
 }
 
 static int
@@ -2007,7 +2523,9 @@ tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t
         char clean_mode[sizeof(entry->mode)];
         char clean_name[sizeof(entry->name)];
         char clean_tags[sizeof(entry->tags)];
-        if (entry->is_range) {
+        if (entry->kind == DSD_TG_POLICY_ROW_PATTERN) {
+            DSD_SNPRINTF(id_text, sizeof(id_text), "%s", entry->pattern);
+        } else if (entry->kind == DSD_TG_POLICY_ROW_RANGE) {
             DSD_SNPRINTF(id_text, sizeof(id_text), "%u-%u", entry->id_start, entry->id_end);
         } else {
             DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
@@ -2023,7 +2541,7 @@ tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t
 
 static int
 tg_policy_entry_requires_extended_csv(const dsd_tg_policy_entry* entry) {
-    const int media_default = !tg_policy_mode_is_blocking(entry->mode);
+    const int media_default = !dsd_tg_policy_mode_blocks(entry->mode);
     return entry->priority != 0 || entry->preempt || entry->audio != media_default || entry->record != media_default
            || entry->stream != media_default;
 }
@@ -2034,13 +2552,11 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const char* path = opts->group_in_file;
-    int has_header = 0;
-    int policy_header = 0;
-    int missing = 0;
-    if (tg_policy_probe_group_file(path, &has_header, &policy_header, &missing) != 0) {
+    tg_policy_group_file_probe probe;
+    if (tg_policy_probe_group_file(path, &probe) != 0) {
         return -1;
     }
-    int use_policy = has_header && policy_header;
+    int use_policy = probe.has_header && probe.header.policy;
     int any_tags = 0;
     const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
     size_t count = ctx ? ctx->table.count : 0;
@@ -2074,9 +2590,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
     char clean_mode[16];
     char clean_name[128];
     char clean_meta[256];
-    int has_existing_header = 0;
-    int existing_policy_header = 0;
-    int file_missing_or_empty = 0;
+    tg_policy_group_file_probe probe;
     FILE* wf = NULL;
     const char* path = NULL;
 
@@ -2095,7 +2609,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
     tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
     tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), metadata ? metadata : "");
 
-    if (tg_policy_probe_group_file(path, &has_existing_header, &existing_policy_header, &file_missing_or_empty) != 0) {
+    if (tg_policy_probe_group_file(path, &probe) != 0) {
         return -1;
     }
 
@@ -2104,19 +2618,13 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
         return -1;
     }
 
-    if (tg_policy_write_group_file_header(wf, file_missing_or_empty, has_existing_header, clean_meta) != 0) {
+    if (tg_policy_write_group_file_header(wf, &probe, clean_meta) != 0
+        || tg_policy_write_group_file_entry(wf, entry, &probe, clean_mode, clean_name, clean_meta) != 0) {
         fclose(wf);
         return -1;
     }
-    if (tg_policy_write_group_file_entry(wf, entry, has_existing_header, existing_policy_header, clean_mode, clean_name,
-                                         clean_meta)
-        != 0) {
-        fclose(wf);
-        return -1;
-    }
-
-    fclose(wf);
-    return 0;
+    // The row is buffered until the close: a close failure (a full disk) means it never reached the file.
+    return tg_policy_close_append(wf) == 0 ? 0 : -1;
 }
 
 static double
@@ -2439,14 +2947,8 @@ tg_policy_reload_validate_candidate(const dsd_state* imported) {
             || !tg_policy_is_terminated_cstr(e->name, sizeof(e->name))) {
             return -1;
         }
-        if (e->is_range == 0u) {
-            if (!tg_policy_entry_valid_exact(e)) {
-                return -1;
-            }
-        } else {
-            if (!tg_policy_entry_valid_range(e)) {
-                return -1;
-            }
+        if (!tg_policy_entry_valid(e)) {
+            return -1;
         }
     }
 
@@ -2623,5 +3125,32 @@ dsd_tg_policy_test_set_generation(dsd_state* state, unsigned int generation, uns
         ctx->table.generation = generation;
         ctx->table.structural_generation = structural_generation;
     }
+}
+
+int dsd_tg_policy_test_keys_consistent(const dsd_state* state);
+
+/* 1 when the state's table has no rows, or its scan keys sit right after its capacity's entries and each describes its
+ * row (bounds, kind, learned alias). */
+int
+dsd_tg_policy_test_keys_consistent(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (!ctx || ctx->table.count == 0) {
+        return 1;
+    }
+    if (!ctx->table.entries
+        || ctx->table.keys != (const tg_policy_row_key*)(const void*)(ctx->table.entries + ctx->table.capacity)) {
+        return 0;
+    }
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        tg_policy_row_key want;
+        DSD_MEMSET(&want, 0, sizeof(want));
+        tg_policy_key_from_entry(&want, &ctx->table.entries[i]);
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        if (k->id_start != want.id_start || k->id_end != want.id_end || k->kind != want.kind
+            || k->alias != want.alias) {
+            return 0;
+        }
+    }
+    return 1;
 }
 #endif

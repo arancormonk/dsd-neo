@@ -202,7 +202,8 @@ committed to the event history.
 
 ```json
 {"type":"call","seq":12,"slots":[
-  {"slot":0,"state":2,"name":"Dispatch","tg_text":"101","src_text":"Unit 7",
+  {"slot":0,"state":2,"name":"Dispatch","tg_text":"101","src_text":"Unit 7 (7)",
+   "src_id":7,"src_label":"Unit 7","tg_label":"Dispatch","protocol_label":"P25p1",
    "channel":"Site 1","service_label":"Hospital","receive_kind":3,
    "receive_value":659,"receive_known":true,"tg_id":101,"elapsed_ms":1815,"kid":0,"algid":0,
    "emergency":false,"priority":0,"enc":false,
@@ -212,6 +213,13 @@ committed to the event history.
 `state` is a `DSD_APP_CALL_LINE_*` value (`1` idle, `2` active, `3` ended); a
 slot with nothing to show is omitted. The fields are documented in
 [`include/dsd-neo/app_control/call_view.h`](../include/dsd-neo/app_control/call_view.h).
+`tg_text` and `src_text` are empty, never `"0"`, for a party that has not decoded.
+`src_id` is the source radio's id (`0` when none decoded) and `src_label` its label
+alone; `tg_label` is the target's own label (a private call's: the other radio's),
+whatever `name` headlines. `protocol_label` is the protocol's display name (`TETRA`,
+`ProVoice`, `X2-TDMA`, `P25p2`, `DMR`, ...; empty for analog), what a client can
+headline a call no party named with. `kind` is the call's `dsd_call_kind` (`0` unknown, `1` voice,
+`2` group voice, `3` private voice, `4` data); a private call's target is a radio.
 `service_label` is the name selected by the validated received identifier; `channel`
 keeps the base channel label. Receive identity fields use the same values as event rows below.
 
@@ -498,10 +506,10 @@ field, and the decoder refuses the rest when it applies the command.
 | `import_src_list` | `{value:path, <=1023 bytes}` |
 | `import_src_list_clear` | – |
 | `p25_p2_params_set` | `{wacn,sysid,cc}` |
-| `tg_listen_set` | `{id_start,id_end,listen}` |
+| `tg_listen_set` | `{id_start,id_end,listen,table_index,pattern,policy_context,policy_generation}` |
 | `tg_listen_set_all` | `{listen,tags}` |
-| `tg_row_set` | `{id_start,id_end,fields,listen,priority,preempt,name,tags,record,policy_context,policy_generation}` |
-| `tg_row_remove` | `{id_start,id_end,policy_context,policy_generation}` |
+| `tg_row_set` | `{id_start,id_end,fields,listen,priority,preempt,name,tags,record,policy_context,policy_generation,table_index,pattern}` |
+| `tg_row_remove` | `{id_start,id_end,policy_context,policy_generation,table_index,pattern}` |
 | `tg_list_export` | `{path,policy_context,policy_generation}` |
 | `tg_selection_set` | `{path,count,listening,policy_context,policy_generation}` |
 | `tg_lockout_persist_set` | `{value:0\|1}` |
@@ -580,8 +588,32 @@ field, and the decoder refuses the rest when it applies the command.
   does not know (`--record-unknown-only`, see [docs/cli.md](cli.md)), `0` every
   call the list lets record. Like the WAV commands it waits while the decoder
   holds a carrier and is refused while Signal search runs.
-* **`tg_selection_set`**: `path` names a CSV of `table_index,start,end` rows the
-  decoder reads, `count` the number of rows, `listening` the value to apply.
+* **Row token (`tg_listen_set`, `tg_row_set`, `tg_row_remove`)**: the optional
+  `table_index` names one row of the list: its 0-based position in the
+  effective list (file order, then rows added at run time). The row there must
+  still have the request's `id_start`/`id_end`, or for a digit-pattern row the
+  request's `pattern` (for example `12*`; `id_start`/`id_end` may then be
+  omitted and must be `0`), or the edit is refused and nothing changes. A token
+  edits that row even when an identical row comes before it. Without
+  `table_index` the edit is bounds-only, as before: it addresses the first
+  talkgroup row with those bounds, and `tg_listen_set` adds a missing exact ID.
+  A pattern row can only be addressed with its `table_index`. `tg_listen_set`
+  requires `policy_context` and `policy_generation` with a `table_index`, and
+  checks them whenever they are given; without them a bounds-only
+  `tg_listen_set` is applied unchecked.
+* **`tg_selection_set`**: `path` names a CSV of `table_index,kind,start,end,pattern`
+  rows the decoder reads (`kind`: `0` exact, `1` range, `2` pattern; `pattern`
+  empty except on a pattern row, whose bounds are `0,0`; a `table_index` of `-1`
+  is a heard talkgroup not on the list, one non-zero exact ID). The older
+  `table_index,start,end` rows are still read. `count` is the number of rows,
+  `listening` the value to apply.
+* **`import_src_list`**: `value` is the path of a source ID list CSV. It replaces
+  the radio ID list, its names and, when the file has policy columns, its radio
+  rules; a call in progress keeps its receiver, and its audio and recording
+  follow the new rules
+  ([Source ID List CSV](csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
+  `import_src_list_clear` removes both. Rows of either list may be digit
+  patterns ([Digit patterns](csv-formats.md#digit-patterns)).
 * **`decryption_apply`**: `type` (`basic`, `hex`, `rc4`, `scrambler`,
   `m17_scrambler`, `m17_aes`), `value`, `hex`/`dec` key CSV paths, `map` (DMR
   key-map CSV), `profile`, `force`, `source` (`0`..`3`, default `2` direct) and

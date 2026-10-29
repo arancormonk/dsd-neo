@@ -3,6 +3,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -45,33 +46,10 @@ csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* 
 }
 
 enum group_parse_value_result {
-    GROUP_PARSE_VALUE_MISSING = 0,
-    GROUP_PARSE_VALUE_OK = 1,
-    GROUP_PARSE_VALUE_INVALID = -1,
+    GROUP_PARSE_VALUE_MISSING = CSV_CELL_MISSING,
+    GROUP_PARSE_VALUE_OK = CSV_CELL_OK,
+    GROUP_PARSE_VALUE_INVALID = CSV_CELL_INVALID,
 };
-
-static int
-group_parse_bool_field(char* token, int* out) {
-    const char* p = NULL;
-    if (!token || !out) {
-        return GROUP_PARSE_VALUE_INVALID;
-    }
-    p = trim_ws(token);
-    if (!p || p[0] == '\0') {
-        return GROUP_PARSE_VALUE_MISSING;
-    }
-    if (csv_ascii_casecmp(p, "true") == 0 || csv_ascii_casecmp(p, "yes") == 0 || csv_ascii_casecmp(p, "on") == 0
-        || strcmp(p, "1") == 0) {
-        *out = 1;
-        return GROUP_PARSE_VALUE_OK;
-    }
-    if (csv_ascii_casecmp(p, "false") == 0 || csv_ascii_casecmp(p, "no") == 0 || csv_ascii_casecmp(p, "off") == 0
-        || strcmp(p, "0") == 0) {
-        *out = 0;
-        return GROUP_PARSE_VALUE_OK;
-    }
-    return GROUP_PARSE_VALUE_INVALID;
-}
 
 static int
 group_parse_priority_field(char* token, int* out) {
@@ -154,23 +132,31 @@ group_parse_policy_header(char* header_line) {
     return info;
 }
 
+_Static_assert((int)CSV_ID_EXACT == (int)DSD_TG_POLICY_ROW_EXACT && (int)CSV_ID_RANGE == (int)DSD_TG_POLICY_ROW_RANGE
+                   && (int)CSV_ID_PATTERN == (int)DSD_TG_POLICY_ROW_PATTERN,
+               "csv_parse_id_field() kinds are group-list row kinds");
+
 static void
-group_entry_init(dsd_tg_policy_entry* entry, uint32_t id_start, uint32_t id_end, int is_range, const char* mode_field,
-                 const char* name_field, unsigned int row_count, int* out_mode_blocking) {
+group_entry_init(dsd_tg_policy_entry* entry, uint32_t id_start, uint32_t id_end, int kind,
+                 const dsd_id_pattern* pattern, const char* mode_field, const char* name_field, unsigned int row_count,
+                 int* out_mode_blocking) {
     if (!entry || !out_mode_blocking) {
         return;
     }
     DSD_MEMSET(entry, 0, sizeof(*entry));
     entry->id_start = id_start;
     entry->id_end = id_end;
-    entry->is_range = is_range ? 1u : 0u;
+    entry->kind = (uint8_t)kind;
+    if (kind == DSD_TG_POLICY_ROW_PATTERN && pattern) {
+        DSD_SNPRINTF(entry->pattern, sizeof(entry->pattern), "%s", pattern->text);
+    }
     entry->source = DSD_TG_POLICY_SOURCE_IMPORTED;
     entry->row = row_count;
     DSD_SNPRINTF(entry->mode, sizeof(entry->mode), "%s", mode_field ? mode_field : "");
     DSD_SNPRINTF(entry->name, sizeof(entry->name), "%s", name_field ? name_field : "");
     entry->priority = 0;
     entry->preempt = 0;
-    *out_mode_blocking = (strcmp(entry->mode, "B") == 0 || strcmp(entry->mode, "DE") == 0);
+    *out_mode_blocking = dsd_tg_policy_mode_blocks(entry->mode);
     entry->audio = *out_mode_blocking ? 0u : 1u;
     entry->record = entry->audio;
     entry->stream = entry->audio;
@@ -180,7 +166,7 @@ static void
 group_apply_optional_bool_field(const char* filename, unsigned int row_count, const char* label, char* token,
                                 uint8_t* target, int* has_flag) {
     int parsed = 0;
-    int br = group_parse_bool_field(token, &parsed);
+    int br = csv_parse_bool_cell(token, &parsed);
     if (br == GROUP_PARSE_VALUE_OK) {
         *target = parsed ? 1u : 0u;
         if (has_flag) {
@@ -221,7 +207,7 @@ group_apply_preempt_field(const group_policy_header* header, const char* filenam
     }
     if (header->prefix_len >= 2 && field_count > 4) {
         int parsed = 0;
-        int br = group_parse_bool_field(fields[4], &parsed);
+        int br = csv_parse_bool_cell(fields[4], &parsed);
         if (br == GROUP_PARSE_VALUE_OK) {
             entry->preempt = parsed ? 1u : 0u;
         } else if (br == GROUP_PARSE_VALUE_INVALID) {
@@ -256,22 +242,9 @@ group_enforce_media_constraints(const char* filename, unsigned int row_count, ds
     if (!entry) {
         return;
     }
-    if (mode_blocking) {
-        if ((has_audio && entry->audio) || (has_record && entry->record) || (has_stream && entry->stream)) {
-            LOG_WARN("WARNING: Group file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
-                     filename, row_count);
-        }
-        entry->audio = 0u;
-        entry->record = 0u;
-        entry->stream = 0u;
-        return;
-    }
-    if (entry->audio == 0u && ((has_record && entry->record) || (has_stream && entry->stream))) {
-        LOG_WARN("WARNING: Group file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
-                 filename, row_count);
-        entry->record = 0u;
-        entry->stream = 0u;
-    }
+    const csv_row_origin origin = {"Group", filename, row_count, 0};
+    const csv_media_cells media = {&entry->audio, &entry->record, &entry->stream, has_audio, has_record, has_stream};
+    csv_enforce_media_cells(&origin, mode_blocking, &media);
 }
 
 static void
@@ -310,26 +283,30 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
 }
 
 static int
-group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int is_range,
-                   const char* filename, unsigned int row_count, size_t* dropped_policy_alloc_rows) {
+group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, const char* filename,
+                   unsigned int row_count, size_t* dropped_policy_alloc_rows) {
     int rc = 0;
     if ((!state && !store) || !entry || !filename || !dropped_policy_alloc_rows) {
         return -1;
     }
 
-    rc = store      ? dsd_tg_policy_store_append(store, entry)
-         : is_range ? dsd_tg_policy_add_range_entry(state, entry)
-                    : dsd_tg_policy_append_exact(state, entry);
+    if (store) {
+        rc = dsd_tg_policy_store_append(store, entry);
+    } else if (entry->kind == DSD_TG_POLICY_ROW_RANGE) {
+        rc = dsd_tg_policy_add_range_entry(state, entry);
+    } else if (entry->kind == DSD_TG_POLICY_ROW_PATTERN) {
+        rc = dsd_tg_policy_add_pattern_entry(state, entry);
+    } else {
+        rc = dsd_tg_policy_append_exact(state, entry);
+    }
     if (rc == -1) {
         (*dropped_policy_alloc_rows)++;
         return rc;
     }
     if (rc == 1) {
-        if (!is_range) {
-            LOG_WARN("WARNING: Group file '%s' row %u has invalid exact entry and was skipped.\n", filename, row_count);
-        } else {
-            LOG_WARN("WARNING: Group file '%s' row %u has invalid range and was skipped.\n", filename, row_count);
-        }
+        static const char* const kinds[] = {"exact entry", "range", "pattern"};
+        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s and was skipped.\n", filename, row_count,
+                 entry->kind < 3u ? kinds[entry->kind] : "entry");
     }
     return rc;
 }
@@ -342,7 +319,8 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
     size_t field_count = 0;
     uint32_t id_start = 0;
     uint32_t id_end = 0;
-    int is_range = 0;
+    int kind = 0;
+    dsd_id_pattern pattern = {{0}, 0, 0};
     const char* mode_field = NULL;
     const char* name_field = NULL;
     dsd_tg_policy_entry entry;
@@ -354,17 +332,20 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
         return -1;
     }
 
-    if (!csv_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
-        LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count, fields[0]);
+    // A failed parse may have trimmed the cell in place; report it as written once trimmed.
+    if (!csv_parse_id_field(fields[0], &id_start, &id_end, &kind, &pattern)) {
+        const char* id_text = trim_ws(fields[0]);
+        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s '%s'; skipping.\n", filename, row_count,
+                 dsd_id_pattern_is_candidate(id_text) ? "pattern" : "id", id_text);
         return -1;
     }
 
     mode_field = trim_ws(fields[1]);
     name_field = fields[2];
-    group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
+    group_entry_init(&entry, id_start, id_end, kind, &pattern, mode_field, name_field, row_count, &mode_blocking);
     group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
     group_apply_tags_field(header, field_count, fields, &entry);
-    return group_commit_entry(state, store, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
+    return group_commit_entry(state, store, &entry, filename, row_count, dropped_policy_alloc_rows);
 }
 
 /* Rows dropped for want of memory are a warning, as they always were: the import keeps

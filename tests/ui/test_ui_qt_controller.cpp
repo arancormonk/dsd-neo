@@ -765,7 +765,7 @@ test_zero_bounds() {
         dsd_tg_policy_entry entry = {};
         check(dsd_tg_policy_make_exact_entry(0, "A", "Zero", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
         entry.id_end = end;
-        entry.is_range = end != 0;
+        entry.kind = end != 0 ? DSD_TG_POLICY_ROW_RANGE : DSD_TG_POLICY_ROW_EXACT;
         check((end ? dsd_tg_policy_add_range_entry(&state, &entry) : dsd_tg_policy_append_exact(&state, &entry)) == 0);
         uint64_t context = 0;
         unsigned int generation = 0;
@@ -786,6 +786,97 @@ test_zero_bounds() {
         dsd_app_frontend_runtime_stop();
         dsd_state_ext_free_all(&state);
     }
+}
+
+/* B14: the bridge names a listed row by its token, so a duplicate, a zero-start range and a pattern row are edited,
+ * toggled, selected and removed as listed, and a stale Listening toggle changes nothing. */
+static void
+test_bridge_row_tokens() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    dsd_tg_policy_entry entry = {};
+    for (const char* name : {"First", "Second"}) {
+        check(dsd_tg_policy_make_exact_entry(0, "A", name, DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+        entry.id_end = 99;
+        entry.kind = DSD_TG_POLICY_ROW_RANGE;
+        check(dsd_tg_policy_add_range_entry(&state, &entry) == 0);
+    }
+    check(dsd_tg_policy_make_exact_entry(0, "A", "Twelves", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+    entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(entry.pattern, sizeof entry.pattern, "%s", "12*");
+    check(dsd_tg_policy_add_pattern_entry(&state, &entry) == 0);
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    QString version;
+    // Re-capture before each edit (arguments are evaluated in no fixed order, so never inside the call).
+    const auto capture = [&]() {
+        dsd_tg_policy_table_version(&state, &context, &generation);
+        version = QString::number(context);
+    };
+    const auto name = [&](size_t index) {
+        dsd_tg_policy_entry row = {};
+        return dsd_tg_policy_entry_at(&state, index, &row) ? QString::fromUtf8(row.name) : QString();
+    };
+    const auto mode = [&](size_t index) {
+        dsd_tg_policy_entry row = {};
+        return dsd_tg_policy_entry_at(&state, index, &row) ? QString::fromUtf8(row.mode) : QString();
+    };
+
+    capture();
+    check(bridge.renameTalkgroup(0, 99, version, generation, "Edited", 1));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(name(0) == "First" && name(1) == "Edited");
+    capture();
+    check(bridge.setTalkgroupPolicy(0, 0, version, generation, {{"name", "Twelve rule"}}, 2, "12*"));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(name(2) == "Twelve rule");
+    capture();
+    check(!bridge.setTalkgroupPolicy(0, 0, version, generation, {{"name", "No index"}}, -1, "12*"));
+    capture();
+    check(!bridge.renameTalkgroup(12, 12, version, generation, "Bounds", 2, "12*"));
+
+    capture();
+    check(bridge.setTalkgroupListening(0, 99, false, version, generation, 1));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(mode(0) == "A" && mode(1) == "B");
+    // The same captured version again: the first toggle moved the generation, so this one is stale.
+    check(bridge.setTalkgroupListening(0, 0, false, version, generation, 2, "12*"));
+    (void)dsd_app_drain_cmds(&opts, &state);
+    check(mode(2) == "A");
+    check(QString::fromUtf8(state.ui_msg).contains("stale", Qt::CaseInsensitive));
+    capture();
+    check(bridge.setTalkgroupListening(0, 0, false, version, generation, 2, "12*"));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(mode(2) == "B");
+    check(!bridge.setTalkgroupListening(0, 99, true, QString(), 0, 1));
+
+    const QVariantList rows = {QVariantMap{{"index", 0}, {"first", 0U}, {"last", 99U}, {"pattern", QString()}},
+                               QVariantMap{{"index", 2}, {"first", 0U}, {"last", 0U}, {"pattern", "12*"}}};
+    capture();
+    check(bridge.setTalkgroupSelection(false, version, generation, rows));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(mode(0) == "B" && mode(1) == "B" && mode(2) == "B");
+    capture();
+    check(bridge.setTalkgroupSelection(true, version, generation, rows));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(mode(0) == "A" && mode(1) == "B" && mode(2) == "A");
+    capture();
+    check(!bridge.setTalkgroupSelection(true, version, generation,
+                                        {QVariantMap{{"index", -1}, {"first", 0U}, {"last", 0U}}}));
+
+    capture();
+    check(bridge.removeTalkgroup(0, 0, version, generation, 2, "12*"));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 2 && dsd_tg_policy_pattern_count(&state) == 0);
+    capture();
+    check(bridge.removeTalkgroup(0, 99, version, generation, 1));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 1 && name(0) == "First");
+    bridge.clearSessionInputs();
+    dsd_app_frontend_runtime_stop();
+    dsd_state_ext_free_all(&state);
 }
 
 /* A saved direct profile whose key was typed byte-spaced applies live through the real DECRYPTION_APPLY queue: its 95
@@ -908,6 +999,7 @@ main(int argc, char** argv) {
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
     test_zero_bounds();
+    test_bridge_row_tokens();
     test_auto_start_requests();
     test_auto_start_follows_the_attached_kind();
     test_attachment_kind();

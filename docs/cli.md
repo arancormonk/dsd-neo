@@ -255,9 +255,10 @@ Windows console runs:
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
   for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
   slot's channel is written silent while the other slot is still written.
-- `--record-unknown-only` Record only talkgroups the group list (`-G`) does not know: a call an exact or range row
-  matches is kept out of the per-call WAV, the static WAV and MBE capture as if the row said `record=off`, and so is a
-  private call when either radio has an exact row. Learned radio-ID aliases (mode `D`) do not count. A matching Hold
+- `--record-unknown-only` Record only talkgroups the group list (`-G`) does not know: a call an exact, range or
+  digit-pattern row (not the `*` catch-all) matches is kept out of the per-call WAV, the static WAV and MBE capture as
+  if the row said `record=off`, and so is a private call when either radio has an exact row. Learned radio-ID aliases
+  (mode `D`) and `--src-csv` rows do not count. A matching Hold
   still records; avoids and skips still block; tuning and playback are unchanged. INI:
   `[recording] unknown_talkgroups_only`. A running session changes it through the API's `record_unknown_only_set`
   (`docs/api.md`).
@@ -282,6 +283,8 @@ Windows console runs:
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
   `--wav-journal` is set
+- A call whose talkgroup or radio policy row has `stream=off` is recorded but not exported (no sidecar, no upload);
+  see `docs/csv-formats.md`.
 - `-r <files>` Play saved MBE files
   SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
   the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by
@@ -1850,10 +1853,13 @@ is delayed.
 - Export the learned P25 band plan at clean shutdown: `--p25-bandplan-export <file>` — writes the identifier
   tables learned this run (every target's under `--trunk-scan`, tagged with their WACN/SYS) in the same format, so
   the next run can load them with `--p25-bandplan`. The terminal menu has the same action live.
-- Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`
-- Source ID list CSV (radio ID names, labels only): `--src-csv <file>` (also `--src-csv=<file>`); format in
-  `docs/csv-formats.md`, starter in `examples/src.csv`. Source names prefer this list, then the group list's exact
-  row; OTA alias text is unchanged. Loads regardless of trunking and is allowed with `--trunk-scan`.
+- Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns; exact IDs,
+  ranges and digit patterns such as `12xx` or `*`): `-G <file>`; pattern starter in `examples/group_patterns.csv`
+- Source ID list CSV (radio ID names; with a `mode` header column also block, mute, recording and export rules by
+  radio): `--src-csv <file>` (also `--src-csv=<file>`); format in `docs/csv-formats.md`, starters in
+  `examples/src.csv` and `examples/src_policy.csv`. Source names prefer this list, then the group list's exact row;
+  OTA alias text is unchanged. Radio rules only restrict, and a talkgroup Hold does not lift them. Loads regardless
+  of trunking and is allowed with `--trunk-scan`.
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`

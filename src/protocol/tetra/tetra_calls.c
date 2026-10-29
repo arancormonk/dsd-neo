@@ -79,6 +79,20 @@ address_ssi(const tetra_mac_address* addr, uint32_t* ssi) {
     }
 }
 
+/* The address names a management identity (types 100, 111): an SMI. */
+static int
+address_is_smi(const tetra_mac_address* addr) {
+    return addr->type == TETRA_MAC_ADDR_SMI || addr->type == TETRA_MAC_ADDR_SMI_EVENT;
+}
+
+/* The call party a MAC address names: the SSI of address_ssi(), never an SMI. The SMI serves mobility management only,
+ * and one may equal an SSI in number while being another identity (EN 300 392-1 clauses 7.3.2, 7.3.3), so a PDU
+ * addressed by one names no called, calling or talking party. */
+static int
+party_address_ssi(const tetra_mac_address* addr, uint32_t* ssi) {
+    return !address_is_smi(addr) && address_ssi(addr, ssi);
+}
+
 /* An address that assigns an event label (types 101, 111): it names its party by the SSI or SMI, and gives it the label
  * (EN 300 392-2 clause 23.4.1.2.3.1). */
 static int
@@ -94,6 +108,12 @@ address_assigns_event_label(const tetra_mac_address* addr) {
 static int
 sdu_ssi(const tetra_mac_sdu* sdu, uint32_t* ssi) {
     return sdu && sdu->has_addr && address_ssi(&sdu->addr, ssi);
+}
+
+/* The call party @p sdu's address names (party_address_ssi()). */
+static int
+sdu_party_ssi(const tetra_mac_sdu* sdu, uint32_t* ssi) {
+    return sdu && sdu->has_addr && party_address_ssi(&sdu->addr, ssi);
 }
 
 /* ---- The table ------------------------------------------------------------------------------------------------- */
@@ -298,17 +318,30 @@ calls_label_here(const dsd_opts* opts, const dsd_state* state, const tetra_state
     return label_channels_meet(opts, state, &c->label_chan, &here, 0);
 }
 
+/* The party an event label assignment names (address types 101, 111): its 24-bit identity, and whether that is an SMI,
+ * which is never a call party even when an SSI has its number (EN 300 392-1 clauses 7.3.2, 7.3.3). */
+typedef struct {
+    uint32_t ssi; /* 0 for none */
+    uint8_t is_smi;
+} label_party;
+
+/* @p party is a party of @p c. */
+static int
+label_party_of(const tetra_call_t* c, const label_party* party) {
+    return !party->is_smi && call_has_party(c, party->ssi);
+}
+
 /* Label @p value goes to @p holder (NULL: a party no record holds) on channel @p ch (NULL: one the decoder cannot tell,
  * which binds none). A label stands for one party on its channel, so no record of another party than @p party keeps
  * that number on a channel that may be the same one (all of them, for @p ch NULL); on another channel it is another
  * label and stays. */
 static void
-label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder, uint32_t party,
-           uint16_t value, const tetra_label_channel* ch) {
+label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder,
+           const label_party* party, uint16_t value, const tetra_label_channel* ch) {
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         tetra_call_t* const o = &ts->calls.call[i];
         if (o != holder && (o->flags & TETRA_CALL_F_EVENT_LABEL) != 0u && o->event_label == value
-            && !call_has_party(o, party) && (!ch || label_channels_meet(opts, state, &o->label_chan, ch, 1))) {
+            && !label_party_of(o, party) && (!ch || label_channels_meet(opts, state, &o->label_chan, ch, 1))) {
             label_drop(o);
         }
     }
@@ -326,11 +359,11 @@ label_bind(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetr
 
 /* The PDU of @p sdu was delivered (a fragmented TM-SDU at its MAC-END, clause 23.4.1.2.3.1 b; an encrypted PDU as far
  * as its clear address goes): an SSI or SMI + event label address (types 101, 111) names its party, whose call
- * @p holder is (NULL when no record holds it, or when the SSI is an encrypted short identity, which names no one,
- * clause 4.2.6 of EN 300 392-7). Label 0 withdraws the party's label. The all-ones label keeps the party's current
- * label valid after the channel change the PDU makes (clause 23.4.1.2.3.0): with an allocation the label moves to the
- * allocated channel, as an assignment there would bind it; without one no channel changes. Any other value is assigned
- * to the party on the channel it applies on. */
+ * @p holder is (NULL when no record holds it, when the SSI is an encrypted short identity, which names no one, clause
+ * 4.2.6 of EN 300 392-7, and for an SMI, which is no call's party). Label 0 withdraws the party's label. The all-ones
+ * label keeps the party's current label valid after the channel change the PDU makes (clause 23.4.1.2.3.0): with an
+ * allocation the label moves to the allocated channel, as an assignment there would bind it; without one no channel
+ * changes. Any other value is assigned to the party on the channel it applies on. */
 static void
 calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, tetra_call_t* holder,
                       const tetra_mac_sdu* sdu) {
@@ -348,22 +381,23 @@ calls_label_delivered(const dsd_opts* opts, const dsd_state* state, tetra_state_
     if (keep && (!sdu->has_alloc || !holder || (holder->flags & TETRA_CALL_F_EVENT_LABEL) == 0u)) {
         return;
     }
-    uint32_t party = 0;
-    if (!address_ssi(addr, &party)) {
-        party = 0u;
+    label_party party = {0u, (uint8_t)address_is_smi(addr)};
+    if (!address_ssi(addr, &party.ssi)) {
+        party.ssi = 0u;
     }
     tetra_label_channel ch;
     const int known = label_channel_of(state, ts, sdu, &ch);
-    label_bind(opts, state, ts, holder, party, keep ? holder->event_label : addr->event_label, known ? &ch : NULL);
+    label_bind(opts, state, ts, holder, &party, keep ? holder->event_label : addr->event_label, known ? &ch : NULL);
 }
 
 /* The call a party of which @p addr names: by its called, calling or talking SSI, or, an address that is an event
  * label (type 010), by the label assigned to one of them on this channel (calls_label_here()); an address that assigns
- * a label names its party by the SSI alone. The most recently heard of several. */
+ * a label names its party by the SSI alone, and an SMI names none (party_address_ssi()). The most recently heard of
+ * several. */
 static tetra_call_t*
 calls_by_address(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts, const tetra_mac_address* addr) {
     uint32_t ssi = 0;
-    if (!address_ssi(addr, &ssi)) {
+    if (!party_address_ssi(addr, &ssi)) {
         ssi = 0u;
     }
     const int by_label = addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_WITHDRAW
@@ -713,30 +747,44 @@ calls_emit_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, u
 
 /* ---- Following ------------------------------------------------------------------------------------------------- */
 
-/* The talkgroup policy's decision on @p c: a group call on its GSSI, an individual call on its two parties. */
+/* The talkgroup policy's decision on @p c: a group call on its GSSI, an individual call on its two parties; the source
+ * is the one the call publishes (calls_source()), so a group call's calling party is never judged as its talker. */
 static int
 call_decision(const dsd_opts* opts, const dsd_state* state, const tetra_call_t* c, dsd_tg_policy_decision* out) {
     const int encrypted = call_undecryptable(state, c);
     const int data = basic_is_data(c->basic_service);
     if (basic_is_group(c->basic_service)) {
-        return dsd_tg_policy_evaluate_group_call(opts, state, c->called_ssi, call_source(c), encrypted, data, out);
+        return dsd_tg_policy_evaluate_group_call(opts, state, c->called_ssi, calls_source(c), encrypted, data, out);
     }
     return dsd_tg_policy_evaluate_private_call(opts, state, c->calling_ssi, c->called_ssi, encrypted, data, out);
 }
 
-/* The route the talkgroup policy's preemption bookkeeping knows a TETRA call by: its carrier, any timeslot. */
+/* The route the talkgroup policy's preemption bookkeeping knows a TETRA call by: its published parties, its carrier,
+ * any timeslot. */
 static dsd_tg_policy_call_route
 call_route(const tetra_call_t* c, int requires_retune) {
     dsd_tg_policy_call_route route;
     DSD_MEMSET(&route, 0, sizeof route);
     route.target_id = c->called_ssi;
-    route.source_id = call_source(c);
+    route.source_id = calls_source(c);
     route.freq_hz = c->alloc.freq_hz;
     route.channel = (int)c->alloc.carrier;
     route.slot = -1;
     route.requires_tuner_retune = requires_retune;
     return route;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+tetra_calls_followed_route(const dsd_state* state, dsd_tg_policy_call_route* out) {
+    const tetra_call_t* const c = tetra_calls_followed(state);
+    if (!c || !out) {
+        return 0;
+    }
+    *out = call_route(c, 0);
+    return 1;
+}
+#endif
 
 /* A downlink pi/4-DQPSK channel with a frequency and a timeslot: what the state machine can follow. */
 static int
@@ -1150,12 +1198,126 @@ call_end(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, d
     calls_forget_heard_call(ts, id);
 }
 
+/* Connect-first set-up (EN 300 392-2 clause 14.5.2.1.2 NOTE 1): the SwMI may grant the calling party transmission in a
+ * D-CONNECT before the D-SETUP that tells the called parties of the call, which then need not name the calling party.
+ * A D-CONNECT with "transmission granted" for a call no record holds is remembered by its call identifier, its MAC
+ * address (the calling party, never the group) and the network it came on, in TETRA_PENDING_CONNECTS entries, the
+ * least recently remembered giving way; the D-SETUP of the call on that network within TETRA_GRANT_PAIR_S takes the
+ * caller as its talker, and as its calling party when it names none (calls_take_pending_connect()). An entry goes once
+ * taken, and with a D-SETUP naming another calling party, a release or any floor PDU of its call identifier, another
+ * D-CONNECT of it that grants nothing, and tetra_calls_forget_calls(). */
+static tetra_pending_connect*
+pending_find(tetra_state_t* ts, uint16_t call_id) {
+    for (size_t i = 0; i < TETRA_PENDING_CONNECTS; i++) {
+        tetra_pending_connect* const p = &ts->calls.pending[i];
+        if (p->used && p->call_id == call_id) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* The entry a new connect-first set-up takes: a free one, else the least recently remembered. */
+static tetra_pending_connect*
+pending_slot(tetra_state_t* ts) {
+    for (size_t i = 0; i < TETRA_PENDING_CONNECTS; i++) {
+        if (!ts->calls.pending[i].used) {
+            return &ts->calls.pending[i];
+        }
+    }
+    tetra_pending_connect* oldest = &ts->calls.pending[0];
+    for (size_t i = 1; i < TETRA_PENDING_CONNECTS; i++) {
+        if (ts->calls.pending[i].seen_m < oldest->seen_m) {
+            oldest = &ts->calls.pending[i];
+        }
+    }
+    return oldest;
+}
+
+/* A PDU other than D-SETUP of call @p ev (@p c NULL when no record holds it): a D-CONNECT granting transmission for a
+ * call no record holds remembers its caller, and a release or any other floor PDU of the call forgets one. */
+static void
+calls_note_pending_connect(tetra_state_t* ts, const tetra_call_t* c, const tetra_call_event* ev,
+                           const tetra_mac_sdu* sdu) {
+    switch ((tetra_call_event_kind)ev->kind) {
+        case TETRA_CALL_EV_SETUP:
+        case TETRA_CALL_EV_ALERT:
+        case TETRA_CALL_EV_PROCEEDING:
+        case TETRA_CALL_EV_INFO: return;
+        default: break;
+    }
+    const uint16_t id = (uint16_t)(ev->call_id & 0x3FFFu);
+    tetra_pending_connect* p = pending_find(ts, id);
+    uint32_t caller = 0;
+    if (ev->kind == TETRA_CALL_EV_CONNECT && !c && (ev->has & TETRA_CALL_HAS_GRANT) != 0u && ev->grant == 0u
+        && sdu_party_ssi(sdu, &caller)) {
+        if (!p) {
+            p = pending_slot(ts);
+        }
+        p->call_id = id;
+        p->caller = caller;
+        p->net = calls_party_net(ts, 0, 0u);
+        p->seen_m = dsd_decode_now_mono_s();
+        p->used = 1;
+        return;
+    }
+    if (p) {
+        DSD_MEMSET(p, 0, sizeof(*p));
+    }
+}
+
+/* The D-SETUP of @p c takes the caller of a D-CONNECT that came before it, on the same network and within
+ * TETRA_GRANT_PAIR_S, unless it names another calling party (setup_names_another_caller()'s rule). */
+static void
+calls_take_pending_connect(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, uint32_t calling_net) {
+    tetra_pending_connect* const p = pending_find(ts, c->call_id);
+    if (!p) {
+        return;
+    }
+    const tetra_pending_connect pc = *p;
+    DSD_MEMSET(p, 0, sizeof(*p));
+    if (dsd_decode_now_mono_s() - pc.seen_m > TETRA_GRANT_PAIR_S || pc.net != calls_party_net(ts, 0, 0u)) {
+        return;
+    }
+    if ((ev->has & TETRA_CALL_HAS_CALLING) != 0u
+        && (ev->calling_ssi != pc.caller
+            || (calling_net != TETRA_CALL_NET_UNKNOWN && pc.net != TETRA_CALL_NET_UNKNOWN && calling_net != pc.net))) {
+        return;
+    }
+    if (c->calling_ssi == 0u) {
+        c->calling_ssi = pc.caller;
+        c->calling_net = pc.net;
+    }
+    if (c->talker_ssi == 0u) {
+        c->talker_ssi = pc.caller;
+    }
+}
+
+/* Whether a D-SETUP names the talker by its calling party, as SS-TPI (EN 300 392-12-3 clause 5.2.1.5 NOTE 2) has it
+ * for a set-up without SS-TPI information: a decoder policy, not a spec guarantee. Only a group call's (communication
+ * type point to multipoint, acknowledged or broadcast) that carries the calling party, with transmission granted or
+ * granted to another user, while no talker is known; not one carrying a Facility element (table 14.86 0011), whose
+ * SS-TPI INFORM may name another talker (not parsed here), and not a late-entry repeat (EN 300 392-12-14 clause
+ * 5.5.3.3: its notification indicator LE broadcast, acknowledgement or paging, 0, 1 or 2, EN 300 392-9 table 3), as
+ * nothing makes the calling party of a repeat the current talker. A repeat that carries another notification instead
+ * (EN 300 392-9 clause 7.2.2) reads as a set-up (documented limit). An individual call's initial permission may go to
+ * either party (clause 14.5.1.2.1 a), so its D-SETUP never names the talker: D-CONNECT, D-CONNECT ACKNOWLEDGE and the
+ * floor PDUs do. */
+static int
+setup_names_talker(const tetra_call_t* c, const tetra_call_event* ev) {
+    if (!basic_is_group(ev->basic_service) || c->talker_ssi != 0u || (ev->has & TETRA_CALL_HAS_CALLING) == 0u
+        || (ev->has & TETRA_CALL_HAS_GRANT) == 0u || !grant_is_transmission(ev->grant) || ev->facility != 0u) {
+        return 0;
+    }
+    return (ev->has & TETRA_CALL_HAS_NOTIFICATION) == 0u || ev->notification > 2u;
+}
+
 /* The record a D-SETUP describes. */
 static tetra_call_t*
 call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
            const tetra_mac_sdu* sdu) {
     uint32_t called = 0;
-    const int has_called = sdu_ssi(sdu, &called);
+    const int has_called = sdu_party_ssi(sdu, &called);
     const uint32_t calling_net = calls_party_net(ts, (ev->has & TETRA_CALL_HAS_CALLING_EXT) != 0u, ev->calling_ext);
     if (c && setup_reuses_id(c, ev, has_called, called, calling_net)) {
         /* The call whose identifier the D-SETUP reuses ended with its release unheard. */
@@ -1182,8 +1344,8 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
         }
         c->calling_ssi = ev->calling_ssi;
     }
-    /* A late-entry D-SETUP repeats the calling party; it names the talker only while none is known. */
-    if (c->talker_ssi == 0u && (ev->has & TETRA_CALL_HAS_GRANT) != 0u && grant_is_transmission(ev->grant)) {
+    calls_take_pending_connect(ts, c, ev, calling_net);
+    if (setup_names_talker(c, ev)) {
         c->talker_ssi = c->calling_ssi;
     }
     return c;
@@ -1219,62 +1381,200 @@ call_connected(tetra_call_t* c) {
     }
 }
 
-/* The transmitting party a grant names: the one the PDU names, else the addressed party when it is the one granted;
- * 0 when it names none. */
-static uint32_t
-grant_talker(const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
-    uint32_t ssi = 0;
-    if ((ev->has & TETRA_CALL_HAS_TALKER) != 0u) {
-        return ev->talker_ssi;
-    }
-    return (ev->grant == 0u && sdu_ssi(sdu, &ssi)) ? ssi : 0u;
-}
-
 /* D-TX GRANTED and D-TX INTERRUPT: a transmission granted (to the addressed party, or to the transmitting party the PDU
  * names) starts; their encryption control says whether it is end-to-end encrypted (table 14.18). A grant is the SwMI's
- * floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1), so one granted after D-TX CEASED, or one
- * that names no talker where one was known, is the next transmission. After D-TX CEASED the speech of the last one (the
- * trail that follows it, whose talker is no longer known) is not its speech (tetra_voice_transmission_started()); the
- * canonical call of a talker no longer known ends, so the next transmission does not go on under that talker, and its
- * speech starts over with it. */
+ * floor decision, never sent unsolicited (EN 300 392-2 clause 14.5.1.2.1), so one granted after D-TX CEASED is the next
+ * transmission: the speech of the last one (the trail that follows it, whose talker is no longer known) is not its
+ * speech (tetra_voice_transmission_started()). Who talks is the floor's (call_floor()). */
 static void
-call_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
-                  const tetra_mac_sdu* sdu) {
+call_transmission(tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev) {
     if ((ev->has & TETRA_CALL_HAS_ENCRYPTION) != 0u) {
         c->e2ee = (uint8_t)(ev->encryption != 0u);
     }
     if ((ev->has & TETRA_CALL_HAS_GRANT) == 0u || !grant_is_transmission(ev->grant)) {
         return;
     }
-    const uint32_t before = c->talker_ssi;
     const int after_cease = c->phase == TETRA_CALL_CEASED;
     c->phase = TETRA_CALL_TX_GRANTED;
-    c->talker_ssi = grant_talker(ev, sdu);
     if (after_cease) {
         tetra_voice_transmission_started(&ts->voice, c->call_id);
     }
-    /* Ending the call starts its speech over too (tetra_calls_t::ends). */
-    if (before != 0u && c->talker_ssi == 0u && ts->calls.published == TETRA_PUB_CALL
-        && ts->calls.published_call_id == c->call_id) {
-        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
-    }
 }
 
-/* D-CONNECT goes to the calling party (clause 14.7.1.4): its address is the caller, a party of the current network, who
- * talks when it is granted. */
+/* D-CONNECT goes to the calling party (clause 14.7.1.4): its address is the caller, a party of the current network. */
 static void
-call_connect(const tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+call_connect(const tetra_state_t* ts, tetra_call_t* c, const tetra_mac_sdu* sdu) {
     uint32_t ssi = 0;
     call_connected(c);
-    if (!sdu_ssi(sdu, &ssi)) {
-        return;
-    }
-    if (c->calling_ssi == 0u) {
+    if (sdu_party_ssi(sdu, &ssi) && c->calling_ssi == 0u) {
         c->calling_ssi = ssi;
         c->calling_net = calls_party_net(ts, 0, 0u);
     }
-    if (c->talker_ssi == 0u && (ev->has & TETRA_CALL_HAS_GRANT) != 0u && ev->grant == 0u) {
-        c->talker_ssi = ssi;
+}
+
+/* The CMCE PDUs that move the floor of a call (call_floor()). */
+static int
+event_moves_floor(uint8_t kind) {
+    switch ((tetra_call_event_kind)kind) {
+        case TETRA_CALL_EV_CONNECT:
+        case TETRA_CALL_EV_CONNECT_ACK:
+        case TETRA_CALL_EV_TX_GRANTED:
+        case TETRA_CALL_EV_TX_INTERRUPT:
+        case TETRA_CALL_EV_TX_CEASED:
+        case TETRA_CALL_EV_TX_CONTINUE:
+        case TETRA_CALL_EV_TX_WAIT:
+        case TETRA_CALL_EV_RESTORE: return 1;
+        default: return 0;
+    }
+}
+
+/* The talker after floor PDU @p ev of @p c, whose MAC address @p sdu holds (none for a NULL @p sdu); @p pairs is set
+ * when the PDU is one a group-addressed PDU of its kind may pair with. No downlink CMCE PDU names the called party: a
+ * group-addressed PDU's address is the call's group (its called GSSI), and for an individual call, which has no group
+ * address, every addressed PDU is individual (EN 300 392-2 clause 14.5.2.2.1 b). The rows, top down; a withdrawal of
+ * the permission wins over a transmitting party in the same PDU:
+ *
+ *   group-addressed D-TX GRANTED "not granted"            unknown, transmitting party ignored (14.5.2.2.1 d.1: any
+ *                                                          previous permission no longer applies)
+ *   D-TX INTERRUPT "not granted", any address              unknown, transmitting party ignored (14.5.2.2.1 f: delayed
+ *                                                          pre-emption)
+ *   individually addressed D-TX GRANTED "not granted"
+ *     or "queued"                                          unchanged (14.5.2.2.1 b: the request is refused or queued)
+ *   D-TX GRANTED / INTERRUPT "granted" or "granted to
+ *     another user" naming a transmitting party            that party, whatever the address
+ *   individually addressed D-TX GRANTED "granted"          the addressed party (14.5.2.2.1 b)
+ *   individually addressed D-TX INTERRUPT                  unknown: the addressed talker loses the floor (14.5.2.2.1 f)
+ *   group-addressed D-TX GRANTED / INTERRUPT "granted to
+ *     another user"                                        unchanged when paired (below), else unknown
+ *   D-TX CEASED                                            unknown (14.5.2.2.1 e)
+ *   D-TX WAIT                                              unchanged: paused (14.5.2.2.1 c)
+ *   D-TX CONTINUE "continue" / "not continue"              unchanged / unknown (14.5.2.2.1 d.2 / d.1)
+ *   D-CALL RESTORE "granted"                               the addressed, restoring, party (14.5.2.2.4)
+ *   D-CALL RESTORE any other grant                         unknown when the talker is the restoring party, else
+ *                                                          unchanged (14.5.2.2.4)
+ *   D-CONNECT "granted"                                    the addressed party, the caller, while none is known
+ *   D-CONNECT ACKNOWLEDGE "granted", individually addressed the addressed party, the called MS (14.5.1.4.1)
+ *
+ * Any other transmission grant that names no one leaves the talker unknown, and any other PDU leaves it unchanged.
+ *
+ * Pairing (a heuristic): on a transmission granted, the SwMI tells the granted MS in an individually addressed D-TX
+ * GRANTED and the other MSs in a group-addressed one, "granted to another user", which need not name the transmitting
+ * party when the individual one came first (14.5.2.2.1 b NOTE 1, e); an immediate pre-emption sends D-TX INTERRUPT the
+ * same way (f). A group-addressed grant that names no one keeps the talker only when the call's previous floor PDU was
+ * an individually addressed one of the same kind that named that talker, and it came within TETRA_GRANT_PAIR_S on the
+ * decode clock; any other floor PDU between ends the pairing. A group notice later than that, or after another floor
+ * PDU, loses the talker, and two floor PDUs missed in a row within the window (a whole transmission, its group notice
+ * and the next individual grant) credit the previous talker until the next PDU names one (documented limits). */
+typedef struct {
+    uint32_t talker; /* the call's talker before the PDU */
+    uint32_t addr;   /* the MAC address's SSI, when addressed */
+    int addressed;   /* the PDU is addressed to a party SSI */
+    int group;       /* ... which is the call's group (its called GSSI) */
+    int individual;  /* ... which is any other SSI */
+    int has_grant;   /* the PDU carries a transmission grant */
+} floor_pdu;
+
+static void
+floor_pdu_init(floor_pdu* f, const tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    f->talker = c->talker_ssi;
+    f->addr = 0;
+    f->addressed = sdu_party_ssi(sdu, &f->addr);
+    f->group = f->addressed && basic_is_group(c->basic_service) && f->addr == c->called_ssi;
+    f->individual = f->addressed && !f->group;
+    f->has_grant = (ev->has & TETRA_CALL_HAS_GRANT) != 0u;
+}
+
+/* A D-TX GRANTED / D-TX INTERRUPT granting transmission that names no transmitting party: an individually addressed
+ * D-TX GRANTED names its addressee (and may pair); a group-addressed "granted to another user" keeps the talker only
+ * when paired; anything else leaves no talker. */
+static uint32_t
+floor_tx_unnamed(const tetra_call_t* c, const tetra_call_event* ev, const floor_pdu* f, double now_m, int* pairs) {
+    const int interrupt = ev->kind == TETRA_CALL_EV_TX_INTERRUPT;
+    if (f->individual && !interrupt && ev->grant == 0u) {
+        *pairs = 1;
+        return f->addr;
+    }
+    const int paired = f->group && ev->grant == 3u && c->pair_kind == (uint8_t)(ev->kind + 1u)
+                       && now_m - c->pair_m <= TETRA_GRANT_PAIR_S;
+    return paired ? f->talker : 0u;
+}
+
+/* The D-TX GRANTED / D-TX INTERRUPT rows of floor_transition(). */
+static uint32_t
+floor_tx_grant(const tetra_call_t* c, const tetra_call_event* ev, const floor_pdu* f, double now_m, int* pairs) {
+    const int interrupt = ev->kind == TETRA_CALL_EV_TX_INTERRUPT;
+    if (!f->has_grant) {
+        return f->talker;
+    }
+    if (ev->grant == 1u && (interrupt || f->group)) {
+        return 0u;
+    }
+    if (!grant_is_transmission(ev->grant)) {
+        return f->talker;
+    }
+    if ((ev->has & TETRA_CALL_HAS_TALKER) != 0u) {
+        *pairs = f->individual;
+        return ev->talker_ssi;
+    }
+    return floor_tx_unnamed(c, ev, f, now_m, pairs);
+}
+
+/* The D-CALL RESTORE rows of floor_transition(). */
+static uint32_t
+floor_restore(const tetra_call_event* ev, const floor_pdu* f) {
+    if (!f->has_grant || !f->individual) {
+        return f->talker;
+    }
+    if (ev->grant == 0u) {
+        return f->addr;
+    }
+    return f->talker == f->addr ? 0u : f->talker;
+}
+
+/* The D-CONNECT and D-CONNECT ACKNOWLEDGE rows of floor_transition(). */
+static uint32_t
+floor_connect(const tetra_call_event* ev, const floor_pdu* f) {
+    const int granted = f->has_grant && ev->grant == 0u;
+    if (ev->kind == TETRA_CALL_EV_CONNECT) {
+        return (f->talker == 0u && granted && f->addressed) ? f->addr : f->talker;
+    }
+    return (granted && f->individual) ? f->addr : f->talker;
+}
+
+static uint32_t
+floor_transition(const tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu, double now_m,
+                 int* pairs) {
+    floor_pdu f;
+    floor_pdu_init(&f, c, ev, sdu);
+    *pairs = 0;
+    switch ((tetra_call_event_kind)ev->kind) {
+        case TETRA_CALL_EV_TX_GRANTED:
+        case TETRA_CALL_EV_TX_INTERRUPT: return floor_tx_grant(c, ev, &f, now_m, pairs);
+        case TETRA_CALL_EV_TX_CEASED: return 0u;
+        case TETRA_CALL_EV_TX_CONTINUE:
+            return ((ev->has & TETRA_CALL_HAS_CONTINUE) != 0u && ev->continue_value != 0u) ? f.talker : 0u;
+        case TETRA_CALL_EV_RESTORE: return floor_restore(ev, &f);
+        case TETRA_CALL_EV_CONNECT:
+        case TETRA_CALL_EV_CONNECT_ACK: return floor_connect(ev, &f);
+        default: return f.talker;
+    }
+}
+
+/* Floor PDU @p ev of @p c moves its talker (floor_transition()) and its pairing. A talker no longer known ends the
+ * canonical call (D-TX CEASED ends it as a terminator in tetra_calls_on_event()), so the next transmission does not go
+ * on under that talker; ending it starts the speech over too (tetra_calls_t::ends). */
+static void
+call_floor(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
+           const tetra_mac_sdu* sdu) {
+    const double now_m = dsd_decode_now_mono_s();
+    const uint32_t before = c->talker_ssi;
+    int pairs = 0;
+    c->talker_ssi = floor_transition(c, ev, sdu, now_m, &pairs);
+    c->pair_kind = pairs ? (uint8_t)(ev->kind + 1u) : 0u;
+    c->pair_m = pairs ? now_m : 0.0;
+    if (before != 0u && c->talker_ssi == 0u && ev->kind != TETRA_CALL_EV_TX_CEASED
+        && ts->calls.published == TETRA_PUB_CALL && ts->calls.published_call_id == c->call_id) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
     }
 }
 
@@ -1289,7 +1589,7 @@ call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
         c->timeout = ev->timeout;
     }
     switch ((tetra_call_event_kind)ev->kind) {
-        case TETRA_CALL_EV_CONNECT: call_connect(ts, c, ev, sdu); break;
+        case TETRA_CALL_EV_CONNECT: call_connect(ts, c, sdu); break;
         case TETRA_CALL_EV_CONNECT_ACK: call_connected(c); break;
         case TETRA_CALL_EV_INFO: call_rename(opts, state, ts, c, ev); break;
         case TETRA_CALL_EV_RESTORE:
@@ -1297,12 +1597,12 @@ call_apply(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
             call_connected(c);
             break;
         case TETRA_CALL_EV_TX_GRANTED:
-        case TETRA_CALL_EV_TX_INTERRUPT: call_transmission(opts, state, ts, c, ev, sdu); break;
-        case TETRA_CALL_EV_TX_CEASED:
-            c->phase = TETRA_CALL_CEASED;
-            c->talker_ssi = 0u;
-            break;
+        case TETRA_CALL_EV_TX_INTERRUPT: call_transmission(ts, c, ev); break;
+        case TETRA_CALL_EV_TX_CEASED: c->phase = TETRA_CALL_CEASED; break;
         default: break;
+    }
+    if (event_moves_floor(ev->kind)) {
+        call_floor(opts, state, ts, c, ev, sdu);
     }
 }
 
@@ -1433,7 +1733,7 @@ calls_on_followed_channel(const dsd_state* state, const tetra_state_t* ts, const
 static int
 address_maintains(const tetra_mac_address* addr) {
     uint32_t ssi = 0;
-    if (address_ssi(addr, &ssi)) {
+    if (party_address_ssi(addr, &ssi)) {
         return ssi != 0xFFFFFFu;
     }
     return addr->type == TETRA_MAC_ADDR_EVENT_LABEL && addr->event_label != TETRA_EVENT_LABEL_KEEP;
@@ -1482,6 +1782,9 @@ tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* e
     tetra_call_t* c = calls_find(ts, (uint16_t)(ev->call_id & 0x3FFFu));
     if (ev->kind == TETRA_CALL_EV_SETUP) {
         c = call_setup(opts, state, ts, c, ev, sdu);
+    } else {
+        /* Before the return for a call no record holds: a connect-first set-up's D-CONNECT, and what forgets it. */
+        calls_note_pending_connect(ts, c, ev, sdu);
     }
     const int alloc = call_takes_allocation(sdu, c);
     if (!c) {
@@ -2397,6 +2700,7 @@ tetra_calls_forget_calls(dsd_opts* opts, dsd_state* state) {
     for (size_t i = 0; i < TETRA_CALLS_MAX; i++) {
         calls_drop(opts, state, ts, &ts->calls.call[i]);
     }
+    DSD_MEMSET(ts->calls.pending, 0, sizeof ts->calls.pending);
     ts->calls.heard = 0;
     ts->calls.held = 0;
     ts->calls.heard_known = 0;

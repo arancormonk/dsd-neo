@@ -67,6 +67,10 @@ test_tune_allowed(const dsd_opts* opts, int call_type_enabled, int encrypted, in
     return 1;
 }
 
+/* The radio the stand-in radio list allows whatever the allow list says (0: none), so a case can tell which source
+ * reached the evaluator. */
+static uint32_t g_allowed_radio = 0U;
+
 int
 dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                   int encrypted, int data_call, dsd_tg_policy_decision* out) {
@@ -82,7 +86,8 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     out->audio_allowed = 1;
     out->record_allowed = 1;
     out->stream_allowed = 1;
-    out->tune_allowed = test_tune_allowed(opts, opts ? opts->trunk_tune_group_calls : 0, encrypted, data_call);
+    out->tune_allowed = test_tune_allowed(opts, opts ? opts->trunk_tune_group_calls : 0, encrypted, data_call)
+                        || (src != 0U && src == g_allowed_radio);
     return 0;
 }
 
@@ -101,8 +106,18 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
     out->audio_allowed = 1;
     out->record_allowed = 1;
     out->stream_allowed = 1;
-    out->tune_allowed = test_tune_allowed(opts, opts ? opts->trunk_tune_private_calls : 0, encrypted, data_call);
+    out->tune_allowed = test_tune_allowed(opts, opts ? opts->trunk_tune_private_calls : 0, encrypted, data_call)
+                        || (src != 0U && src == g_allowed_radio);
     return 0;
+}
+
+/* The radio the stand-in radio list blocks (0: none). */
+static uint32_t g_blocked_radio = 0U;
+
+int
+dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id) {
+    (void)state;
+    return radio_id != 0U && radio_id == g_blocked_radio;
 }
 
 /* The visit cap refuses to fire while a typed row transaction is outstanding. Only
@@ -493,6 +508,145 @@ test_policy_gating(void) {
     (void)dsd_call_state_update_media(data.state, 0, 1, 100.2);
     CHECK("data ignored", probe_voice(&data).retained_media_m < 0.0);
     fixture_free(&data);
+}
+
+static void
+open_voice_epoch_proto(gate_fixture* fix, int protocol, double t, double span, dsd_call_kind kind, uint64_t src,
+                       uint64_t dst) {
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = protocol;
+    obs.slot = 0U;
+    obs.kind = kind;
+    obs.ota_source_id = src;
+    obs.ota_target_id = dst;
+    obs.policy_target_id = dst;
+    obs.observed_m = t;
+    (void)dsd_call_state_observe(fix->state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(fix->state, 0U, 1, t);
+    (void)dsd_call_state_update_media(fix->state, 0U, 1, t + span);
+}
+
+/* M17 addresses calls by callsign, so talkgroup policy never applies: a 48-bit callsign value must not be
+ * truncated into a policy lookup (issue #773). The stub evaluator refuses every call while the allow list is on.
+ * Every M17 sync type is exempt, for group and private calls alike, and so is a short callsign whose value fits 32
+ * bits, which the wide-ID rule alone would hand to the evaluator. */
+static void
+test_m17_voice_ignores_talkgroup_policy(void) {
+    static const uint64_t callsign_targets[] = {0x64ULL, 0x100000064ULL, 0x2A5B6C7D8E9FULL};
+    static const int m17_syncs[] = {
+        DSD_SYNC_M17_STR_POS, DSD_SYNC_M17_STR_NEG, DSD_SYNC_M17_LSF_POS, DSD_SYNC_M17_LSF_NEG,
+        DSD_SYNC_M17_BRT_POS, DSD_SYNC_M17_BRT_NEG, DSD_SYNC_M17_PKT_POS, DSD_SYNC_M17_PKT_NEG,
+        DSD_SYNC_M17_PRE_POS, DSD_SYNC_M17_PRE_NEG, DSD_SYNC_M17_EOT_POS, DSD_SYNC_M17_EOT_NEG,
+    };
+    static const dsd_call_kind kinds[] = {DSD_CALL_KIND_GROUP_VOICE, DSD_CALL_KIND_PRIVATE_VOICE};
+    for (size_t s = 0; s < sizeof(m17_syncs) / sizeof(m17_syncs[0]); s++) {
+        CHECK("M17 sync type", DSD_SYNC_IS_M17(m17_syncs[s]));
+        for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
+            for (size_t i = 0; i < sizeof(callsign_targets) / sizeof(callsign_targets[0]); i++) {
+                gate_fixture fix;
+                if (fixture_init(&fix) != 0) {
+                    DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+                    g_failures++;
+                    return;
+                }
+                fix.opts->trunk_use_allow_list = 1;
+                open_voice_epoch_proto(&fix, m17_syncs[s], 100.0, 0.15, kinds[k], 0x1234ULL, callsign_targets[i]);
+                if (!(probe_voice(&fix).retained_media_m > 0.0)) {
+                    DSD_FPRINTF(stderr, "FAIL: %s: M17 sync %d kind %d target %llx refused under allow list\n",
+                                __func__, m17_syncs[s], (int)kinds[k], (unsigned long long)callsign_targets[i]);
+                    g_failures++;
+                }
+                fixture_free(&fix);
+            }
+        }
+    }
+}
+
+/* A call whose target is unknown but whose source is known still meets the radio list: a blocked radio is not held
+   (radio rules act once the radio is known); an unblocked one is, and M17 stays outside policy. */
+static void
+test_source_only_blocked_radio_not_held(void) {
+    static const struct {
+        uint64_t target;
+        uint64_t source;
+        const char* tag;
+        int protocol;
+        int held;
+    } cases[] = {
+        {0U, 777U, "target 0 with a blocked source is not held", 1, 0},
+        {0x100000064ULL, 777U, "a wide target with a blocked source is not held", 1, 0},
+        {0U, 778U, "target 0 with another source holds", 1, 1},
+        {0U, 0U, "target 0 without a source holds", 1, 1},
+        {0U, 777U, "M17 stays outside policy", DSD_SYNC_M17_STR_POS, 1},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+            g_failures++;
+            return;
+        }
+        g_blocked_radio = 777U;
+        open_voice_epoch_proto(&fix, cases[i].protocol, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, cases[i].source,
+                               cases[i].target);
+        CHECK(cases[i].tag, (probe_voice(&fix).retained_media_m > 0.0) == cases[i].held);
+        g_blocked_radio = 0U;
+        fixture_free(&fix);
+    }
+}
+
+/* Outside M17, a target or source that does not fit 32 bits is unknown, not its truncated low half. */
+static void
+test_wide_ids_read_as_unknown(void) {
+    gate_fixture wide_target;
+    if (fixture_init(&wide_target) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    wide_target.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&wide_target, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 0x100000064ULL);
+    CHECK("wide target is unknown and holds", probe_voice(&wide_target).retained_media_m > 0.0);
+    fixture_free(&wide_target);
+
+    gate_fixture narrow;
+    if (fixture_init(&narrow) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    narrow.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&narrow, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 100);
+    CHECK("known target still policy gated", probe_voice(&narrow).retained_media_m < 0.0);
+    fixture_free(&narrow);
+
+    gate_fixture wide_source;
+    if (fixture_init(&wide_source) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    /* The stand-in radio list allows radio 100, the wide source's low half: only a truncated source would pass. */
+    g_allowed_radio = 100U;
+    wide_source.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&wide_source, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 0x100000064ULL, 22);
+    CHECK("wide source leaves a known target gated", probe_voice(&wide_source).retained_media_m < 0.0);
+    fixture_free(&wide_source);
+
+    gate_fixture allowed_source;
+    if (fixture_init(&allowed_source) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        g_allowed_radio = 0U;
+        return;
+    }
+    allowed_source.opts->trunk_use_allow_list = 1;
+    open_voice_epoch_proto(&allowed_source, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 100, 22);
+    CHECK("allowed radio 100 holds", probe_voice(&allowed_source).retained_media_m > 0.0);
+    fixture_free(&allowed_source);
+    g_allowed_radio = 0U;
 }
 
 static void
@@ -1631,6 +1785,9 @@ main(void) {
     test_non_media_updates_do_not_extend_hold();
     test_probe_tracks_active_and_retained_slots_independently();
     test_policy_gating();
+    test_m17_voice_ignores_talkgroup_policy();
+    test_wide_ids_read_as_unknown();
+    test_source_only_blocked_radio_not_held();
     test_operator_hold_and_visit_reset();
     test_stale_epoch_cannot_rearm();
     test_zero_ms_falls_back_to_defaults();

@@ -61,8 +61,15 @@ Item {
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
+    // Issue #773: a private call headlines its other party under a PRIVATE tag, and a
+    // call no party named headlines its protocol ("TETRA call").
+    readonly property int heroKind: heroSlot === 1 ? metrics.slot1CallKind : heroSlot === 2 ? metrics.slot2CallKind : 0
+    readonly property string heroTgLabel: heroSlot === 1 ? metrics.slot1TgLabel : heroSlot === 2 ? metrics.slot2TgLabel : ""
+    readonly property string heroProtocol: heroSlot === 1 ? metrics.slot1ProtocolLabel : heroSlot === 2 ? metrics.slot2ProtocolLabel : ""
+    readonly property bool heroPrivate: heroSlot !== 0 && Util.callIsPrivate(heroKind)
+    readonly property bool heroAnonymous: heroSlot !== 0 && !heroPrivate && Util.callIsAnonymous(heroTg, heroTgId, heroSrc, heroProtocol)
     readonly property bool heroDuplicate: heroTgId > 0 && heroName === heroTg
-    readonly property string heroHeadline: Util.talkgroupHeadline(heroName, heroTg, heroTgId)
+    readonly property string heroHeadline: Util.callHeadline(heroKind, heroName, heroTg, heroTgId, heroTgLabel, heroSrc, heroProtocol)
     readonly property bool heroEmergency: heroSlot === 1 ? metrics.slot1CallEmergency : heroSlot === 2 ? metrics.slot2CallEmergency : false
     readonly property bool otherEmergency: otherSlot === 1 ? metrics.slot1CallEmergency : otherSlot === 2 ? metrics.slot2CallEmergency : false
     readonly property bool heroEnc: heroSlot === 1 ? metrics.slot1CallEnc : heroSlot === 2 ? metrics.slot2CallEnc : false
@@ -84,13 +91,31 @@ Item {
     readonly property string otherTg: otherSlot === 1 ? metrics.slot1TgText : otherSlot === 2 ? metrics.slot2TgText : ""
     readonly property double otherTgId: otherSlot === 1 ? metrics.slot1TgId : otherSlot === 2 ? metrics.slot2TgId : 0
     readonly property bool otherEnc: otherSlot === 1 ? metrics.slot1CallEnc : otherSlot === 2 ? metrics.slot2CallEnc : false
+    readonly property int otherKind: otherSlot === 1 ? metrics.slot1CallKind : otherSlot === 2 ? metrics.slot2CallKind : 0
+    readonly property string otherTgLabel: otherSlot === 1 ? metrics.slot1TgLabel : otherSlot === 2 ? metrics.slot2TgLabel : ""
+    readonly property string otherSrc: otherSlot === 1 ? metrics.slot1SrcText : otherSlot === 2 ? metrics.slot2SrcText : ""
+    readonly property string otherProtocol: otherSlot === 1 ? metrics.slot1ProtocolLabel : otherSlot === 2 ? metrics.slot2ProtocolLabel : ""
+    readonly property bool otherPrivate: otherSlot !== 0 && Util.callIsPrivate(otherKind)
+    // The strip's one line: a talkgroup call names its talkgroup beside its name, as
+    // before; a private call and a call no party named read as the hero would.
+    readonly property string otherIdentity: {
+        if (otherPrivate || Util.callIsAnonymous(otherTg, otherTgId, otherSrc, otherProtocol))
+            return Util.callHeadline(otherKind, otherName, otherTg, otherTgId, otherTgLabel, otherSrc, otherProtocol);
+        if (otherTgId > 0 && otherName === otherTg)
+            return Util.talkgroupHeadline(otherName, otherTg, otherTgId);
+        if (otherTg.length === 0)
+            return otherName;
+        return otherName.length > 0 ? otherName + " · TG " + otherTg : "TG " + otherTg;
+    }
 
     component AvoidAction: OutlineButton {
         property int heroSlot: 0
         property bool running: false
+        // A private call's target is a radio, which the decoder will not lock out as a talkgroup.
+        property bool privateCall: false
         text: metrics.persistTgLockouts ? qsTr("Lock out") : qsTr("Avoid TG")
-        accessibleName: metrics.persistTgLockouts ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session")
-        enabled: running && heroSlot !== 0
+        accessibleName: privateCall ? qsTr("A private call has no talkgroup to lock out") : metrics.persistTgLockouts ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session")
+        enabled: running && heroSlot !== 0 && !privateCall
         onClicked: commands.lockoutSlot(heroSlot === 2 ? 1 : 0)
     }
 
@@ -182,7 +207,7 @@ Item {
     readonly property real pillHeight: Math.max(48, 30 * Theme.fontScale)
     readonly property real callRowHeight: Math.max(Theme.rowHeight, Math.ceil(rowNameProbe.implicitHeight + 3 + rowMetaProbe.implicitHeight) + 24)
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
-    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight))
+    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
     readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
     readonly property real stripHeight: {
@@ -660,10 +685,14 @@ Item {
                     // cyan→magenta ramp per glyph run.
                     Canvas {
                         id: heroText
+                        objectName: "heroHeadlineText"
 
                         width: parent.width - (heroCompactDuration.visible ? heroCompactDuration.width + 12 : 0)
                         height: parent.height
                         visible: screen.heroSlot !== 0
+                        // Painted text has no text of its own for a screen reader.
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: screen.heroHeadline
 
                         onPaint: {
                             var ctx = getContext("2d");
@@ -728,25 +757,50 @@ Item {
                         visible: screen.heroSlot !== 0
                         spacing: 8
 
-                        // A zero id is "none decoded", not an identity: an encrypted
-                        // call on a conventional channel reports no talkgroup, and
-                        // "TG 0" under a headline that already names the channel would
-                        // only say the decoder saw nothing.
+                        // A private call (#773): the tag leads, then the talker. The
+                        // headline already names the other party, so no TG follows.
+                        PrivateTag {
+                            id: heroPrivateTag
+                            objectName: "heroPrivateTag"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: screen.heroPrivate
+                        }
+
+                        // An id that did not decode has no text (the call view leaves it
+                        // empty, never "0"), so it is simply left out: an encrypted call
+                        // on a conventional channel reports no talkgroup, and the headline
+                        // already names the channel.
                         Text {
                             objectName: "heroIds"
                             anchors.verticalCenter: parent.verticalCenter
                             visible: text.length > 0
-                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroPrivateTag.visible ? heroPrivateTag.width + heroSubline.spacing : 0) - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
                             elide: Text.ElideRight
                             text: {
                                 var parts = [];
-                                if (!screen.heroDuplicate && screen.heroTg.length > 0 && screen.heroTg !== "0")
+                                if (!screen.heroPrivate && !screen.heroDuplicate && screen.heroTg.length > 0)
                                     parts.push("TG " + screen.heroTg);
-                                if (screen.heroSrc.length > 0 && screen.heroSrc !== "0")
+                                if (screen.heroSrc.length > 0)
                                     parts.push("SRC " + screen.heroSrc);
                                 return parts.join(" · ");
                             }
                             font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(13)
+                            color: Theme.textSecondary
+                        }
+
+                        // A TETRA call no party named (#773). TETRA names its parties
+                        // in the call setup, so saying the identity did not decode keeps
+                        // "TETRA call" from reading as all there is. X2-TDMA and ProVoice
+                        // never carry one and get no note. Prose, so the sans face.
+                        Text {
+                            objectName: "heroIdentityNote"
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: screen.heroAnonymous && screen.heroProtocol === "TETRA"
+                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                            elide: Text.ElideRight
+                            text: qsTr("identity not decoded")
+                            font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary
                         }
@@ -775,7 +829,7 @@ Item {
                             objectName: "heroAlgorithm"
                             anchors.verticalCenter: parent.verticalCenter
                             visible: screen.heroEnc && screen.heroEncText.length > 0
-                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
+                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroPrivateTag.visible ? heroPrivateTag.width + heroSubline.spacing : 0) - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
                             elide: Text.ElideRight
                             text: screen.heroEncText
                             font.family: Theme.mono
@@ -783,16 +837,17 @@ Item {
                             color: Theme.textSubdued
                         }
 
-                        // Where the call was heard, when that is not already the name
-                        // above: a listed talkgroup still says which scan channel it
-                        // came from. Last in the row and elided to what is left of it,
+                        // Where the call was heard, when that is not already the
+                        // headline above: a listed talkgroup still says which scan
+                        // channel it came from, and so does a call headlined by its
+                        // other party or its protocol. Last in the row and elided to what is left of it,
                         // so an operator-length name never pushes the ENC tag off the
                         // panel; x is laid out from the siblings before it, so the
                         // width binding cannot loop.
                         Text {
                             objectName: "heroChannel"
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
+                            visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroHeadline
                             width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
                             elide: Text.ElideRight
                             text: "· " + screen.heroChannel
@@ -861,19 +916,34 @@ Item {
             }
 
             Text {
+                id: otherIdentityText
                 objectName: "otherSlotIdentity"
                 visible: !screen.stripIdle
                 anchors.left: otherSlotLabel.right
                 anchors.leftMargin: 10
-                anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
                 anchors.rightMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
-                text: screen.otherTgId > 0 && screen.otherName === screen.otherTg ? Util.talkgroupHeadline(screen.otherName, screen.otherTg, screen.otherTgId) : screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
+                text: screen.otherIdentity
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(14)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
                 elide: Text.ElideRight
+            }
+
+            // The call's name outranks its tag on this narrow line: the tag shows only
+            // where the whole identity still fits beside it and the ENC and EMERGENCY
+            // tags, which keep their places. Measured from the identity's natural
+            // width and the siblings' fixed edges, so no width binding loops.
+            PrivateTag {
+                id: otherPrivateTag
+                objectName: "otherPrivateTag"
+                readonly property real room: otherSkip.x - 10 - (otherEncTag.visible ? otherEncTag.width + 10 : 0) - (otherEmergencyTag.visible ? otherEmergencyTag.width + 10 : 0) - (otherSlotLabel.x + otherSlotLabel.width + 10)
+                visible: !screen.stripIdle && screen.otherPrivate && otherIdentityText.implicitWidth + 10 + implicitWidth <= room
+                anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
             }
 
             EmergencyTag {
@@ -2093,6 +2163,7 @@ Item {
         property bool menuPersist: false
         readonly property bool persistTgLockouts: metrics.persistTgLockouts
         property bool menuHeld: false
+        property bool menuPrivate: false
         readonly property bool heldHere: menuTgId > 0 && menuHeld
         title: qsTr("Slot %1").arg(menuSlot)
         onPersistTgLockoutsChanged: {
@@ -2103,6 +2174,7 @@ Item {
         function openForOtherSlot() {
             menuSlot = screen.otherSlot;
             menuTgId = screen.otherTgId;
+            menuPrivate = screen.otherPrivate;
             menuPersist = metrics.persistTgLockouts;
             menuHeld = metrics.heldTg === menuTgId;
             open();
@@ -2120,15 +2192,15 @@ Item {
         actions: [
             {
                 objectName: "otherSlotHold",
-                text: heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(Util.idText(menuTgId)),
-                description: qsTr("Only this talkgroup is heard; the other slot goes quiet"),
+                text: heldHere ? qsTr("Release hold") : menuPrivate ? qsTr("Hold radio %1").arg(Util.idText(menuTgId)) : qsTr("Hold TG %1").arg(Util.idText(menuTgId)),
+                description: menuPrivate ? qsTr("Only calls with this radio are heard; the other slot goes quiet") : qsTr("Only this talkgroup is heard; the other slot goes quiet"),
                 enabled: decoderHost.running && (heldHere || menuTgId > 0)
             },
             {
                 objectName: "otherSlotAvoid",
                 text: menuPersist ? qsTr("Lock out") : qsTr("Avoid TG"),
-                description: menuPersist ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session"),
-                enabled: decoderHost.running && menuSlot !== 0
+                description: menuPrivate ? qsTr("A private call has no talkgroup to lock out") : menuPersist ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session"),
+                enabled: decoderHost.running && menuSlot !== 0 && !menuPrivate
             }
         ]
         onTriggered: function (index) {
@@ -2259,8 +2331,9 @@ Item {
                 height: liveActions.cellHeight
                 maximumLineCount: liveActions.labelLines
                 wrapMode: Text.WordWrap
-                text: qsTr("Hold TG")
-                accessibleName: qsTr("Hold this talkgroup")
+                // A private call holds its radio: the decoder's hold matches either party of a private call.
+                text: screen.heroPrivate ? qsTr("Hold") : qsTr("Hold TG")
+                accessibleName: screen.heroPrivate ? qsTr("Hold calls with radio %1").arg(Util.idText(screen.heroTgId)) : qsTr("Hold this talkgroup")
                 checkable: true
                 checked: screen.holding
                 // Callsigns and dial strings have no numeric talkgroup to hold.
@@ -2287,6 +2360,7 @@ Item {
                 objectName: "avoidButton"
                 heroSlot: screen.heroSlot
                 running: decoderHost.running
+                privateCall: screen.heroPrivate
                 x: liveActions.inset + (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
                 y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                 width: liveActions.cell

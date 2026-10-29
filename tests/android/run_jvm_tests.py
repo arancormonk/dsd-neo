@@ -58,14 +58,14 @@ def literal_after(path, marker, continuations):
 
 
 def golden_records_match():
-    """The C encoder test and DecoderStatusTest.kt pin the same v3 record; a drift would let each side pass alone."""
+    """The C encoder test and DecoderStatusTest.kt pin the same v4 record; a drift would let each side pass alone."""
     c_test = REPO / "tests/ui/test_app_control_notification_status.c"
     kotlin_test = HERE / "DecoderStatusTest.kt"
     try:
-        encoded = literal_after(c_test, "#define NOTIFICATION_GOLDEN_V3_RECORD", ("\\",))
-        parsed = literal_after(kotlin_test, "private const val GOLDEN_V3 =", ("=", "+"))
+        encoded = literal_after(c_test, "#define NOTIFICATION_GOLDEN_V4_RECORD", ("\\",))
+        parsed = literal_after(kotlin_test, "private const val GOLDEN_V4 =", ("=", "+"))
     except (OSError, ValueError) as error:
-        return f"cannot read the golden v3 records: {error}"
+        return f"cannot read the golden v4 records: {error}"
     if encoded == parsed:
         return None
     left, right = encoded.split("\t"), parsed.split("\t")
@@ -73,7 +73,7 @@ def golden_records_match():
     first = left[field] if field < len(left) else "<none>"
     second = right[field] if field < len(right) else "<none>"
     return (
-        f"NOTIFICATION_GOLDEN_V3_RECORD in {c_test.relative_to(REPO)} and GOLDEN_V3 in "
+        f"NOTIFICATION_GOLDEN_V4_RECORD in {c_test.relative_to(REPO)} and GOLDEN_V4 in "
         f"{kotlin_test.relative_to(REPO)} must be byte-identical; they first differ at field {field} "
         f"({first!r} vs {second!r}; {len(left)} vs {len(right)} fields)"
     )

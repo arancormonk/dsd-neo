@@ -4,9 +4,11 @@
  */
 /**
  * @file
- * @brief Source aliases: CSV grammar `id,name[,tags]`, decimal uint32_t ID or inclusive
- * `start-end` range. See docs/csv-formats.md, "Source ID List CSV".
+ * @brief Source aliases (the radio ID list): the immutable row store, its lookups and its snapshot copy. Rows are
+ * exact IDs, ranges or digit patterns, with optional policy. See docs/csv-formats.md, "Source ID List CSV".
  */
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -16,10 +18,14 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include "talkgroup_policy_internal.h"
 
 struct dsd_source_alias_store {
     dsd_source_alias_entry* entries;
     size_t count, capacity;
+    /* Pattern rows (0 skips the pattern pass and the ID formatting) and policy rows (0 skips policy lookups). */
+    size_t pattern_count, policy_count;
     uint64_t generation, store_id, snapshot_source_id;
 };
 
@@ -67,10 +73,49 @@ dsd_source_alias_store_create(void) {
     return s;
 }
 
+/* A row as the store keeps it: kind and bounds checked, pattern text canonical, policy fields normalised (cleared on a
+ * row without policy), strings terminated. Returns 0 when the row is valid. */
+static int
+alias_entry_normalize(const dsd_source_alias_entry* in, dsd_source_alias_entry* out) {
+    *out = *in;
+    out->name[sizeof(out->name) - 1U] = '\0';
+    out->has_policy = in->has_policy ? 1u : 0u;
+    switch (in->kind) {
+        case DSD_TG_POLICY_ROW_EXACT:
+        case DSD_TG_POLICY_ROW_RANGE:
+            if (in->id_start > in->id_end || (in->kind == DSD_TG_POLICY_ROW_EXACT && in->id_start != in->id_end)) {
+                return 1;
+            }
+            DSD_MEMSET(out->pattern, 0, sizeof(out->pattern));
+            break;
+        case DSD_TG_POLICY_ROW_PATTERN: {
+            dsd_id_pattern parsed;
+            if (in->id_start != 0u || in->id_end != 0u || !memchr(in->pattern, '\0', sizeof(in->pattern))
+                || dsd_id_pattern_parse(in->pattern, &parsed) != 0) {
+                return 1;
+            }
+            DSD_SNPRINTF(out->pattern, sizeof(out->pattern), "%s", parsed.text);
+            break;
+        }
+        default: return 1;
+    }
+    if (!out->has_policy) {
+        if (!out->name[0]) {
+            return 1;
+        }
+        DSD_MEMSET(out->mode, 0, sizeof(out->mode));
+        out->audio = out->record = out->stream = 0u;
+        return 0;
+    }
+    out->mode[sizeof(out->mode) - 1U] = '\0';
+    dsd_tg_policy_media_normalize(out->mode, &out->audio, &out->record, &out->stream);
+    return 0;
+}
+
 int
 dsd_source_alias_store_append(dsd_source_alias_store* store, const dsd_source_alias_entry* entry) {
-    if (!store || !entry || !entry->name[0] || entry->id_start > entry->id_end
-        || (!entry->is_range && entry->id_start != entry->id_end)) {
+    dsd_source_alias_entry row;
+    if (!store || !entry || alias_entry_normalize(entry, &row) != 0) {
         return 1;
     }
     if (store->count == store->capacity) {
@@ -88,8 +133,9 @@ dsd_source_alias_store_append(dsd_source_alias_store* store, const dsd_source_al
         store->entries = entries;
         store->capacity = cap;
     }
-    store->entries[store->count] = *entry;
-    store->entries[store->count++].name[DSD_SOURCE_ALIAS_NAME_MAX - 1] = '\0';
+    store->entries[store->count++] = row;
+    store->pattern_count += row.kind == DSD_TG_POLICY_ROW_PATTERN ? 1u : 0u;
+    store->policy_count += row.has_policy ? 1u : 0u;
     if (++store->generation == 0) {
         ++store->generation;
     }
@@ -136,27 +182,142 @@ dsd_source_alias_count(const dsd_state* state) {
     return dsd_source_alias_store_count(alias_get(state));
 }
 
+uint64_t
+dsd_source_alias_store_id(const dsd_state* state) {
+    const dsd_source_alias_store* s = alias_get(state);
+    return s ? s->store_id : 0u;
+}
+
+int
+dsd_source_policy_loaded(const dsd_state* state) {
+    const dsd_source_alias_store* s = alias_get(state);
+    return s && s->policy_count > 0u;
+}
+
+/* The winning row for one ID among a set of rows, built one matching row at a time: the first exact row; else the
+ * narrowest range, the last row winning ties; else the most specific pattern, the last row winning ties. Rows are held
+ * by index into the store (ALIAS_NONE: none yet). */
+#define ALIAS_NONE SIZE_MAX
+
+typedef struct {
+    size_t exact;
+    size_t range;
+    size_t pattern;
+    dsd_id_pattern rank; /* the pattern row's rank */
+} alias_pick;
+
+static void
+alias_pick_init(alias_pick* p) {
+    DSD_MEMSET(p, 0, sizeof(*p));
+    p->exact = ALIAS_NONE;
+    p->range = ALIAS_NONE;
+    p->pattern = ALIAS_NONE;
+}
+
+static void
+alias_pick_offer(alias_pick* p, const dsd_source_alias_store* s, size_t i, const dsd_id_pattern* rank) {
+    const dsd_source_alias_entry* e = &s->entries[i];
+    if (e->kind == DSD_TG_POLICY_ROW_EXACT) {
+        if (p->exact == ALIAS_NONE) {
+            p->exact = i;
+        }
+    } else if (e->kind == DSD_TG_POLICY_ROW_RANGE) {
+        const dsd_source_alias_entry* held = p->range == ALIAS_NONE ? NULL : &s->entries[p->range];
+        if (!held || e->id_end - e->id_start <= held->id_end - held->id_start) {
+            p->range = i;
+        }
+    } else if (rank && (p->pattern == ALIAS_NONE || !dsd_id_pattern_more_specific(&p->rank, rank))) {
+        p->pattern = i;
+        p->rank = *rank;
+    }
+}
+
+static const dsd_source_alias_entry*
+alias_pick_winner(const alias_pick* p, const dsd_source_alias_store* s) {
+    const size_t i = p->exact != ALIAS_NONE ? p->exact : (p->range != ALIAS_NONE ? p->range : p->pattern);
+    return i == ALIAS_NONE ? NULL : &s->entries[i];
+}
+
+/* Whether a pattern row can no longer win pick @p p: the pick is not wanted for this row (NULL), or a range already beat
+ * every pattern (an exact row ends the search before this is asked). */
+static int
+alias_pick_closed_to_patterns(const alias_pick* p) {
+    return !p || p->range != ALIAS_NONE;
+}
+
+/* Whether row @p e covers @p id (written in decimal as @p digits, @p len long); a matching pattern row's rank goes to
+ * @p rank. */
+static int
+alias_row_covers(const dsd_source_alias_entry* e, uint32_t id, const char* digits, size_t len, dsd_id_pattern* rank) {
+    if (e->kind != DSD_TG_POLICY_ROW_PATTERN) {
+        return id >= e->id_start && id <= e->id_end;
+    }
+    dsd_id_pattern_from_canonical(e->pattern, rank);
+    return dsd_id_pattern_match_decimal(rank, digits, len);
+}
+
+/* Offer row @p i to the picks that want it (@p any_pick, @p named_pick; NULL: not wanted for this row) when it covers
+ * @p id. A pattern row is matched only while one of them is still open to patterns. */
+static void
+alias_consider_row(const dsd_source_alias_store* s, size_t i, uint32_t id, const char* digits, size_t len,
+                   alias_pick* any_pick, alias_pick* named_pick) {
+    const dsd_source_alias_entry* e = &s->entries[i];
+    const int pattern = e->kind == DSD_TG_POLICY_ROW_PATTERN;
+    if (pattern && alias_pick_closed_to_patterns(any_pick) && alias_pick_closed_to_patterns(named_pick)) {
+        return; /* a pattern only wins where no exact or range row matched */
+    }
+    dsd_id_pattern rank;
+    if (!alias_row_covers(e, id, digits, len, &rank)) {
+        return;
+    }
+    const dsd_id_pattern* rank_ptr = pattern ? &rank : NULL;
+    if (any_pick) {
+        alias_pick_offer(any_pick, s, i, rank_ptr);
+    }
+    if (named_pick) {
+        alias_pick_offer(named_pick, s, i, rank_ptr);
+    }
+}
+
+/* One pass over the rows: the winner among all rows (@p any) and among named rows (@p named); either may be NULL when
+ * not wanted. The ID is written in decimal once, and only when the store has pattern rows; a pattern row is matched
+ * only while an exact or range row has not already beaten every pattern. */
+static void
+alias_find(const dsd_source_alias_store* s, uint32_t id, const dsd_source_alias_entry** any,
+           const dsd_source_alias_entry** named) {
+    alias_pick picks[2];
+    alias_pick_init(&picks[0]);
+    alias_pick_init(&picks[1]);
+    char digits[DSD_ID_DECIMAL_MAX] = {0};
+    const size_t len = s->pattern_count ? dsd_id_decimal(id, digits, sizeof(digits)) : 0u;
+    for (size_t i = 0; i < s->count; ++i) {
+        alias_pick* any_pick = (any && picks[0].exact == ALIAS_NONE) ? &picks[0] : NULL;
+        alias_pick* named_pick = (named && picks[1].exact == ALIAS_NONE) ? &picks[1] : NULL;
+        if (!any_pick && !named_pick) {
+            break; /* every wanted pick has its exact row: nothing later can win */
+        }
+        if (s->entries[i].name[0] == '\0') {
+            named_pick = NULL; /* an unnamed row decides policy, never the name */
+        }
+        alias_consider_row(s, i, id, digits, len, any_pick, named_pick);
+    }
+    if (any) {
+        *any = alias_pick_winner(&picks[0], s);
+    }
+    if (named) {
+        *named = alias_pick_winner(&picks[1], s);
+    }
+}
+
 int
 dsd_source_alias_lookup(const dsd_state* state, uint32_t id, char* name, size_t name_sz) {
     const dsd_source_alias_store* s = alias_get(state);
-    const dsd_source_alias_entry* best = NULL;
     if (name && name_sz) {
         name[0] = '\0';
     }
-    if (!s) {
-        return 0;
-    }
-    for (size_t i = 0; i < s->count; ++i) {
-        const dsd_source_alias_entry* e = &s->entries[i];
-        if (id < e->id_start || id > e->id_end) {
-            continue;
-        }
-        if (!best || (best->is_range && (!e->is_range || e->id_end - e->id_start <= best->id_end - best->id_start))) {
-            best = e;
-        }
-        if (!best->is_range) {
-            break;
-        }
+    const dsd_source_alias_entry* best = NULL;
+    if (s) {
+        alias_find(s, id, NULL, &best);
     }
     if (!best) {
         return 0;
@@ -168,18 +329,89 @@ dsd_source_alias_lookup(const dsd_state* state, uint32_t id, char* name, size_t 
 }
 
 int
+dsd_source_policy_lookup(const dsd_state* state, uint32_t id, dsd_source_policy_match* out) {
+    const dsd_source_alias_store* s = alias_get(state);
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+    }
+    if (!s || s->policy_count == 0u) {
+        return 0;
+    }
+    const dsd_source_alias_entry* row = NULL;
+    alias_find(s, id, &row, NULL);
+    if (!row || !row->has_policy) {
+        return 0;
+    }
+    if (out) {
+        out->matched = 1;
+        out->entry = *row;
+    }
+    return 1;
+}
+
+/* Clear an optional output string. */
+static void
+label_out_clear(char* out, size_t out_sz) {
+    if (out && out_sz) {
+        out[0] = '\0';
+    }
+}
+
+/* The radio list's mode for a label: the winning row's, when that row has policy and a mode. */
+static int
+alias_row_names_mode(const dsd_source_alias_entry* winner) {
+    return winner && winner->has_policy && winner->mode[0] != '\0';
+}
+
+int
 dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name, size_t name_sz) {
-    if (mode && mode_sz) {
-        mode[0] = '\0';
+    label_out_clear(mode, mode_sz);
+    label_out_clear(name, name_sz);
+    const dsd_source_alias_store* s = alias_get(state);
+    const dsd_source_alias_entry* winner = NULL;
+    const dsd_source_alias_entry* named = NULL;
+    if (s) {
+        alias_find(s, id, s->policy_count ? &winner : NULL, &named);
+    }
+    const int radio_mode = alias_row_names_mode(winner);
+    /* The group list's exact row supplies whatever the radio list did not: the name, the mode, or both. */
+    char group_mode[sizeof(winner->mode)] = {0};
+    char group_name[DSD_SOURCE_ALIAS_NAME_MAX] = {0};
+    (void)dsd_tg_policy_lookup_label(state, id, group_mode, sizeof(group_mode), group_name, sizeof(group_name));
+    const char* label = named ? named->name : group_name;
+    if (label[0] == '\0') {
+        return 0; /* no name, no label: an unnamed row's mode is never shown on its own */
     }
     if (name && name_sz) {
-        name[0] = '\0';
+        DSD_SNPRINTF(name, name_sz, "%s", label);
     }
-    if (dsd_source_alias_lookup(state, id, name, name_sz)) {
-        (void)dsd_tg_policy_lookup_label(state, id, mode, mode_sz, NULL, 0);
-        return 1;
+    if (mode && mode_sz) {
+        DSD_SNPRINTF(mode, mode_sz, "%s", radio_mode ? winner->mode : group_mode);
     }
-    return dsd_tg_policy_lookup_label(state, id, mode, mode_sz, name, name_sz);
+    return 1;
+}
+
+int
+dsd_call_target_label_lookup(const dsd_state* state, dsd_call_kind kind, uint32_t id, char* mode, size_t mode_sz,
+                             char* name, size_t name_sz) {
+    if (kind == DSD_CALL_KIND_GROUP_VOICE) {
+        return dsd_tg_policy_lookup_group_label(state, id, mode, mode_sz, name, name_sz);
+    }
+    if (kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_source_label_lookup(state, id, mode, mode_sz, name, name_sz);
+    }
+    char exact_mode[sizeof(((dsd_source_alias_entry*)0)->mode)] = {0};
+    char exact_name[DSD_SOURCE_ALIAS_NAME_MAX] = {0};
+    const int found =
+        dsd_tg_policy_lookup_label(state, id, exact_mode, sizeof(exact_mode), exact_name, sizeof(exact_name))
+        && exact_name[0] != '\0';
+    if (mode && mode_sz) {
+        DSD_SNPRINTF(mode, mode_sz, "%s", found ? exact_mode : "");
+    }
+    if (name && name_sz) {
+        DSD_SNPRINTF(name, name_sz, "%s", found ? exact_name : "");
+    }
+    return found;
 }
 
 int
@@ -217,6 +449,8 @@ dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src) {
         return -1;
     }
     clone->count = clone->capacity = s->count;
+    clone->pattern_count = s->pattern_count;
+    clone->policy_count = s->policy_count;
     clone->generation = s->generation;
     clone->snapshot_source_id = s->store_id;
     dsd_source_alias_install(dst, clone);

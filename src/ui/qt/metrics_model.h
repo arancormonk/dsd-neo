@@ -163,6 +163,15 @@ class MetricsModel : public QObject {
     Q_PROPERTY(qulonglong slot2TgId READ slot2TgId NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1SrcText READ slot1SrcText NOTIFY slot1Changed)
     Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY slot2Changed)
+    /* Issue #773 (D10): what the hero and the strip word a private call and a call no party named with. */
+    Q_PROPERTY(int slot1CallKind READ slot1CallKind NOTIFY slot1Changed)
+    Q_PROPERTY(int slot2CallKind READ slot2CallKind NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1TgLabel READ slot1TgLabel NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2TgLabel READ slot2TgLabel NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1SrcLabel READ slot1SrcLabel NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2SrcLabel READ slot2SrcLabel NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1ProtocolLabel READ slot1ProtocolLabel NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2ProtocolLabel READ slot2ProtocolLabel NOTIFY slot2Changed)
     Q_PROPERTY(bool slot1CallEmergency READ slot1CallEmergency NOTIFY slot1Changed)
     Q_PROPERTY(int slot1CallPriority READ slot1CallPriority NOTIFY slot1Changed)
     Q_PROPERTY(bool slot2CallEmergency READ slot2CallEmergency NOTIFY slot2Changed)
@@ -1256,6 +1265,55 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The call's dsd_call_kind (issue #773): a private call (3) headlines its other party, not a talkgroup.
+     */
+    int
+    slot1CallKind() const {
+        return m_view.slot_call[0].kind;
+    }
+
+    int
+    slot2CallKind() const {
+        return m_view.slot_call[1].kind;
+    }
+
+    /** @brief The target's own label (a private call's: the other radio's), whatever headlines the call; may be empty. */
+    const QString&
+    slot1TgLabel() const {
+        return m_view.slot_call[0].tg_label;
+    }
+
+    const QString&
+    slot2TgLabel() const {
+        return m_view.slot_call[1].tg_label;
+    }
+
+    /** @brief The source radio's label alone, without its id; empty when no row names it. */
+    const QString&
+    slot1SrcLabel() const {
+        return m_view.slot_call[0].src_label;
+    }
+
+    const QString&
+    slot2SrcLabel() const {
+        return m_view.slot_call[1].src_label;
+    }
+
+    /**
+     * @brief The protocol's display name ("TETRA", "ProVoice", "X2-TDMA", ...): the headline of a call no party named.
+     * Empty for analog, whose channel names its call.
+     */
+    const QString&
+    slot1ProtocolLabel() const {
+        return m_view.slot_call[0].protocol_label;
+    }
+
+    const QString&
+    slot2ProtocolLabel() const {
+        return m_view.slot_call[1].protocol_label;
+    }
+
+    /**
      * @brief Numeric talkgroup id per slot, 0 when the call has none.
      *
      * The tg_text properties are display strings — for M17/D-STAR/YSF/dPMR they
@@ -1990,9 +2048,13 @@ class MetricsModel : public QObject {
         QString name;
         QString tg_text;
         QString src_text;
-        QString channel;      // scan channel the call was heard on, empty when not scanning
-        QString enc_text;     // "ALG 84 · KID 0001", empty when clear or unlearned
-        qulonglong tg_id = 0; // numeric talkgroup, 0 when the call has none
+        QString tg_label;       // the target's own label, whatever headlines the call
+        QString src_label;      // the source radio's label alone
+        QString protocol_label; // the protocol's display name; empty for analog
+        QString channel;        // scan channel the call was heard on, empty when not scanning
+        QString enc_text;       // "ALG 84 · KID 0001", empty when clear or unlearned
+        qulonglong tg_id = 0;   // numeric talkgroup, 0 when the call has none
+        int kind = 0;           // dsd_call_kind
         bool enc = false;
         bool emergency = false;
         int priority = 0;
@@ -2003,7 +2065,9 @@ class MetricsModel : public QObject {
         operator==(const SlotCall& other) const {
             return state == other.state && name == other.name && tg_text == other.tg_text && src_text == other.src_text
                    && channel == other.channel && enc_text == other.enc_text && tg_id == other.tg_id && enc == other.enc
-                   && seconds == other.seconds && emergency == other.emergency && priority == other.priority;
+                   && seconds == other.seconds && emergency == other.emergency && priority == other.priority
+                   && kind == other.kind && tg_label == other.tg_label && src_label == other.src_label
+                   && protocol_label == other.protocol_label;
         }
     };
 

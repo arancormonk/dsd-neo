@@ -54,6 +54,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../../test_support/radio_policy_test.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1271,6 +1272,54 @@ edacs_run_standard_state_cases(void) {
     rc |= edacs_expect_recent_only(9, DSD_CALL_KIND_VOICE, 0U, 1010U,
                                    EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL, "standard-all-call");
 
+    return rc;
+}
+
+static int
+seed_exact_row(dsd_state* st, uint32_t id) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, "A", "LISTED", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return -1;
+    }
+    return dsd_tg_policy_append_exact(st, &row);
+}
+
+/* D5: an EDACS voice grant naming a radio the radio list blocks is not tuned: a group call by its source, and an
+   all-call too, which the allow list (-W) otherwise always admits (radio rows never admit, and an all-call's allow-list
+   reprieve never lifts a radio block). */
+static int
+edacs_run_radio_policy_cases(void) {
+    int rc = 0;
+    for (int blocked = 0; blocked <= 1; blocked++) {
+        for (int kind = 0; kind < 3; kind++) {
+            edacs_setup_state_fixture(kind == 0 ? 0 : 1);
+            g_opts.trunk_tune_group_calls = 1;
+            g_opts.trunk_use_allow_list = kind == 2 ? 0 : 1;
+            const int source = kind == 0 ? 1010 : 0x4567;
+            if (kind == 2) {
+                rc |= edacs_expect(seed_exact_row(&g_state, 0x2222U) == 0, "radio-policy", "seed", "listed group");
+            }
+            if (blocked) {
+                rc |= edacs_expect(dsd_test_install_radio_policy(&g_state, (uint32_t)source, "B", 0, 0, 0) == 0,
+                                   "radio-policy", "seed", "radio list");
+            }
+            if (kind == 0) {
+                edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_all_call_msg1(9, 1, source),
+                                          edacs_standard_all_call_msg2(source));
+            } else if (kind == 1) {
+                edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_all_call_msg1(4, 1, 0),
+                                          (unsigned long long int)source);
+            } else {
+                edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_group_msg1(0x3, 4, 0x2222),
+                                          edacs_extended_group_msg2(source, 0, 1));
+            }
+            const char* name = kind == 0   ? "radio-policy-standard-all-call"
+                               : kind == 1 ? "radio-policy-extended-all-call"
+                                           : "radio-policy-extended-group";
+            rc |= edacs_expect(g_vc_tune_count == (blocked ? 0 : 1), name, blocked ? "blocked" : "allowed",
+                               blocked ? "a blocked radio's grant is not tuned" : "the grant is tuned");
+        }
+    }
     return rc;
 }
 
@@ -3323,6 +3372,7 @@ main(void) {
     rc |= edacs_run_retune_after_eot_case(&cases[3]);
     rc |= edacs_run_standard_state_cases();
     rc |= edacs_run_extended_state_cases();
+    rc |= edacs_run_radio_policy_cases();
     rc |= edacs_run_helper_contract_cases();
     rc |= edacs_run_analog_loop_helper_cases();
     rc |= test_edacs_analog_media_honors_talkgroup_policy();

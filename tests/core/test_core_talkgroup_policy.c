@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,6 +22,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "../test_support/radio_policy_test.h"
 
 static int
 expect_true(const char* tag, int cond) {
@@ -199,7 +202,7 @@ test_lookup_and_precedence(void) {
 
     init_entry(&e, 1200, "B", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1299;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append range", dsd_tg_policy_add_range_entry(st, &e) == 0);
 
     rc |= expect_true("lookup exact wins", dsd_tg_policy_lookup_id(st, 1201, &lookup) == 0);
@@ -212,18 +215,18 @@ test_lookup_and_precedence(void) {
 
     init_entry(&e, 1205, "A", "NARROW", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1208;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append narrow range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     rc |= expect_true("lookup narrow", dsd_tg_policy_lookup_id(st, 1206, &lookup) == 0);
     rc |= expect_true("narrow wins", strcmp(lookup.entry.name, "NARROW") == 0);
 
     init_entry(&e, 1300, "A", "SPAN-1", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1309;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append span1", dsd_tg_policy_add_range_entry(st, &e) == 0);
     init_entry(&e, 1300, "B", "SPAN-2", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1309;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append span2", dsd_tg_policy_add_range_entry(st, &e) == 0);
     rc |= expect_true("lookup equal span", dsd_tg_policy_lookup_id(st, 1305, &lookup) == 0);
     rc |= expect_true("last inserted equal-span wins", strcmp(lookup.entry.name, "SPAN-2") == 0);
@@ -244,7 +247,7 @@ test_policy_exact_lookup(void) {
 
     init_entry(&e, 1, "A", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 100;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     init_entry(&e, 42, "DE", "EXACT", DSD_TG_POLICY_SOURCE_IMPORTED);
     rc |= expect_true("append exact", dsd_tg_policy_append_exact(st, &e) == 0);
@@ -257,7 +260,7 @@ test_policy_exact_lookup(void) {
     rc |= expect_true("range for non-exact", lookup.match == DSD_TG_POLICY_MATCH_RANGE);
 
     init_entry(&e, 200, "A", "BAD-RANGE", DSD_TG_POLICY_SOURCE_IMPORTED);
-    e.is_range = 0;
+    e.kind = DSD_TG_POLICY_ROW_EXACT;
     rc |= expect_true("reject exact in range helper", dsd_tg_policy_add_range_entry(st, &e) == 1);
 
     free_test_state(st);
@@ -609,7 +612,16 @@ test_group_file_append_helper(void) {
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append to policy header", dsd_tg_policy_append_group_file_row(opts, &e, "hello,\nworld") == 0);
     rc |= expect_true("read policy file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
-    rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,hello  world") == l2);
+    // This header models a tags column, so the metadata goes to the next, unmodelled column, never into tags.
+    rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,,hello  world") == l2);
+    {
+        dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+        dsd_tg_policy_entry row;
+        rc |= expect_true("reload policy-header append", loaded && csvGroupImportPath(path_template, loaded) == 0);
+        rc |= expect_true("policy-header append keeps tags empty",
+                          dsd_tg_policy_entry_at(loaded, 0, &row) == 1 && row.tags[0] == '\0');
+        free_test_state(loaded);
+    }
     (void)remove(path_template);
 
     // A policy-looking header with odd ordering still writes the full schema.
@@ -665,6 +677,143 @@ test_group_file_append_helper(void) {
     (void)remove(path_template);
 
     free(opts);
+    return rc;
+}
+
+/* Write @p content verbatim to a fresh temporary file named into @p path (a mkstemp template). */
+static int
+write_temp_group_file(char* path, size_t path_sz, const char* content) {
+    DSD_SNPRINTF(path, path_sz, "%s", "dsd-neo-test-tg-append-XXXXXX");
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        return 1;
+    }
+    (void)dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        (void)remove(path);
+        return 1;
+    }
+    const int failed = DSD_FPRINTF(fp, "%s", content) < 0;
+    if (fclose(fp) != 0 || failed) {
+        (void)remove(path);
+        return 1;
+    }
+    return 0;
+}
+
+/* Append an alias row with metadata to a file of @p content and reload it into @p loaded. */
+static int
+append_alias_and_reload(const char* tag, const char* content, const char* expected_row, dsd_state* loaded) {
+    int rc = 0;
+    char path[64];
+    char l1[256];
+    char l2[256];
+    char l3[256];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_tg_policy_entry e;
+    if (!opts || write_temp_group_file(path, sizeof(path), content) != 0) {
+        free(opts);
+        return expect_true(tag, 0);
+    }
+    init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true(tag, dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
+    rc |= expect_true(tag, read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true(tag, strcmp(l3, expected_row) == 0);
+    rc |= expect_true(tag, csvGroupImportPath(path, loaded) == 0);
+    (void)remove(path);
+    free(opts);
+    return rc;
+}
+
+/* An appended alias row's metadata never lands in a column the header models as tags (it would reload as the row's
+ * category); it goes to the next, unmodelled column instead. */
+static int
+test_append_metadata_not_tags(void) {
+    int rc = 0;
+    dsd_tg_policy_entry row;
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    if (!loaded) {
+        return 1;
+    }
+    rc |= append_alias_and_reload("append basic tags header", "id,mode,name,tags\n500,A,Existing,FIRE\n",
+                                  "100,D,Alias,,VEND\n", loaded);
+    rc |= expect_true("basic tags reload count", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("basic tags existing row keeps tags",
+                      dsd_tg_policy_entry_at(loaded, 0, &row) == 1 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("basic tags alias row has no tags",
+                      dsd_tg_policy_entry_at(loaded, 1, &row) == 1 && row.id_start == 100 && row.tags[0] == '\0');
+
+    dsd_state_ext_free_all(loaded);
+    rc |=
+        append_alias_and_reload("append extended header",
+                                "id,mode,name,priority,preempt,audio,record,stream,tags\n500,A,Existing,0,false,on,on,"
+                                "on,FIRE\n",
+                                "100,D,Alias,0,false,on,on,on,,VEND\n", loaded);
+    rc |= expect_true("extended reload count", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("extended existing row keeps tags",
+                      dsd_tg_policy_entry_at(loaded, 0, &row) == 1 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("extended alias row has no tags",
+                      dsd_tg_policy_entry_at(loaded, 1, &row) == 1 && row.id_start == 100 && row.tags[0] == '\0');
+
+    free_test_state(loaded);
+    return rc;
+}
+
+/* The importer accepts a final line without a newline; an append must start its row on a line of its own. */
+static int
+test_append_after_unterminated_line(void) {
+    int rc = 0;
+    char path[64];
+    char l1[256];
+    char l2[256];
+    char l3[256];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_entry e;
+    if (!opts || !loaded || write_temp_group_file(path, sizeof(path), "id,mode,name\n1201,A,X") != 0) {
+        free(opts);
+        free_test_state(loaded);
+        return 1;
+    }
+    init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("append after unterminated row", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("read unterminated append",
+                      read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true("unterminated row now ends its line", strcmp(l2, "1201,A,X\n") == 0);
+    rc |= expect_true("appended row on its own line", strcmp(l3, "100,D,Alias\n") == 0);
+    rc |= expect_true("reload unterminated append", csvGroupImportPath(path, loaded) == 0);
+    rc |= expect_true("both rows reload", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("existing row reloads", dsd_tg_policy_lookup_id(loaded, 1201, &lookup) == 0
+                                                  && lookup.match == DSD_TG_POLICY_MATCH_EXACT
+                                                  && strcmp(lookup.entry.name, "X") == 0);
+    rc |= expect_true("appended row reloads", dsd_tg_policy_lookup_id(loaded, 100, &lookup) == 0
+                                                  && lookup.match == DSD_TG_POLICY_MATCH_EXACT
+                                                  && strcmp(lookup.entry.name, "Alias") == 0);
+    (void)remove(path);
+
+    // A header-only file without a newline keeps its header line too.
+    dsd_state_ext_free_all(loaded);
+    if (write_temp_group_file(path, sizeof(path), "id,mode,name") != 0) {
+        free(opts);
+        free_test_state(loaded);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("append after unterminated header", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("read unterminated header append",
+                      read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
+    rc |= expect_true("unterminated header kept", strcmp(l1, "id,mode,name\n") == 0);
+    rc |= expect_true("row after unterminated header", strcmp(l2, "100,D,Alias\n") == 0);
+    rc |= expect_true("reload after unterminated header",
+                      csvGroupImportPath(path, loaded) == 0 && dsd_tg_policy_entry_count(loaded) == 1);
+    (void)remove(path);
+
+    free(opts);
+    free_test_state(loaded);
     return rc;
 }
 
@@ -947,7 +1096,7 @@ test_alias_rows_never_decide_talkgroup_policy(void) {
     DSD_MEMSET(&e, 0, sizeof(e));
     e.id_start = 1000;
     e.id_end = 1999;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     DSD_SNPRINTF(e.mode, sizeof(e.mode), "%s", "A");
     DSD_SNPRINTF(e.name, sizeof(e.name), "%s", "Fire");
     e.priority = 100;
@@ -1035,7 +1184,7 @@ test_edits_prefer_talkgroup_rows(void) {
     rc |= expect_true("learn alias 700", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
     const size_t before = dsd_tg_policy_entry_count(st);
     dsd_tg_policy_table_version(st, &context, &generation);
-    dsd_tg_policy_selection sel = {-1, 700, 700};
+    dsd_tg_policy_selection sel = {-1, 700, 700, DSD_TG_POLICY_ROW_EXACT, ""};
     rc |= expect_true("heard selection over alias",
                       dsd_tg_policy_set_listening_selection(st, context, generation, &sel, 1, 0) == 0);
     dsd_tg_policy_lookup_id(st, 700, &lookup);
@@ -1341,7 +1490,7 @@ expect_zeroed_entry(const char* tag, const dsd_tg_policy_entry* entry) {
     rc |= expect_true(tag, entry->audio == 0);
     rc |= expect_true(tag, entry->record == 0);
     rc |= expect_true(tag, entry->stream == 0);
-    rc |= expect_true(tag, entry->is_range == 0);
+    rc |= expect_true(tag, entry->kind == DSD_TG_POLICY_ROW_EXACT);
     rc |= expect_true(tag, entry->source == 0);
     rc |= expect_true(tag, entry->row == 0);
     return rc;
@@ -1408,14 +1557,15 @@ test_mode_edits_and_enumeration(void) {
 
     init_entry(&e, 1300, "A", "Regional", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1399;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("append editable range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     rc |= expect_true("edit range bounds", dsd_tg_policy_set_mode(st, 1300, 1399, "B") == 0);
     rc |= expect_true("append missing exact", dsd_tg_policy_set_mode(st, 900, 900, "B") == 0);
     rc |= expect_true("enumerated append count", dsd_tg_policy_entry_count(st) == 4);
     rc |= expect_true("enumerate range in append order", dsd_tg_policy_entry_at(st, 2, &row) == 1);
-    rc |= expect_true("range edit retained bounds",
-                      row.id_start == 1300 && row.id_end == 1399 && row.is_range && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("range edit retained bounds", row.id_start == 1300 && row.id_end == 1399
+                                                        && row.kind == DSD_TG_POLICY_ROW_RANGE
+                                                        && strcmp(row.mode, "B") == 0);
     rc |= expect_true("enumerate runtime row last", dsd_tg_policy_entry_at(st, 3, &row) == 1);
     rc |= expect_true("runtime row identity", row.id_start == 900 && row.id_end == 900 && row.name[0] == '\0'
                                                   && row.source == DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
@@ -1486,7 +1636,7 @@ test_group_file_rewrite(void) {
     rc |= expect_true("seed rewrite exact", dsd_tg_policy_append_exact(st, &e) == 0);
     init_entry(&e, 1300, "A", "Regional", DSD_TG_POLICY_SOURCE_IMPORTED);
     e.id_end = 1399;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("seed rewrite range", dsd_tg_policy_add_range_entry(st, &e) == 0);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
     rc |= expect_true("rewrite tagged table", dsd_tg_policy_write_group_file(opts, st) == 0);
@@ -1502,9 +1652,9 @@ test_group_file_rewrite(void) {
                                                     && strcmp(row.name, "Dispatch") == 0
                                                     && strcmp(row.tags, "FIRE") == 0);
     rc |= expect_true("roundtrip range row", dsd_tg_policy_entry_at(loaded, 1, &row) == 1);
-    rc |= expect_true("roundtrip range fields", row.id_start == 1300 && row.id_end == 1399 && row.is_range
-                                                    && strcmp(row.mode, "A") == 0 && strcmp(row.name, "Regional") == 0
-                                                    && row.tags[0] == '\0');
+    rc |= expect_true("roundtrip range fields", row.id_start == 1300 && row.id_end == 1399
+                                                    && row.kind == DSD_TG_POLICY_ROW_RANGE && strcmp(row.mode, "A") == 0
+                                                    && strcmp(row.name, "Regional") == 0 && row.tags[0] == '\0');
 
     fp = dsd_fopen_private(path, "w");
     if (!fp) {
@@ -1727,7 +1877,8 @@ test_captured_selection(void) {
     uint64_t context;
     unsigned int generation;
     dsd_tg_policy_table_version(state, &context, &generation);
-    dsd_tg_policy_selection selected[] = {{1, 123, 123}, {-1, 456, 456}};
+    dsd_tg_policy_selection selected[] = {{1, 123, 123, DSD_TG_POLICY_ROW_EXACT, ""},
+                                          {-1, 456, 456, DSD_TG_POLICY_ROW_EXACT, ""}};
     rc |= expect_true("exact captured selection",
                       dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 0) == 0);
     rc |= expect_true("first duplicate unchanged",
@@ -1741,7 +1892,8 @@ test_captured_selection(void) {
     rc |= expect_true("stale selection refused",
                       dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 1) == 1);
     dsd_tg_policy_table_version(state, &context, &generation);
-    dsd_tg_policy_selection invalid[] = {{0, 123, 123}, {1, 999, 999}};
+    dsd_tg_policy_selection invalid[] = {{0, 123, 123, DSD_TG_POLICY_ROW_EXACT, ""},
+                                         {1, 999, 999, DSD_TG_POLICY_ROW_EXACT, ""}};
     rc |= expect_true("bad selection rejected atomically",
                       dsd_tg_policy_set_listening_selection(state, context, generation, invalid, 2, 0) == 1);
     rc |= expect_true("bad later row leaves earlier unchanged",
@@ -1796,7 +1948,7 @@ test_session_avoids(void) {
     dsd_tg_policy_entry entry;
     init_entry(&entry, 100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
     entry.id_end = 199;
-    entry.is_range = 1;
+    entry.kind = DSD_TG_POLICY_ROW_RANGE;
     entry.priority = 70;
     entry.preempt = 1;
     int rc = expect_true("seed allowed range", dsd_tg_policy_add_range_entry(state, &entry) == 0);
@@ -2118,7 +2270,7 @@ test_record_unknown_only(void) {
     rc |= expect_true("unknown-only seed exact", dsd_tg_policy_append_exact(state, &entry) == 0);
     init_entry(&entry, 200, "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED);
     entry.id_end = 299;
-    entry.is_range = 1;
+    entry.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("unknown-only seed range", dsd_tg_policy_add_range_entry(state, &entry) == 0);
     init_entry(&entry, 300, "B", "Locked out", DSD_TG_POLICY_SOURCE_IMPORTED);
     rc |= expect_true("unknown-only seed mode B", dsd_tg_policy_append_exact(state, &entry) == 0);
@@ -2181,6 +2333,61 @@ test_record_unknown_only(void) {
     return rc;
 }
 
+/* Record only unknown talkgroups with digit-pattern rows (issue #773): a pattern row knows the talkgroups it decides, as
+   a range row does, but the `*` catch-all is the list's "every other talkgroup" and knows none. */
+static int
+test_record_unknown_only_patterns(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!state || !opts) {
+        free_test_state(state);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    dsd_tg_policy_entry entry;
+    int rc = 0;
+    init_entry(&entry, 0, "A", "Thirteens", DSD_TG_POLICY_SOURCE_IMPORTED);
+    entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(entry.pattern, sizeof entry.pattern, "%s", "13xx");
+    rc |= expect_true("unknown-only seed 13xx", dsd_tg_policy_add_pattern_entry(state, &entry) == 0);
+    init_entry(&entry, 0, "A", "Everything else", DSD_TG_POLICY_SOURCE_IMPORTED);
+    entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(entry.pattern, sizeof entry.pattern, "%s", "*");
+    rc |= expect_true("unknown-only seed catch-all", dsd_tg_policy_add_pattern_entry(state, &entry) == 0);
+
+    dsd_tg_policy_decision d = eval_record(opts, state, 1, 0, 1350, 1);
+    rc |= expect_true("a pattern row decides the talkgroup",
+                      d.match == DSD_TG_POLICY_MATCH_PATTERN && strcmp(d.name, "Thirteens") == 0);
+    rc |= expect_record_blocked_only("a pattern row makes a talkgroup known", &d);
+    d = eval_record(opts, state, 1, 0, 999, 1);
+    rc |= expect_true("the catch-all decides the talkgroup",
+                      d.match == DSD_TG_POLICY_MATCH_PATTERN && strcmp(d.name, "Everything else") == 0);
+    rc |= expect_records("the catch-all leaves a talkgroup unknown", &d);
+    d = eval_record(opts, state, 0, 0, 1350, 1);
+    rc |= expect_records("a pattern row's talkgroup records with the rule off", &d);
+
+    /* The catch-all's own record=off still keeps the talkgroups it decides out of the recording. */
+    dsd_tg_policy_entry row;
+    const dsd_tg_policy_entry values = {.record = 0};
+    rc |= expect_true("catch-all row index", dsd_tg_policy_entry_at(state, 1, &row) && strcmp(row.pattern, "*") == 0);
+    dsd_tg_policy_row_key key = {.table_index = 1, .kind = DSD_TG_POLICY_ROW_PATTERN};
+    DSD_SNPRINTF(key.pattern, sizeof key.pattern, "%s", "*");
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    rc |= expect_true(
+        "catch-all record off",
+        dsd_tg_policy_set_fields_key(state, context, generation, &key, &values, DSD_TG_POLICY_FIELD_RECORD) == 0);
+    d = eval_record(opts, state, 1, 0, 999, 1);
+    rc |= expect_record_blocked_only("the catch-all's own record=off still applies", &d);
+
+    free_test_state(state);
+    free(opts);
+    return rc;
+}
+
 /* A Record edit (issue #708) lands after a mode change in the same edit, and a row that does not listen records
    nothing whatever was asked. */
 static int
@@ -2217,6 +2424,1066 @@ test_set_fields_record(void) {
     return rc;
 }
 
+/* Append a pattern row through the public API. */
+static int
+add_pattern_row(dsd_state* st, const char* pattern, const char* mode, const char* name) {
+    dsd_tg_policy_entry e;
+    init_entry(&e, 0, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", pattern);
+    return dsd_tg_policy_add_pattern_entry(st, &e);
+}
+
+static int
+add_range_row(dsd_state* st, uint32_t first, uint32_t last, const char* mode, const char* name) {
+    dsd_tg_policy_entry e;
+    init_entry(&e, first, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.id_end = last;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
+    return dsd_tg_policy_add_range_entry(st, &e);
+}
+
+static int
+add_exact_row(dsd_state* st, uint32_t id, const char* mode, const char* name) {
+    dsd_tg_policy_entry e;
+    init_entry(&e, id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED);
+    return dsd_tg_policy_append_exact(st, &e);
+}
+
+/* Whether the talkgroup lookup for @p id decides by @p match through the row named @p name. */
+static int
+group_row_is(const dsd_state* st, uint32_t id, dsd_tg_policy_match_type match, const char* name) {
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_lookup by_id;
+    return dsd_tg_policy_lookup_group(st, id, &lookup) == 0 && lookup.match == match
+           && strcmp(lookup.entry.name, name) == 0 && dsd_tg_policy_lookup_id(st, id, &by_id) == 0
+           && by_id.match == match && strcmp(by_id.entry.name, name) == 0;
+}
+
+static dsd_tg_policy_match_type
+group_match(const dsd_state* st, uint32_t id) {
+    dsd_tg_policy_lookup lookup;
+    return dsd_tg_policy_lookup_group(st, id, &lookup) == 0 ? lookup.match : DSD_TG_POLICY_MATCH_NONE;
+}
+
+/* Exact (first row), then the narrowest range, then the most specific pattern: more literal digits, then no star,
+ * then the last row. */
+static int
+test_pattern_precedence(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    rc |= expect_true("add 1*", add_pattern_row(st, "1*", "A", "Org1") == 0);
+    rc |= expect_true("add 12*", add_pattern_row(st, "12*", "B", "Org12") == 0);
+    rc |= expect_true("add 1200-1299", add_range_row(st, 1200, 1299, "A", "R") == 0);
+    rc |= expect_true("add 1234", add_exact_row(st, 1234, "A", "E") == 0);
+    rc |= expect_true("exact beats range and patterns", group_row_is(st, 1234, DSD_TG_POLICY_MATCH_EXACT, "E"));
+    rc |= expect_true("range beats patterns", group_row_is(st, 1250, DSD_TG_POLICY_MATCH_RANGE, "R"));
+    rc |= expect_true("more literal digits win", group_row_is(st, 1290000, DSD_TG_POLICY_MATCH_PATTERN, "Org12"));
+    rc |= expect_true("only the wider pattern matches", group_row_is(st, 1500, DSD_TG_POLICY_MATCH_PATTERN, "Org1"));
+    rc |= expect_true("no row matches", group_match(st, 2000) == DSD_TG_POLICY_MATCH_NONE);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1290000, 7, 0, 0, &d);
+    rc |= expect_true("pattern mode B blocks", d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0
+                                                   && d.match == DSD_TG_POLICY_MATCH_PATTERN
+                                                   && strcmp(d.name, "Org12") == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d);
+    rc |= expect_true("pattern mode A admits", d.tune_allowed == 1 && d.match == DSD_TG_POLICY_MATCH_PATTERN);
+
+    // At equal literal digits a pattern without a star beats one with a star, wherever it is listed.
+    rc |= expect_true("add 1xx", add_pattern_row(st, "1xx", "A", "Hundreds") == 0);
+    rc |= expect_true("add later 1*", add_pattern_row(st, "1*", "A", "Org1-late") == 0);
+    rc |= expect_true("no star beats star", group_row_is(st, 150, DSD_TG_POLICY_MATCH_PATTERN, "Hundreds"));
+    free_test_state(st);
+
+    // Equally specific patterns: the last row wins, in either order.
+    for (int order = 0; order < 2; ++order) {
+        st = (dsd_state*)calloc(1, sizeof(*st));
+        if (!st) {
+            return 1;
+        }
+        rc |= expect_true("add first tie", add_pattern_row(st, order ? "5*x" : "5x*", "A", order ? "P2" : "P1") == 0);
+        rc |= expect_true("add second tie", add_pattern_row(st, order ? "5x*" : "5*x", "A", order ? "P1" : "P2") == 0);
+        rc |= expect_true("equal specificity: last row wins",
+                          group_row_is(st, 55, DSD_TG_POLICY_MATCH_PATTERN, order ? "P1" : "P2"));
+        free_test_state(st);
+    }
+
+    // A learned alias exact row never hides a pattern for a talkgroup, but labels keep reading exact rows only.
+    st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    dsd_tg_policy_entry alias;
+    char mode[8];
+    char name[50];
+    rc |= expect_true("add 7xx", add_pattern_row(st, "7xx", "B", "Sevens") == 0);
+    init_entry(&alias, 750, "D", "Radio 750", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias under pattern", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_true("talkgroup lookup skips alias", dsd_tg_policy_lookup_group(st, 750, &lookup) == 0
+                                                          && lookup.match == DSD_TG_POLICY_MATCH_PATTERN
+                                                          && strcmp(lookup.entry.name, "Sevens") == 0);
+    rc |= expect_true("pattern gives no label",
+                      dsd_tg_policy_lookup_label(st, 760, mode, sizeof(mode), name, sizeof(name)) == 0);
+    rc |= expect_true("private call reads exact rows only",
+                      dsd_tg_policy_evaluate_private_call(&opts, st, 760, 9, 0, 0, &d) == 0
+                          && d.match == DSD_TG_POLICY_MATCH_NONE && d.tune_allowed == 1);
+    free_test_state(st);
+    return rc;
+}
+
+/* Whether the talkgroup label for @p id is @p want_name in mode @p want_mode (issue #773 D4). */
+static int
+group_label_is(const dsd_state* st, uint32_t id, const char* want_mode, const char* want_name) {
+    char mode[8] = "x";
+    char name[50] = "x";
+    return dsd_tg_policy_lookup_group_label(st, id, mode, sizeof(mode), name, sizeof(name)) == 1
+           && strcmp(mode, want_mode) == 0 && strcmp(name, want_name) == 0;
+}
+
+/* Whether talkgroup @p id has no label, with both outputs cleared. */
+static int
+group_label_is_none(const dsd_state* st, uint32_t id) {
+    char mode[8] = "x";
+    char name[50] = "x";
+    return dsd_tg_policy_lookup_group_label(st, id, mode, sizeof(mode), name, sizeof(name)) == 0 && mode[0] == '\0'
+           && name[0] == '\0';
+}
+
+/* A talkgroup's label is the name of the row that decides it: the exact row, else the narrowest range, else the most
+ * specific pattern. A deciding row without a name labels nothing; no wider row lends it one. */
+static int
+test_group_label_from_range_and_pattern(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    char mode[8];
+    char name[50];
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("no policy, no label", group_label_is_none(st, 1250));
+    rc |= expect_true("add 1200-1299", add_range_row(st, 1200, 1299, "A", "Ops") == 0);
+    rc |= expect_true("add 1240-1249", add_range_row(st, 1240, 1249, "B", "Ops Narrow") == 0);
+    rc |= expect_true("add 13xx", add_pattern_row(st, "13xx", "DE", "Thirteens") == 0);
+    rc |= expect_true("add 1234 exact", add_exact_row(st, 1234, "A", "Exact") == 0);
+    rc |= expect_true("add unnamed 1260", add_exact_row(st, 1260, "B", "") == 0);
+    rc |= expect_true("add unnamed 1270-1279", add_range_row(st, 1270, 1279, "A", "") == 0);
+    rc |= expect_true("exact row labels", group_label_is(st, 1234, "A", "Exact"));
+    rc |= expect_true("range row labels", group_label_is(st, 1250, "A", "Ops"));
+    rc |= expect_true("narrowest range labels", group_label_is(st, 1245, "B", "Ops Narrow"));
+    rc |= expect_true("pattern row labels", group_label_is(st, 1350, "DE", "Thirteens"));
+    rc |= expect_true("unnamed exact row labels nothing", group_label_is_none(st, 1260));
+    rc |= expect_true("unnamed narrow range labels nothing", group_label_is_none(st, 1275));
+    rc |= expect_true("no row, no label", group_label_is_none(st, 2000));
+    rc |= expect_true("NULL outputs still answer",
+                      dsd_tg_policy_lookup_group_label(st, 1250, NULL, 0, NULL, 0) == 1
+                          && dsd_tg_policy_lookup_group_label(NULL, 1250, NULL, 0, NULL, 0) == 0);
+    /* The exact-only label keeps its meaning (the radio-side fallback of dsd_source_label_lookup()). */
+    rc |= expect_true("exact label ignores the range",
+                      dsd_tg_policy_lookup_label(st, 1250, mode, sizeof(mode), name, sizeof(name)) == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* B10: a learned alias names a radio, never a talkgroup. Under a range the range labels the talkgroup; an ID held only
+ * by an alias has no talkgroup label; the radio-side exact label still reads the alias. */
+static int
+test_alias_never_labels_talkgroup(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry alias;
+    char mode[8];
+    char name[50];
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("add 1200-1299", add_range_row(st, 1200, 1299, "A", "Ops") == 0);
+    init_entry(&alias, 1250, "D", "Radio 1250", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias 1250", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    init_entry(&alias, 5000, "D", "Radio 5000", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("learn alias 5000", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    init_entry(&alias, 5001, "D", "Persisted 5001", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("persisted alias 5001", dsd_tg_policy_append_exact(st, &alias) == 0);
+    rc |= expect_true("range labels the talkgroup under an alias", group_label_is(st, 1250, "A", "Ops"));
+    rc |= expect_true("alias-only ID has no talkgroup label", group_label_is_none(st, 5000));
+    rc |= expect_true("persisted alias has no talkgroup label", group_label_is_none(st, 5001));
+    rc |= expect_true("radio-side label still reads the alias",
+                      dsd_tg_policy_lookup_label(st, 1250, mode, sizeof(mode), name, sizeof(name)) == 1
+                          && strcmp(name, "Radio 1250") == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* `*` is the documented catch-all: under it a more specific row decides, and with the allow list it lists every ID. */
+static int
+test_catch_all_star(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    rc |= expect_true("add *", add_pattern_row(st, "*", "B", "Everything") == 0);
+    rc |= expect_true("add 1xxx", add_pattern_row(st, "1xxx", "A", "Thousands") == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d);
+    rc |= expect_true("1xxx admits 1500", d.tune_allowed == 1 && strcmp(d.name, "Thousands") == 0);
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 5, 7, 0, 0, &d);
+    rc |= expect_true("* blocks 5", d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0
+                                        && strcmp(d.name, "Everything") == 0);
+    opts.trunk_use_allow_list = 1;
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 1500, 7, 0, 0, &d);
+    rc |= expect_true("pattern row lists its IDs",
+                      d.tune_allowed == 1 && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0);
+    free_test_state(st);
+
+    st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("add * listening", add_pattern_row(st, "*", "A", "All") == 0);
+    static const uint32_t ids[] = {0u, 1u, 77u, 1000000000u, 4294967295u};
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+        (void)dsd_tg_policy_evaluate_group_call(&opts, st, ids[i], 7, 0, 0, &d);
+        rc |= expect_true("* with the allow list lists every ID",
+                          d.tune_allowed == 1 && d.match == DSD_TG_POLICY_MATCH_PATTERN
+                              && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0);
+    }
+    free_test_state(st);
+    return rc;
+}
+
+/* A list without pattern rows decides exactly as before patterns existed, and keeps the no-pattern fast path. */
+static int
+test_legacy_list_unchanged(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    rc |= expect_true("legacy exact", add_exact_row(st, 100, "A", "Dispatch") == 0);
+    rc |= expect_true("legacy duplicate", add_exact_row(st, 100, "B", "Shadowed") == 0);
+    rc |= expect_true("legacy blocked", add_exact_row(st, 200, "B", "Blocked") == 0);
+    rc |= expect_true("legacy wide range", add_range_row(st, 1000, 1999, "A", "Wide") == 0);
+    rc |= expect_true("legacy narrow range", add_range_row(st, 1500, 1599, "B", "Narrow") == 0);
+    rc |= expect_true("legacy tie first", add_range_row(st, 3000, 3009, "A", "TieFirst") == 0);
+    rc |= expect_true("legacy tie last", add_range_row(st, 3000, 3009, "B", "TieLast") == 0);
+    init_entry(&e, 1700, "D", "Radio", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("legacy alias", dsd_tg_policy_learn_exact(st, &e) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("legacy list has no pattern rows", dsd_tg_policy_pattern_count(st) == 0);
+
+    static const struct {
+        uint32_t id;
+        dsd_tg_policy_match_type match;
+        const char* name;
+        int tune;
+    } table[] = {
+        {100, DSD_TG_POLICY_MATCH_EXACT, "Dispatch", 1}, {200, DSD_TG_POLICY_MATCH_EXACT, "Blocked", 0},
+        {1001, DSD_TG_POLICY_MATCH_RANGE, "Wide", 1},    {1550, DSD_TG_POLICY_MATCH_RANGE, "Narrow", 0},
+        {1700, DSD_TG_POLICY_MATCH_RANGE, "Wide", 1},    {3005, DSD_TG_POLICY_MATCH_RANGE, "TieLast", 0},
+        {5000, DSD_TG_POLICY_MATCH_NONE, "", 1},         {0, DSD_TG_POLICY_MATCH_NONE, "", 1},
+    };
+
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); ++i) {
+        (void)dsd_tg_policy_evaluate_group_call(&opts, st, table[i].id, 7, 0, 0, &d);
+        rc |= expect_true("legacy decision", d.match == table[i].match && strcmp(d.name, table[i].name) == 0
+                                                 && d.tune_allowed == table[i].tune);
+    }
+    opts.trunk_use_allow_list = 1;
+    (void)dsd_tg_policy_evaluate_group_call(&opts, st, 5000, 7, 0, 0, &d);
+    rc |= expect_true("legacy allow list still blocks unlisted",
+                      d.tune_allowed == 0 && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
+    free_test_state(st);
+    return rc;
+}
+
+static int
+write_text(const char* path, const char* text) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return 1;
+    }
+    const int failed = DSD_FPRINTF(fp, "%s", text) < 0;
+    return (fclose(fp) != 0 || failed) ? 1 : 0;
+}
+
+/* Import a list with pattern rows, edit it, write it back and reload: kinds, canonical texts and the extended header
+ * survive. */
+static int
+test_pattern_row_rewrite_round_trip(void) {
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    char path[] = "dsd-neo-test-tg-pattern-XXXXXX";
+    char l1[256];
+    char l2[256];
+    char l3[256];
+    dsd_tg_policy_entry row;
+    if (!opts || !st || !loaded) {
+        free(opts);
+        free_test_state(st);
+        free_test_state(loaded);
+        return 1;
+    }
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(st);
+        free_test_state(loaded);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    rc |= expect_true("write pattern list", write_text(path, "id,mode,name,priority,preempt,audio,record,stream,tags\n"
+                                                             "1XXX,A,Thousands,5,true,on,on,on,FIRE\n"
+                                                             "**05,B,Ends05,,,,,,\n"
+                                                             "1200-1299,A,Range,,,,,,\n"
+                                                             "42,A,Exact,,,,,,\n")
+                                                == 0);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("import pattern list", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("pattern rows counted", dsd_tg_policy_pattern_count(st) == 2);
+    rc |= expect_true("edit pattern row by index", dsd_tg_policy_set_mode_at(st, 0, "B") == 0);
+    rc |= expect_true("rewrite pattern list", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("read rewritten pattern list",
+                      read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true("extended header kept",
+                      strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
+    rc |= expect_true("canonical pattern written", strcmp(l2, "1xxx,B,Thousands,5,true,off,off,off,FIRE\n") == 0);
+    rc |= expect_true("collapsed star written", strcmp(l3, "*05,B,Ends05,0,false,off,off,off,\n") == 0);
+    rc |= expect_true("reload rewritten pattern list", dsd_tg_policy_reload_group_file(opts, loaded) == 0);
+    rc |= expect_true("reloaded row count", dsd_tg_policy_entry_count(loaded) == 4);
+    rc |= expect_true("reloaded pattern row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1
+                                                  && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                  && strcmp(row.pattern, "1xxx") == 0 && row.id_start == 0
+                                                  && row.id_end == 0 && strcmp(row.mode, "B") == 0 && row.priority == 5
+                                                  && row.preempt == 1 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("reloaded second pattern", dsd_tg_policy_entry_at(loaded, 1, &row) == 1
+                                                     && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                     && strcmp(row.pattern, "*05") == 0);
+    rc |= expect_true("reloaded range row", dsd_tg_policy_entry_at(loaded, 2, &row) == 1
+                                                && row.kind == DSD_TG_POLICY_ROW_RANGE && row.pattern[0] == '\0'
+                                                && row.id_start == 1200 && row.id_end == 1299);
+    rc |= expect_true("reloaded exact row", dsd_tg_policy_entry_at(loaded, 3, &row) == 1
+                                                && row.kind == DSD_TG_POLICY_ROW_EXACT && row.pattern[0] == '\0'
+                                                && row.id_start == 42);
+    rc |= expect_true("reloaded patterns counted", dsd_tg_policy_pattern_count(loaded) == 2);
+    rc |= expect_true("reloaded pattern decides", group_row_is(loaded, 1906, DSD_TG_POLICY_MATCH_PATTERN, "Thousands"));
+    (void)remove(path);
+    free(opts);
+    free_test_state(st);
+    free_test_state(loaded);
+    return rc;
+}
+
+/* Edits by bounds never address a pattern row through its placeholder 0/0 bounds, and bad pattern rows are refused. */
+static int
+test_bounds_edits_skip_pattern_rows(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_entry row;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("add pattern", add_pattern_row(st, "1xxx", "A", "Thousands") == 0);
+    rc |= expect_true("remove ID 0 finds no row", dsd_tg_policy_remove_bounds(st, 0, 0) == 1);
+    rc |= expect_true("set mode of ID 0 appends exact", dsd_tg_policy_set_mode(st, 0, 0, "B") == 0);
+    rc |= expect_true("pattern row untouched", dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                                   && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                   && strcmp(row.mode, "A") == 0);
+    rc |=
+        expect_true("exact 0 appended", dsd_tg_policy_entry_at(st, 1, &row) == 1 && row.kind == DSD_TG_POLICY_ROW_EXACT
+                                            && row.id_start == 0 && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("remove exact 0", dsd_tg_policy_remove_bounds(st, 0, 0) == 0);
+    rc |= expect_true("pattern row kept", dsd_tg_policy_entry_count(st) == 1 && dsd_tg_policy_pattern_count(st) == 1);
+
+    rc |= expect_true("leading zero pattern refused", add_pattern_row(st, "05x", "A", "Bad") == 1);
+    rc |= expect_true("unmatchable pattern refused", add_pattern_row(st, "5xxxxxxxxx", "A", "Bad") == 1);
+    rc |= expect_true("exact text refused as pattern", add_pattern_row(st, "123", "A", "Bad") == 1);
+    init_entry(&e, 7, "A", "Bounds", DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(e.pattern, sizeof(e.pattern), "%s", "7x");
+    rc |= expect_true("pattern row with bounds refused", dsd_tg_policy_add_pattern_entry(st, &e) == 1);
+    rc |= expect_true("pattern kind refused as exact", dsd_tg_policy_append_exact(st, &e) == 1);
+    rc |= expect_true("pattern kind refused as range", dsd_tg_policy_add_range_entry(st, &e) == 1);
+    e.id_start = e.id_end = 0;
+    rc |= expect_true("non-canonical text stored canonically", dsd_tg_policy_add_pattern_entry(st, &e) == 0
+                                                                   && dsd_tg_policy_entry_at(st, 1, &row) == 1
+                                                                   && strcmp(row.pattern, "7x") == 0);
+    rc |= expect_true("only valid rows added",
+                      dsd_tg_policy_entry_count(st) == 2 && dsd_tg_policy_pattern_count(st) == 2);
+    free_test_state(st);
+    return rc;
+}
+
+/* A pattern row reaches frontend snapshots and a scan row's own group list with its kind and text. */
+static int
+test_pattern_survives_snapshot_and_scan_context(void) {
+    int rc = 0;
+    dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
+    dsd_state* published = (dsd_state*)calloc(1, sizeof(*published));
+    dsd_state* consumer = (dsd_state*)calloc(1, sizeof(*consumer));
+    char path[] = "dsd-neo-test-tg-pattern-scan-XXXXXX";
+    dsd_tg_policy_entry row;
+    dsd_scan_row_profile profile = {0};
+    if (!live || !published || !consumer) {
+        rc = 1;
+        goto done;
+    }
+    rc |= expect_true("live pattern", add_pattern_row(live, "12*", "B", "Twelve") == 0);
+    rc |= expect_true("publish pattern", dsd_tg_policy_copy_snapshot(published, live) == 0);
+    rc |= expect_true("consume pattern", dsd_tg_policy_copy_snapshot(consumer, published) == 0);
+    rc |= expect_true("snapshot keeps pattern row", dsd_tg_policy_entry_at(consumer, 0, &row) == 1
+                                                        && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                        && strcmp(row.pattern, "12*") == 0);
+    rc |= expect_true("snapshot counts patterns", dsd_tg_policy_pattern_count(consumer) == 1);
+    rc |=
+        expect_true("snapshot pattern decides", group_row_is(consumer, 1290000, DSD_TG_POLICY_MATCH_PATTERN, "Twelve"));
+
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        rc = 1;
+        goto done;
+    }
+    (void)dsd_close(fd);
+    rc |= expect_true("write scan row list", write_text(path, "id,mode,name\n5xx,A,Row Fives\n") == 0);
+    rc |= expect_true("load scan row list", dsd_tg_policy_load(path, &profile.groups) == 0);
+    (void)remove(path);
+    profile.values.present = DSD_SCAN_OPT_GROUP;
+    rc |= expect_true("reserve scan groups", dsd_scan_groups_begin(live) == 0);
+    dsd_scan_groups_enter(live, &profile);
+    rc |= expect_true("scan row pattern decides", group_row_is(live, 512, DSD_TG_POLICY_MATCH_PATTERN, "Row Fives"));
+    rc |= expect_true("scan row hides the baseline pattern", group_match(live, 1290000) == DSD_TG_POLICY_MATCH_NONE);
+    rc |= expect_true("publish scan row", dsd_tg_policy_copy_snapshot(published, live) == 0);
+    rc |= expect_true("scan row snapshot keeps pattern", dsd_tg_policy_entry_at(published, 0, &row) == 1
+                                                             && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                                                             && strcmp(row.pattern, "5xx") == 0);
+    dsd_scan_groups_leave(live);
+    rc |= expect_true("baseline pattern back after leave",
+                      group_row_is(live, 1290000, DSD_TG_POLICY_MATCH_PATTERN, "Twelve"));
+done:
+    dsd_tg_policy_release(profile.groups);
+    free_test_state(live);
+    free_test_state(published);
+    free_test_state(consumer);
+    return rc;
+}
+
+static dsd_tg_policy_row_key
+row_key(int32_t index, uint8_t kind, uint32_t first, uint32_t last, const char* pattern) {
+    dsd_tg_policy_row_key key;
+    DSD_MEMSET(&key, 0, sizeof(key));
+    key.table_index = index;
+    key.kind = kind;
+    key.id_start = first;
+    key.id_end = last;
+    DSD_SNPRINTF(key.pattern, sizeof(key.pattern), "%s", pattern ? pattern : "");
+    return key;
+}
+
+/* B14: a row token edits the row it names, even when an identical row precedes it (bounds alone address the first). */
+static int
+test_row_token_edits_the_addressed_duplicate(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("first duplicate range", add_range_row(st, 100, 199, "A", "First") == 0);
+    rc |= expect_true("second duplicate range", add_range_row(st, 100, 199, "A", "Second") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    const dsd_tg_policy_row_key second = row_key(1, DSD_TG_POLICY_ROW_RANGE, 100, 199, NULL);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    DSD_SNPRINTF(values.name, sizeof(values.name), "%s", "Edited");
+    DSD_SNPRINTF(values.mode, sizeof(values.mode), "%s", "B");
+    rc |= expect_true("edit the second duplicate by token",
+                      dsd_tg_policy_set_fields_key(st, context, generation, &second, &values,
+                                                   DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_LISTEN)
+                          == 0);
+    rc |= expect_true("first duplicate untouched", dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                                       && strcmp(row.name, "First") == 0 && strcmp(row.mode, "A") == 0);
+    rc |= expect_true("second duplicate edited", dsd_tg_policy_entry_at(st, 1, &row) == 1
+                                                     && strcmp(row.name, "Edited") == 0 && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("the last duplicate decides the tie", group_row_is(st, 150, DSD_TG_POLICY_MATCH_RANGE, "Edited"));
+
+    dsd_tg_policy_table_version(st, &context, &generation);
+    rc |= expect_true("token of the wrong kind refused",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_EXACT, 100, 199, ""})
+                          == 1);
+    rc |= expect_true("token past the table refused",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){2, DSD_TG_POLICY_ROW_RANGE, 100, 199, ""})
+                          == 1);
+    rc |= expect_true("remove the second duplicate by token",
+                      dsd_tg_policy_remove_key(st, context, generation, &second) == 0);
+    rc |= expect_true("only the first duplicate left", dsd_tg_policy_entry_count(st) == 1
+                                                           && dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                                           && strcmp(row.name, "First") == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* A token captured before a reload is stale: nothing changes, even though the reloaded list has a row at that index
+ * with the same bounds. */
+static int
+test_row_token_stale_after_reload(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    char path[] = "dsd-neo-test-tg-token-reload-XXXXXX";
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st || !opts) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        free_test_state(st);
+        free(opts);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("write list", write_text(path, "id,mode,name\n100-199,A,Range\n12*,A,Twelve\n") == 0);
+    rc |= expect_true("load list", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    const dsd_tg_policy_row_key range = row_key(0, DSD_TG_POLICY_ROW_RANGE, 100, 199, NULL);
+    const dsd_tg_policy_row_key pattern = row_key(1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*");
+    rc |= expect_true("reload list", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    DSD_SNPRINTF(values.name, sizeof(values.name), "%s", "Stale");
+    rc |= expect_true("stale range token refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation, &range, &values, DSD_TG_POLICY_FIELD_NAME)
+                          == 1);
+    rc |= expect_true("stale pattern token refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation, &pattern, &values, DSD_TG_POLICY_FIELD_NAME)
+                          == 1);
+    rc |= expect_true("stale remove refused", dsd_tg_policy_remove_key(st, context, generation, &range) == 1);
+    rc |= expect_true("stale bounds-only edit refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){-1, DSD_TG_POLICY_ROW_RANGE, 100, 199, ""},
+                                                   &values, DSD_TG_POLICY_FIELD_NAME)
+                          == 1);
+    rc |=
+        expect_true("nothing changed", dsd_tg_policy_entry_count(st) == 2 && dsd_tg_policy_entry_at(st, 0, &row) == 1
+                                           && strcmp(row.name, "Range") == 0 && dsd_tg_policy_entry_at(st, 1, &row) == 1
+                                           && strcmp(row.name, "Twelve") == 0);
+    (void)remove(path);
+    free_test_state(st);
+    free(opts);
+    return rc;
+}
+
+/* B14: a captured selection may name a listed range that starts at 0. */
+static int
+test_selection_accepts_zero_start_range(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("zero-start range", add_range_row(st, 0, 99, "A", "Low") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection selection = {0, 0, 99, DSD_TG_POLICY_ROW_RANGE, ""};
+    rc |= expect_true("zero-start listed row toggles",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &selection, 1, 0) == 0);
+    rc |=
+        expect_true("zero-start row not tuned", dsd_tg_policy_entry_at(st, 0, &row) == 1 && strcmp(row.mode, "B") == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* A pattern row is edited, toggled and removed by its token, never by its placeholder bounds; removing it clears the
+ * pattern fast path again. */
+static int
+test_pattern_row_edit_remove(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_tg_policy_entry values;
+    dsd_tg_policy_entry row;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("exact row", add_exact_row(st, 5, "A", "Five") == 0);
+    rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    DSD_MEMSET(&values, 0, sizeof(values));
+    DSD_SNPRINTF(values.name, sizeof(values.name), "%s", "Twelves");
+    DSD_SNPRINTF(values.tags, sizeof(values.tags), "%s", "FIRE");
+    DSD_SNPRINTF(values.mode, sizeof(values.mode), "%s", "B");
+    values.priority = 40;
+    values.preempt = 1;
+    const uint32_t all = DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS | DSD_TG_POLICY_FIELD_LISTEN
+                         | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT;
+    rc |= expect_true("wrong pattern text refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "13*"},
+                                                   &values, all)
+                          == 1);
+    rc |= expect_true("pattern token without an index refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){-1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"},
+                                                   &values, all)
+                          == 1);
+    rc |= expect_true("non-canonical token text addresses the row",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12**"},
+                                                   &values, all)
+                          == 0);
+    rc |= expect_true("pattern row edited",
+                      dsd_tg_policy_entry_at(st, 1, &row) == 1 && row.kind == DSD_TG_POLICY_ROW_PATTERN
+                          && strcmp(row.pattern, "12*") == 0 && strcmp(row.name, "Twelves") == 0
+                          && strcmp(row.tags, "FIRE") == 0 && strcmp(row.mode, "B") == 0 && row.priority == 40
+                          && row.preempt == 1 && row.id_start == 0 && row.id_end == 0);
+    rc |= expect_true("exact row untouched", dsd_tg_policy_entry_at(st, 0, &row) == 1 && strcmp(row.name, "Five") == 0);
+
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection selection = {1, 0, 0, DSD_TG_POLICY_ROW_PATTERN, "12*"};
+    rc |= expect_true("selection names the pattern row",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &selection, 1, 1) == 0);
+    rc |= expect_true("pattern row listening", dsd_tg_policy_entry_at(st, 1, &row) == 1 && strcmp(row.mode, "A") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_selection wrong = {1, 0, 0, DSD_TG_POLICY_ROW_PATTERN, "1xxx"};
+    rc |= expect_true("selection with another pattern refused",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &wrong, 1, 0) == 1);
+    dsd_tg_policy_selection heard = {-1, 0, 0, DSD_TG_POLICY_ROW_PATTERN, "12*"};
+    rc |= expect_true("heard-only pattern selection refused",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &heard, 1, 0) == 1);
+
+    rc |= expect_true("remove the pattern row by token",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"})
+                          == 0);
+    rc |= expect_true("pattern fast path back on",
+                      dsd_tg_policy_pattern_count(st) == 0 && dsd_tg_policy_entry_count(st) == 1);
+    rc |= expect_true("pattern no longer matches", group_match(st, 1234) == DSD_TG_POLICY_MATCH_NONE);
+    free_test_state(st);
+    return rc;
+}
+
+/* Session avoids under a pattern row are counted by the matcher. */
+static int
+test_session_avoid_count_pattern(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
+    rc |= expect_true("avoid 12", dsd_tg_policy_session_avoid_add(st, 12) == 0);
+    rc |= expect_true("avoid 1234", dsd_tg_policy_session_avoid_add(st, 1234) == 0);
+    rc |= expect_true("avoid 2123", dsd_tg_policy_session_avoid_add(st, 2123) == 0);
+    rc |= expect_true("matched avoids counted", dsd_tg_policy_session_avoid_count_pattern(st, "12*") == 2);
+    rc |= expect_true("invalid pattern counts nothing", dsd_tg_policy_session_avoid_count_pattern(st, "05x") == 0);
+    rc |= expect_true("NULL pattern counts nothing", dsd_tg_policy_session_avoid_count_pattern(st, NULL) == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* B9: an endpoint ID of 0 is unknown, never an ID. A `0` row (B, A, priority 90) neither blocks, admits nor
+ * prioritises a private call that names only one party; private-call vs private-grant admission is unchanged. */
+static int
+test_unknown_private_endpoints(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    dsd_tg_policy_decision d;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_private_calls = 1;
+    opts.trunk_tune_group_calls = 1;
+
+    rc |= expect_true("zero row B", add_exact_row(st, 0, "B", "Zero") == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("src 0 ignores a B row", d.tune_allowed && d.audio_allowed && d.block_reasons == 0u
+                                                   && d.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 0, 0, 0, &d);
+    rc |= expect_true("dst 0 ignores a B row", d.tune_allowed && d.audio_allowed && d.block_reasons == 0u
+                                                   && d.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("grant src 0 ignores a B row", d.tune_allowed && d.block_reasons == 0u);
+
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    DSD_SNPRINTF(values.mode, sizeof values.mode, "%s", "A");
+    values.priority = 90;
+    rc |= expect_true(
+        "zero row A priority 90",
+        dsd_tg_policy_set_fields(st, 0, 0, &values, DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("src 0 takes no priority",
+                      d.tune_allowed && d.priority == 0 && d.match == DSD_TG_POLICY_MATCH_NONE && d.name[0] == '\0');
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 0, 0, 0, &d);
+    rc |= expect_true("dst 0 takes no priority", d.tune_allowed && d.priority == 0);
+
+    opts.trunk_use_allow_list = 1;
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("-W: src 0 never admits a private call",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 0, 0, 0, &d);
+    rc |= expect_true("-W: dst 0 never admits a private call",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("-W: an unlisted private grant still tunes", d.tune_allowed && d.block_reasons == 0u);
+
+    rc |= expect_true("listed radio 5", add_exact_row(st, 5, "A", "Five") == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &d);
+    rc |= expect_true("-W: a listed known party still admits",
+                      d.tune_allowed && d.match == DSD_TG_POLICY_MATCH_EXACT && strcmp(d.name, "Five") == 0);
+    rc |= expect_true("radio 6 blocked", add_exact_row(st, 6, "B", "Six") == 0);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 0, 6, 0, 0, &d);
+    rc |= expect_true("grant naming a blocked known party is refused",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0u);
+    free_test_state(st);
+    return rc;
+}
+
+/* The followed calls' priority refresh uses the evaluators' lookups: a pattern row's edited priority reaches a group
+ * call (dwell and preemption cooldown ages unchanged) and a private call with source 0 ignores a `0` row. */
+static int
+test_priority_refresh_pattern_and_unknown(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 1;
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
+    dsd_tg_policy_call_route active, candidate;
+    init_route(&active, 1234, 1, 851000000L, 1, 0, 0);
+    init_route(&candidate, 200, 2, 851000000L, 1, 0, 0);
+    dsd_tg_policy_decision decision, competing;
+    dsd_tg_policy_evaluate_group_call(&opts, st, 1234, 1, 0, 0, &decision);
+    rc |= expect_true("followed group call",
+                      dsd_tg_policy_describe_followed_call(st, &active, &decision, 10.0, 10.0) == 0);
+    rc |= expect_true("takeover cooldown", dsd_tg_policy_commit_preemption(st, 11.0) == 0);
+    init_decision(&competing, 200, 2, 50, 1, 1);
+    rc |= expect_true("low pattern priority yields",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 90;
+    rc |= expect_true("raise the pattern row's priority",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 0);
+    rc |= expect_true("edited pattern priority holds the call",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+    dsd_tg_policy_table_version(st, &context, &generation);
+    values.priority = 0;
+    rc |= expect_true("lower the pattern row's priority",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_PATTERN, 0, 0, "12*"},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 0);
+    rc |= expect_true("lowered pattern priority yields",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 13.0));
+    rc |= expect_true("cooldown age unchanged", !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 11.5));
+    rc |= expect_true("clear records", dsd_tg_policy_clear_active_call(st, -1) == 0);
+
+    dsd_tg_policy_call_route priv;
+    init_route(&priv, 5, 0, 851000000L, 1, 0, 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 0, 5, 0, 0, &decision);
+    rc |= expect_true("followed private call",
+                      dsd_tg_policy_describe_followed_call(st, &priv, &decision, 20.0, 20.0) == 0);
+    rc |= expect_true("zero row priority 90", add_exact_row(st, 0, "A", "Zero") == 0);
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 90;
+    rc |= expect_true("zero row priority set",
+                      dsd_tg_policy_set_fields(st, 0, 0, &values, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    rc |= expect_true("src 0 private call ignores the 0 row",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 23.0));
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    free_test_state(st);
+    return rc;
+}
+
+/* Radio policy (D5, D6, D8): a known radio's row only restricts. Group and private calls, the source known or unknown,
+ * each radio row variant, a Hold on the target or none, -W on or off. */
+typedef struct {
+    const char* mode;
+    int audio, record, stream;
+    int tune_ok, audio_ok, record_ok, stream_ok;
+    uint32_t reason;
+} radio_case;
+
+static int
+check_radio_decision(const char* tag, const dsd_tg_policy_decision* d, const radio_case* c, int known) {
+    const int tune_ok = known ? c->tune_ok : 1;
+    const int audio_ok = known ? c->audio_ok : 1;
+    const int record_ok = known ? c->record_ok : 1;
+    const int stream_ok = known ? c->stream_ok : 1;
+    const uint32_t reason = known ? c->reason : 0u;
+    const int ok = d->tune_allowed == tune_ok && d->audio_allowed == audio_ok && d->record_allowed == record_ok
+                   && d->stream_allowed == stream_ok && d->block_reasons == reason && d->radio_match == known
+                   && d->radio_blocked == (known && !c->tune_ok) && d->radio_audio_allowed == audio_ok
+                   && d->radio_record_allowed == record_ok && d->radio_stream_allowed == stream_ok
+                   && d->tg_tune_allowed == 1 && d->tg_audio_allowed == 1 && d->tg_record_allowed == 1
+                   && d->tg_stream_allowed == 1
+                   && dsd_tg_policy_decision_only_radio_blocks(d) == (known && !c->tune_ok);
+    if (!ok) {
+        DSD_FPRINTF(stderr,
+                    "%s: tune=%d audio=%d record=%d stream=%d reasons=0x%X radio_match=%d radio_blocked=%d "
+                    "radio=%d/%d/%d tg=%d/%d/%d/%d\n",
+                    tag, d->tune_allowed, d->audio_allowed, d->record_allowed, d->stream_allowed, d->block_reasons,
+                    d->radio_match, d->radio_blocked, d->radio_audio_allowed, d->radio_record_allowed,
+                    d->radio_stream_allowed, d->tg_tune_allowed, d->tg_audio_allowed, d->tg_record_allowed,
+                    d->tg_stream_allowed);
+    }
+    return ok ? 0 : 1;
+}
+
+static int
+test_radio_policy_matrix(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    const radio_case cases[] = {
+        {"B", 0, 0, 0, 0, 0, 0, 0, DSD_TG_POLICY_BLOCK_SOURCE}, {"A", 1, 1, 1, 1, 1, 1, 1, 0u},
+        {"A", 1, 0, 1, 1, 1, 0, 1, DSD_TG_POLICY_BLOCK_RECORD}, {"A", 0, 0, 0, 1, 0, 0, 0, DSD_TG_POLICY_BLOCK_AUDIO},
+        {"A", 1, 1, 0, 1, 1, 1, 0, DSD_TG_POLICY_BLOCK_STREAM}, {"DE", 1, 1, 1, 0, 0, 0, 0, DSD_TG_POLICY_BLOCK_SOURCE},
+    };
+    rc |= expect_true("listed talkgroup", add_exact_row(st, 100, "A", "Fire") == 0);
+    rc |= expect_true("listed radio party", add_exact_row(st, 200, "A", "Unit") == 0);
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= expect_true("radio row", dsd_test_install_radio_policy(st, 42, cases[i].mode, cases[i].audio,
+                                                                     cases[i].record, cases[i].stream)
+                                           == 0);
+        for (int private_call = 0; private_call <= 1; private_call++) {
+            for (int known = 0; known <= 1; known++) {
+                for (int hold = 0; hold <= 1; hold++) {
+                    for (int allow_list = 0; allow_list <= 1; allow_list++) {
+                        DSD_MEMSET(&opts, 0, sizeof opts);
+                        opts.trunk_tune_group_calls = opts.trunk_tune_private_calls = 1;
+                        opts.trunk_use_allow_list = allow_list;
+                        st->tg_hold = hold ? (private_call ? 200U : 100U) : 0U;
+                        dsd_tg_policy_decision d;
+                        const uint32_t src = known ? 42U : 0U;
+                        if (private_call) {
+                            dsd_tg_policy_evaluate_private_call(&opts, st, src, 200, 0, 0, &d);
+                        } else {
+                            dsd_tg_policy_evaluate_group_call(&opts, st, 100, src, 0, 0, &d);
+                        }
+                        char tag[96];
+                        DSD_SNPRINTF(tag, sizeof tag, "radio case %zu private=%d known=%d hold=%d -W=%d", i,
+                                     private_call, known, hold, allow_list);
+                        rc |= check_radio_decision(tag, &d, &cases[i], known);
+                        rc |= expect_true("hold provenance kept", d.tg_hold_match == hold);
+                    }
+                }
+            }
+        }
+    }
+    st->tg_hold = 0U;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = opts.trunk_tune_private_calls = 1;
+    dsd_tg_policy_decision d;
+
+    /* D8: a radio row restricts either party of a private call. */
+    rc |= expect_true("radio row on the called party", dsd_test_install_radio_policy(st, 200, "B", 0, 0, 0) == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 200, 0, 0, &d);
+    rc |= expect_true("blocked called radio blocks the private call",
+                      !d.tune_allowed && d.radio_blocked && (d.block_reasons & DSD_TG_POLICY_BLOCK_SOURCE) != 0u);
+    dsd_tg_policy_evaluate_private_grant(&opts, st, 7, 200, 0, 0, &d);
+    rc |= expect_true("blocked called radio blocks the private grant", !d.tune_allowed && d.radio_blocked);
+    rc |= expect_true("record-off radio on the caller", dsd_test_install_radio_policy(st, 7, "A", 1, 0, 1) == 0);
+    dsd_tg_policy_evaluate_private_call(&opts, st, 7, 200, 0, 0, &d);
+    rc |= expect_true("caller's record-off reaches the private call",
+                      d.tune_allowed && d.audio_allowed && !d.record_allowed && d.radio_match);
+
+    /* D5: radio rows never admit. An A row satisfies no allow-list and lifts no talkgroup block. */
+    rc |= expect_true("allowed radio", dsd_test_install_radio_policy(st, 42, "A", 1, 1, 1) == 0);
+    opts.trunk_use_allow_list = 1;
+    dsd_tg_policy_evaluate_group_call(&opts, st, 300, 42, 0, 0, &d);
+    rc |= expect_true("radio A row admits no unlisted talkgroup",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u && d.radio_match
+                          && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    dsd_tg_policy_evaluate_private_call(&opts, st, 42, 999, 0, 0, &d);
+    rc |= expect_true("radio A row admits no unlisted private call",
+                      !d.tune_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u);
+    opts.trunk_use_allow_list = 0;
+    rc |= expect_true("blocked talkgroup", add_exact_row(st, 400, "B", "Off") == 0);
+    dsd_tg_policy_evaluate_group_call(&opts, st, 400, 42, 0, 0, &d);
+    rc |= expect_true("radio A row lifts no talkgroup block", !d.tune_allowed && !d.audio_allowed && !d.tg_tune_allowed
+                                                                  && !d.radio_blocked
+                                                                  && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    rc |= expect_true("blocked radio", dsd_test_install_radio_policy(st, 42, "B", 0, 0, 0) == 0);
+    dsd_tg_policy_evaluate_group_call(&opts, st, 400, 42, 0, 0, &d);
+    rc |= expect_true("talkgroup and radio both blocking is not radio-only",
+                      !d.tune_allowed && d.radio_blocked && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    rc |= expect_true("radio blocked label",
+                      strcmp(dsd_tg_policy_block_reason_label(DSD_TG_POLICY_BLOCK_SOURCE), "radio blocked") == 0);
+    rc |= expect_true("radio blocked check", dsd_tg_policy_radio_blocked(st, 42) == 1
+                                                 && dsd_tg_policy_radio_blocked(st, 0) == 0
+                                                 && dsd_tg_policy_radio_blocked(st, 43) == 0);
+
+    /* The supergroup's final blocks reach the talkgroup part too. */
+    rc |= expect_true("allowed radio again", dsd_test_install_radio_policy(st, 42, "A", 1, 1, 1) == 0);
+    dsd_tg_policy_evaluate_group_call(&opts, st, 100, 42, 0, 0, &d);
+    (void)dsd_tg_policy_apply_ota_final_blocks(&opts, st, 400, 100, 42, &d);
+    rc |= expect_true("ota final block is a talkgroup reason", !d.tune_allowed && !d.tg_tune_allowed
+                                                                   && !d.tg_audio_allowed && d.radio_audio_allowed
+                                                                   && !dsd_tg_policy_decision_only_radio_blocks(&d));
+    rc |= expect_true("NULL decision is not radio-only", dsd_tg_policy_decision_only_radio_blocks(NULL) == 0);
+    free_test_state(st);
+    return rc;
+}
+
+/* Every field of two decisions, member by member (the struct has padding, so its bytes are not its value). */
+static int
+decisions_equal(const dsd_tg_policy_decision* a, const dsd_tg_policy_decision* b) {
+    return a->target_id == b->target_id && a->source_id == b->source_id && a->encrypted == b->encrypted
+           && a->data_call == b->data_call && a->private_call == b->private_call && a->tune_allowed == b->tune_allowed
+           && a->audio_allowed == b->audio_allowed && a->record_allowed == b->record_allowed
+           && a->stream_allowed == b->stream_allowed && a->priority == b->priority
+           && a->preempt_requested == b->preempt_requested && a->block_reasons == b->block_reasons
+           && a->tg_hold_active == b->tg_hold_active && a->tg_hold_match == b->tg_hold_match
+           && strncmp(a->mode, b->mode, sizeof a->mode) == 0 && strncmp(a->name, b->name, sizeof a->name) == 0
+           && a->match == b->match && a->radio_match == b->radio_match && a->radio_blocked == b->radio_blocked
+           && a->radio_audio_allowed == b->radio_audio_allowed && a->radio_record_allowed == b->radio_record_allowed
+           && a->radio_stream_allowed == b->radio_stream_allowed && a->tg_audio_allowed == b->tg_audio_allowed
+           && a->tg_record_allowed == b->tg_record_allowed && a->tg_stream_allowed == b->tg_stream_allowed
+           && a->tg_tune_allowed == b->tg_tune_allowed;
+}
+
+/* Review focus: a labels-only radio list (no policy columns) leaves every decision identical to no list. */
+static int
+test_no_radio_policy_no_change(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    if (!st) {
+        return 1;
+    }
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_tune_group_calls = opts.trunk_tune_private_calls = 1;
+    rc |= expect_true("listed talkgroup", add_exact_row(st, 100, "A", "Fire") == 0);
+    rc |= expect_true("blocked talkgroup", add_exact_row(st, 101, "B", "Off") == 0);
+    rc |= expect_true("pattern row", add_pattern_row(st, "2*", "A", "Twos") == 0);
+    const uint32_t targets[] = {100, 101, 205, 300};
+    const uint32_t sources[] = {0, 42, 101};
+
+    enum { N = 4 * 3 * 2 * 2 * 2 };
+
+    static dsd_tg_policy_decision before[N];
+    static dsd_tg_policy_decision after[N];
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1) {
+            const dsd_test_radio_row rows[] = {{42, NULL, 0, 0, 0, "Engine 42"}, {101, NULL, 0, 0, 0, "Unit"}};
+            rc |= expect_true("labels-only radio list", dsd_test_install_radio_rows(st, rows, 2) == 0);
+            rc |= expect_true("labels-only list has no policy", !dsd_source_policy_loaded(st));
+        }
+        size_t n = 0;
+        for (size_t t = 0; t < 4; t++) {
+            for (size_t s = 0; s < 3; s++) {
+                for (int allow_list = 0; allow_list <= 1; allow_list++) {
+                    for (int hold = 0; hold <= 1; hold++) {
+                        opts.trunk_use_allow_list = allow_list;
+                        st->tg_hold = hold ? 100U : 0U;
+                        dsd_tg_policy_decision* out = pass ? &after[n] : &before[n];
+                        dsd_tg_policy_evaluate_group_call(&opts, st, targets[t], sources[s], 0, 0, out);
+                        n++;
+                        out = pass ? &after[n] : &before[n];
+                        dsd_tg_policy_evaluate_private_call(&opts, st, sources[s], targets[t], 0, 0, out);
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+    int same = 1;
+    for (size_t i = 0; i < sizeof before / sizeof before[0]; i++) {
+        same &= decisions_equal(&before[i], &after[i]);
+    }
+    rc |= expect_true("labels-only radio list leaves decisions identical", same);
+    st->tg_hold = 0U;
+    free_test_state(st);
+    return rc;
+}
+
+/* A row token for an exact or range row carries no pattern text: stray text names no row. */
+static int
+test_row_token_refuses_stray_pattern_text(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("exact row", add_exact_row(st, 5, "A", "Five") == 0);
+    rc |= expect_true("range row", add_range_row(st, 10, 20, "A", "Teens") == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    values.priority = 50;
+    rc |= expect_true("exact token with pattern text refused",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_EXACT, 5, 5, "5"},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 1);
+    rc |= expect_true("range token with pattern text refused",
+                      dsd_tg_policy_remove_key(st, context, generation,
+                                               &(dsd_tg_policy_row_key){1, DSD_TG_POLICY_ROW_RANGE, 10, 20, "1x"})
+                          == 1);
+    dsd_tg_policy_selection selection = {0, 5, 5, DSD_TG_POLICY_ROW_EXACT, "5"};
+    rc |= expect_true("selection with stray pattern text refused",
+                      dsd_tg_policy_set_listening_selection(st, context, generation, &selection, 1, 0) == 1);
+    rc |= expect_true("clean exact token still applies",
+                      dsd_tg_policy_set_fields_key(st, context, generation,
+                                                   &(dsd_tg_policy_row_key){0, DSD_TG_POLICY_ROW_EXACT, 5, 5, ""},
+                                                   &values, DSD_TG_POLICY_FIELD_PRIORITY)
+                          == 0);
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2229,6 +3496,7 @@ main(void) {
     rc |= test_call_skips();
     rc |= test_ota_final_blocks();
     rc |= test_record_unknown_only();
+    rc |= test_record_unknown_only_patterns();
     rc |= test_set_fields_record();
     rc |= test_lockout_replaces_alias_metadata();
     rc |= test_snapshot_reclones_recreated_context();
@@ -2238,6 +3506,8 @@ main(void) {
     rc |= test_upsert_modes();
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();
+    rc |= test_append_metadata_not_tags();
+    rc |= test_append_after_unterminated_line();
     rc |= test_preemption_helpers();
     rc |= test_preemption_same_call_by_class();
     rc |= test_live_active_priority();
@@ -2249,5 +3519,23 @@ main(void) {
     rc |= test_mode_edits_and_enumeration();
     rc |= test_group_file_rewrite();
     rc |= test_scan_row_policy_activity();
+    rc |= test_pattern_precedence();
+    rc |= test_catch_all_star();
+    rc |= test_legacy_list_unchanged();
+    rc |= test_pattern_row_rewrite_round_trip();
+    rc |= test_bounds_edits_skip_pattern_rows();
+    rc |= test_pattern_survives_snapshot_and_scan_context();
+    rc |= test_row_token_edits_the_addressed_duplicate();
+    rc |= test_row_token_stale_after_reload();
+    rc |= test_selection_accepts_zero_start_range();
+    rc |= test_pattern_row_edit_remove();
+    rc |= test_session_avoid_count_pattern();
+    rc |= test_unknown_private_endpoints();
+    rc |= test_priority_refresh_pattern_and_unknown();
+    rc |= test_radio_policy_matrix();
+    rc |= test_no_radio_policy_no_change();
+    rc |= test_row_token_refuses_stray_pattern_text();
+    rc |= test_group_label_from_range_and_pattern();
+    rc |= test_alias_never_labels_talkgroup();
     return rc;
 }

@@ -25,9 +25,11 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #define CH_HELD   0x100A /* 851.1250 MHz */
 #define CH_OTHER  0x100B /* 851.1375 MHz */
@@ -922,6 +924,47 @@ test_tdma_update_at_end_reading_holds(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The verbose preemption log reports the held talkgroup's priority from the row that decides it: a learned radio alias
+ * that shares the talkgroup's number must not hide the range's priority. */
+static int
+test_p25_diag_priority_uses_talkgroup_row(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    fresh_site(opts, st);
+    set_dwell_cooldown_ms("0", "0");
+    dsd_tg_policy_entry row;
+    rc |= expect_true("diag: make range",
+                      dsd_tg_policy_make_exact_entry(1200, "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    row.id_end = 1299;
+    row.kind = DSD_TG_POLICY_ROW_RANGE;
+    row.priority = 40;
+    rc |= expect_true("diag: add range", dsd_tg_policy_add_range_entry(st, &row) == 0);
+    rc |= expect_true("diag: make alias",
+                      dsd_tg_policy_make_exact_entry(1250, "D", "Radio 1250", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row)
+                          == 0);
+    rc |= expect_true("diag: learn alias", dsd_tg_policy_learn_exact(st, &row) == DSD_TG_POLICY_LEARN_ADDED);
+    set_clock_s(4000.0);
+    follow(opts, st, 1250, CH_HELD);
+    rc |= expect_true("diag: following 1250", following(1250, FREQ_HELD));
+    set_clock_s(4002.0);
+    opts->verbose = 1;
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25diag") != 0) {
+        opts->verbose = 0;
+        return 1;
+    }
+    offer_update(opts, st, 200, CH_PRIO);
+    (void)dsd_test_capture_stderr_end(&cap);
+    opts->verbose = 0;
+    char log[8192];
+    rc |= expect_true("diag: read log", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    rc |= expect_true("diag: held priority from the range row",
+                      strstr(log, "current_tg=1250 current_prio=40 candidate_tg=200") != NULL);
+    if (rc) {
+        DSD_FPRINTF(stderr, "diag log:\n%s\n", log);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -955,6 +998,7 @@ main(void) {
     rc |= test_tdma_same_reading_voice_restarts_wait(&opts, &st);
     rc |= test_tdma_awaited_update_repeat_keeps_wait(&opts, &st);
     rc |= test_tdma_update_at_end_reading_holds(&opts, &st);
+    rc |= test_p25_diag_priority_uses_talkgroup_row(&opts, &st);
     dsd_state_ext_free_all(&st);
     dsd_decode_clock_use_system();
     return rc;

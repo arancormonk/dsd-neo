@@ -9,6 +9,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -121,21 +122,27 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
     if (!dsd_receive_identity_admitted(opts, &call->receive_identity)) {
         return 0;
     }
-    const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
-    if (target == 0U) {
-        /* Unknown identity (LC never decoded) counts as voice. */
+    if (DSD_SYNC_IS_M17(call->protocol)) {
+        /* M17 addresses calls by callsign, outside talkgroup policy: its 48-bit values must never reach a lookup. */
         return 1;
     }
+    const uint64_t wide_target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
+    /* A source that does not fit 32 bits is unknown, not its truncated low half. */
+    const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
+    if (wide_target == 0U || wide_target > UINT32_MAX) {
+        /* Unknown target (LC never decoded, or not a 32-bit ID) counts as voice, unless the radio list blocks its
+           known source: radio rules act once the radio is known. */
+        return !dsd_tg_policy_radio_blocked(state, source);
+    }
+    const uint32_t target = (uint32_t)wide_target;
     const int encrypted =
         call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
     dsd_tg_policy_decision decision;
     int rc = 0;
     if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)call->ota_source_id, (uint32_t)target,
-                                                 encrypted, 0, &decision);
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, 0, &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, (uint32_t)call->ota_source_id, encrypted,
-                                               0, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, 0, &decision);
     }
     return rc == 0 && decision.tune_allowed;
 }

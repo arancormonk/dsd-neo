@@ -534,13 +534,9 @@ Item {
                         visible: text.length > 0
                         width: Math.max(0, Math.min(implicitWidth, statusLine.width - statusLine.lockedWidth - (cfoLabel.visible ? statusLine.spacing + cfoLabel.width : 0) - statusLine.spacing))
                         elide: Text.ElideRight
-                        // "0" is a call epoch whose target has not decoded yet — which
-                        // a control channel opens routinely. Naming it would put a
-                        // talkgroup on screen that nobody is transmitting on.
-                        text: {
-                            var tg = metrics.slot1CallState === 2 ? metrics.slot1TgText : metrics.slot2CallState === 2 ? metrics.slot2TgText : "";
-                            return tg === "0" ? "" : tg;
-                        }
+                        // A target that has not decoded has no text (the call view
+                        // leaves it empty, never "0"), so nothing is named for it.
+                        text: metrics.slot1CallState === 2 ? metrics.slot1TgText : metrics.slot2CallState === 2 ? metrics.slot2TgText : ""
                         font.family: Theme.mono
                         font.pixelSize: Theme.fontSize(11)
                         color: Theme.cyan

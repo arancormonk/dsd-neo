@@ -91,18 +91,33 @@ tetra_bits_present(tetra_bit_reader* r) {
 }
 
 /** Skip a chain of type-3/4 elements: each starts with an M-bit of 1, a 4-bit identifier and an 11-bit length, and
- * the chain ends with an M-bit of 0. 1 when the chain ended inside the PDU. */
+ * the chain ends with an M-bit of 0. 1 when the chain ended inside the PDU. @p ids_mask (may be NULL) receives bit n
+ * set for each identifier n skipped (EN 300 392-2 table 14.86 for CMCE); 0 when the chain did not end in the PDU. */
 static inline int
-tetra_bits_skip_type34(tetra_bit_reader* r) {
+tetra_bits_skip_type34_ids(tetra_bit_reader* r, uint16_t* ids_mask) {
+    uint16_t seen = 0;
+    if (ids_mask) {
+        *ids_mask = 0;
+    }
     while (tetra_bits_read(r, 1) != 0) {
-        (void)tetra_bits_read(r, 4);
+        const uint32_t id = tetra_bits_read(r, 4);
         const uint32_t length = tetra_bits_read(r, 11);
         if (!tetra_bits_ok(r) || length == 0 || !tetra_bits_skip(r, (int)length)) {
             r->failed = 1;
             return 0;
         }
+        seen = (uint16_t)(seen | (1u << id));
+    }
+    if (ids_mask && tetra_bits_ok(r)) {
+        *ids_mask = seen;
     }
     return tetra_bits_ok(r);
+}
+
+/** tetra_bits_skip_type34_ids() without the identifiers. */
+static inline int
+tetra_bits_skip_type34(tetra_bit_reader* r) {
+    return tetra_bits_skip_type34_ids(r, NULL);
 }
 
 #ifdef __cplusplus

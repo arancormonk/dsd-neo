@@ -26,9 +26,9 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -1401,8 +1401,8 @@ dmr_flco_print_branding(dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_tg_label(const dmr_flco_ctx* ctx) {
-    char name[50];
-    if (dsd_tg_policy_lookup_label(ctx->state, ctx->target, NULL, 0, name, sizeof(name))) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (dsd_call_target_label_lookup(ctx->state, dmr_flco_call_kind(ctx), ctx->target, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, "%s", KCYN);
         DSD_FPRINTF(stderr, "[%s] ", name);
         DSD_FPRINTF(stderr, "%s", KNRM);

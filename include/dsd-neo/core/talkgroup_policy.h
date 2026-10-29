@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_TALKGROUP_POLICY_H_H
 
+#include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -21,11 +22,24 @@
 extern "C" {
 #endif
 
+/**
+ * How a lookup matched. Precedence is exact, then range, then pattern: PATTERN is the weakest match even though its
+ * value is the largest (values are kept for serialized compatibility).
+ */
 typedef enum {
     DSD_TG_POLICY_MATCH_NONE = 0,
     DSD_TG_POLICY_MATCH_RANGE = 1,
     DSD_TG_POLICY_MATCH_EXACT = 2,
+    DSD_TG_POLICY_MATCH_PATTERN = 3,
 } dsd_tg_policy_match_type;
+
+/** A row's ID kind (dsd_tg_policy_entry::kind). */
+typedef enum {
+    DSD_TG_POLICY_ROW_EXACT = 0, /**< one ID: id_start == id_end */
+    DSD_TG_POLICY_ROW_RANGE = 1, /**< id_start..id_end, id_start < id_end */
+    DSD_TG_POLICY_ROW_PATTERN =
+        2, /**< digit pattern (core/id_pattern.h) in `pattern`; id_start = id_end = 0, never a span */
+} dsd_tg_policy_row_kind;
 
 typedef enum {
     DSD_TG_POLICY_SOURCE_IMPORTED = 0,
@@ -58,13 +72,14 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
     DSD_TG_POLICY_BLOCK_SESSION_AVOID = 1u << 11,
     DSD_TG_POLICY_BLOCK_CALL_SKIP = 1u << 12,
+    DSD_TG_POLICY_BLOCK_SOURCE = 1u << 13, /**< The radio list blocks a known party (mode B/DE): "radio blocked". */
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */
 const char* dsd_tg_policy_block_reason_label(uint32_t block_reasons);
 
 typedef struct {
-    uint32_t id_start;
+    uint32_t id_start; /* 0 on a pattern row: read the bounds only of exact and range rows. */
     uint32_t id_end;
     char mode[8];
     char name[50];
@@ -74,9 +89,10 @@ typedef struct {
     uint8_t audio;
     uint8_t record;
     uint8_t stream;
-    uint8_t is_range;
+    uint8_t kind; /* dsd_tg_policy_row_kind */
     uint8_t source;
     unsigned int row;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX]; /* Canonical pattern text on a pattern row; empty otherwise. */
 } dsd_tg_policy_entry;
 
 typedef struct {
@@ -102,7 +118,40 @@ typedef struct {
     char mode[8];
     char name[50];
     dsd_tg_policy_match_type match;
+    /* Provenance. tune/audio/record/stream_allowed above are the combined answer: the talkgroup part AND the radio
+     * part. The radio part comes from the radio ID list (<dsd-neo/core/source_alias.h>) for each known party (a group
+     * call's source; both parties of a private call; an ID of 0 is unknown). Radio rows only restrict: they never
+     * admit (-W) and never lift a talkgroup block. A Hold overrides the talkgroup part only (the media gates compute
+     * (hold override || tg_x) && radio_x), and a radio block denies tuning under a Hold too. Without radio policy the
+     * radio part allows everything and the talkgroup part equals the combined answer. */
+    int radio_match;          /**< A known party matched a radio row with policy. */
+    int radio_blocked;        /**< That row's mode is B/DE (DSD_TG_POLICY_BLOCK_SOURCE). */
+    int radio_audio_allowed;  /**< Radio part of audio_allowed. */
+    int radio_record_allowed; /**< Radio part of record_allowed. */
+    int radio_stream_allowed; /**< Radio part of stream_allowed. */
+    int tg_audio_allowed;     /**< Talkgroup part of audio_allowed (what a Hold may override). */
+    int tg_record_allowed;    /**< Talkgroup part of record_allowed. */
+    int tg_stream_allowed;    /**< Talkgroup part of stream_allowed. */
+    int tg_tune_allowed;      /**< Talkgroup part of tune_allowed. */
 } dsd_tg_policy_decision;
+
+/**
+ * @brief Whether tuning is denied by radio rules alone.
+ *
+ * 1 when @p decision denies tuning, its talkgroup part allows it, and every tuning denial reason is a radio reason
+ * (DSD_TG_POLICY_BLOCK_SOURCE). A path that re-judges a call it already follows, because its identity was learned or
+ * updated, keeps the call on such a rejection (the per-frame media gates mute and stop recording the radio); a new
+ * grant is still refused. 0 for NULL.
+ */
+int dsd_tg_policy_decision_only_radio_blocks(const dsd_tg_policy_decision* decision);
+
+/**
+ * @brief Whether the radio list's policy blocks radio @p radio_id (its winning row's mode is B/DE).
+ *
+ * 0 for radio 0 (unknown), without radio policy, or when no policy row blocks it. For a call whose target is unknown
+ * but whose source is known (the -Y voice gate, frontends' block labels).
+ */
+int dsd_tg_policy_radio_blocked(const dsd_state* state, uint32_t radio_id);
 
 typedef struct {
     uint32_t target_id;
@@ -116,15 +165,56 @@ typedef struct {
 int dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, dsd_tg_policy_entry_source source,
                                    dsd_tg_policy_entry* out);
 int dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
+/**
+ * @brief Append a pattern row (kind DSD_TG_POLICY_ROW_PATTERN, bounds 0/0, a valid pattern in `pattern`).
+ *
+ * The pattern is stored in its canonical form (lower-case `x`, single stars).
+ *
+ * @return 0 stored, 1 invalid row, -1 allocation failure.
+ */
+int dsd_tg_policy_add_pattern_entry(dsd_state* state, const dsd_tg_policy_entry* entry);
+/** Row lookup for any ID: the first exact row (a talkgroup row before a learned alias), else the narrowest range (last
+ * row wins ties), else the most specific pattern (dsd_id_pattern_more_specific(), last row wins ties). Learned alias
+ * rows take part only as exact rows. Returns -1 for NULL @p out, 0 otherwise (match NONE when nothing matched). */
 int dsd_tg_policy_lookup_id(const dsd_state* state, uint32_t id, dsd_tg_policy_lookup* out);
+/** Talkgroup lookup: the row that decides talkgroup @p tg in group evaluation. As dsd_tg_policy_lookup_id(), but a
+ * learned alias row (a radio) never matches. Returns -1 for NULL @p out, 0 otherwise. */
+int dsd_tg_policy_lookup_group(const dsd_state* state, uint32_t tg, dsd_tg_policy_lookup* out);
+/** Number of pattern rows in the effective table; 0 without a policy context. */
+size_t dsd_tg_policy_pattern_count(const dsd_state* state);
 int dsd_tg_policy_has_entries(const dsd_state* state);
+/** Exact-row label for any ID: the first exact row (a talkgroup row before a learned alias) with its mode and name.
+ * The radio-side fallback of dsd_source_label_lookup(); a talkgroup is labelled by
+ * dsd_tg_policy_lookup_group_label(). Returns 1 when an exact row matched (its name may be empty). */
 int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                                size_t name_sz);
+/**
+ * @brief Talkgroup label: the mode and name of the row that decides talkgroup @p tg (dsd_tg_policy_lookup_group():
+ * a talkgroup exact row, else the narrowest range, else the most specific pattern).
+ *
+ * A learned alias row names a radio and never labels a talkgroup. Returns 1 only when the deciding row has a non-empty
+ * name; otherwise 0 with both outputs empty (a deciding row without a name labels nothing, and no wider row lends it
+ * one). NULL outputs are accepted.
+ */
+int dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
+                                     size_t name_sz);
 int dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src);
 int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
                                       int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
                                         int encrypted, int data_call, dsd_tg_policy_decision* out);
+/**
+ * @brief NXDN Type-C source fallback: a group call on @p tg judged by its source's row when @p tg matches no row.
+ *
+ * When @p tg matches no row and @p src (non-zero, not @p tg) matches one, the source row decides admission (`-W`),
+ * mode, media and priority. The target's final blocks still apply (session avoid, call skip, encryption lockout), as
+ * do the source's own, and a Hold on either ID matches. Otherwise exactly dsd_tg_policy_evaluate_group_call().
+ *
+ * @return 0 evaluated, -1 for NULL @p out.
+ */
+int dsd_tg_policy_evaluate_group_source_fallback(const dsd_opts* opts, const dsd_state* state, uint32_t tg,
+                                                 uint32_t src, int encrypted, int data_call,
+                                                 dsd_tg_policy_decision* out);
 
 /**
  * Blocks on a patched call's over-the-air supergroup (SG) that no member WG
@@ -183,6 +273,15 @@ typedef enum {
  * table and its generation alone while a renamed radio's new alias replaces the old one.
  */
 dsd_tg_policy_learn_result dsd_tg_policy_learn_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
+/**
+ * @brief Append one exact row to opts->group_in_file in the file's own schema, creating the file when missing.
+ *
+ * A last line without a newline is ended first. @p metadata (free text, may be NULL) never lands in a column the
+ * header models as tags: it goes one column further, past an empty tags field.
+ *
+ * @return 0 written or nothing to write (NULL opts/entry, empty path), 1 not an exact row, -1 on I/O failure
+ *         (including a failed final close).
+ */
 int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
 
 int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
@@ -238,6 +337,8 @@ int dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id);
 int dsd_tg_policy_session_avoid_contains(const dsd_state* state, uint32_t id);
 /** Count distinct avoided IDs in inclusive bounds; 0..UINT32_MAX counts the whole scope. */
 size_t dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end);
+/** Count distinct avoided IDs a digit pattern (core/id_pattern.h) matches; 0 for a NULL or invalid pattern. */
+size_t dsd_tg_policy_session_avoid_count_pattern(const dsd_state* state, const char* pattern);
 /** Clear only temporary blocks in the current scope; NULL/empty is a no-op. */
 void dsd_tg_policy_session_avoid_clear(dsd_state* state);
 
@@ -293,7 +394,8 @@ int dsd_tg_policy_edit_version_valid(const dsd_state* state, uint64_t context, u
  * missing range is refused.
  * Creates the context when absent.
  * Returns 0 applied, 1 invalid (NULL state/mode, empty or over-long mode, reversed bounds,
- * missing range), -1 allocation failure. */
+ * missing range), -1 allocation failure. Edits by bounds (this, set_fields, remove_bounds) never address a pattern
+ * row; edit one by index. */
 int dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end, const char* mode);
 /** Same edit on the row at @p index (decoder thread only; indices remain stable while it holds state).
  * Returns 0 applied, 1 bad index or mode. */
@@ -301,13 +403,17 @@ int dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode);
 
 typedef struct {
     int32_t policy_index; /**< -1 for a heard-only exact ID; otherwise the captured table row. */
-    uint32_t id_start;
+    uint32_t id_start;    /**< 0 on a pattern row. */
     uint32_t id_end;
+    uint8_t kind;                          /**< Captured row's dsd_tg_policy_row_kind (EXACT when heard-only). */
+    char pattern[DSD_ID_PATTERN_TEXT_MAX]; /**< The captured pattern row's text; empty otherwise. */
 } dsd_tg_policy_selection;
 
-/** Apply an exact captured selection atomically. A stale capture (dsd_tg_policy_edit_version_valid())
- * or invalid rows return 1; allocation failure returns -1, leaving policy intact. A heard-only ID held
- * only by a learned alias takes that row over. Ranges, priority and preemption are retained. */
+/** Apply an exact captured selection atomically. Each listed item names its row like a dsd_tg_policy_row_key (index,
+ * kind, bounds or pattern; a range may start at 0); a heard-only item is one exact non-zero ID. A stale capture
+ * (dsd_tg_policy_edit_version_valid()) or an invalid item returns 1; allocation failure returns -1, leaving policy
+ * intact. A heard-only ID held only by a learned alias takes that row over. Ranges, priority and preemption are
+ * retained. */
 int dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
                                           const dsd_tg_policy_selection* selection, size_t count, int listening);
 
@@ -333,9 +439,44 @@ int dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_en
  * only by a learned alias has nothing to remove).
  * Remaining rows keep their order; a successful edit advances the table generation. */
 int dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end);
+
+/**
+ * A row token: the row a frontend listed, named by its table index and its key. A duplicate row is a row of its own,
+ * and a pattern row is addressed by its text (canonicalised before the compare), never by its 0/0 bounds.
+ * table_index -1 is a bounds-only edit of an exact or range row (the first talkgroup row with these bounds, as
+ * dsd_tg_policy_set_fields() and dsd_tg_policy_remove_bounds() address it); a pattern row always needs its index.
+ */
+typedef struct {
+    int32_t table_index; /**< Captured table row, or -1 for a bounds-only edit. */
+    uint8_t kind;        /**< dsd_tg_policy_row_kind */
+    uint32_t id_start;   /**< 0 on a pattern row. */
+    uint32_t id_end;
+    char pattern[DSD_ID_PATTERN_TEXT_MAX]; /**< Pattern rows only; empty otherwise. */
+} dsd_tg_policy_row_key;
+
+/**
+ * @brief dsd_tg_policy_set_fields() on the row a token names, captured at (@p context, @p generation).
+ *
+ * Refused when the capture is stale (dsd_tg_policy_edit_version_valid()), or when the row at the token's index no
+ * longer has that kind and key or is a learned alias. A bounds-only token (index -1) edits as
+ * dsd_tg_policy_set_fields() does, after the same version check.
+ *
+ * @return 0 applied, 1 stale or invalid (nothing changed), -1 allocation failure.
+ */
+int dsd_tg_policy_set_fields_key(dsd_state* state, uint64_t context, unsigned int generation,
+                                 const dsd_tg_policy_row_key* key, const dsd_tg_policy_entry* values, uint32_t mask);
+/**
+ * @brief Remove the row a token names, captured at (@p context, @p generation); the same checks as
+ *        dsd_tg_policy_set_fields_key(). A bounds-only token removes as dsd_tg_policy_remove_bounds() does.
+ *
+ * @return 0 removed, 1 stale or invalid (nothing changed), -1 allocation failure.
+ */
+int dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int generation,
+                             const dsd_tg_policy_row_key* key);
 /** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.
  * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
- * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end. Unmodelled free-text columns (e.g. alias metadata)
+ * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end, patterns as their
+ * canonical text. Unmodelled free-text columns (e.g. alias metadata)
  * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), -1 on I/O
  * failure with the old file intact. */
 int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state);

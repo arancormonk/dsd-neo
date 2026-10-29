@@ -180,6 +180,13 @@ typedef enum {
  */
 int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
+/**
+ * Re-judge the rdio-scanner export of slot @p slot's staged row now, as its next render would (issue #773 D7), so a
+ * recording closed before that render -- a WAV stop or another pre-commit close in the same command drain as a policy
+ * import or edit -- follows the policy in force at the close. Only the slot's call's own staged row changes. Callers
+ * must not hold the call-state lock.
+ */
+void dsd_event_refresh_stream_verdict(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                const char* detail);
 /** Commit an informational call notice without call-end alerts, WAV rotation, or slot-identity reset. */

@@ -3,8 +3,42 @@
 .pragma library
 
 // Only numeric talkgroups get the TG prefix; callsigns remain names in their own right.
+// An empty tgText is a target that has not decoded: no "TG " with nothing after it.
 function talkgroupHeadline(name, tgText, tgId) {
-    return tgId > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
+    return tgId > 0 && tgText.length > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
+}
+
+// dsd_call_kind's private voice call (issue #773): one radio calling another, so its
+// target is a radio, never a talkgroup.
+var CALL_KIND_PRIVATE = 3;
+
+function callIsPrivate(kind) {
+    return kind === CALL_KIND_PRIVATE;
+}
+
+// A call no party named (#773): no target text or number and no source. TETRA speech
+// before a D-SETUP, and X2-TDMA and ProVoice voice, which never carry identity. Analog
+// has no protocol label, so its channel keeps naming its call.
+function callIsAnonymous(tgText, tgId, srcText, protocolLabel) {
+    return tgText.length === 0 && !(tgId > 0) && srcText.length === 0 && protocolLabel.length > 0;
+}
+
+// What the hero and the second-slot strip headline a call with. A private call names
+// its other party: that radio's label, else its text (a callsign), else a known nonzero
+// id as "ID n", else "Private call" -- never a service or channel name, which would read
+// as a talkgroup. A call no party named names its protocol. Everything else is a
+// talkgroup call, headlined as before.
+function callHeadline(kind, name, tgText, tgId, tgLabel, srcText, protocolLabel) {
+    if (callIsPrivate(kind)) {
+        if (tgLabel.length > 0)
+            return tgLabel;
+        if (tgText.length > 0 && !(tgId > 0 && tgText === idText(tgId)))
+            return tgText;
+        return tgId > 0 ? qsTr("ID %1").arg(idText(tgId)) : qsTr("Private call");
+    }
+    if (callIsAnonymous(tgText, tgId, srcText, protocolLabel))
+        return qsTr("%1 call").arg(protocolLabel);
+    return talkgroupHeadline(name, tgText, tgId);
 }
 
 // String.arg(double) uses QString's six-significant-digit formatting. Convert

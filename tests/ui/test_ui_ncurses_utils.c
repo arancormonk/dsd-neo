@@ -124,7 +124,7 @@ test_lockout_label_policy_lookup(void) {
                       dsd_tg_policy_make_exact_entry(1000U, "B", "RANGE-BLOCK", DSD_TG_POLICY_SOURCE_IMPORTED, &range)
                           == 0);
     range.id_end = 1099U;
-    range.is_range = 1U;
+    range.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("add range policy", dsd_tg_policy_add_range_entry(state, &range) == 0);
 
     rc |= expect_int_eq("null state not locked", ui_is_locked_from_label(NULL, "TG: 123"), 0);
@@ -138,7 +138,9 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_int_eq("TGT DE mode locks", ui_is_locked_from_label(state, "Call TGT:456 slot 2"), 1);
     rc |= expect_int_eq("SG DE mode locks", ui_is_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 321;"), 1);
     rc |= expect_int_eq("allow mode does not lock", ui_is_locked_from_label(state, "TG: 789"), 0);
-    rc |= expect_int_eq("range-only match does not lock label", ui_is_locked_from_label(state, "TG: 1005"), 0);
+    // A TG token takes the talkgroup's deciding row, so a mode-B range locks it; a TGT token stays exact-only.
+    rc |= expect_int_eq("range match locks TG label", ui_is_locked_from_label(state, "TG: 1005"), 1);
+    rc |= expect_int_eq("range does not lock private target", ui_is_locked_from_label(state, "TGT: 1005"), 0);
     rc |= expect_int_eq("later locked target is evaluated",
                         ui_is_locked_from_label(state, "Grant TG: 789 TGT: 456 SG: 321"), 1);
     rc |= expect_int_eq("add temporary label avoid", dsd_tg_policy_session_avoid_add(state, 789), 0);
@@ -196,6 +198,46 @@ test_lockout_label_policy_lookup(void) {
     return rc;
 }
 
+/* A talkgroup token (TG:/SG:) is locked by whatever row decides that talkgroup: an exact row, the narrowest range or
+ * the most specific pattern. A private target (TGT:) is a radio and keeps the exact-row rule. */
+static int
+test_terminal_lock_marks_range_and_pattern(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        DSD_FPRINTF(stderr, "FAIL: state alloc\n");
+        return 1;
+    }
+    int rc = 0;
+    dsd_tg_policy_entry row;
+    rc |= expect_true("make range row",
+                      dsd_tg_policy_make_exact_entry(1200U, "B", "RANGE", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    row.id_end = 1299U;
+    row.kind = DSD_TG_POLICY_ROW_RANGE;
+    rc |= expect_true("add range row", dsd_tg_policy_add_range_entry(state, &row) == 0);
+    rc |= expect_true("make pattern row",
+                      dsd_tg_policy_make_exact_entry(0U, "B", "TWELVE", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    row.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(row.pattern, sizeof(row.pattern), "%s", "12*");
+    rc |= expect_true("add pattern row", dsd_tg_policy_add_pattern_entry(state, &row) == 0);
+    rc |= expect_true("add allow exact", add_policy(state, 1210U, "A", "ALLOW") == 0);
+    rc |= expect_true("make learned radio alias",
+                      dsd_tg_policy_make_exact_entry(7000U, "DE", "RADIO", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row)
+                          == 0);
+    rc |= expect_true("add learned radio alias", dsd_tg_policy_append_exact(state, &row) == 0);
+
+    rc |= expect_int_eq("range locks TG", ui_is_locked_from_label(state, "TG: 1250"), 1);
+    rc |= expect_int_eq("pattern locks TG", ui_is_locked_from_label(state, "TG: 1290000"), 1);
+    rc |= expect_int_eq("pattern locks SG", ui_is_locked_from_label(state, "Grant SG: 1290000;"), 1);
+    rc |= expect_int_eq("exact allow row beats the range", ui_is_locked_from_label(state, "TG: 1210"), 0);
+    rc |= expect_int_eq("range does not lock TGT", ui_is_locked_from_label(state, "TGT: 1250"), 0);
+    rc |= expect_int_eq("pattern does not lock TGT", ui_is_locked_from_label(state, "TGT: 1290000"), 0);
+    rc |= expect_int_eq("unmatched TG not locked", ui_is_locked_from_label(state, "TG: 5000"), 0);
+    rc |= expect_int_eq("a radio alias does not lock the same TG", ui_is_locked_from_label(state, "TG: 7000"), 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -203,5 +245,6 @@ main(void) {
     rc |= test_int_selection_helpers();
     rc |= test_percentiles_u8();
     rc |= test_lockout_label_policy_lookup();
+    rc |= test_terminal_lock_marks_range_and_pattern();
     return rc ? 1 : 0;
 }

@@ -444,7 +444,8 @@ test_standard_setup_release_status(void) {
     n = off + 3;
     tetra_mle_dispatch(mle, n, 2, opts, state);
     const tetra_call_t* c = tetra_calls_peek(state, 0x1234);
-    if (!c || c->timeout != 9 || c->calling_ssi != 0x654321 || c->talker_ssi != 0x654321 || c->basic_service != 0x32
+    /* An individual D-SETUP names no talker (EN 300 392-2 clause 14.5.1.2.1 a): D-CONNECT ACKNOWLEDGE or a grant does. */
+    if (!c || c->timeout != 9 || c->calling_ssi != 0x654321 || c->talker_ssi != 0u || c->basic_service != 0x32
         || !c->e2ee || c->priority != 7) {
         ok = 0;
     }

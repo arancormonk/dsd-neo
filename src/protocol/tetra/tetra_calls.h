@@ -38,6 +38,9 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <stdint.h>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/core/talkgroup_policy.h>
+#endif
 
 #include "tetra_state.h"
 
@@ -49,6 +52,11 @@ extern "C" {
  * floor-control PDUs of a call that is still up, so only a call whose release went unheard ages out. The followed call
  * never ages; the trunking state machine's hangtime ends it. */
 #define TETRA_CALL_IDLE_S       30.0
+
+/** Decode clock seconds within which a group-addressed grant that names no transmitting party pairs with the
+ * individually addressed one before it (EN 300 392-2 clause 14.5.2.2.1 b, f; tetra_calls.c), and a D-SETUP takes the
+ * talker of a D-CONNECT that came before it (clause 14.5.2.1.2 NOTE 1). An implementation limit, not an ETSI one. */
+#define TETRA_GRANT_PAIR_S      1.0
 
 /** Seconds without speech after which the heard call (not trunking) counts as over: longer than the frame 18 gap of a
  * speech timeslot, short enough that the next transmission on another timeslot is heard. */
@@ -98,15 +106,16 @@ typedef enum {
 
 /* tetra_call_event::has */
 enum {
-    TETRA_CALL_HAS_CALLING = 1u << 0,     /* calling_ssi: the calling party of D-SETUP */
-    TETRA_CALL_HAS_TALKER = 1u << 1,      /* talker_ssi: the transmitting party of D-TX GRANTED or D-TX INTERRUPT */
-    TETRA_CALL_HAS_NEW_ID = 1u << 2,      /* new_call_id: D-INFO or D-CALL RESTORE renames the call */
-    TETRA_CALL_HAS_BASIC = 1u << 3,       /* basic_service: the basic service information (table 14.35) */
-    TETRA_CALL_HAS_TIMEOUT = 1u << 4,     /* timeout: the call time-out (table 14.50) */
-    TETRA_CALL_HAS_GRANT = 1u << 5,       /* grant: the transmission grant (table 14.80) */
-    TETRA_CALL_HAS_ENCRYPTION = 1u << 6,  /* encryption: the encryption control of D-TX GRANTED or D-TX INTERRUPT */
-    TETRA_CALL_HAS_CALLING_EXT = 1u << 7, /* calling_ext: the extension of a calling party of type 2 (table 14.43) */
-    TETRA_CALL_HAS_CONTINUE = 1u << 8,    /* continue_value: the continue element of D-TX CONTINUE (table 14.17) */
+    TETRA_CALL_HAS_CALLING = 1u << 0,      /* calling_ssi: the calling party of D-SETUP */
+    TETRA_CALL_HAS_TALKER = 1u << 1,       /* talker_ssi: the transmitting party of D-TX GRANTED or D-TX INTERRUPT */
+    TETRA_CALL_HAS_NEW_ID = 1u << 2,       /* new_call_id: D-INFO or D-CALL RESTORE renames the call */
+    TETRA_CALL_HAS_BASIC = 1u << 3,        /* basic_service: the basic service information (table 14.35) */
+    TETRA_CALL_HAS_TIMEOUT = 1u << 4,      /* timeout: the call time-out (table 14.50) */
+    TETRA_CALL_HAS_GRANT = 1u << 5,        /* grant: the transmission grant (table 14.80) */
+    TETRA_CALL_HAS_ENCRYPTION = 1u << 6,   /* encryption: the encryption control of D-TX GRANTED or D-TX INTERRUPT */
+    TETRA_CALL_HAS_CALLING_EXT = 1u << 7,  /* calling_ext: the extension of a calling party of type 2 (table 14.43) */
+    TETRA_CALL_HAS_CONTINUE = 1u << 8,     /* continue_value: the continue element of D-TX CONTINUE (table 14.17) */
+    TETRA_CALL_HAS_NOTIFICATION = 1u << 9, /* notification: the notification indicator of D-SETUP (table 14.15) */
 };
 
 /** One decoded CMCE call PDU, as the call records need it. */
@@ -124,6 +133,8 @@ typedef struct {
     uint8_t grant;          /**< table 14.80: 0 granted, 1 not granted, 2 queued, 3 granted to another user */
     uint8_t encryption;     /**< encryption control: 1 end-to-end encrypted */
     uint8_t continue_value; /**< D-TX CONTINUE: 1 continue */
+    uint8_t notification;   /**< D-SETUP notification indicator (EN 300 392-9 table 3: 0, 1, 2 late entry) */
+    uint8_t facility;       /**< D-SETUP carried a Facility type-3 element (table 14.86 0011) */
 } tetra_call_event;
 
 /**
@@ -196,6 +207,13 @@ uint32_t tetra_calls_target(const tetra_call_t* c);
 
 /** @brief The record of the call the trunking state machine follows, or NULL when it follows none. */
 const tetra_call_t* tetra_calls_followed(const dsd_state* state);
+
+#ifdef DSD_NEO_TEST_HOOKS
+/** @brief The route the talkgroup policy's preemption bookkeeping knows the followed call by: its called party, its
+ * source (the talker; an individual call's calling party while none is named), its carrier and any timeslot.
+ * @return 1 and @p out when the state machine follows a call record, else 0. */
+int tetra_calls_followed_route(const dsd_state* state, dsd_tg_policy_call_route* out);
+#endif
 
 /**
  * @brief The ACCESS-ASSIGN PDU of the downlink normal burst being decoded (@p read 0 when its AACH could not be read),

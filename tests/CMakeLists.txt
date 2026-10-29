@@ -1326,6 +1326,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_id_pattern
+  HEADERS_PUBLIC_CORE_ID_PATTERN
+  dsd-neo/core/id_pattern.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_id_pattern_cxx
+  HEADERS_PUBLIC_CORE_ID_PATTERN_CXX
+  dsd-neo/core/id_pattern.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_received_identity
   HEADERS_PUBLIC_CORE_RECEIVED_IDENTITY
   dsd-neo/core/received_identity.h
@@ -2965,6 +2977,7 @@ add_executable(
     dsd-neo_test_app_control_call_view
     ui/test_app_control_call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_app_control_call_view
@@ -3246,9 +3259,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing, squelch, received-tone and TETRA views come in as sources rather
-    # than stubs: the Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything if they
-    # run through the real display rules.
+    # The shared call, scan-timing, squelch, received-tone and TETRA views come in as sources rather
+    # than stubs: the TETRA call, Scan Timing, SQL, Rx tone and TETRA goldens are only worth anything
+    # if they run through the real display rules.
     # Built twice: as a radio-off build compiles the printer, and as a radio build
     # does (USE_RADIO, whichever SDR backend), which draws the Visual Aids section.
     foreach(
@@ -3263,6 +3276,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ui/test_ui_ncurses_printer_helpers.c
             ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_row.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
@@ -3963,6 +3977,7 @@ add_executable(
     dsd-neo_test_ui_qt_call_line
     ui/test_ui_qt_call_line.cpp
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_line
@@ -4858,6 +4873,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
@@ -4898,6 +4914,7 @@ add_executable(
     dsd-neo_test_app_control_history_tap
     ui/test_app_control_history_tap.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -5798,6 +5815,7 @@ add_executable(
     dsd-neo_test_core_scan_profile
     core/test_core_scan_profile.c
     ../src/core/util/talkgroup_policy.c
+    ../src/core/util/id_pattern.c
 )
 target_compile_definitions(
     dsd-neo_test_core_scan_profile
@@ -5958,6 +5976,15 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_access_code PRIVATE dsd-neo_core)
 add_test(NAME CORE_ACCESS_CODE COMMAND dsd-neo_test_core_access_code)
 
+# Issue #773: digit-pattern IDs for the group list and the radio list
+add_executable(dsd-neo_test_core_id_pattern core/test_core_id_pattern.c)
+target_include_directories(
+    dsd-neo_test_core_id_pattern
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_id_pattern PRIVATE dsd-neo_core)
+add_test(NAME CORE_ID_PATTERN COMMAND dsd-neo_test_core_id_pattern)
+
 # The system identity received on the carrier being decoded (dsd_state::rx_id)
 add_executable(
     dsd-neo_test_core_received_identity
@@ -6029,6 +6056,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/file/source_alias_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -6061,6 +6089,8 @@ add_executable(
     dsd-neo_test_core_tg_policy_alloc_fail
     core/test_core_tg_policy_alloc_fail.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -9988,6 +10018,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -10018,6 +10050,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -10048,6 +10082,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -10082,6 +10118,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -10113,6 +10151,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
@@ -10156,6 +10196,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
@@ -10196,6 +10238,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
@@ -10238,6 +10282,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
@@ -12180,6 +12226,8 @@ add_executable(
     protocol/dmr/test_dmr_talker_alias_header_len.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -12202,6 +12250,8 @@ add_executable(
     protocol/dmr/test_dmr_talker_alias_utf16.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -12224,6 +12274,8 @@ add_executable(
     core/test_core_apx_embedded_alias_utf16.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -12523,6 +12575,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
@@ -12746,6 +12800,17 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+
+# tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
+# the hooks on, ahead of the library's.
+target_sources(
+    dsd-neo_test_tetra_tetra_calls
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/protocol/tetra/tetra_calls.c
+)
+target_compile_definitions(
+    dsd-neo_test_tetra_tetra_calls
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 
 add_executable(
     dsd-neo_bench_tetra_viterbi

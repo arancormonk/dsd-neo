@@ -1,0 +1,6 @@
+id,mode,name,priority,preempt,audio,record,stream,tags
+1201,A,Fire Dispatch,80,true,on,on,on,Fire
+1200-1299,A,Fire Ops,20,false,on,on,on,Fire
+13xx,A,Law Tac,10,false,on,off,on,Law
+9*,B,Test talkgroups
+*,A,Other,0,false,on,on,off,Other

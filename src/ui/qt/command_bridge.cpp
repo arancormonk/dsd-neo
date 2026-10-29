@@ -30,6 +30,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/core/id_pattern.h>
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
@@ -73,25 +74,81 @@ CommandBridge::~CommandBridge() = default;
 
 // WP-D1: typed policy edits; backend owns bounds, aliases and version validation.
 namespace {
+
+/* The row a single-row edit names (B14): the listed row's table index, its kind and its key. tableIndex -1 is a
+ * heard-only ID or a bounds-only edit; a pattern row (non-empty pattern, 0/0 bounds) always carries its index. The
+ * pattern's characters are the decoder's to judge. */
+struct TalkgroupRowToken {
+    int32_t index = -1;
+    uint8_t kind = DSD_APP_TG_ROW_EXACT;
+    QByteArray pattern;
+};
+
 bool
-submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                   const QString& name, bool listen, int priority, bool preempt, uint32_t fields, bool record = false) {
-    bool ok = false;
-    dsd_app_tg_row_payload p = {};
-    p.policy_context = context.toULongLong(&ok);
-    const QByteArray utf8 = name.toUtf8();
-    if (!ok || end < start || priority < 0 || priority > 100 || utf8.size() >= static_cast<qsizetype>(sizeof p.name)
-        || utf8.contains('\0')) {
+makeTalkgroupRowToken(unsigned int start, unsigned int end, int tableIndex, const QString& pattern,
+                      TalkgroupRowToken* out) {
+    if (end < start || tableIndex < -1) {
         return false;
     }
-    p.id_start = start;
-    p.id_end = end;
-    p.policy_generation = generation;
-    p.fields = fields;
-    p.listen = listen;
-    p.priority = priority;
-    p.preempt = preempt;
-    p.record = record ? 1U : 0U;
+    out->index = tableIndex;
+    out->pattern = pattern.toUtf8();
+    if (out->pattern.isEmpty()) {
+        out->kind = start != end ? DSD_APP_TG_ROW_RANGE : DSD_APP_TG_ROW_EXACT;
+        return true;
+    }
+    out->kind = DSD_APP_TG_ROW_PATTERN;
+    return tableIndex >= 0 && start == 0 && end == 0 && out->pattern.size() < DSD_ID_PATTERN_TEXT_MAX
+           && !out->pattern.contains('\0');
+}
+
+template <typename Payload>
+void
+applyTalkgroupRowToken(const TalkgroupRowToken& token, Payload* p) {
+    p->table_index = token.index;
+    p->kind = token.kind;
+    DSD_MEMCPY(p->pattern, token.pattern.constData(), static_cast<size_t>(token.pattern.size()));
+}
+
+/* The row an edit names: its bounds, the list version it was captured at and its row token parts. */
+struct TalkgroupRowRef {
+    unsigned int start;
+    unsigned int end;
+    const QString& context;
+    unsigned int generation;
+    int tableIndex;
+    const QString& pattern;
+};
+
+/* The values an edit sets; `fields` says which of them apply. */
+struct TalkgroupRowValues {
+    const QString& name;
+    bool listen;
+    int priority;
+    bool preempt;
+    uint32_t fields;
+    bool record;
+};
+
+bool
+submitTalkgroupRow(const TalkgroupRowRef& row, const TalkgroupRowValues& values) {
+    bool ok = false;
+    dsd_app_tg_row_payload p = {};
+    p.policy_context = row.context.toULongLong(&ok);
+    const QByteArray utf8 = values.name.toUtf8();
+    TalkgroupRowToken token;
+    if (!ok || !makeTalkgroupRowToken(row.start, row.end, row.tableIndex, row.pattern, &token) || values.priority < 0
+        || values.priority > 100 || utf8.size() >= static_cast<qsizetype>(sizeof p.name) || utf8.contains('\0')) {
+        return false;
+    }
+    applyTalkgroupRowToken(token, &p);
+    p.id_start = row.start;
+    p.id_end = row.end;
+    p.policy_generation = row.generation;
+    p.fields = values.fields;
+    p.listen = values.listen;
+    p.priority = values.priority;
+    p.preempt = values.preempt;
+    p.record = values.record ? 1U : 0U;
     DSD_MEMCPY(p.name, utf8.constData(), static_cast<size_t>(utf8.size()));
     return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &p, sizeof p));
 }
@@ -125,7 +182,8 @@ talkgroup_change_field(const QString& key, const QVariant& value) {
 
 bool
 CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, const QString& context,
-                                  unsigned int generation, const QVariantMap& changes) const {
+                                  unsigned int generation, const QVariantMap& changes, int tableIndex,
+                                  const QString& pattern) const {
     uint32_t fields = 0;
     for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
         const uint32_t field = talkgroup_change_field(it.key(), it.value());
@@ -137,38 +195,45 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
     if (!fields) {
         return false;
     }
+    const QString name = changes.value(QStringLiteral("name")).toString();
     return submitTalkgroupRow(
-        idStart, idEnd, context, generation, changes.value(QStringLiteral("name")).toString(),
-        changes.value(QStringLiteral("listening")).toBool(), changes.value(QStringLiteral("priority")).toInt(),
-        changes.value(QStringLiteral("preempt")).toBool(), fields, changes.value(QStringLiteral("record")).toBool());
+        {idStart, idEnd, context, generation, tableIndex, pattern},
+        {name, changes.value(QStringLiteral("listening")).toBool(), changes.value(QStringLiteral("priority")).toInt(),
+         changes.value(QStringLiteral("preempt")).toBool(), fields, changes.value(QStringLiteral("record")).toBool()});
 }
 
 bool
 CommandBridge::renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
-                               unsigned int generation, const QString& name) const {
-    return submitTalkgroupRow(idStart, idEnd, context, generation, name, false, 0, false, DSD_APP_TG_FIELD_NAME);
+                               unsigned int generation, const QString& name, int tableIndex,
+                               const QString& pattern) const {
+    return submitTalkgroupRow({idStart, idEnd, context, generation, tableIndex, pattern},
+                              {name, false, 0, false, DSD_APP_TG_FIELD_NAME, false});
 }
 
 bool
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML submits additions through this context object.
 CommandBridge::addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context, unsigned int generation,
                             const QString& name, bool listen, int priority, bool preempt, bool record) const {
-    return submitTalkgroupRow(idStart, idEnd, context, generation, name, listen, priority, preempt,
-                              DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
-                                  | DSD_APP_TG_FIELD_PREEMPT
-                                  | (listen ? static_cast<uint32_t>(DSD_APP_TG_FIELD_RECORD) : 0U),
-                              record);
+    const QString noPattern;
+    return submitTalkgroupRow({idStart, idEnd, context, generation, -1, noPattern},
+                              {name, listen, priority, preempt,
+                               DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
+                                   | DSD_APP_TG_FIELD_PREEMPT
+                                   | (listen ? static_cast<uint32_t>(DSD_APP_TG_FIELD_RECORD) : 0U),
+                               record});
 }
 
 bool
 CommandBridge::removeTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
-                               unsigned int generation) const {
+                               unsigned int generation, int tableIndex, const QString& pattern) const {
     bool ok = false;
     dsd_app_tg_range_payload p = {};
     p.policy_context = context.toULongLong(&ok);
-    if (!ok || idEnd < idStart) {
+    TalkgroupRowToken token;
+    if (!ok || !makeTalkgroupRowToken(idStart, idEnd, tableIndex, pattern, &token)) {
         return false;
     }
+    applyTalkgroupRowToken(token, &p);
     p.id_start = idStart;
     p.id_end = idEnd;
     p.policy_generation = generation;
@@ -221,9 +286,19 @@ CommandBridge::skipSlot(int slot) const {
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
-CommandBridge::setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen) const {
+CommandBridge::setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen, const QString& context,
+                                     unsigned int generation, int tableIndex, const QString& pattern) const {
     dsd_app_tg_listen_payload payload;
     DSD_MEMSET(&payload, 0, sizeof(payload));
+    TalkgroupRowToken token;
+    bool ok = context.isEmpty();
+    payload.policy_context = ok ? 0U : context.toULongLong(&ok);
+    if (!ok || !makeTalkgroupRowToken(idStart, idEnd, tableIndex, pattern, &token)
+        || (tableIndex >= 0 && context.isEmpty())) {
+        return false;
+    }
+    applyTalkgroupRowToken(token, &payload);
+    payload.policy_generation = context.isEmpty() ? 0U : generation;
     payload.id_start = idStart;
     payload.id_end = idEnd;
     payload.listen = listen ? 1 : 0;
@@ -999,6 +1074,8 @@ CommandBridge::clearSessionInputs() {
     m_selectionFiles.clear();
 }
 
+/* One row per item: table_index,kind,start,end,pattern. A listed row (index >= 0) is named by its token, so a range
+ * starting at 0 and a pattern row are rows like any; a heard-only item is one non-zero exact ID. */
 static bool
 write_talkgroup_selection(QTemporaryFile* file, const QVariantList& rows) {
     for (const auto& value : rows) {
@@ -1007,11 +1084,15 @@ write_talkgroup_selection(QTemporaryFile* file, const QVariantList& rows) {
         const auto first = row.value("first").toUInt(&firstOk);
         const auto last = row.value("last").toUInt(&lastOk);
         const auto index = row.value("index").toInt(&indexOk);
-        if (!firstOk || !lastOk || !indexOk || !first || first > last || index < -1) {
+        TalkgroupRowToken token;
+        if (!firstOk || !lastOk || !indexOk
+            || !makeTalkgroupRowToken(first, last, index, row.value("pattern").toString(), &token)
+            || (index < 0 && (!first || first != last))) {
             return false;
         }
-        const QByteArray line =
-            QByteArray::number(index) + ',' + QByteArray::number(first) + ',' + QByteArray::number(last) + '\n';
+        const QByteArray line = QByteArray::number(index) + ',' + QByteArray::number(token.kind) + ','
+                                + QByteArray::number(first) + ',' + QByteArray::number(last) + ',' + token.pattern
+                                + '\n';
         if (file->write(line) != line.size()) {
             return false;
         }

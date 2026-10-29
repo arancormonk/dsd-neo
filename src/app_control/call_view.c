@@ -60,11 +60,17 @@ call_reads_encrypted(const dsd_call_snapshot* call) {
  * talkgroup or a source at all, so an identity-less voice epoch is the whole story the
  * protocol has. Suppressed, their transmissions would play audio and log history rows
  * while every status surface said nothing was happening.
+ *
+ * TETRA is exempt for another reason (issue #773): it never opens an epoch on a bare sync.
+ * Its calls publish only from a CRC-checked carrier, and speech heard before any D-SETUP
+ * named a party is published as a voice call with no identity -- a real transmission that
+ * no PDU named, not noise. A direct mode call of security class DM-2-C, which encrypts
+ * every identity (EN 300 396-3), publishes no party either.
  */
 static int
 call_has_no_identity(const dsd_call_snapshot* call) {
-    if (DSD_SYNC_IS_X2TDMA(call->protocol) || DSD_SYNC_IS_PROVOICE(call->protocol)
-        || call->protocol == DSD_SYNC_ANALOG) {
+    if (DSD_SYNC_IS_X2TDMA(call->protocol) || DSD_SYNC_IS_PROVOICE(call->protocol) || call->protocol == DSD_SYNC_ANALOG
+        || DSD_SYNC_IS_TETRA(call->protocol)) {
         return 0;
     }
     return call->ota_target_id == 0U && call->policy_target_id == 0U && call->target_text[0] == '\0'
@@ -95,19 +101,43 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
     return 1;
 }
 
+/**
+ * @brief Copy the target label the event layer cached on an ended call's epoch (issue #773 B11).
+ *
+ * Once the call's row commits, the staged row no longer names it, so the ended-call hold reads the label cached on the
+ * epoch when the row committed -- only for the target it was cached for (target_label_id), and never over a textual
+ * target, whose text names the call itself.
+ *
+ * @return Non-zero when a name was written.
+ */
+static int
+cached_group_name(const dsd_call_snapshot* call, uint64_t tg_id, char* out, size_t out_size) {
+    if (call->phase != DSD_CALL_PHASE_ENDED || call->target_text[0] != '\0' || tg_id == 0U
+        || call->target_label_id != tg_id || call->target_label[0] == '\0') {
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", call->target_label);
+    return 1;
+}
+
 /* The event layer resolves source aliases before group-list exact labels. Reuse that
  * staged value only for the same nonzero source, so the previous caller cannot name
  * a new epoch. Once the row has committed (an ended call the view still holds), the
  * label the event layer cached on the epoch names it instead -- including a name a late
  * talker alias taught after the commit -- read as cached, never resolved per render.
- * Keep the OTA identity visible alongside the label. */
+ * Keep the OTA identity visible alongside the label in src_text; src_label carries the label
+ * alone, for a surface that shows the id in a column of its own. */
 static void
-slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, char* out, size_t out_size) {
+slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, dsd_app_slot_call* out) {
     char identity[DSD_CALL_IDENTITY_TEXT_SIZE];
     if (call->source_text[0] != '\0') {
         DSD_SNPRINTF(identity, sizeof(identity), "%s", call->source_text);
-    } else {
+    } else if (call->ota_source_id != 0U) {
         DSD_SNPRINTF(identity, sizeof(identity), "%llu", (unsigned long long)call->ota_source_id);
+    } else {
+        /* No source decoded: no text, never "0", which would read as a radio numbered zero (issue #773). A label needs
+           a nonzero source below, so src_label stays empty too. */
+        return;
     }
     const Event_History* staged = state->event_history_s ? &state->event_history_s[slot].Event_History_Items[0] : NULL;
     const char* label = NULL;
@@ -117,10 +147,13 @@ slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* 
                && call->source_label[0] != '\0') {
         label = call->source_label;
     }
+    if (label != NULL) {
+        DSD_SNPRINTF(out->src_label, sizeof(out->src_label), "%s", label);
+    }
     if (label != NULL && strcmp(label, identity) != 0) {
-        DSD_SNPRINTF(out, out_size, "%s (%s)", label, identity);
+        DSD_SNPRINTF(out->src_text, sizeof(out->src_text), "%s (%s)", label, identity);
     } else {
-        DSD_SNPRINTF(out, out_size, "%s", identity);
+        DSD_SNPRINTF(out->src_text, sizeof(out->src_text), "%s", identity);
     }
 }
 
@@ -145,10 +178,14 @@ staged_channel_label(const dsd_state* state, uint8_t slot, char* out, size_t out
 }
 
 /**
- * @brief Fill @c channel and @c name for a call the slot line is going to show.
+ * @brief Fill @c channel, @c tg_label and @c name for a call the slot line is going to show.
+ *
+ * @c tg_label is the target's own label and is filled first, whatever headlines the call: a
+ * surface that shows the service or channel name can still name the talkgroup beside it.
  *
  * The staged row outlives a call by design and must not caption the next one, which is
- * what the target_id comparison inside staged_group_name() guards. Below it, the order
+ * what the target_id comparison inside staged_group_name() guards; once an ended call's row
+ * has committed, the label cached on its epoch names it (cached_group_name()). Below it, the order
  * the call history applies: a textual target is a name of its own; a bare talkgroup
  * number is not, so the scan channel the call was heard on names it -- the only name
  * encrypted traffic on a conventional list ever gets -- and the number stays in tg_text
@@ -157,6 +194,10 @@ staged_channel_label(const dsd_state* state, uint8_t slot, char* out, size_t out
 static void
 slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, dsd_app_slot_call* out) {
     staged_channel_label(state, slot, out->channel, sizeof(out->channel));
+    /* The target's own label, whatever ends up headlining the call below. */
+    if (!staged_group_name(state, slot, out->tg_id, out->tg_label, sizeof(out->tg_label))) {
+        (void)cached_group_name(call, out->tg_id, out->tg_label, sizeof(out->tg_label));
+    }
     DSD_SNPRINTF(out->service, sizeof(out->service), "%s", call->service_label);
     out->receive_identity = call->receive_identity;
     if (call->service_label[0]) {
@@ -167,11 +208,37 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
         DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->channel[0] ? out->channel : "NFM");
         return;
     }
-    if (staged_group_name(state, slot, out->tg_id, out->name, sizeof(out->name))) {
+    if (out->tg_label[0] != '\0') {
+        DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->tg_label);
         return;
     }
     const char* fallback = (call->target_text[0] == '\0' && out->channel[0] != '\0') ? out->channel : out->tg_text;
     DSD_SNPRINTF(out->name, sizeof(out->name), "%s", fallback);
+}
+
+/**
+ * @brief The protocol's display name for @c protocol_label: the sync table's name, except where that names a frame type
+ * or a protocol family rather than the protocol (X2-TDMA, ProVoice, EDACS, D-STAR, M17). Empty for analog, whose
+ * channel names its call, for the generic digital sync (no protocol) and for no sync.
+ */
+static void
+slot_protocol_label(int protocol, char* out, size_t out_size) {
+    const char* label = dsd_synctype_to_string(protocol);
+    if (DSD_SYNC_IS_X2TDMA(protocol)) {
+        label = "X2-TDMA";
+    } else if (DSD_SYNC_IS_PROVOICE(protocol)) {
+        label = "ProVoice";
+    } else if (DSD_SYNC_IS_EDACS_ONLY(protocol)) {
+        label = "EDACS";
+    } else if (DSD_SYNC_IS_DSTAR(protocol)) {
+        label = "D-STAR";
+    } else if (DSD_SYNC_IS_M17(protocol)) {
+        label = "M17";
+    } else if (protocol == DSD_SYNC_ANALOG || protocol == DSD_SYNC_DIGITAL || strcmp(label, "NONE") == 0
+               || strcmp(label, "UNKNOWN") == 0) {
+        label = "";
+    }
+    DSD_SNPRINTF(out, out_size, "%s", label);
 }
 
 int
@@ -217,11 +284,15 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
         return;
     }
 
+    out->kind = (uint8_t)call.kind;
+    slot_protocol_label(call.protocol, out->protocol_label, sizeof(out->protocol_label));
+    /* A target that has not decoded has no text: "0" would read as a talkgroup numbered zero. */
     if (call.target_text[0] != '\0') {
         DSD_SNPRINTF(out->tg_text, sizeof(out->tg_text), "%s", call.target_text);
-    } else {
+    } else if (call.ota_target_id != 0U) {
         DSD_SNPRINTF(out->tg_text, sizeof(out->tg_text), "%llu", (unsigned long long)call.ota_target_id);
     }
+    out->src_id = call.ota_source_id;
     /* Same preference order the event layer uses: the OTA id when one decoded, the
        policy-resolved id otherwise. Text-only targets stay 0. */
     out->tg_id = (call.ota_target_id != 0U) ? call.ota_target_id : call.policy_target_id;
@@ -230,7 +301,7 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
        history transaction. dsd_call_state_get() above takes the same lock itself, so not around that. */
     dsd_event_history_transaction transaction;
     dsd_event_history_transaction_begin((dsd_state*)state, &transaction);
-    slot_source_text(state, slot, &call, out->src_text, sizeof(out->src_text));
+    slot_source_text(state, slot, &call, out);
     slot_call_name(state, slot, &call, out);
     dsd_event_history_transaction_end(&transaction);
 

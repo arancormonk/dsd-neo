@@ -115,6 +115,7 @@ qt_add_resources(
         qml/DisclosureRow.qml
         qml/EncTag.qml
         qml/EmergencyTag.qml
+        qml/PrivateTag.qml
         # WP-D2 encryption entry surfaces.
         qml/EncryptionEditor.qml
         qml/KeySheet.qml

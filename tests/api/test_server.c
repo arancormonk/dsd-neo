@@ -13,6 +13,7 @@
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -20,6 +21,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
@@ -572,6 +574,37 @@ test_feed(void) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
         assert(await_line(c, "event", crc_cases[i].json, 3000U));
         assert(strstr(g_line, "\"update\":true") != NULL && strstr(g_line, "\"t_name\":\"Untuned\"") != NULL);
+    }
+
+    /* Issue #773: a call slot carries the call kind once (the key the feed already had), the source radio's id and
+       label apart from src_text, the target's own label and the protocol's display name. */
+    {
+        dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 2001U);
+        call.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+        call.observed_m = dsd_decode_now_mono_s();
+        assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+        row->target_id = 2001U;
+        DSD_SNPRINTF(row->t_name, sizeof row->t_name, "%s", "Dispatcher 7");
+        row->source_id = 4242U;
+        DSD_SNPRINTF(row->s_name, sizeof row->s_name, "%s", "Engine 21");
+        int call_seen = 0;
+        for (int attempt = 0; attempt < 30 && !call_seen; attempt++) {
+            dsd_telemetry_publish_both_and_redraw(opts, state);
+            call_seen = await_line(c, "call", "\"tg_label\":\"Dispatcher 7\"", 100U);
+        }
+        assert(call_seen);
+        assert(strstr(g_line, "\"src_text\":\"Engine 21 (4242)\"") != NULL);
+        assert(strstr(g_line, "\"src_id\":4242,\"src_label\":\"Engine 21\",\"tg_label\":\"Dispatcher 7\","
+                              "\"protocol_label\":\"NXDN\"")
+               != NULL);
+        int kind_keys = 0;
+        for (const char* k = strstr(g_line, "\"kind\":"); k != NULL; k = strstr(k + 1, "\"kind\":")) {
+            kind_keys++;
+        }
+        assert(kind_keys == 1 && strstr(g_line, "\"kind\":3") != NULL);
+        assert(dsd_call_state_end(state, 0U, dsd_decode_now_mono_s()) > 0);
+        DSD_MEMSET(row, 0, sizeof *row);
     }
 
     /* A one-shot get reads the cached record. */

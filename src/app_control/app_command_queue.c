@@ -115,6 +115,12 @@ _Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct dsd_app_command*)0)->
                "dsd_app_command payload too small for dsdneoUserConfig");
 _Static_assert(sizeof(dsd_app_rr_apply_payload) <= sizeof(((struct dsd_app_command*)0)->data),
                "dsd_app_command payload too small for dsd_app_rr_apply_payload");
+_Static_assert((int)DSD_APP_TG_ROW_EXACT == (int)DSD_TG_POLICY_ROW_EXACT
+                   && (int)DSD_APP_TG_ROW_RANGE == (int)DSD_TG_POLICY_ROW_RANGE
+                   && (int)DSD_APP_TG_ROW_PATTERN == (int)DSD_TG_POLICY_ROW_PATTERN,
+               "talkgroup payload row kinds are the policy's");
+_Static_assert(sizeof(((dsd_app_tg_row_payload*)0)->pattern) == sizeof(((dsd_tg_policy_row_key*)0)->pattern),
+               "talkgroup payload pattern is a policy pattern");
 
 enum {
     UI_CMD_APPLY_UNHANDLED = 0,
@@ -6350,7 +6356,9 @@ apply_cmd_lockout_resolve_target(const dsd_state* state, const struct dsd_app_co
     }
     *slot_out = slot;
     *target_out = (uint32_t)target;
-    return 1;
+    /* A private call's target is a radio. A lockout writes a talkgroup row, which would block the talkgroup with that
+       number; a radio is blocked from the radio ID list instead (issue #773). */
+    return call.kind == DSD_CALL_KIND_PRIVATE_VOICE ? 2 : 1;
 }
 
 static int
@@ -6428,6 +6436,20 @@ tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generatio
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The row token a single-row payload carries (see dsd_app_tg_listen_payload). The pattern is copied as sent: an
+ * unterminated one is refused by the policy editor, never cut. */
+static dsd_tg_policy_row_key
+tg_row_key(int32_t table_index, uint8_t kind, uint32_t id_start, uint32_t id_end, const char* pattern) {
+    dsd_tg_policy_row_key key;
+    DSD_MEMSET(&key, 0, sizeof key);
+    key.table_index = table_index;
+    key.kind = kind;
+    key.id_start = id_start;
+    key.id_end = id_end;
+    DSD_MEMCPY(key.pattern, pattern, sizeof key.pattern);
+    return key;
+}
+
 static int
 tg_row_fields_valid(const dsd_app_tg_row_payload* p) {
     const uint32_t all = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_PREEMPT
@@ -6476,8 +6498,12 @@ apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     DSD_MEMCPY(values.name, p.name, sizeof values.name);
     DSD_MEMCPY(values.tags, p.tags, sizeof values.tags);
     const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
-    if (dsd_tg_policy_set_fields(state, p.id_start, p.id_end, &values, mask) != 0) {
-        ui_set_toast(state, 3, "Talkgroup edit refused: invalid fields or alias row");
+    const dsd_tg_policy_row_key key = tg_row_key(p.table_index, p.kind, p.id_start, p.id_end, p.pattern);
+    const int rc = dsd_tg_policy_set_fields_key(state, p.policy_context, p.policy_generation, &key, &values, mask);
+    if (rc != 0) {
+        ui_set_toast(state, 3, "%s",
+                     rc == 1 && p.table_index >= 0 ? "Talkgroup list changed: the row is no longer listed"
+                                                   : "Talkgroup edit refused: invalid fields or alias row");
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup updated");
@@ -6494,8 +6520,12 @@ apply_cmd_tg_row_remove(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         return UI_CMD_APPLY_FAILED;
     }
     const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
-    if (dsd_tg_policy_remove_bounds(state, p.id_start, p.id_end) != 0) {
-        ui_set_toast(state, 3, "Talkgroup remove refused: missing or alias row");
+    const dsd_tg_policy_row_key key = tg_row_key(p.table_index, p.kind, p.id_start, p.id_end, p.pattern);
+    const int rc = dsd_tg_policy_remove_key(state, p.policy_context, p.policy_generation, &key);
+    if (rc != 0) {
+        ui_set_toast(state, 3, "%s",
+                     rc == 1 && p.table_index >= 0 ? "Talkgroup list changed: the row is no longer listed"
+                                                   : "Talkgroup remove refused: missing or alias row");
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup removed");
@@ -6649,17 +6679,61 @@ parse_selection_uint(char** cursor, uint32_t* value, int final) {
     return 1;
 }
 
+/* The last field of a selection row: a pattern row's text up to the line end, empty on other rows. Its characters
+ * are the policy's to judge. */
 static int
-parse_selection_line(const char* line, dsd_tg_policy_selection* entry) {
+parse_selection_pattern(const char* at, char* out, size_t cap) {
+    const size_t n = strcspn(at, "\r\n");
+    if (n >= cap || (at[n] && strcmp(at + n, "\n") != 0 && strcmp(at + n, "\r\n") != 0)) {
+        return 0;
+    }
+    DSD_MEMCPY(out, at, n);
+    out[n] = '\0';
+    return 1;
+}
+
+/* The leading table_index field of a selection row (-1..INT32_MAX), with @p cursor left after its comma. */
+static int
+parse_selection_index(const char* line, int32_t* index_out, char** cursor) {
     char* at = NULL;
     errno = 0;
     const long long index = strtoll(line, &at, 10);
     if (errno || at == line || *at != ',' || index < -1 || index > INT32_MAX) {
         return 0;
     }
-    ++at;
-    entry->policy_index = (int32_t)index;
-    return parse_selection_uint(&at, &entry->id_start, 0) && parse_selection_uint(&at, &entry->id_end, 1);
+    *index_out = (int32_t)index;
+    *cursor = at + 1;
+    return 1;
+}
+
+/* One row: table_index,kind,start,end,pattern, or the older table_index,start,end (exact or range by its bounds). */
+static int
+parse_selection_line(const char* line, dsd_tg_policy_selection* entry) {
+    char* at = NULL;
+    size_t commas = 0;
+    for (const char* c = line; *c; ++c) {
+        commas += *c == ',';
+    }
+    int32_t index = 0;
+    if ((commas != 2U && commas != 4U) || !parse_selection_index(line, &index, &at)) {
+        return 0;
+    }
+    DSD_MEMSET(entry, 0, sizeof(*entry));
+    entry->policy_index = index;
+    if (commas == 2U) {
+        if (!parse_selection_uint(&at, &entry->id_start, 0) || !parse_selection_uint(&at, &entry->id_end, 1)) {
+            return 0;
+        }
+        entry->kind = entry->id_start != entry->id_end ? DSD_TG_POLICY_ROW_RANGE : DSD_TG_POLICY_ROW_EXACT;
+        return 1;
+    }
+    uint32_t kind = 0;
+    if (!parse_selection_uint(&at, &kind, 0) || kind > DSD_TG_POLICY_ROW_PATTERN
+        || !parse_selection_uint(&at, &entry->id_start, 0) || !parse_selection_uint(&at, &entry->id_end, 0)) {
+        return 0;
+    }
+    entry->kind = (uint8_t)kind;
+    return parse_selection_pattern(at, entry->pattern, sizeof entry->pattern);
 }
 
 static int
@@ -6754,11 +6828,31 @@ static int
 apply_cmd_tg_listen_one(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_app_tg_listen_payload payload;
     DSD_MEMCPY(&payload, c->data, sizeof payload);
-    if (payload.id_start > payload.id_end) {
+    if (payload.id_start > payload.id_end || payload.table_index < -1) {
         ui_set_toast(state, 3, "Invalid talkgroup range");
         return UI_CMD_APPLY_FAILED;
     }
-    const int rc = tg_listen_apply(state, payload.id_start, payload.id_end, payload.listen);
+    const int token = payload.table_index >= 0 || payload.kind == DSD_APP_TG_ROW_PATTERN;
+    if ((token || payload.policy_context != 0U || payload.policy_generation != 0U)
+        && tg_edit_check_version(state, payload.policy_context, payload.policy_generation) != UI_CMD_APPLY_COMPLETED) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    int rc = 0;
+    if (token) {
+        // The listed row the toggle was on: a duplicate or a pattern row is addressed by its token, not its bounds.
+        dsd_tg_policy_entry values = {0};
+        DSD_SNPRINTF(values.mode, sizeof values.mode, "%s", payload.listen ? "A" : "B");
+        const dsd_tg_policy_row_key key =
+            tg_row_key(payload.table_index, payload.kind, payload.id_start, payload.id_end, payload.pattern);
+        rc = dsd_tg_policy_set_fields_key(state, payload.policy_context, payload.policy_generation, &key, &values,
+                                          DSD_TG_POLICY_FIELD_LISTEN);
+    } else {
+        rc = tg_listen_apply(state, payload.id_start, payload.id_end, payload.listen);
+    }
+    if (rc == 1 && token) {
+        ui_set_toast(state, 3, "Talkgroup list changed: the row is no longer listed");
+        return UI_CMD_APPLY_FAILED;
+    }
     if (rc == 1) {
         ui_set_toast(state, 3, "Range %u-%u is not on the list", (unsigned)payload.id_start, (unsigned)payload.id_end);
         return UI_CMD_APPLY_FAILED;
@@ -6840,7 +6934,11 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     uint8_t slot = 0U;
     uint32_t target = 0U;
     int upsert_rc = 0;
-    if (!apply_cmd_lockout_resolve_target(state, c, &slot, &target)) {
+    const int resolved = apply_cmd_lockout_resolve_target(state, c, &slot, &target);
+    if (resolved == 2) {
+        ui_set_toast(state, 4, "A private call has no talkgroup to lock out");
+    }
+    if (resolved != 1) {
         return 1;
     }
     const unsigned int tg = target;
@@ -8243,7 +8341,8 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
     return 0;
 }
 
-/* Every free, publish or realloc of the live talkgroup policy store runs under
+/* Every free, publish or realloc of the live talkgroup policy store, and every
+ * replacement of the radio list (its policy rows judge calls too), runs under
  * the P25 SM tick guard: the watchdog's release-time audio flush evaluates policy
  * under it (#554). The guard is not re-entrant. Nothing reached from these commands
  * may acquire it with p25_sm_tick_guard_enter(), run_manual_retune_guarded(),
@@ -8268,6 +8367,9 @@ command_writes_policy_store(const struct dsd_app_command* c) {
         DSD_APP_CMD_LOCKOUT_SLOT,
         DSD_APP_CMD_TG_SESSION_AVOID_CLEAR,
         DSD_APP_CMD_SKIP_SLOT,
+        /* The radio list's policy rows judge calls as the group list's do. */
+        DSD_APP_CMD_IMPORT_SRC_LIST,
+        DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
     };
     if (!c) {
         return 0;

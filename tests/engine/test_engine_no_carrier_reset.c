@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -3912,6 +3913,83 @@ test_replay_leave_closes_the_nfm_recording(void) {
     return rc;
 }
 
+/*
+ * Issue #773 D7: a talkgroup row with stream=off and recording on. The call is recorded and its recording published as
+ * usual, but it is not exported to rdio-scanner: the replay leave that ends the call closes the recording against the
+ * row the event layer judged, and no sidecar is written (the API upload shares the one export call).
+ */
+static int
+test_stream_off_recording_is_kept_but_not_exported(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_stream_off_rdio")) {
+        DSD_FPRINTF(stderr, "stream off export: dsd_test_mkdtemp failed\n");
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", dir);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->dmr_stereo_wav = 1;
+    const time_t capture_s = (time_t)4102444800LL;
+    dsd_decode_clock_use_replay((int64_t)capture_s);
+
+    dsd_tg_policy_entry row;
+    int rc =
+        expect_true("stream off export: the row is made",
+                    dsd_tg_policy_make_exact_entry(1201U, "A", "NO STREAM", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
+    row.audio = 1U;
+    row.record = 1U;
+    row.stream = 0U;
+    rc |= expect_true("stream off export: the row is loaded", dsd_tg_policy_append_exact(state, &row) == 0);
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.ota_source_id = 42U;
+    rc |= expect_true("stream off export: the call begins",
+                      dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+    opts->wav_out_open_time = dsd_decode_time();
+    static const short silence[8000] = {0};
+    rc |= expect_true("stream off export: the recording opens and records",
+                      opts->wav_out_f != NULL && sf_write_short(opts->wav_out_f, silence, 8000) == 8000);
+    dsd_decode_clock_set_media_ns(1ULL * 1000000000ULL);
+    rc |= expect_true("stream off export: the call goes on",
+                      dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    dsd_event_sync_slot(opts, state, 0U);
+
+    dsd_engine_decode_clock_leave_replay(opts, state);
+    rc |= expect_true("stream off export: the call's row is committed",
+                      state->event_history_s[0].Event_History_Items[1].target_id == 1201U);
+
+    replay_leave_recordings found;
+    DSD_MEMSET(&found, 0, sizeof found);
+    (void)dsd_dir_list(dir, replay_leave_find_recording, &found);
+    rc |= expect_true("stream off export: the recording is published", found.published == 1);
+    replay_leave_listing listing;
+    DSD_MEMSET(&listing, 0, sizeof listing);
+    listing.dir = dir;
+    (void)dsd_dir_list(dir, replay_leave_find_sidecar, &listing);
+    rc |= expect_true("stream off export: no rdio-scanner sidecar is written", listing.sidecars == 0);
+
+    if (opts->wav_out_f != NULL) {
+        opts->wav_out_f = close_wav_file(opts->wav_out_f);
+    }
+    (void)dsd_dir_list(dir, replay_leave_remove_file, dir);
+    (void)dsd_test_rmdir(dir);
+    dsd_decode_clock_use_system();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
 static void
 seed_xpt_identity(dsd_state* state) {
@@ -6950,6 +7028,7 @@ main(void) {
 #endif
     rc |= test_replay_leave_exports_recordings_on_the_capture_clock();
     rc |= test_replay_leave_closes_the_nfm_recording();
+    rc |= test_stream_off_recording_is_kept_but_not_exported();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_nfm_row_tone_rejection_steps();

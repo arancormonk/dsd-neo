@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -105,7 +106,9 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
 /* Determine if an Active Channel label refers to a locked-out target.
  * Supports "TG:" (group), "TGT:" (target/private/data), and "SG:" (regroup
  * supergroup) fields.
- * Returns 1 when the referenced ID is session-avoided or marked with groupMode "DE" or "B". */
+ * Returns 1 when the referenced ID is session-avoided or its deciding row has groupMode "DE" or "B": for a talkgroup
+ * (TG:/SG:) the row group evaluation uses (exact, narrowest range or most specific pattern), for a private target
+ * (TGT:) its exact row. */
 int
 ui_is_locked_from_label(const dsd_state* state, const char* label) {
     if (!state) {
@@ -118,7 +121,13 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) {
             return 1;
         }
         char mode[8];
-        if (!dsd_tg_policy_lookup_label(state, token.id, mode, sizeof(mode), NULL, 0)) {
+        if (token.is_group) {
+            dsd_tg_policy_lookup lookup;
+            if (dsd_tg_policy_lookup_group(state, token.id, &lookup) != 0 || lookup.match == DSD_TG_POLICY_MATCH_NONE) {
+                continue;
+            }
+            DSD_SNPRINTF(mode, sizeof(mode), "%s", lookup.entry.mode);
+        } else if (!dsd_tg_policy_lookup_label(state, token.id, mode, sizeof(mode), NULL, 0)) {
             continue;
         }
         if (strcmp(mode, "DE") == 0 || strcmp(mode, "B") == 0) {

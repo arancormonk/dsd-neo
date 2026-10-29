@@ -208,6 +208,79 @@ test_group_counts_mixed_rows(void) {
     return failed;
 }
 
+/* Digit patterns count as rows in both lists; a bad pattern is skipped like a bad ID. */
+static int
+test_group_counts_pattern_rows(void) {
+    char tmpl[] = "dsd-neo-test-validate-group-pat-XXXXXX";
+    if (write_temp_csv(tmpl, "id,mode,name\n"
+                             "1xxx,A,Thousands\n"
+                             "12*,B,Twelve\n"
+                             "*,A,All\n"
+                             "05x,A,Leading zero\n"
+                             "1x-2x,A,Pattern range\n"
+                             "4294967296*,A,Too big\n"
+                             "300,A,Exact\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_group_file(tmpl, &v) != 0 || v.accepted != 4U || v.skipped != 3U || v.total != 7U) {
+        DSD_FPRINTF(stderr, "group pattern counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(tmpl);
+
+    char src[] = "dsd-neo-test-validate-src-pat-XXXXXX";
+    if (write_temp_csv(src, "id,name\n1xxx,Radios\n42,Unit\n05x,Leading zero\n2*,\n") != 0) {
+        return 1;
+    }
+    v = (dsd_csv_validation){0U, 0U, 0U};
+    if (dsd_csv_validate_src_file(src, &v) != 0 || v.accepted != 2U || v.skipped != 2U || v.total != 4U) {
+        DSD_FPRINTF(stderr, "radio list pattern counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(src);
+    return failed;
+}
+
+/* A radio list with policy columns counts unnamed policy rows as accepted; the same rows without them are skipped. */
+static int
+test_src_counts_policy_rows(void) {
+    char src[] = "dsd-neo-test-validate-src-policy-XXXXXX";
+    if (write_temp_csv(src, "id,name,mode,audio,record,stream,tags\n"
+                            "1234,,B\n"
+                            "2*,Fire,A,on,off,on,Fire\n"
+                            "1xx-5,,A\n"
+                            "1300,Unit,DE\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_src_file(src, &v) != 0 || v.accepted != 3U || v.skipped != 1U || v.total != 4U) {
+        DSD_FPRINTF(stderr, "radio policy counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(src);
+
+    char basic[] = "dsd-neo-test-validate-src-basic-XXXXXX";
+    if (write_temp_csv(basic, "id,name,tags\n1234,,B\n1235,Unit,Ops\n") != 0) {
+        return 1;
+    }
+    v = (dsd_csv_validation){0U, 0U, 0U};
+    if (dsd_csv_validate_src_file(basic, &v) != 0 || v.accepted != 1U || v.skipped != 1U || v.total != 2U) {
+        DSD_FPRINTF(stderr, "radio labels-only counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(basic);
+    return failed;
+}
+
 static int
 test_chan_counts_mixed_rows(void) {
     char tmpl[] = "dsd-neo-test-validate-chan-mix-XXXXXX";
@@ -668,6 +741,12 @@ main(void) {
         return 1;
     }
     if (test_group_counts_mixed_rows() != 0) {
+        return 1;
+    }
+    if (test_group_counts_pattern_rows() != 0) {
+        return 1;
+    }
+    if (test_src_counts_policy_rows() != 0) {
         return 1;
     }
     if (test_chan_counts_mixed_rows() != 0) {

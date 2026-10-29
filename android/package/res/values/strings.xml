@@ -19,6 +19,12 @@
     <string name="notif_control_freq">Control %1$s</string>
     <string name="notif_freq_mhz">%.06f MHz</string>
     <string name="notif_slot">Slot %1$d</string>
+    <!-- Issue #773: a private call headlines its other party; a call no party named, its protocol. -->
+    <string name="notif_private">Private</string>
+    <string name="notif_radio_id">ID %1$s</string>
+    <string name="notif_private_call">Private call</string>
+    <string name="notif_protocol_call">%1$s call</string>
+    <string name="notif_identity_not_decoded">Identity not decoded</string>
     <!-- Shown in the app when a start dies before the engine ever runs. The code is
          carried through because the underlying reason only exists in logcat. -->
     <string name="error_init_failed">The decoder could not be initialised (code %1$d).</string>

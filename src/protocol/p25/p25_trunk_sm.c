@@ -890,6 +890,7 @@ grant_block_log_tag(int is_indiv, uint32_t block_reasons) {
         {DSD_TG_POLICY_BLOCK_ENC_LOCKOUT, "indiv-blocked-enc-lo", "grant-blocked-enc-lo"},
         {DSD_TG_POLICY_BLOCK_ALLOWLIST, "indiv-blocked-allowlist", "grant-blocked-allowlist"},
         {DSD_TG_POLICY_BLOCK_MODE, "indiv-blocked-mode", "grant-blocked-mode"},
+        {DSD_TG_POLICY_BLOCK_SOURCE, "indiv-blocked-radio", "grant-blocked-radio"},
     };
 
     for (size_t i = 0; i < sizeof(k_tags) / sizeof(k_tags[0]); i++) {
@@ -906,7 +907,8 @@ lookup_policy_priority_for_tg(const dsd_state* state, int tg) {
     if (!state || tg < 0) {
         return 0;
     }
-    if (dsd_tg_policy_lookup_id(state, (uint32_t)tg, &lookup) != 0) {
+    // The talkgroup's deciding row: a learned radio alias sharing its number never hides a range or pattern priority.
+    if (dsd_tg_policy_lookup_group(state, (uint32_t)tg, &lookup) != 0) {
         return 0;
     }
     if (lookup.match == DSD_TG_POLICY_MATCH_NONE) {
@@ -1265,10 +1267,12 @@ p25_grant_release_enc_lockout_if_clear(p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     }
 }
 
+/* Candidates (the supergroup and its members) share the grant's source, so its radio part is the same for all: they are
+   ranked on their talkgroup part, and a radio block applies to whichever wins. */
 static int
 p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, const dsd_tg_policy_decision* best,
                                      int have_best) {
-    if (!candidate || !candidate->tune_allowed) {
+    if (!candidate || !candidate->tg_tune_allowed) {
         return 0;
     }
     if (!have_best || !best) {
@@ -1298,6 +1302,9 @@ p25_grant_apply_planned_release(const p25_grant_eval_ctx_t* eval_ctx, uint32_t t
         return;
     }
     decision->block_reasons &= ~(uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT;
+    if ((decision->block_reasons & P25_GRANT_TUNE_DENY_BLOCKS & ~(uint32_t)DSD_TG_POLICY_BLOCK_SOURCE) == 0U) {
+        decision->tg_tune_allowed = 1;
+    }
     if ((decision->block_reasons & P25_GRANT_TUNE_DENY_BLOCKS) == 0U) {
         decision->tune_allowed = 1;
     }
@@ -4106,8 +4113,13 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     dsd_tg_policy_decision decision;
+    DSD_MEMSET(&decision, 0, sizeof(decision));
     p25_grant_eval_ctx_t eval_ctx;
-    if (!grant_allowed(ctx, opts, state, &call_ev, &decision, &eval_ctx, P25_GRANT_EVAL_RECHECK)) {
+    // Voice on the carrier the machine follows that names a radio the radio list blocks keeps its call (never released
+    // mid-call for a radio rule): its identity is committed, and the per-frame media gates mute it and stop recording
+    // it. Any other rejection releases the slot as before; the companion slot is untouched either way.
+    const int admitted = grant_allowed(ctx, opts, state, &call_ev, &decision, &eval_ctx, P25_GRANT_EVAL_RECHECK);
+    if (!admitted && !dsd_tg_policy_decision_only_radio_blocks(&decision)) {
         p25_call_end_slot(opts, state, slot, now_m);
         p25_voice_close_slot_media(ctx, opts, state, slot);
         p25_voice_clear_slot_grant(ctx, state, slot);
@@ -4115,6 +4127,10 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
         p25_voice_release_or_preserve_companion(ctx, opts, state, slot, "policy-reject", "policy_reject_slot_only",
                                                 "policy-reject-slot-only");
         return 0;
+    }
+    if (!admitted) {
+        p25_sm_diagf(opts, state, ctx, "voice_radio_blocked", "slot=%d target=%d src=%d", slot,
+                     p25_grant_ota_target_id(&call_ev), call_ev.src);
     }
 
     p25_voice_start_commit_identity(ctx, opts, state, slot, &call_ev, &decision, &eval_ctx, &changes, now_m);

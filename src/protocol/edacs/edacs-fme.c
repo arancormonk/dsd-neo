@@ -35,6 +35,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -85,8 +86,8 @@ edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t samp
 
 static void
 edacs_print_group_label(const dsd_state* state, uint32_t id) {
-    char name[50];
-    if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_tg_policy_lookup_group_label(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -1861,7 +1862,8 @@ edacs_handle_extended_mt1_system_all_call(dsd_opts* opts, dsd_state* state, unsi
     dsd_tg_policy_decision decision;
     int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0, &decision) == 0
                      && decision.tune_allowed);
-    if (!policy_ok && opts->trunk_use_allow_list == 1) {
+    // An all-call names no talkgroup, so the allow list admits it; a radio the radio list blocks is still refused.
+    if (!policy_ok && opts->trunk_use_allow_list == 1 && !decision.radio_blocked) {
         policy_ok = 1;
     }
 
@@ -2459,7 +2461,8 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     int policy_ok =
         dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0, &decision) == 0 && decision.tune_allowed;
     state->tg_hold = saved_tg_hold;
-    if (opts->trunk_use_allow_list == 1) {
+    // An all-call names no talkgroup, so the allow list admits it; a radio the radio list blocks is still refused.
+    if (opts->trunk_use_allow_list == 1 && !decision.radio_blocked) {
         policy_ok = 1;
     }
 

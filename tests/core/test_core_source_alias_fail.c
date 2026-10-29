@@ -203,9 +203,53 @@ test_validator_discards_partial_counts_on_allocation_failure(void) {
     dsd_source_alias_test_alloc_reset();
 }
 
+/* A failed import keeps the live list's policy rows and identity; a policy file keeps the physical-line rules. */
+static void
+test_policy_failures(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    write_text("id,name,mode\n1201,,B\n12*,Live,A\n");
+    assert(csvSrcImportPath(path, state) == 0);
+    const uint64_t live_id = dsd_source_alias_store_id(state);
+    assert(live_id != 0 && dsd_source_policy_loaded(state));
+    write_text("id,name\n1201,Replacement\n");
+    for (long n = 0; n < 2; ++n) {
+        dsd_source_alias_test_alloc_fail_after(n);
+        assert(csvSrcImportPath(path, state) == -1);
+        dsd_source_alias_test_alloc_reset();
+        dsd_source_alias_test_read_fail_after_lines(n + 1);
+        assert(csvSrcImportPath(path, state) == -1);
+        dsd_source_alias_test_read_fail_after_lines(-1);
+        dsd_source_policy_match m;
+        assert(dsd_source_policy_lookup(state, 1201, &m) == 1 && strcmp(m.entry.mode, "B") == 0);
+        assert(dsd_source_alias_store_id(state) == live_id && dsd_source_policy_loaded(state));
+        expect_live(state);
+    }
+
+    FILE* fp = dsd_fopen_private(path, "wb");
+    assert(fp);
+    const char* prefix = "1201,,B,";
+    assert(fputs("id,name,mode\n", fp) >= 0 && fputs(prefix, fp) >= 0);
+    for (size_t i = strlen(prefix); i < 999; ++i) {
+        assert(fputc('x', fp) != EOF);
+    }
+    assert(fputs("\n1203,,DE\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_csv_validation v;
+    assert(dsd_csv_validate_src_file(path, &v) == 0);
+    assert(v.accepted == 1 && v.skipped == 1 && v.total == 2);
+    assert(csvSrcImportPath(path, state) == 0 && dsd_source_alias_count(state) == 1);
+    dsd_source_policy_match m;
+    assert(dsd_source_policy_lookup(state, 1201, &m) == 0);
+    assert(dsd_source_policy_lookup(state, 1203, &m) == 1 && strcmp(m.entry.mode, "DE") == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_failures();
+    test_policy_failures();
     test_validator_discards_partial_counts_on_allocation_failure();
     nul_cases();
     boundary(998, "", 0, 1, 0);

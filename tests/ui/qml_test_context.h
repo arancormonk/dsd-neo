@@ -778,15 +778,15 @@ class CommandRecorder : public QObject {
     // WP-D1: retain the captured version and requested fields for edit-sheet tests.
     Q_INVOKABLE bool
     setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                       const QVariantMap& changes) {
-        m_talkgroupEdit = {start, end, context, generation, changes};
+                       const QVariantMap& changes, int tableIndex = -1, const QString& pattern = QString()) {
+        m_talkgroupEdit = {start, end, context, generation, changes, tableIndex, pattern};
         return true;
     }
 
     Q_INVOKABLE bool
     renameTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                    const QString& name) {
-        m_talkgroupEdit = {start, end, context, generation, name};
+                    const QString& name, int tableIndex = -1, const QString& pattern = QString()) {
+        m_talkgroupEdit = {start, end, context, generation, name, tableIndex, pattern};
         return true;
     }
 
@@ -798,8 +798,9 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    removeTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation) {
-        m_talkgroupEdit = {start, end, context, generation};
+    removeTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                    int tableIndex = -1, const QString& pattern = QString()) {
+        m_talkgroupEdit = {start, end, context, generation, tableIndex, pattern};
         return true;
     }
 
@@ -815,11 +816,14 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    setTalkgroupListening(double idStart, double idEnd, bool listen) {
+    setTalkgroupListening(double idStart, double idEnd, bool listen, const QString& context = QString(),
+                          unsigned int generation = 0, int tableIndex = -1, const QString& pattern = QString()) {
         m_talkgroup_listen_calls++;
         m_last_talkgroup_id_start = idStart;
         m_last_talkgroup_id_end = idEnd;
         m_last_talkgroup_listen = listen;
+        m_last_talkgroup_listen_token = {
+            {"context", context}, {"generation", generation}, {"tableIndex", tableIndex}, {"pattern", pattern}};
         return true;
     }
 
@@ -1070,6 +1074,7 @@ class CommandRecorder : public QObject {
         m_last_talkgroup_id_start = 0.0;
         m_last_talkgroup_id_end = 0.0;
         m_last_talkgroup_listen = false;
+        m_last_talkgroup_listen_token.clear();
         m_all_talkgroups_listen_calls = 0;
         m_last_all_talkgroups_listen = false;
         m_last_all_talkgroups_tag.clear();
@@ -1267,6 +1272,11 @@ class CommandRecorder : public QObject {
         return m_last_talkgroup_listen;
     }
 
+    QVariantMap
+    lastTalkgroupListenToken() const {
+        return m_last_talkgroup_listen_token;
+    }
+
     int
     allTalkgroupsListenCalls() const {
         return m_all_talkgroups_listen_calls;
@@ -1341,6 +1351,7 @@ class CommandRecorder : public QObject {
     double m_last_talkgroup_id_start = 0.0;
     double m_last_talkgroup_id_end = 0.0;
     bool m_last_talkgroup_listen = false;
+    QVariantMap m_last_talkgroup_listen_token;
     int m_all_talkgroups_listen_calls = 0;
     bool m_last_all_talkgroups_listen = false;
     QString m_last_all_talkgroups_tag;
@@ -2154,6 +2165,24 @@ class Setup : public QObject {
         return true;
     }
 
+    Q_INVOKABLE bool
+    pushPatternTalkgroup(const QString& pattern, const QString& mode, const QString& name, const QString& tags) {
+        dsd_tg_policy_entry entry{};
+        if (dsd_tg_policy_make_exact_entry(0, mode.toUtf8().constData(), name.toUtf8().constData(),
+                                           DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+            != 0) {
+            return false;
+        }
+        entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+        DSD_SNPRINTF(entry.pattern, sizeof(entry.pattern), "%s", pattern.toUtf8().constData());
+        DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", tags.toUtf8().constData());
+        if (dsd_tg_policy_add_pattern_entry(m_talkgroup_state.get(), &entry) != 0) {
+            return false;
+        }
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        return true;
+    }
+
     Q_INVOKABLE void
     setGroupFileConfigured(bool configured) {
         DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
@@ -2218,6 +2247,12 @@ class Setup : public QObject {
     Q_INVOKABLE bool
     lastTalkgroupListenOn() const {
         return m_commands != nullptr && m_commands->lastTalkgroupListenOn();
+    }
+
+    /** The row token the last Listening toggle submitted: context, generation, tableIndex, pattern. */
+    Q_INVOKABLE QVariantMap
+    lastTalkgroupListenToken() const {
+        return m_commands != nullptr ? m_commands->lastTalkgroupListenToken() : QVariantMap();
     }
 
     Q_INVOKABLE int
@@ -3192,6 +3227,11 @@ class Setup : public QObject {
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();
             metrics[p + QStringLiteral("SrcText")] = QString();
+            // Issue #773: the call kind (dsd_call_kind, 0 unknown), the parties' own labels and the protocol's name.
+            metrics[p + QStringLiteral("CallKind")] = 0;
+            metrics[p + QStringLiteral("TgLabel")] = QString();
+            metrics[p + QStringLiteral("SrcLabel")] = QString();
+            metrics[p + QStringLiteral("ProtocolLabel")] = QString();
             metrics[p + QStringLiteral("EncText")] = QString();
             metrics[p + QStringLiteral("TgId")] = 0;
         }

@@ -6417,7 +6417,7 @@ test_talkgroup_list_commands(void) {
     seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
 #endif
-    dsd_app_tg_listen_payload one = {1001, 1001, 0};
+    dsd_app_tg_listen_payload one = {.id_start = 1001, .id_end = 1001, .listen = 0, .table_index = -1};
     rc |= expect_int("block talkgroup queued", dsd_app_command_set_tg_listen(&one), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("block talkgroup drained", dsd_app_drain_cmds(opts, state), 1);
     dsd_tg_policy_lookup lookup;
@@ -6527,7 +6527,7 @@ test_patched_call_user_blocks_target_supergroup(void) {
     // though the member the call was matched on still listens.
     seed_active_p25_patched_voice(opts, state, 851000000L, 852000000L, 1101, 2002);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-    dsd_app_tg_listen_payload block_sg = {1101, 1101, 0};
+    dsd_app_tg_listen_payload block_sg = {.id_start = 1101, .id_end = 1101, .listen = 0, .table_index = -1};
     rc |= expect_true("supergroup block queued", dsd_app_command_set_tg_listen(&block_sg) > 0);
     rc |= expect_int("supergroup block drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("supergroup block releases patched call", g_cc_tune_calls, 1);
@@ -6537,7 +6537,7 @@ test_patched_call_user_blocks_target_supergroup(void) {
     opts->trunk_use_allow_list = 1;
     seed_active_p25_patched_voice(opts, state, 851000000L, 852000000L, 1201, 2002);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-    dsd_app_tg_listen_payload block_other = {3001, 3001, 0};
+    dsd_app_tg_listen_payload block_other = {.id_start = 3001, .id_end = 3001, .listen = 0, .table_index = -1};
     rc |= expect_true("unrelated block queued", dsd_app_command_set_tg_listen(&block_other) > 0);
     rc |= expect_int("unrelated block drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("allow-list miss on supergroup keeps member call", g_cc_tune_calls, 0);
@@ -6705,7 +6705,7 @@ test_talkgroup_row_commands(void) {
         if (scenario < 2) {
             dsd_tg_policy_make_exact_entry(1000, scenario == 0 ? "B" : "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
             e.id_end = 1099;
-            e.is_range = 1;
+            e.kind = DSD_TG_POLICY_ROW_RANGE;
             dsd_tg_policy_add_range_entry(state, &e);
         }
         dsd_tg_policy_set_mode(state, 1001, 1001, "A");
@@ -6713,7 +6713,7 @@ test_talkgroup_row_commands(void) {
         seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
         reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
 #endif
-        dsd_app_tg_range_payload p = {1001, 1001, 0, 0};
+        dsd_app_tg_range_payload p = {1001, 1001, 0, 0, -1, 0, ""};
         dsd_tg_policy_table_version(state, &p.policy_context, &p.policy_generation);
         dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &p, sizeof p);
         rc |= expect_int("remove drains", dsd_app_drain_cmds(opts, state), 1);
@@ -6734,7 +6734,8 @@ test_talkgroup_row_commands(void) {
     dsd_tg_policy_set_mode(state, 1001, 1001, "A");
     seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-    dsd_app_tg_row_payload block = {.id_start = 1001, .id_end = 1001, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0};
+    dsd_app_tg_row_payload block = {
+        .id_start = 1001, .id_end = 1001, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0, .table_index = -1};
     dsd_tg_policy_table_version(state, &block.policy_context, &block.policy_generation);
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block);
     dsd_app_drain_cmds(opts, state);
@@ -6761,12 +6762,12 @@ test_talkgroup_row_commands(void) {
     dsd_tg_policy_append_exact(state, &e);
     e.id_start = 4000;
     e.id_end = 4099;
-    e.is_range = 1;
+    e.kind = DSD_TG_POLICY_ROW_RANGE;
     DSD_SNPRINTF(e.mode, sizeof e.mode, "%s", "A");
     e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
     dsd_tg_policy_add_range_entry(state, &e);
     dsd_app_tg_row_payload edit = {
-        .id_start = 2000, .id_end = 2000, .fields = DSD_APP_TG_FIELD_PRIORITY, .priority = 50};
+        .id_start = 2000, .id_end = 2000, .fields = DSD_APP_TG_FIELD_PRIORITY, .priority = 50, .table_index = -1};
     dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
     edit.policy_context++;
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
@@ -6805,7 +6806,7 @@ test_talkgroup_row_commands(void) {
     rc |= expect_str("taken-over row listens", lookup.entry.mode, "A");
     rc |= expect_int("taken over in place", (int)dsd_tg_policy_entry_count(state), 6);
     dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
-    dsd_app_tg_range_payload rem = {3000, 3000, edit.policy_context, edit.policy_generation};
+    dsd_app_tg_range_payload rem = {3000, 3000, edit.policy_context, edit.policy_generation, -1, 0, ""};
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
     dsd_app_drain_cmds(opts, state);
     rc |= expect_int("learned alias remove refused", (int)dsd_tg_policy_entry_count(state), 6);
@@ -6903,6 +6904,183 @@ test_talkgroup_row_commands(void) {
     return rc;
 }
 
+static void
+seed_row_token_policy(dsd_state* state) {
+    dsd_tg_policy_clear(state);
+    dsd_tg_policy_entry e;
+    for (int i = 0; i < 2; ++i) {
+        dsd_tg_policy_make_exact_entry(100, "A", i == 0 ? "First" : "Second", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
+        e.id_end = 199;
+        e.kind = DSD_TG_POLICY_ROW_RANGE;
+        dsd_tg_policy_add_range_entry(state, &e);
+    }
+    dsd_tg_policy_make_exact_entry(0, "A", "Twelves", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
+    e.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(e.pattern, sizeof e.pattern, "%s", "12*");
+    dsd_tg_policy_add_pattern_entry(state, &e);
+}
+
+static const char*
+row_token_name(const dsd_state* state, size_t index) {
+    static dsd_tg_policy_entry row;
+    return dsd_tg_policy_entry_at(state, index, &row) ? row.name : "";
+}
+
+static const char*
+row_token_mode(const dsd_state* state, size_t index) {
+    static dsd_tg_policy_entry row;
+    return dsd_tg_policy_entry_at(state, index, &row) ? row.mode : "";
+}
+
+/* B14: Listening, row set, row remove and captured selections address the listed row by its token, including a
+ * duplicate and a pattern row; a stale token changes nothing, and bounds-only payloads keep the first-row meaning. */
+static int
+test_talkgroup_row_token_commands(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    seed_row_token_policy(&state);
+
+    /* Row set on the second of two identical ranges. */
+    dsd_app_tg_row_payload row = {.table_index = 1,
+                                  .kind = DSD_TG_POLICY_ROW_RANGE,
+                                  .id_start = 100,
+                                  .id_end = 199,
+                                  .fields = DSD_APP_TG_FIELD_NAME};
+    DSD_SNPRINTF(row.name, sizeof row.name, "%s", "Edited");
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("row set edits the addressed duplicate", row_token_name(&state, 1), "Edited");
+    rc |= expect_str("row set leaves the first duplicate", row_token_name(&state, 0), "First");
+
+    /* Listening on the second duplicate, then a stale Listening token. */
+    dsd_app_tg_listen_payload listen = {
+        .table_index = 1, .kind = DSD_TG_POLICY_ROW_RANGE, .id_start = 100, .id_end = 199, .listen = 0};
+    dsd_tg_policy_table_version(&state, &listen.policy_context, &listen.policy_generation);
+    rc |= expect_true("token listen queued", dsd_app_command_set_tg_listen(&listen) > 0);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("listen token blocks the addressed duplicate", row_token_mode(&state, 1), "B");
+    rc |= expect_str("listen token leaves the first duplicate", row_token_mode(&state, 0), "A");
+    listen.listen = 1;
+    rc |= expect_true("stale token listen queued", dsd_app_command_set_tg_listen(&listen) > 0);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("stale listen token refused", state.ui_msg, "stale");
+    rc |= expect_str("stale listen token changes nothing", row_token_mode(&state, 1), "B");
+
+    /* The pattern row: Listening, a field edit, and removal by token. */
+    listen = (dsd_app_tg_listen_payload){.table_index = 2, .kind = DSD_TG_POLICY_ROW_PATTERN, .listen = 0};
+    DSD_SNPRINTF(listen.pattern, sizeof listen.pattern, "%s", "12*");
+    dsd_tg_policy_table_version(&state, &listen.policy_context, &listen.policy_generation);
+    rc |= expect_true("pattern listen queued", dsd_app_command_set_tg_listen(&listen) > 0);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("pattern row not tuned", row_token_mode(&state, 2), "B");
+    row = (dsd_app_tg_row_payload){.table_index = 2,
+                                   .kind = DSD_TG_POLICY_ROW_PATTERN,
+                                   .fields = DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_TAGS,
+                                   .priority = 30};
+    DSD_SNPRINTF(row.pattern, sizeof row.pattern, "%s", "12*");
+    DSD_SNPRINTF(row.tags, sizeof row.tags, "%s", "FIRE");
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    {
+        dsd_tg_policy_entry pattern;
+        rc |= expect_true("pattern row edited", dsd_tg_policy_entry_at(&state, 2, &pattern) && pattern.priority == 30
+                                                    && strcmp(pattern.tags, "FIRE") == 0);
+    }
+    dsd_app_tg_range_payload rem = {.table_index = 2, .kind = DSD_TG_POLICY_ROW_PATTERN};
+    DSD_SNPRINTF(rem.pattern, sizeof rem.pattern, "%s", "1xxx");
+    dsd_tg_policy_table_version(&state, &rem.policy_context, &rem.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("another pattern's token removes nothing", (int)dsd_tg_policy_entry_count(&state), 3);
+    rc |= expect_contains("a token that names no row says so", state.ui_msg, "the row is no longer listed");
+    row = (dsd_app_tg_row_payload){
+        .table_index = 2, .kind = DSD_TG_POLICY_ROW_PATTERN, .fields = DSD_APP_TG_FIELD_PRIORITY, .priority = 40};
+    DSD_SNPRINTF(row.pattern, sizeof row.pattern, "%s", "1xxx");
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("a row set whose token names no row says so", state.ui_msg, "the row is no longer listed");
+    DSD_SNPRINTF(rem.pattern, sizeof rem.pattern, "%s", "12*");
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("pattern row removed by token", (int)dsd_tg_policy_entry_count(&state), 2);
+    rc |= expect_int("pattern count back to zero", (int)dsd_tg_policy_pattern_count(&state), 0);
+
+    /* Bounds-only payloads (table_index -1) keep the first-row meaning. */
+    seed_row_token_policy(&state);
+    row = (dsd_app_tg_row_payload){.table_index = -1, .id_start = 100, .id_end = 199, .fields = DSD_APP_TG_FIELD_NAME};
+    DSD_SNPRINTF(row.name, sizeof row.name, "%s", "Legacy");
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("bounds-only row set edits the first row", row_token_name(&state, 0), "Legacy");
+    rc |= expect_str("bounds-only row set leaves the duplicate", row_token_name(&state, 1), "Second");
+    listen = (dsd_app_tg_listen_payload){.table_index = -1, .id_start = 100, .id_end = 199, .listen = 0};
+    rc |= expect_true("bounds-only listen queued", dsd_app_command_set_tg_listen(&listen) > 0);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("bounds-only listen blocks the first row", row_token_mode(&state, 0), "B");
+    rc |= expect_str("bounds-only listen leaves the duplicate", row_token_mode(&state, 1), "A");
+    listen = (dsd_app_tg_listen_payload){.table_index = -1, .id_start = 777, .id_end = 777, .listen = 0};
+    dsd_tg_policy_table_version(&state, &listen.policy_context, &listen.policy_generation);
+    rc |= expect_true("heard-only listen queued", dsd_app_command_set_tg_listen(&listen) > 0);
+    dsd_app_drain_cmds(&opts, &state);
+    {
+        dsd_tg_policy_lookup heard;
+        dsd_tg_policy_lookup_id(&state, 777, &heard);
+        rc |= expect_true("heard-only listen appends an exact row", heard.match == DSD_TG_POLICY_MATCH_EXACT
+                                                                        && strcmp(heard.entry.mode, "B") == 0
+                                                                        && dsd_tg_policy_entry_count(&state) == 4);
+    }
+    rem = (dsd_app_tg_range_payload){.table_index = -1, .id_start = 100, .id_end = 199};
+    dsd_tg_policy_table_version(&state, &rem.policy_context, &rem.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("bounds-only remove takes the first row", row_token_name(&state, 0), "Second");
+
+    /* A captured selection names a pattern row and a duplicate by token; an old three-field row still parses. */
+    seed_row_token_policy(&state);
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_tg_token_selection");
+    if (fd < 0) {
+        freeState(&state);
+        return 1;
+    }
+    dsd_close(fd);
+    const char* rows = "1,1,100,199,\n2,2,0,0,12*\n0,100,199\n";
+    rc |= write_file_bytes(path, rows, strlen(rows));
+    dsd_app_tg_selection_payload selection = {.count = 3, .listening = 0};
+    DSD_SNPRINTF(selection.selection_path, sizeof selection.selection_path, "%s", path);
+    {
+        unsigned int generation = 0;
+        dsd_tg_policy_table_version(&state, &selection.policy_context, &generation);
+        selection.policy_generation = generation;
+    }
+    dsd_app_command_submit(DSD_APP_CMD_TG_SELECTION_SET, &selection, sizeof selection);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("selection blocks the first duplicate", row_token_mode(&state, 0), "B");
+    rc |= expect_str("selection blocks the second duplicate", row_token_mode(&state, 1), "B");
+    rc |= expect_str("selection blocks the pattern row", row_token_mode(&state, 2), "B");
+    const char* stale_rows = "2,2,0,0,1xxx\n";
+    rc |= write_file_bytes(path, stale_rows, strlen(stale_rows));
+    selection.count = 1;
+    selection.listening = 1;
+    {
+        unsigned int generation = 0;
+        dsd_tg_policy_table_version(&state, &selection.policy_context, &generation);
+        selection.policy_generation = generation;
+    }
+    dsd_app_command_submit(DSD_APP_CMD_TG_SELECTION_SET, &selection, sizeof selection);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("a selection naming another pattern changes nothing", row_token_mode(&state, 2), "B");
+    remove(path);
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_direct_key_updates_preserve_fifo(void) {
     static dsd_opts opts;
@@ -6961,7 +7139,7 @@ test_foundation_commands(void) {
     rc |= expect_int("export id", DSD_APP_CMD_TG_LIST_EXPORT, 594);
     rc |= expect_int("direct key id", DSD_APP_CMD_KEY_DIRECT_SET, 652);
     rc |= expect_int("force key id", DSD_APP_CMD_FORCE_KEY_SET, 653);
-    dsd_app_tg_row_payload row = {0};
+    dsd_app_tg_row_payload row = {.table_index = -1};
     dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
     row.id_start = row.id_end = 42;
     row.fields = DSD_APP_TG_FIELD_NAME;
@@ -6973,7 +7151,7 @@ test_foundation_commands(void) {
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
     dsd_app_drain_cmds(&opts, &state);
     rc |= expect_contains("stale row rejected", state.ui_msg, "stale");
-    dsd_app_tg_range_payload range = {42, 42, 0, 0};
+    dsd_app_tg_range_payload range = {42, 42, 0, 0, -1, 0, ""};
     dsd_tg_policy_table_version(&state, &range.policy_context, &range.policy_generation);
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &range, sizeof range);
     dsd_app_drain_cmds(&opts, &state);
@@ -7821,7 +7999,7 @@ test_temporary_lockout_commands(uint8_t slot) {
     rc |= expect_str("temporary avoid preserves label", lookup.entry.name, "Dispatch");
 
     // An ordinary edit persists, but must not serialize the temporary overlay.
-    dsd_app_tg_listen_payload block = {456, 456, 0};
+    dsd_app_tg_listen_payload block = {.id_start = 456, .id_end = 456, .listen = 0, .table_index = -1};
     rc |= expect_true("queue permanent list edit", dsd_app_command_set_tg_listen(&block) > 0);
     rc |= expect_int("permanent list edit drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
@@ -7946,6 +8124,40 @@ test_lockout_and_skip_pass_only_an_edacs_call(void) {
         rc |= expect_true("edacs lockout is a no-op", !dsd_tg_policy_session_avoid_contains(&state, 654U));
         rc |= expect_true("edacs skip is a no-op", dsd_tg_policy_call_skip_count(&state, now) == 0);
         rc |= expect_call_phase("edacs call stays active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* A private call's target is a radio: a lockout would write a talkgroup row with the radio's number, blocking that
+   talkgroup, so it is refused with a toast in both modes and the list is left alone; Skip still passes the call by
+   (issue #773). */
+static int
+test_lockout_refuses_a_private_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int persist = 0; persist <= 1; persist++) {
+        init_test_context(&opts, &state);
+        opts.persist_tg_lockouts = persist;
+        dsd_call_observation observation = {.protocol = DSD_SYNC_P25P1_POS,
+                                            .slot = 0U,
+                                            .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+                                            .ota_target_id = 4321U,
+                                            .policy_target_id = 4321U,
+                                            .ota_source_id = 1234U,
+                                            .observed_m = dsd_decode_now_mono_s()};
+        rc |=
+            expect_int("private call seeded", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_true("private lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+        rc |= expect_int("private lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("no session avoid for the radio", !dsd_tg_policy_session_avoid_contains(&state, 4321U));
+        dsd_tg_policy_lookup lookup;
+        rc |= expect_true("no talkgroup row for the radio", dsd_tg_policy_lookup_id(&state, 4321U, &lookup) != 0
+                                                                || lookup.match == DSD_TG_POLICY_MATCH_NONE);
+        rc |= expect_str("the refusal says why", state.ui_msg, "A private call has no talkgroup to lock out");
+        rc |= expect_call_phase("the private call stays active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
         freeState(&state);
     }
     return rc;
@@ -20067,7 +20279,7 @@ test_config_group_path_reloads_before_persist(int scoped) {
         dsd_scan_groups_leave(&state);
     }
     rc |= expect_int("config resets old avoids", (int)dsd_tg_policy_session_avoid_count(&state, 0, UINT32_MAX), 0);
-    dsd_app_tg_listen_payload edit = {222, 222, 0};
+    dsd_app_tg_listen_payload edit = {.id_start = 222, .id_end = 222, .listen = 0, .table_index = -1};
     rc |= expect_true("config persisted edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
     rc |= expect_int("config persisted edit drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_file_bytes(first, a);
@@ -20587,12 +20799,14 @@ main(void) {
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_lockout_and_skip_pass_only_an_edacs_call();
+    rc |= test_lockout_refuses_a_private_call();
     rc |= test_skip_commands(0);
     rc |= test_skip_commands(1);
     rc |= test_temporary_lockout_commands(0);
     rc |= test_temporary_lockout_commands(1);
     rc |= test_talkgroup_row_commands();
     rc |= test_talkgroup_row_record_after_mode();
+    rc |= test_talkgroup_row_token_commands();
     rc |= test_talkgroup_export_result();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();

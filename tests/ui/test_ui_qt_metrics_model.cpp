@@ -56,6 +56,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include "../test_support/radio_policy_test.h"
 #include "metrics_model.h"
 
 namespace {
@@ -382,6 +383,72 @@ test_lead_slot_change_alone_notifies() {
     expect("unchanged lead is silent", lead_changes == 1);
     model.clear();
     expect("clear notifies the no-lead sentinel", model.leadSlot() == 0 && lead_changes == 2 && notified_lead == 0);
+    freeState(&state);
+}
+
+/* Issue #773 (D10): the hero and the second-slot strip word a private call and a call no party named apart from a
+   talkgroup call, so each slot exposes the call kind, the target's and the source's own labels and the protocol's
+   name, and a change to any of them alone notifies. */
+static void
+test_slot_kind_and_labels() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.synctype = DSD_SYNC_NXDN_POS;
+    dsd_qt::MetricsModel model;
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 2001U);
+    call.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    call.observed_m = dsd_decode_now_mono_s() + 60.0;
+    expect("a private call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    expect("the state carries an event ring", state.event_history_s != nullptr);
+    if (state.event_history_s == nullptr) {
+        freeState(&state);
+        return;
+    }
+    Event_History* staged = &state.event_history_s[0].Event_History_Items[0];
+    staged->target_id = 2001U;
+    DSD_SNPRINTF(staged->t_name, sizeof(staged->t_name), "%s", "Dispatcher 7");
+    staged->source_id = 4242U;
+    DSD_SNPRINTF(staged->s_name, sizeof(staged->s_name), "%s", "Engine 21");
+    model.refresh(&opts, &state);
+    expect("the slot exposes the call kind", model.slot1CallKind() == DSD_CALL_KIND_PRIVATE_VOICE);
+    expect("the slot exposes the target's label", model.slot1TgLabel() == QStringLiteral("Dispatcher 7"));
+    expect("the slot exposes the source's label", model.slot1SrcLabel() == QStringLiteral("Engine 21"));
+    expect("the slot exposes the protocol's name", model.slot1ProtocolLabel() == QStringLiteral("NXDN"));
+    expect("the other slot has none", model.slot2CallKind() == 0 && model.slot2TgLabel().isEmpty()
+                                          && model.slot2SrcLabel().isEmpty() && model.slot2ProtocolLabel().isEmpty());
+
+    int slot1_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::slot1Changed, [&]() { ++slot1_changes; });
+    DSD_SNPRINTF(staged->t_name, sizeof(staged->t_name), "%s", "Dispatcher 8");
+    model.refresh(&opts, &state);
+    expect("a target label change alone notifies", slot1_changes == 1);
+    DSD_SNPRINTF(staged->s_name, sizeof(staged->s_name), "%s", "Engine 22");
+    model.refresh(&opts, &state);
+    expect("a source label change notifies",
+           slot1_changes == 2 && model.slot1SrcLabel() == QStringLiteral("Engine 22"));
+    model.refresh(&opts, &state);
+    expect("an unchanged slot is silent", slot1_changes == 2);
+
+    /* The same call restarted as a group call, every other field equal: the kind alone notifies. */
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    expect("the group call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("a kind change alone notifies", model.slot1CallKind() == DSD_CALL_KIND_GROUP_VOICE && slot1_changes == 3
+                                               && model.slot1TgLabel() == QStringLiteral("Dispatcher 8"));
+
+    /* Speech no D-SETUP named: no party's text, and the protocol to headline it with. */
+    dsd_call_observation anonymous = dsd_call_observation_data(DSD_SYNC_TETRA_NDB_POS, 1U, 0U, 0U);
+    anonymous.kind = DSD_CALL_KIND_VOICE;
+    anonymous.observed_m = dsd_decode_now_mono_s() + 61.0;
+    expect("an identity-less TETRA call opens",
+           dsd_call_state_observe(&state, &anonymous, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("an identity-less TETRA call is presented", model.slot2CallState() == 2);
+    expect("it names no party", model.slot2TgText().isEmpty() && model.slot2SrcText().isEmpty());
+    expect("it names its protocol", model.slot2ProtocolLabel() == QStringLiteral("TETRA"));
     freeState(&state);
 }
 
@@ -1851,10 +1918,48 @@ test_tetra_rows() {
     free(opts);
 }
 
+/* The block label names a radio the radio list blocks, for a call whose target is known and for one whose target is
+   not (only its source is). */
+static void
+test_block_label_radio_blocked() {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_tune_group_calls = 1;
+    expect("radio list installed", dsd_test_install_radio_policy(&state, 777U, "B", 0, 0, 0) == 0);
+    dsd_qt::MetricsModel model;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        dsd_call_observation observation = {};
+        observation.protocol = DSD_SYNC_P25P2_POS;
+        observation.slot = slot;
+        observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+        observation.ota_target_id = slot == 0 ? 123U : 0U;
+        observation.policy_target_id = observation.ota_target_id;
+        observation.ota_source_id = 777U;
+        observation.observed_m = 4.0;
+        dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    }
+    model.refresh(&opts, &state);
+    const auto slots = model.decryptionSlots();
+    expect("two slots listed", slots.size() == 2);
+    expect("a known target's blocked radio is labelled",
+           slots.size() == 2 && slots[0].toMap().value("blockReason") == QStringLiteral("radio blocked"));
+    expect("a source-only call's blocked radio is labelled",
+           slots.size() == 2 && slots[1].toMap().value("blockReason") == QStringLiteral("radio blocked"));
+    expect("radio list cleared", dsd_source_alias_clear(&state) == 0);
+    model.refresh(&opts, &state);
+    expect("no label without the radio list",
+           model.decryptionSlots().size() == 2
+               && model.decryptionSlots()[1].toMap().value("blockReason").toString().isEmpty());
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_tetra_rows();
+    test_slot_kind_and_labels();
     test_scan_row();
     test_dmr_ras_and_crc_policy();
     test_rigctl_audio_passband();
@@ -1871,6 +1976,7 @@ main(int argc, char** argv) {
     test_tone_filter_editor_setting();
     test_direct_key_presence();
     test_decryption_metadata();
+    test_block_label_radio_blocked();
     test_site();
     test_quality();
     test_lead_slot_keeps_earlier_call_and_quality();
@@ -2661,7 +2767,8 @@ main(int argc, char** argv) {
             model.refresh(&opts, &state);
             expect("the slot exposes its scan channel", model.slot1Channel() == QStringLiteral("Fire Dispatch"));
             expect("a nameless call is named by its channel", model.slot1CallName() == QStringLiteral("Fire Dispatch"));
-            expect("the talkgroup text stays the number", model.slot1TgText() == QStringLiteral("0"));
+            /* No talkgroup decoded: no talkgroup text, never "0" (issue #773). */
+            expect("the talkgroup text stays empty", model.slot1TgText().isEmpty());
         }
     }
 
