@@ -16546,6 +16546,26 @@ if(DSD_HAS_RADIO)
         ""
         40
     )
+    # The call's first 2 s at 144 kHz with base_decimation 2 (TETRA_HALFBAND_NAME in tools/build_iq_fixtures.py): the
+    # TETRA chain runs behind one half-band pass, as on an RTL-SDR at twice the DSP rate, and its matched filter writes
+    # the pass's buffer behind the chain's read cursor. It decodes what the 72 kHz call's first 2 s decode: 70
+    # identities and 24 speech frames; require 90% of each.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_HALFBAND_BSCH
+        tetra_call_halfband_144k
+        -fT
+        "\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+        ""
+        63
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_HALFBAND_TCH_FS
+        tetra_call_halfband_144k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok"
+        ""
+        22
+    )
     # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
     # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
     # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP

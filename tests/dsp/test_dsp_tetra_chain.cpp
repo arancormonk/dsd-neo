@@ -6,8 +6,9 @@
 /*
  * The TETRA receive chain inside full_demod(): the activation predicate (dsd_demod_tetra_chain_wanted()) and the
  * transitions full_demod() runs when it changes between blocks, the chain's order (mixer, channel LPF, AGC 0.1,
- * matched filter, FLL and transfer), its output's independence of where the input is cut into blocks, the squelch and
- * signal-search behaviour, the once-per-stream warnings for a TETRA profile whose chain cannot run, the pull-in on a
+ * matched filter, FLL and transfer), its output's independence of where the input is cut into blocks (behind the
+ * half-band cascade too, whichever buffer that leaves the block in) and the FLL's gear, the squelch and signal-search
+ * behaviour, the once-per-stream warnings for a TETRA profile whose chain cannot run, the pull-in on a
  * clean synthetic stream, and a P25 stream after a TETRA session running exactly as a fresh one, and an uplink session,
  * which keeps only the TETRA channel filter. The tests force the TETRA profile on the demodulator directly.
  */
@@ -157,11 +158,13 @@ configure_tetra(demod_state* s, int rate) {
     configure_cqpsk(s, rate, DSD_CH_LPF_PROFILE_TETRA, 18000, rate / 18000);
 }
 
-/* One block through full_demod(); returns the symbols it made. */
+/* One block through full_demod() from @p buf (the input buffer unless a test names another); returns the symbols it
+ * made. */
 std::vector<float>
-run_block(demod_state* s, const float* iq, int pairs) {
-    DSD_MEMCPY(s->input_cb_buf, iq, (size_t)pairs * 2U * sizeof(float));
-    s->lowpassed = s->input_cb_buf;
+run_block(demod_state* s, const float* iq, int pairs, float* buf = nullptr) {
+    float* in = buf ? buf : s->input_cb_buf;
+    DSD_MEMCPY(in, iq, (size_t)pairs * 2U * sizeof(float));
+    s->lowpassed = in;
     s->lp_len = pairs * 2;
     full_demod(s);
     std::vector<float> out;
@@ -1045,14 +1048,20 @@ test_partition_invariance(void) {
  * Gardner, differential, Costas) makes the same symbols however its input is cut into blocks: the transfer falls on
  * the sub-block boundaries of the input's own sample count, and nothing after the FLL decides per block. A carrier
  * well off centre makes the transfers matter: the mixer takes thousands of hertz in steps over the first blocks. */
+/* The chain at the DSP rate @p rate, behind @p passes half-band stages when the input is undecimated (rate << passes),
+ * which leave the block in hb_workbuf (odd passes: the matched filter then writes behind the read cursor in the
+ * input's own buffer) or in the input buffer (even passes: the mixer rotates the input in place). *track is the FLL's
+ * gear at the end. */
 int
-run_chain(int rate, const std::vector<float>& iq, const std::vector<int>& cuts, std::vector<float>* out,
-          double* total_hz) {
+run_chain(int rate, int passes, const std::vector<float>& iq, const std::vector<int>& cuts, std::vector<float>* out,
+          double* total_hz, int* track) {
     demod_state* s = new_demod();
     if (!s) {
         return fail("alloc");
     }
     configure_tetra(s, rate);
+    s->rate_in = rate << passes;
+    s->downsample_passes = passes;
     size_t pos = 0;
     out->clear();
     float first_gain = -1.0f;
@@ -1065,6 +1074,7 @@ run_chain(int rate, const std::vector<float>& iq, const std::vector<int>& cuts, 
         }
     }
     *total_hz = rad_to_hz(dsd_fll_band_edge_total_freq(&s->fll_band_edge_state), rate);
+    *track = s->fll_band_edge_state.tetra_track;
     const int active = s->tetra_chain;
     /* Locked long since, the Gardner still runs the gain it started with: lowering it is a block's decision. */
     const float gain = s->ted_effective_gain;
@@ -1099,16 +1109,36 @@ irregular_cuts(int total, int max, uint32_t seed) {
     return cuts;
 }
 
+/* The partitions at the DSP rate @p rate behind @p passes half-band stages: the input runs at rate << passes. The FLL
+ * must have locked (a gear above acquiring) by the end of every partition, on the same gear, so its gear decisions
+ * fall on the same samples however the input is cut, as the symbols show. */
 int
-block_partitions_at(int rate, double offset_hz) {
+block_partitions_at(int rate, int passes, double offset_hz) {
     int rc = 0;
     const int sps = rate / 18000;
-    const int sub = DSD_TETRA_SUBBLOCK_SYMBOLS * sps;
-    const int total = rate / 2; /* 0.5 s: the pull-in and the tracking after it */
-    const std::vector<float> iq = make_tetra_stream(rate, offset_hz, total, 0.3f, 0x1357u);
+    const int sub = (DSD_TETRA_SUBBLOCK_SYMBOLS * sps) << passes; /* in input samples */
+    const int in_rate = rate << passes;
+    const int total = in_rate / 2; /* 0.5 s: the pull-in and the tracking after it */
+    const std::vector<float> iq = make_tetra_stream(in_rate, offset_hz, total, 0.3f, 0x1357u);
     std::vector<float> ref;
     double ref_hz = 0.0;
-    rc |= run_chain(rate, iq, cuts_of(total, sub), &ref, &ref_hz);
+    int ref_track = -1;
+    rc |= run_chain(rate, passes, iq, cuts_of(total, sub), &ref, &ref_hz, &ref_track);
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "%d Hz behind %d half-band passes: symbols", rate, passes);
+    if (ref.size() < 1000U) {
+        rc |= fail(label);
+    }
+    for (float v : ref) {
+        if (!std::isfinite(v)) {
+            rc |= fail(label);
+            break;
+        }
+    }
+    if (ref_track <= 0) {
+        DSD_SNPRINTF(label, sizeof label, "%d Hz behind %d half-band passes: FLL still acquiring", rate, passes);
+        rc |= fail(label);
+    }
     double worst_all = 0.0;
     const std::vector<std::vector<int>> partitions = {
         cuts_of(total, 2400),
@@ -1121,34 +1151,82 @@ block_partitions_at(int rate, double offset_hz) {
     for (size_t p = 0; p < partitions.size(); p++) {
         std::vector<float> got;
         double got_hz = 0.0;
-        rc |= run_chain(rate, iq, partitions[p], &got, &got_hz);
-        char label[128];
-        DSD_SNPRINTF(label, sizeof label, "%d Hz, %+.0f Hz offset, partition %d: symbols", rate, offset_hz, (int)p);
+        int got_track = -1;
+        rc |= run_chain(rate, passes, iq, partitions[p], &got, &got_hz, &got_track);
+        DSD_SNPRINTF(label, sizeof label, "%d Hz/%d passes, %+.0f Hz offset, partition %d: symbols", rate, passes,
+                     offset_hz, (int)p);
         rc |= expect_int(label, (int)got.size(), (int)ref.size());
+        DSD_SNPRINTF(label, sizeof label, "%d Hz/%d passes, %+.0f Hz offset, partition %d: FLL gear", rate, passes,
+                     offset_hz, (int)p);
+        rc |= expect_int(label, got_track, ref_track);
         double worst = 0.0;
         for (size_t k = 0; k < got.size() && k < ref.size(); k++) {
             worst = std::fmax(worst, std::fabs((double)got[k] - (double)ref[k]));
         }
         /* The SIMD kernels' and the phasor renormalization's rounding, not a different trajectory. */
-        DSD_SNPRINTF(label, sizeof label, "%d Hz, %+.0f Hz offset, partition %d: worst symbol difference", rate,
-                     offset_hz, (int)p);
+        DSD_SNPRINTF(label, sizeof label, "%d Hz/%d passes, %+.0f Hz offset, partition %d: worst symbol difference",
+                     rate, passes, offset_hz, (int)p);
         rc |= expect_near(label, worst, 0.0, 1e-3);
         worst_all = std::fmax(worst_all, worst);
-        DSD_SNPRINTF(label, sizeof label, "%d Hz, %+.0f Hz offset, partition %d: carrier estimate (Hz)", rate,
-                     offset_hz, (int)p);
+        DSD_SNPRINTF(label, sizeof label, "%d Hz/%d passes, %+.0f Hz offset, partition %d: carrier estimate (Hz)", rate,
+                     passes, offset_hz, (int)p);
         rc |= expect_near(label, got_hz, ref_hz, 0.05);
     }
-    DSD_FPRINTF(stdout, "TETRA chain block partitions at %d Hz, %+.0f Hz offset: %d symbols, worst difference %.3g\n",
-                rate, offset_hz, (int)ref.size(), worst_all);
+    DSD_FPRINTF(stdout,
+                "TETRA chain block partitions at %d Hz behind %d half-band passes, %+.0f Hz offset: %d symbols, FLL "
+                "gear %d, worst difference %.3g\n",
+                rate, passes, offset_hz, (int)ref.size(), ref_track, worst_all);
     return rc;
 }
 
 int
 test_block_partitions(void) {
     int rc = 0;
-    rc |= block_partitions_at(72000, 3500.0);
-    rc |= block_partitions_at(54000, -2200.0);
-    rc |= block_partitions_at(144000, 6000.0);
+    rc |= block_partitions_at(72000, 0, 3500.0);
+    rc |= block_partitions_at(54000, 0, -2200.0);
+    rc |= block_partitions_at(144000, 0, 6000.0);
+    /* Undecimated 144 kHz input: one pass leaves the block in hb_workbuf, two in the input buffer. */
+    rc |= block_partitions_at(72000, 1, 3500.0);
+    rc |= block_partitions_at(36000, 2, 1500.0);
+    return rc;
+}
+
+/* A block that arrives in hb_workbuf without a half-band pass (the matched filter then writes the input's own buffer
+ * behind its read cursor, as after an odd pass count) makes the same symbols as the same block in the input buffer. */
+int
+test_block_in_workbuf(void) {
+    int rc = 0;
+    const int rate = 72000;
+    const int block = 2400;
+    const int total = block * 15;
+    const std::vector<float> iq = make_tetra_stream(rate, 2000.0, total, 0.3f, 0x2468u);
+    demod_state* a = new_demod();
+    demod_state* b = new_demod();
+    if (!a || !b) {
+        free_demod(a);
+        free_demod(b);
+        return fail("alloc");
+    }
+    configure_tetra(a, rate);
+    configure_tetra(b, rate);
+    size_t made = 0;
+    for (int k = 0; k < total / block && rc == 0; k++) {
+        const float* p = iq.data() + (size_t)k * (size_t)block * 2U;
+        const std::vector<float> oa = run_block(a, p, block);
+        const std::vector<float> ob = run_block(b, p, block, b->hb_workbuf);
+        made += ob.size();
+        if (oa.size() != ob.size()
+            || (!oa.empty() && std::memcmp(oa.data(), ob.data(), oa.size() * sizeof(float)) != 0)) {
+            DSD_FPRINTF(stderr, "TETRA chain: block %d from hb_workbuf differs from the input buffer's\n", k);
+            rc = 1;
+        }
+    }
+    if (made < 1000U) {
+        rc |= fail("block in hb_workbuf: too few symbols");
+    }
+    rc |= expect_int("block in hb_workbuf: chain active", b->tetra_chain, 1);
+    free_demod(a);
+    free_demod(b);
     return rc;
 }
 
@@ -1410,6 +1488,7 @@ main(void) {
     rc |= test_block_after_gap_makes_symbols();
     rc |= test_partition_invariance();
     rc |= test_block_partitions();
+    rc |= test_block_in_workbuf();
     rc |= test_fll_gears();
     rc |= test_p25_after_tetra_session();
     rc |= test_filter_reset();

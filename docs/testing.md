@@ -540,6 +540,16 @@ the case was set, rounded to the nearest whole number:
 
 The rejection case accepts silence: the chain must not name the neighbour, and need not decode the call.
 
+Every other TETRA fixture replays at its DSP rate (`base_decimation` 1), but an RTL-SDR runs faster and decimates
+through the half-band cascade first, which leaves each block in another buffer: after an odd number of passes the
+block sits in the cascade's work buffer, where the TETRA chain's matched filter writes behind the chain's read cursor,
+and after an even number it is back in the input buffer, which the mixer rotates in place. `tetra_call_halfband_144k`
+(`TETRA_HALFBAND_NAME`, `build_tetra_halfband()`, `--derived-only`) is the call's first 2 seconds taken to 144 kHz
+with the tool's ideal low-pass resampler and replayed with `base_decimation` 2, one pass.
+`DECODE_IQ_TETRA_HALFBAND_BSCH` and `_TCH_FS` require at least 63 identities and 22 TCH/FS bursts; it decodes 70 and
+24, as the 72 kHz call's first 2 seconds do. `DSP_TETRA_CHAIN` covers both pass parities without a fixture (one pass from 144 to 72 kHz, two from 144
+to 36 kHz): their symbols must not depend on where the undecimated input is cut into blocks.
+
 `tetra_uplink_bursts_72k` (`TETRA_UPLINK_BURSTS`, `build_tetra_uplink()`) is a trunked mode uplink for
 `--tetra-uplink --tetra-net 460,4242,17`: 16 bursts, control uplink bursts (one SCH/HU) and normal uplink bursts (one
 SCH/F), carrying the MAC-ACCESS and MAC-DATA vectors of `tests/protocol/tetra/test_tetra_ul.c` from SSIs 2001 to 2016.
