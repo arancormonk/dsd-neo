@@ -183,23 +183,33 @@ line_u_escape(wav_journal_line* l, unsigned int cp) {
     line_raw(l, esc);
 }
 
+/* The length of the UTF-8 sequence lead byte @p c starts, 0 for none, and the range its second byte must fall in
+   (*lo..*hi: no overlong form, no surrogate, nothing past U+10FFFF). */
+static size_t
+wav_journal_utf8_lead(unsigned char c, unsigned char* lo, unsigned char* hi) {
+    *lo = 0x80U;
+    *hi = 0xBFU;
+    if (c >= 0xC2U && c <= 0xDFU) {
+        return 2;
+    }
+    if (c >= 0xE0U && c <= 0xEFU) {
+        *lo = (c == 0xE0U) ? 0xA0U : 0x80U;
+        *hi = (c == 0xEDU) ? 0x9FU : 0xBFU;
+        return 3;
+    }
+    if (c >= 0xF0U && c <= 0xF4U) {
+        *lo = (c == 0xF0U) ? 0x90U : 0x80U;
+        *hi = (c == 0xF4U) ? 0x8FU : 0xBFU;
+        return 4;
+    }
+    return 0;
+}
+
 size_t
 wav_journal_utf8_seq_len(const unsigned char* p, const unsigned char* end) {
-    const unsigned char c = p[0];
     unsigned char lo = 0x80U;
     unsigned char hi = 0xBFU;
-    size_t seq = 0;
-    if (c >= 0xC2U && c <= 0xDFU) {
-        seq = 2;
-    } else if (c >= 0xE0U && c <= 0xEFU) {
-        lo = (c == 0xE0U) ? 0xA0U : 0x80U;
-        hi = (c == 0xEDU) ? 0x9FU : 0xBFU;
-        seq = 3;
-    } else if (c >= 0xF0U && c <= 0xF4U) {
-        lo = (c == 0xF0U) ? 0x90U : 0x80U;
-        hi = (c == 0xF4U) ? 0x8FU : 0xBFU;
-        seq = 4;
-    }
+    const size_t seq = wav_journal_utf8_lead(p[0], &lo, &hi);
     if (seq == 0 || (size_t)(end - p) < seq || p[1] < lo || p[1] > hi) {
         return 0;
     }
@@ -208,6 +218,43 @@ wav_journal_utf8_seq_len(const unsigned char* p, const unsigned char* end) {
             return 0;
         }
     }
+    return seq;
+}
+
+/* One ASCII byte of a JSON string, at @p p: quotes, backslashes and control characters escaped. */
+static void
+line_string_ascii(wav_journal_line* l, const unsigned char* p) {
+    const unsigned char c = *p;
+    if (c == '"' || c == '\\') {
+        const char esc[2] = {'\\', (char)c};
+        line_put(l, esc, 2);
+    } else if (c == '\n') {
+        line_raw(l, "\\n");
+    } else if (c == '\r') {
+        line_raw(l, "\\r");
+    } else if (c == '\t') {
+        line_raw(l, "\\t");
+    } else if (c < 0x20U || c == 0x7FU) {
+        line_u_escape(l, c);
+    } else {
+        line_put(l, (const char*)p, 1);
+    }
+}
+
+/* The non-ASCII character of a JSON string at @p p: U+FFFD for a byte that starts none, U+2028 and U+2029 escaped.
+   @return the bytes it took. */
+static size_t
+line_string_utf8(wav_journal_line* l, const unsigned char* p, const unsigned char* end) {
+    const size_t seq = wav_journal_utf8_seq_len(p, end);
+    if (seq == 0) {
+        line_raw(l, "\xEF\xBF\xBD");
+        return 1;
+    }
+    if (seq == 3 && p[0] == 0xE2U && p[1] == 0x80U && (p[2] == 0xA8U || p[2] == 0xA9U)) {
+        line_u_escape(l, 0x2000U | ((unsigned int)p[2] & 0x3FU));
+        return 3;
+    }
+    line_put(l, (const char*)p, seq);
     return seq;
 }
 
@@ -220,38 +267,11 @@ line_string(wav_journal_line* l, const char* text) {
     const unsigned char* p = (const unsigned char*)(text ? text : "");
     const unsigned char* end = p + strlen((const char*)p);
     while (p < end) {
-        const unsigned char c = *p;
-        if (c == '"' || c == '\\') {
-            const char esc[2] = {'\\', (char)c};
-            line_put(l, esc, 2);
-            p++;
-        } else if (c == '\n') {
-            line_raw(l, "\\n");
-            p++;
-        } else if (c == '\r') {
-            line_raw(l, "\\r");
-            p++;
-        } else if (c == '\t') {
-            line_raw(l, "\\t");
-            p++;
-        } else if (c < 0x20U || c == 0x7FU) {
-            line_u_escape(l, c);
-            p++;
-        } else if (c < 0x80U) {
-            line_put(l, (const char*)p, 1);
+        if (*p < 0x80U) {
+            line_string_ascii(l, p);
             p++;
         } else {
-            const size_t seq = wav_journal_utf8_seq_len(p, end);
-            if (seq == 0) {
-                line_raw(l, "\xEF\xBF\xBD");
-                p++;
-            } else if (seq == 3 && p[0] == 0xE2U && p[1] == 0x80U && (p[2] == 0xA8U || p[2] == 0xA9U)) {
-                line_u_escape(l, 0x2000U | ((unsigned int)p[2] & 0x3FU));
-                p += 3;
-            } else {
-                line_put(l, (const char*)p, seq);
-                p += seq;
-            }
+            p += line_string_utf8(l, p, end);
         }
     }
     line_raw(l, "\"");
