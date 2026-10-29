@@ -1088,7 +1088,9 @@ suite runs under this compiler.
   file (`close_wav_file()`: never renamed or exported), the raw WAV closed; then the new ones go in. A raw open of the
   path the raw WAV records restarts it, closed first since the open truncates it. The config apply
   (`apply_cfg_recording()`) puts back what staging wrote and hands what it staged to the transition, failing the apply
-  with a toast when a file does not open. WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so
+  with a toast when a file does not open. The config's `unknown_talkgroups_only` is not part of the transition: it is
+  a call policy flag (which calls record, not where), so it applies even when the apply's recording outputs fail to
+  change. WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so
   does the terminal's `Per-call WAV` label. Per-call writers (the vocoder's slot writers through
   `dsd_audio_write_wav_short_block()`, EDACS analog, `engine/analog_call.c`) write through `dsd_wav_segment_write()`
   (`src/core/file/wav_segment.c`): a handle `open_wav_file()` opened is a segment, and its first short write latches it,
