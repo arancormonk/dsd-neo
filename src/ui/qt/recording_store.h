@@ -206,7 +206,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * the default to someone who chose a larger one).
      */
     int limitMb() const;
-    void setLimitMb(int limitMb);
+    void setLimitMb(int mb);
 
     /** @brief Delete recordings by id; each waits while something holds its file. History rows stay. */
     Q_INVOKABLE void deleteRecordings(const QStringList& ids);
@@ -346,6 +346,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         int deletesWaiting = 0;
         int deleteFailures = 0;
         QString lastDeleteError;
+
+        /* Whether anything the GUI shows differs from @p other. */
+        bool differsFrom(const Summary& other) const;
     };
 
     /* What one worker pass changed. */
@@ -363,6 +366,28 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* What is at a recording's path, without following a link there: nothing; a regular file inside an available root,
      * which the store may remove; or anything else, which it leaves alone. */
     enum class OnDisk { Missing, Removable, Foreign };
+    /* What a folder name an owner's new folder would take, already there, comes to: taken for the owner, or the next
+     * name, or the next root (the owner's, taking no new files). */
+    enum class CandidateFolder { Taken, NextName, NextRoot };
+
+    /* A recording the limit may remove, and what it goes in the order of. */
+    struct LimitCandidate {
+        QString id;
+        qint64 bytes = 0;
+        qint64 start = 0;
+        quint64 order = 0U;
+    };
+
+    /* What the limit counts: its usage of the roots it counts, and the recordings in it. */
+    struct LimitUsage {
+        qint64 limit = 0;
+        qint64 total = 0;
+        /* The roots the total counts. */
+        QList<bool> rootAvailable;
+        /* Before the files were looked at, the ids to look at; after, the recordings the limit may remove. */
+        QStringList counted;
+        QList<LimitCandidate> candidates;
+    };
 
     /* What the store needs of one file, read without following a symlink in its place. */
     static FileStat statOf(const QFileInfo& info, bool withTime);
@@ -372,7 +397,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
                               QHash<QString, FileStat>* files);
 
     void run();
-    void pass(bool first);
+    void runPass(bool first);
+    /* The limit, when it is due, then the free space, when it is due. */
+    void checkLimitAndSpace(bool first, Pass* pass);
     void refreshRoots(bool first, Pass* pass);
     /* @p root turned unavailable: what it held stays indexed, untouched, and the rows its recordings belong to are told
      * (their recordings now read as away). Under the store's lock. */
@@ -386,14 +413,26 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* rootStillAvailable() for each root @p roots marks true; false when any of them is gone. */
     bool rootsStillAvailable(const QList<bool>& roots, Pass* pass);
     void rebuildRoot(int root, Pass* pass);
+    /* @p root's folder table, as rebuildRoot() listed it, in place of what the index held for the root. Under the
+     * store's lock. */
+    void installRootTableLocked(int root, QList<Folder>& table, Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);
     /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it. */
     void loadFolder(const QString& path, int root, bool replace, Pass* pass);
+    /* The files of the folder at @p path: plain ones into @p files, and an earlier process's temp files as unfinished
+     * recordings. */
+    void listFolder(const QString& path, QHash<QString, FileStat>* files, QList<Entry>* unfinished) const;
+    /* applyRecordLocked() for each of @p records, taking the lock a slice at a time. */
+    void applyRecordsInSlices(const Folder& folder, const QList<RecordingJournalRecord>& records,
+                              const QHash<QString, FileStat>& files, Pass* pass);
     void tailFolders(Pass* pass);
     void tailFolder(const QString& path, qint64 offset, Pass* pass);
     void applyRecordLocked(const Folder& folder, const RecordingJournalRecord& record,
                            const QHash<QString, FileStat>& files, Pass* pass);
+    void applyPublishLocked(const Folder& folder, const RecordingJournalRecord& record,
+                            const QHash<QString, FileStat>& files, Pass* pass);
+    void applyLinkLocked(const RecordingJournalRecord& record, Pass* pass);
     void insertEntryLocked(Entry entry, Pass* pass);
     void unindexFragmentLocked(const Entry& entry, Pass* pass);
     void removeEntryLocked(const QString& id, Pass* pass);
@@ -411,17 +450,39 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void processDeletes(Pass* pass);
     /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
     DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr);
+    /* A recording not removable as found (@p found: missing, or not the store's to remove) leaves the index, unless
+     * what is there changed meanwhile. Under the store's lock. */
+    DeleteResult dropUnremovableLocked(const QString& id, OnDisk found, Pass* pass);
     OnDisk onDiskLocked(const QString& path) const;
     void noteDeleteFailure(DeleteCause cause, const QString& error);
     void enforceLimit(Pass* pass);
+    /* The limit's usage now; false when nothing is to go (no limit the user set, or under it). Once @p looked, the
+     * recordings it may remove; before, the ids of the files to look at first. */
+    bool countLimitUsage(bool looked, LimitUsage* usage);
+    /* Remove @p usage's candidates in order until its total is down to @p target; true when a root marked away
+     * meanwhile means it must be counted again. */
+    bool removeForLimit(LimitUsage* usage, qint64 target, Pass* pass, int* removed, bool* held);
     bool checkFreeSpace();
     void compactFolders();
     bool compactFolder(const QString& path);
+    static RecordingJournalRecord journalRecordOf(const Entry& entry);
+    /* Rewrite the journal at @p journalPath with one publish per @p live recording, when nothing but a torn line lies
+     * past @p offset; @p written is the bytes it holds then. */
+    static bool rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written);
     static Summary summarize(const QHash<QString, Entry>& entries, const QHash<QString, Folder>& folders,
                              const QList<bool>& rootAvailable);
     void publish(const Pass& pass);
     void deliver();
     QString folderLocked(const QString& kind, const QString& uid, const QString& name);
+    /* folderLocked()'s steps, under the store's lock: the roots usable now; the owner's folder (its path, @p gone
+     * listing the unread folders no longer its); that folder, relabelled; a folder name already there, taken or not;
+     * and a new folder. */
+    QList<bool> usableRootsLocked();
+    QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone);
+    QString existingFolderLocked(const QString& kind, const QString& uid, const QString& name, QList<bool>* usable);
+    CandidateFolder takeCandidateFolderLocked(const QString& path, int root, const QString& uid, const QFileInfo& info);
+    bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);
+    QString newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable);
     QVariantMap entryMap(const Entry& entry) const;
     QVariantMap selectLocked(QList<const Entry*> entries);
 
