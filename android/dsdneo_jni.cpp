@@ -38,6 +38,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
@@ -220,14 +221,21 @@ jstring_to_utf8(JNIEnv* env, jstring value, bool* ok) {
     return out;
 }
 
+/**
+ * @brief Sets a host override (<dsd-neo/platform/env.h>) from a Java string, never the process environment.
+ *
+ * Qt's thread reads the environment while this runs on the Android main thread, and on bionic adding a variable can
+ * free the environ array under that read (#782). The override lasts the life of the process; every in-process reader
+ * sees it through dsd_env_get(). An empty or failed conversion leaves the name as it was.
+ */
 void
-set_env_from_jstring(JNIEnv* env, const char* name, jstring value) {
+set_host_override_from_jstring(JNIEnv* env, const char* name, jstring value) {
     bool ok = false;
     const std::string text = jstring_to_utf8(env, value, &ok);
     if (!ok || text.empty()) {
         return;
     }
-    (void)setenv(name, text.c_str(), 1);
+    (void)dsd_env_set(DSD_ENV_LAYER_HOST, name, text.c_str());
 }
 
 /**
@@ -374,8 +382,7 @@ engine_is_running(void) {
 extern "C" {
 
 JNIEXPORT jint JNICALL
-Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz, jstring config_dir,
-                                                       jstring cache_dir) {
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz, jstring config_dir) {
     (void)clazz;
 
     // WP-F5: LOG_* enters through the tap only; choose the platform sink before the pump starts.
@@ -383,11 +390,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
     dsd_neo_log_set_sink(DSD_NEO_LOG_SINK_PLATFORM);
     start_log_pump();
 
-    /* The app owns the paths and must not steal the process signal dispositions. */
-    set_env_from_jstring(env, "HOME", config_dir);
-    set_env_from_jstring(env, "XDG_CONFIG_HOME", config_dir);
-    set_env_from_jstring(env, "DSD_NEO_CACHE_DIR", cache_dir);
-    (void)setenv("DSD_NEO_NO_SIGNAL_HANDLERS", "1", 1);
+    /* The app owns the paths and must not steal the process signal dispositions. Host overrides, not the process
+     * environment, which Qt's thread is reading (#782). */
+    set_host_override_from_jstring(env, "HOME", config_dir);
+    set_host_override_from_jstring(env, "XDG_CONFIG_HOME", config_dir);
+    (void)dsd_env_set(DSD_ENV_LAYER_HOST, "DSD_NEO_NO_SIGNAL_HANDLERS", "1");
     /* #647: before any session can be configured. Without the unplug-owner grace the reader's own -1 ends a session
      * at once, racing the detach broadcast that names the unplug. */
     dsd_android::install_receiver_policy();

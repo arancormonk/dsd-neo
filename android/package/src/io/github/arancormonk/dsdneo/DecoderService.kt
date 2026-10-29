@@ -246,7 +246,7 @@ class DecoderService : Service() {
         acquireWakeLock(this)
 
         if (!initialized) {
-            val rc = DsdNative.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
+            val rc = DsdNative.nativeInit(filesDir.absolutePath)
             if (rc != DsdNative.STATUS_OK) {
                 failStart("nativeInit failed ($rc)", getString(R.string.error_init_failed, rc))
                 return

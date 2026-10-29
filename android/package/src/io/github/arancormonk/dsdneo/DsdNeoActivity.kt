@@ -54,8 +54,9 @@ import org.qtproject.qt.android.bindings.QtActivity
  * For the diagnostics (#782) it tells [MainLooperWatchdog.activities] its lifecycle phase, each window attach and each
  * touch event, and records how long each step of its teardown took.
  *
- * The environment Qt reads is written only before `super.onCreate()` starts Qt's `main()` (#782): [QmlGcPolicy] and
- * the accessibility bridge's variable, with one in-place exception documented in [AccessibilityBridge].
+ * The app writes the process environment only before `super.onCreate()` starts Qt's `main()` (#782): [QmlGcPolicy] and
+ * the accessibility bridge's variable, with one in-place exception documented in [AccessibilityBridge]. The native
+ * library writes none; it keeps its overrides in the engine's in-process store.
  *
  * Qt's accessibility bridge (#782) is decided around `super.onCreate()`, where Qt reads it:
  * [AccessibilityBridge.beforeQt] immediately before keeps the bridge off unless touch exploration (TalkBack) is on,

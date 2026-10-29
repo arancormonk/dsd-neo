@@ -20199,6 +20199,54 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
     )
+    # #782: the Android build refuses an app library that imports an environment writer
+    # (cmake/check_no_environment_writers.cmake, run after every link of dsd-neo-app). These run its parser on the
+    # host, on llvm-nm output of the shape the NDK prints: the writers fail it, a getenv() import and a
+    # look-alike name do not.
+    set(_android_link_env_dir "${CMAKE_CURRENT_BINARY_DIR}/android_link_env")
+    file(
+        WRITE "${_android_link_env_dir}/writers.txt"
+        "                 U getenv@LIBC\n                 U setenv@LIBC\n                 U unsetenv@LIBC\n"
+    )
+    file(
+        WRITE "${_android_link_env_dir}/clean.txt"
+        "                 U getenv@LIBC\n                 U localtime_r@LIBC\n                 U dsd_test_setenv\n                 U setenvironment\n"
+    )
+    file(
+        WRITE "${_android_link_env_dir}/putenv.txt"
+        "                 U putenv\n"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DNM_OUTPUT_FILE=${_android_link_env_dir}/writers.txt" -P
+            "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_PUTENV_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DNM_OUTPUT_FILE=${_android_link_env_dir}/putenv.txt" -P
+            "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
+    # The refusal names exactly the writers it found (CTest then ignores the exit code, so a crash cannot pass).
+    set_tests_properties(
+        ANDROID_LINK_ENV_WRITERS_REFUSED
+        PROPERTIES
+            PASS_REGULAR_EXPRESSION "environment-writers=setenv,unsetenv\n"
+    )
+    set_tests_properties(
+        ANDROID_LINK_ENV_WRITERS_PUTENV_REFUSED
+        PROPERTIES PASS_REGULAR_EXPRESSION "environment-writers=putenv\n"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_CLEAN
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DNM_OUTPUT_FILE=${_android_link_env_dir}/clean.txt" -P
+            "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
     # Airspy dependency/packaging contracts: repin hashes, notices, installer modes,
     # overlay pin drift and the AUR template. Needs cmake, clang-format and bash.
     find_program(DSD_NEO_CLANG_FORMAT_FOR_TESTS clang-format)

@@ -55,7 +55,7 @@ object DsdNative {
         diagnosticHook = null
         UsbSourceManager.reset()
     }
-    fun nativeInit(config: String, cache: String) = initCode
+    fun nativeInit(config: String) = initCode
     fun nativeConfigure(args: Array<String>, id: Long): Int {
         configured += args.toList()
         configureHook?.invoke()

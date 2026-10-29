@@ -167,3 +167,18 @@ set_property(
     PROPERTY QT_ANDROID_VERSION_CODE "${dsd_neo_android_version_code}"
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_ABIS "arm64-v8a")
+
+# #782: once super.onCreate() starts Qt's main(), nothing in the app may add, remove or reallocate an environment
+# entry: on bionic an added variable can free the environ array under another thread's getenv(). Semgrep keeps the
+# writers out of our sources; this refuses a library that imports one from anywhere, vendored and static dependencies
+# included (ANDROID_LINK_ENV_WRITERS_* test the check itself on the host).
+add_custom_command(
+    TARGET dsd-neo-app
+    POST_BUILD
+    COMMAND
+        ${CMAKE_COMMAND} "-DNM=${CMAKE_NM}"
+        "-DLIBRARY=$<TARGET_FILE:dsd-neo-app>" -P
+        "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    COMMENT "Checking that the app library imports no environment writer"
+    VERBATIM
+)

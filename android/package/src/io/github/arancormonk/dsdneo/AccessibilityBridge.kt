@@ -25,10 +25,12 @@ import android.view.accessibility.AccessibilityManager
  *   6.11.2 (QTBUG-144911), and turning it off would leave a screen reader with nothing to read. Touch exploration
  *   turned on later gets the notice instead, through [Effects].
  *
- * The environment rule: once `super.onCreate()` has started Qt's `main()` on the Qt thread, nothing on any thread adds,
- * removes or reallocates an environment entry, since that thread reads the environment (Qt's own variables, the app's
- * config) with no lock. Bionic's `setenv` of an absent name grows `environ` with `reallocarray`, which can free the
- * array a concurrent `getenv` is walking. So:
+ * The environment rule: once `super.onCreate()` has started Qt's `main()` on the Qt thread, the app's own code, Kotlin
+ * and native, adds, removes or reallocates no environment entry on any thread, since that thread reads the environment
+ * (Qt's own variables, local time's `TZ`, the app's config) with no lock. Bionic's `setenv` of an absent name grows
+ * `environ` with `reallocarray`, which can free the array a concurrent `getenv` is walking. So:
+ * - the native library writes none: the engine keeps its overrides in an in-process store
+ *   (`include/dsd-neo/platform/env.h`), and the build refuses an app library that imports an environment writer;
  * - [beforeQt] writes `0` rather than unsetting, so the entry exists before Qt starts, and it writes only on the
  *   process's first launch, before any Qt thread exists;
  * - [afterQt] writes only into an entry that exists and is not already `1`. That is one in-place pointer swap, in a

@@ -638,6 +638,47 @@ def android_main_writes_no_environment():
     return None
 
 
+# The vendored snapshots under android/third_party keep upstream code; the link check
+# (cmake/check_no_environment_writers.cmake) covers what they import.
+ANDROID_NATIVE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp")
+# The two Kotlin files that set Qt's own inputs, before super.onCreate() starts Qt (a11y_bridge_order pins the order).
+KOTLIN_ENVIRONMENT_WRITERS = ("QmlGcPolicy.kt", "AccessibilityBridge.kt")
+KOTLIN_ENVIRONMENT_WRITE = re.compile(r"\bOs\.(?:set|unset)env\s*\(")
+
+
+def android_native_writes_no_environment():
+    """#782: the app's native code runs on the Android main thread and the engine's threads while Qt's thread reads
+    the environment, so no C or C++ source under android/ writes it: nativeInit sets host overrides in the engine's
+    store (<dsd-neo/platform/env.h>) instead. Kotlin writes it only in the two files that set Qt's own inputs."""
+    for probe, writes in (
+        ('Os.setenv("X", "1", true)', True),
+        ("android.system.Os.unsetenv(name)", True),
+        ('val v = Os.getenv("X")', False),
+        ("resetenvCount()", False),
+    ):
+        if bool(KOTLIN_ENVIRONMENT_WRITE.search(probe)) != writes:
+            return f"the Kotlin environment scan gets {probe!r} wrong"
+    root = REPO / "android"
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(REPO)
+        if "third_party" in relative.parts or not path.is_file():
+            continue
+        try:
+            if path.suffix in ANDROID_NATIVE_SUFFIXES:
+                writer = cpp_environment_writer(path.read_text(encoding="utf-8"))
+                if writer:
+                    return f"{relative}: {writer}() writes the process environment; set a dsd_env_set() override"
+            elif path.suffix == ".kt" and path.name not in KOTLIN_ENVIRONMENT_WRITERS:
+                code = CPP_LITERAL_OR_COMMENT.sub(
+                    lambda match: '""' if match.group(0)[0] in "\"'" else " ", path.read_text(encoding="utf-8")
+                )
+                if KOTLIN_ENVIRONMENT_WRITE.search(code):
+                    return f"{relative}: writes the process environment; only {KOTLIN_ENVIRONMENT_WRITERS} may"
+        except OSError as error:
+            return f"cannot read {relative}: {error}"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -823,7 +864,8 @@ SUITES = {
     # Qt's accessibility bridge (#782): the gate's decisions in plain Kotlin with no stubs, then AccessibilityBridge and
     # QmlGcPolicy against stubs of the accessibility manager (listeners fired in AOSP's order) and of the process
     # environment, with Qt's own listener modelled in the test. Both are process state, so each test file runs in its
-    # own JVM. The checks pin the environment writes before super.onCreate() and none from android/main.cpp.
+    # own JVM. The checks pin the environment writes before super.onCreate(), none from android/main.cpp, and none from
+    # any other native source or Kotlin file of the app.
     "a11y_bridge": Suite(
         builds=(
             Build(sources=("AccessibilityGate.kt", "ActivitySlot.kt"), tests=("AccessibilityGateTest.kt",)),
@@ -840,7 +882,12 @@ SUITES = {
                 stubs=("AccessibilityManager.kt", "AccessibilityServiceInfo.kt", "SystemOsEnv.kt", "A11yContext.kt", "A11yActivity.kt"),
             ),
         ),
-        checks=(a11y_bridge_order, cpp_environment_writer_probes, android_main_writes_no_environment),
+        checks=(
+            a11y_bridge_order,
+            cpp_environment_writer_probes,
+            android_main_writes_no_environment,
+            android_native_writes_no_environment,
+        ),
     ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and
