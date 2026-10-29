@@ -280,7 +280,7 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
     // On: unknown-only first, so the first call recorded already follows it, and the start last. Off: the stop first,
     // so a refused second submit never leaves the session recording more than it did (unknown-only cleared, the stop
     // refused). The stop is the switch: once it is in, unknown-only follows best effort, as it applies only while
-    // calls record and a later start sends it first.
+    // calls record and a later start sends it first, and the status keeps describing the stop.
     if (on) {
         const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
                           && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0));
@@ -293,7 +293,9 @@ CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
         return false;
     }
     noteRecording(QString());
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0);
+    if (accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0)) && m_recordingStatus != nullptr) {
+        m_recordingStatus->noteFollowUp(DSD_APP_CMD_WAV_STOP, DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET);
+    }
     return true;
 }
 

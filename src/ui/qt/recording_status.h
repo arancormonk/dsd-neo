@@ -64,6 +64,10 @@ class RecordingStatus : public QObject {
     /** @brief CommandBridge sent a recording switch in this session: the refusal clears and the command readings follow
      * the decoder's again (read now, so the switch shows applying at once). */
     void noteSent();
+    /** @brief After the switch @p noted it sent and noted, CommandBridge sent @p followUp best effort: the readings keep
+     * describing the switch. The queue applies in order, so while the view names the follow-up the switch is applying or
+     * done, and the follow-up's outcome reads as the switch's. The next noteSent() or session edge ends it. */
+    void noteFollowUp(int noted, int followUp);
 
     /** @brief Whether a session is on (Starting, Running or Stopping). A start or an end clears the refusal and the
      * session's command readings. Off until the host says otherwise. */
@@ -87,7 +91,7 @@ class RecordingStatus : public QObject {
     /** @brief "none", "on" or "failed" (a write failed: off for the rest of the run). */
     QString journal() const;
     /** @brief The last recording command this session sent: "start", "stop", "toggle", "static", "unknownOnly",
-     *  "config", or empty before it sent one. */
+     *  "config", or empty before it sent one. A follow-up (noteFollowUp()) reads as the switch it follows. */
     QString command() const;
     /** @brief Its state: "none" (none sent this session), "pending" (Applying...), "applied", "failed", "refused" (Signal
      *  search runs) or "dropped" (the session ended first). */
@@ -118,6 +122,9 @@ class RecordingStatus : public QObject {
     bool m_runUp = false;
     /* CommandBridge sent a switch since this session started: the decoder's command state is this session's. */
     bool m_sentThisSession = false;
+    /* noteFollowUp(): the command id the view names for the follow-up, and the switch's id it reads as (0: none). */
+    int m_followUpId = 0;
+    int m_followUpOf = 0;
 };
 
 } // namespace dsd_qt

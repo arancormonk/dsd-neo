@@ -322,11 +322,15 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("and applied", live.drain() == 1 && opts->record_unknown_only == 0);
 
     expect("Record calls off is queued", bridge.setRecordCalls(false, true));
+    status.refresh();
+    // The status is about the switch the user made, the stop, not the unknown-only clear sent after it.
+    expect("and shows the stop applying", status.commandState() == "pending" && status.command() == "stop");
     expect("unknown-only off and the stop apply", live.drain() == 2);
     status.refresh();
     expect("the session stops recording", opts->record_unknown_only == 0 && opts->dmr_stereo_wav == 0
                                               && opts->wav_out_f == nullptr && opts->wav_out_fR == nullptr
                                               && !status.perCall() && !status.unknownOnly());
+    expect("and shows the stop applied", status.commandState() == "applied" && status.command() == "stop");
 }
 
 /* A session started with Record calls on, whose first live switch is unknown-only (D8): the status shows it applying,

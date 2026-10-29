@@ -8052,8 +8052,9 @@ Qt Quick frontend (`src/ui/qt`):
     taken for an option and an option never for a value. A target CSV's options cell refuses every recording switch
     already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and
     on every change.
-  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or
-    unknown-only off then WAV stop; it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
+  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or WAV
+    stop then unknown-only off, best effort once the stop is in (`RecordingStatus::noteFollowUp()`: the status keeps
+    describing the stop, whose outcome the follow-up's stands in for, as the queue applies in order); it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
     ("no-session", from the host, since a view outlives its run), while its run is not up yet ("starting": until then
     the view is the last run's; up when Running, after `sessionInitialized()` on a host that signals it, or at once for
     a session the UI found running), when on would record into a session that names no recording journal

@@ -69,6 +69,8 @@ RecordingStatus::noteSent() {
     const bool moved = !m_refusal.isEmpty() || !m_sentThisSession;
     m_refusal.clear();
     m_sentThisSession = true;
+    m_followUpId = 0;
+    m_followUpOf = 0;
     dsd_app_recording_view view{};
     (void)dsd_app_recording_view_get(&view);
     if (!same_view(view, m_view)) {
@@ -80,6 +82,12 @@ RecordingStatus::noteSent() {
 }
 
 void
+RecordingStatus::noteFollowUp(int noted, int followUp) {
+    m_followUpId = followUp;
+    m_followUpOf = noted;
+}
+
+void
 RecordingStatus::setSessionActive(bool active) {
     if (active == m_sessionActive) {
         return;
@@ -87,6 +95,8 @@ RecordingStatus::setSessionActive(bool active) {
     m_sessionActive = active;
     m_refusal.clear();
     m_sentThisSession = false;
+    m_followUpId = 0;
+    m_followUpOf = 0;
     Q_EMIT changed();
 }
 
@@ -183,7 +193,8 @@ RecordingStatus::command() const {
     if (!m_sentThisSession) {
         return {};
     }
-    switch (m_view.command_id) {
+    const int id = m_followUpOf != 0 && m_view.command_id == m_followUpId ? m_followUpOf : m_view.command_id;
+    switch (id) {
         case DSD_APP_CMD_WAV_START: return QStringLiteral("start");
         case DSD_APP_CMD_WAV_STOP: return QStringLiteral("stop");
         case DSD_APP_CMD_WAV_TOGGLE: return QStringLiteral("toggle");
