@@ -1370,7 +1370,7 @@ RecordingStore::rootWritableNow(const QString& root) {
 QString
 RecordingStore::spaceRoot() const {
     QStringList roots;
-    QList<bool> available;
+    QList<bool> rootThere;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         // While a session records, the root of its folder: the decoder keeps writing there when a preferred root comes
@@ -1386,11 +1386,11 @@ RecordingStore::spaceRoot() const {
             return m_roots.at(active);
         }
         roots = m_roots;
-        available = m_rootAvailable;
+        rootThere = m_rootAvailable;
     }
     // Idle: the root a session start would take now, the first one there that takes new folders (beginSession()).
     for (int i = 0; i < roots.size(); i++) {
-        if (available.value(i) && rootWritableNow(roots.at(i))) {
+        if (rootThere.value(i) && rootWritableNow(roots.at(i))) {
             return roots.at(i);
         }
     }
