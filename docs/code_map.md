@@ -7082,7 +7082,8 @@ the inverted extended training sequence. That SCH/HU also proves a trunked mode 
 like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`: the mode, the DM colour
 code, its protection and the direct mode call with its canonical call), so the normal bursts after it are NUBs again
 and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the CQPSK
-symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`), where the RTL front end and a soft symbol capture give them;
+symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile without the adaptive centre P25's
+CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end and a soft symbol capture give them;
 a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
 (`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
 into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same way:

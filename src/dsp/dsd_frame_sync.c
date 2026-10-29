@@ -2784,9 +2784,20 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* The level the hunt slices CQPSK symbols about. TETRA's (the 18000/4 profile, a candidate only when TETRA is the decode
+ * mode) are arg(z) * 4/pi of the differential phasor, cut at the quadrant edges 0 and +-2 as digitize() cuts their
+ * payload: the adaptive centre, the midpoint of the averaged extremes, does not enter. P25's CQPSK hunt keeps it. */
+static float
+frame_sync_cqpsk_slice_center(const dsd_state* state) {
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && state->rf_mod == 1) {
+        return 0.0f;
+    }
+    return state->center;
+}
+
 static int
 frame_sync_slice_cqpsk_dibit(const dsd_state* state, float symbol) {
-    float sym = symbol - state->center;
+    float sym = symbol - frame_sync_cqpsk_slice_center(state);
     int d = 0;
     if (sym >= 2.0f) {
         d = 1;
@@ -2889,7 +2900,7 @@ static void
 frame_sync_store_dmr_payload_symbol(dsd_state* state, float symbol, int cqpsk_4level) {
     int d = 0;
     if (cqpsk_4level) {
-        float sym = symbol - state->center;
+        float sym = symbol - frame_sync_cqpsk_slice_center(state);
         if (sym >= 2.0f) {
             d = 1;
         } else if (sym >= 0.0f) {
@@ -2929,6 +2940,13 @@ frame_sync_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float sym
     frame_sync_store_dmr_payload_symbol(state, symbol, cqpsk_4level);
     return dibit;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float symbol) {
+    return frame_sync_process_dibit_and_payload(opts, state, symbol);
+}
+#endif
 
 typedef struct frame_sync_runtime_ctx {
     int t;

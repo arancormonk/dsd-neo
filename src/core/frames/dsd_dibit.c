@@ -1002,6 +1002,9 @@ digitize(const dsd_opts* opts, dsd_state* state, float symbol) {
     int stored_dibit = is_negative ? invert_dibit(dibit) : dibit;
 
     dsd_dibit_soft_t soft;
+    /* A TETRA dibit's sign comes from the fixed slicer and its magnitude from the adaptive ideals here; the TETRA
+       decoder never reads these LLRs (it takes cqpsk_soft_symbol_to_viterbi_cost() of the symbol), only a -c capture
+       records them. */
     compute_dibit_soft_metric(state, symbol, dibit, is_negative, used_cqpsk_slice, &soft);
     state->last_dibit = dibit;
     store_dibit_with_soft(state, stored_dibit, &soft);

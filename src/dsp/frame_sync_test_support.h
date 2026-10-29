@@ -20,6 +20,9 @@ int dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, c
 int dsd_frame_sync_test_eval_window(dsd_opts* opts, dsd_state* state, const char* symbols, const float* levels,
                                     int symbol_count);
 int dsd_frame_sync_test_capture_tetra_soft(const dsd_state* state, float* dst, int payload_len, int sync_len);
+/* frame_sync_process_dibit_and_payload(): the hunt's slice of one symbol into dibit_buf and dmr_payload_buf. Returns the
+   dibit as the history character ('0'..'3'). */
+int dsd_frame_sync_test_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float symbol);
 void dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk);
 void dsd_frame_sync_test_get_mod_votes(int* out_c4fm, int* out_qpsk, int* out_gfsk);
 /** @brief Whether the 2 s QPSK dwell is currently armed. */
