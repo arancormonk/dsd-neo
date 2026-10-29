@@ -95,6 +95,32 @@ submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context,
     DSD_MEMCPY(p.name, utf8.constData(), static_cast<size_t>(utf8.size()));
     return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &p, sizeof p));
 }
+
+/* The row field one setTalkgroupPolicy() change edits; 0 for a key it does not know or a value of the wrong kind. */
+uint32_t
+talkgroup_change_field(const QString& key, const QVariant& value) {
+    if (key == QStringLiteral("name") && value.typeId() == QMetaType::QString) {
+        return DSD_APP_TG_FIELD_NAME;
+    }
+    if (key == QStringLiteral("listening") && value.typeId() == QMetaType::Bool) {
+        return DSD_APP_TG_FIELD_LISTEN;
+    }
+    if (key == QStringLiteral("preempt") && value.typeId() == QMetaType::Bool) {
+        return DSD_APP_TG_FIELD_PREEMPT;
+    }
+    if (key == QStringLiteral("record") && value.typeId() == QMetaType::Bool) {
+        return DSD_APP_TG_FIELD_RECORD;
+    }
+    if (key == QStringLiteral("priority")) {
+        bool ok = false;
+        const double priority = value.toDouble(&ok);
+        if (!ok || !(priority >= 0 && priority <= 100) || std::fmod(priority, 1.0) != 0.0) {
+            return 0U;
+        }
+        return DSD_APP_TG_FIELD_PRIORITY;
+    }
+    return 0U;
+}
 } // namespace
 
 bool
@@ -102,24 +128,11 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
                                   unsigned int generation, const QVariantMap& changes) const {
     uint32_t fields = 0;
     for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
-        if (it.key() == QStringLiteral("name") && it.value().typeId() == QMetaType::QString) {
-            fields |= DSD_APP_TG_FIELD_NAME;
-        } else if (it.key() == QStringLiteral("listening") && it.value().typeId() == QMetaType::Bool) {
-            fields |= DSD_APP_TG_FIELD_LISTEN;
-        } else if (it.key() == QStringLiteral("preempt") && it.value().typeId() == QMetaType::Bool) {
-            fields |= DSD_APP_TG_FIELD_PREEMPT;
-        } else if (it.key() == QStringLiteral("record") && it.value().typeId() == QMetaType::Bool) {
-            fields |= DSD_APP_TG_FIELD_RECORD;
-        } else if (it.key() == QStringLiteral("priority")) {
-            bool ok = false;
-            const double priority = it.value().toDouble(&ok);
-            if (!ok || !(priority >= 0 && priority <= 100) || std::fmod(priority, 1.0) != 0.0) {
-                return false;
-            }
-            fields |= DSD_APP_TG_FIELD_PRIORITY;
-        } else {
+        const uint32_t field = talkgroup_change_field(it.key(), it.value());
+        if (field == 0U) {
             return false;
         }
+        fields |= field;
     }
     if (!fields) {
         return false;
