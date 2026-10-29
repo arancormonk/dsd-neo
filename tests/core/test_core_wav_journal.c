@@ -270,14 +270,14 @@ rig_open_ex(rig* r, const char* prefix, int with_journal) {
     DSD_MEMSET(r, 0, sizeof(*r));
     if (!dsd_test_mkdtemp(r->dir, sizeof r->dir, prefix)) {
         DSD_FPRINTF(stderr, "FAIL: temp dir for %s\n", prefix);
-        return 1;
+        exit(2);
     }
     (void)dsd_path_canonical(r->dir, r->canon, sizeof r->canon);
     r->opts = (dsd_opts*)calloc(1, sizeof(*r->opts));
     r->state = (dsd_state*)calloc(1, sizeof(*r->state));
     if (!r->opts || !r->state) {
         DSD_FPRINTF(stderr, "FAIL: alloc for %s\n", prefix);
-        return 1;
+        exit(2);
     }
     dsd_decode_clock_use_test(k_t0 * 1000000000ULL);
     g_now_s = k_t0;
