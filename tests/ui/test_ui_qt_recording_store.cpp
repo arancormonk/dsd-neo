@@ -1573,6 +1573,38 @@ test_root_gone_during_an_unlink(void) {
                && s.store.deletesWaiting() == 0 && s.store.deleteFailures() == 0);
 }
 
+/* Issue #708: storage that left after the last pass and before a session start is not made again under the absent
+ * mount (recordings there would hide once the storage came back over it): the start checks the roots as they are now
+ * and makes its folder in the fallback, and the pass it asks for marks the storage away. */
+void
+test_root_gone_before_a_session_start(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString old = s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Metro"));
+    record(old, QStringLiteral("00000000000000F5-1"), QStringLiteral("m.wav"), 1754705000, 70);
+    s.store.endSession();
+    s.pass();
+    expect("start: folders go to the external storage while it is there",
+           QDir::cleanPath(old).startsWith(QDir::cleanPath(roots.external) + QLatin1Char('/')));
+    expect("start: the storage goes away", QDir().rename(ext, away));
+    const QString fresh = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("start: a new owner's folder is made in the fallback",
+           QDir::cleanPath(fresh).startsWith(QDir::cleanPath(roots.internal) + QLatin1Char('/'))
+               && QFileInfo(fresh).isDir());
+    expect("start: nothing is made where the storage was", !QFileInfo::exists(ext));
+    const QString again = s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Metro"));
+    expect("start: an owner whose folder is away gets one in the fallback",
+           QDir::cleanPath(again).startsWith(QDir::cleanPath(roots.internal) + QLatin1Char('/'))
+               && !QFileInfo::exists(ext));
+    s.store.endSession();
+    s.pass();
+    const QVariantMap m = s.store.recordingsForFragments({fragment(70)}).value(0).toMap();
+    expect("start: the next pass marks the storage away", !m.isEmpty() && !m.value("available").toBool());
+    expect("start: still nothing where the storage was", !QFileInfo::exists(ext));
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -2067,6 +2099,7 @@ main(int argc, char** argv) {
     test_root_gone_as_a_journal_is_tailed();
     test_root_gone_during_the_limit();
     test_root_gone_during_an_unlink();
+    test_root_gone_before_a_session_start();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();

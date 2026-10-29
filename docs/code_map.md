@@ -8023,7 +8023,9 @@ Qt Quick frontend (`src/ui/qt`):
     a folder, `<sanitized name> (<uid8>)` (`recording_folder_base_name()`; `Explore` for every Explore, signal search
     and unsaved session), with `folder.json` {uid, kind, name}; it is looked up by the full uid, so a rename keeps it
     (and relabels it) and two uids sharing eight characters get `<name> (<uid8>) 2`. A folder without a folder.json is
-    not the app's and is never read or taken. New folders go to the first available root.
+    not the app's and is never read or taken. New folders go to the first available root, as the start checks the
+    roots then (not as the last pass found them): storage gone since is skipped, never made again under its absent
+    mount (a start makes the root itself if need be, never its parent), and the pass it asks for marks it away.
   - Sessions (`RecordingSessions`): `SessionArgsBuilder::start()` and `ScanListStarter::start()` call
     `beginSession(kind, uid, name)` before `DecoderHost::start()`, which makes the folder and marks it in use (waiting
     for a compaction of it in progress, never for the journals), and `endSession()` when the start did not happen.
@@ -8226,7 +8228,8 @@ Qt Quick frontend (`src/ui/qt`):
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
-    lost while a root is listed, a folder read, a journal tailed, an unlink runs or the limit runs),
+    lost while a root is listed, a folder read, a journal tailed, an unlink runs, the limit runs or before a session
+    start),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in

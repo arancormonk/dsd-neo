@@ -1546,12 +1546,21 @@ RecordingStore::deliver() {
 
 QString
 RecordingStore::folderLocked(const QString& kind, const QString& uid, const QString& name) {
+    // The roots as they are now, not as the last pass found them: storage that left since is never made again under
+    // its absent mount, where recordings would hide once it came back over them. The pass asked for marks it away.
+    QList<bool> usable = m_rootAvailable;
+    for (int i = 0; i < usable.size(); i++) {
+        if (usable.at(i) && !rootAvailableNow(m_roots.at(i))) {
+            usable[i] = false;
+            m_passRequested = true;
+        }
+    }
     // The owner's folder in the first available root that has one: a rename keeps it, and a clash of the short
     // uid in the name never merges two owners.
     const Folder* best = nullptr;
     QStringList gone;
     for (const Folder& folder : std::as_const(m_folders)) {
-        if (folder.uid != uid || !m_rootAvailable.value(folder.root)
+        if (folder.uid != uid || !usable.value(folder.root)
             || (best != nullptr
                 && (folder.root > best->root || (folder.root == best->root && folder.path >= best->path)))) {
             continue;
@@ -1560,7 +1569,10 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
         // worker has not read yet holds no recordings, so it leaves the table here; a read one is the worker's.
         Folder onDisk;
         if (!read_folder_json(folder.path, &onDisk.uid, &onDisk.kind, &onDisk.name) || onDisk.uid != uid) {
-            if (!folder.loaded) {
+            if (!rootAvailableNow(m_roots.at(folder.root))) {
+                usable[folder.root] = false; // gone since the check above: its folders stay, as storage away
+                m_passRequested = true;
+            } else if (!folder.loaded) {
                 gone.append(folder.path);
             }
             continue;
@@ -1584,7 +1596,8 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
     }
     const QString base = recording_folder_base_name(kind, uid, name);
     for (int i = 0; i < m_roots.size(); i++) {
-        if (!m_rootAvailable.at(i) || !QDir().mkpath(m_roots.at(i))) {
+        // Never a parent: an available root's parent is there, and one gone since is not made again in its place.
+        if (!usable.at(i) || (!QFileInfo(m_roots.at(i)).isDir() && !QDir().mkdir(m_roots.at(i)))) {
             continue;
         }
         for (int n = 1; n <= kMaxFolderCandidates; n++) {
@@ -1640,12 +1653,17 @@ RecordingStore::beginSession(const QString& kind, const QString& uid, const QStr
     m_settled.wait(lock, [this]() { return m_ready || m_stop; });
     QString path = folderLocked(ownerKind, ownerUid, name);
     if (path.isEmpty()) {
+        if (m_passRequested) {
+            m_wake.notify_all(); // a root found gone is marked away
+        }
         return QString();
     }
     m_active.insert(path);
     m_starterBegan = true;
     if (m_foldersChanged) {
         m_passRequested = true;
+    }
+    if (m_passRequested) {
         m_wake.notify_all();
     }
     // A compaction already rewriting this journal finishes before the decoder may append to it.
