@@ -409,6 +409,12 @@ typedef struct {
     // membership is current, else the call's policy target, else target_id (a private call: target_id); 0 while the
     // call has not been judged. Bookkeeping as stream_blocked is.
     uint32_t policy_target_id;
+    // Who held the tuner when this row's call was first rendered; frozen with channel_label, so a
+    // call a later release or resume ends keeps the identity it began with. operator_tuned: the
+    // operator held the receiver (a paused scan, a tuner release). scan_member: a scan was running,
+    // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
+    uint8_t operator_tuned;
+    uint8_t scan_member;
     uint32_t channel; // If this occurs on a trunking channel, which channel
     // Frequency in Hz the call was heard on, or 0 when unknown. The call's own frequency (a grant's
     // channel, the followed voice channel) whenever the call has one; otherwise the receiver's tuned
