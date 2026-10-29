@@ -27,6 +27,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 
 #include "app_prefs.h"
@@ -416,12 +417,12 @@ bool
 session_args_freq_valid(const QString& freqMhz) {
     bool ok = false;
     const double mhz = freqMhz.trimmed().toDouble(&ok);
-    if (!ok || !std::isfinite(mhz) || mhz <= 0.0 || mhz > 5000.0) {
+    if (!ok || !std::isfinite(mhz) || mhz <= 0.0) {
         return false;
     }
-    /* Same MHz-to-Hz rounding as the session spec; the tuner takes 1..UINT32_MAX Hz. */
-    const long long hz = std::llround(mhz * 1e6);
-    return hz >= 1 && hz <= 4294967295LL;
+    /* The start path splices "<text>M" into the rtl spec; use the runtime's own exact rounding and 1..UINT32_MAX range. */
+    const QByteArray spec = freqMhz.trimmed().toLatin1() + 'M';
+    return dsd_parse_freq_hz(spec.constData()) != 0U;
 }
 
 bool
