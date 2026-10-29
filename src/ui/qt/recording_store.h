@@ -372,6 +372,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * marked away earlier in the pass stays so; for either, nothing in it is treated as deleted, and the caller keeps
      * what the index and the queues hold. */
     bool rootStillAvailable(int root, Pass* pass);
+    /* rootStillAvailable() for each root @p roots marks true; false when any of them is gone. */
+    bool rootsStillAvailable(const QList<bool>& roots, Pass* pass);
     void rebuildRoot(int root, Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);
@@ -393,7 +395,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void yieldToReaders() const;
     void processRechecks(Pass* pass);
     void processDeletes(Pass* pass);
-    DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass);
+    /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
+    DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr);
     OnDisk onDiskLocked(const QString& path) const;
     void noteDeleteFailure(DeleteCause cause, const QString& error);
     void enforceLimit(Pass* pass);

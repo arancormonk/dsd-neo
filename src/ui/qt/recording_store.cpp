@@ -543,6 +543,18 @@ RecordingStore::rootStillAvailable(int root, Pass* pass) {
     return false;
 }
 
+bool
+RecordingStore::rootsStillAvailable(const QList<bool>& roots, Pass* pass) {
+    bool all = true;
+    for (int i = 0; i < roots.size(); i++) {
+        // Every one is checked, so each that went is marked away.
+        if (roots.at(i) && !rootStillAvailable(i, pass)) {
+            all = false;
+        }
+    }
+    return all;
+}
+
 void
 RecordingStore::rebuildRoot(int root, Pass* pass) {
     QString rootPath;
@@ -1052,7 +1064,7 @@ RecordingStore::processDeletes(Pass* pass) {
 }
 
 RecordingStore::DeleteResult
-RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
+RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted) {
     QString path;
     {
         yieldToReaders();
@@ -1069,6 +1081,11 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
     // The rdio uploader takes its queue's own lock; asked here, outside the store's. A job for a file the journal
     // already named was queued before its line was written, so a hold can only end after this, never start.
     const bool uploading = m_uploadHolds(path);
+    // A removal for the limit rests on the usage of every root its total counts, not only this recording's: each is
+    // checked again right before the unlink, and one gone (marked away) holds it.
+    if (counted != nullptr && !rootsStillAvailable(*counted, pass)) {
+        return DeleteResult::Held;
+    }
 
     QString error;
     OnDisk found = OnDisk::Removable;
@@ -1158,86 +1175,90 @@ RecordingStore::enforceLimit(Pass* pass) {
         quint64 order;
     };
 
-    QList<Candidate> candidates;
-    qint64 total = 0;
-    qint64 limit = 0;
-    // The roots the total counts.
-    QList<bool> rootAvailable;
-    {
-        // Summed outside the lock on shared copies, as publish() does; they are gone before the first delete.
-        QHash<QString, Entry> entries;
-        QHash<QString, Folder> folders;
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            m_limitPending = false;
-            limit = m_limitBytes;
-            if (!m_limitSet || limit <= 0) {
-                return; // no limit, or not the user's yet
-            }
-            entries = m_entries;
-            folders = m_folders;
-            rootAvailable = m_rootAvailable;
-        }
-        for (const Entry& entry : std::as_const(entries)) {
-            const auto folder = folders.constFind(entry.folder);
-            if (folder != folders.cend() && rootAvailable.value(folder->root)) {
-                total += entry.bytes;
-            }
-        }
-        if (total <= limit) {
-            return;
-        }
-        for (const Entry& entry : std::as_const(entries)) {
-            const auto folder = folders.constFind(entry.folder);
-            if (folder != folders.cend() && rootAvailable.value(folder->root)) {
-                candidates.append({entry.id, entry.bytes, entry.start, entry.order});
-            }
-        }
-    }
-    // Oldest first (an unfinished recording by its file's time), down to 95% so one more call does not start again.
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-        return a.start != b.start ? a.start < b.start : a.order < b.order;
-    });
-    const qint64 target = limit / 100 * 95;
     int removed = 0;
     bool held = false;
-    bool rootLost = false;
-    for (const Candidate& candidate : candidates) {
-        if (total <= target) {
-            break;
-        }
-        const DeleteResult result = deleteEntry(candidate.id, DeleteCause::Limit, pass);
-        held = held || result == DeleteResult::Held;
-        if (result == DeleteResult::Held) {
-            // A root that went away during the delete took its recordings out of the usage: the total no longer counts
-            // what is there, so no recording elsewhere goes for it. A pass asked for now sums what is left.
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_rootAvailable != rootAvailable) {
-                rootLost = true;
+    bool over = false;
+    // A root found gone during the run took its recordings out of the usage: the total is summed again over the roots
+    // still there, and only then is it decided whether anything needs to go.
+    for (bool recount = true; recount;) {
+        recount = false;
+        held = false;
+        over = false;
+        QList<Candidate> candidates;
+        qint64 total = 0;
+        qint64 limit = 0;
+        // The roots the total counts.
+        QList<bool> rootAvailable;
+        {
+            // Summed outside the lock on shared copies, as publish() does; they are gone before the first delete.
+            QHash<QString, Entry> entries;
+            QHash<QString, Folder> folders;
+            {
+                const std::lock_guard<std::mutex> lock(m_mutex);
+                m_limitPending = false;
+                limit = m_limitBytes;
+                if (!m_limitSet || limit <= 0) {
+                    break; // no limit, or not the user's yet
+                }
+                entries = m_entries;
+                folders = m_folders;
+                rootAvailable = m_rootAvailable;
+            }
+            for (const Entry& entry : std::as_const(entries)) {
+                const auto folder = folders.constFind(entry.folder);
+                if (folder != folders.cend() && rootAvailable.value(folder->root)) {
+                    total += entry.bytes;
+                }
+            }
+            if (total <= limit) {
                 break;
             }
-        }
-        if (result == DeleteResult::Removed) {
-            total -= candidate.bytes;
-            removed++;
-        } else if (result == DeleteResult::Gone) {
-            total -= candidate.bytes; // already gone: not one the limit removed
-        } else if (result == DeleteResult::Kept) {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            if (!m_entries.contains(candidate.id)) {
-                total -= candidate.bytes; // no longer managed
+            for (const Entry& entry : std::as_const(entries)) {
+                const auto folder = folders.constFind(entry.folder);
+                if (folder != folders.cend() && rootAvailable.value(folder->root)) {
+                    candidates.append({entry.id, entry.bytes, entry.start, entry.order});
+                }
             }
         }
+        // Oldest first (an unfinished recording by its file's time), down to 95% so one more call does not start again.
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+            return a.start != b.start ? a.start < b.start : a.order < b.order;
+        });
+        const qint64 target = limit / 100 * 95;
+        for (const Candidate& candidate : candidates) {
+            if (total <= target) {
+                break;
+            }
+            // Every root the total counts is checked again right before the unlink (deleteEntry()): one found gone
+            // holds this removal, wherever the recording is.
+            const DeleteResult result = deleteEntry(candidate.id, DeleteCause::Limit, pass, &rootAvailable);
+            if (result == DeleteResult::Held) {
+                const std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_rootAvailable != rootAvailable) {
+                    recount = true; // a root marked away: the total no longer counts what is there
+                    break;
+                }
+                held = true;
+            }
+            if (result == DeleteResult::Removed) {
+                total -= candidate.bytes;
+                removed++;
+            } else if (result == DeleteResult::Gone) {
+                total -= candidate.bytes; // already gone: not one the limit removed
+            } else if (result == DeleteResult::Kept) {
+                const std::lock_guard<std::mutex> lock(m_mutex);
+                if (!m_entries.contains(candidate.id)) {
+                    total -= candidate.bytes; // no longer managed
+                }
+            }
+        }
+        over = total > target;
     }
     if (removed > 0) {
         m_removedByLimit += removed;
         pass->dirty = true;
     }
-    if (rootLost) {
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        m_limitPending = true;
-        m_passRequested = true;
-    } else if (held && total > target) {
+    if (held && over) {
         // What is left over the target is held: a hold's release, or the next timed pass, tries again.
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_limitPending = true;

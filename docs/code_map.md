@@ -8204,9 +8204,10 @@ Qt Quick frontend (`src/ui/qt`):
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
     the total is at 95%; a file already gone is taken off the total without counting as removed. When the held files
     keep it over (`m_limitPending`), the release of a selection or of the player's file wakes a pass that tries again,
-    and so does every timed pass (an rdio upload's hold has no release to wake one). A root that goes away while the
-    limit removes recordings ends that run, since its total still counts the root's recordings: nothing elsewhere goes
-    for usage that no longer counts, and a pass asked for at once sums the roots still there. Decided limit: the
+    and so does every timed pass (an rdio upload's hold has no release to wake one). The total counts every available
+    root, so each of them is checked again right before each removal (after its holds are asked), wherever the
+    recording is: one found gone is marked away, the total is summed again over the roots still there, and only then is
+    it decided whether anything needs to go, so nothing goes for usage that no longer counts. Decided limit: the
     journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
     first. Free space where new folders go is read (`dsd_path_free_bytes()`) at start, after each publish and every
     minute while a session records; under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
@@ -8232,8 +8233,8 @@ Qt Quick frontend (`src/ui/qt`):
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
-    lost while a root is listed, a folder read, a journal tailed, an unlink runs, the limit runs or before a session
-    start; a session start waking an idle worker),
+    lost while a root is listed, a folder read, a journal tailed, an unlink runs, the limit runs (before its first
+    removal, or as one is checked) or before a session start; a session start waking an idle worker),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in

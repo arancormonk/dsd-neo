@@ -1536,6 +1536,44 @@ test_root_gone_during_the_limit(void) {
                                                               && s.store.removedByLimit() == 1);
 }
 
+/* Issue #708: storage that leaves after the limit summed the usage, before its first removal, takes its usage with
+ * it even when the recording to remove is elsewhere. A 1 MB limit, an older 200 kB recording inside and a newer
+ * 900 kB one on the external storage: the inside one is the first to go, and the external storage leaves as it is
+ * checked. What is left counts 200 kB, under the limit, so it stays; once the storage is back the limit is over again
+ * and the oldest goes then. */
+void
+test_root_gone_before_the_limit_removes(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString outer = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    const QString inner = roots.internal + QStringLiteral("/Metro (5e6f7a8b)");
+    write_folder_json(outer, QString(kUidA), QStringLiteral("County"));
+    write_folder_json(inner, QString(kUidC), QStringLiteral("Metro"));
+    record(inner, QStringLiteral("00000000000000F7-1"), QStringLiteral("old.wav"), 1754705000, 60, 200000);
+    record(outer, QStringLiteral("00000000000000F7-2"), QStringLiteral("new.wav"), 1754705100, 61, 900000);
+    Store s(roots.list(), false);
+    std::atomic<bool> moved{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/old.wav")) && !moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+        return false;
+    });
+    s.store.setLimitMb(1);
+    s.start();
+    s.pass();
+    expect("limit first: the storage went before the first removal", moved.load() && !QFileInfo::exists(outer));
+    expect("limit first: the recording inside stays, what is left being under the limit",
+           QFileInfo::exists(inner + QStringLiteral("/old.wav")) && s.store.removedByLimit() == 0);
+    expect("limit first: the one away stays indexed", s.store.recordingCount() == 2 && folder_away(s.store, kUidA));
+    expect("limit first: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("limit first: back over the limit, the oldest goes",
+           !QFileInfo::exists(inner + QStringLiteral("/old.wav"))
+               && QFileInfo::exists(outer + QStringLiteral("/new.wav")) && s.store.removedByLimit() == 1);
+}
+
 /* Issue #708: an unlink that fails because the storage went as it ran is not a refused delete: the root is marked
  * away, the recording stays indexed, its delete stays queued and no failure is counted; the delete runs once the
  * storage is back. */
@@ -2132,6 +2170,7 @@ main(int argc, char** argv) {
     test_root_gone_as_a_journal_is_read_again();
     test_root_gone_as_a_journal_is_tailed();
     test_root_gone_during_the_limit();
+    test_root_gone_before_the_limit_removes();
     test_root_gone_during_an_unlink();
     test_root_gone_before_a_session_start();
     test_session_start_wakes_the_worker();
