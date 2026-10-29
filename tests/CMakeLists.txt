@@ -16537,7 +16537,7 @@ if(DSD_HAS_RADIO)
     # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
     # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
     # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP
-    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 8 of
+    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 16 of
     # them under an assigned control AACH and decodes none (before the AACH was read, 3 passed as speech).
     set(_dsd_tetra_aach_not_traffic
         "AACH (0/[0-9]+|[123]/[0-3])/[0-9]+\\]\\[TETRA TCH"
@@ -16562,7 +16562,8 @@ if(DSD_HAS_RADIO)
     # The TETRA stress set (TETRA_STRESS in tools/build_iq_fixtures.py): the real-air call next to a stronger
     # synthetic neighbour of another network (MCC 460 / MNC 4242 / colour code 0x11), in noise, or tuned off its
     # carrier, built at 144 kHz and decimated to 72 kHz. The counts in each comment are the receiver before the TETRA
-    # chain against the chain, on these bytes.
+    # chain against the chain, on these bytes. A 60% threshold is 60% of the chain's count rounded to the nearest
+    # whole number (139.2 -> 139, 48.6 -> 49).
     #
     # The neighbour 25 kHz below at +30 dB (29.99 dB realized after decimation), receiver on frequency: 0 identities
     # against 232. At least 139 wanted identities (60% of 232), the call's SYSINFO and channel allocation, and never
@@ -16583,15 +16584,15 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_CALL_ADJACENT
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
-    # AWGN at 3 dB SNR over the 72 kHz band: 3 identities and no speech against 53 and 20 TCH/FS bursts whose CRC
-    # passes (81 and 20 since TETRA slices at the quadrant boundaries). At least 32 wanted identities (60% of 53)
+    # AWGN at 3 dB SNR over the 72 kHz band: 3 identities and no speech against 81 and 20 TCH/FS bursts whose CRC
+    # passes (53 and 20 before TETRA sliced at the quadrant boundaries). At least 49 wanted identities (60% of 81)
     # and one accepted TCH/FS.
     add_test(
         NAME DECODE_IQ_TETRA_CALL_AWGN
         COMMAND
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fT -Z"
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_awgn_72k.iq.json"
-            "-DEXPECTED=${_dsd_tetra_wanted_bsch}" -DMIN_MATCHES=32
+            "-DEXPECTED=${_dsd_tetra_wanted_bsch}" -DMIN_MATCHES=49
             "-DEXPECTED2=\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok" -P
             "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
