@@ -636,11 +636,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void startBackgroundCapture();
     /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill. */
     void handOffBackgroundCapture();
+    /** @brief Stop the running background tap and take the clear it settled and the ring position it read; @return the
+     * lines it could not write to the spill. */
+    QByteArray stopBackgroundCapture();
     /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
     void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
     /** @brief Fold the spill into the log, then @p unwritten (the lines the tap could not write to it), idempotently by
      * fragment; @return whether the row count changed. */
     bool foldSpill(const QByteArray& unwritten = QByteArray());
+    /** @brief Fold @p unwritten, the lines the tap could not write to the spill, into the log; @p folded is set when any
+     * line folded. @return whether rows changed. */
+    bool foldUnwritten(const QByteArray& unwritten, bool* folded);
     /** @brief Fold the spill lines @p reader reads into the log; @p folded is set when any line folded. @return whether
      * rows changed. */
     bool foldSpillLines(CallHistorySpillReader& reader, bool* folded);

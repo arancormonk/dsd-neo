@@ -15,8 +15,8 @@
  * stopped decoder left published are captured; a clear made while the tap runs keeps its rows cleared, and one made
  * after the app returned but before its first ingest hands the tap off instead of restarting it; the spill is written
  * in batches of about a kilobyte a row; and a spill that cannot be written holds a bounded backlog, the newest rows,
- * reported once, which reaches History with the handoff when the spill is still unwritable then (a call whose first
- * sighting the bound dropped included, from its updates). Notices fold once like calls, a replay begun in the
+ * reported once, which reaches History with the handoff, or the model's teardown, when the spill is still unwritable
+ * then (a call whose first sighting the bound dropped included, from its updates). Notices fold once like calls, a replay begun in the
  * background included. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's
  * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. The deliberate
  * failures' warnings are counted, not printed. */
@@ -532,6 +532,40 @@ test_unwritable_spill_hands_off_what_it_holds(void) {
     expect("handoff: no call twice", model.count() == 360 && rows_in_tg_range(model, 38001U, 38410U) == 360);
 }
 
+/* A model torn down while the spill is still unwritable (the app closed from the background) has the rows the tap's
+ * last append could not write, as the handoff has: they go into the log before its last save. 300 calls on one slot
+ * while suspended, more than the ring keeps: after the relaunch every one is in History, and the ring adds none
+ * twice. */
+void
+test_unwritable_spill_teardown_keeps_what_it_holds(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754875000;
+    {
+        CallHistoryModel model;
+        start_tap(model);
+        gui_ingest(model);
+        expect("teardown: the spill is blocked", QDir().mkpath(spill_path()));
+        g_spillDropWarnings = 0;
+        set_app_state(Qt::ApplicationSuspended);
+        for (int batch = 0; batch < 6; batch++) {
+            decoder.commitCalls(0, 50, 38501U + static_cast<uint32_t>(batch) * 50U,
+                                when + static_cast<time_t>(batch) * 1500);
+            decoder.publish();
+            model.waitForBackgroundPollForTest();
+        }
+        expect("teardown: the tap runs and nothing reached the spill",
+               model.backgroundCaptureRunningForTest() && spill_lines() == 0);
+    }
+    QDir(spill_path()).removeRecursively();
+    CallHistoryModel relaunched;
+    expect("teardown: every call held is in History",
+           relaunched.count() == 300 && rows_in_tg_range(relaunched, 38501U, 38800U) == 300);
+    gui_ingest(relaunched);
+    expect("teardown: the ring adds none twice", relaunched.count() == 300);
+    expect("teardown: none was dropped", g_spillDropWarnings == 0);
+}
+
 /* A long call heard again and again while the spill cannot be written: each reacquisition is an update the tap holds,
  * until the bound drops the call's first sighting and keeps only updates. Those carry the whole row, and the model,
  * which never logged the call, takes the first of them as the call: the ring walk after the handoff finds it seen. */
@@ -818,6 +852,7 @@ main(int argc, char** argv) {
     test_clear_before_the_first_ingest_after_return();
     test_unwritable_spill_keeps_a_bounded_backlog();
     test_unwritable_spill_hands_off_what_it_holds();
+    test_unwritable_spill_teardown_keeps_what_it_holds();
     test_unwritable_spill_keeps_a_call_only_its_updates_hold();
     test_replayed_notice_folds_once_from_a_new_ring();
     test_long_spill_folds_bounded();

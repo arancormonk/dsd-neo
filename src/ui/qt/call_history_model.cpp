@@ -259,9 +259,17 @@ CallHistoryModel::scheduleDayRollover() {
 
 CallHistoryModel::~CallHistoryModel() {
     const TeardownStage stage("~CallHistoryModel");
-    /* The tap writes what it holds to the spill as it stops; the next model folds it in. */
-    if (m_tap) {
-        (void)m_tap->stop();
+    /* The tap writes what it holds to the spill as it stops; the next model folds it in. What it could not write (the
+     * spill still unwritable) only this model has: it goes into the log before the last save below, as the handoff
+     * takes it. */
+    if (m_tap && m_tap->running()) {
+        bool folded = false;
+        (void)foldUnwritten(stopBackgroundCapture(), &folded);
+        if (folded) {
+            (void)trimToCapacity();
+            pruneSeen();
+            markChanged();
+        }
     }
     /* A debounced or coalesced save may still be owed; the queued ones (if any)
      * already carry the stores they copied. Wait them out, then flush what remains
@@ -2101,6 +2109,15 @@ CallHistoryModel::handOffBackgroundCapture() {
     if (!m_tap || !m_tap->running()) {
         return;
     }
+    // What the tap's last append could not write (the spill still unwritable) is folded with the spill: only the model
+    // has it now.
+    if (foldSpill(stopBackgroundCapture())) {
+        Q_EMIT countChanged();
+    }
+}
+
+QByteArray
+CallHistoryModel::stopBackgroundCapture() {
     const CallHistoryTap::Result tapped = m_tap->stop();
     // A clear before the next ingest covers what the tap read.
     takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
@@ -2112,11 +2129,7 @@ CallHistoryModel::handOffBackgroundCapture() {
         m_clear = tapped.clear;
         saveClear();
     }
-    // What the tap's last append could not write (the spill still unwritable) is folded with the spill: only the model
-    // has it now.
-    if (foldSpill(tapped.unwritten)) {
-        Q_EMIT countChanged();
-    }
+    return tapped.unwritten;
 }
 
 bool
@@ -2136,14 +2149,7 @@ CallHistoryModel::foldSpill(const QByteArray& unwritten) {
         rowsChanged = foldSpillLines(reader, &folded);
     }
     file.close(); // before a save's acknowledgement below truncates it
-    if (!unwritten.isEmpty()) {
-        QBuffer buffer;
-        buffer.setData(unwritten);
-        if (buffer.open(QIODevice::ReadOnly)) {
-            CallHistorySpillReader reader(&buffer, unwritten.size());
-            rowsChanged = foldSpillLines(reader, &folded) || rowsChanged;
-        }
-    }
+    rowsChanged = foldUnwritten(unwritten, &folded) || rowsChanged;
     rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();
     if (size > 0) {
@@ -2161,6 +2167,20 @@ CallHistoryModel::foldSpill(const QByteArray& unwritten) {
         }
     }
     return rowsChanged;
+}
+
+bool
+CallHistoryModel::foldUnwritten(const QByteArray& unwritten, bool* folded) {
+    if (unwritten.isEmpty()) {
+        return false;
+    }
+    QBuffer buffer;
+    buffer.setData(unwritten);
+    if (!buffer.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    CallHistorySpillReader reader(&buffer, unwritten.size());
+    return foldSpillLines(reader, folded);
 }
 
 bool
