@@ -785,15 +785,35 @@ fll_need_reinit(const dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_p
 /* GNU Radio control_loop::update_gains() at loop bandwidth loop_bw_scale * 2*pi/sps/350 (OP25's FLL bandwidth for a
  * scale of 1), critically damped. */
 static void
-fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps, float loop_bw_scale) {
+fll_set_loop_gains(dsd_fll_band_edge_state_t* f, int sps, float loop_bw_scale) {
     const float loop_bw = kTwoPi / (float)sps / 350.0f * loop_bw_scale;
     const float damping = 0.70710678118654752440f;
     const float denom = 1.0f + 2.0f * damping * loop_bw + loop_bw * loop_bw;
     f->loop_bw = loop_bw;
     f->alpha = (4.0f * damping * loop_bw) / denom;
     f->beta = (4.0f * loop_bw * loop_bw) / denom;
+}
+
+/* The TETRA gears start over, acquiring (dsd_fll_band_edge_tetra_boundary()). */
+static void
+fll_tetra_gear_reset(dsd_fll_band_edge_state_t* f) {
+    f->tetra_track = 0;
+    f->tetra_have_ref = 0;
+    f->tetra_ref_total = 0.0f;
+    for (int k = 0; k < DSD_TETRA_FLL_LOCK_WINDOW; k++) {
+        f->tetra_err[k] = 0.0f;
+    }
+    f->tetra_err_idx = 0;
+    f->tetra_err_count = 0;
+    f->tetra_lock_run = 0;
+}
+
+static void
+fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps, float loop_bw_scale) {
+    fll_set_loop_gains(f, sps, loop_bw_scale);
     f->max_freq = 1.0f;
     f->min_freq = -1.0f;
+    fll_tetra_gear_reset(f);
 }
 
 /* The one band-edge design both init paths run: filters at the parameters' rolloff with OP25's filter size 2*sps+1,
@@ -1389,11 +1409,16 @@ dsd_fll_band_edge_init_params(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_ban
      *   - Phase: new samples have no phase relationship to old
      *   - Delay lines: must be cleared when filters are redesigned
      *   - Frequency: preserved exactly as seeded by the caller
+     *   - The TETRA gears: acquiring again, at the design's gains
      */
     f->phase = 0.0f;
     /* f->freq is caller-owned retune policy state. */
     f->delay_idx = 0;
     fll_band_edge_clear_delay(f);
+    if (f->tetra_track) {
+        fll_set_loop_gains(f, f->sps, f->loop_bw_scale);
+    }
+    fll_tetra_gear_reset(f);
 }
 
 extern "C" int
@@ -1467,6 +1492,78 @@ dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit) {
     const float want = clampf_range(total, -limit, limit);
     f->freq = freq - (want - pre);
     f->pre_freq = want;
+}
+
+/* The TETRA FLL's gears (dsd_fll_band_edge_tetra_boundary()). The tracking loop narrows in octave steps from the
+   design's 4x OP25's bandwidth to a quarter of it, one step every kTetraFllStepEvery sub-blocks, so each narrower loop
+   starts from an estimate the one before it had already averaged: locked straight from the wide loop, the narrow one
+   inherited the wide loop's jitter (tens of Hz) and took seconds to remove it. A quarter: behind the matched filter
+   the band-edge estimate wanders with the bursts' content (on the 72 kHz real-air call about 120 Hz over seconds while
+   the carrier holds within 3 Hz), and the steady estimate's spread was 62 Hz at 4x, 40 Hz at 1x and 12 Hz at a
+   quarter, decoding the same. The lock tests are in band-edge error summed over DSD_TETRA_FLL_LOCK_WINDOW sub-blocks
+   per sample per symbol. */
+static const int kTetraFllTrackSteps = 4; /* 4x -> 2x, 1x, 0.5x, 0.25x */
+static const int kTetraFllStepEvery = 4;
+static const float kTetraFllLockBelow = 8.0f;
+static const float kTetraFllUnlockAbove = 15.0f;
+static const int kTetraFllLockRun = 8;
+
+/* The loop gains at gear @p step: the design's bandwidth halved @p step times. */
+static void
+fll_tetra_set_gear(dsd_fll_band_edge_state_t* f, int step) {
+    float scale = f->loop_bw_scale;
+    for (int k = 0; k < step; k++) {
+        scale *= 0.5f;
+    }
+    fll_set_loop_gains(f, f->sps, scale);
+    f->tetra_track = step;
+    f->tetra_lock_run = 0;
+}
+
+extern "C" void
+dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f) {
+    if (!f || !f->initialized || f->sps < 1 || !(f->beta > 0.0f)) {
+        return;
+    }
+    const float total = f->pre_freq + f->freq;
+    if (!stored_float_is_finite(&total)) {
+        return;
+    }
+    if (!f->tetra_have_ref || !stored_float_is_finite(&f->tetra_ref_total)) {
+        f->tetra_ref_total = total;
+        f->tetra_have_ref = 1;
+        return;
+    }
+    const float err = (total - f->tetra_ref_total) / (f->beta * (float)f->sps);
+    f->tetra_ref_total = total;
+    if (f->tetra_err_idx < 0 || f->tetra_err_idx >= DSD_TETRA_FLL_LOCK_WINDOW) {
+        f->tetra_err_idx = 0; /* not reachable: the index stays within the window */
+    }
+    f->tetra_err[f->tetra_err_idx] = err;
+    f->tetra_err_idx = (f->tetra_err_idx + 1) % DSD_TETRA_FLL_LOCK_WINDOW;
+    if (f->tetra_err_count < DSD_TETRA_FLL_LOCK_WINDOW) {
+        f->tetra_err_count++;
+        return;
+    }
+    float sum = 0.0f;
+    for (int k = 0; k < DSD_TETRA_FLL_LOCK_WINDOW; k++) {
+        sum += f->tetra_err[k];
+    }
+    const float size = fabsf(sum);
+    if (f->tetra_track <= 0) {
+        f->tetra_lock_run = size < kTetraFllLockBelow ? f->tetra_lock_run + 1 : 0;
+        if (f->tetra_lock_run >= kTetraFllLockRun) {
+            fll_tetra_set_gear(f, 1);
+        }
+        return;
+    }
+    if (size > kTetraFllUnlockAbove) {
+        fll_tetra_set_gear(f, 0);
+        return;
+    }
+    if (f->tetra_track < kTetraFllTrackSteps && ++f->tetra_lock_run >= kTetraFllStepEvery) {
+        fll_tetra_set_gear(f, f->tetra_track + 1);
+    }
 }
 
 extern "C" void

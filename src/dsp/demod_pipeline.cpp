@@ -2338,6 +2338,7 @@ full_demod_tetra_stream_block(struct demod_state* d, tetra_stream_block* r) {
         in_pos += seg;
         d->tetra_sub_pos += seg;
         if (d->tetra_sub_pos >= sub) {
+            dsd_fll_band_edge_tetra_boundary(f);
             dsd_fll_band_edge_transfer(f, pre_limit);
             d->tetra_sub_pos = 0;
         }

@@ -594,7 +594,9 @@ Notes
   28 dB down by ±13.75 kHz and 75 dB from ±15 kHz, shown as a 22.5 kHz channel width), levels the signal, and applies
   the receive half of TETRA's root-raised-cosine pulse (roll-off 0.35, the matched filter for what TETRA transmitters
   send). Then it corrects the carrier offset that is left, recovers the symbol timing, and slices the pi/4-DQPSK
-  symbols at their quadrant boundaries. The chain runs only at the DSP rates above, with the channel filter on. When
+  symbols at their quadrant boundaries. The carrier loop pulls in wide and narrows once its estimate holds (in about
+  0.1 to 0.4 s on a usable signal), so the frequency error the receiver reports holds steady: on a clean real-air
+  capture it varied by 12 Hz (standard deviation) where a loop kept wide varied by 62 Hz. The chain runs only at the DSP rates above, with the channel filter on. When
   TETRA is selected but the chain cannot run (a rate outside that range, a timing (TED) samples-per-symbol override
   that does not match the DSP rate, or `DSD_NEO_CHANNEL_LPF=0`), the stream falls back to the generic CQPSK path,
   which has neither the TETRA channel filter nor the matched filter, and logs the cause once per stream, for example

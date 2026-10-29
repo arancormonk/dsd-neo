@@ -57,7 +57,10 @@ typedef struct {
  *   - NXDN:  SPS=20 -> 41 taps
  * Size 48 supports SPS up to 23 (e.g., future 2400 sym/s modes at higher rates).
  */
-#define FLL_BAND_EDGE_MAX_TAPS 48
+#define FLL_BAND_EDGE_MAX_TAPS    48
+
+/** @brief The TETRA FLL's lock window, in transfer sub-blocks (dsd_fll_band_edge_tetra_boundary()). */
+#define DSD_TETRA_FLL_LOCK_WINDOW 16
 
 typedef struct {
     float phase;    /* NCO phase accumulator (radians) */
@@ -92,6 +95,17 @@ typedef struct {
     float pre_freq; /* Mixer frequency (rad/sample) */
     float pre_re;   /* Mixer phasor, real part */
     float pre_im;   /* Mixer phasor, imaginary part */
+
+    /* The TETRA chain's two loop gears (dsd_fll_band_edge_tetra_boundary()), read and written only at its transfer
+     * sub-block boundaries: the design's wide loop while acquiring, the narrow tracking loop once locked. Every design
+     * and every initialization starts them over, acquiring. */
+    int tetra_track;       /* the tracking gear: 0 acquiring, 1 to 4 the loop bandwidth halved that many times */
+    int tetra_have_ref;    /* tetra_ref_total holds the estimate at the last boundary */
+    float tetra_ref_total; /* pre_freq + freq at the last boundary */
+    float tetra_err[DSD_TETRA_FLL_LOCK_WINDOW]; /* each recent sub-block's band-edge error sum, per sample per symbol */
+    int tetra_err_idx;                          /* next slot of tetra_err */
+    int tetra_err_count;                        /* filled slots of tetra_err */
+    int tetra_lock_run; /* boundaries in a row the acquiring loop met the lock test, or since the last step down */
 } dsd_fll_band_edge_state_t;
 
 /** @brief Bound on the TETRA mixer frequency, in Hz either side of the tuned centre. */
@@ -329,6 +343,21 @@ void dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f);
  * @param pre_limit Mixer bound, rad/sample (dsd_tetra_pre_limit_rad()).
  */
 void dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit);
+
+/**
+ * @brief The TETRA chain's FLL gear, decided at a transfer sub-block boundary.
+ *
+ * The step the combined estimate took over the sub-block, divided by the loop's frequency gain (beta) and by the
+ * sps, is that sub-block's band-edge error sum per symbol, whatever gear ran it. Over the last
+ * DSD_TETRA_FLL_LOCK_WINDOW sub-blocks the acquiring (wide) loop locks once the summed magnitude stays below 8 for 8
+ * boundaries in a row, and the loop then narrows an octave every 4 sub-blocks down to a quarter of OP25's bandwidth;
+ * at any tracking gear, a sum above 15 drops it back to acquiring. Locked carriers measured at most 4 to 7 at 4x and
+ * at 1x OP25's bandwidth, pull-ins of a few kHz 13 and up. Only the loop gains change: the filters, delay line, phase
+ * and frequency carry on. The first boundary after a design or an initialization only takes its reference.
+ *
+ * @param f FLL state (designed; anything else is left alone).
+ */
+void dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f);
 
 /**
  * @brief Rotate a block by the TETRA mixer: x[n] * p, with the phasor p advanced by exp(+j * pre_freq) per sample.

@@ -1152,6 +1152,122 @@ test_block_partitions(void) {
     return rc;
 }
 
+/* --- The FLL's gears ---------------------------------------------------------------------------------------- */
+
+/* The loop gains GNU Radio's control loop sets at @p scale times OP25's bandwidth 2*pi/sps/350, critically damped. */
+double
+fll_beta_for(int sps, double scale) {
+    const double bw = 2.0 * kPi / (double)sps / 350.0 * scale;
+    return 4.0 * bw * bw / (1.0 + 2.0 * 0.70710678118654752440 * bw + bw * bw);
+}
+
+/* A noisy pi/4-DQPSK stream (about 10 dB SNR in the 25 kHz channel) whose carrier sits @p hz1 above the centre for
+ * the first @p switch_at samples and @p hz2 after, phase continuous. */
+std::vector<float>
+gear_stream(int rate, int pairs, double hz1, double hz2, int switch_at) {
+    std::vector<float> iq = make_tetra_stream(rate, 0.0, pairs, 0.3f, 0x6E6Eu);
+    Lcg rng{0x5EEDu};
+    double ph = 0.0;
+    for (int n = 0; n < pairs; n++) {
+        ph += 2.0 * kPi * (n < switch_at ? hz1 : hz2) / (double)rate;
+        const double c = std::cos(ph);
+        const double s = std::sin(ph);
+        const double re = (double)iq[(size_t)n * 2U];
+        const double im = (double)iq[((size_t)n * 2U) + 1U];
+        /* Box-Muller from the stream's own generator. */
+        const double u1 = rng.uniform() + 1e-12;
+        const double u2 = rng.uniform();
+        const double r = std::sqrt(-2.0 * std::log(u1)) * 0.06;
+        iq[(size_t)n * 2U] = (float)(re * c - im * s + r * std::cos(2.0 * kPi * u2));
+        iq[((size_t)n * 2U) + 1U] = (float)(re * s + im * c + r * std::sin(2.0 * kPi * u2));
+    }
+    return iq;
+}
+
+/* The chain acquires with the wide loop, locks to the narrow tracking loop (a quarter of OP25's bandwidth) once the
+ * estimate holds, and drops back to acquiring when the carrier moves: here 2 kHz in one step, after which it locks
+ * again on the new carrier. Locked, the estimate's spread is a fraction of the acquiring loop's. */
+int
+test_fll_gears(void) {
+    int rc = 0;
+    const int rate = 72000;
+    const int block = 2400;
+    const int total = rate * 3; /* 3 s: the jump at 1.5 s */
+    const std::vector<float> iq = gear_stream(rate, total, 2500.0, 4500.0, total / 2);
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_tetra(s, rate);
+    std::vector<double> est;
+    std::vector<int> gear;
+    for (int b = 0; b < total / block; b++) {
+        (void)run_block(s, iq.data() + (size_t)b * (size_t)block * 2U, block);
+        est.push_back(rad_to_hz(dsd_fll_band_edge_total_freq(&s->fll_band_edge_state), rate));
+        gear.push_back(s->fll_band_edge_state.tetra_track);
+    }
+    const dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;
+    const int per_s = rate / block; /* 30 blocks a second */
+    auto spread = [&](int from, int to) {
+        double m = 0.0;
+        for (int k = from; k < to; k++) {
+            m += est[(size_t)k];
+        }
+        m /= (double)(to - from);
+        double v = 0.0;
+        for (int k = from; k < to; k++) {
+            v += (est[(size_t)k] - m) * (est[(size_t)k] - m);
+        }
+        return std::sqrt(v / (double)(to - from));
+    };
+    int first_lock = -1;
+    int dropped = -1;
+    int relock = -1;
+    for (size_t k = 0; k < gear.size(); k++) {
+        if (first_lock < 0 && gear[k] > 0) {
+            first_lock = (int)k;
+        }
+        if (k >= (size_t)(per_s * 3 / 2) && dropped < 0 && gear[k] == 0) {
+            dropped = (int)k;
+        }
+        if (dropped >= 0 && relock < 0 && gear[k] > 0) {
+            relock = (int)k;
+        }
+    }
+    const double locked_spread = spread(per_s, per_s * 3 / 2);
+    const double final_spread = spread(per_s * 5 / 2, per_s * 3);
+    DSD_FPRINTF(stdout,
+                "TETRA chain FLL gears: locked at %.3f s, dropped at %.3f s, locked again at %.3f s; spread %.1f Hz "
+                "before the step, %.1f Hz at the end; estimate %.1f Hz before the step (truth -2500), %.1f Hz at the "
+                "end (truth -4500)\n",
+                first_lock >= 0 ? (double)(first_lock + 1) * block / rate : -1.0,
+                dropped >= 0 ? (double)(dropped + 1) * block / rate : -1.0,
+                relock >= 0 ? (double)(relock + 1) * block / rate : -1.0, locked_spread, final_spread,
+                est[(size_t)(per_s * 3 / 2 - 1)], est.back());
+    rc |= expect_int("gears: acquiring at the start", gear[0], 0);
+    if (first_lock < 0 || first_lock >= per_s / 2) {
+        rc |= fail("gears: no lock within 0.5 s");
+    }
+    for (int k = per_s; k < per_s * 3 / 2; k++) {
+        if (gear[(size_t)k] == 0) {
+            rc |= fail("gears: dropped out of tracking on a steady carrier");
+            break;
+        }
+    }
+    if (dropped < 0 || dropped > per_s * 3 / 2 + per_s / 5) {
+        rc |= fail("gears: the 2 kHz step did not drop back to acquiring within 0.2 s");
+    }
+    if (relock < 0 || relock > per_s * 5 / 2) {
+        rc |= fail("gears: no lock again within 1 s of the step");
+    }
+    rc |= expect_near("gears: tracking spread (Hz)", locked_spread, 0.0, 15.0);
+    rc |= expect_near("gears: estimate after the step (Hz)", est.back(), -4500.0, 150.0);
+    rc |= expect_int("gears: narrowest tracking gear at the end", gear.back(), 4);
+    rc |= expect_near("gears: tracking loop gain", f->beta, fll_beta_for(4, 0.25), 1e-9);
+    free_demod(s);
+    return rc;
+}
+
 /* --- A P25 stream after a TETRA session --------------------------------------------------------------------- */
 
 /* What a stream switch at the same frequency resets: the filters, and the loops as a family switch starts them, but
@@ -1294,6 +1410,7 @@ main(void) {
     rc |= test_block_after_gap_makes_symbols();
     rc |= test_partition_invariance();
     rc |= test_block_partitions();
+    rc |= test_fll_gears();
     rc |= test_p25_after_tetra_session();
     rc |= test_filter_reset();
     if (rc == 0) {

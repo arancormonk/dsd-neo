@@ -4508,7 +4508,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     with `dsd_fll_band_edge_params_for(tetra_chain)`: rolloff 0.35 and 4x OP25's loop bandwidth 2*pi/sps/350 for the
     TETRA chain, 0.2 and 1x otherwise (filter size 2*sps+1 either way). A redesign is keyed on (sps, rolloff,
     loop-bandwidth scale) and keeps the frequency estimate; `dsd_fll_band_edge_init()` is the P25-parameter wrapper
-    for callers without a demod. The band-edge convolution takes its newest tap from the sample just rotated rather
+    for callers without a demod. The TETRA chain's 4x is its acquiring gear. At each transfer sub-block boundary
+    `dsd_fll_band_edge_tetra_boundary()` takes the step the combined estimate made over the sub-block, divided by the
+    loop's frequency gain and the sps: that sub-block's band-edge error sum per symbol, the same measure in any gear.
+    Summed over the last `DSD_TETRA_FLL_LOCK_WINDOW` (16) sub-blocks, below 8 for 8 boundaries in a row locks, and the
+    loop then halves its bandwidth every 4 sub-blocks down to a quarter of OP25's; above 15 at any tracking gear drops
+    it back to 4x. Only the gains change (filters, delay line, phase and frequency carry on), every design and every
+    `dsd_fll_band_edge_init_params()` starts the gears over, acquiring, and the decisions fall on the sub-block
+    boundaries, so they do not depend on how the input is cut. Locked carriers measured at most 4 to 7 at 4x and at 1x,
+    pull-ins of a few kHz 13 and up. Behind the matched filter the band-edge estimate wanders with the bursts' content
+    (the 72 kHz real-air call: about 120 Hz over seconds while its carrier holds within 3 Hz of +342 Hz), so a wide
+    loop follows that wander: the steady estimate's spread on that call is 62 Hz at 4x, 40 Hz at 1x and 12 Hz at a
+    quarter. The narrow loop also pulls weakly, so it holds the estimate near where it locked, and the estimator's
+    bias stays in it: on that call the wide loop averages +624 Hz and the narrow one held +529 Hz (+463 Hz on its AWGN
+    copy) against the carrier's +342 Hz. Tests: `DSP_TETRA_CHAIN` (`test_fll_gears()`: lock within 0.5 s, the
+    narrowest gear, a 2 kHz step dropping back and locking again), `test_block_partitions()`. The band-edge
+    convolution takes its newest tap from the sample just rotated rather
     than reading it back from the delay line (`fll_convolve_band_edges()`): the sums run in the same order, and a
     vectorized build no longer stalls on that store (a quarter of the FLL's time at 144 kHz). The CQPSK RMS AGC
     averages with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA,
@@ -4545,7 +4560,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     root-raised-cosine of roll-off 0.35, 8 symbols each side (33 / 65 / 129 taps at sps 2 / 4 / 8), scaled to a sum
     of squared taps of 1/sps; it streams through `simd_fir_complex_apply()` with its own `tetra_rrc_*` history and is
     redesigned on an sps change. It sits ahead of the FLL: placed after it, a neighbour 30-40 dB stronger 25 kHz away
-    broke decoding on frequency, and the 4x FLL loop bandwidth restores the pull-in it costs. A squelched block still
+    broke decoding on frequency, and the 4x FLL loop bandwidth restores the pull-in it costs (the acquiring gear
+    above). A squelched block still
     mixes and channel-filters; the matched filter, FLL and loops do not run, and the matched filter starts over for
     the reopen. `dsd_demod_reset_filter_state()` resets the matched filter too, and on the TETRA chain the AGC
     average. The symbols are sliced at the quadrant boundaries (TETRA protocol section).
