@@ -53,6 +53,12 @@ Item {
     property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested
     signal closed
+    // Shown, fade included (issue #782). Hidden, the cards and category chips
+    // let their models go: a scan brings each target's own table, and every
+    // card or chip rebuilt under the hidden screen sends accessibility events.
+    // The filters live in talkgroupView and stay set; reopening lists the
+    // table as it is then, from the top.
+    readonly property bool live: screen.visible
     onVisibleChanged: {
         if (!visible)
             editSheet.visible = false;
@@ -142,7 +148,7 @@ Item {
         clip: true
         implicitHeight: Math.max(48, Theme.fontSize(13) + 24)
         visible: talkgroups.categories.length > 0
-        model: [qsTr("All")].concat(talkgroups.categories)
+        model: screen.live ? [qsTr("All")].concat(talkgroups.categories) : []
 
         delegate: FilterPill {
             required property int index
@@ -241,7 +247,7 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         clip: true
-        model: talkgroupView
+        model: screen.live ? talkgroupView : null
         spacing: 10
         enabled: decoderHost.running
 

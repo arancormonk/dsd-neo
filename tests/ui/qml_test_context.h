@@ -62,6 +62,7 @@
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
+#include <array>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -71,7 +72,9 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <iterator>
 #include <memory>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
 
@@ -2376,7 +2379,14 @@ class Setup : public QObject {
      * is when the collector policy has to be in place. */
     Setup() { dsd_qt::applyQmlGcPolicy(); }
 
-    ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
+    ~Setup() override {
+        dsd_state_ext_free_all(m_talkgroup_state.get());
+        for (auto& table : m_target_tables) {
+            if (table) {
+                dsd_state_ext_free_all(table.get());
+            }
+        }
+    }
 
     Q_INVOKABLE bool
     retainedKeyMatches(const QString& uid, const QString& expected) const {
@@ -2401,6 +2411,7 @@ class Setup : public QObject {
         if (dsd_tg_policy_append_exact(m_talkgroup_state.get(), &entry) != 0) {
             return false;
         }
+        m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
     }
@@ -2423,10 +2434,46 @@ class Setup : public QObject {
         return true;
     }
 
+    /**
+     * @brief Issue #782: show scan target @p target's talkgroup table, as the poll tick does after a hop.
+     *
+     * Targets 0 and 1 are two prepared policy tables, A and B, each with its own policy context and with different
+     * rows and categories, so a switch between them resets the list and changes the categories. Any other value
+     * goes back to the fixture's own table, the one pushTalkgroup() fills.
+     */
+    Q_INVOKABLE bool
+    applyTalkgroupTable(int target) {
+        dsd_state* table = m_talkgroup_state.get();
+        if (target >= 0 && target < static_cast<int>(m_target_tables.size())) {
+            table = targetTable(static_cast<size_t>(target));
+            if (table == nullptr) {
+                return false;
+            }
+        }
+        m_applied_table = table == m_talkgroup_state.get() ? nullptr : table;
+        m_talkgroups->refresh(m_talkgroup_opts.get(), table);
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: whether the shown table takes an edit captured at (@p context, @p generation).
+     *
+     * The same check the decoder makes before any talkgroup edit (tg_edit_check_version()); false is the stale
+     * refusal.
+     */
+    Q_INVOKABLE bool
+    talkgroupEditVersionValid(const QString& context, unsigned int generation) const {
+        bool ok = false;
+        const qulonglong id = context.toULongLong(&ok);
+        const dsd_state* table = m_applied_table != nullptr ? m_applied_table : m_talkgroup_state.get();
+        return ok && dsd_tg_policy_edit_version_valid(table, id, generation) != 0;
+    }
+
     Q_INVOKABLE void
     setGroupFileConfigured(bool configured) {
         DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
                      configured ? "fixture-talkgroups.csv" : "");
+        m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
     }
 
@@ -2435,6 +2482,7 @@ class Setup : public QObject {
         if (dsd_tg_policy_clear(m_talkgroup_state.get()) != 0) {
             return false;
         }
+        m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
     }
@@ -4014,7 +4062,53 @@ class Setup : public QObject {
     ImportOnlyHost* m_lifecycle_host = nullptr;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
+    /* Issue #782: two scan targets' policy tables (applyTalkgroupTable()), built on first use. */
+    std::array<std::unique_ptr<dsd_state>, 2> m_target_tables;
+    /* The target table on show, or null for m_talkgroup_state. */
+    const dsd_state* m_applied_table = nullptr;
     dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;
+
+    struct TableRow {
+        uint32_t id;
+        const char* mode;
+        const char* name;
+        const char* tags;
+    };
+
+    /* Target 0 (A) and target 1 (B): no row bounds and no category in common. */
+    dsd_state*
+    targetTable(size_t target) {
+        if (m_target_tables[target]) {
+            return m_target_tables[target].get();
+        }
+        static const TableRow kTableA[] = {
+            {1001, "A", "Fire Dispatch", "FIRE"},
+            {1002, "B", "Fire Tactical", "FIRE"},
+            {2001, "A", "EMS Dispatch", "EMS"},
+        };
+        static const TableRow kTableB[] = {
+            {3001, "A", "Police Dispatch", "POLICE"},
+            {3002, "B", "Police Tactical", "POLICE"},
+            {4001, "A", "Public Works", "WORKS"},
+            {4002, "B", "Water Department", "WORKS"},
+        };
+        const TableRow* rows = target == 0 ? kTableA : kTableB;
+        const size_t count = target == 0 ? std::size(kTableA) : std::size(kTableB);
+        auto table = std::make_unique<dsd_state>();
+        for (size_t i = 0; i < count; ++i) {
+            dsd_tg_policy_entry entry{};
+            if (dsd_tg_policy_make_exact_entry(rows[i].id, rows[i].mode, rows[i].name, DSD_TG_POLICY_SOURCE_IMPORTED,
+                                               &entry)
+                    != 0
+                || DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", rows[i].tags) < 0
+                || dsd_tg_policy_append_exact(table.get(), &entry) != 0) {
+                dsd_state_ext_free_all(table.get());
+                return nullptr;
+            }
+        }
+        m_target_tables[target] = std::move(table);
+        return m_target_tables[target].get();
+    }
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */
