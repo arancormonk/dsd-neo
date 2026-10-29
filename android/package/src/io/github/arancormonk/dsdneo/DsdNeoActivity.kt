@@ -63,6 +63,11 @@ import org.qtproject.qt.android.bindings.QtActivity
  * and [AccessibilityBridge.afterQt] immediately after freezes that for the process. The resume, pause, stop and
  * destroy callbacks go to [AccessibilityBridge] too, so the notice for TalkBack turned on later reaches only a resumed
  * activity and is never lost.
+ *
+ * Qt 6.11.2 restarts the whole process, with none of the teardown below, when a second instance of this activity is
+ * created in a process Qt already started (#782). The manifest keeps that from happening: `singleTask`, so a USB
+ * attachment reaches [onNewIntent] of the one instance, and every configuration change handled in place. One that gets
+ * through anyway is recorded by [LaunchGuard], first among the launch statements, for the next process's `exit:` line.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -73,11 +78,13 @@ class DsdNeoActivity : QtActivity() {
         // Before Qt starts: native diagnostics ask it for the process facts as soon as they start.
         ProcessFacts.attach(this)
         trace.created(this)
+        LaunchGuard.onCreate(ProcessFacts::setStateSummary)
         AccessibilityBridge.effects = AccessibilityRestartNotice
         QmlGcPolicy.beforeQt(HostDiagnostics::submit)
         AccessibilityBridge.beforeQt(this)
         super.onCreate(savedInstanceState)
         AccessibilityBridge.afterQt(this)
+        LaunchGuard.afterQt()
         ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
             val callback = OnBackInvokedCallback { ScreenSupport.userInteraction(this); AppSupport.requestBack() }

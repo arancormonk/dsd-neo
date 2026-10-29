@@ -106,6 +106,11 @@ set_property(
     PROPERTY QT_QML_ROOT_PATH "${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_TARGET_SDK_VERSION 36)
+# Pinned rather than whichever platform is installed newest: the manifest's
+# configChanges uses assetsPaths, which aapt2 knows only from android-36 (#782).
+# CI installs this platform from ANDROID_COMPILE_SDK in tools/ci-dependency-pins.env;
+# launch_policy in tests/android/run_jvm_tests.py keeps the two equal.
+set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_COMPILE_SDK_VERSION 36)
 
 # Without these two androiddeployqt substitutes the CMake target name into
 # android:label and drops android:icon outright, so the app installs as
