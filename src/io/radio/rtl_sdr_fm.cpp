@@ -5013,17 +5013,20 @@ optimal_settings(uint32_t freq, int rate) {
 }
 
 /* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, or
- * goes back to @p previous when it cannot say. Returns @p rc. */
+ * goes back to @p previous when it cannot say. A device running another rate whose capture correction it does not take
+ * sets @p out_correction_failed, as program_capture_frequency_and_rate() does for a readback after a rate write that
+ * took (issue #670 B16). Returns @p rc. */
 static int
 capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz,
-                          const CaptureSettingsSnapshot* previous, int rc) {
+                          const CaptureSettingsSnapshot* previous, int rc, int* out_correction_failed) {
     capture_writes_forget_tuning();
     LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0) {
-        if ((uint32_t)actual != capture_rate_hz) {
-            /* The programming fails with @p rc whether or not the capture follows. */
-            (void)apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual, NULL);
+        if ((uint32_t)actual != capture_rate_hz
+            && apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual, NULL) != 0
+            && out_correction_failed) {
+            *out_correction_failed = 1;
         }
     } else {
         restore_capture_rate_settings(previous);
@@ -5042,7 +5045,8 @@ capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uin
  *
  * A capture frequency out of the device's range is refused before anything is written, with the settings it had put
  * back (issue #670 B4). A device that took the frequency and then reads back a rate whose capture correction it does
- * not take (a refused write, or a corrected capture out of range) sets @p out_correction_failed: it runs neither the
+ * not take (a refused write, or a corrected capture out of range), after a rate write that took or one that failed,
+ * sets @p out_correction_failed: it runs neither the
  * capture the stream asked for nor the one the rate chain now follows, so the caller refuses the retune and puts the
  * previous capture back (issue #670 B16).
  *
@@ -5098,7 +5102,8 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     }
     rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
     if (rc != 0) {
-        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc);
+        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc,
+                                         out_correction_failed);
     }
     /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
@@ -6645,8 +6650,9 @@ controller_gate_tune_timeout(struct controller_state* s, uint32_t request_id) {
     }
 }
 
-/* A retune refused for the analog monitor's width (@p refused) fails whatever centre it finalized on: it kept the
- * capture it had and dropped its profile, even when the centre it kept is the one it asked for. Any other failed apply
+/* A retune refused once the device was programmed (@p refused: for the analog monitor's width, or for a capture
+ * correction the device did not take, controller_apply_reconfigure()) fails whatever centre it finalized on: it kept
+ * the capture it had and dropped its profile, even when the centre it kept is the one it asked for. Any other failed apply
  * that still reconfigured onto its target reports OK, with a warning logged. */
 static int
 controller_manual_retune_completion_result(int retune_rc, int reconfigured, int refused, uint32_t target_hz,

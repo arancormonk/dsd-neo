@@ -4483,8 +4483,9 @@ Key public headers:
     capture (centre, plus Fs/4 while the shift is active, plus the edge offset) must lie in 1..UINT32_MAX, because
     software rotation counts on the whole shift: one outside is refused, never clamped. A start fails with it logged; a
     retune fails before anything is written, with the settings it had put back. After the frequency write, a device that
-    reads back another rate gets a corrective frequency write; when that write fails or the corrected capture is out of
-    range, `program_capture_frequency_and_rate()` reports `out_correction_failed` and both reconfigure paths refuse the
+    reads back another rate (after a rate write that took, or one that failed, `capture_rate_write_failed()`) gets a
+    corrective frequency write; when that write fails or the corrected capture is out of range,
+    `program_capture_frequency_and_rate()` reports `out_correction_failed` and both reconfigure paths refuse the
     retune through the same rollback as the analog-width refusal (`controller_roll_back_refused_retune()`: the previous
     capture back on the device, finalized on the kept centre without the profile, completed as failed through the
     refused flag, a device that will not go back stopping the stream). Test: `IO_RTL_CAPTURE_WRITES` (its manual retune

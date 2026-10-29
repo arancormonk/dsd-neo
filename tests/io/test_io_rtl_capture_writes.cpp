@@ -28,7 +28,7 @@
  *   int, which programmed the dongle near 0 Hz), and a capture frequency past UINT32_MAX is refused with nothing
  *   written instead of saturated;
  * - a retune whose actual-rate correction cannot be written (the write fails, or the corrected capture is past
- *   UINT32_MAX) is refused: the device goes back on the capture it had, the controller finalizes on the centre it
+ *   UINT32_MAX), after a rate write that took or one that failed, is refused: the device goes back on the capture it had, the controller finalizes on the centre it
  *   kept and the retune completes as failed; a device that will not go back stops the stream.
  */
 
@@ -754,6 +754,28 @@ test_rate_correction_past_uint32_rolls_back(void) {
     rig_close(r);
 }
 
+/* The rate write for 960 kS/s is refused and the device still runs the rate it had, whose capture correction it refuses
+ * too: the retune is refused and rolled back onto the capture the stream ran, as after a rate write that took. */
+void
+test_failed_rate_write_correction_rolls_back(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value = (int)kCapture960kHz;
+    const uint32_t corrected_hz = kHopsHz[0] + r.start.capture_rate_hz / 4U;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)corrected_hz;
+    const int from = r.dongle->tuner.freq_log_count;
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], kRateIn960k);
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 0;
+    expect_rolled_back(r, got);
+    assert(r.dongle->tuner.freq_log_count == from + 2);
+    assert(freq_taken(r, from) == kHopsHz[0] + kCapture960kHz / 4U);
+    assert(freq_taken(r, from + 1) == r.start.capture_freq_hz);
+    rig_close(r);
+}
+
 /* The correction fails and so does the rollback's frequency write: the device may still run the retune's capture, so
  * the stream stops, reported as a device failure of the input. */
 void
@@ -816,6 +838,7 @@ main(int argc, char** argv) {
         {"start_past_uint32", test_start_past_uint32_refused},
         {"failed_rate_correction", test_failed_rate_correction_rolls_back},
         {"rate_correction_past_uint32", test_rate_correction_past_uint32_rolls_back},
+        {"failed_rate_write_correction", test_failed_rate_write_correction_rolls_back},
         {"failed_rollback", test_failed_rollback_stops_stream},
     };
 
