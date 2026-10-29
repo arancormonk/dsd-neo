@@ -1647,6 +1647,11 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
             }
             continue;
         }
+        // One that no longer takes new files (storage mounted read-only, permissions changed) records nothing: the
+        // next root takes the session, as for a folder that cannot be made.
+        if (!QFileInfo(folder.path).isWritable()) {
+            continue;
+        }
         best = &folder;
     }
     const QString bestPath = best != nullptr ? best->path : QString();
@@ -1678,6 +1683,9 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
                 Folder found;
                 if (!info.isSymLink() && info.isDir() && read_folder_json(path, &found.uid, &found.kind, &found.name)
                     && found.uid == uid) {
+                    if (!info.isWritable()) {
+                        break; // this owner's, taking no new files: the next root
+                    }
                     // Made for this owner, not read yet: the worker reads its journal from the start, in place of
                     // what the index held for it under another owner.
                     found.path = path;

@@ -8034,7 +8034,8 @@ Qt Quick frontend (`src/ui/qt`):
     (and relabels it) and two uids sharing eight characters get `<name> (<uid8>) 2`. A folder without a folder.json is
     not the app's and is never read or taken. New folders go to the first available root, as the start checks the
     roots then (not as the last pass found them): storage gone since is skipped, never made again under its absent
-    mount (a start makes the root itself if need be, never its parent), and the pass it asks for marks it away.
+    mount (a start makes the root itself if need be, never its parent), and the pass it asks for marks it away. An
+    owner's folder that takes no new files (read-only storage, changed permissions) is passed over for the next root.
   - Sessions (`RecordingSessions`): `SessionArgsBuilder::start()` and `ScanListStarter::start()` call
     `beginSession(kind, uid, name)` before `DecoderHost::start()`, which makes the folder and marks it in use (waiting
     for a compaction of it in progress, never for the journals), and `endSession()` when the start did not happen.

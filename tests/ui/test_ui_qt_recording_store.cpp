@@ -1683,6 +1683,60 @@ test_root_gone_before_a_session_start(void) {
     expect("start: still nothing where the storage was", !QFileInfo::exists(ext));
 }
 
+/* Whether this process is refused new files in a read-only folder (not, as root). */
+bool
+permissions_enforced(const QString& dir) {
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QFile probe(dir + QStringLiteral("/probe"));
+    const bool refused = !probe.open(QIODevice::WriteOnly);
+    probe.close();
+    QFile::remove(dir + QStringLiteral("/probe"));
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    return refused;
+}
+
+/* Issue #708: an owner's folder that no longer takes new files (storage mounted read-only, its permissions changed)
+ * is not handed to a session, which would record nothing: the next root takes it, as when a folder cannot be made.
+ * Both ways the start finds a folder: one the store has read, and one made for the owner that it has not read yet. */
+void
+test_unwritable_folder_falls_back(void) {
+    const Roots roots;
+    Store s(roots.list());
+    const QString old = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.pass();
+    expect("read-only: the folder goes to the external storage first",
+           old == roots.external + QStringLiteral("/County (1a2b3c4d)"));
+    if (!permissions_enforced(old)) {
+        return; // as root, a read-only folder takes new files
+    }
+    const QFileDevice::Permissions open = QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+    const QFileDevice::Permissions readOnly = QFileDevice::ReadOwner | QFileDevice::ExeOwner;
+
+    QFile::setPermissions(old, readOnly);
+    const QString fallback = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    expect("read-only: a read folder that takes no new files gives way to the fallback",
+           fallback == roots.internal + QStringLiteral("/County (1a2b3c4d)") && QFileInfo(fallback).isDir());
+    QFile::setPermissions(old, open);
+    const QString back = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.pass();
+    expect("read-only: writable again, the preferred folder", back == old);
+
+    const QString unread = roots.external + QStringLiteral("/Metro (1a2b3c4d)");
+    expect("read-only: a folder made for an owner, not read yet", QDir().mkpath(unread));
+    append(unread + QStringLiteral("/folder.json"),
+           QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"Metro\"}\n").arg(kUidB).toUtf8());
+    QFile::setPermissions(unread, readOnly);
+    const QString other = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+    s.store.endSession();
+    expect("read-only: an unread folder that takes no new files gives way to the fallback",
+           other == roots.internal + QStringLiteral("/Metro (1a2b3c4d)") && QFileInfo(other).isDir());
+    QFile::setPermissions(unread, open);
+    s.pass();
+}
+
 /* Wait (at most five seconds) for the store to deliver @p count recordings from a pass the test did not ask for. */
 bool
 counted_soon(const RecordingStore& store, int count) {
@@ -2285,6 +2339,7 @@ main(int argc, char** argv) {
     test_root_gone_before_the_limit_removes();
     test_root_gone_during_an_unlink();
     test_root_gone_before_a_session_start();
+    test_unwritable_folder_falls_back();
     test_session_start_wakes_the_worker();
     test_recheck_recordings();
     test_limit_counts_only_files_still_there();
