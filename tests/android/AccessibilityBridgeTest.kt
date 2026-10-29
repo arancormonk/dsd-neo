@@ -60,7 +60,7 @@ internal object Qt {
     private fun changed(enabled: Boolean) {
         val value = Os.getenv(VARIABLE)
         envSeen += value
-        if (value == "1" || value == "true") return
+        if (value == "1" || value.equals("true", ignoreCase = true)) return
         if (enabled && !bridgeOn) activations++
         bridgeOn = enabled
     }

@@ -25,8 +25,8 @@ fun main() {
     check(Recorder.records == listOf(
         "qml: setting QV4_GC_TIMELIMIT failed (errno 22); the collector keeps its time slices",
         "accessibility: setting QT_ANDROID_DISABLE_ACCESSIBILITY failed (errno 22); Qt's default applies at launch",
-        "accessibility: the variable is unset; the bridge is not frozen, so Qt follows later changes",
-        "accessibility: bridge on at launch (touch exploration off; accessibility on, 1 service bound)",
+        "accessibility: bridge on at launch (touch exploration off; accessibility on, 1 service bound); " +
+            "not frozen, so Qt follows later changes",
     )) { "records: ${Recorder.records}" }
     // The process goes on. TalkBack can already read it, so turning TalkBack on asks for no restart.
     AccessibilityBridge.onResume(a)

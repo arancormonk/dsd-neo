@@ -62,6 +62,36 @@ private fun theFirstLaunchDecidesForTheProcess() {
     check(gate.launch(OFF) == LaunchPlan(wanted = false, activated = false, env = "1"))
 }
 
+private fun qtsOwnReadingOfTheVariable() {
+    // QtAccessibilityDelegate.java:94-95 at v6.11.2: equalsIgnoreCase("true") || equals("1").
+    for (value in listOf("1", "true", "TRUE", "True", "tRuE")) check(qtKeepsBridgeOff(value)) { "Qt keeps off: $value" }
+    for (value in listOf(null, "", "0", "false", "yes", "11", " 1", "1 ", "truee")) {
+        check(!qtKeepsBridgeOff(value)) { "Qt does not keep off: $value" }
+    }
+}
+
+private fun anUnfrozenLaunchNeverAsks() {
+    // The write failed and nothing is set (#782 T4 r3 M1): Qt follows the enabled state by itself, mid-session too.
+    for (facts in listOf(OFF, SERVICE_ONLY, A11yFacts(enabled = false, touchExploration = true, boundServices = 0))) {
+        val rig = Rig()
+        val plan = LaunchPlan.of(facts).copy(activated = facts.enabled, qtFollows = true)
+        rig.gate.launch(facts, plan)
+        check(!rig.gate.noticePending) { "Qt turns the bridge on itself: nothing is owed at launch ($facts)" }
+        rig.gate.attach(rig.a)
+        check(rig.gate.resumed(rig.a) == Notice.NONE)
+        check(rig.gate.onFacts(TALKBACK) == Notice.NONE) { "no restart asked ($facts)" }
+        check(rig.gate.onFacts(OFF) == Notice.NONE && rig.gate.onFacts(TALKBACK) == Notice.NONE)
+        check(!rig.gate.noticePending)
+        check(rig.records.isNotEmpty() && rig.records.all {
+            it.endsWith("; the bridge is not frozen, so Qt follows it")
+        }) { "records: ${rig.records}" }
+    }
+    val gate = AccessibilityGate<GateActivity> {}
+    check(gate.record(OFF, LaunchPlan.of(OFF).copy(qtFollows = true)) ==
+        "accessibility: bridge off at launch (touch exploration off; accessibility off, 0 services bound); " +
+        "not frozen, so Qt follows later changes")
+}
+
 private fun aLaunchWhoseVariableWasNotWrittenFollowsQtsDefault() {
     // The bridge could not write 1, so Qt's default turned the bridge on for the bound service: never ask.
     val rig = Rig()
@@ -247,6 +277,8 @@ fun main() {
     thePredicateIsTouchExplorationOnly()
     theFirstLaunchDecidesForTheProcess()
     aLaunchWhoseVariableWasNotWrittenFollowsQtsDefault()
+    qtsOwnReadingOfTheVariable()
+    anUnfrozenLaunchNeverAsks()
     aRisingEdgeWhileOffAsksOnce()
     aFallingThenRisingEdgeAsksAgain()
     aBridgeOnAtLaunchNeverAsks()

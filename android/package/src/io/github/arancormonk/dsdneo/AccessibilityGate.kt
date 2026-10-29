@@ -23,9 +23,11 @@ fun bridgeWanted(f: A11yFacts): Boolean = f.touchExploration
  * The launch's decision. [env] is what `QT_ANDROID_DISABLE_ACCESSIBILITY` holds while Qt starts: `"1"` keeps the bridge
  * off; `"0"` leaves Qt's default, since Qt keeps it off only for `1` or `true`. It is written rather than unset so the
  * freeze after Qt starts never adds an environment entry (see [AccessibilityBridge]). [activated] is whether Qt turns
- * the bridge on as it starts, which it does only when accessibility is enabled at that moment.
+ * the bridge on as it starts, which it does only when accessibility is enabled at that moment. [qtFollows] is set
+ * when the variable could not be written and is absent: nothing freezes the bridge then, Qt turns it on and off with
+ * the enabled state itself (the behaviour before #782), and the gate never asks for a restart.
  */
-data class LaunchPlan(val wanted: Boolean, val activated: Boolean, val env: String) {
+data class LaunchPlan(val wanted: Boolean, val activated: Boolean, val env: String, val qtFollows: Boolean = false) {
     companion object {
         fun of(f: A11yFacts): LaunchPlan {
             val wanted = bridgeWanted(f)
@@ -33,6 +35,9 @@ data class LaunchPlan(val wanted: Boolean, val activated: Boolean, val env: Stri
         }
     }
 }
+
+/** Whether Qt 6.11.2 reads [value] of the variable as "keep the bridge off" (QtAccessibilityDelegate.java:94-95). */
+fun qtKeepsBridgeOff(value: String?): Boolean = value == "1" || value.equals("true", ignoreCase = true)
 
 /** What the platform side does with the notice: nothing, show it now, or keep it for the owner's next resume. */
 enum class Notice { NONE, SHOW, PENDING }
@@ -78,7 +83,7 @@ class AccessibilityGate<A : Any>(private val log: (String) -> Unit) {
         plan?.let { return it }
         plan = decided
         lastWanted = decided.wanted
-        if (decided.wanted && !decided.activated) {
+        if (decided.wanted && !decided.activated && !decided.qtFollows) {
             state = State.PENDING
         }
         return decided
@@ -125,6 +130,11 @@ class AccessibilityGate<A : Any>(private val log: (String) -> Unit) {
             return Notice.NONE
         }
         lastWanted = wanted
+        if (launched.qtFollows) {
+            val edge = if (wanted) "on" else "off"
+            log("accessibility: touch exploration turned $edge; the bridge is not frozen, so Qt follows it")
+            return Notice.NONE
+        }
         if (launched.activated) {
             log(
                 if (wanted) "accessibility: touch exploration turned on"
@@ -192,7 +202,11 @@ class AccessibilityGate<A : Any>(private val log: (String) -> Unit) {
         val touch = if (f.touchExploration) "on" else "off"
         val enabled = if (f.enabled) "on" else "off"
         val services = if (f.boundServices == 1) "1 service" else "${f.boundServices} services"
-        val notice = if (plan.wanted && !plan.activated) "; restart notice pending" else ""
+        val notice = when {
+            plan.qtFollows -> "; not frozen, so Qt follows later changes"
+            plan.wanted && !plan.activated -> "; restart notice pending"
+            else -> ""
+        }
         return "accessibility: bridge $bridge at launch (touch exploration $touch; accessibility $enabled, " +
             "$services bound)$notice"
     }

@@ -556,6 +556,58 @@ def a11y_bridge_order():
     return None
 
 
+# One left-to-right pass over C++ text: a string or character literal, a line comment or a block comment, whichever
+# starts first. Separate passes would let a "//" or "/*" inside a literal hide the code after it, or a quote inside a
+# comment hide a call.
+CPP_LITERAL_OR_COMMENT = re.compile(
+    r'"(?:[^"\\\n]|\\.)*"' + r"|'(?:[^'\\\n]|\\.)*'" + r"|//[^\n]*" + r"|/\*.*?\*/",
+    re.S,
+)
+# Any environment writer, the project's wrappers (dsd_setenv, dsd_unsetenv) and Qt's (qputenv, qunsetenv) included,
+# and the QML collector policy that writes one.
+CPP_ENVIRONMENT_WRITER = re.compile(r"\b(\w*(?:setenv|unsetenv|putenv)|applyQmlGcPolicy)\s*\(")
+
+
+def cpp_environment_writer(text):
+    """The first environment-writing call in C++ `text`, outside literals and comments, or None."""
+    code = CPP_LITERAL_OR_COMMENT.sub(lambda match: '""' if match.group(0)[0] in "\"'" else " ", text)
+    writer = CPP_ENVIRONMENT_WRITER.search(code)
+    return writer.group(1) if writer else None
+
+
+def cpp_environment_writer_probes():
+    """The scanner behind android_main_writes_no_environment, on the cases that once got past it (#782 T4 review)."""
+    caught = (
+        'dsd_setenv("X", "1", 1);',
+        'dsd_unsetenv("X");',
+        'qputenv("X", "1");',
+        'qunsetenv("X");',
+        '::setenv("X", "1", 1);',
+        'putenv(buffer);',
+        "dsd_qt::applyQmlGcPolicy();",
+        'const char* u = "http://x"; qputenv("X", "1");',
+        'const char* g = "*.cpp/*"; qputenv("X", "1"); /* end */',
+        "char q = '\"'; qputenv(\"X\", \"1\");",
+        "/* a comment */ setenv(\"X\", \"1\", 1);",
+    )
+    ignored = (
+        '// qputenv("X", "1");',
+        '/* dsd_setenv("X", "1", 1); */',
+        'const char* s = "qputenv(";',
+        'log("setenv(X) failed");',
+        "char c = '('; int setenvironment_count = 0;",
+        "int resetenv_count = 1; (void)resetenv_count;",
+    )
+    for text in caught:
+        if not cpp_environment_writer(text):
+            return f"the main.cpp environment scan misses a writer in: {text}"
+    for text in ignored:
+        found = cpp_environment_writer(text)
+        if found:
+            return f"the main.cpp environment scan reports {found}() in code that writes nothing: {text}"
+    return None
+
+
 def android_main_writes_no_environment():
     """#782: once super.onCreate() starts Qt's main(), nothing may add, remove or reallocate an environment entry, so
     android/main.cpp writes none, and QmlGcPolicy.kt sets the QML collector's variable, the one applyQmlGcPolicy()
@@ -570,11 +622,9 @@ def android_main_writes_no_environment():
     except OSError as error:
         return f"cannot read the environment writers: {error}"
     # Code only: comments and string literals may name the calls.
-    code = re.sub(r"/\*.*?\*/|//[^\n]*", "", main, flags=re.S)
-    code = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', code)
-    writer = re.search(r"\b(qputenv|qunsetenv|setenv|unsetenv|putenv|applyQmlGcPolicy)\s*\(", code)
+    writer = cpp_environment_writer(main)
     if writer:
-        return f"android/main.cpp: {writer.group(1)}() writes the environment while the Android main thread reads it"
+        return f"android/main.cpp: {writer}() writes the environment while the Android main thread reads it"
     native = re.search(r'qputenv\("([^"]+)",\s*QByteArrayLiteral\("([^"]*)"\)\)', header)
     jvm_name = re.search(r'const val VARIABLE = "([^"]+)"', kotlin)
     jvm_value = re.search(r'Os\.setenv\(VARIABLE, "([^"]*)", true\)', kotlin)
@@ -783,13 +833,14 @@ SUITES = {
                     "AccessibilityBridgeTest.kt",
                     "AccessibilityBridgeLaunchTest.kt",
                     "AccessibilityBridgeErrnoTest.kt",
+                    "AccessibilityBridgeErrnoOffTest.kt",
                     "AccessibilityBridgeLeftoverTest.kt",
                     "QmlGcPolicyTest.kt",
                 ),
                 stubs=("AccessibilityManager.kt", "AccessibilityServiceInfo.kt", "SystemOsEnv.kt", "A11yContext.kt", "A11yActivity.kt"),
             ),
         ),
-        checks=(a11y_bridge_order, android_main_writes_no_environment),
+        checks=(a11y_bridge_order, cpp_environment_writer_probes, android_main_writes_no_environment),
     ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and

@@ -82,28 +82,27 @@ object AccessibilityBridge {
         val facts = readFacts(activity)
         val wanted = LaunchPlan.of(facts)
         val written = setVariable(wanted.env, "Qt's default applies at launch")
-        // Unwritten, Qt reads whatever value is there: usually none, so the bridge turns on with any enabled service.
-        // The gate is told what Qt actually does, so it asks for a restart exactly when the bridge stays off under
-        // touch exploration.
-        val activated = if (written) wanted.activated else facts.enabled && !keepsOff(Os.getenv(DISABLE_VARIABLE))
-        gate.launch(facts, wanted.copy(activated = activated))
+        // Unwritten, Qt reads whatever value is there, and the gate is told what Qt actually does. Usually there is
+        // none: the bridge turns on with any enabled service, and since afterQt never creates the entry, Qt goes on
+        // following the enabled state, so no restart is ever owed. A value left over from elsewhere is frozen by
+        // afterQt in place; the gate then asks for a restart exactly when that value keeps the bridge off under touch
+        // exploration.
+        val plan = if (written) {
+            wanted
+        } else {
+            val present = Os.getenv(DISABLE_VARIABLE)
+            wanted.copy(activated = facts.enabled && !qtKeepsBridgeOff(present), qtFollows = present == null)
+        }
+        gate.launch(facts, plan)
         launchFacts = facts
     }
-
-    /** What Qt 6.11.2 reads as "keep the bridge off" (QtAccessibilityDelegate.java:94-95). */
-    private fun keepsOff(value: String?): Boolean = value == "1" || value.equals("true", ignoreCase = true)
 
     /** Just after the activity's `super.onCreate()`: freezes the variable, attaches [activity], records the launch. */
     fun afterQt(activity: Activity) {
         // Qt's main() may already be reading the environment: write only into an existing entry that is not 1 yet.
+        // Absent only when the launch's write failed: the launch record says Qt follows later changes.
         val now = Os.getenv(DISABLE_VARIABLE)
-        if (now == null) {
-            if (!launchRecorded) {
-                effects.record(
-                    "accessibility: the variable is unset; the bridge is not frozen, so Qt follows later changes"
-                )
-            }
-        } else if (now != "1") {
+        if (now != null && now != "1") {
             setVariable("1", "the bridge is not frozen, so Qt follows later changes")
         }
         gate.attach(activity)
