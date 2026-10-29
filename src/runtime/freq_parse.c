@@ -50,6 +50,9 @@ dsd_parse_freq_hz(const char* s) {
         return 0;
     }
     char buf[64];
+    if (strlen(s) >= sizeof buf) {
+        return 0;
+    }
     DSD_SNPRINTF(buf, sizeof buf, "%s", s);
     buf[sizeof buf - 1] = '\0';
     double factor = freq_suffix_factor(buf);
@@ -63,11 +66,9 @@ dsd_parse_freq_hz(const char* s) {
     }
 
     double hz = val * factor;
-    if (hz <= 0.0) {
+    /* Written so NaN fails the test; the upper bound is the largest value that rounds to UINT32_MAX. */
+    if (!(hz >= 0.5 && hz < 4294967295.5)) {
         return 0;
-    }
-    if (hz > (double)UINT32_MAX) {
-        hz = (double)UINT32_MAX;
     }
     return (uint32_t)(hz + 0.5);
 }

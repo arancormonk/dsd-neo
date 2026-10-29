@@ -85,6 +85,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
@@ -118,6 +119,7 @@ elseif(MSVC)
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
