@@ -73,6 +73,7 @@ class QThread;
 namespace dsd_qt {
 
 class CallHistorySpill;
+class CallHistorySpillReader;
 class CallHistoryTap;
 class CallRecordingProvider;
 
@@ -334,6 +335,23 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     qint64
     trimRowsScannedForTest() const {
         return m_trimRowsScannedForTest;
+    }
+
+    /** @brief The most entries the seen map and the notice twins taken have held while a spill folded. */
+    qsizetype
+    peakFoldSeenForTest() const {
+        return m_peakFoldSeenForTest;
+    }
+
+    qsizetype
+    peakFoldTwinsForTest() const {
+        return m_peakFoldTwinsForTest;
+    }
+
+    /** @brief The most bytes a spill fold's reader has held at once. */
+    qsizetype
+    peakSpillReadBytesForTest() const {
+        return m_peakSpillReadBytesForTest;
     }
 #endif
 
@@ -623,8 +641,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief Fold the spill into the log, then @p unwritten (the lines the tap could not write to it), idempotently by
      * fragment; @return whether the row count changed. */
     bool foldSpill(const QByteArray& unwritten = QByteArray());
-    /** @brief Fold spill @p lines into the log; @p folded is set when any line folded. @return whether rows changed. */
-    bool foldSpillLines(const QByteArray& lines, bool* folded);
+    /** @brief Fold the spill lines @p reader reads into the log; @p folded is set when any line folded. @return whether
+     * rows changed. */
+    bool foldSpillLines(CallHistorySpillReader& reader, bool* folded);
+    /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
+    void pruneSeenWhileFolding();
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
         Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
@@ -717,6 +738,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 #ifdef DSD_NEO_TEST_HOOKS
     int m_peakRowsForTest = 0;
     qint64 m_trimRowsScannedForTest = 0;
+    qsizetype m_peakFoldSeenForTest = 0;
+    qsizetype m_peakFoldTwinsForTest = 0;
+    qsizetype m_peakSpillReadBytesForTest = 0;
 #endif
 };
 

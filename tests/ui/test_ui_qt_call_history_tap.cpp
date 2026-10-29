@@ -18,8 +18,8 @@
  * reported once, which reaches History with the handoff when the spill is still unwritable then (a call whose first
  * sighting the bound dropped included, from its updates). Notices fold once like calls, a replay begun in the
  * background included. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's
- * oldest go first, and the log never holds the whole backlog. The deliberate failures' warnings are counted, not
- * printed. */
+ * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. The deliberate
+ * failures' warnings are counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -60,6 +60,7 @@
 #include "../../src/app_control/snapshot_internal.h"
 #include "../test_support/qt_test_paths.h"
 #include "call_history_model.h"
+#include "call_history_tap.h"
 #include "json_store.h"
 
 using dsd_qt::CallHistoryModel;
@@ -629,11 +630,11 @@ test_sustained_write_volume(void) {
            lines > 0 && qint64{10} * bytes / lines < qint64{16} * 1024);
 }
 
-/* A spill line as the tap writes one (CallHistoryModel::spillLine()) for a voice call first read on slot 0 of ring
- * 0x708 at push stamp @p seq, 4 s long. */
+/* A spill line as the tap writes one (CallHistoryModel::spillLine()) for a row of @p kind first read on @p slot of
+ * ring 0x708 at push stamp @p seq, 4 s long; with @p again, the tap judged it heard again. */
 QByteArray
-spill_line(qulonglong seq, qint64 when, qulonglong tg, qint64 session) {
-    const QString key = QStringLiteral("0|%1|%2|%3|%4").arg(seq).arg(when).arg(tg).arg(CallHistoryModel::KindVoice);
+spill_line_of(int kind, int slot, qulonglong seq, qint64 when, qulonglong tg, qint64 session, bool again) {
+    const QString key = QStringLiteral("%1|%2|%3|%4|%5").arg(slot).arg(seq).arg(when).arg(tg).arg(kind);
     QJsonObject seen;
     seen.insert(QStringLiteral("when"), when);
     seen.insert(QStringLiteral("end"), when + 4);
@@ -648,32 +649,47 @@ spill_line(qulonglong seq, qint64 when, qulonglong tg, qint64 session) {
     row.insert(QStringLiteral("tg"), static_cast<qint64>(tg));
     row.insert(QStringLiteral("src"), 7);
     row.insert(QStringLiteral("durationSecs"), 4);
-    row.insert(QStringLiteral("kind"), CallHistoryModel::KindVoice);
-    row.insert(QStringLiteral("slot"), 0);
+    row.insert(QStringLiteral("kind"), kind);
+    row.insert(QStringLiteral("slot"), slot);
     row.insert(QStringLiteral("seq"), static_cast<qint64>(seq));
     row.insert(QStringLiteral("session"), session);
-    row.insert(QStringLiteral("fr"), QJsonArray{QStringLiteral("0000000000000708:0:%1").arg(seq)});
+    row.insert(QStringLiteral("fr"), QJsonArray{QStringLiteral("0000000000000708:%1:%2").arg(slot).arg(seq)});
     QJsonObject obj;
     obj.insert(QStringLiteral("v"), 1);
     obj.insert(QStringLiteral("key"), key);
     obj.insert(QStringLiteral("seen"), seen);
     obj.insert(QStringLiteral("row"), row);
+    if (again) {
+        obj.insert(QStringLiteral("again"), true);
+    }
     return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
+}
+
+/* A voice call's spill line, read on slot 0. */
+QByteArray
+spill_line(qulonglong seq, qint64 when, qulonglong tg, qint64 session) {
+    return spill_line_of(CallHistoryModel::KindVoice, 0, seq, when, tg, session, false);
+}
+
+bool
+open_spill_for_writing(QFile& file) {
+    file.setFileName(spill_path());
+    return QDir().mkpath(QFileInfo(spill_path()).absolutePath()) && file.open(QIODevice::WriteOnly);
 }
 
 /* @p rows distinct calls, 30 s apart from @p when, talkgroups from @p tg up; with @p alternate the odd ones are a
  * second session's. */
 bool
 write_spill(int rows, qint64 when, qulonglong tg, bool alternate) {
-    QByteArray data;
-    for (int i = 0; i < rows; i++) {
+    QFile file;
+    bool written = open_spill_for_writing(file);
+    for (int i = 0; written && i < rows; i++) {
         const qint64 session = alternate && i % 2 != 0 ? 2 : 1;
-        data += spill_line(static_cast<qulonglong>(i) + 1U, when + 30 * static_cast<qint64>(i),
-                           tg + static_cast<qulonglong>(i), session);
+        const QByteArray line = spill_line(static_cast<qulonglong>(i) + 1U, when + 30 * static_cast<qint64>(i),
+                                           tg + static_cast<qulonglong>(i), session);
+        written = file.write(line) == line.size();
     }
-    QFile file(spill_path());
-    return QDir().mkpath(QFileInfo(spill_path()).absolutePath()) && file.open(QIODevice::WriteOnly)
-           && file.write(data) == data.size();
+    return written;
 }
 
 /* A long stretch in the background spills far more calls than History keeps (1,000 rows). The fold keeps the newest
@@ -711,6 +727,69 @@ test_spill_fold_trims_oldest_session_first(void) {
     expect("the newer session's newest 1,000 calls stay", newest);
 }
 
+/* The fold reads the spill a line at a time and prunes its seen entries as it trims its rows, so neither the reader
+ * nor the seen map holds the whole backlog. Read whole and split into lines, a 500,000-row spill (149 MB) took the
+ * fold past 500 MB; its seen map held an entry a row until the fold ended. The seen map's bound is the one it always
+ * had, twice its 2,048-entry store, and the line that passes it; the reader holds one line, at most a megabyte, and a
+ * chunk. A line longer than that, which no build writes, and a torn last line are passed over. */
+void
+test_very_long_spill_folds_in_bounded_memory(void) {
+    resetStorage();
+    const int spilled = 200000;
+    const qint64 when = 1754900000;
+    const qulonglong tg = 300000U;
+    QFile file;
+    bool written = open_spill_for_writing(file);
+    for (int i = 0; written && i < spilled; i++) {
+        if (i == spilled - 500) {
+            const QByteArray tooLong =
+                "{\"v\":1,\"key\":\"" + QByteArray(2 * dsd_qt::CallHistorySpillReader::kMaxLineBytes, 'x') + "\"}\n";
+            written = file.write(tooLong) == tooLong.size();
+        }
+        const QByteArray line = spill_line(static_cast<qulonglong>(i) + 1U, when + 30 * static_cast<qint64>(i),
+                                           tg + static_cast<qulonglong>(i), 1);
+        written = written && file.write(line) == line.size();
+    }
+    const QByteArray torn = spill_line(static_cast<qulonglong>(spilled) + 1U, when + 30 * qint64{spilled},
+                                       tg + static_cast<qulonglong>(spilled), 1);
+    written = written && file.write(torn.left(torn.size() / 2)) == torn.size() / 2;
+    file.close();
+    expect("the very long spill is written", written);
+    CallHistoryModel model;
+    expect("the very long spill keeps the newest 1,000 calls, past the over-long line and not the torn one",
+           model.count() == 1000 && rows_in_tg_range(model, tg + spilled - 1000, tg + spilled - 1) == 1000);
+    expect("the seen map never holds the backlog while it folds", model.peakFoldSeenForTest() <= 4097);
+    expect("the reader holds one line at most",
+           model.peakSpillReadBytesForTest() <= dsd_qt::CallHistorySpillReader::kMaxLineBytes + 32 * 1024);
+}
+
+/* A notice heard again takes the logged one as its twin. The twins taken are pruned with the seen entries that record
+ * them, so a long spill of notices each heard again leaves each in History once and never holds a twin a line. */
+void
+test_long_spill_of_repeated_notices_folds_bounded(void) {
+    resetStorage();
+    const int notices = 20000;
+    const qint64 when = 1754900000;
+    const qulonglong tg = 400000U;
+    QFile file;
+    bool written = open_spill_for_writing(file);
+    for (int i = 0; written && i < notices; i++) {
+        const qint64 at = when + 30 * static_cast<qint64>(i);
+        const qulonglong seq = static_cast<qulonglong>(i) + 1U;
+        const QByteArray first = spill_line_of(CallHistoryModel::KindNotice, 0, seq, at, tg + seq, 1, false);
+        const QByteArray again = spill_line_of(CallHistoryModel::KindNotice, 1, seq, at, tg + seq, 1, true);
+        written = file.write(first) == first.size() && file.write(again) == again.size();
+    }
+    file.close();
+    expect("the notice spill is written", written);
+    CallHistoryModel model;
+    expect("each notice heard again is in History once, the newest 1,000",
+           model.count() == 1000 && rows_in_tg_range(model, tg + notices - 999, tg + notices) == 1000);
+    expect("the seen map never holds the notice backlog", model.peakFoldSeenForTest() <= 4097);
+    expect("the twins taken never hold the notice backlog", model.peakFoldTwinsForTest() <= 4097);
+    expect("the reader holds one short line and a chunk", model.peakSpillReadBytesForTest() <= 32 * 1024);
+}
+
 } // namespace
 
 int
@@ -743,6 +822,8 @@ main(int argc, char** argv) {
     test_replayed_notice_folds_once_from_a_new_ring();
     test_long_spill_folds_bounded();
     test_spill_fold_trims_oldest_session_first();
+    test_very_long_spill_folds_in_bounded_memory();
+    test_long_spill_of_repeated_notices_folds_bounded();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -20,7 +20,9 @@
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_TAP_H_
 
 #include <QByteArray>
+#include <QFile>
 #include <QHash> // IWYU pragma: keep -- Context holds the seen map (a QHash) by value.
+#include <QIODevice>
 #include <QList>
 #include <QString>
 #include <QtGlobal>
@@ -54,8 +56,13 @@ class CallHistorySpill {
      */
     bool append(const QByteArray& lines);
 
-    /** @brief The whole spill; @p size receives its length (0 when there is none). */
-    QByteArray read(qint64* size) const;
+    /**
+     * @brief Open the spill in @p file to read; @p size receives its length now (0 when there is none).
+     *
+     * Read it no further than @p size: the tap appends only past it, and only the GUI thread, which reads the spill,
+     * truncates it, so the bytes before it stay as they are while it reads without the mutex.
+     */
+    bool open(QFile* file, qint64* size) const;
 
     /** @brief Empty the spill if it still holds exactly @p size bytes; @return whether it was emptied. */
     bool truncateIfSize(qint64 size);
@@ -74,6 +81,44 @@ class CallHistorySpill {
     mutable std::mutex m_mutex;
     int m_appends = 0;
     int m_attempts = 0;
+};
+
+/**
+ * @brief Reads JSON lines from a device one at a time, holding one line at most.
+ *
+ * A long background stretch spills far more rows than History keeps: read whole, and split into lines, the spill
+ * would cost twice its size in memory when the app resumes or relaunches. The reader holds the line it returns, its
+ * buffer growing to the longest line read, and a line past kMaxLineBytes, which no build writes, is passed over a
+ * chunk at a time. A last line without its newline (one a kill tore) comes back as it is.
+ */
+class CallHistorySpillReader {
+  public:
+    static constexpr qsizetype kMaxLineBytes = qsizetype{1} << 20;
+
+    /** @brief Read @p device from where it is, at most @p limit bytes. */
+    CallHistorySpillReader(QIODevice* device, qint64 limit);
+
+    /** @brief Read the next line into line(); @return false at the end. */
+    bool next();
+
+    /** @brief The line next() read, without its newline; valid until the next call. */
+    const QByteArray&
+    line() const {
+        return m_line;
+    }
+
+    /** @brief The most bytes the reader's buffers have held at once. */
+    qsizetype
+    peakBytes() const {
+        return m_peakBytes;
+    }
+
+  private:
+    QIODevice* m_device;
+    qint64 m_remaining;
+    QByteArray m_chunk;
+    QByteArray m_line;
+    qsizetype m_peakBytes = 0;
 };
 
 /**

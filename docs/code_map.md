@@ -8007,7 +8007,13 @@ Qt Quick frontend (`src/ui/qt`):
     covers are skipped. A spill longer than the log
     is trimmed as it folds, whenever the log passes 1250 rows, so a long background stretch (50,000 rows: 0.26 s at
     `-O3`, 4.2 s when the fold inserted them all and trimmed one row a scan) never holds the whole backlog;
-    `trimToCapacity()` picks every row that goes in one pass. Limit: a row trimmed mid-fold that a later line would
+    `trimToCapacity()` picks every row that goes in one pass. Nor does it hold the spill: `CallHistorySpill::open()`
+    gives the length the spill has then, and `CallHistorySpillReader` reads up to it a line at a time (the tap appends
+    only past it, and only the GUI thread truncates), holding one line of at most 1 MiB and a 16 KiB chunk; a longer
+    line, which no build writes, is passed over, and a torn last line fails to parse and is skipped. The seen map is
+    pruned as the rows are trimmed, at its usual bound (`pruneSeenMap()`: past 4,096 entries, back to the newest
+    2,048), and the twins taken go with the entries that recorded them (500,000 rows, 149 MB: 520 MB peak RSS when the
+    fold read the spill whole, 29 MB streamed, at `-O3`). Limit: a row trimmed mid-fold that a later line would
     have merged into (a call heard again) comes back as a new row. The spill is emptied only after a save of the
     generation the fold made is acknowledged, and only if it still holds exactly what the fold read, so a tap appending
     meanwhile loses nothing. `clearAll()` while the tap runs stops it, takes its read position into
@@ -8021,7 +8027,7 @@ Qt Quick frontend (`src/ui/qt`):
     minimal row spills as about 440 bytes (a named row about a kilobyte).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
     while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable
-    at the handoff, a 50,000-row spill;
+    at the handoff, a 50,000-row spill, a 200,000-row one and a long one of notices heard again in bounded memory;
     the real publisher, tap and consumer), `UI_QT_CONTROLLER` (the handoff on a tick with no redraw), `UI_QT_TALKGROUP_LIST_MODEL`,
     `UI_QT_QML_CALL_LISTS` (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Call recording store (issue #708; `recording_store.{h,cpp}`, `recording_journal.{h,cpp}`, `recording_sessions.h`).

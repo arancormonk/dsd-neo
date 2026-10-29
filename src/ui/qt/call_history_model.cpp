@@ -8,10 +8,13 @@
 #include <dsd-neo/core/receive_types.h>
 #include "call_history_model.h"
 
+#include <QBuffer>
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QFile>
 #include <QGuiApplication>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -2119,14 +2122,28 @@ CallHistoryModel::handOffBackgroundCapture() {
 bool
 CallHistoryModel::foldSpill(const QByteArray& unwritten) {
     qint64 size = 0;
-    const QByteArray data = m_spill->read(&size);
+    QFile file;
+    (void)m_spill->open(&file, &size);
     if (size <= 0 && unwritten.isEmpty()) {
         return false;
     }
     bool folded = false;
-    // The spill's lines first: the tap wrote them before the ones it could not.
-    bool rowsChanged = foldSpillLines(data, &folded);
-    rowsChanged = foldSpillLines(unwritten, &folded) || rowsChanged;
+    bool rowsChanged = false;
+    // The spill's lines first: the tap wrote them before the ones it could not. Read a line at a time: a long
+    // background stretch spills far more than the log keeps, and the fold holds no more of it than one line.
+    if (size > 0) {
+        CallHistorySpillReader reader(&file, size);
+        rowsChanged = foldSpillLines(reader, &folded);
+    }
+    file.close(); // before a save's acknowledgement below truncates it
+    if (!unwritten.isEmpty()) {
+        QBuffer buffer;
+        buffer.setData(unwritten);
+        if (buffer.open(QIODevice::ReadOnly)) {
+            CallHistorySpillReader reader(&buffer, unwritten.size());
+            rowsChanged = foldSpillLines(reader, &folded) || rowsChanged;
+        }
+    }
     rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();
     if (size > 0) {
@@ -2147,16 +2164,16 @@ CallHistoryModel::foldSpill(const QByteArray& unwritten) {
 }
 
 bool
-CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
+CallHistoryModel::foldSpillLines(CallHistorySpillReader& reader, bool* folded) {
     bool rowsChanged = false;
     const bool cleared = clearApplies();
     // The twins taken are the ring's that took them (noteCommitRevs()). A line another ring read, a replay the tap
     // found begun in the background, folds against that ring's, which the walk after the fold would restore too late:
     // the fold has marked the line's notice seen by then.
     quint64 twinsRing = m_ringInstance[0];
-    for (const QByteArray& line : lines.split('\n')) {
+    while (reader.next()) {
         // A line a kill tore, or one a newer build wrote, is skipped; the rest still fold.
-        const QJsonObject obj = QJsonDocument::fromJson(line).object();
+        const QJsonObject obj = QJsonDocument::fromJson(reader.line()).object();
         if (obj.value(QLatin1String("v")).toInt() != 1) {
             continue;
         }
@@ -2182,6 +2199,9 @@ CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
         if (!seen.twin.isEmpty()) {
             m_seen[key].twin = seen.twin;
         }
+#ifdef DSD_NEO_TEST_HOOKS
+        m_peakFoldSeenForTest = qMax(m_peakFoldSeenForTest, m_seen.size());
+#endif
         // Idempotent by fragment: a row whose fragment the log already holds was folded before (a fold the
         // last save has not acknowledged, read again at load) or ingested by a GUI that kept running, and can
         // only refine that row. One it does not hold is a new row, whatever the tap judged it: an update whose
@@ -2198,11 +2218,38 @@ CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
         if (m_rows.size() > kMaxRows + kSpillFoldTrimSlack) {
             rowsChanged = trimToCapacity() || rowsChanged;
         }
+#ifdef DSD_NEO_TEST_HOOKS
+        m_peakFoldTwinsForTest = qMax(m_peakFoldTwinsForTest, m_noticeTwinsTaken.size());
+#endif
+        // Each line can add a seen entry, and a notice heard again a twin taken: pruned as the rows are trimmed,
+        // as they go, so neither holds the whole backlog either.
+        pruneSeenWhileFolding();
     }
+#ifdef DSD_NEO_TEST_HOOKS
+    m_peakSpillReadBytesForTest = qMax(m_peakSpillReadBytesForTest, reader.peakBytes());
+#endif
     if (twinsRing != m_ringInstance[0]) {
         restoreNoticeTwinsTaken(m_ringInstance[0], m_ringInstance[1]); // the rings read, as before the fold
     }
     return rowsChanged;
+}
+
+void
+CallHistoryModel::pruneSeenWhileFolding() {
+    const qsizetype before = m_seen.size();
+    pruneSeen();
+    if (m_seen.size() == before) {
+        return;
+    }
+    // The twins taken that no entry left records go with the entries: the set stays bounded by the map, and a
+    // relaunch rebuilding it from the seen store would not know them either (restoreNoticeTwinsTaken()).
+    QSet<QString> recorded;
+    for (const SeenState& state : m_seen) {
+        if (!state.twin.isEmpty()) {
+            recorded.insert(state.twin);
+        }
+    }
+    m_noticeTwinsTaken.intersect(recorded);
 }
 
 QByteArray

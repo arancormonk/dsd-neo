@@ -23,6 +23,8 @@ namespace {
 
 /* The most rows the tap holds while the spill cannot be written: twice what one slot's ring keeps. */
 constexpr qsizetype kMaxPendingRows = qsizetype{2} * (DSD_EVENT_HISTORY_LEN - 1);
+/* What the spill reader reads at a time; a spill line is about half a kilobyte, a named one about a kilobyte. */
+constexpr qsizetype kChunkBytes = qsizetype{16} * 1024;
 
 } // namespace
 
@@ -52,18 +54,16 @@ CallHistorySpill::append(const QByteArray& lines) {
     return written;
 }
 
-QByteArray
-CallHistorySpill::read(qint64* size) const {
+bool
+CallHistorySpill::open(QFile* file, qint64* size) const {
     const std::lock_guard<std::mutex> lock(m_mutex);
-    QFile file(m_path);
-    QByteArray data;
-    if (file.open(QIODevice::ReadOnly)) {
-        data = file.readAll();
+    *size = 0;
+    file->setFileName(m_path);
+    if (!file->open(QIODevice::ReadOnly)) {
+        return false;
     }
-    if (size != nullptr) {
-        *size = data.size();
-    }
-    return data;
+    *size = file->size();
+    return true;
 }
 
 bool
@@ -93,6 +93,48 @@ int
 CallHistorySpill::appendAttemptsForTest() const {
     const std::lock_guard<std::mutex> lock(m_mutex);
     return m_attempts;
+}
+
+CallHistorySpillReader::CallHistorySpillReader(QIODevice* device, qint64 limit)
+    : m_device(device), m_remaining(qMax<qint64>(limit, 0)), m_chunk(kChunkBytes + 1, '\0') {}
+
+bool
+CallHistorySpillReader::next() {
+    m_line.truncate(0); // keeps the buffer
+    bool read = false;
+    bool tooLong = false;
+    while (m_remaining > 0) {
+        // readLine() stops after a newline, and keeps a byte for its terminating NUL.
+        const qint64 got = m_device->readLine(m_chunk.data(), qMin<qint64>(m_remaining, kChunkBytes) + 1);
+        if (got <= 0) {
+            m_remaining = 0;
+            break;
+        }
+        m_remaining -= got;
+        read = true;
+        const bool ended = m_chunk.at(static_cast<qsizetype>(got) - 1) == '\n';
+        const qsizetype bytes = static_cast<qsizetype>(ended ? got - 1 : got);
+        if (!tooLong && m_line.size() + bytes > kMaxLineBytes) {
+            tooLong = true;
+            m_line.truncate(0);
+        }
+        if (!tooLong) {
+            // Grown by doubling, never past kMaxLineBytes.
+            if (m_line.size() + bytes > m_line.capacity()) {
+                m_line.reserve(qMin(kMaxLineBytes, qMax(m_line.capacity() * 2, m_line.size() + bytes)));
+            }
+            m_line.append(m_chunk.constData(), bytes);
+            m_peakBytes = qMax(m_peakBytes, m_chunk.size() + m_line.capacity());
+        }
+        if (ended) {
+            if (!tooLong) {
+                return true;
+            }
+            tooLong = false;
+            read = false;
+        }
+    }
+    return read && !tooLong;
 }
 
 CallHistoryTap::CallHistoryTap(CallHistoryTapSource source, CallHistorySpill* spill)
