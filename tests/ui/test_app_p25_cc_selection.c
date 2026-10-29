@@ -752,10 +752,14 @@ test_command_scope(dsd_opts* opts, dsd_state* state) {
     opts->trunk_scan_enabled = 0;
     select_cc(opts, state, 0);
     assert(cc_calls == 0);
-#if LONG_MAX < UINT32_MAX
+    select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ + 1U); // one past the trunk ceiling, on every platform
+    assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
     select_cc(opts, state, UINT32_MAX);
-    assert(cc_calls == 0);
-#endif
+    assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
+    select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ); // the ceiling itself is a control channel
+    assert(cc_calls == 1 && state->p25_cc_freq == DSD_TRUNK_FREQ_MAX_HZ);
+    cc_calls = 0;
+    state->p25_cc_freq = state->trunk_cc_freq = CC_A;
     opts->trunk_enable = 0;
     select_cc(opts, state, CC_B);
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);

@@ -1909,6 +1909,25 @@ ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result)
     return 1;
 }
 
+/* A frequency payload the tuner cannot take, toasted: 0, and on a build whose long is 32 bits one past what it holds.
+   Returns 1 with the command status in *status when the payload is refused. */
+static int
+ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
+    if (v == 0) {
+        ui_set_toast(state, 3, "Invalid frequency");
+        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
+        return 1;
+    }
+#if LONG_MAX < UINT32_MAX
+    if (v > (uint32_t)LONG_MAX) {
+        ui_set_toast(state, 3, "Above 2147.483647 MHz, this build's limit");
+        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
+        return 1;
+    }
+#endif
+    return 0;
+}
+
 /* The frequency entry's refusals, each toasted: a replay, a trunk scan owning the tuner, a frequency out of range.
    Returns 1 with the command status in *status when the entry is refused. */
 static int
@@ -1922,16 +1941,7 @@ ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, 
         *status = UI_CMD_APPLY_FAILED;
         return 1;
     }
-    if (v == 0
-#if LONG_MAX < UINT32_MAX
-        || v > (uint32_t)LONG_MAX
-#endif
-    ) {
-        ui_set_toast(state, 3, "Invalid frequency");
-        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
-        return 1;
-    }
-    return 0;
+    return ui_cmd_freq_payload_refused(state, v, status);
 }
 
 /* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
@@ -2033,6 +2043,9 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (opts->trunk_scan_enabled) {
         ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
         return UI_CMD_APPLY_FAILED;
+    }
+    if (ui_cmd_freq_payload_refused(state, v, &result)) {
+        return result;
     }
     int rc = svc_rtl_set_freq(opts, state, v);
     result = ui_cmd_apply_status_from_tune_rc(rc);

@@ -83,6 +83,7 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdbool.h>
@@ -2383,6 +2384,49 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* A manual tune's payload is range-checked as the frequency entry's is: refused before the tuner is touched, with the
+ * reason toasted. These cases need no io_control stub, so they run on every radio build. */
+static int
+expect_manual_tune_payload_refused(const char* tag, dsd_opts* opts, dsd_state* state, uint32_t hz, const char* toast) {
+    int rc = 0;
+    state->ui_msg[0] = '\0';
+    const long int center = opts->rtlsdr_center_freq;
+    rc |= expect_int(tag, dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(tag, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains(tag, state->ui_msg, toast);
+    rc |= expect_true(tag, strstr(state->ui_msg, "Failed") == NULL && strstr(state->ui_msg, "Applied") == NULL);
+    rc |= expect_true(tag, opts->rtlsdr_center_freq == center);
+    return rc;
+}
+
+static int
+test_manual_tune_payload_range(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    rc |= expect_manual_tune_payload_refused("manual tune of 0", &opts, &state, 0U, "Invalid frequency");
+#if LONG_MAX < UINT32_MAX // Windows: a payload past what long holds. Not run on a 64-bit long host.
+    rc |= expect_manual_tune_payload_refused("manual tune past LONG_MAX", &opts, &state, (uint32_t)LONG_MAX + 1U,
+                                             "Above 2147.483647 MHz, this build's limit");
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("RTL set freq past LONG_MAX queued",
+                     dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, (uint32_t)LONG_MAX + 1U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("RTL set freq past LONG_MAX drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_contains("RTL set freq past LONG_MAX toast", state.ui_msg, "Above 2147.483647 MHz, this build's limit");
+#endif
+    freeState(&state);
     return rc;
 }
 #endif
@@ -20503,6 +20547,7 @@ main(void) {
     rc |= test_manual_scan_steps_clear_received_tone();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
+    rc |= test_manual_tune_payload_range();
     rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
