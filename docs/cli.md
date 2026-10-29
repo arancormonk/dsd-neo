@@ -594,9 +594,12 @@ Notes
   28 dB down by ±13.75 kHz and 75 dB from ±15 kHz, shown as a 22.5 kHz channel width), levels the signal, and applies
   the receive half of TETRA's root-raised-cosine pulse (roll-off 0.35, the matched filter for what TETRA transmitters
   send). Then it corrects the carrier offset that is left, recovers the symbol timing, and slices the pi/4-DQPSK
-  symbols at their quadrant boundaries. The carrier loop pulls in wide and narrows once its estimate holds (in about
-  0.1 to 0.4 s on a usable signal), so the frequency error the receiver reports holds steady: on a clean real-air
-  capture it varied by 12 Hz (standard deviation) where a loop kept wide varied by 62 Hz. The chain runs only at the DSP rates above, with the channel filter on. When
+  symbols at their quadrant boundaries. The carrier loop pulls in wide and narrows once its estimate holds, so the
+  frequency error the receiver reports holds steady: on a clean real-air capture it varied by 12 Hz (standard
+  deviation) where a loop kept wide varied by 62 Hz. It cannot narrow sooner than about 0.13 s after the stream starts
+  or the carrier moves (25 steps of 96 symbols: one to start, 16 to fill its error window and 8 holding steady), and
+  on a noisy test signal (about 10 dB SNR) it narrowed after 0.23 s. The chain runs only at the DSP rates above, with
+  the channel filter on. When
   TETRA is selected but the chain cannot run (a rate outside that range, a timing (TED) samples-per-symbol override
   that does not match the DSP rate, or `DSD_NEO_CHANNEL_LPF=0`), the stream falls back to the generic CQPSK path,
   which has neither the TETRA channel filter nor the matched filter, and logs the cause once per stream, for example
@@ -2473,7 +2476,8 @@ Gardner/Costas/FLL-band-edge symbol chain.
 
 - `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override, 0.01 to 0.5 (the menu's range; a value
   outside it is taken as the nearest end, and one that is not a number is ignored). Without it the gain is OP25's
-  0.025, and the TETRA receive chain's own 0.07 while that chain runs (`-fT`)
+  0.025, and the TETRA receive chain's own 0.07 while that chain runs (`-fT`). The terminal's CQPSK timing gain menu
+  row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also while the TETRA chain runs 0.07
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 

@@ -487,40 +487,38 @@ SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
 records the source commits, transforms, and parameters.
 
 Both of those captures are control channels. `tetra_call_real_air_72k` is the real-air traffic: 6.5 seconds of the
-Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228,
-MNC 8889, colour code 1, main carrier 1068 at 426.7 MHz) with a cleartext group call on timeslot 2.
-`tools/build_iq_fixtures.py` (`TETRA_EXCERPTS`) cuts it where the floor passes from one talker to the next and
-resamples it to 72 kHz, the rate `-fT` runs an RTL-SDR at; the recording's carrier offset, about +343 Hz, is kept for
-the receiver to recover. The wiki gives no frequency, so the sidecar is tuned to carrier 1068, where the call's
-allocation sends the call: a call's speech is its own only on the carrier its allocation names, and
-`DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT` requires the replay to publish the group call, talkgroup 100601 from SSI 100702 on
-426.7 MHz, to its event history (`-J`, through `iq_decode_check.cmake`'s `EVENT_EXPECTED`), and
-`DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO` requires the call's speech to play through mbelib-neo's TETRA decoder: at least
-2 seconds of decoded audio (`-w`, `AUDIO_MIN_BYTES`; the replay writes about 3), not all of it silence. The other
-`DECODE_IQ_TETRA_REAL_AIR_CALL_*` cases assert at least 200 BSCH identities (`_BSCH`; the
-replay decodes 232), the main carrier in SYSINFO, the call's channel allocation, its D-SETUP from SSI 100701,
-D-TX-CEASED and D-TX-GRANTED to SSI 100702, and at least 40 TCH/S bursts whose class-2 CRC passes (`_TCH_FS`; the
-replay decodes 48, all of the speech in the excerpt, and none fails). This fixture's margin is ±20 counts of added
-noise rather than ±45: the excerpt carries each call-control PDU twice, and at ±30 one copy of some is lost.
-`DECODE_IQ_TETRA_REAL_AIR_CALL_AACH` asserts that the speech decodes under its AACH: at least 40 TCH/S bursts behind
-`AACH 3/51/51` (all 48), the traffic usage marker 51 the call's MAC-RESOURCE assigned. Between the talkers the
+Signal Identification Wiki's `TETRA_IQ.zip`, a 48 kHz recording of one downlink carrier of another network (MCC 228, MNC
+8889, colour code 1, main carrier 1068 at 426.7 MHz) with a cleartext group call on timeslot 2.
+`tools/build_iq_fixtures.py` (`TETRA_EXCERPTS`) cuts it where the floor passes from one talker to the next and resamples
+it to 72 kHz, the rate `-fT` runs an RTL-SDR at; the recording's carrier offset, about +343 Hz, is kept for the receiver
+to recover. The wiki gives no frequency, so the sidecar is tuned to carrier 1068, where the call's allocation sends the
+call: a call's speech is its own only on the carrier its allocation names, and `DECODE_IQ_TETRA_REAL_AIR_CALL_EVENT`
+requires the replay to publish the group call, talkgroup 100601 from SSI 100702 on 426.7 MHz, to its event history
+(`-J`, through `iq_decode_check.cmake`'s `EVENT_EXPECTED`), and `DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO` requires the
+call's speech to play through mbelib-neo's TETRA decoder: at least 2 seconds of decoded audio (`-w`, `AUDIO_MIN_BYTES`;
+the replay writes about 3), not all of it silence. The other `DECODE_IQ_TETRA_REAL_AIR_CALL_*` cases assert at least 200
+BSCH identities (`_BSCH`; the replay decodes 232), the main carrier in SYSINFO, the call's channel allocation, its
+D-SETUP from SSI 100701, D-TX-CEASED and D-TX-GRANTED to SSI 100702, and at least 40 TCH/S bursts whose class-2 CRC
+passes (`_TCH_FS`; the replay decodes 48, all of the speech in the excerpt, and none fails). This fixture's margin is
+±20 counts of added noise rather than ±45: the excerpt carries each call-control PDU twice, and at ±30 one copy of some
+is lost. `DECODE_IQ_TETRA_REAL_AIR_CALL_AACH` asserts that the speech decodes under its AACH: at least 40 TCH/S bursts
+behind `AACH 3/51/51` (all 48), the traffic usage marker 51 the call's MAC-RESOURCE assigned. Between the talkers the
 timeslot sends SCH/F blocks of nearly all zero bits under an assigned control AACH (`2/1/9`); once noise breaks their
 CRC, all zero bits pass the speech CRC too. `tetra_call_gap_noisy_72k` (`DERIVED_TETRA_GAP`, `--derived-only`) is that
-stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 40 LSB (seed 24013): before the AACH
-was read, 3 of its blocks played as speech at sigma 24. The sigma and seed are set for the TETRA receive chain and its
+stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 40 LSB (seed 24013): before the AACH was
+read, 3 of its blocks played as speech at sigma 24. The sigma and seed are set for the TETRA receive chain and its
 quadrant slicer, whose matched filter reads these blocks through more noise: at 24 LSB it decodes 52 of the stretch's
 SCH/F blocks, so none fails the CRC and the gate has nothing to read, and past about 46 LSB the AACH itself stops
-reading, so the gate reads less again (21 at 46 LSB, 2 at 52). `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at least 8 bursts read as
-assigned control that decode nothing. On these bytes the chain reads 14 and decodes 19 SCH/F blocks; the receiver
-before the TETRA chain reads 2 and decodes none (it tries 9 blocks as speech behind a traffic or unread AACH, all
-failing the speech CRC). The seed was swept with the sigma (36 to 41 LSB, seeds 24004 to 24063): at 40 LSB the 60
-seeds give 5 to 21 (median 11.5), and 24013 holds 12 to 17 from 39 to 41 LSB, where the earlier seed 24004 at 38 LSB,
-which gave 16 before the quadrant slicer, gives 5. Both cases refuse a burst tried as speech behind an AACH saying
-control or unallocated; none was tried in any of the sweep's 220 runs, nor in the 66 that re-ran it on the chain's
-block-size fix, Gardner gain and narrowed FLL. An AACH that cannot be read (four or more bit
-errors) says nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this
-stretch got through that way, so the gate case asserts the AACH's decisions rather than the absence of every false
-frame.
+reading, so the gate reads less again (21 at 46 LSB, 2 at 52). `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at
+least 8 bursts read as assigned control that decode nothing. On these bytes the chain reads 14 and decodes 19 SCH/F
+blocks; the receiver before the TETRA chain reads 2 and decodes none (it tries 9 blocks as speech behind a traffic or
+unread AACH, all failing the speech CRC). The seed was swept with the sigma (36 to 41 LSB, seeds 24004 to 24063): at 40
+LSB the 60 seeds give 5 to 21 (median 11.5), and 24013 holds 12 to 17 from 39 to 41 LSB, where the earlier seed 24004 at
+38 LSB, which gave 16 before the quadrant slicer, gives 5. Both cases refuse a burst tried as speech behind an AACH
+saying control or unallocated; none was tried in any of the sweep's 220 runs, nor in the 66 that re-ran it on the
+chain's block-size fix, Gardner gain and narrowed FLL. An AACH that cannot be read (four or more bit errors) says
+nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this stretch got through
+that way, so the gate case asserts the AACH's decisions rather than the absence of every false frame.
 
 The TETRA stress set (`TETRA_STRESS`, `build_tetra_stress()`, `--derived-only`) puts the same call under stress. Its
 neighbour is an independent synthetic downlink of another network (MCC 460, MNC 4242, colour code 0x11): the spec
@@ -541,14 +539,14 @@ the case was set, rounded to the nearest whole number:
 The rejection case accepts silence: the chain must not name the neighbour, and need not decode the call.
 
 Every other TETRA fixture replays at its DSP rate (`base_decimation` 1), but an RTL-SDR runs faster and decimates
-through the half-band cascade first, which leaves each block in another buffer: after an odd number of passes the
-block sits in the cascade's work buffer, where the TETRA chain's matched filter writes behind the chain's read cursor,
-and after an even number it is back in the input buffer, which the mixer rotates in place. `tetra_call_halfband_144k`
-(`TETRA_HALFBAND_NAME`, `build_tetra_halfband()`, `--derived-only`) is the call's first 2 seconds taken to 144 kHz
-with the tool's ideal low-pass resampler and replayed with `base_decimation` 2, one pass.
-`DECODE_IQ_TETRA_HALFBAND_BSCH` and `_TCH_FS` require at least 63 identities and 22 TCH/FS bursts; it decodes 70 and
-24, as the 72 kHz call's first 2 seconds do. `DSP_TETRA_CHAIN` covers both pass parities without a fixture (one pass from 144 to 72 kHz, two from 144
-to 36 kHz): their symbols must not depend on where the undecimated input is cut into blocks.
+through the half-band cascade first, which leaves each block in another buffer: after an odd number of passes the block
+sits in the cascade's work buffer, where the TETRA chain's matched filter writes behind the chain's read cursor, and
+after an even number it is back in the input buffer, which the mixer rotates in place. `tetra_call_halfband_144k`
+(`TETRA_HALFBAND_NAME`, `build_tetra_halfband()`, `--derived-only`) is the call's first 2 seconds taken to 144 kHz with
+the tool's ideal low-pass resampler and replayed with `base_decimation` 2, one pass. `DECODE_IQ_TETRA_HALFBAND_BSCH` and
+`_TCH_FS` require at least 63 identities and 22 TCH/FS bursts; it decodes 70 and 24, as the 72 kHz call's first 2
+seconds do. `DSP_TETRA_CHAIN` covers both pass parities without a fixture (one pass from 144 to 72 kHz, two from 144 to
+36 kHz): their symbols must not depend on where the undecimated input is cut into blocks.
 
 `tetra_uplink_bursts_72k` (`TETRA_UPLINK_BURSTS`, `build_tetra_uplink()`) is a trunked mode uplink for
 `--tetra-uplink --tetra-net 460,4242,17`: 16 bursts, control uplink bursts (one SCH/HU) and normal uplink bursts (one
@@ -576,35 +574,33 @@ out where the Gardner's input stops: `DECODE_IQ_TETRA_UPLINK_SQUELCH` runs the u
 20 symbols after the last) requires the last burst and then the end-of-capture notice. With the weak bursts 3, 6 and
 9 dB lower (not committed) the sweep decoded 121, 114 and 105 of 128 before and 128, 128 and 117 after.
 
-The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are
-pi/4-DQPSK shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
+The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are pi/4-DQPSK
+shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
 `tetra_pulse_shape()`), the transmit half of the matched pair the TETRA receive chain completes; they once used a full
 raised cosine at roll-off 0.2, which put inter-symbol interference behind the receiver's matched filter. Their
-`_TWO_RAY` variant offsets the second path by 3 Hz at the fixtures' own 54 kHz (`simulcast_two_ray(...,
-sample_rate=54000)`; the helper defaults to the 48 kHz of every other caller). `TOOLS_BUILD_IQ_FIXTURES_TETRA`
-(`tests/tools/test_build_iq_fixtures_tetra.py`) checks the pulse against the closed form within 1e-9 and the helper's
-phase step; it needs numpy, and where the tests' Python has none CTest reports it skipped. Regenerating them with
-`--derived-only` into a copy of `tests/fixtures/iq` changed the ten `tetra_bsch_*` captures and
+`_TWO_RAY` variant offsets the second path by 3 Hz at the fixtures' own 54 kHz
+(`simulcast_two_ray(..., sample_rate=54000)`; the helper defaults to the 48 kHz of every other caller).
+`TOOLS_BUILD_IQ_FIXTURES_TETRA` (`tests/tools/test_build_iq_fixtures_tetra.py`) checks the pulse against the closed form
+within 1e-9 and the helper's phase step; it needs numpy, and where the tests' Python has none CTest reports it skipped.
+Regenerating them with `--derived-only` into a copy of `tests/fixtures/iq` changed the ten `tetra_bsch_*` captures and
 `tetra_call_gap_noisy_72k` and left every other derived fixture byte for byte; `--verify` passes on the committed set.
-They repeat one
-sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
-normal downlink burst whose two SCH/HD half slots carry SYSINFO and a MAC-RESOURCE channel allocation, and a full-slot
-TCH/S burst whose class-2 CRC passes. `DECODE_IQ_TETRA_BSCH`, `_SYSINFO`, `_CHANNEL_ALLOCATION` and `_TCH_FS` assert
-each on the clean replay; the `_INVERTED` (complex conjugate: every dibit XOR 2 and the negative sync words),
-`_CFO_AWGN` (300 Hz offset at 14 dB SNR), `_TWO_RAY` (a second path one sample later at -6.9 dB),
-`_CLOCK_100PPM` and `_CLOCK_MINUS_100PPM` (sample-clock error) variants repeat all four, and `_SNR6` (the same offset
-and noise at 6 dB) the three signalling cases. The TCH/FS cases require the speech CRC on at least 90 of the 100
-bursts, and on the clean and inverted replays every burst with no re-encode mismatch. `tetra_bsch_synth_72k` carries
-25 of the same sequences at the 72 kHz DSP bandwidth `-fT` runs an RTL-SDR at (4 samples per symbol):
-`DECODE_IQ_TETRA_BSCH_72K` requires 24 BSCH decodes and no rate warning, and `DECODE_IQ_TETRA_TCH_FS_72K` 24 TCH/FS
-bursts with the CRC passing and none failing. `DECODE_IQ_TETRA_BAD_CRC_REJECT`
-and `DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT` replay a BSCH with one protected bit flipped: the burst must sync and
-no network identity may be published. `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY` (`tests/iq_float_symbol_replay_check.cmake`)
-captures the clean replay's symbols (`-c`), writes them as a float symbol file (`dsd-neo_test_symbol_capture_to_float`)
-and replays that with `-i symbols.raw`: it must decode as many BSCHs as the I/Q replay, at least 90 of the 100 (all of
-them here), which a float symbol file scaled into the PCM sample domain loses (TETRA's frame-sync slicer has fixed
-thresholds in the symbol domain). These are deterministic
-regression boundaries, not receiver-sensitivity claims.
+They repeat one sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour
+code 17), a normal downlink burst whose two SCH/HD half slots carry SYSINFO and a MAC-RESOURCE channel allocation, and a
+full-slot TCH/S burst whose class-2 CRC passes. `DECODE_IQ_TETRA_BSCH`, `_SYSINFO`, `_CHANNEL_ALLOCATION` and `_TCH_FS`
+assert each on the clean replay; the `_INVERTED` (complex conjugate: every dibit XOR 2 and the negative sync words),
+`_CFO_AWGN` (300 Hz offset at 14 dB SNR), `_TWO_RAY` (a second path one sample later at -6.9 dB), `_CLOCK_100PPM` and
+`_CLOCK_MINUS_100PPM` (sample-clock error) variants repeat all four, and `_SNR6` (the same offset and noise at 6 dB) the
+three signalling cases. The TCH/FS cases require the speech CRC on at least 90 of the 100 bursts, and on the clean and
+inverted replays every burst with no re-encode mismatch. `tetra_bsch_synth_72k` carries 25 of the same sequences at the
+72 kHz DSP bandwidth `-fT` runs an RTL-SDR at (4 samples per symbol): `DECODE_IQ_TETRA_BSCH_72K` requires 24 BSCH
+decodes and no rate warning, and `DECODE_IQ_TETRA_TCH_FS_72K` 24 TCH/FS bursts with the CRC passing and none failing.
+`DECODE_IQ_TETRA_BAD_CRC_REJECT` and `DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT` replay a BSCH with one protected bit
+flipped: the burst must sync and no network identity may be published. `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`
+(`tests/iq_float_symbol_replay_check.cmake`) captures the clean replay's symbols (`-c`), writes them as a float symbol
+file (`dsd-neo_test_symbol_capture_to_float`) and replays that with `-i symbols.raw`: it must decode as many BSCHs as
+the I/Q replay, at least 90 of the 100 (all of them here), which a float symbol file scaled into the PCM sample domain
+loses (TETRA's frame-sync slicer has fixed thresholds in the symbol domain). These are deterministic regression
+boundaries, not receiver-sensitivity claims.
 
 `provoice` is the sigidwiki ProVoice clip, one 3.5 s transmission (issue #588). Unlike the other audio sources it was
 recorded from a receiver's de-emphasized audio rather than from its discriminator: its 9600 baud clock line is there,

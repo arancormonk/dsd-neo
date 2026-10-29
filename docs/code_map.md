@@ -4543,9 +4543,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     clamp, read only it. A retune reset (`demod_reset_on_retune()`) applies the reset plan's decision to the sum,
     clearing both parts or keeping the sum (rescaled to the new rate) and splitting it again with
     `dsd_fll_band_edge_split_total()`, into the mixer up to its bound only while `tetra_chain` is set; every reset but
-    a CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` (at each transfer sub-block boundary, after the FLL)
-    and `dsd_fll_band_edge_fold()` move the estimate between the parts without changing the sum. With `pre_freq` 0
-    (every non-TETRA chain) all of this is the FLL frequency as before.
+    a CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` (at each transfer sub-block
+    boundary, after the FLL) and `dsd_fll_band_edge_fold()` move the estimate between the parts without changing the
+    sum. With `pre_freq` 0 (every non-TETRA chain) all of this is the FLL frequency as before.
   - The predicate. `dsd_demod_update_tetra_chain()` sets `tetra_chain` at every block boundary in `full_demod()`,
     after the half-band decimation and before the mixer, and `dsd_rtl_stream_open()` runs it once the open's
     configuration is final, so a TETRA open publishes the TETRA profile before any block and the first block runs no
@@ -4565,10 +4565,11 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     of squared taps of 1/sps; it streams through `simd_fir_complex_apply()` with its own `tetra_rrc_*` history and is
     redesigned on an sps change. It sits ahead of the FLL: placed after it, a neighbour 30-40 dB stronger 25 kHz away
     broke decoding on frequency, and the 4x FLL loop bandwidth restores the pull-in it costs (the acquiring gear
-    above). A squelched block still
-    mixes and channel-filters; the matched filter, FLL and loops do not run, and the matched filter starts over for
-    the reopen. `dsd_demod_reset_filter_state()` resets the matched filter too, and on the TETRA chain the AGC
-    average. The symbols are sliced at the quadrant boundaries (TETRA protocol section).
+    above). A squelched block runs the mixer, channel LPF, AGC, matched filter and FLL as an open one does, then puts
+    the FLL and the AGC average back (block independence, below); the Gardner, differential detector and Costas loop
+    do not run, and the matched filter starts over for the reopen. `dsd_demod_reset_filter_state()` resets the
+    matched filter too, and on the TETRA chain the AGC average. The symbols are sliced at the quadrant boundaries
+    (TETRA protocol section).
   - Block independence. The chain's output does not depend on where its input is cut into blocks.
     `full_demod_tetra_stream_block()` runs a block in pieces cut at the transfer sub-block boundaries,
     `DSD_TETRA_SUBBLOCK_SYMBOLS` (96 symbols, 5.33 ms, a replay's block at every rate in the domain) of mixer input
