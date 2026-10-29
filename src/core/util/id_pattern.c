@@ -218,22 +218,22 @@ dsd_id_decimal(uint32_t id, char* out, size_t out_size) {
     if (out == NULL) {
         return 0;
     }
-    char rev[ID_DIGITS_MAX];
-    size_t n = 0;
-    do {
-        rev[n++] = (char)('0' + (id % 10U));
-        id /= 10U;
-    } while (id != 0U && n < ID_DIGITS_MAX);
+    /* Count first, then write the digits from the last: no copy loop for a vectorizer to widen past the ID's digits. */
+    size_t n = 1;
+    for (uint32_t rest = id; rest >= 10U; rest /= 10U) {
+        n++;
+    }
     if (out_size < n + 1U) {
         if (out_size > 0U) {
             out[0] = '\0';
         }
         return 0;
     }
-    for (size_t i = 0; i < n; i++) {
-        out[i] = rev[n - 1U - i];
-    }
     out[n] = '\0';
+    for (size_t i = n; i-- > 0U;) {
+        out[i] = (char)('0' + (id % 10U));
+        id /= 10U;
+    }
     return n;
 }
 
