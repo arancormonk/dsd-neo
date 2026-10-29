@@ -256,6 +256,49 @@ CallHistoryTap::run() {
 }
 
 void
+CallHistoryTap::settleClear(int slot, qulonglong pushSeq, quint64 instance) {
+    // The clear mark, settled against this ring as the model's settleClear() would: a pending one binds to
+    // what the first read finds, and one made on another ring covers nothing here.
+    CallHistoryModel::ClearMark& clear = m_result.clear;
+    if (clear.active && clear.pending) {
+        if (!m_clearBound[slot]) {
+            clear.pushSeq[slot] = pushSeq;
+            clear.ring = instance;
+            m_clearBound[slot] = true;
+        }
+        clear.pending = !(m_clearBound[0] && m_clearBound[1]);
+    } else if (clear.active && clear.ring != instance) {
+        clear = CallHistoryModel::ClearMark();
+    }
+}
+
+CallHistoryModel::RingWalk
+CallHistoryTap::slotWalk(int slot, const dsd_app_history_tap_meta& meta) {
+    const CallHistoryModel::ClearMark& clear = m_result.clear;
+    CallHistoryModel::RingWalk walk;
+    walk.seen = &m_context.seen;
+    walk.session = m_context.session;
+    walk.sessionLabel = m_context.sessionLabel;
+    // As refresh() attributes: unknown options cannot establish identity.
+    const bool singleSystem = meta.opts_published != 0 && meta.scanner_mode == 0 && meta.trunk_scan_enabled == 0;
+    walk.systemUid = singleSystem ? m_context.sessionUid : QString();
+    walk.cleared = clear.active && (!clear.pending || m_clearBound[slot]);
+    walk.clearedThrough = clear.pushSeq[slot];
+    return walk;
+}
+
+void
+CallHistoryTap::noteRead(int slot, qulonglong pushSeq, quint64 instance) {
+    if (m_result.read && m_result.ring != instance) {
+        m_result.pushSeq[0] = 0U;
+        m_result.pushSeq[1] = 0U;
+    }
+    m_result.read = true;
+    m_result.ring = instance;
+    m_result.pushSeq[slot] = pushSeq;
+}
+
+void
 CallHistoryTap::poll() {
     for (int slot = 0; slot < 2; slot++) {
         Event_History_I* ring = &m_rings[slot];
@@ -265,28 +308,8 @@ CallHistoryTap::poll() {
         }
         const qulonglong pushSeq = static_cast<qulonglong>(ring->push_seq);
         const quint64 instance = static_cast<quint64>(ring->instance);
-        // The clear mark, settled against this ring as the model's settleClear() would: a pending one binds to
-        // what the first read finds, and one made on another ring covers nothing here.
-        CallHistoryModel::ClearMark& clear = m_result.clear;
-        if (clear.active && clear.pending) {
-            if (!m_clearBound[slot]) {
-                clear.pushSeq[slot] = pushSeq;
-                clear.ring = instance;
-                m_clearBound[slot] = true;
-            }
-            clear.pending = !(m_clearBound[0] && m_clearBound[1]);
-        } else if (clear.active && clear.ring != instance) {
-            clear = CallHistoryModel::ClearMark();
-        }
-        CallHistoryModel::RingWalk walk;
-        walk.seen = &m_context.seen;
-        walk.session = m_context.session;
-        walk.sessionLabel = m_context.sessionLabel;
-        // As refresh() attributes: unknown options cannot establish identity.
-        const bool singleSystem = meta.opts_published != 0 && meta.scanner_mode == 0 && meta.trunk_scan_enabled == 0;
-        walk.systemUid = singleSystem ? m_context.sessionUid : QString();
-        walk.cleared = clear.active && (!clear.pending || m_clearBound[slot]);
-        walk.clearedThrough = clear.pushSeq[slot];
+        settleClear(slot, pushSeq, instance);
+        const CallHistoryModel::RingWalk walk = slotWalk(slot, meta);
         QList<CallHistoryModel::FreshRow> fresh;
         CallHistoryModel::walkRing(*ring, slot, walk, fresh);
         // The walk goes newest first; each slot's rows are held oldest first, so a backlog the spill cannot take
@@ -294,13 +317,7 @@ CallHistoryTap::poll() {
         for (auto it = fresh.crbegin(); it != fresh.crend(); ++it) {
             m_pending.append(CallHistoryModel::spillLine(*it));
         }
-        if (m_result.read && m_result.ring != instance) {
-            m_result.pushSeq[0] = 0U;
-            m_result.pushSeq[1] = 0U;
-        }
-        m_result.read = true;
-        m_result.ring = instance;
-        m_result.pushSeq[slot] = pushSeq;
+        noteRead(slot, pushSeq, instance);
     }
     CallHistoryModel::pruneSeenMap(m_context.seen);
     if (m_pending.isEmpty()) {

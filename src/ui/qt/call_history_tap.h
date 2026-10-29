@@ -199,6 +199,12 @@ class CallHistoryTap {
   private:
     void run();
     void poll();
+    /** @brief Settle the clear mark against @p slot's ring (@p instance, read at @p pushSeq). */
+    void settleClear(int slot, qulonglong pushSeq, quint64 instance);
+    /** @brief The ring walk of @p slot's copy, as refresh() would attribute and clear it. */
+    CallHistoryModel::RingWalk slotWalk(int slot, const dsd_app_history_tap_meta& meta);
+    /** @brief Note @p slot's ring (@p instance) as read at @p pushSeq. */
+    void noteRead(int slot, qulonglong pushSeq, quint64 instance);
     void flush();
     /** @brief Cut the held rows to the bound, oldest first, reporting the first cut of a run of failed appends. */
     void trimPending();
