@@ -241,7 +241,7 @@ Item {
                 {tag: "full", kind: "write", count: 1, low: true, text: "A call couldn't be recorded. This phone's storage is full."},
                 {tag: "write", kind: "write", count: 3, low: false, text: "3 calls couldn't be recorded. Writing the file failed."},
                 {tag: "open", kind: "open", count: 1, low: false, text: "A call couldn't be recorded. The file couldn't be created."},
-                {tag: "publish", kind: "publish", count: 1, low: false, text: "A call couldn't be recorded. The file couldn't be finished. It's kept under Unfinished recordings."}
+                {tag: "publish", kind: "publish", count: 1, low: false, text: "A call couldn't be recorded. The file couldn't be finished. It's kept, and shows under Unfinished recordings after DSD-neo restarts."}
             ];
         }
         function test_recording_failures(data) {

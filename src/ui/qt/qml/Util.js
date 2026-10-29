@@ -706,9 +706,16 @@ function fileNameText(name) {
     return String(name || "").replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "")
 }
 
-// A player position or length in milliseconds as "m:ss".
+// A player position in milliseconds as "m:ss", whole seconds played.
 function playbackTimeText(ms) {
     return fmtDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)))
+}
+
+// A recording's length in milliseconds as "m:ss", to the nearest second; a
+// length under half a second reads 0:01, so a real recording never reads empty.
+function playbackLengthText(ms) {
+    var value = Number(ms) || 0
+    return fmtDuration(value > 0 ? Math.max(1, Math.round(value / 1000)) : 0)
 }
 
 // Issue #708: the store notices Settings and the Call recordings screen share.

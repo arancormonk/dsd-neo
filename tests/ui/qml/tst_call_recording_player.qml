@@ -259,6 +259,48 @@ Item {
             compare(checked, [2], "one chip shows the part");
         }
 
+        // A length rounds, and never reads 0:00 for a real recording; the
+        // position floors, and reads the length once it reaches the end.
+        function test_sub_second_and_rounded_lengths() {
+            openWith([rec("t-1", pathA, 240), rec("t-2", pathB, 2600)]);
+            compare(item("recordingPart0").text, "Part 1 · 0:01");
+            compare(item("recordingPart1").text, "Part 2 · 0:03");
+            compare(item("recordingTime").text, "0:00 / 0:01");
+            testContext.publishPlayback(pathA, 0, 240, 240, "");
+            compare(item("recordingTime").text, "0:01 / 0:01", "a finished part reads its length");
+            compare(item("recordingTime").Accessible.name, "0:01 of 0:01");
+            tap("recordingPart1");
+            testContext.publishPlayback(pathB, 2, 1500, 2600, "");
+            compare(item("recordingTime").text, "0:01 / 0:03");
+            testContext.publishPlayback(pathB, 0, 2600, 2600, "");
+            compare(item("recordingTime").text, "0:03 / 0:03");
+            compare(item("recordingSeekBar").Accessible.description, "0:03 of 0:03");
+        }
+
+        function test_duration_line_counts_seconds() {
+            sheet().open({name: "Dispatch", tg: 1001, durationSecs: 1});
+            verify(sheet().detailLines.indexOf("Duration: 1 second") >= 0, "one second is singular");
+            sheet().visible = false;
+            sheet().open({name: "Dispatch", tg: 1001, durationSecs: 3});
+            verify(sheet().detailLines.indexOf("Duration: 3 seconds") >= 0);
+        }
+
+        // Play all starts from the first part, whichever part was shown last.
+        function test_play_all_after_a_later_part() {
+            openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            tap("recordingPart1");
+            compare(lastHostCall().path, pathB);
+            testContext.publishPlayback(pathB, 0, 8000, 8000, "");
+            verify(item("recordingPart1").checked);
+            tap("recordingPlayAll");
+            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().path, pathA, "Play all plays part 1 first");
+            verify(item("recordingPart0").checked);
+            testContext.publishPlayback(pathA, 2, 6000, 12000, "");
+            testContext.publishPlayback(pathA, 0, 12000, 12000, "");
+            compare(lastHostCall().path, pathB, "then part 2");
+        }
+
         function test_stop_ends_play_all() {
             openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
             tap("recordingPlayAll");
@@ -437,6 +479,42 @@ Item {
             testContext.publishPlayback(pathA, 2, 1000, 12000, "");
             sheet().visible = false;
             compare(testContext.hostCalls().length, 0, "another recording plays on");
+        }
+
+        // What this block started stops with it even once the row no longer
+        // names that recording (History trimmed or changed the row).
+        function test_closing_stops_what_it_started_after_the_row_changed() {
+            var uid = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            verify(callHistory.setRowRecordings(uid, [rec("t-2", pathB, 8000)]));
+            sheet().visible = false;
+            compare(lastHostCall().name, "stopPlayback");
+        }
+        function test_row_trimmed_away_stops_its_playback() {
+            var uid = openWith([rec("t-1", pathA, 12000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            verify(callHistory.setRowRecordings(uid, []));
+            verify(!item("historyRecording").visible);
+            compare(lastHostCall().name, "stopPlayback", "no control is left for it, so it stops");
+        }
+
+        // A save still running when its sheet closes ends quietly on another row's sheet.
+        function test_save_ends_quietly_on_another_rows_sheet() {
+            openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            tap("recordingSave");
+            var player = item("historyRecording");
+            var selection = player.saveSelection;
+            verify(selection > 0);
+            player.savePicked("file:///tmp/A.wav");
+            sheet().visible = false;
+            openWith([rec("t-2", pathB, 12000)]);
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            compare(player.saveSelection, 0, "the save is over");
+            verify(!item("recordingNotice").visible, "and says nothing about another call's file");
+            verify(item("recordingSave").enabled);
         }
     }
 }

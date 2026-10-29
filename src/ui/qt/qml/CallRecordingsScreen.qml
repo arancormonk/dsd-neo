@@ -107,7 +107,7 @@ Item {
         subject = folder;
         var items = [];
         if (decoderHost.recordingExportSupported)
-            items.push({text: qsTr("Export as zip"), key: "export", objectName: "folderActionExport", enabled: folder.available !== false});
+            items.push({text: qsTr("Export as zip"), key: "export", objectName: "folderActionExport", enabled: folder.available !== false && screen.exportSelection === 0});
         items.push({text: folder.kind === "scan" ? qsTr("Delete all for this scan list") : folder.kind === "saved" ? qsTr("Delete all for this system") : qsTr("Delete all from Explore"), key: "delete", destructive: true, objectName: "folderActionDelete", enabled: folder.available !== false});
         folderMenu.title = folder.name;
         folderMenu.actions = items;
@@ -135,8 +135,10 @@ Item {
         });
     }
     function beginExport(folder, preset) {
-        if (exportSelection > 0)
+        if (exportSelection > 0) {
+            say(qsTr("An export is running. Export again when it finishes."), true);
             return;
+        }
         var selection = recordings.selectForExport(folder ? folder.uid : "", preset);
         if (!selection.selection) {
             say(qsTr("No recordings in that range."), false);

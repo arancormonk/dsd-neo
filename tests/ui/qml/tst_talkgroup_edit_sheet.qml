@@ -218,6 +218,22 @@ Item {
             compare(recorder.edits, 1);
             compare(recorder.last[4], {record: true});
         }
+        // D4: with Record calls and Only unknown talkgroups on, a listed
+        // talkgroup's calls are not saved, whatever its own Record says.
+        function test_record_hint_under_unknown_only() {
+            var sheet = loader.item;
+            testContext.setPrefs("recordCalls", true);
+            testContext.setPrefs("recordUnknownOnly", true);
+            sheet.openRow(42, 42, "Dispatch", true, true, 0, false, "7", 3, true);
+            var hint = findChild(sheet, "recordHint");
+            compare(hint.text, "This talkgroup's calls aren't saved while Only unknown talkgroups is on in Settings.");
+            mouseClick(findChild(sheet, "listeningToggle"));
+            compare(hint.text, "Off while not tuned. Tuning it again turns Record back on.", "not tuned says so first");
+            testContext.setPrefs("recordUnknownOnly", false);
+            mouseClick(findChild(sheet, "listeningToggle"));
+            compare(hint.text, "Saves this talkgroup's calls when call recording is on.");
+            testContext.setPrefs("recordCalls", false);
+        }
         function test_record_edits_data() {
             return [
                 {tag: "record-off", listening: true, record: true, clicks: ["recordToggle"], changes: {record: false}},

@@ -162,7 +162,7 @@ Item {
             var why = kind === "write" && recordings.lowSpace ? qsTr("This phone's storage is full.")
                 : kind === "write" ? qsTr("Writing the file failed.")
                 : kind === "open" ? qsTr("The file couldn't be created.")
-                : qsTr("The file couldn't be finished. It's kept under Unfinished recordings.");
+                : qsTr("The file couldn't be finished. It's kept, and shows under Unfinished recordings after DSD-neo restarts.");
             notes.push({text: (failures === 1 ? qsTr("A call couldn't be recorded.") : qsTr("%1 calls couldn't be recorded.").arg(Util.countText(failures))) + " " + why, problem: true});
         }
         if (recordingStatus.journal === "failed")

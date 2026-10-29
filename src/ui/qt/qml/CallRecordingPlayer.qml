@@ -32,12 +32,18 @@ Column {
     property int current: 0
     property string currentPath: ""
     property bool playAll: false
+    // The recording this block last asked the host to play: it stops with the
+    // sheet even once the row's list no longer names it (a History trim).
+    property string ownedPath: ""
     // What the last share, save or delete came to; empty when there is nothing to say.
     property string notice: ""
     property bool noticeProblem: false
     // The selection a Save to file holds while its picker and transfer run, 0 while none.
     property int saveSelection: 0
     property var saveSelectionMap: ({})
+    // The recording that save is of: its end is reported only while that
+    // recording is shown here, never on another row's sheet.
+    property string savePath: ""
 
     readonly property var parts: {
         var list = [];
@@ -60,8 +66,13 @@ Column {
     visible: parts.length > 0
     spacing: 10
 
+    // The length rounds; the position floors, and reads the length once it
+    // reaches the end, so a finished part reads 0:01 / 0:01, never 0:00 / 0:01.
+    readonly property string lengthText: Util.playbackLengthText(durationMs)
+    readonly property string positionText: durationMs > 0 && positionMs >= durationMs ? lengthText : Util.playbackTimeText(positionMs)
+
     function partLabel(index) {
-        return qsTr("Part %1 · %2").arg(index + 1).arg(Util.playbackTimeText(parts[index].durationMs));
+        return qsTr("Part %1 · %2").arg(index + 1).arg(Util.playbackLengthText(parts[index].durationMs));
     }
     // A short state, beside the time.
     function statusText() {
@@ -103,7 +114,11 @@ Column {
             decoderHost.resumePlayback();
             return;
         }
-        decoderHost.playRecording(part.path);
+        play(part.path);
+    }
+    function play(path) {
+        ownedPath = path;
+        decoderHost.playRecording(path);
     }
     function select(index) {
         current = Math.max(0, Math.min(index, parts.length - 1));
@@ -113,13 +128,13 @@ Column {
         playAll = false;
         select(index);
         notice = "";
-        decoderHost.playRecording(parts[current].path);
+        play(parts[current].path);
     }
     function startPlayAll() {
         select(0);
         notice = "";
         playAll = true;
-        decoderHost.playRecording(parts[0].path);
+        play(parts[0].path);
     }
     // The host's news: a part that stopped at its end hands over to the next one
     // while Play all runs, and a stop of any other kind ends Play all.
@@ -132,7 +147,7 @@ Column {
         var atEnd = decoderHost.playbackState === 0 && decoderHost.playbackPath === part.path && decoderHost.playbackDurationMs > 0 && decoderHost.playbackPositionMs >= decoderHost.playbackDurationMs;
         if (atEnd && current + 1 < parts.length) {
             select(current + 1);
-            decoderHost.playRecording(parts[current].path);
+            play(parts[current].path);
             return;
         }
         playAll = false;
@@ -140,17 +155,14 @@ Column {
     // The sheet went away: what it played stops with it, since nothing else shows it.
     function stopOwnPlayback() {
         playAll = false;
-        for (var i = 0; i < recordingList.length; i++) {
-            if (decoderHost.playbackPath === recordingList[i].path && decoderHost.playbackState !== 0) {
-                decoderHost.stopPlayback();
-                return;
-            }
-        }
+        if (ownedPath !== "" && decoderHost.playbackPath === ownedPath && decoderHost.playbackState !== 0)
+            decoderHost.stopPlayback();
     }
     function reset() {
         current = 0;
         currentPath = "";
         playAll = false;
+        ownedPath = "";
         notice = "";
         noticeProblem = false;
     }
@@ -177,6 +189,7 @@ Column {
         }
         saveSelection = selection.selection;
         saveSelectionMap = selection;
+        savePath = part.path;
         savePicker.selectedFile = part.fileName;
         say("", false);
         savePicker.open();
@@ -191,12 +204,19 @@ Column {
             return;
         recordings.releaseSelection(saveSelection);
         saveSelection = 0;
+        savePath = "";
     }
     // DecoderHost::RecordingTransferResult for the save this block began.
     function saveFinished(selection, result) {
         if (selection !== saveSelection)
             return;
         saveSelection = 0;
+        var shown = false;
+        for (var i = 0; i < parts.length; i++)
+            shown = shown || parts[i].path === savePath;
+        savePath = "";
+        if (!shown)
+            return;
         if (result === 0)
             say(qsTr("Saved."), false);
         else if (result === 3)
@@ -226,6 +246,12 @@ Column {
     }
 
     onPartsChanged: {
+        // Nothing left to show it (the row trimmed away): what this block plays
+        // stops, as no control is left on screen for it.
+        if (parts.length === 0 && ownedPath !== "" && decoderHost.playbackPath === ownedPath && (decoderHost.playbackState === 1 || decoderHost.playbackState === 2 || decoderHost.playbackState === 3)) {
+            playAll = false;
+            decoderHost.stopPlayback();
+        }
         for (var i = 0; i < parts.length; i++) {
             if (parts[i].path === currentPath) {
                 current = i;
@@ -291,12 +317,12 @@ Column {
             Text {
                 objectName: "recordingTime"
                 width: parent.width
-                text: qsTr("%1 / %2").arg(Util.playbackTimeText(player.positionMs)).arg(Util.playbackTimeText(player.durationMs))
+                text: qsTr("%1 / %2").arg(player.positionText).arg(player.lengthText)
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary
                 Accessible.role: Accessible.StaticText
-                Accessible.name: qsTr("%1 of %2").arg(Util.playbackTimeText(player.positionMs)).arg(Util.playbackTimeText(player.durationMs))
+                Accessible.name: qsTr("%1 of %2").arg(player.positionText).arg(player.lengthText)
             }
 
             // The position under the time, and a seek by tap or drag while the
@@ -322,7 +348,7 @@ Column {
                     activeFocusOnTab: Navigation.allows(seekBar) && seekable
                     Accessible.role: Accessible.Slider
                     Accessible.name: qsTr("Position")
-                    Accessible.description: qsTr("%1 of %2").arg(Util.playbackTimeText(player.positionMs)).arg(Util.playbackTimeText(player.durationMs))
+                    Accessible.description: qsTr("%1 of %2").arg(player.positionText).arg(player.lengthText)
                     readonly property real value: player.positionMs / 1000
                     readonly property real minimumValue: 0
                     readonly property real maximumValue: player.durationMs / 1000

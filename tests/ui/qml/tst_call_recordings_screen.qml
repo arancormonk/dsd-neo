@@ -151,6 +151,17 @@ Item {
             testContext.setHostReading("recordingTransferBytes", 18000000);
             testContext.setHostReading("recordingTransferTotalBytes", 40000000);
             compare(item("callRecordingsExportText").text, "Exporting… 18 MB of 40 MB");
+            // A folder's export waits for this one, as Export all does, and says why if reached.
+            item("callRecordingsFolder1").activate();
+            var actions = item("callRecordingsFolderMenu").actions;
+            var exportAction = actions.filter(function (action) { return action.objectName === "folderActionExport"; })[0];
+            verify(exportAction.enabled === false, "a folder's Export as zip waits for the running export");
+            item("callRecordingsFolderMenu").visible = false;
+            var selects = recordings.calls().filter(function (call) { return call.name === "selectForExport"; }).length;
+            screen().beginExport(metro, "today");
+            compare(item("callRecordingsNotice").text, "An export is running. Export again when it finishes.");
+            compare(recordings.calls().filter(function (call) { return call.name === "selectForExport"; }).length, selects, "nothing new is selected");
+            compare(screen().exportSelection, selection);
             item("callRecordingsCancelExport").activate();
             compare(lastHostCall().name, "cancelRecordingTransfer");
 
