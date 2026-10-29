@@ -8922,9 +8922,9 @@ guard_probe_arm_with_retune(dsd_opts* opts, uint32_t freq_hz) {
     g_guard_probe_retune_hz = freq_hz;
 }
 
-/* The drain publishes the options and state snapshots after each command, each under a hold of its own (the watchdog
-   writes what they copy under the guard): the probe checks the input at those entries like any other, and counts them
-   apart from the command's holds. */
+/* The drain publishes the options and state snapshots after each command, each under a hold of its own taken by a try
+   (the watchdog writes what they copy under the guard, and a publication never waits for it): the probe checks the
+   input at those entries like any other, and counts them apart from the command's holds. */
 static int g_guard_probe_publishing;
 void __real_dsd_app_telemetry_publish_snapshot(const dsd_state* state);
 void __real_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
@@ -8946,9 +8946,21 @@ __wrap_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
 }
 
 void __real_p25_sm_tick_guard_enter(void);
+int __real_p25_sm_tick_guard_try_enter(void);
 void __real_p25_sm_tick_guard_leave(void);
 void __wrap_p25_sm_tick_guard_enter(void);
+int __wrap_p25_sm_tick_guard_try_enter(void);
 void __wrap_p25_sm_tick_guard_leave(void);
+
+int
+__wrap_p25_sm_tick_guard_try_enter(void) {
+    const int entered = __real_p25_sm_tick_guard_try_enter();
+    if (entered && g_guard_probe_opts && g_guard_probe_publishing) {
+        ++g_guard_probe_publish_holds;
+        guard_probe_check(g_guard_probe_opts);
+    }
+    return entered;
+}
 
 void
 __wrap_p25_sm_tick_guard_enter(void) {

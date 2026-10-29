@@ -2600,10 +2600,15 @@ are read under `dsd_event_history_transaction_begin()`, as every other cross-thr
 **Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
 control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25
 SM tick guard on its own thread. `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
-therefore hold that guard for the whole publish: the copy, the notification record and the observers. A publisher
-already under it (a frame dispatch) is used as held (`p25_sm_tick_guard_held_by_caller()`); the guard is not
-re-entrant. Publishers run on the decoder thread only; the hold is one copy long, and a watchdog tick that meets it
-waits for its next period.
+therefore read the live state only under that guard: the copy, the notification record and the observers. Publishers
+run on the decoder thread only, and a publication never waits for a tick (a tick can last an RTL tune, up to 500 ms, or
+rigctl round trips): a publisher already under the guard (a frame dispatch) uses that hold, since the guard is not
+re-entrant (`p25_sm_tick_guard_held_by_caller()`); any other tries it once (`dsd_app_publish_guard_try()` in
+`src/app_control/snapshot_internal.h`), and a busy guard puts the publication off with a pending flag
+(`dsd_app_telemetry_snapshot_pending()`, `dsd_app_telemetry_opts_snapshot_pending()`). A put-off publication is never
+dropped: the next publish of the same snapshot carries the state as it is then, and `dsd_app_drain_cmds()`, which the
+decode loop runs every pass, retries it at its start (a flag read when nothing waits); the frame-sync hunt publishes
+every 50 ms. A read waiting on a silent input runs no pass, so there the retry waits for the next sample or command. The hold is one copy long, and a watchdog tick that meets it waits for its next period.
 
 ### Control Pump (DSP/Protocol → Runtime ← App-Control)
 

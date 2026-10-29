@@ -109,6 +109,7 @@
 #include "recording_view_internal.h"
 #include "scan_row_edit.h"
 #include "services.h"
+#include "snapshot_internal.h"
 
 #define DSD_APP_CMD_Q_CAP 128
 
@@ -9298,6 +9299,14 @@ int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
+    /* A publication a watchdog tick put off (snapshot_internal.h) goes out at the next drain, which the decode loop
+       runs every pass: a flag read while none is waiting. */
+    if (dsd_app_telemetry_opts_snapshot_pending()) {
+        dsd_telemetry_publish_opts_snapshot(opts);
+    }
+    if (dsd_app_telemetry_snapshot_pending()) {
+        dsd_telemetry_publish_snapshot(state);
+    }
     ui_show_stream_notice(state);
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between

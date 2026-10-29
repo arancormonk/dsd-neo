@@ -9,7 +9,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -23,6 +22,8 @@ static dsd_mutex_t g_opts_mu;
 static atomic_int g_opts_mu_init = 0;
 static unsigned long long g_pub_opts_seq = 0;
 static unsigned long long g_consume_opts_seq = 0;
+/* A publication the P25 SM tick guard put off (dsd_app_telemetry_opts_snapshot_pending()). */
+static atomic_int g_pub_opts_pending = 0;
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready. The loser of the
  * first-call race must wait: taking a mutex another thread has not finished
@@ -69,15 +70,20 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
         return;
     }
     /* The P25 watchdog's tunes write the options too (trunk_is_tuned, the tuner's centre frequency) under the tick
-       guard, so the copy holds it, as the state snapshot's does (ui_snapshot.c); not re-entrant. */
-    const int take_guard = !p25_sm_tick_guard_held_by_caller();
-    if (take_guard) {
-        p25_sm_tick_guard_enter();
+       guard, so the copy holds it, and a tick in progress puts it off, as the state snapshot's does (ui_snapshot.c). */
+    const dsd_app_publish_guard guard = dsd_app_publish_guard_try();
+    if (guard == DSD_APP_PUBLISH_GUARD_BUSY) {
+        atomic_store(&g_pub_opts_pending, 1);
+        return;
     }
+    atomic_store(&g_pub_opts_pending, 0);
     ui_opts_snapshot_publish(opts);
-    if (take_guard) {
-        p25_sm_tick_guard_leave();
-    }
+    dsd_app_publish_guard_leave(guard);
+}
+
+int
+dsd_app_telemetry_opts_snapshot_pending(void) {
+    return atomic_load(&g_pub_opts_pending);
 }
 
 const dsd_opts*

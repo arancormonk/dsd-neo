@@ -240,6 +240,31 @@ test_publish_holds_the_tick_guard(void) {
     assert(dsd_app_telemetry_observer_remove(&observer) == 0);
 }
 
+/* A watchdog tick in progress holds the guard: the publication does not wait for it, but is put off, and the next
+   publish carries the options as they are then. */
+static void
+test_publish_puts_off_while_a_tick_holds_the_guard(void) {
+    static dsd_opts opts;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.rtlsdr_center_freq = 851000000U;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_telemetry_opts_snapshot_pending() == 0);
+    assert(dsd_app_get_latest_opts_snapshot()->rtlsdr_center_freq == 851000000U);
+
+    assert(dsd_test_p25_tick_guard_hold_elsewhere());
+    opts.rtlsdr_center_freq = 852000000U;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_telemetry_opts_snapshot_pending() == 1);
+    assert(dsd_app_get_latest_opts_snapshot()->rtlsdr_center_freq == 851000000U);
+    assert(dsd_test_p25_tick_guard_release_elsewhere()); /* still held: the publish returned without waiting */
+
+    opts.rtlsdr_center_freq = 853000000U;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_telemetry_opts_snapshot_pending() == 0);
+    assert(dsd_app_get_latest_opts_snapshot()->rtlsdr_center_freq == 853000000U);
+}
+
 int
 main(void) {
     test_initial_snapshot_is_absent();
@@ -249,6 +274,7 @@ main(void) {
     test_publish_carries_the_recording_view();
     test_publish_carries_the_journal_state();
     test_publish_holds_the_tick_guard();
+    test_publish_puts_off_while_a_tick_holds_the_guard();
     printf("UI_OPTS_SNAPSHOT: OK\n");
     return 0;
 }

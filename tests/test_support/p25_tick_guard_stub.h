@@ -7,4 +7,10 @@
    each one would have been a hang. */
 int dsd_test_p25_tick_guard_reentries(void);
 
+/* Hold the guard on a thread of its own, as a watchdog tick in progress does, until
+   dsd_test_p25_tick_guard_release_elsewhere() or 2 s pass. Returns 1 once the guard is held there. */
+int dsd_test_p25_tick_guard_hold_elsewhere(void);
+/* End that hold and join its thread. Returns 1 when the hold was still in place (it had not run out its 2 s). */
+int dsd_test_p25_tick_guard_release_elsewhere(void);
+
 #endif /* DSD_NEO_TEST_P25_TICK_GUARD_STUB_H */

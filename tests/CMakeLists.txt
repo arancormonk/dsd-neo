@@ -8167,6 +8167,7 @@ if(
             "LINKER:--wrap=rtl_stream_replay_replan_check_request"
             "LINKER:--wrap=rtl_stream_replay_checkpoint"
             "LINKER:--wrap=p25_sm_tick_guard_enter"
+            "LINKER:--wrap=p25_sm_tick_guard_try_enter"
             "LINKER:--wrap=p25_sm_tick_guard_leave"
             "LINKER:--wrap=dsd_app_telemetry_publish_snapshot"
             "LINKER:--wrap=dsd_app_telemetry_publish_opts_snapshot"

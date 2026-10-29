@@ -17,7 +17,6 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
@@ -41,6 +40,8 @@ static uint64_t g_consume_eh_seq[2] = {0};
 static uint64_t g_pub_eh_source_revision[2] = {0};
 static const Event_History_I* g_pub_eh_source = NULL;
 static int g_pub_eh_present = 0;
+/* A publication the P25 SM tick guard put off (dsd_app_telemetry_snapshot_pending()). */
+static atomic_int g_pub_pending = 0;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
@@ -379,16 +380,21 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     }
     /* The P25 watchdog's tick writes the decoder state (calls, tuned frequencies, site tables, CC candidates) under the
        tick guard on its own thread, so every read of the live state here -- the copy, the notification and the
-       observers -- holds it too, or a frontend renders a half-written tick. Publishers run on the decoder thread, some
-       of them already under the guard (a frame dispatch), which is not re-entrant. */
-    const int take_guard = !p25_sm_tick_guard_held_by_caller();
-    if (take_guard) {
-        p25_sm_tick_guard_enter();
+       observers -- holds it too, or a frontend renders a half-written tick. A tick in progress puts the publication off
+       rather than stall the decoder for the rest of it (an RTL tune, a rigctl round trip): the next publish retries. */
+    const dsd_app_publish_guard guard = dsd_app_publish_guard_try();
+    if (guard == DSD_APP_PUBLISH_GUARD_BUSY) {
+        atomic_store(&g_pub_pending, 1);
+        return;
     }
+    atomic_store(&g_pub_pending, 0);
     ui_snapshot_publish(state);
-    if (take_guard) {
-        p25_sm_tick_guard_leave();
-    }
+    dsd_app_publish_guard_leave(guard);
+}
+
+int
+dsd_app_telemetry_snapshot_pending(void) {
+    return atomic_load(&g_pub_pending);
 }
 
 const dsd_state*

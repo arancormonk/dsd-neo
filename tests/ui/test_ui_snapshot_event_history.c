@@ -201,6 +201,28 @@ test_publish_holds_the_tick_guard(const dsd_state* state) {
     assert(dsd_app_telemetry_observer_remove(&observer) == 0);
 }
 
+/* A watchdog tick in progress holds the guard: the publication does not wait for it (an RTL tune or a rigctl round trip
+   would stall the decoder), but is put off, and the next publish carries the state as it is then. */
+static void
+test_publish_puts_off_while_a_tick_holds_the_guard(dsd_state* state) {
+    state->trunk_cc_freq = 851000000L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_telemetry_snapshot_pending() == 0);
+    assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 851000000L);
+
+    assert(dsd_test_p25_tick_guard_hold_elsewhere());
+    state->trunk_cc_freq = 852000000L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_telemetry_snapshot_pending() == 1);
+    assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 851000000L);
+    assert(dsd_test_p25_tick_guard_release_elsewhere()); /* still held: the publish returned without waiting */
+
+    state->trunk_cc_freq = 853000000L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_telemetry_snapshot_pending() == 0);
+    assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 853000000L);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -538,6 +560,7 @@ main(void) {
     free(opts);
 
     test_publish_holds_the_tick_guard(state);
+    test_publish_puts_off_while_a_tick_holds_the_guard(state);
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);
