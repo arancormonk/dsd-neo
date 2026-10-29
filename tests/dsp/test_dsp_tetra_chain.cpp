@@ -777,11 +777,26 @@ test_uplink_keeps_channel_filter_only(void) {
     rc |= expect_near("uplink: no mixer", s->fll_band_edge_state.pre_freq, 0.0, 0.0);
     rc |= expect_near("uplink: FLL rolloff", s->fll_band_edge_state.rolloff, 0.2, 1e-6);
     rc |= expect_near("uplink: FLL loop scale", s->fll_band_edge_state.loop_bw_scale, 1.0, 1e-6);
-    rc |= expect_near("uplink: AGC weight", dsd_cqpsk_agc_alpha(s->tetra_chain), 0.45, 1e-6);
     rc |= expect_int("uplink: nothing warned", g_warns.total, 0);
     if (s->result_len <= 0) {
         rc |= fail("uplink: no symbols");
     }
+
+    /* The AGC averages with the earlier path's 0.45: from 1.0, after 8 samples of |x|^2 = 0.25 the average is
+       0.25 + 0.75 * 0.55^8, where the chain's 0.1 would leave 0.25 + 0.75 * 0.9^8. */
+    DSD_MEMSET(s, 0, sizeof(*s));
+    configure_tetra(s, 72000);
+    s->tetra_uplink = 1;
+    dsd_demod_update_tetra_chain(s);
+    s->cqpsk_agc_avg = 1.0f;
+    for (int k = 0; k < 8; k++) {
+        s->input_cb_buf[k * 2] = 0.5f;
+        s->input_cb_buf[(k * 2) + 1] = 0.0f;
+    }
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = 16;
+    dsd_demod_test_cqpsk_rms_agc(s);
+    rc |= expect_near("uplink: AGC average at 0.45", s->cqpsk_agc_avg, 0.25 + 0.75 * std::pow(0.55, 8.0), 1e-5);
 
     /* Off the domain (48 kHz) the uplink runs WIDE, as a downlink stream there does, and is not warned about either. */
     DSD_MEMSET(s, 0, sizeof(*s));

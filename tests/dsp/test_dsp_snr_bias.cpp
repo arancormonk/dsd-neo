@@ -42,13 +42,13 @@ main(void) {
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         const struct test_case* tc = &cases[i];
-        double got_c4fm = dsd_snr_bias_c4fm_db(rate_out, ted_sps, tc->profile, 0);
+        double got_c4fm = dsd_snr_bias_c4fm_db(rate_out, ted_sps, tc->profile, DSD_SNR_TETRA_STAGE_WIDE);
         if (!nearly_equal(got_c4fm, tc->expected_c4fm, tol)) {
             DSD_FPRINTF(stderr, "SNR bias C4FM mismatch for %s: got %.12f expected %.12f\n", tc->name, got_c4fm,
                         tc->expected_c4fm);
             return 1;
         }
-        double got_evm = dsd_snr_bias_evm_db(rate_out, ted_sps, tc->profile, 0);
+        double got_evm = dsd_snr_bias_evm_db(rate_out, ted_sps, tc->profile, DSD_SNR_TETRA_STAGE_WIDE);
         if (!nearly_equal(got_evm, tc->expected_evm, tol)) {
             DSD_FPRINTF(stderr, "SNR bias EVM mismatch for %s: got %.12f expected %.12f\n", tc->name, got_evm,
                         tc->expected_evm);
@@ -58,8 +58,8 @@ main(void) {
 
     /* Fallback behavior for invalid inputs should be stable. */
     {
-        const double fb_c4fm = dsd_snr_bias_c4fm_db(0, ted_sps, DSD_CH_LPF_PROFILE_WIDE, 0);
-        const double fb_evm = dsd_snr_bias_evm_db(rate_out, 0, DSD_CH_LPF_PROFILE_WIDE, 0);
+        const double fb_c4fm = dsd_snr_bias_c4fm_db(0, ted_sps, DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_WIDE);
+        const double fb_evm = dsd_snr_bias_evm_db(rate_out, 0, DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_WIDE);
         if (!nearly_equal(fb_c4fm, 7.93, tol)) {
             DSD_FPRINTF(stderr, "SNR bias C4FM fallback mismatch: got %.12f expected %.12f\n", fb_c4fm, 7.93);
             return 1;
@@ -77,40 +77,40 @@ main(void) {
     {
         struct bw_case {
             int profile;
-            int tetra_chain;
+            int tetra_stage;
             double noise_bw_hz;
         };
 
         const struct bw_case bw_cases[] = {
-            {DSD_CH_LPF_PROFILE_TETRA, 1, 9000.0},
-            {DSD_CH_LPF_PROFILE_TETRA, 0, 8415.0},
+            {DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHAIN, 9000.0},
+            {DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_WIDE, 8415.0},
             {DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHANNEL, 12114.0},
             {DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_CHANNEL, 8415.0},
-            {DSD_CH_LPF_PROFILE_WIDE, 0, 8415.0},
-            {DSD_CH_LPF_PROFILE_6K25, 0, 3540.0},
-            {DSD_CH_LPF_PROFILE_12K5, 0, 6665.0},
-            {DSD_CH_LPF_PROFILE_PROVOICE, 0, 6665.0},
-            {DSD_CH_LPF_PROFILE_P25_C4FM, 0, 6665.0},
-            {DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 7065.0},
-            {DSD_CH_LPF_PROFILE_P25_CQPSK, 1, 7065.0},
+            {DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_WIDE, 8415.0},
+            {DSD_CH_LPF_PROFILE_6K25, DSD_SNR_TETRA_STAGE_WIDE, 3540.0},
+            {DSD_CH_LPF_PROFILE_12K5, DSD_SNR_TETRA_STAGE_WIDE, 6665.0},
+            {DSD_CH_LPF_PROFILE_PROVOICE, DSD_SNR_TETRA_STAGE_WIDE, 6665.0},
+            {DSD_CH_LPF_PROFILE_P25_C4FM, DSD_SNR_TETRA_STAGE_WIDE, 6665.0},
+            {DSD_CH_LPF_PROFILE_P25_CQPSK, DSD_SNR_TETRA_STAGE_WIDE, 7065.0},
+            {DSD_CH_LPF_PROFILE_P25_CQPSK, DSD_SNR_TETRA_STAGE_CHAIN, 7065.0},
         };
         for (size_t i = 0; i < sizeof(bw_cases) / sizeof(bw_cases[0]); i++) {
             const struct bw_case* bc = &bw_cases[i];
-            const double got = dsd_snr_noise_bandwidth_hz(bc->profile, bc->tetra_chain);
+            const double got = dsd_snr_noise_bandwidth_hz(bc->profile, bc->tetra_stage);
             if (!nearly_equal(got, bc->noise_bw_hz, tol)) {
-                DSD_FPRINTF(stderr, "noise bandwidth for profile %d chain %d: got %.3f expected %.3f\n", bc->profile,
-                            bc->tetra_chain, got, bc->noise_bw_hz);
+                DSD_FPRINTF(stderr, "noise bandwidth for profile %d TETRA stage %d: got %.3f expected %.3f\n",
+                            bc->profile, bc->tetra_stage, got, bc->noise_bw_hz);
                 return 1;
             }
         }
-        const double tetra_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, 1);
+        const double tetra_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHAIN);
         const double want_tetra_evm = 1.92 + 10.0 * log10(9000.0 / 18000.0);
         if (!nearly_equal(tetra_evm, want_tetra_evm, tol)) {
             DSD_FPRINTF(stderr, "TETRA EVM bias: got %.12f expected %.12f\n", tetra_evm, want_tetra_evm);
             return 1;
         }
-        const double inactive_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, 0);
-        const double wide_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_WIDE, 0);
+        const double inactive_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_WIDE);
+        const double wide_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_WIDE);
         if (!nearly_equal(inactive_evm, wide_evm, tol)) {
             DSD_FPRINTF(stderr, "inactive TETRA EVM bias: got %.12f expected WIDE's %.12f\n", inactive_evm, wide_evm);
             return 1;

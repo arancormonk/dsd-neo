@@ -1415,11 +1415,13 @@ dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
 
 extern "C" int
 dsd_demod_tetra_channel_runs(const struct demod_state* d) {
+    /* The chain flag first, as dsd_demod_tetra_stage() reads it: between a setter that leaves the TETRA profile and the
+       next block boundary the chain still runs, and its filter with it. */
+    if (d && d->tetra_chain) {
+        return 1;
+    }
     if (!d || !tetra_chain_requested(d)) {
         return 0;
-    }
-    if (d->tetra_chain) {
-        return 1;
     }
     const int rate = d->rate_out;
     if (!d->tetra_uplink || !d->channel_lpf_enable || !dsd_tetra_dsp_rate_runs(rate)) {
