@@ -186,6 +186,9 @@ static int g_rigctl_fake_bw = 0;
 static int g_rigctl_fake_known = 1;      /* whether the client knows what the peer runs */
 static int g_rigctl_fake_last_kind = -1; /* the last request sent */
 static int g_rigctl_fake_last_bw = -1;
+/* Armed apart from the passband fake: a frequency the peer takes (issue #671), and the last one sent. */
+static int g_rigctl_fake_freq_armed = 0;
+static long int g_rigctl_fake_freq = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -193,6 +196,8 @@ bool __real_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __real_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
+bool __real_SetFreq(dsd_socket_t sockfd, long int freq);
+bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
 int __real_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __real_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
@@ -472,6 +477,15 @@ __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
         return __real_SetModulationKind(sockfd, kind, bandwidth);
     }
     return rigctl_fake_request(kind, bandwidth);
+}
+
+bool
+__wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
+    if (!g_rigctl_fake_freq_armed) {
+        return __real_SetFreq(sockfd, freq);
+    }
+    g_rigctl_fake_freq = freq;
+    return true;
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -21352,6 +21366,195 @@ test_channel_scan_pause_services(void) {
     return rc;
 }
 
+/* Post the action @p id and drain it. */
+static int
+drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
+    int rc = expect_int(label, dsd_app_command_action(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* An untyped -Y list of three rows on audio input, scanning from row 2 with an operator hold. */
+static void
+seed_running_list(dsd_opts* opts, dsd_state* state) {
+    opts->scanner_mode = 1;
+    state->lcn_freq_count = 3;
+    *dsd_state_trunk_lcn_slot(state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(state, 1) = 852375000;
+    *dsd_state_trunk_lcn_slot(state, 2) = 853375000;
+    state->lcn_freq_roll = 2;
+    state->lcn_scan_hold = 1;
+    state->lcn_scan_paused = 0U;
+    state->lcn_scan_resume_pending = 0U;
+    state->operator_tuned = 0U;
+}
+
+/* A -Y list of three rows paused by a tuner release, cursor on row 2 (seed_running_list()). */
+static int
+pause_seeded_list(dsd_opts* opts, dsd_state* state, const char* label) {
+    seed_running_list(opts, state);
+    int rc = drain_action(opts, state, DSD_APP_CMD_TUNER_RELEASE, label);
+    rc |= expect_int(label, opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_freq_roll == 2, 1);
+    return rc;
+}
+
+/* Apply @p cfg and drain it, with the status line cleared first. */
+static int
+drain_config(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* label) {
+    int rc = expect_true(label, dsd_app_command_apply_config(cfg) > 0);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #671 (F11): a config applied over a paused -Y scan settles the scan last, as the controls do. Without
+ * [trunking] it keeps the pause (cursor and list untouched). Trunking on stops it and trunks; the scanner off stops
+ * it, and a save then writes the scanner off; the scanner on resumes it (here the row's tune is refused on audio input,
+ * so it stays paused and says why). A config apply never imports a channel map, so another chan_csv waits for a
+ * restart: the path the session loaded stays, the pause is left to the owner rules alone, and the restart cause stays
+ * on the status line beside the resume's own reason. On main the staged scanner and trunking flags were written over
+ * the pause: the scanner on left a scan both running and paused with no row installed, and trunking on or the scanner
+ * off left the pause set.
+ */
+static int
+test_config_settles_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+
+    rc |= pause_seeded_list(&opts, &state, "paused before a config without [trunking]");
+    dsdneoUserConfig cfg = {0};
+    cfg.has_logging = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config without [trunking]");
+    rc |= expect_int("no [trunking]: the pause stays",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && opts.trunk_enable == 0
+                         && state.lcn_freq_roll == 2 && state.lcn_freq_count == 3 && state.operator_tuned == 1,
+                     1);
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config trunking on");
+    rc |= expect_int("trunking on stops the paused scan and trunks",
+                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && opts.trunk_enable == 1, 1);
+    opts.trunk_enable = 0;
+
+    rc |= pause_seeded_list(&opts, &state, "paused before scanner off");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config scanner off");
+    rc |= expect_int("scanner off stops the paused scan",
+                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && opts.trunk_enable == 0, 1);
+    static dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("scanner off: a save after the stop writes the scanner off", saved.trunk_scanner, 0);
+
+    rc |= pause_seeded_list(&opts, &state, "paused before scanner on");
+    const uint32_t session = state.lcn_scan_session;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config scanner on");
+    rc |= expect_int("scanner on asked for a resume", state.lcn_scan_session != session, 1);
+    rc |= expect_str("scanner on: the resume says why it stays paused", state.ui_msg,
+                     "Scan stays paused: tune to 853.375000 MHz failed");
+    rc |= expect_int("scanner on: paused, never running and paused at once",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && state.lcn_freq_roll == 2, 1);
+
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+    rc |= drain_config(&opts, &state, &cfg, "config scanner on, another map");
+    rc |= expect_str("another map: the loaded map stays", opts.chan_in_file, "loaded_map.csv");
+    rc |= expect_int("another map: restart needed", dsd_app_command_test_last_restart_required(), 1);
+    rc |= expect_str("another map: the resume's reason and the restart cause", state.ui_msg,
+                     "Scan stays paused: tune to 853.375000 MHz failed; restart to use the new channel map");
+    rc |= expect_int("another map: still paused where it was",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && state.lcn_freq_roll == 2, 1);
+
+    opts.chan_in_file[0] = '\0';
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671: a config apply never imports a channel map (only startup does), so in any session another chan_csv
+ * leaves the path the session loaded and says a restart is needed: with no scan, and under a running -Y scan, which
+ * keeps running. On main the new path was taken silently while the decoder kept the old rows, and the next save wrote
+ * a map the session never ran.
+ */
+static int
+test_config_channel_map_waits_for_a_restart(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int scanning = 0; scanning <= 1; scanning++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_WAV;
+        if (scanning) {
+            seed_running_list(&opts, &state);
+        }
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        dsdneoUserConfig cfg = {0};
+        cfg.has_trunking = 1;
+        cfg.trunk_scanner = scanning;
+        DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+        rc |= drain_config(&opts, &state, &cfg, scanning ? "map under -Y" : "map with no scan");
+        int bad = expect_str("the loaded map stays", opts.chan_in_file, "loaded_map.csv");
+        bad |= expect_int("restart needed", dsd_app_command_test_last_restart_required(), 1);
+        bad |= expect_str("restart toast", state.ui_msg, "Config applied; restart to use the new channel map");
+        bad |= expect_int("the scan is as it was", opts.scanner_mode == scanning && state.lcn_scan_paused == 0, 1);
+        if (bad) {
+            DSD_FPRINTF(stderr, "  %s\n", scanning ? "under a running -Y scan" : "with no scan");
+            rc = 1;
+        }
+        /* The same path again needs nothing. */
+        DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "loaded_map.csv");
+        rc |= drain_config(&opts, &state, &cfg, "same map");
+        rc |= expect_int("same map: no restart", dsd_app_command_test_last_restart_required(), 0);
+        opts.scanner_mode = 0;
+        freeState(&state);
+    }
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Issue #671: the scanner on resumes a paused -Y scan whose row's tune lands (a rigctl peer that takes it): the scan
+ * runs again from the row after its cursor, no longer paused, and the tuner is the scan's again.
+ */
+static int
+test_config_resumes_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+    g_rigctl_fake_freq_armed = 1;
+    int rc = pause_seeded_list(&opts, &state, "paused before a landing resume");
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config scanner on, the row lands");
+    rc |= expect_int("landing resume: running again",
+                     opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 0,
+                     1);
+    rc |= expect_int("landing resume: on the row after the cursor", g_rigctl_fake_freq == 853375000L, 1);
+    rc |= expect_int("landing resume: the cursor moved past it", state.lcn_freq_roll, 3);
+    g_rigctl_fake_freq_armed = 0;
+    disarm_rigctl_fake(&opts);
+    opts.scanner_mode = 0;
+    freeState(&state);
+    return rc;
+}
+#endif
+
 #ifdef USE_RADIO
 /* Issue #671: the frequency entry's tune leg, through the queue's portable seam (dsd_app_command_test_set_tune_leg()),
    so these cases run on every toolchain: it answers g_seam_tune_result and caches what an accepted tune asked for, as
@@ -21390,30 +21593,6 @@ drain_entry(dsd_opts* opts, dsd_state* state, uint32_t hz, const char* label) {
     state->ui_msg[0] = '\0';
     rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
     return rc;
-}
-
-/* Post the action @p id and drain it. */
-static int
-drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
-    int rc = expect_int(label, dsd_app_command_action(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    state->ui_msg[0] = '\0';
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
-/* An untyped -Y list of three rows on audio input, scanning from row 2 with an operator hold. */
-static void
-seed_running_list(dsd_opts* opts, dsd_state* state) {
-    opts->scanner_mode = 1;
-    state->lcn_freq_count = 3;
-    *dsd_state_trunk_lcn_slot(state, 0) = 851375000;
-    *dsd_state_trunk_lcn_slot(state, 1) = 852375000;
-    *dsd_state_trunk_lcn_slot(state, 2) = 853375000;
-    state->lcn_freq_roll = 2;
-    state->lcn_scan_hold = 1;
-    state->lcn_scan_paused = 0U;
-    state->lcn_scan_resume_pending = 0U;
-    state->operator_tuned = 0U;
 }
 
 /*
@@ -21784,90 +21963,6 @@ test_trunk_scan_pauses_for_an_entry_and_resumes(void) {
     return rc;
 }
 
-/* A -Y list of three rows paused by a tuner release, cursor on row 2 (seed_running_list()). */
-static int
-pause_seeded_list(dsd_opts* opts, dsd_state* state, const char* label) {
-    seed_running_list(opts, state);
-    int rc = drain_action(opts, state, DSD_APP_CMD_TUNER_RELEASE, label);
-    rc |= expect_int(label, opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_freq_roll == 2, 1);
-    return rc;
-}
-
-/* Apply @p cfg and drain it, with the status line cleared first. */
-static int
-drain_config(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* label) {
-    int rc = expect_true(label, dsd_app_command_apply_config(cfg) > 0);
-    state->ui_msg[0] = '\0';
-    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
-    return rc;
-}
-
-/*
- * Issue #671 (F11): a config applied over a paused -Y scan settles the scan last, as the controls do. Without
- * [trunking] it keeps the pause (cursor and list untouched). Trunking on stops it and trunks; the scanner off stops
- * it; the scanner on resumes it (here the row's tune is refused on audio input, so it stays paused and says why);
- * the scanner on with another channel map stops the paused scan (its cursor belongs to the old map) and starts the
- * scanner afresh. On main the staged scanner and trunking flags were written over the pause: the scanner on left a
- * scan both running and paused with no row installed, and trunking on or the scanner off left the pause set.
- */
-static int
-test_config_settles_a_paused_list(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    int rc = 0;
-    init_decode_mode_context(&opts, &state);
-    opts.audio_in_type = AUDIO_IN_WAV;
-
-    rc |= pause_seeded_list(&opts, &state, "paused before a config without [trunking]");
-    dsdneoUserConfig cfg = {0};
-    cfg.has_logging = 1;
-    rc |= drain_config(&opts, &state, &cfg, "config without [trunking]");
-    rc |= expect_int("no [trunking]: the pause stays",
-                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && opts.trunk_enable == 0
-                         && state.lcn_freq_roll == 2 && state.lcn_freq_count == 3 && state.operator_tuned == 1,
-                     1);
-
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_trunking = 1;
-    cfg.trunk_enabled = 1;
-    rc |= drain_config(&opts, &state, &cfg, "config trunking on");
-    rc |= expect_int("trunking on stops the paused scan and trunks",
-                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && opts.trunk_enable == 1, 1);
-    opts.trunk_enable = 0;
-
-    rc |= pause_seeded_list(&opts, &state, "paused before scanner off");
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_trunking = 1;
-    rc |= drain_config(&opts, &state, &cfg, "config scanner off");
-    rc |= expect_int("scanner off stops the paused scan",
-                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && opts.trunk_enable == 0, 1);
-
-    rc |= pause_seeded_list(&opts, &state, "paused before scanner on");
-    const uint32_t session = state.lcn_scan_session;
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_trunking = 1;
-    cfg.trunk_scanner = 1;
-    rc |= drain_config(&opts, &state, &cfg, "config scanner on");
-    rc |= expect_int("scanner on asked for a resume", state.lcn_scan_session != session, 1);
-    rc |= expect_str("scanner on: the resume says why it stays paused", state.ui_msg,
-                     "Scan stays paused: tune to 853.375000 MHz failed");
-    rc |= expect_int("scanner on: paused, never running and paused at once",
-                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && state.lcn_freq_roll == 2, 1);
-
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_trunking = 1;
-    cfg.trunk_scanner = 1;
-    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
-    rc |= drain_config(&opts, &state, &cfg, "config scanner on, another map");
-    rc |= expect_int("another map stops the paused scan and starts the scanner",
-                     state.lcn_scan_paused == 0 && opts.scanner_mode == 1 && opts.trunk_enable == 0, 1);
-    rc |= expect_str("another map is the configured one", opts.chan_in_file, "another_map.csv");
-
-    opts.scanner_mode = 0;
-    freeState(&state);
-    return rc;
-}
-
 /*
  * Issue #671 (B6, F11): [trunking] enabled = true applied under a trunk scan is the configured setting the coordinator
  * puts back at shutdown and a save writes, never the live flag: a paused scan stays untrunked on the operator's
@@ -21990,8 +22085,12 @@ main(void) {
     rc |= test_frequency_entry_pauses_a_running_list();
     rc |= test_paused_list_controls_and_stops();
     rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();
-    rc |= test_config_settles_a_paused_list();
     rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();
+#endif
+    rc |= test_config_settles_a_paused_list();
+    rc |= test_config_channel_map_waits_for_a_restart();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_config_resumes_a_paused_list();
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_config_failed_reopen_keeps_a_paused_list();

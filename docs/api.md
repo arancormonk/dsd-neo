@@ -643,15 +643,16 @@ field, and the decoder refuses the rest when it applies the command.
   [docs/config-system.md](config-system.md) for the keys.
 
   Settings that only a restart puts in place (the frontend, `[trunk_scan]
-  enabled`, an Airspy input chosen over a non-radio input, and while a trunk
-  scan runs its target list, dwell and hold defaults and the global channel map
-  and band plan) keep their running values, and `status.message` names them
-  (`Config applied; restart to use the new trunk scan list`). Under a trunk scan
-  `[trunking] enabled = true` is the setting the scan puts back at shutdown and
-  a save writes, not the parked target's. Over a paused `-Y` scan, a config
-  without `[trunking]` keeps the pause; trunking on, `scanner = false` or another
-  `chan_csv` stop it; `scanner = true` resumes it. A config whose input does not
-  start is rolled back and keeps the pause.
+  enabled`, `[trunking] chan_csv` (the channel map is imported at startup
+  only), an Airspy input chosen over a non-radio input, and while a trunk scan
+  runs its target list, dwell and hold defaults and the global band plan) keep
+  their running values, and `status.message` names them (`Config applied;
+  restart to use the new channel map`), after any other message the apply left.
+  Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
+  back at shutdown and a save writes, not the parked target's. Over a paused
+  `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or
+  `scanner = false` stop it; `scanner = true` resumes it. A config whose input
+  does not start is rolled back and keeps the pause.
 
   ```json
   {"cmd":"config_apply","params":{"sections":{

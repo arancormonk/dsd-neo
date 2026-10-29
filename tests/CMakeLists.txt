@@ -8150,6 +8150,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
             "LINKER:--wrap=SetScanRowModulation"
             "LINKER:--wrap=SetModulationKind"
+            "LINKER:--wrap=SetFreq"
     )
 endif()
 # The receiver's refusals (issue #518 D6) reach the command toasts through the stream; radio builds only.

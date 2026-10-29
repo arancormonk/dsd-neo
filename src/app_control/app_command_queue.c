@@ -8063,13 +8063,14 @@ cfg_restore_owned_int(int* live, int before) {
  * UI thread has a chance to shut it down. The trunk-scan coordinator is likewise
  * only installed at startup, and its flag must keep saying whether one is
  * installed: the scanner-exclusivity refusals and P25 recovery admission read it
- * (#554). A running coordinator also loaded its target list and resolved the list's
- * dwell and hold defaults at startup, and refused the global channel map and band plan
- * then (each target names its own), so under it those are the coordinator's too: a
- * config that changed them would have the next save write a list the session never
- * ran (issue #671). All of them are put back after the config is applied; the
- * CFG_RESTART_* mask returned names those the config asked to change, which the
- * caller reports as restart-required.
+ * (#554). The channel map is imported at startup only (a config apply copies its
+ * path and nothing more), so another path would have the next save write a map the
+ * session never ran while the decoder keeps the rows it loaded (issue #671). A running
+ * coordinator also loaded its target list and resolved the list's dwell and hold
+ * defaults at startup, and refused the global band plan then (each target names its
+ * own), so under it those are the coordinator's too. All of them are put back after
+ * the config is applied; the CFG_RESTART_* mask returned names those the config asked
+ * to change, which the caller reports as restart-required.
  */
 static int
 cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
@@ -8082,15 +8083,15 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const c
     if (cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != before->trunk_scan_enabled) {
         changed |= CFG_RESTART_TRUNK_SCAN;
     }
+    if (cfg_restore_owned_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file)) {
+        changed |= CFG_RESTART_CHANNEL_MAP;
+    }
     if (before->trunk_scan_enabled == 1) {
         int list_changed = cfg_restore_owned_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
                                                   before->trunk_scan_targets_csv);
         list_changed |= cfg_restore_owned_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms);
         list_changed |= cfg_restore_owned_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms);
         changed |= list_changed ? CFG_RESTART_TRUNK_SCAN_LIST : 0;
-        if (cfg_restore_owned_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file)) {
-            changed |= CFG_RESTART_CHANNEL_MAP;
-        }
         if (cfg_restore_owned_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file,
                                    before->p25_bandplan_in_file)) {
             changed |= CFG_RESTART_BAND_PLAN;
@@ -8101,11 +8102,12 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const c
 
 /*
  * Say which settings of an applied config wait for a restart (@p causes, a CFG_RESTART_* mask), on the status line
- * every frontend shows: "Config applied; restart to use the new trunk scan list". Set before the rest of the apply
- * runs, so a toast that matters more (a refusal, a rollback, a resume that cannot run) replaces it.
+ * every frontend shows and in the log: "Config applied; restart to use the new trunk scan list". Set before the rest
+ * of the apply runs, so a rollback's toast replaces it (that apply fails); one that applies after all keeps it beside
+ * whatever else it said (cfg_keep_restart_note()). The names go to @p names (@p size bytes), "" with no cause.
  */
 static void
-cfg_note_restart_required(dsd_state* state, int causes) {
+cfg_note_restart_required(dsd_state* state, int causes, char* names, size_t size) {
     static const struct {
         int cause;
         const char* name;
@@ -8118,17 +8120,39 @@ cfg_note_restart_required(dsd_state* state, int causes) {
         {CFG_RESTART_AIRSPY_INPUT, "Airspy input"},
     };
 
-    char names[96] = "";
+    names[0] = '\0';
     size_t used = 0U;
     for (size_t i = 0; i < sizeof k_names / sizeof k_names[0]; i++) {
-        if ((causes & k_names[i].cause) == 0 || used >= sizeof names) {
+        if ((causes & k_names[i].cause) == 0 || used >= size) {
             continue;
         }
-        const int n = DSD_SNPRINTF(names + used, sizeof names - used, "%s%s", used ? ", " : "", k_names[i].name);
+        const int n = DSD_SNPRINTF(names + used, size - used, "%s%s", used ? ", " : "", k_names[i].name);
         used += n > 0 ? (size_t)n : 0U;
     }
     if (used > 0U) {
+        LOG_INFO("Config applied; restart to use the new %s.\n", names);
         ui_set_toast(state, 5, "Config applied; restart to use the new %s", names);
+    }
+}
+
+/*
+ * A config apply that needs a restart and applied: when something it ran said something else on the status line
+ * after the restart note (a resume that stays paused, a refused width), both are kept, the restart cause last; when
+ * both do not fit, the other message stays and points at the log, which has the restart cause.
+ */
+static void
+cfg_keep_restart_note(dsd_state* state, const char* names) {
+    char note[sizeof state->ui_msg];
+    DSD_SNPRINTF(note, sizeof note, "Config applied; restart to use the new %s", names);
+    if (strcmp(state->ui_msg, note) == 0) {
+        return;
+    }
+    char other[sizeof state->ui_msg];
+    DSD_SNPRINTF(other, sizeof other, "%s", state->ui_msg);
+    if (strlen(other) + strlen("; restart to use the new ") + strlen(names) < sizeof state->ui_msg) {
+        ui_set_toast(state, 5, "%s; restart to use the new %s", other, names);
+    } else {
+        ui_set_toast(state, 5, "%s; restart needed (see log)", other);
     }
 }
 
@@ -8166,9 +8190,9 @@ cfg_store_configured_trunking(const dsd_opts* opts, dsd_state* state, const dsdn
  * tuner. A trunk scan keeps it whatever the config says: the live flags stay as the coordinator set them. A -Y scan the
  * operator paused (issue #671) follows the rules a frontend's controls follow: a config without [trunking] keeps the
  * pause, and so does one whose input did not come up (@p applied 0: the session is back on the input it paused on);
- * trunking on, the scanner off, or another channel map (the paused list's cursor, avoids and edits belong to the map
- * it was loaded from) stop it, and the owner the config names takes over; the scanner on resumes it, which stays
- * paused, with the reason on the status line, when no row can be tuned. Otherwise the config's owner is the
+ * trunking on or the scanner off stop it, and the owner the config names takes over; the scanner on resumes it, which
+ * stays paused, with the reason on the status line, when no row can be tuned. Another channel map changes none of
+ * this: it waits for a restart (cfg_restore_lifecycle_owned()). Otherwise the config's owner is the
  * session's: a running -Y scan the config turned off leaves its scope once the command has run
  * (ui_cmd_leaves_scanner_scope()). The caller holds the P25 SM tick guard (a guarded command).
  */
@@ -8182,8 +8206,7 @@ cfg_settle_scan_owner(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
         if (!cfg->has_trunking || !applied) {
             return;
         }
-        const int map_changed = strcmp(opts->chan_in_file, before->chan_in_file) != 0;
-        if (owner->scanner_mode == 1 && !map_changed) {
+        if (owner->scanner_mode == 1) {
             (void)svc_resume_channel_scan(opts, state);
             return;
         }
@@ -8452,7 +8475,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
         restart_causes |= CFG_RESTART_AIRSPY_INPUT;
     }
-    cfg_note_restart_required(state, restart_causes);
+    char restart_names[96];
+    cfg_note_restart_required(state, restart_causes, restart_names, sizeof restart_names);
     cfg_store_configured_trunking(opts, state, &cfg);
 #ifdef USE_RADIO
     rollback.scanner_after = owner.scanner_mode;
@@ -8485,6 +8509,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, 1);
 #endif
     if (restart_causes != 0) {
+        cfg_keep_restart_note(state, restart_names);
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
     return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;

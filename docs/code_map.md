@@ -276,12 +276,13 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   -1 no scan). Shutdown puts back only the configured gain and the trunking flags: the scope leave restores the
   configured modulation, which a modulation change made during the scan recaptured; an init that fails after attaching
   puts back the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running
-  coordinator's target-list path, idle dwell and activity hold, and the global channel map and band plan (which the
-  scan refuses at startup), as they were and reports restart-required (`cfg_restore_lifecycle_owned()` in
-  app_control; every restart-required apply, the frontend, the trunk-scan flag and an Airspy input over a non-radio
-  one included, toasts what waits: `Config applied; restart to use the new trunk scan list`,
-  `cfg_note_restart_required()`), and its `[trunking] enabled = true` goes to the configured setting through that setter, never to the
-  live flag, running or paused (`cfg_store_configured_trunking()`).
+  coordinator's target-list path, idle dwell and activity hold, and the global band plan (which the scan refuses at
+  startup), as they were and reports restart-required (`cfg_restore_lifecycle_owned()` in app_control), as it does
+  in every session for the frontend, the trunk-scan flag, the channel map (imported at startup only) and an Airspy
+  input over a non-radio one. The apply toasts and logs what waits (`Config applied; restart to use the new trunk
+  scan list`, `cfg_note_restart_required()`), kept beside any other message the apply leaves
+  (`cfg_keep_restart_note()`). Its `[trunking] enabled = true` goes to the configured setting through that setter,
+  never to the live flag, running or paused (`cfg_store_configured_trunking()`).
 - Pause and resume (issue #671): `dsd_engine_trunk_scan_pause_locked()` / `_resume_locked()` (and their `_ex_` forms,
   whose `dsd_trunk_scan_leave_report` carries the scope leave's monitor request and whether the target left ran its
   own tuner gain, for app-control's #578 record and stream reopen), with the caller holding the P25 SM tick guard,
@@ -2762,15 +2763,15 @@ and late failure, a landing in the middle of a reception, a landing after a rigc
 list replacement, a failure's centre, an empty or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
-app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader
-of "the scan owns the tuner now" goes quiet, and `dsd_state::lcn_scan_paused` and `operator_tuned` are 1. The pause and
-the leave share one teardown (`channel_scan_release()`, keep or drop): a pause ends the calls whatever the list (an
-untyped one has no scope or extension), under the row on air's label, keys and policy; in place (no tune follows, a
-tuner release) it then forgets the carrier's decoding as a boundary would. The configured decoder, receive profile and
-rigctl passband come back as at a leave, then the row keys and the hold go. The typed extension stays with its session
-edits and session; its row in flight or on air goes (request, retry, owed commit, row on air, staged options and keys),
-so `service_sync()` gates no manual frame and no rigctl request reads the staged row. The cursor and the avoids stay.
-A resume first finds a row from the kept cursor: in a typed list one a step can land on (`channel_scan_row_reachable()`,
+app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
+"the scan owns the tuner now" goes quiet, and `dsd_state::lcn_scan_paused` and `operator_tuned` are 1. The pause and the
+leave share one teardown (`channel_scan_release()`, keep or drop): a pause ends the calls whatever the list (an untyped
+one has no scope or extension), under the row on air's label, keys and policy; in place (no tune follows, a tuner
+release) it then forgets the carrier's decoding as a boundary would. The configured decoder, receive profile and rigctl
+passband come back as at a leave, then the row keys and the hold go. The typed extension stays with its session edits
+and session; its row in flight or on air goes (request, retry, owed commit, row on air, staged options and keys), so
+`service_sync()` gates no manual frame and no rigctl request reads the staged row. The cursor and the avoids stay. A
+resume first finds a row from the kept cursor: in a typed list one a step can land on (`channel_scan_row_reachable()`,
 which also skips an analog row whose width the front end refuses, since a resume that failed on it would keep its cursor
 and try it again), in an untyped one any row with a frequency that is not avoided
 (`dsd_engine_scan_untyped_find_row()`). With none it never starts (`DSD_SCAN_RESUME_NO_ROW`, toasted). Otherwise it ends
@@ -2793,15 +2794,17 @@ Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run in
 pause service records its return to the monitor as `svc_leave_channel_scan()` records a leave's. That stop also ends a
 pause and a pending resume, and leaves `operator_tuned` set; the engine's shutdown leave clears neither flag, so the
 exit autosave sees the pause and writes `scanner = true` (`snapshot_trunking_config()`: `scanner_mode ||
-lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last
-(`cfg_settle_scan_owner()` in app_control): without `[trunking]` the pause stays, trunking on, the scanner off or
-another `chan_csv` stop it, the scanner on resumes it, and a config whose input did not start keeps it (covered by
-`APP_COMMAND_QUEUE` `test_config_settles_a_paused_list` and `test_config_failed_reopen_keeps_a_paused_list`,
-`RUNTIME_CONFIG_USER`, and `ENGINE_CLEANUP_AUDIO` for the exit autosave right after a pause). Tests: `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a
-row every visit skips, a refused, deferred, unprepared and pending typed resume, the pause hook at once and late, a
-pause while one is pending), `ENGINE_NO_CARRIER_RESET` (the untyped resume through the real step: a step's landing after
-a pause, a pending resume's reception, landing and late failure, which keeps the call heard), `APP_COMMAND_QUEUE` (the
-services, the monitor reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
+lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last (`cfg_settle_scan_owner()`
+in app_control): without `[trunking]` the pause stays, trunking on or the scanner off stop it, the scanner on resumes
+it, and a config whose input did not start keeps it. Another `chan_csv` only waits for a restart, as in every session.
+Covered by `APP_COMMAND_QUEUE` (`test_config_settles_a_paused_list`, `test_config_resumes_a_paused_list`,
+`test_config_channel_map_waits_for_a_restart`, `test_config_failed_reopen_keeps_a_paused_list`), `RUNTIME_CONFIG_USER`,
+and `ENGINE_CLEANUP_AUDIO` (the exit autosave right after a pause, and after a pause and a stop). Tests:
+`ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a row every visit skips, a refused,
+deferred, unprepared and pending typed resume, the pause hook at once and late, a pause while one is pending),
+`ENGINE_NO_CARRIER_RESET` (the untyped resume through the real step: a step's landing after a pause, a pending resume's
+reception, landing and late failure, which keeps the call heard), `APP_COMMAND_QUEUE` (the services, the monitor
+reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
 
 ## App-Control
 

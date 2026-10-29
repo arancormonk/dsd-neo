@@ -187,8 +187,11 @@ cleanup_autosaves_scanner(int how, int* out_scanner) {
         /* What a tuner release runs; the engine's own shutdown leave keeps the pause. */
         (void)dsd_engine_channel_scan_pause(opts, state, 1);
     } else if (how == 2) {
-        /* A stop: svc_leave_channel_scan() clears the pause the engine's leave keeps. */
-        opts->scanner_mode = 0;
+        /* Paused, then stopped as svc_leave_channel_scan() stops it: the pause and a pending resume cleared, then the
+           engine's leave, which keeps neither. */
+        (void)dsd_engine_channel_scan_pause(opts, state, 1);
+        state->lcn_scan_paused = 0U;
+        state->lcn_scan_resume_pending = 0U;
         (void)dsd_engine_channel_scan_leave(opts, state);
     }
     state->config_autosave_enabled = 1;
@@ -209,7 +212,7 @@ test_cleanup_autosaves_a_paused_scan(void) {
     static const char* const k_tags[] = {
         "running-scan-autosaves-scanner-on",
         "paused-scan-autosaves-scanner-on",
-        "stopped-scan-autosaves-scanner-off",
+        "paused-then-stopped-scan-autosaves-scanner-off",
     };
     static const int k_want[] = {1, 1, 0};
     int rc = 0;

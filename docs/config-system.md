@@ -342,7 +342,7 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable trunking | `false` |
-| `chan_csv` | PATH | Channel map CSV | (empty) |
+| `chan_csv` | PATH | Channel map CSV, imported at startup; a config applied to a running session keeps the map it loaded and says a restart is needed | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
 | `src_csv` | PATH | Source ID list CSV (`--src-csv`; names, optional radio policy columns; loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
