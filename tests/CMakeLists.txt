@@ -20201,8 +20201,8 @@ if(Python3_Interpreter_FOUND)
     )
     # #782: the Android build refuses an app library that imports an environment writer
     # (cmake/check_no_environment_writers.cmake, run after every link of dsd-neo-app). These run its parser on the
-    # host, on llvm-nm output of the shape the NDK prints: the writers fail it, a getenv() import and a
-    # look-alike name do not.
+    # host, on llvm-nm output of the shape the NDK prints: libc's and Qt's writers fail it, a getenv() or qgetenv()
+    # import and a look-alike name do not.
     set(_android_link_env_dir "${CMAKE_CURRENT_BINARY_DIR}/android_link_env")
     file(
         WRITE "${_android_link_env_dir}/writers.txt"
@@ -20216,12 +20216,22 @@ if(Python3_Interpreter_FOUND)
         WRITE "${_android_link_env_dir}/putenv.txt"
         "                 U putenv\n"
     )
+    file(
+        WRITE "${_android_link_env_dir}/qt.txt"
+        "                 U _Z7qputenvPKc14QByteArrayView\n                 U _Z9qunsetenvPKc\n                 U _Z7qgetenvPKc\n"
+    )
     add_test(
         NAME ANDROID_LINK_ENV_WRITERS_REFUSED
         COMMAND
             ${CMAKE_COMMAND}
             "-DNM_OUTPUT_FILE=${_android_link_env_dir}/writers.txt" -P
             "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_QT_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} "-DNM_OUTPUT_FILE=${_android_link_env_dir}/qt.txt"
+            -P "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
     )
     add_test(
         NAME ANDROID_LINK_ENV_WRITERS_PUTENV_REFUSED
@@ -20235,6 +20245,11 @@ if(Python3_Interpreter_FOUND)
         ANDROID_LINK_ENV_WRITERS_REFUSED
         PROPERTIES
             PASS_REGULAR_EXPRESSION "environment-writers=setenv,unsetenv\n"
+    )
+    set_tests_properties(
+        ANDROID_LINK_ENV_WRITERS_QT_REFUSED
+        PROPERTIES
+            PASS_REGULAR_EXPRESSION "environment-writers=qputenv,qunsetenv\n"
     )
     set_tests_properties(
         ANDROID_LINK_ENV_WRITERS_PUTENV_REFUSED

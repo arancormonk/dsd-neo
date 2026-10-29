@@ -203,6 +203,8 @@ cpp_environment_access(const char* name) {
     // ruleid: dsd-neo.env-read-through-store
     const bool f = qEnvironmentVariableIsSet("DSD_NEO_AUTO_PPM");
     // ok: dsd-neo.env-read-through-store
-    const char* g = dsd_env_get(name);
+    const dsd_env_value g(name);
+    // ruleid: dsd-neo.no-environment-write
+    dsd_qt::applyQmlGcPolicy();
     consume(a, b, c, d, e, f, g);
 }

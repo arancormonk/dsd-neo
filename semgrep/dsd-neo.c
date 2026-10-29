@@ -136,10 +136,10 @@ c_environment_reads(const char* name, char* out, size_t out_size) {
     (void)_dupenv_s(&copy, &required, name);
     // ruleid: dsd-neo.env-read-through-store
     (void)GetEnvironmentVariableA(name, out, (DWORD)out_size);
-    // The store, and the runtime forwarder over it, apply the overrides.
+    // The store applies the overrides and copies the value out.
     // ok: dsd-neo.env-read-through-store
-    const char* c = dsd_env_get(name);
+    const char* c = dsd_env_read(name, out, out_size);
     // ok: dsd-neo.env-read-through-store
-    const char* d = dsd_neo_env_get(name);
+    size_t d = dsd_env_copy(name, out, out_size);
     consume(a, b, c, d, copy);
 }

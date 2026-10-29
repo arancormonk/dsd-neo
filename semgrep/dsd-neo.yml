@@ -63,7 +63,7 @@ rules:
     message: >-
       Do not write the process environment: another thread may be reading it, and on Android an added variable can
       free the array under that read. Set an override with dsd_env_set() (<dsd-neo/platform/env.h>), which every
-      in-process reader sees through dsd_env_get().
+      in-process reader sees through dsd_env_read() or dsd_env_value.
     paths:
       include:
         - /android/**
@@ -98,6 +98,9 @@ rules:
       # The wrappers that used to write it, in case one comes back.
       - pattern: dsd_setenv(...)
       - pattern: dsd_unsetenv(...)
+      # The Qt QML collector policy, which qputenv()s; only tests and the Qt Quick Test setup may call it.
+      - pattern: applyQmlGcPolicy(...)
+      - pattern: dsd_qt::applyQmlGcPolicy(...)
 
   # #782: every in-process reader goes through the override store, so an option, INI key or menu override applies
   # wherever the variable is read, and only the store reads the process environment.
@@ -105,8 +108,8 @@ rules:
     languages: [c, cpp]
     severity: ERROR
     message: >-
-      Read environment variables with dsd_env_get() (<dsd-neo/platform/env.h>): it applies the session and host
-      overrides that options, the INI file, menus and an embedding host set, then falls back to the process
+      Read environment variables with dsd_env_read() or dsd_env_value (<dsd-neo/platform/env.h>): they copy the
+      session or host override that options, the INI file, menus or an embedding host set, else the process
       environment.
     paths:
       include:
