@@ -16,9 +16,10 @@
  * after the app returned but before its first ingest hands the tap off instead of restarting it; the spill is written
  * in batches of about a kilobyte a row; and a spill that cannot be written holds a bounded backlog, the newest rows,
  * reported once, which reaches History with the handoff when the spill is still unwritable then (a call whose first
- * sighting the bound dropped included, from its updates). Notices fold once like calls. A spill far longer than the
- * log folds bounded: the newest rows stay, the oldest session's oldest go first, and the log never holds the whole
- * backlog. The deliberate failures' warnings are counted, not printed. */
+ * sighting the bound dropped included, from its updates). Notices fold once like calls, a replay begun in the
+ * background included. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's
+ * oldest go first, and the log never holds the whole backlog. The deliberate failures' warnings are counted, not
+ * printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -566,6 +567,37 @@ test_unwritable_spill_keeps_a_call_only_its_updates_hold(void) {
     QDir(spill_path()).removeRecursively();
 }
 
+/* A capture replayed twice logs its notice once: the second replay's copy takes the first's row as its twin. A third
+ * replay begun while the app is away is read by the tap, and its notice folds at the handoff, before the model's own
+ * walk reads the new ring: it is absorbed against the twins that ring has taken (none), not the last ring's, and the
+ * notice still shows once. */
+void
+test_replayed_notice_folds_once_from_a_new_ring(void) {
+    resetStorage();
+    const time_t when = 1754890000;
+    const char* text = "2025-08-06 12:00:00 SMS from 4321";
+    CallHistoryModel model;
+    start_tap(model);
+    for (int replay = 0; replay < 2; replay++) {
+        Decoder decoder;
+        decoder.commitNotice(1, when, text);
+        decoder.publish();
+        gui_ingest(model);
+    }
+    expect("replayed notice: two replays show it once", notice_rows(model) == 1 && model.count() == 1);
+    Decoder third;
+    set_app_state(Qt::ApplicationSuspended);
+    third.commitNotice(1, when, text);
+    third.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("replayed notice: a third replay read in the background still shows it once",
+           notice_rows(model) == 1 && model.count() == 1);
+    gui_ingest(model);
+    expect("replayed notice: reading the ring again adds nothing", notice_rows(model) == 1 && model.count() == 1);
+}
+
 /* The spill is written in batches, never per row: a call a poll for 100 polls appends at most once every five
  * polls (five seconds at the app's pace), about a kilobyte a row, so even ten calls a second stay under the 16 KiB/s
  * the History stores budget. */
@@ -708,6 +740,7 @@ main(int argc, char** argv) {
     test_unwritable_spill_keeps_a_bounded_backlog();
     test_unwritable_spill_hands_off_what_it_holds();
     test_unwritable_spill_keeps_a_call_only_its_updates_hold();
+    test_replayed_notice_folds_once_from_a_new_ring();
     test_long_spill_folds_bounded();
     test_spill_fold_trims_oldest_session_first();
 

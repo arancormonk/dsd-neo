@@ -7927,7 +7927,8 @@ Qt Quick frontend (`src/ui/qt`):
     than the newest 32 rows, and that row joins the running session (a notice heard again promotes a field-for-field
     twin no other notice of its ring has taken, so two identical notices promote two rows, and a new ring within the
     session logs none twice; the seen store keeps the twin each such notice took, so a relaunched UI rebuilds what its
-    ring has taken). Every in-place update (a seen row that advanced: its end extending, its source learned, its crypto
+    ring has taken, and a spill fold rebuilds them for each line's own ring, a replay the tap found begun in the
+    background included). Every in-place update (a seen row that advanced: its end extending, its source learned, its crypto
     verdict) searches the whole log too, newest first. So it reaches a replayed call's row under newer rows, whether the
     call was a first sighting or heard again, after a relaunch as well, and a live update still lands on the row the
     newest rows hold for it. So a second replay shows its calls in the new session's views, logs no new row for a call

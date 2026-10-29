@@ -1350,21 +1350,20 @@ CallHistoryModel::noteCommitRevs(const dsd_state* snapshot, bool scan[2]) {
     }
     if (ringChanged) {
         // The twins notices heard again have taken belong to the ring that heard them.
-        restoreNoticeTwinsTaken();
+        restoreNoticeTwinsTaken(m_ringInstance[0], m_ringInstance[1]);
     }
     m_seeded = true;
     return anyChanged;
 }
 
 void
-CallHistoryModel::restoreNoticeTwinsTaken() {
+CallHistoryModel::restoreNoticeTwinsTaken(quint64 a, quint64 b) {
     // A new ring has taken none yet. A ring read before, by this model or by the one a relaunch replaced,
     // has taken exactly the twins its notices' seen entries record: an entry read again from another ring
     // starts over with no twin.
     m_noticeTwinsTaken.clear();
     for (const SeenState& state : m_seen) {
-        if (!state.twin.isEmpty() && state.ring != 0U
-            && (state.ring == m_ringInstance[0] || state.ring == m_ringInstance[1])) {
+        if (!state.twin.isEmpty() && state.ring != 0U && (state.ring == a || state.ring == b)) {
             m_noticeTwinsTaken.insert(state.twin);
         }
     }
@@ -2151,6 +2150,10 @@ bool
 CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
     bool rowsChanged = false;
     const bool cleared = clearApplies();
+    // The twins taken are the ring's that took them (noteCommitRevs()). A line another ring read, a replay the tap
+    // found begun in the background, folds against that ring's, which the walk after the fold would restore too late:
+    // the fold has marked the line's notice seen by then.
+    quint64 twinsRing = m_ringInstance[0];
     for (const QByteArray& line : lines.split('\n')) {
         // A line a kill tore, or one a newer build wrote, is skipped; the rest still fold.
         const QJsonObject obj = QJsonDocument::fromJson(line).object();
@@ -2168,6 +2171,10 @@ CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
             && row.seq <= m_clear.pushSeq[row.slot]) {
             // Cleared after the tap found it.
             continue;
+        }
+        if (seen.ring != 0U && seen.ring != twinsRing) {
+            restoreNoticeTwinsTaken(seen.ring, seen.ring);
+            twinsRing = seen.ring;
         }
         // The seen entry as the tap left it, folded in as a fresh read would be, so the next ring walk finds the
         // row seen and still notices what the core adds to it later.
@@ -2191,6 +2198,9 @@ CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
         if (m_rows.size() > kMaxRows + kSpillFoldTrimSlack) {
             rowsChanged = trimToCapacity() || rowsChanged;
         }
+    }
+    if (twinsRing != m_ringInstance[0]) {
+        restoreNoticeTwinsTaken(m_ringInstance[0], m_ringInstance[1]); // the rings read, as before the fold
     }
     return rowsChanged;
 }

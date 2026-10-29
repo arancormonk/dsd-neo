@@ -628,8 +628,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
         Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
-    /** @brief Rebuild m_noticeTwinsTaken for the rings now read, from the twins their seen entries record. */
-    void restoreNoticeTwinsTaken();
+    /** @brief Rebuild m_noticeTwinsTaken for rings @p a and @p b, from the twins their seen entries record. */
+    void restoreNoticeTwinsTaken(quint64 a, quint64 b);
     /** @brief Trim m_rows to kMaxRows in one pass, oldest session's oldest row first; returns whether any row went. */
     bool trimToCapacity();
 
