@@ -74,7 +74,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
 #ifdef USE_RADIO
     hooks.output_rate_hz = dsd_rtl_stream_output_rate;
     hooks.output_kind = rtl_stream_get_output_kind;
-    hooks.symbol_profile = rtl_stream_get_symbol_profile_full;
+    hooks.symbol_profile = rtl_stream_get_running_symbol_profile;
     hooks.stream_generation = rtl_stream_output_generation;
     hooks.apply_demod_profile = rtl_stream_metrics_apply_demod_profile;
     hooks.apply_analog_profile = rtl_stream_request_analog_profile;

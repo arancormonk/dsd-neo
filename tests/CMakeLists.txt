@@ -10772,6 +10772,21 @@ add_test(
 # on AM and narrow channels, a retune or reset starting it over without touching the
 # tracker's floors, the post-decimator carrying its flags, and the same flags whatever the
 # block cuts.
+# The TETRA receive chain inside full_demod(): its activation predicate and the
+# transitions between blocks, the chain's order, the squelch and signal-search
+# behaviour, the once-per-stream fallback warnings, the pull-in on a clean stream,
+# and a P25 stream after a TETRA session running as a fresh one.
+add_executable(dsd-neo_test_dsp_tetra_chain dsp/test_dsp_tetra_chain.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_tetra_chain
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_tetra_chain
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_TETRA_CHAIN COMMAND dsd-neo_test_dsp_tetra_chain)
+
 add_executable(
     dsd-neo_test_dsp_noise_squelch_demod
     dsp/test_dsp_noise_squelch_demod.cpp

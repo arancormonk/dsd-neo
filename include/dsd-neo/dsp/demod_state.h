@@ -22,6 +22,7 @@
 #include <dsd-neo/core/safe_api.h>
 #endif
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
@@ -46,6 +47,11 @@
  * input samples. Its windows reach pending + c samples back, with pending at most the largest c (143, for the
  * largest odd tap count) and c at most that too, so a tap change without a reset always finds its history. */
 #define DSD_CHANNEL_LPF_HIST_LEN (DSD_CHANNEL_LPF_MAX_TAPS - 1)
+
+/* The TETRA receive chain's matched filter (root-raised-cosine, dsd_tetra_rrc_design()): taps for sps up to 8, and a
+ * streaming history (simd_fir_complex_apply()) of one less than that, which holds every look-ahead the longest design
+ * needs. The filter is redesigned (and its history reset) only when the sps changes, so pending + c never exceeds it. */
+#define DSD_TETRA_RRC_HIST_LEN   (DSD_TETRA_RRC_MAX_TAPS - 1)
 
 /* The channel LPF's output work buffers (hb_workbuf, timing_buf), in floats: a call makes at most N + 143 complex
  * outputs for N in (N + c_old - c_new on a tap shrink), and N is at most MAXIMUM_BUF_LENGTH / 2 complex. */
@@ -131,6 +137,11 @@ struct demod_state {
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_i[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_q[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_plan_taps[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_MAX_TAPS)];
+    /* TETRA chain matched filter: its streaming history (DSD_TETRA_RRC_HIST_LEN complex samples, newest right-aligned)
+       and its taps. */
+    alignas(DSD_DEMOD_BUF_ALIGN) float tetra_rrc_hist_i[DSD_DEMOD_ALIGNED_FLOATS(DSD_TETRA_RRC_HIST_LEN)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float tetra_rrc_hist_q[DSD_DEMOD_ALIGNED_FLOATS(DSD_TETRA_RRC_HIST_LEN)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float tetra_rrc_taps[DSD_DEMOD_ALIGNED_FLOATS(DSD_TETRA_RRC_MAX_TAPS)];
     /* The auto squelch's per-sample gate flags (DSD_SQUELCH_FLAG_CLOSED), parallel to result and to resamp_outbuf.
        Valid only while result_flags_active; otherwise every sample is open. */
     alignas(DSD_DEMOD_BUF_ALIGN) uint8_t result_flags[MAXIMUM_BUF_LENGTH];
@@ -371,8 +382,17 @@ struct demod_state {
     int symbol_levels;  /* 2 or 4 for FSK; 4 for SYMBOL_CQPSK */
     /* 1 while the TETRA receive chain runs (DSD_CH_LPF_PROFILE_TETRA with the TETRA symbol profile); 0, the zeroed
        default, runs every stream as before that chain existed, a TETRA-profile one with the legacy WIDE channel filter.
-       Keys the channel-filter plan and the SNR noise bandwidth. */
+       Keys the channel-filter plan and the SNR noise bandwidth. full_demod() alone writes it: once per block, at the
+       block boundary, from dsd_demod_tetra_chain_wanted(), running the transition when the value changes. */
     int tetra_chain;
+    /* The TETRA matched filter's state: outputs held back for look-ahead (0 after a reset), the tap count (0 = not
+       designed) and the sps the taps were designed for. */
+    int tetra_rrc_pending;
+    int tetra_rrc_taps_len;
+    int tetra_rrc_sps;
+    /* The causes (DSD_TETRA_CHAIN_WARN_* bits, demod_pipeline.cpp) this stream has warned about once already: a TETRA
+       profile whose chain cannot run. The stream open clears them. */
+    int tetra_chain_warned;
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;
@@ -445,6 +465,12 @@ static_assert(sizeof(demod_state::channel_lpf_hist_q) % DSD_DEMOD_BUF_ALIGN == 0
               "channel_lpf_hist_q must fill whole alignment blocks");
 static_assert(sizeof(demod_state::channel_lpf_plan_taps) % DSD_DEMOD_BUF_ALIGN == 0,
               "channel_lpf_plan_taps must fill whole alignment blocks");
+static_assert(sizeof(demod_state::tetra_rrc_hist_i) % DSD_DEMOD_BUF_ALIGN == 0,
+              "tetra_rrc_hist_i must fill whole alignment blocks");
+static_assert(sizeof(demod_state::tetra_rrc_hist_q) % DSD_DEMOD_BUF_ALIGN == 0,
+              "tetra_rrc_hist_q must fill whole alignment blocks");
+static_assert(sizeof(demod_state::tetra_rrc_taps) % DSD_DEMOD_BUF_ALIGN == 0,
+              "tetra_rrc_taps must fill whole alignment blocks");
 static_assert(sizeof(demod_state::result_flags) % DSD_DEMOD_BUF_ALIGN == 0,
               "result_flags must fill whole alignment blocks");
 static_assert(sizeof(demod_state::resamp_outflags) % DSD_DEMOD_BUF_ALIGN == 0,

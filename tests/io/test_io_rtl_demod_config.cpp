@@ -1968,6 +1968,46 @@ expect_landing_cqpsk_truth_table(void) {
 }
 
 /*
+ * The channel profile the stream publishes to frontends and decoder labels (the metrics hooks' symbol profile) follows
+ * the running chain: a TETRA profile reads TETRA only while the TETRA chain runs, and WIDE, the filter that runs, while
+ * it does not. The configured profile, which a restore puts back, stays TETRA either way.
+ */
+static int
+expect_tetra_published_profile_follows_chain(void) {
+    int rc = 0;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.rate_out = 72000;
+    demod.tetra_chain = 0;
+    rc |= expect_int_eq("TETRA profile set", rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
+    int configured = -1;
+    int running = -1;
+    int rate = 0;
+    int levels = 0;
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &configured);
+    (void)rtl_stream_get_running_symbol_profile(&rate, &levels, &running);
+    rc |= expect_int_eq("  chain inactive: configured profile", configured, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("  chain inactive: running profile", running, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("  running symbol rate", rate, 18000);
+    rc |= expect_int_eq("  running levels", levels, 4);
+
+    demod.tetra_chain = 1; /* as full_demod() sets it at a block boundary, which publishes after the block */
+    rc |= expect_int_eq("TETRA profile republished", rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA),
+                        0);
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &configured);
+    (void)rtl_stream_get_running_symbol_profile(nullptr, nullptr, &running);
+    rc |= expect_int_eq("  chain active: configured profile", configured, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("  chain active: running profile", running, DSD_CH_LPF_PROFILE_TETRA);
+
+    demod.tetra_chain = 0;
+    rc |= expect_int_eq("P25 profile set", rtl_stream_set_symbol_profile(4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK), 0);
+    (void)rtl_stream_get_running_symbol_profile(nullptr, nullptr, &running);
+    rc |= expect_int_eq("  P25: running profile", running, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    return rc;
+}
+
+/*
  * The TETRA channel profile (6) passes every profile validator, and the first id past it does not: the symbol-profile
  * setter keeps the previous profile and a digital-family switch falls back to WIDE. An open that lands on CQPSK keeps a
  * TETRA filter (the TETRA chain is CQPSK), and one turned onto the FSK discriminator runs WIDE, the filter TETRA had
@@ -2025,6 +2065,8 @@ expect_tetra_profile_validators(void) {
         {1, -1, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_TETRA},
         {0, 1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
         {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_WIDE},
+        {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
+        {0, -1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
         {1, 0, DSD_CH_LPF_PROFILE_12K5, 4800, 1, DSD_CH_LPF_PROFILE_P25_CQPSK},
         {0, 1, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 1, DSD_CH_LPF_PROFILE_P25_C4FM},
     };
@@ -2843,6 +2885,7 @@ main(void) {
     rc |= expect_analog_open_ignores_cqpsk();
     rc |= expect_landing_cqpsk_truth_table();
     rc |= expect_tetra_profile_validators();
+    rc |= expect_tetra_published_profile_follows_chain();
     rc |= expect_analog_am_open();
     rc |= expect_audio_monitor_reset_clears_am_carrier();
     rc |= expect_analog_kind_switch();

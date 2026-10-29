@@ -170,6 +170,25 @@ float mean_power(const float* samples, int len, int step);
 void full_demod(struct demod_state* d);
 
 /**
+ * @brief Whether the TETRA receive chain can run on a demodulator as it is configured now.
+ *
+ * True only when all of these hold: the channel profile is DSD_CH_LPF_PROFILE_TETRA; CQPSK is enabled; the symbol
+ * rate is 18000; the effective TED samples per symbol (ted_sps_override when above 0, else ted_sps) equals
+ * rate_out / 18000 exactly; rate_out is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the
+ * channel LPF is enabled; and dsd_tetra_channel_design() succeeds at rate_out, whatever plan is installed now.
+ *
+ * full_demod() evaluates it once per block, after the half-band decimation, and keeps the result in
+ * demod_state::tetra_chain, running the state transition when it changes: entering splits the carrier estimate into
+ * the TETRA mixer and re-initializes the band-edge FLL with the TETRA parameters; leaving folds the mixer back into
+ * the FLL and re-initializes it with the P25 parameters; either way the mixer phasor, the channel LPF, the matched
+ * filter and the CQPSK AGC average start over. Setters never evaluate it.
+ *
+ * @param d Demodulator state (NULL reads false).
+ * @return 1 when the chain can run, else 0.
+ */
+int dsd_demod_tetra_chain_wanted(const struct demod_state* d);
+
+/**
  * @brief Averaging weight of the CQPSK RMS AGC (OP25 rms_agc alpha; the decay is 1 - alpha).
  *
  * @param tetra_chain demod_state::tetra_chain: nonzero for the TETRA receive chain.

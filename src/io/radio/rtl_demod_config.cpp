@@ -346,6 +346,10 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->costas_reset_pending = 0;
     s->ted_mu = 0.0f;
     s->sps_is_integer = 1;
+    /* A stream starts off the TETRA chain: its first block decides (full_demod()), and warns afresh about a TETRA
+       profile whose chain cannot run. */
+    s->tetra_chain = 0;
+    s->tetra_chain_warned = 0;
     ted_init_state(&s->ted_state);
     s->squelch_running_power = 0;
     s->squelch_decim_phase = 0;
@@ -1506,6 +1510,11 @@ rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int chann
         /* demod_apply_channel_lpf_defaults(): an open picks a protocol profile only for a channel filter that runs. */
         return DSD_CH_LPF_PROFILE_WIDE;
     }
+    if (landing_cqpsk <= 0 && channel_profile == DSD_CH_LPF_PROFILE_TETRA) {
+        /* The TETRA profile describes the CQPSK chain; on the FSK discriminator TETRA filters with WIDE, as it did
+           before it had a profile, and says so. */
+        return DSD_CH_LPF_PROFILE_WIDE;
+    }
     if (landing_cqpsk == requested_cqpsk) {
         return channel_profile;
     }
@@ -1513,11 +1522,6 @@ rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int chann
         /* demod_apply_channel_lpf_defaults(): CQPSK output runs the P25 CQPSK filter, except TETRA, whose own profile
            describes its CQPSK chain. */
         return channel_profile == DSD_CH_LPF_PROFILE_TETRA ? DSD_CH_LPF_PROFILE_TETRA : DSD_CH_LPF_PROFILE_P25_CQPSK;
-    }
-    if (channel_profile == DSD_CH_LPF_PROFILE_TETRA) {
-        /* The TETRA profile describes the CQPSK chain; on the FSK discriminator TETRA filters with WIDE, as it did
-           before it had a profile. */
-        return DSD_CH_LPF_PROFILE_WIDE;
     }
     if (channel_profile == DSD_CH_LPF_PROFILE_P25_CQPSK && symbol_rate_hz == 4800) {
         /* A P25 Phase 1 open on the FSK discriminator filters with the C4FM profile. */

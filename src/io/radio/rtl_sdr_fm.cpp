@@ -2553,6 +2553,10 @@ static std::atomic<int> g_pub_output_kind{0};
 static std::atomic<int> g_pub_symbol_rate{4800};
 static std::atomic<int> g_pub_symbol_levels{4};
 static std::atomic<int> g_pub_channel_profile{0};
+/* The channel profile the front end runs: g_pub_channel_profile, except WIDE for a TETRA profile whose chain is not
+ * running (demod_state::tetra_chain), since that stream runs the WIDE filter. Frontends, the metrics hooks and the
+ * replay batch tags read this one; the stream's own save-and-restore paths read the configured one above. */
+static std::atomic<int> g_pub_running_channel_profile{0};
 static std::atomic<int> g_pub_tetra_chain{0};
 static std::atomic<int> g_pub_ted_sps{10};
 static std::atomic<int> g_pub_ted_sps_override{0};
@@ -4546,7 +4550,7 @@ demod_replay_batch_tag(const DemodInputSpan* span, const struct output_state* o)
     tag.chunk_sequence = span->chunk.sequence;
     tag.center_frequency_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     tag.output_kind = g_pub_output_kind.load(std::memory_order_relaxed);
-    tag.channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+    tag.channel_profile = g_pub_running_channel_profile.load(std::memory_order_relaxed);
     tag.symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
     tag.symbol_levels = g_pub_symbol_levels.load(std::memory_order_relaxed);
     tag.output_rate_hz = o->rate.load(std::memory_order_relaxed);
@@ -9963,6 +9967,10 @@ rtl_stream_publish_demod_profile_snapshot(void) {
     g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
     g_pub_symbol_levels.store(demod.symbol_levels, std::memory_order_relaxed);
     g_pub_channel_profile.store(demod.channel_lpf_profile, std::memory_order_relaxed);
+    g_pub_running_channel_profile.store((demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_TETRA && !demod.tetra_chain)
+                                            ? (int)DSD_CH_LPF_PROFILE_WIDE
+                                            : demod.channel_lpf_profile,
+                                        std::memory_order_relaxed);
     g_pub_tetra_chain.store(demod.tetra_chain ? 1 : 0, std::memory_order_relaxed);
     g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
     g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
@@ -10091,6 +10099,16 @@ rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int
         *out_channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
     }
     return 0;
+}
+
+extern "C" int
+rtl_stream_get_running_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    /* The same independent reads as rtl_stream_get_symbol_profile_full(), with the profile the front end runs. */
+    const int rc = rtl_stream_get_symbol_profile_full(out_symbol_rate_hz, out_levels, NULL);
+    if (out_channel_profile) {
+        *out_channel_profile = g_pub_running_channel_profile.load(std::memory_order_relaxed);
+    }
+    return rc;
 }
 
 extern "C" int

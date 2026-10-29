@@ -4484,6 +4484,26 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` and `dsd_fll_band_edge_fold()` move
   the estimate between the parts without changing the sum. With `pre_freq` 0 (every non-TETRA chain) all of this is
   the FLL frequency as before.
+  `full_demod()` sets `tetra_chain` itself, once per block after the half-band decimation, from
+  `dsd_demod_tetra_chain_wanted()`: the TETRA profile on CQPSK at 18 ksym/s, an effective TED sps (the override when
+  set) of exactly rate_out / 18000, a rate in the 36-144 kHz domain, the channel LPF on, and a TETRA channel design
+  for the rate (checked for the rate, not read from the installed plan). Setters never evaluate it. When the value
+  changes between blocks, entering splits the combined estimate into the mixer and re-initializes the FLL with the
+  TETRA parameters, leaving re-initializes it with the P25 parameters and folds the mixer back, and both start the
+  mixer phasor, the channel LPF, the matched filter and the AGC average over. While active a block runs mixer ->
+  channel LPF -> AGC (0.1) -> matched filter (`dsd_tetra_rrc_design()`, streaming through `simd_fir_complex_apply()`
+  with its own `tetra_rrc_*` history, redesigned on an sps change) -> FLL -> `dsd_fll_band_edge_transfer()` ->
+  Gardner -> diff -> Costas. A squelched block still mixes and channel-filters; the matched filter, FLL and loops do
+  not run, and the matched filter starts over for the reopen. `dsd_demod_reset_filter_state()` resets the matched
+  filter too, and on the TETRA chain the AGC average. A TETRA profile on CQPSK whose chain cannot run warns once per
+  stream per cause (rate out of the domain, a TED override that does not match the rate, `DSD_NEO_CHANNEL_LPF=0`) and
+  runs main's path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1). The stream publishes TETRA as the running channel
+  profile (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag
+  and so the UI channel width) only while the chain runs, WIDE otherwise; `rtl_stream_get_symbol_profile_full()`
+  keeps the configured profile the trunk-tuning restore puts back, and an open on the FSK discriminator turns a TETRA
+  profile into WIDE (`rtl_demod_open_channel_profile()`). Tests: `DSP_TETRA_CHAIN` (predicate table, transitions,
+  warnings, the WIDE-identical fallback, pull-in from +6 kHz and +600 Hz, squelch and signal-search, partition
+  invariance of the linear filters, P25 after a TETRA session), `IO_RTL_DEMOD_CONFIG`.
   The plan cache key is (rate_out, profile, width, TETRA chain). The SIMD complex FIR kernels size their scratch per
   call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless
   (issue #572):
