@@ -308,9 +308,10 @@ rdio-scanner upload is deleted once it is free.
 
 **Storage limit** is 1 GB unless you choose 250 MB, 500 MB, 2 GB, 5 GB or **No limit** (1 GB holds about 17 hours of
 digital voice, or about 3 hours of analog FM). Over the limit, DSD-neo deletes the oldest recordings until they take 95%
-of it, and Settings says how many it removed. While Record calls is on and the phone has less than 200 MB free, Settings
-warns. A full phone stops the call being recorded where it was, keeps what was written, and is reported; recording
-starts again with the next call once there is room.
+of it, and Settings says how many it removed. A recording that is playing, being saved or exported, or being uploaded
+is skipped, and deleted once it is let go if the recordings are still over the limit. While Record calls is on and the
+phone has less than 200 MB free, Settings warns. A full phone stops the call being recorded where it was, keeps what was
+written, and is reported; recording starts again with the next call once there is room.
 
 ### Unfinished recordings
 

@@ -414,15 +414,15 @@ RecordingStore::pass(bool first) {
     tailFolders(&p);
     processRechecks(&p);
     processDeletes(&p);
-    bool limitChanged = false;
+    bool limitDue = false;
     bool active = false;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        limitChanged = m_limitChanged;
+        limitDue = m_limitChanged || m_limitPending;
         m_limitChanged = false;
         active = m_allActive || !m_active.isEmpty();
     }
-    if (first || p.published || p.rebuilt || limitChanged) {
+    if (first || p.published || p.rebuilt || limitDue) {
         enforceLimit(&p);
     }
     const quint64 now = dsd_realtime_mono_ms();
@@ -1101,6 +1101,7 @@ RecordingStore::enforceLimit(Pass* pass) {
         QList<bool> rootAvailable;
         {
             const std::lock_guard<std::mutex> lock(m_mutex);
+            m_limitPending = false;
             limit = m_limitBytes;
             if (!m_limitSet || limit <= 0) {
                 return; // no limit, or not the user's yet
@@ -1131,11 +1132,13 @@ RecordingStore::enforceLimit(Pass* pass) {
     });
     const qint64 target = limit / 100 * 95;
     int removed = 0;
+    bool held = false;
     for (const Candidate& candidate : candidates) {
         if (total <= target) {
             break;
         }
         const DeleteResult result = deleteEntry(candidate.id, DeleteCause::Limit, pass);
+        held = held || result == DeleteResult::Held;
         if (result == DeleteResult::Removed) {
             total -= candidate.bytes;
             removed++;
@@ -1151,6 +1154,11 @@ RecordingStore::enforceLimit(Pass* pass) {
     if (removed > 0) {
         m_removedByLimit += removed;
         pass->dirty = true;
+    }
+    if (held && total > target) {
+        // What is left over the target is held: a hold's release, or the next timed pass, tries again.
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_limitPending = true;
     }
 }
 
@@ -1905,7 +1913,7 @@ RecordingStore::releaseSelection(int selection) {
                 m_holds.erase(hold);
             }
         }
-        if (paths.isEmpty() || m_deleteQueue.isEmpty()) {
+        if (paths.isEmpty() || (m_deleteQueue.isEmpty() && !m_limitPending)) {
             return;
         }
         m_passRequested = true;
@@ -1920,8 +1928,8 @@ RecordingStore::setPlayingPath(const QString& path) {
         const QString playing = path.isEmpty() ? QString() : clean_absolute(path);
         const bool released = !m_playing.isEmpty() && !same_path(m_playing, playing);
         m_playing = playing;
-        // A delete waiting on the file the player let go of runs now, not at the next timed pass.
-        if (!released || m_deleteQueue.isEmpty()) {
+        // A delete, or the limit, waiting on the file the player let go of runs now, not at the next timed pass.
+        if (!released || (m_deleteQueue.isEmpty() && !m_limitPending)) {
             return;
         }
         m_passRequested = true;

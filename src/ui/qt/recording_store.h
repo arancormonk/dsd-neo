@@ -433,6 +433,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     qint64 m_limitBytes = kDefaultLimitMb * kBytesPerMb;
     bool m_limitChanged = false;
     bool m_limitSet = false;
+    /* The last enforceLimit() stopped over its target because what was left was held (played, selected, uploading):
+     * a released hold wakes a pass and every timed pass tries again (an rdio upload has no release to wake one). */
+    bool m_limitPending = false;
     /* A session start made or relabelled a folder: the next pass delivers the folder list again. */
     bool m_foldersChanged = false;
     /* A session ended: its folder may be compacted at the next pass. */

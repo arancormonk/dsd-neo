@@ -1476,6 +1476,68 @@ test_player_release_wakes_a_waiting_delete(void) {
     s.store.setPlayingPath(QString());
 }
 
+/* Wait (at most five seconds) for the worker to remove @p path on a pass something other than the test asked for. */
+bool
+removed_soon(const QString& path) {
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (QFileInfo::exists(path) && dsd_realtime_mono_ms() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return !QFileInfo::exists(path);
+}
+
+/* Issue #708: a limit the held recordings kept the store over is enforced again once they are let go: an export's
+ * selection and the player wake a pass when they release, and an rdio upload, which has no release, waits for the
+ * timed pass (here the test's). Before, nothing tried again until the next publish, rebuild or limit change. */
+void
+test_held_recordings_over_the_limit_go_once_released(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    for (int i = 0; i < 4; i++) {
+        record(folder, QStringLiteral("0000000000000099-%1").arg(i), QStringLiteral("h%1.wav").arg(i),
+               1754714000 + i * 10, 900 + i, 400000);
+    }
+    s.pass();
+    // The three oldest are in an export when the limit drops to 1 MB: only the newest can go, and 1.2 MB stays.
+    const QVariantMap exporting =
+        s.store.selectRecordings({QStringLiteral("0000000000000099-0"), QStringLiteral("0000000000000099-1"),
+                                  QStringLiteral("0000000000000099-2")});
+    s.store.setLimitMb(1);
+    s.pass();
+    expect("an export's selection keeps the store over its limit",
+           s.store.usedBytes() == 1200000 && !QFileInfo::exists(folder + QStringLiteral("/h3.wav")));
+    s.store.releaseSelection(exporting.value("selection").toInt());
+    expect("the export's end lets the oldest go at once", removed_soon(folder + QStringLiteral("/h0.wav")));
+    s.pass();
+    expect("down to 95%", s.store.usedBytes() == 800000 && QFileInfo::exists(folder + QStringLiteral("/h1.wav")));
+
+    // A recording larger than the limit plays as it is published: the rest go, it stays until the player lets it go.
+    s.store.setPlayingPath(folder + QStringLiteral("/h4.wav"));
+    record(folder, QStringLiteral("0000000000000099-4"), QStringLiteral("h4.wav"), 1754714040, 904, 1200000);
+    s.pass();
+    expect("the recording that plays keeps the store over its limit",
+           QFileInfo::exists(folder + QStringLiteral("/h4.wav"))
+               && !QFileInfo::exists(folder + QStringLiteral("/h2.wav")) && s.store.usedBytes() == 1200000);
+    s.store.setPlayingPath(QString());
+    expect("stopping it lets it go at once", removed_soon(folder + QStringLiteral("/h4.wav")));
+    s.pass();
+    expect("and nothing is left over the limit", s.store.usedBytes() == 0);
+
+    // One that uploads as it is published stays too; the upload has no release, and the next timed pass removes it.
+    s.uploading = {QStringLiteral("h5.wav")};
+    s.uploadingSet = true;
+    record(folder, QStringLiteral("0000000000000099-5"), QStringLiteral("h5.wav"), 1754714050, 905, 1200000);
+    s.pass();
+    expect("an upload keeps the store over its limit",
+           QFileInfo::exists(folder + QStringLiteral("/h5.wav")) && s.store.usedBytes() == 1200000);
+    s.uploadingSet = false;
+    s.pass();
+    expect("the next timed pass after the upload removes it",
+           !QFileInfo::exists(folder + QStringLiteral("/h5.wav")) && s.store.usedBytes() == 0);
+}
+
 /* A host with a player, share and a transfer it finishes when the test says (Android's run on their own threads). */
 class ServedHost : public dsd_qt::DecoderHost {
   public:
@@ -1764,6 +1826,7 @@ main(int argc, char** argv) {
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
     test_player_release_wakes_a_waiting_delete();
+    test_held_recordings_over_the_limit_go_once_released();
     test_host_surface();
     test_limit_follows_the_preference();
 

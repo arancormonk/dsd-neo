@@ -8191,7 +8191,9 @@ Qt Quick frontend (`src/ui/qt`):
   - Limit (D2): `limitMb` (decimal MB, 0 none) applies only once the app has set it (`setLimitMb()`; a first pass
     never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change:
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
-    the total is at 95%; a file already gone is taken off the total without counting as removed. Decided limit: the
+    the total is at 95%; a file already gone is taken off the total without counting as removed. When the held files
+    keep it over (`m_limitPending`), the release of a selection or of the player's file wakes a pass that tries again,
+    and so does every timed pass (an rdio upload's hold has no release to wake one). Decided limit: the
     journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
     first. Free space where new folders go is read (`dsd_path_free_bytes()`) at start, after each publish and every
     minute while a session records; under 200 MB is `lowSpace`. A root that goes away, at a pass's start or within it
