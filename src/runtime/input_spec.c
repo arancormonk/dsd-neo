@@ -57,13 +57,35 @@ parse_int_strict(const char* tok, int* out) {
     return 0;
 }
 
+/* A number with a K, M or G suffix ("851.375M", "5.8G"): digits and dots with at least one digit, then exactly one
+   suffix letter and nothing after it. Such a token is always a frequency, never device args. */
+static int
+is_suffixed_freq_token(const char* tok) {
+    if (!tok) {
+        return 0;
+    }
+    int digits = 0;
+    size_t i = 0;
+    for (; tok[i] == '.' || (tok[i] >= '0' && tok[i] <= '9'); i++) {
+        if (tok[i] != '.') {
+            digits = 1;
+        }
+    }
+    if (!digits || tok[i] == '\0' || tok[i + 1] != '\0') {
+        return 0;
+    }
+    const char c = tok[i];
+    return c == 'k' || c == 'K' || c == 'm' || c == 'M' || c == 'g' || c == 'G';
+}
+
 static int
 parse_freq_hz_token(const char* tok, uint32_t* out_hz) {
     if (!tok || !out_hz || tok[0] == '\0') {
         return -1;
     }
     uint32_t hz = dsd_parse_freq_hz(tok);
-    /* Use a conservative floor to avoid mis-parsing colon-delimited numeric args. */
+    /* Use a conservative floor to avoid mis-parsing colon-delimited numeric args (a suffixed token under it is an
+       out-of-range frequency instead; see parse_soapy_head_tokens()). */
     if (hz < 1000000U) {
         return -1;
     }
@@ -120,6 +142,11 @@ tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size
     return 0;
 }
 
+enum { SOAPY_HEAD_FREQ_OUT_OF_RANGE = -2 };
+
+/* Reads the optional device args and the frequency. Returns 0 when they parse; SOAPY_HEAD_FREQ_OUT_OF_RANGE, with
+   *out_idx at the frequency token, when that place holds a suffixed number out of range; and -1 when the head is not
+   shorthand (opaque args). */
 static int
 parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_tokens, size_t* out_idx,
                         uint32_t* out_freq_hz) {
@@ -139,6 +166,10 @@ parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_toke
 
     uint32_t freq_hz = 0;
     if (parse_freq_hz_token(tok[idx], &freq_hz) != 0) {
+        if (is_suffixed_freq_token(tok[idx])) {
+            *out_idx = idx;
+            return SOAPY_HEAD_FREQ_OUT_OF_RANGE;
+        }
         return -1;
     }
 
@@ -284,7 +315,12 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     size_t arg_tokens = 0;
     size_t idx = 0;
     uint32_t freq_hz = 0;
-    if (parse_soapy_head_tokens(tok, n, &arg_tokens, &idx, &freq_hz) != 0) {
+    const int head_rc = parse_soapy_head_tokens(tok, n, &arg_tokens, &idx, &freq_hz);
+    if (head_rc == SOAPY_HEAD_FREQ_OUT_OF_RANGE) {
+        LOG_ERROR("Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)\n", tok[idx]);
+        return -1;
+    }
+    if (head_rc != 0) {
         restore_opaque_soapy_args(opts, tail_copy);
         return 0;
     }

@@ -286,7 +286,12 @@ apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val,
     if (strcmp(key_lc, "rtl_device") == 0) {
         (void)apply_integer_setting(val, 0, mode, &cfg->rtl_device);
     } else if (strcmp(key_lc, "rtl_freq") == 0) {
-        copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
+        /* A value cut to fit would parse as another frequency ("146.52...M" without its M), so it is refused. */
+        if (strlen(val) >= sizeof cfg->rtl_freq) {
+            LOG_WARN("Config: invalid %s = '%s'; too long, keeping previous/default value\n", key_lc, val);
+        } else {
+            copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
+        }
     } else if (strcmp(key_lc, "rtl_gain") == 0) {
         if (apply_integer_setting(val, 22, mode, &cfg->rtl_gain)) {
             cfg->rtl_gain_is_set = 1;

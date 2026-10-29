@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/input_spec.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -36,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 #include <sys/types.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -94,6 +96,18 @@ reset_opts_and_state(dsd_opts& opts, dsd_state& state) {
     static const dsd_state k_zero_state = {};
     opts = k_zero_opts;
     state = k_zero_state;
+}
+
+static char g_log_text[4096];
+
+static void
+capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    size_t used = strlen(g_log_text);
+    if (text && used < sizeof g_log_text - 1U) {
+        DSD_SNPRINTF(g_log_text + used, sizeof g_log_text - used, "%s", text);
+    }
 }
 
 static int
@@ -1095,6 +1109,58 @@ test_load_and_apply_alerts_empty_event_mask(void) {
 /* Issue #669 B10: an INI rtl_volume outside 0..3 reads as the default 1 on every radio source, as the local RTL setup
    and the menu always read it: 10 would multiply the monitor audio tenfold, and the menu cycle could never return to
    it. */
+/* Issue #670 B3: an rtl_freq too long for the config's 64-byte field is refused at load, with a warning, instead of
+   cut: the 64-character "146520000.000...M" lost its M and loaded as 146520000 Hz. The key keeps what it had. */
+static int
+test_rtl_freq_too_long_is_refused(void) {
+    std::string long_freq = "146520000.";
+    long_freq.append(53, '0');
+    long_freq += "M";
+    if (long_freq.size() != 64U) {
+        DSD_FPRINTF(stderr, "test value is %zu characters, want 64\n", long_freq.size());
+        return 1;
+    }
+    int rc = 0;
+    for (int with_prior = 0; with_prior <= 1; with_prior++) {
+        char ini[512];
+        DSD_SNPRINTF(ini, sizeof ini, "[input]\nsource = \"rtl\"\n%srtl_freq = \"%s\"\n",
+                     with_prior ? "rtl_freq = \"155.340M\"\n" : "", long_freq.c_str());
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        g_log_text[0] = '\0';
+        dsdneoUserConfig cfg;
+        if (dsd_user_config_load(path, &cfg) != 0) {
+            DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+            (void)remove(path);
+            return 1;
+        }
+        (void)remove(path);
+        const char* want = with_prior ? "155.340M" : "";
+        if (strcmp(cfg.rtl_freq, want) != 0) {
+            DSD_FPRINTF(stderr, "long rtl_freq loaded as '%s', want '%s'\n", cfg.rtl_freq, want);
+            rc |= 1;
+        }
+        if (!strstr(g_log_text, "rtl_freq")) {
+            DSD_FPRINTF(stderr, "long rtl_freq loaded without a warning (log: '%s')\n", g_log_text);
+            rc |= 1;
+        }
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_opts_and_state(opts, state);
+        opts.rtlsdr_center_freq = 162475000U;
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        (void)dsd_rtl_input_spec_apply(&opts);
+        const uint32_t want_hz = with_prior ? 155340000U : 162475000U;
+        if (opts.rtlsdr_center_freq != want_hz) {
+            DSD_FPRINTF(stderr, "long rtl_freq tuned %u, want %u\n", opts.rtlsdr_center_freq, want_hz);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_rtl_volume_out_of_range_reads_as_default(void) {
     static const char* const sources[] = {"rtl", "soapy", "rtltcp"};
@@ -5005,7 +5071,9 @@ test_receive_boundary_waits_for_resume(void) {
 int
 main(void) {
     int rc = 0;
+    dsd_neo_log_set_tap(capture_log, NULL);
     rc |= test_imports_dir_follows_config_dir();
+    rc |= test_rtl_freq_too_long_is_refused();
     rc |= test_rtl_volume_out_of_range_reads_as_default();
     rc |= test_receive_defaults_and_row_inheritance();
     rc |= test_receive_boundary_waits_for_resume();

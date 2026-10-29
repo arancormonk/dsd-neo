@@ -747,13 +747,15 @@ dsd_engine_squelch_notice_text(const dsd_opts* opts, char* out, size_t out_size)
     (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", out, out_size);
 }
 
-static void
+static int
 dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     if (!dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
-        return;
+        return 0;
     }
     int tuning_applied = 0;
-    (void)dsd_normalize_soapy_input_spec(opts, &tuning_applied);
+    if (dsd_normalize_soapy_input_spec(opts, &tuning_applied) != 0) {
+        return -1;
+    }
     const char* soapy_args = "";
     if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0) {
         soapy_args = opts->audio_in_dev + 6;
@@ -773,6 +775,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     }
     opts->rtltcp_enabled = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
+    return 0;
 }
 
 #ifdef USE_RTLSDR
@@ -1135,7 +1138,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     dsd_engine_setup_connect_rigctl_if_enabled(opts);
     dsd_engine_setup_enable_iq_replay_if_selected(opts);
     dsd_engine_setup_parse_rtltcp_input(opts);
-    dsd_engine_setup_parse_soapy_input(opts);
+    if (dsd_engine_setup_parse_soapy_input(opts) != 0) {
+        return -1;
+    }
     if (dsd_normalize_airspy_input_spec(opts) != 0) {
         return -1;
     }
