@@ -13,8 +13,9 @@ extern "C" {
 /**
  * @brief Noise equivalent bandwidth (Hz) of the receive chain a channel profile runs.
  *
- * The TETRA profile's bandwidth follows the chain that runs: 18000 Hz (its RRC
- * matched filter) while the TETRA chain runs, the WIDE plan's otherwise.
+ * The TETRA profile's bandwidth follows the chain that runs: 9000 Hz (its RRC
+ * matched filter, one-sided) while the TETRA chain runs, the WIDE plan's
+ * otherwise.
  *
  * @param lpf_profile Channel LPF profile (DSD_CH_LPF_PROFILE_*).
  * @param tetra_chain demod_state::tetra_chain (nonzero while the TETRA chain runs).

@@ -5,6 +5,7 @@
 
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/snr_bias.h>
+#include <math.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -70,9 +71,9 @@ main(void) {
     }
 
     /* The noise bandwidth follows the chain that runs. The TETRA chain's RRC matched filter has an equivalent noise
-       bandwidth equal to the symbol rate, 18000 Hz, so its EVM bias is the estimator bias alone. A TETRA profile whose
-       chain is inactive runs the WIDE plan and uses WIDE's bandwidth. A chain flag on another profile changes
-       nothing. */
+       bandwidth of the 18000 sym/s symbol rate two-sided, 9000 Hz one-sided as the other profiles' figures are, so
+       its EVM bias is the estimator bias plus 10 log10(9000 / 18000). A TETRA profile whose chain is inactive runs the
+       WIDE plan and uses WIDE's bandwidth. A chain flag on another profile changes nothing. */
     {
         struct bw_case {
             int profile;
@@ -81,7 +82,7 @@ main(void) {
         };
 
         const struct bw_case bw_cases[] = {
-            {DSD_CH_LPF_PROFILE_TETRA, 1, 18000.0},    {DSD_CH_LPF_PROFILE_TETRA, 0, 8415.0},
+            {DSD_CH_LPF_PROFILE_TETRA, 1, 9000.0},     {DSD_CH_LPF_PROFILE_TETRA, 0, 8415.0},
             {DSD_CH_LPF_PROFILE_WIDE, 0, 8415.0},      {DSD_CH_LPF_PROFILE_6K25, 0, 3540.0},
             {DSD_CH_LPF_PROFILE_12K5, 0, 6665.0},      {DSD_CH_LPF_PROFILE_PROVOICE, 0, 6665.0},
             {DSD_CH_LPF_PROFILE_P25_C4FM, 0, 6665.0},  {DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 7065.0},
@@ -97,8 +98,9 @@ main(void) {
             }
         }
         const double tetra_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, 1);
-        if (!nearly_equal(tetra_evm, 1.92, tol)) {
-            DSD_FPRINTF(stderr, "TETRA EVM bias: got %.12f expected %.12f\n", tetra_evm, 1.92);
+        const double want_tetra_evm = 1.92 + 10.0 * log10(9000.0 / 18000.0);
+        if (!nearly_equal(tetra_evm, want_tetra_evm, tol)) {
+            DSD_FPRINTF(stderr, "TETRA EVM bias: got %.12f expected %.12f\n", tetra_evm, want_tetra_evm);
             return 1;
         }
         const double inactive_evm = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, 0);

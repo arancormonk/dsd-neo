@@ -4622,9 +4622,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer
   count raised for it, a batch count bumped when it ends). Each estimate caches per thread, keyed by batch count, TED
   SPS, output rate, channel profile and TETRA chain flag (the SNR noise bandwidth, `dsd_snr_noise_bandwidth_hz()`,
-  follows the chain that runs: 18000 Hz for the TETRA chain, WIDE's for an inactive TETRA profile), and returns exactly
-  a fresh estimate's answer; a read a batch raced is answered
-  (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
+  follows the chain that runs: 9000 Hz one-sided for the TETRA chain, WIDE's for an inactive TETRA profile), and
+  returns exactly a fresh estimate's answer; a read a batch raced is answered (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
   `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
 - CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;
   `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original

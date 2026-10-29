@@ -37,9 +37,10 @@ static const double kNoiseBw12K5Hz = 6665.0;     /* 12.5 kHz modes, 6250 Hz prot
 static const double kNoiseBwProvoiceHz = 6665.0; /* ProVoice, 6250 Hz protected edge */
 static const double kNoiseBwP25C4fmHz = 6665.0;  /* P25 C4FM, 6250 Hz protected edge */
 static const double kNoiseBwP25CqpskHz = 7065.0; /* P25 CQPSK/LSM, 12.5 kHz edge plus guard */
-/* The TETRA chain: its RRC matched filter, not the wider channel filter ahead of it, bounds the noise. The figure is
- * the RRC's two-sided equivalent noise bandwidth, the 18000 sym/s symbol rate. */
-static const double kNoiseBwTetraHz = 18000.0;
+/* The TETRA chain: its RRC matched filter, not the wider channel filter ahead of it, bounds the noise. Its equivalent
+ * noise bandwidth is the 18000 sym/s symbol rate two-sided, so 9000 Hz one-sided, the convention of the figures above
+ * (Bn = (Fs/2) * sum(h^2) / sum(h)^2, which gives 9000 Hz for the RRC: sum(h^2) = 1/sps, sum(h) ~ 1). */
+static const double kNoiseBwTetraHz = 9000.0;
 
 double
 dsd_snr_noise_bandwidth_hz(int lpf_profile, int tetra_chain) {
