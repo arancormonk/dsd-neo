@@ -176,6 +176,21 @@ private fun aDroppedNoticeIsMootOnceTouchExplorationIsOff() {
     rig.show(rig.gate.onFacts(TALKBACK)) // The next rising edge still asks.
 }
 
+private fun aDetachFollowsTheDropRule() {
+    // A showing notice detached without a drop (the bridge always drops first) follows noticeDropped()'s rule.
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    rig.gate.detach(rig.a)
+    check(rig.gate.noticePending) { "touch exploration still on: owed to the next activity" }
+    val b = GateActivity("main")
+    rig.gate.attach(b)
+    rig.show(rig.gate.resumed(b), on = b)
+    check(rig.gate.onFacts(OFF) == Notice.NONE)
+    rig.gate.detach(b)
+    check(!rig.gate.noticePending) { "touch exploration off: a detached notice is moot" }
+}
+
 private fun afterOkNothingUntilTheNextRisingEdge() {
     val rig = Rig()
     rig.start(OFF)
@@ -240,6 +255,7 @@ fun main() {
     staleCallbacksAreIgnored()
     aDialogClosedWithoutOkComesBack()
     aDroppedNoticeIsMootOnceTouchExplorationIsOff()
+    aDetachFollowsTheDropRule()
     afterOkNothingUntilTheNextRisingEdge()
     theRecordHoldsFlagsAndCountsOnly()
     println("PASS: the accessibility gate decides once, and the notice reaches only a resumed activity, never lost")

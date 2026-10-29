@@ -534,11 +534,13 @@ def a11y_bridge_order():
     statements = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith("//")]
     expected = [
         "AccessibilityBridge.effects = AccessibilityRestartNotice",
+        "QmlGcPolicy.beforeQt(HostDiagnostics::submit)",
         "AccessibilityBridge.beforeQt(this)",
         "super.onCreate(savedInstanceState)",
         "AccessibilityBridge.afterQt(this)",
     ]
-    found = [line for line in statements if line in expected or line.startswith(("AccessibilityBridge.", "super.onCreate("))]
+    prefixes = ("AccessibilityBridge.", "QmlGcPolicy.", "super.onCreate(")
+    found = [line for line in statements if line in expected or line.startswith(prefixes)]
     if found != expected:
         return f"{where}: onCreate must run exactly {expected}, in that order, with nothing of these elsewhere; found {found}"
     start = statements.index(expected[0])
@@ -551,6 +553,38 @@ def a11y_bridge_order():
     destroy = method_body(text, "override fun onDestroy(")
     if destroy.find("AccessibilityBridge.onDestroy(this)") > destroy.find("super.onDestroy()"):
         return f"{where}: AccessibilityBridge.onDestroy(this) must come before super.onDestroy(), which may not return"
+    return None
+
+
+def android_main_writes_no_environment():
+    """#782: once super.onCreate() starts Qt's main(), nothing may add, remove or reallocate an environment entry, so
+    android/main.cpp writes none, and QmlGcPolicy.kt sets the QML collector's variable, the one applyQmlGcPolicy()
+    writes, before super.onCreate()."""
+    main_path = REPO / "android/main.cpp"
+    header_path = REPO / "src/ui/qt/qml_gc_policy.h"
+    kotlin_path = REPO / APP_SOURCES / "QmlGcPolicy.kt"
+    try:
+        main = main_path.read_text(encoding="utf-8")
+        header = header_path.read_text(encoding="utf-8")
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the environment writers: {error}"
+    # Code only: comments and string literals may name the calls.
+    code = re.sub(r"/\*.*?\*/|//[^\n]*", "", main, flags=re.S)
+    code = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', code)
+    writer = re.search(r"\b(qputenv|qunsetenv|setenv|unsetenv|putenv|applyQmlGcPolicy)\s*\(", code)
+    if writer:
+        return f"android/main.cpp: {writer.group(1)}() writes the environment while the Android main thread reads it"
+    native = re.search(r'qputenv\("([^"]+)",\s*QByteArrayLiteral\("([^"]*)"\)\)', header)
+    jvm_name = re.search(r'const val VARIABLE = "([^"]+)"', kotlin)
+    jvm_value = re.search(r'Os\.setenv\(VARIABLE, "([^"]*)", true\)', kotlin)
+    if not native or not jvm_name or not jvm_value:
+        return "cannot find the collector's variable in qml_gc_policy.h or QmlGcPolicy.kt"
+    if (native.group(1), native.group(2)) != (jvm_name.group(1), jvm_value.group(1)):
+        return (
+            f"QmlGcPolicy.kt sets {jvm_name.group(1)}={jvm_value.group(1)}, but applyQmlGcPolicy() in "
+            f"src/ui/qt/qml_gc_policy.h sets {native.group(1)}={native.group(2)}"
+        )
     return None
 
 
@@ -736,19 +770,26 @@ SUITES = {
         ),
         checks=(screen_golden_matches,),
     ),
-    # Qt's accessibility bridge (#782): the gate's decisions in plain Kotlin with no stubs, then AccessibilityBridge
-    # against stubs of the accessibility manager (listeners fired in AOSP's order) and of the process environment, with
-    # Qt's own listener modelled in the test. The bridge is process state, so each of its test files runs in its own JVM.
+    # Qt's accessibility bridge (#782): the gate's decisions in plain Kotlin with no stubs, then AccessibilityBridge and
+    # QmlGcPolicy against stubs of the accessibility manager (listeners fired in AOSP's order) and of the process
+    # environment, with Qt's own listener modelled in the test. Both are process state, so each test file runs in its
+    # own JVM. The checks pin the environment writes before super.onCreate() and none from android/main.cpp.
     "a11y_bridge": Suite(
         builds=(
             Build(sources=("AccessibilityGate.kt", "ActivitySlot.kt"), tests=("AccessibilityGateTest.kt",)),
             Build(
-                sources=("AccessibilityGate.kt", "ActivitySlot.kt", "AccessibilityBridge.kt"),
-                tests=("AccessibilityBridgeTest.kt", "AccessibilityBridgeLaunchTest.kt", "AccessibilityBridgeErrnoTest.kt"),
+                sources=("AccessibilityGate.kt", "ActivitySlot.kt", "AccessibilityBridge.kt", "QmlGcPolicy.kt"),
+                tests=(
+                    "AccessibilityBridgeTest.kt",
+                    "AccessibilityBridgeLaunchTest.kt",
+                    "AccessibilityBridgeErrnoTest.kt",
+                    "AccessibilityBridgeLeftoverTest.kt",
+                    "QmlGcPolicyTest.kt",
+                ),
                 stubs=("AccessibilityManager.kt", "AccessibilityServiceInfo.kt", "SystemOsEnv.kt", "A11yContext.kt", "A11yActivity.kt"),
             ),
         ),
-        checks=(a11y_bridge_order,),
+        checks=(a11y_bridge_order, android_main_writes_no_environment),
     ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and

@@ -54,6 +54,9 @@ import org.qtproject.qt.android.bindings.QtActivity
  * For the diagnostics (#782) it tells [MainLooperWatchdog.activities] its lifecycle phase, each window attach and each
  * touch event, and records how long each step of its teardown took.
  *
+ * The environment Qt reads is written only before `super.onCreate()` starts Qt's `main()` (#782): [QmlGcPolicy] and
+ * the accessibility bridge's variable, with one in-place exception documented in [AccessibilityBridge].
+ *
  * Qt's accessibility bridge (#782) is decided around `super.onCreate()`, where Qt reads it:
  * [AccessibilityBridge.beforeQt] immediately before keeps the bridge off unless touch exploration (TalkBack) is on,
  * and [AccessibilityBridge.afterQt] immediately after freezes that for the process. The resume, pause, stop and
@@ -70,6 +73,7 @@ class DsdNeoActivity : QtActivity() {
         ProcessFacts.attach(this)
         trace.created(this)
         AccessibilityBridge.effects = AccessibilityRestartNotice
+        QmlGcPolicy.beforeQt(HostDiagnostics::submit)
         AccessibilityBridge.beforeQt(this)
         super.onCreate(savedInstanceState)
         AccessibilityBridge.afterQt(this)

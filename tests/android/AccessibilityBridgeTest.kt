@@ -66,9 +66,10 @@ internal object Qt {
     }
 }
 
-/** The activity's onCreate, around Qt's. */
+/** The activity's onCreate, around Qt's, in DsdNeoActivity's order. */
 internal fun create(activity: Activity) {
     AccessibilityBridge.effects = Recorder
+    QmlGcPolicy.beforeQt(Recorder::record)
     AccessibilityBridge.beforeQt(activity)
     Qt.onCreate()
     AccessibilityBridge.afterQt(activity)
@@ -84,14 +85,16 @@ private fun aServiceAloneLeavesTheBridgeOffAndFrozen(a: Activity) {
     bind(*SERVICE_NAMES.toTypedArray())
     am.setState(enabled = true, touchExploration = false)
     AccessibilityBridge.effects = Recorder
+    QmlGcPolicy.beforeQt(Recorder::record)
     AccessibilityBridge.beforeQt(a)
     check(Os.env[VARIABLE] == "1") { "touch exploration off: the variable is 1 before Qt starts" }
-    check(Os.calls == listOf("setenv $VARIABLE=1")) { "one write, before Qt: ${Os.calls}" }
+    val beforeQt = listOf("setenv QV4_GC_TIMELIMIT=0", "setenv $VARIABLE=1")
+    check(Os.calls == beforeQt) { "the writes, all before Qt: ${Os.calls}" }
     Qt.onCreate()
     check(!Qt.bridgeOn && Qt.activations == 0) { "Qt's synchronous check at onCreate must see 1" }
     AccessibilityBridge.afterQt(a)
     check(Os.env[VARIABLE] == "1")
-    check(Os.calls == listOf("setenv $VARIABLE=1")) { "already 1: the freeze writes nothing while Qt runs: ${Os.calls}" }
+    check(Os.calls == beforeQt) { "already 1: the freeze writes nothing while Qt runs: ${Os.calls}" }
     check(am.touchListeners.size == 1 && am.touchListenerAdds == 1) { "one touch exploration listener" }
     check(Recorder.records == listOf(
         "accessibility: bridge off at launch (touch exploration off; accessibility on, 2 services bound)"

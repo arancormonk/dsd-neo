@@ -22,16 +22,21 @@ import android.view.accessibility.AccessibilityManager
  * - [beforeQt], just before `super.onCreate()`, sets the variable from the launch's facts: `1` keeps the bridge off,
  *   `0` under touch exploration lets Qt turn it on;
  * - [afterQt], just after, makes it `1` for the rest of the process: turning the bridge on mid-session crashes Qt
- *   6.11.2 (QTBUG-144911), and turning it off would leave a screen reader with nothing to read. Touch exploration turned
- *   on later gets the notice instead, through [Effects].
+ *   6.11.2 (QTBUG-144911), and turning it off would leave a screen reader with nothing to read. Touch exploration
+ *   turned on later gets the notice instead, through [Effects].
  *
- * Why `0` and not unset: inside `super.onCreate()` Qt posts its `main()` to the Qt thread, which reads the environment
- * (Qt's own variables, the app's config) while [afterQt] runs. Bionic's `setenv` of a name that is absent grows
- * `environ` with `reallocarray`, which can free the array a concurrent `getenv` is walking. With the name already
- * present the freeze only swaps that entry's pointer, and it is skipped when the value already is `1` (every launch
- * without touch exploration, and every later activity), so after Qt starts no entry is ever added. What remains, in a
- * launch under touch exploration only, is the one in-place swap: the old string is leaked, not freed, and a concurrent
- * `getenv` of that one name may briefly see the new, still-filling string. That window is accepted.
+ * The environment rule: once `super.onCreate()` has started Qt's `main()` on the Qt thread, nothing on any thread adds,
+ * removes or reallocates an environment entry, since that thread reads the environment (Qt's own variables, the app's
+ * config) with no lock. Bionic's `setenv` of an absent name grows `environ` with `reallocarray`, which can free the
+ * array a concurrent `getenv` is walking. So:
+ * - [beforeQt] writes `0` rather than unsetting, so the entry exists before Qt starts, and it writes only on the
+ *   process's first launch, before any Qt thread exists;
+ * - [afterQt] writes only into an entry that exists and is not already `1`. That is one in-place pointer swap, in a
+ *   launch under touch exploration only: the old string is leaked, not freed, and a concurrent `getenv` of that one
+ *   name may briefly see the new, still-filling string. That window is accepted. Every other launch, and every later
+ *   activity, writes nothing after Qt starts. An entry that is absent because the launch write failed stays absent:
+ *   the bridge is then not frozen, Qt's default applies, and that is recorded.
+ * - `QV4_GC_TIMELIMIT`, which the Qt side used to set from `main()`, is set by [QmlGcPolicy] before Qt starts.
  *
  * The notice follows the activity: it is shown only while the attached activity is resumed, closed at its stop or
  * destroy and shown again at the next resume, until the user's OK ([noticeAcknowledged]).
@@ -77,16 +82,28 @@ object AccessibilityBridge {
         val facts = readFacts(activity)
         val wanted = LaunchPlan.of(facts)
         val written = setVariable(wanted.env, "Qt's default applies at launch")
-        // Unwritten, the variable leaves Qt's default: the bridge turns on with any enabled service, so the gate is told
-        // what Qt actually does and never asks such a launch for a restart.
-        gate.launch(facts, if (written) wanted else wanted.copy(activated = facts.enabled))
+        // Unwritten, Qt reads whatever value is there: usually none, so the bridge turns on with any enabled service.
+        // The gate is told what Qt actually does, so it asks for a restart exactly when the bridge stays off under
+        // touch exploration.
+        val activated = if (written) wanted.activated else facts.enabled && !keepsOff(Os.getenv(DISABLE_VARIABLE))
+        gate.launch(facts, wanted.copy(activated = activated))
         launchFacts = facts
     }
 
-    /** Just after the activity's `super.onCreate()`: freezes the variable, attaches [activity] and records the launch. */
+    /** What Qt 6.11.2 reads as "keep the bridge off" (QtAccessibilityDelegate.java:94-95). */
+    private fun keepsOff(value: String?): Boolean = value == "1" || value.equals("true", ignoreCase = true)
+
+    /** Just after the activity's `super.onCreate()`: freezes the variable, attaches [activity], records the launch. */
     fun afterQt(activity: Activity) {
-        // Qt's main() may already be reading the environment: write only the existing entry, and only if it is not 1.
-        if (Os.getenv(DISABLE_VARIABLE) != "1") {
+        // Qt's main() may already be reading the environment: write only into an existing entry that is not 1 yet.
+        val now = Os.getenv(DISABLE_VARIABLE)
+        if (now == null) {
+            if (!launchRecorded) {
+                effects.record(
+                    "accessibility: the variable is unset; the bridge is not frozen, so Qt follows later changes"
+                )
+            }
+        } else if (now != "1") {
             setVariable("1", "the bridge is not frozen, so Qt follows later changes")
         }
         gate.attach(activity)

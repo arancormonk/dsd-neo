@@ -95,8 +95,9 @@ class AccessibilityGate<A : Any>(private val log: (String) -> Unit) {
         }
         ownerResumed = false
         if (state == State.SHOWING && shownOn === activity) {
-            // The platform side drops a showing notice before it detaches; this only keeps the notice from being lost.
-            state = State.PENDING
+            // The platform side drops a showing notice before it detaches; this only keeps the notice from being lost,
+            // by noticeDropped()'s rule.
+            state = if (lastWanted) State.PENDING else State.IDLE
             shownOn = null
         }
     }
