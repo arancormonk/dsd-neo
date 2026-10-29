@@ -8001,7 +8001,9 @@ Qt Quick frontend (`src/ui/qt`):
     back with the stop (`Result::unwritten`) and fold after the spill's lines: only the model has them then (the next
     start clears what the tap holds), and the log's own saves keep them. The fold also runs at load, so a process killed in the background loses nothing
     its batches wrote. It is idempotent by fragment: a line whose fragment a row already holds can only refine it, and
-    its seen entry joins the model's as a fresh read would; lines a clear covers are skipped. A spill longer than the log
+    one whose fragment no row holds is a new row, whatever verdict the tap gave it (an update whose first sighting the
+    508-row bound dropped carries the whole row); its seen entry joins the model's as a fresh read would; lines a clear
+    covers are skipped. A spill longer than the log
     is trimmed as it folds, whenever the log passes 1250 rows, so a long background stretch (50,000 rows: 0.26 s at
     `-O3`, 4.2 s when the fold inserted them all and trimmed one row a scan) never holds the whole backlog;
     `trimToCapacity()` picks every row that goes in one pass. Limit: a row trimmed mid-fold that a later line would

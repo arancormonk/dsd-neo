@@ -15,9 +15,10 @@
  * stopped decoder left published are captured; a clear made while the tap runs keeps its rows cleared, and one made
  * after the app returned but before its first ingest hands the tap off instead of restarting it; the spill is written
  * in batches of about a kilobyte a row; and a spill that cannot be written holds a bounded backlog, the newest rows,
- * reported once, which reaches History with the handoff when the spill is still unwritable then. Notices fold once
- * like calls. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's oldest go
- * first, and the log never holds the whole backlog. The deliberate failures' warnings are counted, not printed. */
+ * reported once, which reaches History with the handoff when the spill is still unwritable then (a call whose first
+ * sighting the bound dropped included, from its updates). Notices fold once like calls. A spill far longer than the
+ * log folds bounded: the newest rows stay, the oldest session's oldest go first, and the log never holds the whole
+ * backlog. The deliberate failures' warnings are counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -161,6 +162,15 @@ struct Decoder {
         item->event_start_time = start;
         item->event_time = start + 4;
         ring->push_seq++;
+        ring->commit_rev++;
+        ring->revision++;
+    }
+
+    /** The core's in-place merge of a reacquired segment into the newest committed row: its end moves on. */
+    void
+    extendNewest(int slot, time_t seconds) {
+        Event_History_I* ring = &state->event_history_s[slot];
+        ring->Event_History_Items[1].event_time += seconds;
         ring->commit_rev++;
         ring->revision++;
     }
@@ -520,6 +530,42 @@ test_unwritable_spill_hands_off_what_it_holds(void) {
     expect("handoff: no call twice", model.count() == 360 && rows_in_tg_range(model, 38001U, 38410U) == 360);
 }
 
+/* A long call heard again and again while the spill cannot be written: each reacquisition is an update the tap holds,
+ * until the bound drops the call's first sighting and keeps only updates. Those carry the whole row, and the model,
+ * which never logged the call, takes the first of them as the call: the ring walk after the handoff finds it seen. */
+void
+test_unwritable_spill_keeps_a_call_only_its_updates_hold(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754880000;
+    CallHistoryModel model;
+    start_tap(model);
+    gui_ingest(model);
+    expect("updates only: the spill is blocked", QDir().mkpath(spill_path()));
+    g_spillDropWarnings = 0;
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commit(0, 39001U, 99U, when);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    // One more update than the backlog holds rows: the first sighting goes.
+    for (int update = 0; update < 2 * (DSD_EVENT_HISTORY_LEN - 1); update++) {
+        decoder.extendNewest(0, 2);
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+    }
+    expect("updates only: the first sighting was dropped", g_spillDropWarnings == 1);
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("updates only: the call is in History once",
+           model.count() == 1 && rows_in_tg_range(model, 39001U, 39001U) == 1);
+    gui_ingest(model);
+    expect("updates only: reading the ring again adds nothing", model.count() == 1);
+    expect("updates only: with the end the last update gave it",
+           model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt()
+               == 4 + 4 * (DSD_EVENT_HISTORY_LEN - 1));
+    QDir(spill_path()).removeRecursively();
+}
+
 /* The spill is written in batches, never per row: a call a poll for 100 polls appends at most once every five
  * polls (five seconds at the app's pace), about a kilobyte a row, so even ten calls a second stay under the 16 KiB/s
  * the History stores budget. */
@@ -661,6 +707,7 @@ main(int argc, char** argv) {
     test_clear_before_the_first_ingest_after_return();
     test_unwritable_spill_keeps_a_bounded_backlog();
     test_unwritable_spill_hands_off_what_it_holds();
+    test_unwritable_spill_keeps_a_call_only_its_updates_hold();
     test_long_spill_folds_bounded();
     test_spill_fold_trims_oldest_session_first();
 

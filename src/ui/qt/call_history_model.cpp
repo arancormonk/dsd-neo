@@ -2177,12 +2177,14 @@ CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
         }
         // Idempotent by fragment: a row whose fragment the log already holds was folded before (a fold the
         // last save has not acknowledged, read again at load) or ingested by a GUI that kept running, and can
-        // only refine that row.
+        // only refine that row. One it does not hold is a new row, whatever the tap judged it: an update whose
+        // first sighting a bounded backlog dropped (the spill unwritable) carries the whole row, and the ring
+        // walk after it finds the call seen.
         bool known = false;
         for (const QString& fragment : row.fragments) {
             known = known || m_fragmentIndex.contains(fragment);
         }
-        const bool isUpdate = obj.value(QLatin1String("upd")).toBool() || known;
+        const bool isUpdate = known;
         const bool again = obj.value(QLatin1String("again")).toBool() && !known;
         rowsChanged = ingestRow(row, isUpdate, again) || rowsChanged;
         *folded = true;
