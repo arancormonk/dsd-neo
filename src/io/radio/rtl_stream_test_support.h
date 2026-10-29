@@ -378,6 +378,8 @@ typedef struct {
     uint32_t actual_rate;  /* a nonzero sample-rate readback different from the requested rate */
     int frequency_calls;
     int fail_frequency_from_call;
+    uint32_t freq_log[16]; /* the centre frequencies the tuner took, in order (the first 16) */
+    int freq_log_count;    /* centre frequencies the tuner took, those past the log included */
 } rtl_device_test_usb_tuner_fake;
 
 /* A USB device, never opened, whose tuning controls (centre frequency, sample rate, direct sampling, offset tuning,
@@ -472,6 +474,8 @@ typedef struct {
     int rate_out_hz;          /* the demod's output rate for that capture rate */
     int rate_forced;          /* the device runs another rate than the stream's plan (capture_rate_device_forced) */
     int downsample_passes;    /* half-band passes from the capture rate */
+    uint32_t applied_hz;      /* centre the controller last finalized on (a session's start counts as finalized) */
+    int completion;           /* RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE: the retune's completion (RTL_STREAM_TUNE_*) */
 } rtl_stream_test_capture_result;
 
 /* Run the stream start's device programming for @p center_hz with @p dev as the open device, @p direct_sampling the
@@ -498,6 +502,9 @@ enum {
     RTL_STREAM_TEST_CAPTURE_AUTOGAIN = 3,    /* the tuner autogain supervisor's gain of value tenths of a dB */
     RTL_STREAM_TEST_CAPTURE_PPM = 4,         /* a PPM correction of value */
     RTL_STREAM_TEST_CAPTURE_OFFSET = 5,      /* offset tuning turned on (value 1) or off */
+    /* a manual retune to center_hz at demod input rate value (0: kept), applied, finalized and completed as the
+       controller lands one (controller_apply_reconfigure()) */
+    RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE = 6,
 };
 
 /* Run one step; @p out (optional) holds the capture after it, with its rc. Returns -1 with no session, else 0. */

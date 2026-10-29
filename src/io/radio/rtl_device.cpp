@@ -7361,6 +7361,10 @@ rtl_usb_ctl_set_center_freq(rtlsdr_dev_t* dev, uint32_t freq) {
             return -1;
         }
         fake->freq = freq;
+        if (fake->freq_log_count < (int)(sizeof fake->freq_log / sizeof fake->freq_log[0])) {
+            fake->freq_log[fake->freq_log_count] = freq;
+        }
+        fake->freq_log_count++;
         if (fake->tuner_type == RTLSDR_TUNER_FC2580) {
             /* fc2580_set_freq(): the band's channel filter, set on every tune from the LO in kHz. */
             const uint32_t lo_khz = (freq - fake->offs_freq) / 1000U;

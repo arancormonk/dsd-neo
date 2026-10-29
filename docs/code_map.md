@@ -4478,6 +4478,17 @@ Key public headers:
     librtlsdr opens on enable (an explicit `DSD_NEO_TUNER_BW_HZ` above it is kept, below it is raised and logged once).
     The device caches the bandwidth it last took (`tuner_bw_hz`). Test: `IO_RTL_OFFSET_TUNING` (an effective-state fake
     of librtlsdr's tuning controls, `rtl_device_test_usb_tuner_device()`).
+  - Capture frequency range (issue #670 B4/B16; `rtl_sdr_fm.cpp` `capture_frequency_for_rate()`): centres stay
+    `uint32_t` end to end (`optimal_settings()` included), so a tune above 2147.483647 MHz is programmed as asked. The
+    capture (centre, plus Fs/4 while the shift is active, plus the edge offset) must lie in 1..UINT32_MAX, because
+    software rotation counts on the whole shift: one outside is refused, never clamped. A start fails with it logged; a
+    retune fails before anything is written, with the settings it had put back. After the frequency write, a device that
+    reads back another rate gets a corrective frequency write; when that write fails or the corrected capture is out of
+    range, `program_capture_frequency_and_rate()` reports `out_correction_failed` and both reconfigure paths refuse the
+    retune through the same rollback as the analog-width refusal (`controller_roll_back_refused_retune()`: the previous
+    capture back on the device, finalized on the kept centre without the profile, completed as failed through the
+    refused flag, a device that will not go back stopping the stream). Test: `IO_RTL_CAPTURE_WRITES` (its manual retune
+    step runs `controller_apply_reconfigure()` and the completion on the fake dongle).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path
@@ -4923,7 +4934,8 @@ Notes:
     (`controller_apply_reconfigure()` reports the refusal, and the manual retune completes as failed even when the
     centre it kept is its target). A retune profile for the target that switches to the digital family, or to an
     analog width the new rate fits, is not refused for the monitor's width. A device that refuses the capture
-    frequency or rate it is put back on stops the stream (`controller_stop_for_unrestored_capture()`: logged,
+    frequency or rate it is put back on, or the capture correction for the rate it then reports, stops the stream
+    (`controller_stop_for_unrestored_capture()`: logged,
     `DSD_INPUT_FAILURE_DEVICE` with the device's return code, exit flag), since it may still run the retune's capture
     while the stream finalizes on the one it kept. A device that still reports a rate the
     width cannot run at after it was put back stops the stream (`controller_refresh_analog_channel_for_rate()`:
