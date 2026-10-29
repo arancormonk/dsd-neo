@@ -3644,8 +3644,8 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
 
 // Issue #773 D7: a row whose stream verdict is off keeps its recording but is not exported to rdio-scanner -- no
 // DirWatch sidecar and no upload, which share the one export call -- on both close entry points: the event layer's
-// rotation (close_and_rename_wav_file_ex()) and the toggle, shutdown, analog-call and EDACS closes
-// (close_and_rename_wav_file()), which all read the slot's staged row.
+// rotation (close_and_rename_wav_file_ex()) and the closes before the row commits (close_and_publish_call_wav(): WAV
+// stop, analog calls, EDACS, the last close), which read the slot's staged row.
 static int
 close_and_rename_stream_case(const char* label, uint8_t stream_export, int use_ex) {
     int rc = 0;
@@ -3679,8 +3679,14 @@ close_and_rename_stream_case(const char* label, uint8_t stream_export, int use_e
         item->stream_export = stream_export;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "DMR_TEST");
 
-        SNDFILE* closed = use_ex ? close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, 0, 1)
-                                 : close_and_rename_wav_file(wav, &opts, path, dir, &history, 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        rc |= expect_true(label, state != NULL);
+        if (state) {
+            state->event_history_s = &history;
+        }
+        SNDFILE* closed = use_ex ? close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, 0, 1, NULL)
+                                 : close_and_publish_call_wav(wav, &opts, state, 0, path, dir, 0);
+        free(state);
         rc |= expect_true(label, closed == NULL);
         rc |= expect_true(label, file_size_or_negative(path) < 0);
 

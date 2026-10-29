@@ -65,7 +65,7 @@ class TalkgroupListModel : public QAbstractListModel {
         PreemptRole,
         TableIndexRole, /**< The row's index in the effective table, -1 for a heard talkgroup: part of its edit token. */
         TemporaryAvoidCountRole,
-        RecordRole, /**< The row's record flag (issue #708): off while not listening, as the decoder keeps it. */
+        RecordRole,  /**< The row's record flag (issue #708): off while not listening, as the decoder keeps it. */
         KindRole,    /**< "exact", "range" or "pattern" */
         PatternRole, /**< A pattern row's canonical text (its ID); empty on other rows. */
     };
@@ -182,6 +182,7 @@ class TalkgroupListModel : public QAbstractListModel {
         QVariant value(int role) const;
         /** @brief Whether anything but the bounds differs from @p other. */
         bool fieldsDiffer(const Row& other) const;
+
         /* The same listed row: kind, bounds and pattern (a heard row has no pattern). */
         bool
         sameRow(const Row& other) const {

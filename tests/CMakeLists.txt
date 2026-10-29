@@ -4914,6 +4914,7 @@ add_executable(
     dsd-neo_test_app_control_history_tap
     ui/test_app_control_history_tap.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c

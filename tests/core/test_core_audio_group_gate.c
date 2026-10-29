@@ -468,7 +468,7 @@ seed_unknown_only_case(dsd_state* st, uint8_t slot, int setup, int* rc) {
             *rc |= expect_eq("unknown-only range row",
                              dsd_tg_policy_make_exact_entry(100, "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &row), 0);
             row.id_end = 199;
-            row.is_range = 1;
+            row.kind = DSD_TG_POLICY_ROW_RANGE;
             *rc |= expect_eq("unknown-only range add", dsd_tg_policy_add_range_entry(st, &row), 0);
             break;
         }

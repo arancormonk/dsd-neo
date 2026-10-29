@@ -196,11 +196,10 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
         return false;
     }
     const QString name = changes.value(QStringLiteral("name")).toString();
-    return submitTalkgroupRow({idStart, idEnd, context, generation, tableIndex, pattern},
-                              {name, changes.value(QStringLiteral("listening")).toBool(),
-                               changes.value(QStringLiteral("priority")).toInt(),
-                               changes.value(QStringLiteral("preempt")).toBool(), fields,
-                               changes.value(QStringLiteral("record")).toBool()});
+    return submitTalkgroupRow(
+        {idStart, idEnd, context, generation, tableIndex, pattern},
+        {name, changes.value(QStringLiteral("listening")).toBool(), changes.value(QStringLiteral("priority")).toInt(),
+         changes.value(QStringLiteral("preempt")).toBool(), fields, changes.value(QStringLiteral("record")).toBool()});
 }
 
 bool

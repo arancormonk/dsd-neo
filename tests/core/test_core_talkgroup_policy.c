@@ -2270,7 +2270,7 @@ test_record_unknown_only(void) {
     rc |= expect_true("unknown-only seed exact", dsd_tg_policy_append_exact(state, &entry) == 0);
     init_entry(&entry, 200, "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED);
     entry.id_end = 299;
-    entry.is_range = 1;
+    entry.kind = DSD_TG_POLICY_ROW_RANGE;
     rc |= expect_true("unknown-only seed range", dsd_tg_policy_add_range_entry(state, &entry) == 0);
     init_entry(&entry, 300, "B", "Locked out", DSD_TG_POLICY_SOURCE_IMPORTED);
     rc |= expect_true("unknown-only seed mode B", dsd_tg_policy_append_exact(state, &entry) == 0);
@@ -2365,6 +2365,10 @@ test_set_fields_record(void) {
     value.record = 2;
     rc |= expect_true("record above 1 refused",
                       dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_RECORD) == 1);
+    free_test_state(st);
+    return rc;
+}
+
 /* Append a pattern row through the public API. */
 static int
 add_pattern_row(dsd_state* st, const char* pattern, const char* mode, const char* name) {
