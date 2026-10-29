@@ -4577,9 +4577,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     follows the last burst. An `--iq-loop` pass end does the same before its rewind: the reader sets
     `replay_pass_end` while it waits for the rewind's idle boundary, the demod flushes on it as on EOF, and
     `replay_pipeline_idle_locked()` is not idle while that flush is owed, so the pass's last burst is decoded on its
-    own pass rather than dropped by the rewind. A live stream's stop drops it with the rest of the pipeline's
-    in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`, `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`,
-    `DECODE_IQ_TETRA_UPLINK_SQUELCH`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP`.
+    own pass rather than dropped by the rewind. While such a flush is owed the demod waits for the next chunk in
+    `demod_replay_input_or_flush()`, not in the input ring, whose wait returns only with data: paced in real time the
+    demod is already waiting there when the input ends, and would never reach the flush. A live stream's stop drops it
+    with the rest of the pipeline's in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`,
+    `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL` and
+    `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP`, each also `_REALTIME`.
   - Published profile. The stream publishes TETRA as the running channel profile
     (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag and so
     the UI channel width) only while the TETRA channel filter runs, WIDE otherwise;
@@ -4592,10 +4595,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     goes with CQPSK: CQPSK off returns it to WIDE, and the symbol-profile setter stores WIDE for it on the FSK
     discriminator.
   - Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions, warnings, the WIDE-identical fallback,
-    pull-in from +6 kHz and +600 Hz, squelch, the resume after a dropped block, partition invariance of the linear
-    filters, P25 after a TETRA session through the leave transition, the uplink's channel filter alone), `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the
-    22.5 kHz width a TETRA open, downlink or uplink, publishes), `DSP_CHANNEL_FILTERS`, `DSP_FLL_BAND_EDGE`, and the
-    `DECODE_IQ_TETRA_*` I/Q cases (`docs/testing.md`).
+    pull-in from +6 kHz and +600 Hz, squelch, the symbols a block after a gap makes, partition invariance of the linear
+    filters, P25 after a TETRA session through the leave transition, the uplink's channel filter alone),
+    `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the 22.5 kHz width a TETRA open, downlink or uplink, publishes),
+    `DSP_CHANNEL_FILTERS`, `DSP_FLL_BAND_EDGE`, and the `DECODE_IQ_TETRA_*` I/Q cases (`docs/testing.md`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,
   `simd_hb_decim2_real()` and `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing the call
   contracts in `src/dsp/simd_fir_internal.h`) carry their look-ahead, and the half-band its decimation phase, from one

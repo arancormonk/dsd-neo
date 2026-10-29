@@ -10786,8 +10786,8 @@ add_test(
 )
 
 # The TETRA receive chain inside full_demod(): its activation predicate and the
-# transitions between blocks, the chain's order, the squelch and the resume after a
-# dropped block, the once-per-stream fallback warnings, the pull-in on a clean stream,
+# transitions between blocks, the chain's order, the squelch and the symbols a block
+# after a gap makes, the once-per-stream fallback warnings, the pull-in on a clean stream,
 # and a P25 stream after a TETRA session, through the leave transition, running as a
 # fresh one seeded with its estimate.
 add_executable(dsd-neo_test_dsp_tetra_chain dsp/test_dsp_tetra_chain.cpp)
@@ -16723,6 +16723,14 @@ if(DSD_HAS_RADIO)
         "${_dsd_tetra_ul_mode}"
         "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
     )
+    # The same paced in real time: the demod waits for a chunk the capture's end never brings, and that wait must give
+    # way to the end-of-capture flush, or the replay never ends.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_REALTIME
+        tetra_uplink_bursts_short_tail_72k
+        "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
+        "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
+    )
     # The same capture under --iq-loop: each pass ends 20 symbols after the last burst, and the rewind pushes the
     # look-ahead out as the capture's end does, so every pass decodes both bursts (before, the last one decoded on no
     # pass).
@@ -16738,8 +16746,22 @@ if(DSD_HAS_RADIO)
                 "MAC-DATA enc=0 ssi=2015" --count "MAC-ACCESS enc=0 ssi=2016"
                 --min-count 1 --timeout 100
         )
+        # The same paced in real time (0.25 s a pass), where the demod waits for the next chunk before the reader
+        # reaches the pass's end: the wait must give way to the look-ahead flush, or the rewind waits for it forever.
+        add_test(
+            NAME DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP_REALTIME
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/iq_loop_passes_check.py
+                --dsd-bin $<TARGET_FILE:dsd-neo> --fixture
+                ${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_uplink_bursts_short_tail_72k.iq.json
+                --mode "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
+                --passes 3 --count "MAC-DATA enc=0 ssi=2015" --count
+                "MAC-ACCESS enc=0 ssi=2016" --min-count 1 --timeout 30
+        )
         set_tests_properties(
             DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP
+            DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP_REALTIME
             PROPERTIES LABELS "iq-decode" TIMEOUT 120
         )
     endif()

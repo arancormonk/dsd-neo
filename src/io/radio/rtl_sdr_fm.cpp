@@ -3300,10 +3300,42 @@ demod_copy_wrapped_input_block(struct demod_state* d, const DemodInputSpan* span
     return (int)copied;
 }
 
+/* A replay demod that owes the decoder an uplink look-ahead flush (replay_demod_flush_owed) waits for input here, not
+   in the input ring: the ring's wait returns only with data or at exit, and the end of the capture, or of an --iq-loop
+   pass, brings none, so the flush the loop top runs (demod_replay_flush_uplink()) would never come and the replay
+   would neither end nor rewind. Returns 1 to read the ring (there is input, or no flush is owed: the flag is the demod
+   thread's own, so it cannot change during the wait), 0 to go back to the loop top (the input ended or the pass did,
+   or the stream stops). The wait is 10 ms at a time, so a wake lost between the look and the wait costs at most
+   that. */
+static int
+demod_replay_input_or_flush(void) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_demod_flush_owed.load(std::memory_order_acquire) || !stream_is_replay_active()) {
+        return 1;
+    }
+    for (;;) {
+        if (input_ring_used(&input_ring) != 0U) {
+            return 1;
+        }
+        if (s->replay_input_eof.load(std::memory_order_acquire) || s->replay_pass_end.load(std::memory_order_acquire)
+            || demod_should_exit_requested()) {
+            return 0;
+        }
+        dsd_mutex_lock(&input_ring.ready_m);
+        if (input_ring_used(&input_ring) == 0U) {
+            (void)dsd_cond_timedwait(&input_ring.ready, &input_ring.ready_m, 10);
+        }
+        dsd_mutex_unlock(&input_ring.ready_m);
+    }
+}
+
 static int
 demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     demod_input_span_init(span);
     if (!d || !span) {
+        return 0;
+    }
+    if (!demod_replay_input_or_flush()) {
         return 0;
     }
     span->got = input_ring_read_reserve(&input_ring, static_cast<size_t>(MAXIMUM_BUF_LENGTH), &span->ring_p1,
