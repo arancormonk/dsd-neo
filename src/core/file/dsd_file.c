@@ -1433,6 +1433,8 @@ close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename
 SNDFILE*
 close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
                            const char* wav_out_filename, const char* dir, time_t opened) {
+    /* The policy as it is at the close: an import or edit applied since the row's last render counts. */
+    dsd_event_refresh_stream_verdict(opts, state, slot);
     const Event_History_I* event_struct =
         (state && state->event_history_s && slot < 2U) ? &state->event_history_s[slot] : NULL;
     dsd_wav_owner owner = {DSD_WAV_OWNER_NONE, slot, 0U, 0U};

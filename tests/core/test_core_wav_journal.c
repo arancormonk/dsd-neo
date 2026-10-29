@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../test_support/radio_policy_test.h"
 #include "commands_internal.h"
 #include "edacs_internal.h"
 #include "snapshot_internal.h"
@@ -1389,6 +1390,49 @@ test_error_failed_and_rdio_shapes(void) {
     return rc;
 }
 
+/* A radio list change applied after the call's last render, then WAV_STOP before the next render, as one command drain
+   delivers them: the stop's close follows the policy in force (issue #773 D7). A radio row turned stream=off keeps the
+   recording local (no DirWatch sidecar); with stream on the sidecar is written. */
+static int
+test_wav_stop_follows_a_fresh_stream_verdict(void) {
+    int rc = 0;
+    for (int blocked = 0; blocked <= 1; blocked++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_stream");
+        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        r.opts->rdio_system_id = 48;
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 1500U, 42U, DSD_CALL_BOUNDARY_BEGIN);
+        voice_frames(&r, 0, 2);
+        rc |= expect_int("radio row", dsd_test_install_radio_policy(r.state, 42U, "A", 1, 1, blocked ? 0 : 1), 0);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        rc |= expect_true("the stopped recording is published", pub != NULL);
+        if (pub) {
+            char path[DSD_TEST_PATH_MAX * 2];
+            (void)dsd_test_path_join(path, sizeof path, r.dir, field_s(pub, "file"));
+            char sidecar[DSD_TEST_PATH_MAX * 2];
+            DSD_SNPRINTF(sidecar, sizeof sidecar, "%s", path);
+            char* ext = strrchr(sidecar, '.');
+            if (ext != NULL && strcmp(ext, ".wav") == 0) {
+                DSD_SNPRINTF(ext, sizeof sidecar - (size_t)(ext - sidecar), "%s", ".json");
+            }
+            FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
+            rc |= expect_true(blocked ? "a radio turned stream=off keeps the stopped recording local"
+                                      : "with stream on the stopped recording is exported",
+                              (f != NULL) == !blocked);
+            if (f) {
+                fclose(f);
+                (void)remove(sidecar);
+            }
+        }
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        rig_close(&r);
+    }
+    return rc;
+}
+
 /* The process token the app reads (dsd_wav_temp_token(), its text form) is the one the temp names and journal ids
    carry: the app tells this process's temp files, which may still be open, from the ones an earlier process left. */
 static int
@@ -1498,6 +1542,7 @@ main(void) {
     rc |= test_strings_are_escaped();
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
+    rc |= test_wav_stop_follows_a_fresh_stream_verdict();
     rc |= test_path_forms();
     rc |= test_temp_token_is_the_names_token();
     if (rc == 0) {

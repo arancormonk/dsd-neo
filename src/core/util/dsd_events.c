@@ -1807,19 +1807,27 @@ watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* 
 // ended, the staged row's own talkgroup -- this epoch's, when staged_is_own -- is kept, so the finalize pass does not
 // re-judge it on the supergroup.
 static void
-watchdog_event_current_load_stream_export(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
-                                          const Event_History* staged, int staged_is_own,
-                                          watchdog_event_current_ctx* ctx) {
-    ctx->stream_blocked = 0U;
-    ctx->policy_target_id = 0U;
+watchdog_event_judge_stream_export(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                   const Event_History* staged, int staged_is_own, uint8_t* blocked,
+                                   uint32_t* policy_target_id) {
+    *blocked = 0U;
+    *policy_target_id = 0U;
     if (call == NULL || call->epoch == 0U) {
         return;
     }
     const uint32_t pinned =
         (call->phase != DSD_CALL_PHASE_ACTIVE && staged_is_own && staged != NULL) ? staged->policy_target_id : 0U;
     uint32_t judged = 0U;
-    ctx->stream_blocked = dsd_audio_stream_export_allowed(opts, state, call, pinned, &judged) ? 0U : 1U;
-    ctx->policy_target_id = judged;
+    *blocked = dsd_audio_stream_export_allowed(opts, state, call, pinned, &judged) ? 0U : 1U;
+    *policy_target_id = judged;
+}
+
+static void
+watchdog_event_current_load_stream_export(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                          const Event_History* staged, int staged_is_own,
+                                          watchdog_event_current_ctx* ctx) {
+    watchdog_event_judge_stream_export(opts, state, call, staged, staged_is_own, &ctx->stream_blocked,
+                                       &ctx->policy_target_id);
 }
 
 static void
@@ -2896,6 +2904,30 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     // from it: call_state.c does not know the event layer exists.
     watchdog_event_flush_pending_end_alert(opts, state, slot, lifecycle,
                                            watchdog_event_end_is_positively_terminated(call, lifecycle));
+    dsd_call_state_ext_unlock(ext);
+}
+
+void
+dsd_event_refresh_stream_verdict(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    // Only the call's own staged row, as a render judges it; a row already committed or another epoch's is left alone.
+    if (call->epoch != 0U && lifecycle->epoch == call->epoch && !lifecycle->ended_committed) {
+        Event_History* staged = &state->event_history_s[slot].Event_History_Items[0];
+        uint8_t blocked = 0U;
+        uint32_t judged = 0U;
+        watchdog_event_judge_stream_export(opts, state, call, staged, 1, &blocked, &judged);
+        staged->stream_blocked = blocked;
+        staged->policy_target_id = judged;
+    }
     dsd_call_state_ext_unlock(ext);
 }
 

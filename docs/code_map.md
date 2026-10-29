@@ -1220,7 +1220,9 @@ suite runs under this compiler.
   call. `wav_close_and_publish()` (`dsd_file.c`), the one export call site, which every close path reaches (the event
   rotation through `close_and_rename_wav_file_ex()`, and `close_and_publish_call_wav()` for WAV stop, analog calls,
   EDACS and the last close) with the slot's staged row, exports only when `export_call` and the row's verdict allow
-  it. The flag is set only to block, so a row never judged, however it was built (`init_event_history()`, a zeroed
+  it. `close_and_publish_call_wav()` first re-judges the verdict (`dsd_event_refresh_stream_verdict()`, the call's own
+  staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
+  (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built (`init_event_history()`, a zeroed
   row, a trunk-scan target's empty row), exports as before. Conventional analog calls, M17 and identities wider than
   32 bits are never judged. Neither field is shown, persisted or part of the control API's row fingerprint; exports
   already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`,

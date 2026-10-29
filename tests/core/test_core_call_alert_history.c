@@ -7972,6 +7972,50 @@ test_radio_stream_off_skips_export(void) {
     return rc;
 }
 
+// A policy change applied after the row's last render reaches a close that comes before the next render (a radio list
+// import and a WAV stop in one command drain): dsd_event_refresh_stream_verdict() re-judges the call's own staged row,
+// both ways, and leaves a slot without an open call alone.
+static int
+test_stream_verdict_refreshed_before_close(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        stream_fixture(&opts, &state, event_history, &wav_sentinel);
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 1201U,
+            .policy_target_id = 1201U,
+            .ota_source_id = 42U,
+            .observed_m = g_observed_m,
+        };
+        g_observed_m += 0.1;
+        rc |= expect_int("refresh call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        const Event_History* staged = &event_history[slot].Event_History_Items[0];
+        rc |= expect_int("rendered with no radio row: exported", staged->stream_blocked, 0);
+        rc |= expect_int("refresh radio row", dsd_test_install_radio_policy(&state, 42U, "A", 1, 1, 0), 0);
+        rc |= expect_int("not re-judged before a render", staged->stream_blocked, 0);
+        dsd_event_refresh_stream_verdict(&opts, &state, slot);
+        rc |= expect_int("re-judged at the close: kept local", staged->stream_blocked, 1);
+        rc |= expect_u64("judged on the talkgroup", staged->policy_target_id, 1201U);
+        rc |= expect_int("refresh radio row back on", dsd_test_install_radio_policy(&state, 42U, "A", 1, 1, 1), 0);
+        dsd_event_refresh_stream_verdict(&opts, &state, slot);
+        rc |= expect_int("re-judged back: exported", staged->stream_blocked, 0);
+        const uint8_t other = (uint8_t)(slot ^ 1U);
+        event_history[other].Event_History_Items[0].stream_blocked = 1U;
+        dsd_event_refresh_stream_verdict(&opts, &state, other);
+        rc |= expect_int("a slot without a call is left alone",
+                         event_history[other].Event_History_Items[0].stream_blocked, 1);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 static void
 stream_seed_patch(dsd_state* state, uint16_t sg, uint16_t wg) {
     state->p25_patch_count = 1;
@@ -8527,6 +8571,7 @@ main(void) {
     rc |= test_call_context_snapshot_restores_committed_end();
     rc |= test_stream_off_skips_export();
     rc |= test_radio_stream_off_skips_export();
+    rc |= test_stream_verdict_refreshed_before_close();
     rc |= test_patched_call_member_stream_off();
     rc |= test_consecutive_calls_opposite_verdicts();
     rc |= test_hold_does_not_override_stream_off();
