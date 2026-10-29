@@ -3486,8 +3486,6 @@ close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) 
         item->channel = 0x10C8U;
         item->freq_hz = 851012500;
         item->enc = 1;
-        // A row whose export the policy allows, as init_event_history() leaves every row (issue #773 D7).
-        item->stream_export = 1U;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "P25_TEST");
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "FIRE DISP");
 
@@ -3676,7 +3674,7 @@ close_and_rename_stream_case(const char* label, uint8_t stream_export, int use_e
         item->source_id = 42U;
         item->target_id = 1201U;
         item->policy_target_id = 1201U;
-        item->stream_export = stream_export;
+        item->stream_blocked = stream_export ? 0U : 1U;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "DMR_TEST");
 
         dsd_state* state = calloc(1, sizeof(*state));

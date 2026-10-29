@@ -108,7 +108,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE;
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         /* Never judged: exports as before (issue #773 D7). */
-        event_struct->Event_History_Items[i].stream_export = 1U;
+        event_struct->Event_History_Items[i].stream_blocked = 0U;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].freq_hz = 0;
         event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
@@ -185,7 +185,7 @@ push_event_history(Event_History_I* event_struct) {
                        sizeof event_struct->Event_History_Items[i].channel_label);
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
-        event_struct->Event_History_Items[i].stream_export = event_struct->Event_History_Items[i - 1].stream_export;
+        event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
         event_struct->Event_History_Items[i].access_code_kind =
@@ -1421,7 +1421,7 @@ typedef struct {
     uint8_t s_name_loaded;
     /* The rdio-scanner export verdict (issue #773 D7) and, beside the system IDs above, the talkgroup it was judged
      * on (policy_target_id); see watchdog_event_current_load_stream_export(). */
-    uint8_t stream_export;
+    uint8_t stream_blocked;
     /* Seconds the call has run on the canonical epoch's own timeline — through its
      * last observation while active, through its end once ended. Anchors the row's
      * stamps: the first render subtracts it from the wall clock to fix
@@ -1810,7 +1810,7 @@ static void
 watchdog_event_current_load_stream_export(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
                                           const Event_History* staged, int staged_is_own,
                                           watchdog_event_current_ctx* ctx) {
-    ctx->stream_export = 1U;
+    ctx->stream_blocked = 0U;
     ctx->policy_target_id = 0U;
     if (call == NULL || call->epoch == 0U) {
         return;
@@ -1818,7 +1818,7 @@ watchdog_event_current_load_stream_export(const dsd_opts* opts, const dsd_state*
     const uint32_t pinned =
         (call->phase != DSD_CALL_PHASE_ACTIVE && staged_is_own && staged != NULL) ? staged->policy_target_id : 0U;
     uint32_t judged = 0U;
-    ctx->stream_export = dsd_audio_stream_export_allowed(opts, state, call, pinned, &judged) ? 1U : 0U;
+    ctx->stream_blocked = dsd_audio_stream_export_allowed(opts, state, call, pinned, &judged) ? 0U : 1U;
     ctx->policy_target_id = judged;
 }
 
@@ -1969,7 +1969,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->source_id = ctx->source_id;
     item->target_id = ctx->target_id;
     item->policy_target_id = ctx->policy_target_id;
-    item->stream_export = ctx->stream_export;
+    item->stream_blocked = ctx->stream_blocked;
     item->channel = ctx->channel;
     item->freq_hz = ctx->freq_hz;
     item->access_code_kind = ctx->access_code_kind;
@@ -2433,7 +2433,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->target_id = item->target_id;
     // A committed row's export verdict stands as its last render judged it; a merge re-renders only its text.
     ctx->policy_target_id = item->policy_target_id;
-    ctx->stream_export = item->stream_export;
+    ctx->stream_blocked = item->stream_blocked;
     ctx->svc_opts = item->svc;
     ctx->enc = item->enc;
     ctx->emergency = item->emergency;

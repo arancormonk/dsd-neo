@@ -1519,11 +1519,6 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
      * RAN 0 for a target that has never decoded one. */
     snapshot->nxdn_last_ran = (unsigned int)-1;
     snapshot->nxdn_location_category[0] = ' ';
-    /* A target's empty current event row is a row never judged for the rdio-scanner export, which exports as
-       init_event_history() leaves it (issue #773 D7); zero would keep a recording closed against it local. */
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        snapshot->event_current[slot].stream_export = 1U;
-    }
 }
 
 static void

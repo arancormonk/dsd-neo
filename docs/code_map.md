@@ -1212,19 +1212,19 @@ suite runs under this compiler.
   every render through `dsd_audio_stream_export_allowed()` (module-private, `src/core/audio/dsd_audio_gate_internal.h`),
   which evaluates it as the record gate does (a private call on both parties; a group call on its policy target -- a
   patched P25 call's member while the membership is current -- then `dsd_tg_policy_apply_ota_final_blocks()` on the
-  over-the-air target, then the radio part), and stores `Event_History::stream_export` and `policy_target_id` on the
+  over-the-air target, then the radio part), and stores `Event_History::stream_blocked` and `policy_target_id` on the
   staged row. A Hold lifts what it lifts for recording (the allow-list miss, and a stream flag derived off by a
   `B`/`DE` or `audio=off` row) but never an explicit `stream=off` on an audible row (`DSD_TG_POLICY_BLOCK_STREAM`) or a
   radio row's.
   Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
-  call. `close_and_rename_wav_file_ex()` (`dsd_file.c`), the one export call site, which every close path reaches
-  (event rotation, the WAV toggles, shutdown, analog calls, EDACS) with the slot's staged row, exports only when
-  `export_call` and the row's verdict allow it. `init_event_history()` sets `stream_export` 1, so a row never judged
-  exports as before; a memset-zero row reads 0, so code that builds a row outside `init_event_history()` sets it (the
-  trunk-scan empty snapshot does). Conventional analog calls, M17 and identities wider than 32 bits are never judged.
-  Neither field is shown, persisted or part of the control API's row fingerprint; exports already queued are not
-  recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
-  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+  call. `wav_close_and_publish()` (`dsd_file.c`), the one export call site, which every close path reaches (the event
+  rotation through `close_and_rename_wav_file_ex()`, and `close_and_publish_call_wav()` for WAV stop, analog calls,
+  EDACS and the last close) with the slot's staged row, exports only when `export_call` and the row's verdict allow
+  it. The flag is set only to block, so a row never judged, however it was built (`init_event_history()`, a zeroed
+  row, a trunk-scan target's empty row), exports as before. Conventional analog calls, M17 and identities wider than
+  32 bits are never judged. Neither field is shown, persisted or part of the control API's row fingerprint; exports
+  already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR

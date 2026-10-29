@@ -258,7 +258,7 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         const int index = g_close_wav_capture_count++;
         close_wav_capture* capture = &g_close_wav_captures[index];
         capture->event_time = event_struct->Event_History_Items[0].event_time;
-        capture->stream_export = event_struct->Event_History_Items[0].stream_export;
+        capture->stream_export = event_struct->Event_History_Items[0].stream_blocked == 0U;
         capture->policy_target_id = event_struct->Event_History_Items[0].policy_target_id;
         capture->export_call = export_call;
         capture->sidecar[0] = '\0';

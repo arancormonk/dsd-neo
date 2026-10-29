@@ -1393,7 +1393,7 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     /* The row's stream verdict (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with
        no DirWatch sidecar and no upload. A row the event layer never judged allows it (init_event_history()). */
     int rdio_queued = 0;
-    if (export_call && opts && final_size > 44 && (event_item == NULL || event_item->stream_export != 0U)) {
+    if (export_call && opts && final_size > 44 && (event_item == NULL || event_item->stream_blocked == 0U)) {
         if (dsd_rdio_export_call_ex(opts, event_struct, new_filename, opened, &rdio_queued) != 0) {
             LOG_WARN("Rdio export failed for %s\n", new_filename);
         }
