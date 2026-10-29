@@ -462,6 +462,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Remove @p usage's candidates in order until its total is down to @p target; true when a root marked away
      * meanwhile means it must be counted again. */
     bool removeForLimit(LimitUsage* usage, qint64 target, Pass* pass, int* removed, bool* held);
+    /* Whether a session start could make a folder in @p root now. */
+    static bool rootWritableNow(const QString& root);
+    /* Where recordings go: the active session's root, or when idle the root a session start would take now. */
+    QString spaceRoot() const;
     bool checkFreeSpace();
     void compactFolders();
     bool compactFolder(const QString& path);

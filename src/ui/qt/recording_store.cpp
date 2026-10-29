@@ -1358,16 +1358,48 @@ RecordingStore::enforceLimit(Pass* pass) {
 }
 
 bool
-RecordingStore::checkFreeSpace() {
-    QString where;
+RecordingStore::rootWritableNow(const QString& root) {
+    // As a session start finds it: a root that is there takes a new folder, or a missing one can be made.
+    const QFileInfo info(root);
+    if (info.exists()) {
+        return info.isDir() && info.isWritable();
+    }
+    return !info.isSymLink() && QFileInfo(info.absolutePath()).isWritable();
+}
+
+QString
+RecordingStore::spaceRoot() const {
+    QStringList roots;
+    QList<bool> available;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        for (int i = 0; i < m_roots.size() && where.isEmpty(); i++) {
-            if (m_rootAvailable.at(i)) {
-                where = m_roots.at(i);
+        // While a session records, the root of its folder: the decoder keeps writing there when a preferred root comes
+        // back, or stays there when it takes no new files.
+        int active = -1;
+        for (const QString& path : std::as_const(m_active)) {
+            const auto folder = m_folders.constFind(path);
+            if (folder != m_folders.cend() && (active < 0 || folder->root < active)) {
+                active = folder->root;
             }
         }
+        if (active >= 0 && active < m_roots.size()) {
+            return m_roots.at(active);
+        }
+        roots = m_roots;
+        available = m_rootAvailable;
     }
+    // Idle: the root a session start would take now, the first one there that takes new folders (beginSession()).
+    for (int i = 0; i < roots.size(); i++) {
+        if (available.value(i) && rootWritableNow(roots.at(i))) {
+            return roots.at(i);
+        }
+    }
+    return QString();
+}
+
+bool
+RecordingStore::checkFreeSpace() {
+    const QString where = spaceRoot();
     qint64 free = -1;
     if (!where.isEmpty()) {
         free = m_freeSpaceProbe(QFileInfo::exists(where) ? where : QFileInfo(where).absolutePath());

@@ -8248,8 +8248,9 @@ Qt Quick frontend (`src/ui/qt`):
     recording is: one found gone is marked away, the total is summed again over the roots still there, and only then is
     it decided whether anything needs to go, so nothing goes for usage that no longer counts. Decided limit: the
     journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
-    first. Free space where new folders go is read (`dsd_path_free_bytes()`) at start, after each publish and every
-    minute while a session records; under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
+    first. Free space where recordings go is read (`dsd_path_free_bytes()`) at start, after each publish and every
+    minute while a session records: the root of the active session's folder, or when idle the root a session start
+    would take now (the first one available and writable); under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
   - Storage-loss invariant: storage can go at any moment of a pass (a USB connection, an unmounted card), and a gone
     root makes every read in it fail or come back empty. So no outcome that drops index state (a root's folder
     listing, a folder read whole, a journal's new lines, a file found missing or no longer the store's to remove), drops

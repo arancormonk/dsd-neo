@@ -1806,6 +1806,79 @@ test_unwritable_folder_falls_back(void) {
     s.pass();
 }
 
+/* A free-space probe that answers by volume: 900 MB on the external storage, @p internalMb on the internal one, and the
+ * paths it was asked about into @p asked. */
+void
+probe_by_volume(Store& s, const Roots& roots, qint64 internalMb, QStringList* asked) {
+    const QString ext = QDir::cleanPath(roots.dir.path() + QStringLiteral("/ext"));
+    s.store.setFreeSpaceProbeForTest([ext, internalMb, asked](const QString& path) {
+        asked->append(path);
+        const QString clean = QDir::cleanPath(path);
+        const bool external = clean == ext || clean.startsWith(ext + QLatin1Char('/'));
+        return (external ? qint64{900} : internalMb) * RecordingStore::kBytesPerMb;
+    });
+}
+
+/* Issue #708: free space is read where recordings go. External storage that is there but takes no new files (mounted
+ * read-only) sends a session to the internal one, so the internal volume's space is the one reported, idle or in the
+ * session. */
+void
+test_free_space_where_a_session_goes(void) {
+    const Roots roots;
+    expect("space, read-only: the external root is there", QDir().mkpath(roots.external));
+    if (!permissions_enforced(roots.external)) {
+        return; // as root, a read-only folder takes new files
+    }
+    const QFileDevice::Permissions open = QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+    QFile::setPermissions(roots.external, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QStringList asked;
+    Store s(roots.list(), false);
+    probe_by_volume(s, roots, 100, &asked);
+    s.start();
+    expect("space, read-only: idle, the internal storage a session would take is read",
+           s.store.lowSpace() && s.store.freeBytes() == 100 * RecordingStore::kBytesPerMb);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("space, read-only: the session falls back to the internal storage",
+           QDir::cleanPath(folder).startsWith(QDir::cleanPath(roots.internal) + QLatin1Char('/')));
+    record(folder, QStringLiteral("00000000000000F7-1"), QStringLiteral("a.wav"), 1754705000, 80);
+    s.pass();
+    expect("space, read-only: in the session, the fallback's free space and its warning",
+           s.store.lowSpace() && s.store.freeBytes() == 100 * RecordingStore::kBytesPerMb);
+    expect("space, read-only: the probe was asked about the internal storage",
+           !asked.isEmpty()
+               && QDir::cleanPath(asked.last()).startsWith(QDir::cleanPath(roots.dir.path() + QStringLiteral("/int"))));
+    s.store.endSession();
+    QFile::setPermissions(roots.external, open);
+    s.pass();
+}
+
+/* Issue #708: a session that started in the fallback while the external storage was away keeps recording there when
+ * the external storage comes back, so the fallback's free space is still the one reported until the session ends. */
+void
+test_free_space_follows_the_session(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    expect("space, back: the external storage starts away", QDir().rename(ext, away));
+    QStringList asked;
+    Store s(roots.list(), false);
+    probe_by_volume(s, roots, 150, &asked);
+    s.start();
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("space, back: the session goes to the fallback",
+           QDir::cleanPath(folder).startsWith(QDir::cleanPath(roots.internal) + QLatin1Char('/')));
+    expect("space, back: the external storage comes back", QDir().rename(away, ext));
+    record(folder, QStringLiteral("00000000000000F8-1"), QStringLiteral("a.wav"), 1754705000, 81);
+    s.pass();
+    expect("space, back: the session's fallback is still the volume read",
+           s.store.lowSpace() && s.store.freeBytes() == 150 * RecordingStore::kBytesPerMb);
+    s.store.endSession();
+    record(folder, QStringLiteral("00000000000000F8-2"), QStringLiteral("b.wav"), 1754705010, 82);
+    s.pass();
+    expect("space, back: idle, the external storage the next session takes is read",
+           !s.store.lowSpace() && s.store.freeBytes() == 900 * RecordingStore::kBytesPerMb);
+}
+
 /* Wait (at most five seconds) for the store to deliver @p count recordings from a pass the test did not ask for. */
 bool
 counted_soon(const RecordingStore& store, int count) {
@@ -2436,6 +2509,8 @@ main(int argc, char** argv) {
     test_deletion_safety();
     test_retention();
     test_free_space_warning();
+    test_free_space_where_a_session_goes();
+    test_free_space_follows_the_session();
     test_export_selection();
     test_session_running_at_ui_load();
     test_start_does_not_wait_for_journals();
