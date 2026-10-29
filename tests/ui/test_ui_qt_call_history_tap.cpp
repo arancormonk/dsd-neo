@@ -19,7 +19,9 @@
  * then (a call whose first sighting the bound dropped included, from its updates). Notices fold once like calls, a replay begun in the
  * background included. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's
  * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. A read that fails
- * partway keeps the spill whole for the next fold. The deliberate failures' warnings are counted, not printed. */
+ * partway keeps the spill whole for the next fold. A session that changes while the tap runs hidden hands it off and
+ * starts it again: the old session's calls keep its attribution, the new session's take theirs. The deliberate
+ * failures' warnings are counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -866,6 +868,82 @@ test_failed_spill_read_keeps_the_spill(void) {
     expect("read error: reported only for the failed read", g_spillReadWarnings == 1);
 }
 
+/* The row with talkgroup @p tg, or -1. */
+int
+row_of_tg(const CallHistoryModel& model, qulonglong tg) {
+    for (int i = 0; i < model.count(); i++) {
+        if (model.data(model.index(i), CallHistoryModel::TgRole).toULongLong() == tg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Whether the row with talkgroup @p tg carries @p session, @p label and @p uid. */
+bool
+row_attributed(const CallHistoryModel& model, qulonglong tg, qint64 session, const QString& label, const QString& uid) {
+    const int row = row_of_tg(model, tg);
+    if (row < 0) {
+        return false;
+    }
+    const QModelIndex index = model.index(row);
+    return model.data(index, CallHistoryModel::SessionRole).toLongLong() == session
+           && model.data(index, CallHistoryModel::SystemNameRole).toString() == label
+           && model.data(index, CallHistoryModel::SystemUidRole).toString() == uid;
+}
+
+/* A start that completes while the app is away (a deferred restart, or a USB start's continuation while hidden)
+ * changes the session the running tap attributes its rows to. The tap hands off what it found under the old session
+ * first, and starts again on the new one while the app is still away; the ingest after the return finds the new
+ * session's calls attributed to it, not seen already under the old one. */
+void
+test_session_change_while_hidden(void) {
+    resetStorage();
+    const QString oldLabel = QStringLiteral("Old source");
+    const QString oldUid = QStringLiteral("old-source-uid");
+    const QString newLabel = QStringLiteral("New source");
+    const QString newUid = QStringLiteral("new-source-uid");
+    CallHistoryModel model;
+    start_tap(model);
+    model.setSessionLabel(oldLabel);
+    model.setSessionUid(oldUid);
+    model.beginSession();
+    const qint64 oldSession = model.session();
+    Decoder oldDecoder;
+    oldDecoder.commit(0, 33000U, 99U, 1754960000);
+    oldDecoder.publish();
+    gui_ingest(model);
+
+    set_app_state(Qt::ApplicationHidden);
+    expect("session change: the tap runs while hidden", model.backgroundCaptureRunningForTest());
+    oldDecoder.commit(0, 33001U, 99U, 1754960060);
+    oldDecoder.publish();
+    model.waitForBackgroundPollForTest();
+    // Main.startWithMap after an accepted asynchronous start: an ingest, then the new session.
+    gui_ingest(model);
+    model.setSessionLabel(newLabel);
+    model.setSessionUid(newUid);
+    model.beginSession();
+    const qint64 newSession = model.session();
+    expect("session change: the tap still runs while hidden", model.backgroundCaptureRunningForTest());
+
+    set_app_state(Qt::ApplicationSuspended);
+    Decoder newDecoder;
+    newDecoder.commit(0, 33002U, 100U, 1754960100);
+    newDecoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+
+    expect("session change: every call is in History once", model.count() == 3);
+    expect("session change: the call before the hide keeps the old session",
+           row_attributed(model, 33000U, oldSession, oldLabel, oldUid));
+    expect("session change: the old session's call the tap found keeps it",
+           row_attributed(model, 33001U, oldSession, oldLabel, oldUid));
+    expect("session change: the new session's call is attributed to it",
+           row_attributed(model, 33002U, newSession, newLabel, newUid));
+}
+
 } // namespace
 
 int
@@ -902,6 +980,7 @@ main(int argc, char** argv) {
     test_very_long_spill_folds_in_bounded_memory();
     test_long_spill_of_repeated_notices_folds_bounded();
     test_failed_spill_read_keeps_the_spill();
+    test_session_change_while_hidden();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

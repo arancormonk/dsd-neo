@@ -639,6 +639,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void startBackgroundCapture();
     /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill. */
     void handOffBackgroundCapture();
+    /** @brief Hand off the running tap before the session it attributes rows to changes; @return whether it should
+     * start again on the new one (the app still away), for resumeBackgroundCapture(). */
+    bool handOffBackgroundCaptureForSession();
+    /** @brief Start the tap again on the changed session when handOffBackgroundCaptureForSession() said so. */
+    void resumeBackgroundCapture(bool resume);
     /** @brief Stop the running background tap and take the clear it settled and the ring position it read; @return the
      * lines it could not write to the spill. */
     QByteArray stopBackgroundCapture();

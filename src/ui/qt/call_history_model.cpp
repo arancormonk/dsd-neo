@@ -493,8 +493,10 @@ CallHistoryModel::setSessionLabel(const QString& label) {
     if (label == m_sessionLabel) {
         return;
     }
+    const bool resumeTap = handOffBackgroundCaptureForSession();
     m_sessionLabel = label;
     m_settings.setValue(QLatin1String(kSessionLabelKey), label);
+    resumeBackgroundCapture(resumeTap);
     Q_EMIT sessionLabelChanged();
 }
 
@@ -503,13 +505,16 @@ CallHistoryModel::setSessionUid(const QString& uid) {
     if (uid == m_sessionUid) {
         return;
     }
+    const bool resumeTap = handOffBackgroundCaptureForSession();
     m_sessionUid = uid;
     m_settings.setValue(QLatin1String(kSessionUidKey), uid);
+    resumeBackgroundCapture(resumeTap);
     Q_EMIT sessionUidChanged();
 }
 
 void
 CallHistoryModel::beginSession() {
+    const bool resumeTap = handOffBackgroundCaptureForSession();
     m_session++;
     m_settings.setValue(QLatin1String(kSessionKey), m_session);
     /* A start usually brings a fresh ring, but not always: an embedding host can run again on the
@@ -535,6 +540,7 @@ CallHistoryModel::beginSession() {
         m_ringPushSeqRing = 0U;
         m_ringRead = true;
     }
+    resumeBackgroundCapture(resumeTap);
     Q_EMIT sessionChanged();
 }
 
@@ -2120,6 +2126,26 @@ CallHistoryModel::handOffBackgroundCapture() {
     // has it now.
     if (foldSpill(stopBackgroundCapture())) {
         Q_EMIT countChanged();
+    }
+}
+
+bool
+CallHistoryModel::handOffBackgroundCaptureForSession() {
+    // A start that completes while the app is away (a deferred restart, a USB start's continuation) changes the
+    // session, label or system the tap attributes its rows to; it holds a copy of the old ones. What it found so far
+    // folds in under them now, and a tap the app's return already owes a handoff stays stopped, as in clearAll().
+    if (!m_tap || !m_tap->running()) {
+        return false;
+    }
+    const bool resume = !m_handoffOwed;
+    handOffBackgroundCapture();
+    return resume;
+}
+
+void
+CallHistoryModel::resumeBackgroundCapture(bool resume) {
+    if (resume) {
+        startBackgroundCapture();
     }
 }
 
