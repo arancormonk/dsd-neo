@@ -34,6 +34,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -880,6 +881,18 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
 int
 svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
     return dsd_engine_channel_scan_leave(opts, state);
+}
+
+/* Nor its record of a trunk-scan pause or resume (issue #671): the engine's, as the stubs run them. */
+int
+svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                dsd_trunk_scan_leave_report* out) {
+    return dsd_engine_trunk_scan_pause_ex_locked(opts, state, kind, out);
+}
+
+int
+svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
+    return dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
 }
 
 static int

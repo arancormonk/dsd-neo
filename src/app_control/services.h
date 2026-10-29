@@ -20,14 +20,15 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/input_failure.h>
-#include <stdint.h>
 #endif
 
 #ifdef __cplusplus
@@ -686,6 +687,57 @@ int svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place);
 int svc_resume_channel_scan(dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief dsd_engine_trunk_scan_pause_ex_locked() with its return to the configured monitor (@p out->monitor_request,
+ * @p out not NULL) recorded for the command drain as svc_leave_channel_scan() records a -Y stop's (issue #578).
+ *
+ * Only the record: the caller holds the P25 SM tick guard and settles @p out->restart_gain (svc_pause_trunk_scan_*).
+ */
+int svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                    dsd_trunk_scan_leave_report* out);
+/** @brief dsd_engine_trunk_scan_resume_ex_locked(), a refused retune's return to the monitor recorded as a pause's. */
+int svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out);
+
+/** The tune leg of a frequency entry (svc_rtl_tune_only()'s shape): an RTL_STREAM_TUNE_* result or a refusal. */
+typedef int (*svc_tune_leg_fn)(dsd_opts* opts, dsd_state* state, uint32_t hz);
+
+/**
+ * @brief Tune to a frequency the operator entered over a running trunk scan, and pause the scan once the tune is
+ * accepted (issue #671).
+ *
+ * Takes the P25 SM tick guard (the frequency entry is not a guarded command) for the whole step: the tune through
+ * @p tune_leg (NULL: svc_rtl_tune_only()); then, when it was applied or is pending, the pause
+ * (dsd_engine_trunk_scan_pause_ex_locked(), DSD_TRUNK_SCAN_PAUSE_TUNE) with its return to the configured monitor
+ * recorded for the command drain as a -Y stop's is (issue #578), the TUNE carrier boundary, and, when the target left
+ * ran a tuner gain of its own, a stream restart on the configured gain. A tune that is refused or deferred leaves the
+ * scan running, untouched. Decoder thread only; radio builds (the frequency entry is a radio build's command).
+ *
+ * @return The tune leg's result.
+ */
+int svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg);
+
+/**
+ * @brief Pause the running trunk scan where it is, no tune following (`y`, a tuner release; issue #671).
+ *
+ * dsd_engine_trunk_scan_pause_ex_locked() with DSD_TRUNK_SCAN_PAUSE_IN_PLACE, its return to the configured monitor
+ * recorded as a -Y stop's is (issue #578), and a stream restart on the configured gain when the target left ran its
+ * own. The caller holds the P25 SM tick guard. Decoder thread only.
+ *
+ * @return 0 when the scan is paused (or already was), -1 when no trunk scan runs.
+ */
+int svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Resume the paused trunk scan on the target it left (dsd_engine_trunk_scan_resume_ex_locked(), issue #671).
+ *
+ * A resume whose retune is refused leaves the scan paused; its return to the configured monitor is recorded as a
+ * pause's is. The caller holds the P25 SM tick guard. Decoder thread only.
+ *
+ * @return As dsd_engine_trunk_scan_resume_ex_locked(): 0 running, 1 running with the park in flight, -1 no trunk scan,
+ * -2 preparation failed, -3 retune refused (both failures leave the scan paused, with the reason on the status line).
+ */
+int svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief How many radio streams app-control has started (svc_rtl_restart_locked()), from 0; always 0 without radio
  * support.
  *
@@ -1034,6 +1086,9 @@ int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
    _locked form is for a caller that holds the P25 SM tick guard. */
 int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
+/* The tune alone, the io/control leg of svc_rtl_set_freq() with its pending manual-tune record (issue #671), for a
+   caller that runs the carrier boundary itself once something else (a scan's pause) has run after the tune. */
+int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**

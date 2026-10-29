@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -505,6 +506,34 @@ int
 svc_resume_channel_scan(dsd_opts* opts, dsd_state* state) {
     /* A refused typed row's undo runs svc_pause_channel_scan() through the engine's pause hook, which records it. */
     return dsd_engine_channel_scan_resume(opts, state);
+}
+
+int
+svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                dsd_trunk_scan_leave_report* out) {
+#ifdef USE_RADIO
+    int earlier_not_run = 0;
+    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
+    const int rc = dsd_engine_trunk_scan_pause_ex_locked(opts, state, kind, out);
+    symbol_profile_scan_release_record(opts, running, earlier_not_run, out->monitor_request);
+    return rc;
+#else
+    return dsd_engine_trunk_scan_pause_ex_locked(opts, state, kind, out);
+#endif
+}
+
+int
+svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
+#ifdef USE_RADIO
+    int earlier_not_run = 0;
+    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
+    const int rc = dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
+    /* Only a refused retune's rollback leaves the scopes, and so asks the monitor for anything. */
+    symbol_profile_scan_release_record(opts, running, earlier_not_run, out->monitor_request);
+    return rc;
+#else
+    return dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
+#endif
 }
 
 #ifdef USE_RADIO

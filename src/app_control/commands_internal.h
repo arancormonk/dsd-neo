@@ -26,6 +26,8 @@ int dsd_app_commands_need_frame_loop(void);
 void dsd_app_stream_notice_post(int kind);
 void dsd_app_stream_notice_clear(void);
 #ifdef DSD_NEO_TEST_HOOKS
+#include <stdint.h>
+
 /* Counts contended policy transactions; relaxed, so observing it adds no synchronization. */
 int dsd_app_command_test_policy_guard_waits(void);
 /* Boolean probes only: tests must never export command payloads as diagnostics. */
@@ -36,6 +38,9 @@ int dsd_app_command_test_last_failed(void);
 int dsd_app_command_test_last_invalid_payload(void);
 /* 1 when the last command the drain applied asked for a change only a restart makes, 0 otherwise. */
 int dsd_app_command_test_last_restart_required(void);
+/* Replace the frequency entry's tune leg (svc_rtl_tune_only()) with @p tune_leg, or put it back with NULL: the result
+   it returns is the tune's, and it caches what a success applied in opts->rtlsdr_center_freq as the real one does. */
+void dsd_app_command_test_set_tune_leg(int (*tune_leg)(dsd_opts* opts, dsd_state* state, uint32_t hz));
 #endif
 
 #ifdef __cplusplus

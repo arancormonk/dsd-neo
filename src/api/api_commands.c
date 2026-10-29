@@ -931,6 +931,7 @@ static const api_command_desc k_commands[] = {
     API_ACTION("scan_hold_toggle", DSD_APP_CMD_SCAN_HOLD_TOGGLE),
     API_ACTION("scan_avoid", DSD_APP_CMD_SCAN_AVOID),
     API_ACTION("scan_avoid_clear", DSD_APP_CMD_SCAN_AVOID_CLEAR),
+    API_ACTION("scan_resume", DSD_APP_CMD_SCAN_RESUME),
 
     API_ACTION("quit", DSD_APP_CMD_QUIT),
     API_ACTION("force_priv_toggle", DSD_APP_CMD_FORCE_PRIV_TOGGLE),

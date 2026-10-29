@@ -2276,13 +2276,11 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     return 0;
 }
 
-/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. An accepted one
-   (applied or pending) puts the receiver on another carrier, which can sync before any no-carrier pass: the carrier
-   boundary runs at this success point (issue #575). One that reached the tuner replaces any manual tune still pending,
-   and an RTL tune that timed out is followed to its completion, a late failure putting the cached frequency back
-   (issue #671). @p guard_held says whether the caller holds the P25 SM tick guard. */
-static int
-svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
+/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
+   the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
+   late failure putting the cached frequency back (issue #671). */
+int
+svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     if (!opts) {
         return -1;
     }
@@ -2292,6 +2290,18 @@ svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
     if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
         dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
     }
+    return rc;
+}
+
+/* svc_rtl_tune_only(), and its carrier boundary: an accepted tune (applied or pending) puts the receiver on another
+   carrier, which can sync before any no-carrier pass, so the boundary runs at this success point (issue #575).
+   @p guard_held says whether the caller holds the P25 SM tick guard. */
+static int
+svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
+    if (!opts) {
+        return -1;
+    }
+    const int rc = svc_rtl_tune_only(opts, state, hz);
     if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
     }
@@ -2306,6 +2316,28 @@ svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
 int
 svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     return svc_rtl_tune(opts, state, hz, 1);
+}
+
+/* Defined with the trunk-scan pause services below, which build without radio support too. */
+static void svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report);
+
+int
+svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg) {
+    if (!opts || !state) {
+        return -1;
+    }
+    /* One hold from the tune to the boundary: no watchdog tick sees the scan's target with the receiver moved. */
+    p25_sm_tick_guard_enter();
+    const int rc = (tune_leg ? tune_leg : svc_rtl_tune_only)(opts, state, hz);
+    if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* The target's calls end under its name before the boundary, which then forgets the carrier left. */
+        dsd_trunk_scan_leave_report report;
+        (void)svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report);
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_trunk_scan_settle_gain(opts, state, &report);
+    }
+    p25_sm_tick_guard_leave();
+    return rc;
 }
 
 int
@@ -2587,6 +2619,54 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
     return 0;
 }
 #endif
+
+/* The target a trunk scan paused at ran a tuner gain of its own (@p report): a retune carries no gain profile outside a
+   running scan, so the device keeps it until the stream reopens, which it does here on the configured gain the pause
+   put back (issue #671). A reopen that fails starts the input that ran again through the recovery path, as a target's
+   gain edit does (scan_row_edit_restart_gain()). The caller holds the P25 SM tick guard. A trunk scan also runs with
+   only a rigctl peer to tune, so the pause and resume services build without radio support too. */
+static void
+svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report) {
+#ifdef USE_RADIO
+    if (!report->restart_gain) {
+        return;
+    }
+    opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    dsd_input_failure failure_before;
+    dsd_input_failure_get(&failure_before);
+    const int stream_stopped = state->rtl_ctx != NULL;
+    if (svc_rtl_restart_locked(opts, state) != 0) {
+        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, &failure_before, NULL);
+    }
+#else
+    (void)opts;
+    (void)state;
+    (void)report;
+#endif
+}
+
+int
+svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    dsd_trunk_scan_leave_report report;
+    const int rc = svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE, &report);
+    svc_trunk_scan_settle_gain(opts, state, &report);
+    return rc;
+}
+
+int
+svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    dsd_trunk_scan_leave_report report;
+    return svc_trunk_scan_resume_and_record(opts, state, &report);
+}
 
 /* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */
 int

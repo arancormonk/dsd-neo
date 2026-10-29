@@ -34,6 +34,31 @@ dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
     return DSD_SCAN_RESUME_NO_ROW;
 }
 
+/* Nor a trunk scan to pause or resume (issue #671): ENGINE_TRUNK_SCAN and APP_COMMAND_QUEUE drive the coordinator's. */
+int
+dsd_engine_trunk_scan_pause_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                      dsd_trunk_scan_leave_report* out) {
+    (void)opts;
+    (void)state;
+    (void)kind;
+    if (out) {
+        out->monitor_request = 0;
+        out->restart_gain = 0;
+    }
+    return -1;
+}
+
+int
+dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
+    (void)opts;
+    (void)state;
+    if (out) {
+        out->monitor_request = 0;
+        out->restart_gain = 0;
+    }
+    return -1;
+}
+
 /* Nor a -Y tune or retry staged: a rigctl follow (issue #621) is not left to one. */
 int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {

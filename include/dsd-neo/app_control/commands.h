@@ -32,7 +32,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_GAIN_DELTA = 20,  // payload: int32_t delta (+1/-1)
     DSD_APP_CMD_AGAIN_DELTA = 21, // payload: int32_t delta (+1/-1) for analog gain; from auto it steps from 50
 
+    // Trunking on/off. Refused while a --trunk-scan coordinator exists, running or paused: each target sets its own.
     DSD_APP_CMD_TRUNK_TOGGLE = 30,
+    // `y`: a paused -Y scan or trunk scan resumes; a running trunk scan pauses where it is; a running -Y scan stops
+    // and a stopped one starts.
     DSD_APP_CMD_SCANNER_TOGGLE = 31,
 
     DSD_APP_CMD_PAYLOAD_TOGGLE = 40,
@@ -99,9 +102,13 @@ enum dsd_app_command_id {
     DSD_APP_CMD_WAV_TOGGLE = 214,
     DSD_APP_CMD_ENC_LOCKOUT_CLEAR = 215, // forget all encrypted-target lockouts
     // On-the-fly scan controls (#380): -Y rows or --trunk-scan targets, whichever is running
-    DSD_APP_CMD_SCAN_HOLD_TOGGLE = 216, // pause/resume rotation on the channel/target on air
+    // (a paused scan refuses them, CHANNEL_CYCLE's next included, until it resumes)
+    DSD_APP_CMD_SCAN_HOLD_TOGGLE = 216, // hold/release rotation on the channel/target on air
     DSD_APP_CMD_SCAN_AVOID = 217,       // avoid the channel/target on air for the session and step on
     DSD_APP_CMD_SCAN_AVOID_CLEAR = 218, // put every avoided channel/target back into the rotation
+    // Resume the paused -Y scan (the next row from its cursor) or trunk scan (the target it left); no payload. A
+    // running scan is left as it is, and with none paused nothing starts.
+    DSD_APP_CMD_SCAN_RESUME = 219,
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,
@@ -159,8 +166,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_RTL_ENABLE_INPUT = 480,
     DSD_APP_CMD_RTL_RESTART = 481,
     DSD_APP_CMD_RTL_SET_DEV = 482, // payload: int32_t index
-    // payload: uint32_t Hz; selects the CC during single-system P25 trunking.
-    // Refused during trunk scan; conventional/scanner frequency semantics are unchanged.
+    // payload: uint32_t Hz; selects the CC during single-system P25 trunking. Otherwise a tune the operator asked
+    // for: accepted (applied or pending), it pauses a running -Y scan or trunk scan, which keeps its list, cursor and
+    // session edits for SCAN_RESUME or `y`; refused or deferred, it changes nothing. A paused scan stays paused.
     DSD_APP_CMD_RTL_SET_FREQ = 483,
     DSD_APP_CMD_RTL_SET_GAIN = 484,        // payload: int32_t gain
     DSD_APP_CMD_RTL_SET_PPM = 485,         // payload: int32_t ppm
@@ -174,9 +182,10 @@ enum dsd_app_command_id {
     // with taps, the trunking gate is enforced at drain time, and an accepted tune resets
     // the decoder's auto-modulation votes and call state for re-acquisition.
     DSD_APP_CMD_MANUAL_TUNE = 492, // payload: uint32_t hz
-    // Hand the tuner back to the operator: trunking and conventional scanner mode both off,
-    // idempotent. Distinct from TRUNK_TOGGLE/SCANNER_TOGGLE, which cannot express "off" from a
-    // frontend that only sees whether *something* owns the tuner.
+    // Hand the tuner back to the operator, idempotent: trunking off, and a running -Y scan or trunk
+    // scan paused where it is (resumed by SCAN_RESUME or `y`); a paused scan stays paused. Distinct
+    // from TRUNK_TOGGLE/SCANNER_TOGGLE, which cannot express "off" from a frontend that only sees
+    // whether *something* owns the tuner.
     DSD_APP_CMD_TUNER_RELEASE = 493, // no payload
     // Set the modulation outright rather than cycling it. A view showing C4FM and
     // QPSK as two choices has to be able to ask for the one it is not on; a toggle
@@ -191,8 +200,9 @@ enum dsd_app_command_id {
     // "follow this system" as a choice has to be able to ask for the state it is not
     // in, and a flip makes that a guess about state that may already have moved.
     // Turning it on clears scanner mode, which is the same exclusion SCANNER_TOGGLE
-    // already applies in the other direction — both cannot own the tuner. Turning it
-    // off is deliberately narrow; TUNER_RELEASE remains the way to clear both at once.
+    // already applies in the other direction — both cannot own the tuner (a paused -Y scan
+    // ends). Turning it off is deliberately narrow; TUNER_RELEASE remains the way to clear both
+    // at once. Refused while a --trunk-scan coordinator exists, running or paused.
     DSD_APP_CMD_TRUNK_SET = 496,  // payload: int32_t on(0/1)
     DSD_APP_CMD_AIRSPY_SET = 497, // payload: dsd_app_airspy_setting_payload
     DSD_APP_CMD_AIRSPY_ENABLE_INPUT = 498,

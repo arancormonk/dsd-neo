@@ -415,6 +415,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `scan_hold_toggle` | – |
 | `scan_avoid` | – |
 | `scan_avoid_clear` | – |
+| `scan_resume` | – |
 | `quit` | – |
 | `force_priv_toggle` | – |
 | `force_rc4_toggle` | – |
