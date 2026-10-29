@@ -921,6 +921,30 @@ dsd_wav_temp_token_text(char* out, size_t out_size) {
 
 static long wav_file_get_size_or_negative(const char* filename);
 
+/* The last path component of @p path, either separator. */
+static const char*
+wav_temp_basename(const char* path) {
+    const char* base = path;
+    for (const char* p = path; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+    return base;
+}
+
+/* Whether @p token starts with 16 uppercase hex digits, the temp token's form. */
+static int
+wav_temp_token_hex(const char* token) {
+    for (int i = 0; i < 16; i++) {
+        const char c = token[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* The recording journal's id for a per-call segment, "<token>-<sequence>", read back from the temp name
    open_wav_file() gave it (so the open, its discard and its errors name one id); 0 for a name it did not make. */
 static int
@@ -929,12 +953,7 @@ wav_temp_id(const char* temp_filename, char* out, size_t out_size) {
     if (!temp_filename) {
         return 0;
     }
-    const char* base = temp_filename;
-    for (const char* p = temp_filename; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            base = p + 1;
-        }
-    }
+    const char* base = wav_temp_basename(temp_filename);
     if (strncmp(base, "TEMP_", 5) != 0) {
         return 0;
     }
@@ -951,11 +970,8 @@ wav_temp_id(const char* temp_filename, char* out, size_t out_size) {
         return 0;
     }
     const char* token = base + seq_start - 17;
-    for (int i = 0; i < 16; i++) {
-        const char c = token[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) {
-            return 0;
-        }
+    if (!wav_temp_token_hex(token)) {
+        return 0;
     }
     const int n = DSD_SNPRINTF(out, out_size, "%.16s-%.*s", token, (int)(len - seq_start), base + seq_start);
     if (n < 0 || (size_t)n >= out_size) {
@@ -1276,33 +1292,63 @@ wav_journal_published(const char* id, const char* path, const char* dir, const E
     wav_journal_publish(&rec);
 }
 
+/* What a per-call segment's journal records name (issue #708), read before its close. */
+typedef struct {
+    int on; /* a close with options while the journal is active */
+    char id[48];
+    int64_t duration_ms;
+    int rate;
+    int failed;
+} wav_close_journal;
+
+/* The id a journal record names: none for a segment whose temp name gave none. */
+static const char*
+wav_close_journal_id(const wav_close_journal* journal) {
+    return journal->id[0] ? journal->id : NULL;
+}
+
+/* Close the segment, reading what its journal records name first. 0 once closed (or with nothing to close); -1 when
+   the close failed, journaled and reported, the file keeping its temp name. */
+static int
+wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* dir, wav_close_journal* journal) {
+    if (journal->on) {
+        (void)wav_temp_id(wav_out_filename, journal->id, sizeof journal->id);
+        wav_segment_length(wav_file, &journal->duration_ms, &journal->rate);
+    }
+    if (wav_file == NULL || wav_segment_close(wav_file, &journal->failed) == 0) {
+        return 0;
+    }
+    /* The header may not hold what was written: the file keeps its temp name, as on a failed rename. */
+    if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_CLOSE)) {
+        LOG_WARN("Recording %s did not close cleanly; it keeps its temp name, and later close failures are "
+                 "counted, not logged\n",
+                 wav_out_filename ? wav_out_filename : "");
+    }
+    if (journal->on) {
+        wav_journal_error(wav_close_journal_id(journal), "close", wav_out_filename, dir);
+    }
+    return -1;
+}
+
+/* An empty segment (the header alone) at @p path: removed, and journaled as discarded. */
+static void
+wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
+    remove(path);
+    if (journal->on) {
+        wav_journal_discard(wav_close_journal_id(journal));
+    }
+}
+
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                       const Event_History_I* event_struct, time_t opened, int export_call, int analog,
                       const dsd_wav_owner* owner) {
     /* Only a close with options is journaled: the NFM teardown's (no options, no row) writes nothing. */
-    const int journal = opts != NULL && wav_journal_active();
-    char id[48] = {0};
-    int64_t duration_ms = 0;
-    int rate = 0;
-    int failed = 0;
-    if (journal) {
-        (void)wav_temp_id(wav_out_filename, id, sizeof id);
-        wav_segment_length(wav_file, &duration_ms, &rate);
-    }
-    if (wav_file != NULL) {
-        if (wav_segment_close(wav_file, &failed) != 0) {
-            /* The header may not hold what was written: the file keeps its temp name, as on a failed rename. */
-            if (dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_CLOSE)) {
-                LOG_WARN("Recording %s did not close cleanly; it keeps its temp name, and later close failures are "
-                         "counted, not logged\n",
-                         wav_out_filename ? wav_out_filename : "");
-            }
-            if (journal) {
-                wav_journal_error(id[0] ? id : NULL, "close", wav_out_filename, dir);
-            }
-            return NULL;
-        }
+    wav_close_journal journal;
+    DSD_MEMSET(&journal, 0, sizeof journal);
+    journal.on = opts != NULL && wav_journal_active();
+    if (wav_close_segment(wav_file, wav_out_filename, dir, &journal) != 0) {
+        return NULL;
     }
 
     if (wav_out_filename == NULL || wav_out_filename[0] == '\0') {
@@ -1320,10 +1366,7 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
     long size = wav_file_get_size_or_negative(wav_out_filename);
     if (size == 44) {
-        remove(wav_out_filename);
-        if (journal) {
-            wav_journal_discard(id[0] ? id : NULL);
-        }
+        wav_close_discard_empty(wav_out_filename, &journal);
         wav_file = NULL;
         return wav_file;
     }
@@ -1334,18 +1377,15 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
             LOG_ERROR("Error - could not rename wav file %s -> %s; later rename failures are counted, not logged\n",
                       wav_out_filename, new_filename);
         }
-        if (journal) {
-            wav_journal_error(id[0] ? id : NULL, "publish", wav_out_filename, dir);
+        if (journal.on) {
+            wav_journal_error(wav_close_journal_id(&journal), "publish", wav_out_filename, dir);
         }
         return NULL;
     }
 
     long final_size = wav_file_get_size_or_negative(new_filename);
     if (final_size == 44) {
-        remove(new_filename);
-        if (journal) {
-            wav_journal_discard(id[0] ? id : NULL);
-        }
+        wav_close_discard_empty(new_filename, &journal);
         wav_file = NULL;
         return wav_file;
     }
@@ -1356,9 +1396,9 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
             LOG_WARN("Rdio export failed for %s\n", new_filename);
         }
     }
-    if (journal) {
-        wav_journal_published(id, new_filename, dir, event_struct, opened, duration_ms, rate, owner, rdio_queued,
-                              failed);
+    if (journal.on) {
+        wav_journal_published(journal.id, new_filename, dir, event_struct, opened, journal.duration_ms, journal.rate,
+                              owner, rdio_queued, journal.failed);
     }
 
     wav_file = NULL;
