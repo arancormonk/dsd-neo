@@ -416,7 +416,12 @@ bool
 session_args_freq_valid(const QString& freqMhz) {
     bool ok = false;
     const double mhz = freqMhz.trimmed().toDouble(&ok);
-    return ok && std::isfinite(mhz) && mhz > 0.0;
+    if (!ok || !std::isfinite(mhz) || mhz <= 0.0 || mhz > 5000.0) {
+        return false;
+    }
+    /* Same MHz-to-Hz rounding as the session spec; the tuner takes 1..UINT32_MAX Hz. */
+    const long long hz = std::llround(mhz * 1e6);
+    return hz >= 1 && hz <= 4294967295LL;
 }
 
 bool
@@ -530,7 +535,7 @@ struct SessionArgsErrorText {
 /* One row per SessionArgsError value, in the enum's order (None has no text), so a value is its row's index. */
 constexpr SessionArgsErrorText k_error_texts[] = {
     {SessionArgsError::None, ""},
-    {SessionArgsError::Frequency, "Enter a positive frequency in MHz."},
+    {SessionArgsError::Frequency, "Enter a frequency from 0.000001 to 4294.967295 MHz"},
     {SessionArgsError::Ppm, "Enter a whole number for PPM."},
     {SessionArgsError::Hangtime, "Enter hang time in seconds from 0 to 30."},
     {SessionArgsError::KeyType, "Choose one encryption key type."},
