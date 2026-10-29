@@ -8143,7 +8143,9 @@ Qt Quick frontend (`src/ui/qt`):
     `CallRecordingPlayer.qml` above Hold: play/pause, position and seek, the parts (the one shown kept on its recording
     by path) with a Play all parts action (the host keeps no queue: a part that stopped at its end, path kept and
     position at its length, plays the next; a stop clears the path and ends it), Share (`recordingShareFailed()` worded
-    there), Save to file and Delete. A part the host reports "missing" leaves the block at once; closing the sheet stops
+    there), Save to file and Delete. A part the host reports "missing" leaves the block at once, until the store lists it as away
+    (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
+    storage is back, without reopening the sheet; closing the sheet stops
     what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record switch
     follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where
     it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows

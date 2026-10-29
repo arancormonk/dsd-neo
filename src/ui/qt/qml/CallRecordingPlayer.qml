@@ -15,7 +15,9 @@ import "Util.js" as Util
 // queue: Play all advances when a part stops at its end (the path kept and the
 // position at the length), and a stop the user asked for clears the path, which
 // ends Play all too. A recording the host found gone ("missing") leaves the
-// block at once; the store drops it from the row soon after.
+// block at once; the store drops it from the row soon after, or, when its
+// storage went, lists it as away, and from then on the store's availability
+// speaks for it: it shows again, away, and plays once the storage is back.
 Column {
     id: player
 
@@ -44,10 +46,15 @@ Column {
     // The recording that save is of: its end is reported only while that
     // recording is shown here, never on another row's sheet.
     property string savePath: ""
+    // The recording the host found missing, while that failure stands.
+    readonly property string missingPath: decoderHost.playbackState === 4 && decoderHost.playbackError === "missing" ? decoderHost.playbackPath : ""
+    // That recording once the store has listed it as away since: no longer
+    // left out, and its failure no longer read as this block's.
+    property string missingAway: ""
 
     readonly property var parts: {
         var list = [];
-        var gone = decoderHost.playbackState === 4 && decoderHost.playbackError === "missing" ? decoderHost.playbackPath : "";
+        var gone = missingPath !== missingAway ? missingPath : "";
         for (var i = 0; i < recordingList.length; i++) {
             if (recordingList[i].path !== gone)
                 list.push(recordingList[i]);
@@ -55,7 +62,7 @@ Column {
         return list;
     }
     readonly property var part: parts.length > 0 ? parts[Math.min(current, parts.length - 1)] : null
-    readonly property bool loaded: part !== null && decoderHost.playbackPath === part.path
+    readonly property bool loaded: part !== null && decoderHost.playbackPath === part.path && part.path !== missingAway
     // DecoderHost::PlaybackState: 0 stopped, 1 preparing, 2 playing, 3 paused, 4 failed.
     readonly property int playState: loaded ? decoderHost.playbackState : 0
     readonly property bool wantsPlay: playState === 1 || playState === 2
@@ -163,6 +170,7 @@ Column {
         currentPath = "";
         playAll = false;
         ownedPath = "";
+        missingAway = "";
         notice = "";
         noticeProblem = false;
     }
@@ -243,6 +251,17 @@ Column {
         playAll = false;
         recordings.deleteRecording(target.id);
         say("", false);
+    }
+
+    onMissingPathChanged: {
+        if (missingPath !== missingAway)
+            missingAway = "";
+    }
+    onRecordingListChanged: {
+        for (var i = 0; i < recordingList.length; i++) {
+            if (missingPath !== "" && recordingList[i].path === missingPath && recordingList[i].available === false)
+                missingAway = missingPath;
+        }
     }
 
     onPartsChanged: {

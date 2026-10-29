@@ -213,6 +213,31 @@ Item {
             compare(item("recordingPart0"), null, "one part left, no part list");
         }
 
+        // A recording found missing because its storage went: once the store
+        // lists it as away it shows again, and plays when the storage is back.
+        function test_storage_returns_after_missing() {
+            var uid = openWith([rec("t-1", pathA, 12000)]);
+            testContext.setHostReading("shareSupported", true);
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 4, 0, 0, "missing");
+            verify(!item("historyRecording").visible, "found gone, it leaves at once");
+            verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000)]));
+            verify(!item("historyRecording").visible, "the row read again, unchanged, keeps it out");
+            verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000, {available: false})]));
+            verify(item("historyRecording").visible, "listed as away, it shows again");
+            compare(item("recordingProblem").text, "The storage this recording is on isn't available right now.");
+            verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000, {available: true})]));
+            verify(item("historyRecording").visible, "the storage back, the recording is usable again");
+            verify(!item("recordingProblem").visible, "the failure from before is not read as a damaged file");
+            verify(item("recordingShare").enabled && item("recordingSave").enabled && item("recordingDelete").enabled);
+            compare(item("recordingPlayButton").accessibleName, "Play recording");
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().path, pathA);
+            testContext.publishPlayback(pathA, 4, 0, 0, "missing");
+            verify(!item("historyRecording").visible, "found gone again, it leaves again");
+        }
+
         function test_storage_away() {
             openWith([rec("t-1", pathA, 12000, {available: false})]);
             testContext.setHostReading("shareSupported", true);
