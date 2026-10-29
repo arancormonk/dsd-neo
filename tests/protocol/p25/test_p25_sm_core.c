@@ -39,6 +39,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -2122,7 +2123,7 @@ main(void) {
     s19.p2_sysid = 0x1A2;
     s19.p2_cc = 0x293;
     s19.p25_vc_cqpsk_pref = -1;
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);
 
@@ -2173,7 +2174,7 @@ main(void) {
     s20.p2_sysid = 0x1A2;
     s20.p2_cc = 0x293;
     s20.p25_vc_cqpsk_pref = -1;
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);
 

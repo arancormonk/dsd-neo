@@ -33,6 +33,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25p2_frame_internal.h"
+#include "test_env.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -475,7 +476,7 @@ static void
 set_p25p2_threshold(int threshold) {
     char value[16];
     DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
-    dsd_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
+    dsd_test_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
     dsd_neo_config_init();
 }
 
@@ -489,9 +490,9 @@ set_p25p2_threshold(int threshold) {
 static void
 set_p25_vc_grace(const char* seconds) {
     if (seconds) {
-        dsd_setenv("DSD_NEO_P25_VC_GRACE", seconds, 1);
+        dsd_test_setenv("DSD_NEO_P25_VC_GRACE", seconds, 1);
     } else {
-        (void)dsd_unsetenv("DSD_NEO_P25_VC_GRACE");
+        (void)dsd_test_unsetenv("DSD_NEO_P25_VC_GRACE");
     }
     dsd_neo_config_init();
 }

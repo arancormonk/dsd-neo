@@ -22,10 +22,10 @@
 
 static void
 clear_dmr_t3_env(void) {
-    (void)dsd_unsetenv("DSD_NEO_DMR_T3_STEP_HZ");
-    (void)dsd_unsetenv("DSD_NEO_DMR_T3_CC_FREQ");
-    (void)dsd_unsetenv("DSD_NEO_DMR_T3_CC_LCN");
-    (void)dsd_unsetenv("DSD_NEO_DMR_T3_START_LCN");
+    (void)dsd_test_unsetenv("DSD_NEO_DMR_T3_STEP_HZ");
+    (void)dsd_test_unsetenv("DSD_NEO_DMR_T3_CC_FREQ");
+    (void)dsd_test_unsetenv("DSD_NEO_DMR_T3_CC_LCN");
+    (void)dsd_test_unsetenv("DSD_NEO_DMR_T3_START_LCN");
 }
 
 static void
@@ -147,10 +147,10 @@ test_configured_step_and_anchor_are_accepted(void) {
     char path[DSD_TEST_PATH_MAX];
 
     clear_dmr_t3_env();
-    (void)dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", "12500", 1);
-    (void)dsd_setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.025M", 1);
-    (void)dsd_setenv("DSD_NEO_DMR_T3_CC_LCN", "10", 1);
-    (void)dsd_setenv("DSD_NEO_DMR_T3_START_LCN", "3", 1);
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_STEP_HZ", "12500", 1);
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.025M", 1);
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_LCN", "10", 1);
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_START_LCN", "3", 1);
     dsd_neo_config_init();
 
     write_temp_csv(path, "site,freq\nA,851012500\nB,851025000\nC,851037500\n");

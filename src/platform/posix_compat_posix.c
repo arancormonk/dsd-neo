@@ -28,16 +28,6 @@ extern char* mkdtemp(char* tmpl);
 #endif
 
 int
-dsd_setenv(const char* name, const char* value, int overwrite) {
-    return setenv(name, value, overwrite);
-}
-
-int
-dsd_unsetenv(const char* name) {
-    return unsetenv(name);
-}
-
-int
 dsd_mkdir(const char* path, int mode) {
     return mkdir(path, (mode_t)mode);
 }

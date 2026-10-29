@@ -3263,7 +3263,7 @@ static const char kModulationHeader[] = "id,type,frequency_hz,chan_csv,dwell_ms,
 static int
 stop_cqpsk_env_trunk_scan(dsd_opts* opts, dsd_state* state, const char* path) {
     const int rc = stop_outstanding_trunk_scan(opts, state, path);
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return rc;
 }
@@ -3287,7 +3287,7 @@ run_cqpsk_choice_case(const cqpsk_choice_case* c) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_CQPSK", c->cqpsk_env, 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", c->cqpsk_env, 1);
     dsd_neo_config_init();
     char targets[256];
     DSD_SNPRINTF(targets, sizeof targets, "fire,nfm-conventional,154330000,,250,250,,\n%s", c->digital_target);
@@ -3365,7 +3365,7 @@ test_trunk_scan_p25_target_without_modulation_behind_an_nfm_retune(void) {
         return 1;
     }
     const char* label = "p25 target without modulation behind an nfm retune";
-    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "0", 1);
     dsd_neo_config_init();
     /* -mq: the CQPSK lock a target with no modulation keeps. */
     opts->mod_c4fm = 0;
@@ -3431,7 +3431,7 @@ run_nfm_retune_fails_after_the_target_was_timed(const failed_after_timing_case* 
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "0", 1);
     dsd_neo_config_init();
     if (c->mq) {
         opts->mod_c4fm = 0;
@@ -3507,7 +3507,7 @@ run_resume_behind_an_outstanding_digital_family_retune(const resume_behind_digit
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "0", 1);
     dsd_neo_config_init();
     opts->mod_c4fm = 0;
     opts->mod_qpsk = 1;
@@ -3631,7 +3631,7 @@ test_typed_scan_width_skipped_under_channel_lpf_override(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     int rc = 0;
     reset_rtl_profile_fakes();
@@ -3663,7 +3663,7 @@ test_typed_scan_width_skipped_under_channel_lpf_override(void) {
     rc |= expect_true("default-width row tuned", g_rtl_tune_freq == 154530000U && g_rtl_analog_width_hz == 0);
     dsd_engine_channel_scan_leave(opts, state);
     state->rtl_ctx = NULL;
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
@@ -3683,7 +3683,7 @@ typed_scan_am_default_width_skipped_without_the_stream(int lpf_off) {
         return 1;
     }
     if (lpf_off) {
-        (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+        (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
         dsd_neo_config_init();
     }
     int rc = 0;
@@ -3715,7 +3715,7 @@ typed_scan_am_default_width_skipped_without_the_stream(int lpf_off) {
     dsd_engine_channel_scan_leave(opts, state);
     state->rtl_ctx = NULL;
     if (lpf_off) {
-        (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+        (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
         dsd_neo_config_init();
     }
     free_test_runtime(opts, state);

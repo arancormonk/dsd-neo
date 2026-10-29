@@ -48,6 +48,7 @@
 #include <string.h>
 #include "scan_analog_internal.h"
 #include "scan_step_untyped.h"
+#include "test_env.h"
 
 void dsd_key_set_test_alloc_fail_after(long count);
 
@@ -2223,7 +2224,7 @@ test_nfm_placeholder_rows_owe_nothing(void) {
  * on the unset default width still runs, and names nothing. */
 static void
 test_nfm_row_warnings_under_the_channel_lpf_override(void) {
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -2249,7 +2250,7 @@ test_nfm_row_warnings_under_the_channel_lpf_override(void) {
     free(state);
     free(opts);
     tunes = reset_count = 0;
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
 }
 

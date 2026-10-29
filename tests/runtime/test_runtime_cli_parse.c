@@ -1798,8 +1798,8 @@ test_bootstrap_treats_lone_ini_as_config(void) {
     initState(state);
 
     // Make test deterministic: avoid env-config interference and skip bootstrap UI.
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char cfg_path[1024];
     if (test_create_temp_ini(cfg_path, sizeof cfg_path) != 0) {
@@ -1885,8 +1885,8 @@ test_bootstrap_accepts_explicit_config_path_outside_cwd(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char cfg_path[1024];
     if (test_create_temp_ini_in_tmpdir_with_contents("[input]\n"
@@ -1952,8 +1952,8 @@ test_bootstrap_config_trunking_preserves_terminal_frontend(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char cfg_path[1024];
     if (test_create_temp_ini_in_tmpdir_with_contents("[input]\n"
@@ -2025,8 +2025,8 @@ test_bootstrap_config_trunking_preserves_N_terminal_alias(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"rtl\"\n"
@@ -2099,8 +2099,8 @@ test_bootstrap_missing_explicit_config_keeps_autosave_path(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char cfg_path[1024];
     if (test_create_temp_ini_in_tmpdir_with_contents("", cfg_path, sizeof cfg_path) != 0) {
@@ -2153,8 +2153,8 @@ test_bootstrap_rejects_too_long_explicit_config_path(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char too_long_path[3072];
     DSD_MEMSET(too_long_path, 'a', sizeof too_long_path);
@@ -2466,8 +2466,8 @@ bootstrap_capturing(int argc, char** argv, int* exit_rc) {
     }
     initOpts(opts);
     initState(state);
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
     g_unreachable_log[0] = '\0';
     int argc_effective = 0;
     *exit_rc = -1;
@@ -2657,8 +2657,8 @@ test_bootstrap_print_config_normalizes_soapy_shorthand(void) {
     initState(state);
 
     // Keep bootstrap deterministic and isolate from host configuration.
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char arg0[] = "dsd-neo";
     char arg1[] = "-i";
@@ -2711,8 +2711,8 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"pulse\"\n"
@@ -2798,8 +2798,8 @@ test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -2873,8 +2873,8 @@ test_bootstrap_inherited_trunk_scan_ignores_api_token_text(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -2938,8 +2938,8 @@ test_bootstrap_inherited_trunk_scan_allows_cli_channel_map(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -3018,8 +3018,8 @@ test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -3097,8 +3097,8 @@ test_bootstrap_inherited_trunk_scan_disables_for_positional_input(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -3161,8 +3161,8 @@ test_bootstrap_inherited_trunk_scan_disables_for_long_only_runtime_mode(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -3243,8 +3243,8 @@ test_bootstrap_inherited_trunk_scan_preserves_timing_overrides(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunk_scan]\n"
                              "enabled = true\n"
@@ -3326,8 +3326,8 @@ test_bootstrap_config_one_shots_skip_trunk_scan_runtime_validation(void) {
         initOpts(opts);
         initState(state);
 
-        (void)dsd_unsetenv("DSD_NEO_CONFIG");
-        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
         char arg0[] = "dsd-neo";
         char arg1[] = "--config";
@@ -3369,8 +3369,8 @@ test_bootstrap_profile_disables_autosave(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[profile.p25_trunk]\n"
                              "input.source = \"rtl\"\n"
@@ -3440,8 +3440,8 @@ test_bootstrap_missing_profile_errors_without_applying_config_or_cli(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"rtl\"\n"
@@ -3544,8 +3544,8 @@ test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[alerts]\n"
                              "enabled = false\n"
@@ -3941,8 +3941,8 @@ run_wav_mode_precedence_case(const wav_mode_precedence_case* tc) {
 /* The command line's WAV mode replaces the INI's, either way round, and opens nothing per-call while it is parsed. */
 static int
 test_cli_wav_mode_overrides_the_ini_recording_mode(void) {
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
     dsd_test_temp_cwd cwd;
     if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_wav_ini") != 0) {
         DSD_FPRINTF(stderr, "WAV mode precedence: temp working directory failed\n");
@@ -4035,8 +4035,8 @@ journal_rdio_delete_after_bootstrap(const char* tag, const char* ini, const char
    so the config the run saves on exit still has it on; without a journal the uploads are deleted. */
 static int
 test_wav_journal_keeps_uploads_and_the_delete_option(void) {
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
     static const char ini_delete[] = "[recording]\n"
                                      "rdio_mode = \"api\"\n"
                                      "rdio_api_delete_after_upload = true\n";
@@ -5663,10 +5663,10 @@ api_parse(int argc, char** argv) {
 
 static void
 api_env_clear(void) {
-    (void)dsd_unsetenv("DSD_NEO_API_PORT");
-    (void)dsd_unsetenv("DSD_NEO_API_BIND");
-    (void)dsd_unsetenv("DSD_NEO_API_TOKEN");
-    (void)dsd_unsetenv("DSD_NEO_API_TOKEN_FILE");
+    (void)dsd_test_unsetenv("DSD_NEO_API_PORT");
+    (void)dsd_test_unsetenv("DSD_NEO_API_BIND");
+    (void)dsd_test_unsetenv("DSD_NEO_API_TOKEN");
+    (void)dsd_test_unsetenv("DSD_NEO_API_TOKEN_FILE");
 }
 
 /* Write @p contents to a fresh temp file; returns 0 with its path in @p path. */
@@ -5730,7 +5730,7 @@ test_api_options(void) {
         test_rc |= api_expect("--api 65536", &r, DSD_PARSE_ERROR, 0, "", "");
     }
     /* The environment fills in only what the CLI left out, and an explicit --api 0 wins over it. */
-    (void)dsd_setenv("DSD_NEO_API_PORT", "7000", 1);
+    (void)dsd_test_setenv("DSD_NEO_API_PORT", "7000", 1);
     {
         char* argv[] = {a0, NULL};
         api_parse_result r = api_parse(1, argv);
@@ -5741,7 +5741,7 @@ test_api_options(void) {
         api_parse_result r = api_parse(3, argv);
         test_rc |= api_expect("--api 0 over DSD_NEO_API_PORT", &r, DSD_PARSE_CONTINUE, 0, "", "");
     }
-    (void)dsd_setenv("DSD_NEO_API_PORT", "70000", 1);
+    (void)dsd_test_setenv("DSD_NEO_API_PORT", "70000", 1);
     {
         char* argv[] = {a0, NULL};
         api_parse_result r = api_parse(1, argv);
@@ -5765,13 +5765,13 @@ test_api_options(void) {
         api_parse_result r = api_parse(5, argv);
         test_rc |= api_expect("non-numeric bind", &r, DSD_PARSE_ERROR, 0, "", "");
     }
-    (void)dsd_setenv("DSD_NEO_API_BIND", "10.0.0.1", 1);
+    (void)dsd_test_setenv("DSD_NEO_API_BIND", "10.0.0.1", 1);
     {
         char* argv[] = {a0, api, port9911, NULL};
         api_parse_result r = api_parse(3, argv);
         test_rc |= api_expect("DSD_NEO_API_BIND without token", &r, DSD_PARSE_ERROR, 0, "", "");
     }
-    (void)dsd_setenv("DSD_NEO_API_TOKEN", "envtoken", 1);
+    (void)dsd_test_setenv("DSD_NEO_API_TOKEN", "envtoken", 1);
     {
         char* argv[] = {a0, api, port9911, NULL};
         api_parse_result r = api_parse(3, argv);
@@ -5860,8 +5860,8 @@ test_api_options(void) {
         }
         initOpts(bopts);
         initState(bstate);
-        (void)dsd_unsetenv("DSD_NEO_CONFIG");
-        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
         char print_config[] = "--print-config";
         char* argv[] = {a0, api, port9911, token_opt, print_config, NULL};
         int argc_effective = 0;
@@ -5880,7 +5880,7 @@ test_api_options(void) {
     }
 
     /* The fallbacks are read only when the API is on: a stale token file in the environment does not stop a run. */
-    (void)dsd_setenv("DSD_NEO_API_TOKEN_FILE", missing, 1);
+    (void)dsd_test_setenv("DSD_NEO_API_TOKEN_FILE", missing, 1);
     {
         char* argv[] = {a0, NULL};
         api_parse_result r = api_parse(1, argv);
@@ -7888,8 +7888,8 @@ test_bootstrap_config_file_rate_survives_cli_provoice_preset(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"file\"\n"
@@ -7961,8 +7961,8 @@ test_bootstrap_compact_s_rate_override_clears_config_file_rate(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"file\"\n"
@@ -9202,8 +9202,8 @@ test_bootstrap_inherited_scan_voice_preserves_timing_overrides(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[trunking]\n"
                              "scan_voice_only = true\n"
@@ -9469,8 +9469,8 @@ test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
         initOpts(opts);
         initState(state);
 
-        (void)dsd_unsetenv("DSD_NEO_CONFIG");
-        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
         char cfg_path[1024];
         if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
@@ -10218,8 +10218,8 @@ test_bootstrap_analog_config_and_cli_override(void) {
         }
         initOpts(opts);
         initState(state);
-        (void)dsd_unsetenv("DSD_NEO_CONFIG");
-        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
         char cfg_path[1024];
         if (test_create_temp_ini_with_contents(cases[i].ini, cfg_path, sizeof cfg_path) != 0) {
@@ -10269,8 +10269,8 @@ test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"file\"\n"
@@ -10342,8 +10342,8 @@ test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"file\"\n"
@@ -10416,8 +10416,8 @@ test_bootstrap_cli_file_override_ignores_config_file_rate_timing(void) {
     initOpts(opts);
     initState(state);
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"file\"\n"
@@ -10512,8 +10512,8 @@ test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open(void) {
         return 1;
     }
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     static const char* ini = "[input]\n"
                              "source = \"file\"\n"
@@ -10633,8 +10633,8 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
         return 1;
     }
 
-    (void)dsd_unsetenv("DSD_NEO_CONFIG");
-    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
 
     char ini[1536];
     DSD_SNPRINTF(ini, sizeof ini,

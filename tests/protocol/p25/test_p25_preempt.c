@@ -30,6 +30,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+#include "test_env.h"
 
 #define CH_HELD   0x100A /* 851.1250 MHz */
 #define CH_OTHER  0x100B /* 851.1375 MHz */
@@ -83,8 +84,8 @@ set_clock_s(double s) {
 
 static void
 set_dwell_cooldown_ms(const char* dwell, const char* cooldown) {
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", dwell, 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", cooldown, 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", dwell, 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", cooldown, 1);
 }
 
 static int

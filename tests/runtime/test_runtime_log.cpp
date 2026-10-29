@@ -14,6 +14,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
+#include "test_env.h"
 
 typedef struct capture_stderr {
     FILE* file;
@@ -22,7 +23,7 @@ typedef struct capture_stderr {
 
 static void
 set_env_flag(const char* name, const char* value) {
-    int rc = value != nullptr ? dsd_setenv(name, value, 1) : dsd_unsetenv(name);
+    int rc = value != nullptr ? dsd_test_setenv(name, value, 1) : dsd_test_unsetenv(name);
     assert(rc == 0);
 }
 

@@ -19,6 +19,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
+#include "test_env.h"
 
 #define FLOAT_TOL 0.01f
 
@@ -604,7 +605,7 @@ test_warm_start_disabled_env(void) {
         dsd_symbol_history_push(&state, (i < 2) ? -3.0f : 3.0f);
     }
 
-    (void)dsd_setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
     dsd_neo_config_init();
 
     dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 4);
@@ -612,7 +613,7 @@ test_warm_start_disabled_env(void) {
     result = dsd_sync_warm_start_center_outer_only(&state, 4);
     check_int("center disabled", DSD_WARM_START_DISABLED, result);
 
-    (void)dsd_unsetenv("DSD_NEO_SYNC_WARMSTART");
+    (void)dsd_test_unsetenv("DSD_NEO_SYNC_WARMSTART");
     dsd_neo_config_init();
     printf("test_warm_start_disabled_env: passed\n\n");
 }

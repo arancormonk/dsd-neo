@@ -27,28 +27,6 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * Environment Variables (setenv/unsetenv)
- * ============================================================================ */
-
-/**
- * @brief Set an environment variable.
- *
- * @param name      Variable name.
- * @param value     Variable value.
- * @param overwrite If non-zero, overwrite existing value.
- * @return 0 on success, -1 on error.
- */
-int dsd_setenv(const char* name, const char* value, int overwrite);
-
-/**
- * @brief Unset an environment variable.
- *
- * @param name  Variable name.
- * @return 0 on success, -1 on error.
- */
-int dsd_unsetenv(const char* name);
-
-/* ============================================================================
  * String Functions (strdup, strtok_r, strcasecmp, strncasecmp)
  * ============================================================================ */
 

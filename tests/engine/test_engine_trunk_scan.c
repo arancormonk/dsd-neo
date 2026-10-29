@@ -13055,7 +13055,7 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     }
     reset_scan_opts_state(&opts, &state);
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
@@ -13081,7 +13081,7 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
     g_scan_tune_refuses_unfit_width = 0;
     g_scan_dsp_rate_hz = 0;
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);

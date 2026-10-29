@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 
 /* NaN and infinity built from their bit patterns: the global fast-math option warns on NAN and INFINITY, and these
  * cases check that the stream's own guards reject the values whatever the build mode. */
@@ -997,7 +998,7 @@ expect_item3_landings(const char* cqpsk_env, const item3_landing* want, size_t c
     if (count == 0U || count > kMaxTargets) {
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
     dsd_neo_config_init();
     rtl_stream_test_retune_step steps[2U * kMaxTargets];
     DSD_MEMSET(steps, 0, sizeof steps);
@@ -1044,7 +1045,7 @@ expect_item3_landings(const char* cqpsk_env, const item3_landing* want, size_t c
         DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s: %s TED", cqpsk_env, want[i].name);
         failed |= expect_int_eq(label, digital->applied_ted_sps, kLandingTedSps);
     }
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return failed;
 }
@@ -1123,7 +1124,7 @@ expect_digital_front_end_landing(const char* stage, const rtl_stream_test_retune
 static int
 expect_digital_front_end_landings(const char* cqpsk_env, int from_profile, const digital_front_end_landing* attached,
                                   const digital_front_end_landing* unattached, int external_backend) {
-    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
     dsd_neo_config_init();
     const rtl_stream_test_retune_step steps[] = {
         {-1, DSD_ANALOG_DEMOD_FM, 0, from_profile, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
@@ -1148,7 +1149,7 @@ expect_digital_front_end_landings(const char* cqpsk_env, int from_profile, const
     failed |= expect_digital_front_end_landing(label, &r[1], attached);
     DSD_SNPRINTF(label, sizeof label, "DSD_NEO_CQPSK=%s, %s: P25 target without a family", cqpsk_env, path);
     failed |= expect_digital_front_end_landing(label, &r[3], unattached);
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return failed;
 }
@@ -1201,7 +1202,7 @@ test_external_backend_retune_lands_where_timed(void) {
     failed |= expect_digital_front_end_landings("1", RTL_STREAM_TEST_SYMBOL_DMR_FSK_EXPLICIT, &on_attached,
                                                 &on_unattached, 1);
 
-    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "0", 1);
     dsd_neo_config_init();
     const rtl_stream_test_retune_step steps[] = {
         {-1, DSD_ANALOG_DEMOD_FM, 0, RTL_STREAM_TEST_SYMBOL_P25_CQPSK_EXPLICIT, -1, -1, RTL_STREAM_TEST_QUEUED_NONE, 0},
@@ -1226,7 +1227,7 @@ test_external_backend_retune_lands_where_timed(void) {
     failed |= expect_int_eq("external backend: dmr target after the nfm target predicted rate",
                             r[3].predicted_output_rate, 48000);
     failed |= expect_digital_front_end_landing("external backend: dmr target after the nfm target", &r[3], &dmr);
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return failed;
 }
@@ -1386,7 +1387,7 @@ static int
 expect_live_landing(const char* stage, const char* cqpsk_env, const rtl_stream_test_live_landing_case* c,
                     const live_landing_want* want, int predicted, int outcome,
                     rtl_stream_test_live_landing_result* out) {
-    (void)dsd_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", cqpsk_env, 1);
     dsd_neo_config_init();
     DSD_MEMSET(out, 0, sizeof *out);
     char label[192];
@@ -1415,7 +1416,7 @@ expect_live_landing(const char* stage, const char* cqpsk_env, const rtl_stream_t
     failed |= expect_int_eq(label, out->request_outcome, outcome);
     DSD_SNPRINTF(label, sizeof label, "%s: nothing outstanding once landed", stage);
     failed |= expect_int_eq(label, out->outstanding_after, 0);
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return failed;
 }
@@ -1797,7 +1798,7 @@ usb_gain_fake_init(rtl_device_test_usb_gain_fake* fake, const int* gains, size_t
 /* The runtime config's RTL digital AGC under automatic gain. */
 static void
 usb_gain_set_digital_agc(int on) {
-    (void)dsd_setenv("DSD_NEO_RTL_AGC", on ? "1" : "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_RTL_AGC", on ? "1" : "0", 1);
     dsd_neo_config_init();
 }
 
@@ -2050,7 +2051,7 @@ test_usb_manual_gain_partial_failure_rolls_back(void) {
     /* From automatic gain: the digital AGC write and the manual mode take, the tuner refuses 28.0 dB. With two verified
      * attempts, each writes register 0x19, the mode and the gain; the rollback then writes the mode and register 0x19
      * once more. */
-    (void)dsd_setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "2", 1);
+    (void)dsd_test_setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "2", 1);
     dsd_neo_config_init();
     int failed = expect_int_eq("auto gain rc", rtl_device_set_gain(dev, kAutoGain), 0);
     fake.gain_fault.fail_value_set = 1;
@@ -2063,7 +2064,7 @@ test_usb_manual_gain_partial_failure_rolls_back(void) {
     failed |= expect_int_eq("refused gain from auto: register 0x19 writes", fake.reg19_calls - reg19_calls, 3);
     failed |= expect_int_eq("refused gain from auto: mode writes", fake.mode_calls - mode_calls, 3);
     failed |= expect_int_eq("refused gain from auto: gain writes", fake.gain_calls - gain_calls, 2);
-    (void)dsd_unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    (void)dsd_test_unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
     dsd_neo_config_init();
     failed |= expect_dongle("refused gain from auto rolled back", &fake, kReg19DigitalAgc, 0, 0);
     failed |= expect_reported_gain("refused gain from auto", dev, 0, 0);
@@ -2923,7 +2924,7 @@ main(void) {
     /* Issue #518 follow-up: the supervisor's on/off is set when the stream opens, before its workers run. Its first
      * block no longer loads the environment default over a setting made since; an explicit setting survives a reopen
      * until the default changes (the terminal toggles it while no stream runs); a source it cannot drive opens off. */
-    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
     dsd_neo_config_init();
     int flag = -1;
     failed |= expect_int_eq("first block rc", rtl_stream_test_autogain_first_block_keeps_flag(0, &flag), 0);
@@ -2940,14 +2941,14 @@ main(void) {
     (void)rtl_stream_test_open_tuner_autogain(0, &flag);
     failed |= expect_int_eq("back on a tuner rc", rtl_stream_test_open_tuner_autogain(1, &flag), 0);
     failed |= expect_int_eq("back on a tuner the explicit on returns", flag, 1);
-    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TUNER_AUTOGAIN", "0", 1);
     dsd_neo_config_init();
     failed |= expect_int_eq("changed default rc", rtl_stream_test_open_tuner_autogain(1, &flag), 0);
     failed |= expect_int_eq("a changed default replaces the explicit setting", flag, 0);
     /* A scan's enforcement is not the operator's setting: the next open goes back to the default or to the operator's
      * last explicit setting. */
     rtl_stream_test_reset_tuner_autogain();
-    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
     dsd_neo_config_init();
     rtl_stream_enforce_tuner_autogain(0);
     failed |= expect_int_eq("enforced off is in force", rtl_stream_get_tuner_autogain(), 0);
@@ -2957,7 +2958,7 @@ main(void) {
     rtl_stream_enforce_tuner_autogain(1);
     (void)rtl_stream_test_open_tuner_autogain(1, &flag);
     failed |= expect_int_eq("an open after the scan's on keeps the operator's off", flag, 0);
-    (void)dsd_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
+    (void)dsd_test_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
     dsd_neo_config_init();
     rtl_stream_test_reset_tuner_autogain();
 
@@ -3017,7 +3018,7 @@ main(void) {
     failed |= test_usb_nearest_gain_lookup_failure_is_error();
     failed |= test_usb_manual_gain_partial_failure_rolls_back();
     failed |= test_usb_rollback_failure_marks_unknown();
-    (void)dsd_unsetenv("DSD_NEO_RTL_AGC");
+    (void)dsd_test_unsetenv("DSD_NEO_RTL_AGC");
     dsd_neo_config_init();
 
     // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.

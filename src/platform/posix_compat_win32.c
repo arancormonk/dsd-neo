@@ -136,38 +136,6 @@ getopt(int argc, char* const argv[], const char* optstring) {
 #endif /* DSD_COMPILER_MSVC */
 
 int
-dsd_setenv(const char* name, const char* value, int overwrite) {
-    if (name == NULL || value == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (!overwrite) {
-        /* Check if variable already exists */
-        size_t required = 0;
-        if (getenv_s(&required, NULL, 0, name) == 0 && required > 0) {
-            return 0; /* Already exists, don't overwrite */
-        }
-    }
-    if (_putenv_s(name, value) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-int
-dsd_unsetenv(const char* name) {
-    if (name == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-    /* Setting to empty string removes the variable */
-    if (_putenv_s(name, "") != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-int
 dsd_mkdir(const char* path, int mode) {
     (void)mode; /* Windows ignores mode */
     return _mkdir(path);

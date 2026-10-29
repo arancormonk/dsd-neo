@@ -100,7 +100,7 @@ fi
 # outside the scan targets because they intentionally contain violations.
 # semgrep --test takes one target, so each fixture runs on its own.
 if [[ $STRICT -eq 1 && $CUSTOM_CONFIGS -eq 0 ]]; then
-  for fixture in semgrep/dsd-neo.c semgrep/dsd-neo.cpp semgrep/dsd-neo.js; do
+  for fixture in semgrep/dsd-neo.c semgrep/dsd-neo.cpp semgrep/dsd-neo.js semgrep/dsd-neo.kt; do
     semgrep --test --metrics=off --disable-version-check --config semgrep/dsd-neo.yml "$fixture"
   done
 fi

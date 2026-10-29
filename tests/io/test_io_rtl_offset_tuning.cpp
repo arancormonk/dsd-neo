@@ -27,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 
 struct rtl_device;
 
@@ -86,14 +87,14 @@ offs_freq_for_rate(uint32_t rate_hz) {
 void
 set_runtime_env(const char* tuner_bw, const char* offset_tuning) {
     if (tuner_bw) {
-        (void)dsd_setenv("DSD_NEO_TUNER_BW_HZ", tuner_bw, 1);
+        (void)dsd_test_setenv("DSD_NEO_TUNER_BW_HZ", tuner_bw, 1);
     } else {
-        (void)dsd_unsetenv("DSD_NEO_TUNER_BW_HZ");
+        (void)dsd_test_unsetenv("DSD_NEO_TUNER_BW_HZ");
     }
     if (offset_tuning) {
-        (void)dsd_setenv("DSD_NEO_RTL_OFFSET_TUNING", offset_tuning, 1);
+        (void)dsd_test_setenv("DSD_NEO_RTL_OFFSET_TUNING", offset_tuning, 1);
     } else {
-        (void)dsd_unsetenv("DSD_NEO_RTL_OFFSET_TUNING");
+        (void)dsd_test_unsetenv("DSD_NEO_RTL_OFFSET_TUNING");
     }
     dsd_neo_config_init();
 }

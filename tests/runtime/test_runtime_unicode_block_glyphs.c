@@ -14,10 +14,11 @@
 #if DSD_PLATFORM_WIN_NATIVE
 #include <windows.h>
 #endif
+#include "test_env.h"
 
 static void
 set_env_flag(const char* name, const char* value) {
-    int rc = value ? dsd_setenv(name, value, 1) : dsd_unsetenv(name);
+    int rc = value ? dsd_test_setenv(name, value, 1) : dsd_test_unsetenv(name);
     assert(rc == 0);
 }
 

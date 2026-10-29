@@ -94,3 +94,52 @@ c_named_domain_reads(struct clock_fixture* fixture, struct clock_fixture copy, c
     const char* spelled = "time(NULL)";
     consume(real, decoded_ms, real_ms, real_wall_s, field, hooked, spelled);
 }
+
+void
+c_environment_writes(char* entry, const char* name) {
+    // ruleid: dsd-neo.no-environment-write
+    setenv(name, "1", 1);
+    // ruleid: dsd-neo.no-environment-write
+    unsetenv(name);
+    // ruleid: dsd-neo.no-environment-write
+    putenv(entry);
+    // ruleid: dsd-neo.no-environment-write
+    clearenv();
+    // ruleid: dsd-neo.no-environment-write
+    _putenv_s(name, "1");
+    // ruleid: dsd-neo.no-environment-write
+    SetEnvironmentVariableA(name, "1");
+    // ruleid: dsd-neo.no-environment-write
+    dsd_setenv(name, "1", 1);
+    // ruleid: dsd-neo.no-environment-write
+    dsd_unsetenv(name);
+    // An override in the store is not a write.
+    // ok: dsd-neo.no-environment-write
+    dsd_env_set(DSD_ENV_LAYER_SESSION, name, "1");
+    // ok: dsd-neo.no-environment-write
+    dsd_env_set(DSD_ENV_LAYER_SESSION, name, NULL);
+    // ok: dsd-neo.no-environment-write
+    dsd_env_clear_layer(DSD_ENV_LAYER_SESSION);
+}
+
+void
+c_environment_reads(const char* name, char* out, size_t out_size) {
+    size_t required = 0;
+    char* copy = NULL;
+    // ruleid: dsd-neo.env-read-through-store
+    const char* a = getenv(name);
+    // ruleid: dsd-neo.env-read-through-store
+    const char* b = secure_getenv(name);
+    // ruleid: dsd-neo.env-read-through-store
+    (void)getenv_s(&required, out, out_size, name);
+    // ruleid: dsd-neo.env-read-through-store
+    (void)_dupenv_s(&copy, &required, name);
+    // ruleid: dsd-neo.env-read-through-store
+    (void)GetEnvironmentVariableA(name, out, (DWORD)out_size);
+    // The store, and the runtime forwarder over it, apply the overrides.
+    // ok: dsd-neo.env-read-through-store
+    const char* c = dsd_env_get(name);
+    // ok: dsd-neo.env-read-through-store
+    const char* d = dsd_neo_env_get(name);
+    consume(a, b, c, d, copy);
+}

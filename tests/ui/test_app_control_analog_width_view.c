@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_env.h"
 
 static void
 expect_reading(const dsd_app_analog_width_view* view, const char* want) {
@@ -447,13 +448,13 @@ main(void) {
     assert(view.width_hz == dsd_channel_lpf_legacy_wide_width_hz(128000) && view.dsp_limited);
     assert(view.width_hz > 70000 && view.width_hz < 90000);
     /* ...and with DSD_NEO_CHANNEL_LPF=0 no channel filter runs there: the rate itself. */
-    assert(dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1) == 0);
+    assert(dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1) == 0);
     dsd_neo_config_init();
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == 128000 && view.dsp_limited);
     expect_reading(&view, "128 kHz (DSP-limited)");
     /* DSD_NEO_CHANNEL_LPF=1 turns the filter on below 20 kHz too, where the rate cannot realize the default either. */
-    assert(dsd_setenv("DSD_NEO_CHANNEL_LPF", "1", 1) == 0);
+    assert(dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "1", 1) == 0);
     dsd_neo_config_init();
     m = monitor_metrics(12500, 0, 12000);
     m.output_kind = DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK;
@@ -463,7 +464,7 @@ main(void) {
     m.channel_lpf_default = DSD_FRONTEND_CHANNEL_LPF_DEFAULT_OFF;
     assert(dsd_app_analog_width_view_get(opts, state, &m, &view) == 0);
     assert(view.width_hz == 12000 && view.dsp_limited);
-    assert(dsd_unsetenv("DSD_NEO_CHANNEL_LPF") == 0);
+    assert(dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF") == 0);
     dsd_neo_config_init();
 
     /* The stream decided the filter when its configuration started, from the rate it started at, and keeps that

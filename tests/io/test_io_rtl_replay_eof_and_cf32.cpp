@@ -3775,14 +3775,14 @@ test_replay_keeps_tuner_autogain_off(void) {
     if (rc != 0) {
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_TUNER_AUTOGAIN", "1", 1);
     dsd_neo_config_init();
 
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
     if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
         stop_and_destroy_stream(ctx);
-        (void)dsd_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
+        (void)dsd_test_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
         dsd_neo_config_init();
         return 1;
     }
@@ -3796,7 +3796,7 @@ test_replay_keeps_tuner_autogain_off(void) {
                       rtl_stream_test_autogain_supervised_blocks() == supervised_before);
     rtl_stream_set_tuner_autogain(0);
     stop_and_destroy_stream(ctx);
-    (void)dsd_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
+    (void)dsd_test_unsetenv("DSD_NEO_TUNER_AUTOGAIN");
     dsd_neo_config_init();
     return rc;
 }

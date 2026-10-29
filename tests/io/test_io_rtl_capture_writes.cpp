@@ -50,6 +50,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
+#include "test_env.h"
 
 struct rtl_device;
 
@@ -806,8 +807,8 @@ test_failed_rollback_stops_stream(void) {
 
 int
 main(int argc, char** argv) {
-    (void)dsd_unsetenv("DSD_NEO_TUNER_BW_HZ");
-    (void)dsd_unsetenv("DSD_NEO_RTL_OFFSET_TUNING");
+    (void)dsd_test_unsetenv("DSD_NEO_TUNER_BW_HZ");
+    (void)dsd_test_unsetenv("DSD_NEO_RTL_OFFSET_TUNING");
     dsd_neo_config_init();
     rtl_device_test_set_open_fd_failure_hook(fake_open_fd);
     rtl_device_test_set_fd_reset_hook(fake_fd_reset);

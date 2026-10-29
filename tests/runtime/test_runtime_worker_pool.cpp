@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <thread>
+#include "test_env.h"
 
 struct demod_state;
 
@@ -39,9 +40,9 @@ state_key(void* storage) {
 static void
 set_mt_config(const char* value) {
     if (value != nullptr) {
-        dsd_setenv("DSD_NEO_MT", value, 1);
+        dsd_test_setenv("DSD_NEO_MT", value, 1);
     } else {
-        dsd_unsetenv("DSD_NEO_MT");
+        dsd_test_unsetenv("DSD_NEO_MT");
     }
     dsd_neo_config_init();
 }
@@ -106,7 +107,7 @@ int
 main(void) {
     test_disabled_mode_runs_synchronously();
     test_enabled_mode_runs_and_tears_down();
-    dsd_unsetenv("DSD_NEO_MT");
+    dsd_test_unsetenv("DSD_NEO_MT");
     dsd_neo_config_init();
     return 0;
 }

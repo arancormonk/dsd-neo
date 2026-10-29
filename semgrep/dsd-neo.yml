@@ -53,6 +53,114 @@ rules:
       - pattern: posix_spawn(...)
       - pattern: posix_spawnp(...)
 
+  # #782: the process environment is not thread-safe. On Android's bionic, adding a variable can reallocate and free
+  # the environ array another thread's getenv() or localtime_r() is walking. Nothing in the program writes it; a
+  # running program overrides a variable through <dsd-neo/platform/env.h>. Tests seed it through
+  # tests/test_support/test_env.h before they start threads.
+  - id: dsd-neo.no-environment-write
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Do not write the process environment: another thread may be reading it, and on Android an added variable can
+      free the array under that read. Set an override with dsd_env_set() (<dsd-neo/platform/env.h>), which every
+      in-process reader sees through dsd_env_get().
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+        # Qt's own input, QV4_GC_TIMELIMIT, which Qt reads from the process environment when it builds a QML engine.
+        # Only tests and the Qt Quick Test setup call it, before any thread starts; the Android app sets the variable
+        # in QmlGcPolicy.kt instead, and android_main_writes_no_environment (tests/android/run_jvm_tests.py) keeps
+        # it out of android/main.cpp.
+        - /src/ui/qt/qml_gc_policy.h
+    pattern-either:
+      - pattern: setenv(...)
+      - pattern: ::setenv(...)
+      - pattern: unsetenv(...)
+      - pattern: ::unsetenv(...)
+      - pattern: putenv(...)
+      - pattern: ::putenv(...)
+      - pattern: clearenv(...)
+      - pattern: _putenv(...)
+      - pattern: _putenv_s(...)
+      - pattern: _wputenv(...)
+      - pattern: _wputenv_s(...)
+      - pattern: SetEnvironmentVariable(...)
+      - pattern: SetEnvironmentVariableA(...)
+      - pattern: SetEnvironmentVariableW(...)
+      - pattern: qputenv(...)
+      - pattern: qunsetenv(...)
+      # The wrappers that used to write it, in case one comes back.
+      - pattern: dsd_setenv(...)
+      - pattern: dsd_unsetenv(...)
+
+  # #782: every in-process reader goes through the override store, so an option, INI key or menu override applies
+  # wherever the variable is read, and only the store reads the process environment.
+  - id: dsd-neo.env-read-through-store
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Read environment variables with dsd_env_get() (<dsd-neo/platform/env.h>): it applies the session and host
+      overrides that options, the INI file, menus and an embedding host set, then falls back to the process
+      environment.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+        # The store itself: the one reader of the process environment.
+        - /src/platform/env.c
+        # Qt's own input, QV4_GC_TIMELIMIT: Qt reads it from the process environment, so the policy must too.
+        - /src/ui/qt/qml_gc_policy.h
+    pattern-either:
+      - pattern: getenv(...)
+      - pattern: std::getenv(...)
+      - pattern: ::getenv(...)
+      - pattern: secure_getenv(...)
+      - pattern: getenv_s(...)
+      - pattern: _dupenv_s(...)
+      - pattern: _wgetenv(...)
+      - pattern: _wgetenv_s(...)
+      - pattern: GetEnvironmentVariable(...)
+      - pattern: GetEnvironmentVariableA(...)
+      - pattern: GetEnvironmentVariableW(...)
+      - pattern: qgetenv(...)
+      - pattern: qEnvironmentVariable(...)
+      - pattern: qEnvironmentVariableIntValue(...)
+      - pattern: qEnvironmentVariableIsSet(...)
+      - pattern: qEnvironmentVariableIsEmpty(...)
+
+  # #782: the Android app writes the process environment only for Qt's own inputs, and only before
+  # super.onCreate() starts Qt's main() (a11y_bridge_order in tests/android/run_jvm_tests.py pins that order).
+  - id: dsd-neo.no-environment-write-kotlin
+    languages: [kotlin]
+    severity: ERROR
+    message: >-
+      Do not write the process environment from the app: once super.onCreate() starts Qt's main(), its thread reads
+      the environment, and an added variable can free the array under that read. Pass values to native code through
+      DsdNative instead; only QmlGcPolicy.kt and AccessibilityBridge.kt set Qt's own inputs, before Qt starts.
+    paths:
+      include:
+        - /android/**
+      exclude:
+        - /android/third_party/**
+        - /android/package/src/io/github/arancormonk/dsdneo/QmlGcPolicy.kt
+        - /android/package/src/io/github/arancormonk/dsdneo/AccessibilityBridge.kt
+    pattern-either:
+      - pattern: Os.setenv(...)
+      - pattern: Os.unsetenv(...)
+      - pattern: android.system.Os.setenv(...)
+      - pattern: android.system.Os.unsetenv(...)
+
   - id: dsd-neo.no-static-array-parameter-bounds
     languages: [generic]
     severity: ERROR

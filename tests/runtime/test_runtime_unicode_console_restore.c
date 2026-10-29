@@ -17,11 +17,12 @@
 #include <stdio.h>
 #include <windows.h>
 #endif
+#include "test_env.h"
 
 int
 main(void) {
-    assert(dsd_unsetenv("DSD_FORCE_ASCII") == 0);
-    assert(dsd_unsetenv("DSD_FORCE_UTF8") == 0);
+    assert(dsd_test_unsetenv("DSD_FORCE_ASCII") == 0);
+    assert(dsd_test_unsetenv("DSD_FORCE_UTF8") == 0);
 
 #if DSD_PLATFORM_WIN_NATIVE
     const UINT original_output = GetConsoleOutputCP();

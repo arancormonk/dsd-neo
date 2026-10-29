@@ -2109,7 +2109,7 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     rc |= expect_int_eq("DSP CQPSK toggle enables mode", cq, 1);
 
     rtl_stream_toggle_iq_balance(0);
-    (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_BALANCE");
     dsp.op = DSD_APP_DSP_OP_TOGGLE_IQBAL;
     dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
     applied = dsd_app_drain_cmds(opts, state);
@@ -2121,7 +2121,7 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     int dc_shift = 0;
     (void)rtl_stream_get_iq_dc(&dc_shift);
     int dc_shift_before_toggle = dc_shift;
-    (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_DC_BLOCK");
     dsp.op = DSD_APP_DSP_OP_IQ_DC_TOGGLE;
     dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
     applied = dsd_app_drain_cmds(opts, state);
@@ -2171,8 +2171,8 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     rc |= expect_int_eq("short DSP command still drains", applied, 1);
     rc |= expect_int_eq("short DSP command preserves IQ balance", rtl_stream_get_iq_balance(), 1);
 
-    (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
-    (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_BALANCE");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_DC_BLOCK");
     free_test_runtime(&runtime);
     return rc;
 }
