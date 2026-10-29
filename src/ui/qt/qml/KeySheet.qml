@@ -68,11 +68,25 @@ ModalSheet {
         selectedProfileUid = materialProfile.uid || "";
         profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
         context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
+        openedTargetName = targetName;
+        targetLeft = false;
         advancedOpen = false;
         savingDraft = false;
         systemRevision++;
         openedChoice = choiceValue();
         visible = sessionRunning;
+    }
+    // The target as the sheet opened, which is the one a target-scope Apply
+    // addresses (context), by its name then.
+    property string openedTargetName: ""
+    // The scan has left that target while the sheet was open: a target-scope
+    // Apply is then refused as stale. Latched until the sheet opens again, so
+    // a rotating scan shows the note once instead of on every hop.
+    property bool targetLeft: false
+    readonly property string liveTargetId: metrics.scanTargetId || ""
+    onLiveTargetIdChanged: {
+        if (visible && liveTargetId !== (context.target || ""))
+            targetLeft = true;
     }
     // The profile and scope as the sheet opened: a different choice is an edit.
     property string openedChoice: ""
@@ -291,18 +305,29 @@ ModalSheet {
         currentIndex: sheet.profileScope
         onActivated: sheet.profileScope = currentIndex
     }
-    // Which target the target scope means now. One line, elided, so the sheet
-    // keeps its layout as a scan rotates the name.
+    // Where the target scope applies: the target the sheet opened on, which
+    // Apply addresses, not the scan's current one. One line, elided.
     Text {
         objectName: "keySheetTargetName"
         width: parent.width
-        visible: scopeChoice.visible && sheet.profileScope === 1 && sheet.targetName.length > 0
-        text: qsTr("Active target: %1").arg(sheet.targetName)
+        visible: scopeChoice.visible && sheet.profileScope === 1 && sheet.openedTargetName.length > 0
+        text: qsTr("Applies to %1").arg(sheet.openedTargetName)
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSecondary
+    }
+    Text {
+        objectName: "keySheetTargetLeft"
+        width: parent.width
+        visible: sheet.profileScope === 1 && sheet.targetLeft && sheet.openedTargetName.length > 0
+        text: qsTr("The scan has left %1. Reopen to apply to the current target.").arg(sheet.openedTargetName)
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.alert
     }
     GradientButton {
         width: parent.width

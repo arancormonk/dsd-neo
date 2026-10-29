@@ -209,30 +209,37 @@ Item {
             }
         }
 
-        // The closed key sheet follows the target's name without rebuilding its scope choice: the name is a line of
-        // its own, so the choice's model never changes and its popup never reparents a delegate under the hidden
-        // sheet.
+        // The closed key sheet sees the targets change without rebuilding its scope choice: the choice is a fixed
+        // pair, so its model never changes and its popup never reparents a delegate under the hidden sheet. The name
+        // line holds the target the sheet last opened on, the one a target-scope Apply addresses, until it opens again.
         function test_b2_target_names_leave_the_closed_key_sheet_quiet() {
             closedSheets();
             var keys = findChild(app, "keySheet");
             var scope = findChild(keys, "keySheetScope");
             verify(scope !== null, "the key sheet's scope choice is missing");
+            var line = findChild(keys, "keySheetTargetName");
+            verify(line !== null, "the key sheet's target name line is missing");
+            var held = line.text;
             modelSpy.target = scope;
             modelSpy.clear();
             testContext.startAccessibilityCount();
-            var names = [];
             for (var i = 0; i < 10; ++i) {
                 var before = keys.targetName;
                 testContext.publishTarget({scanTargetOrdinal: (i % 2) + 2, scanTargetId: "target-" + ((i % 2) + 2)});
                 verify(keys.targetName !== before, "change " + (i + 1) + " renamed the target");
-                names.push(keys.targetName);
+                compare(line.text, held, "the closed sheet's line holds its target");
             }
             var counts = testContext.accessibilityCount();
             compare(modelSpy.count, 0, "the scope choice's model changed with the name");
             compare(showHide(keys), 0, churn(counts));
             compare(testContext.accessibilityCountWithin(keys, "NameChanged"), 0, churn(counts));
-            compare(findChild(keys, "keySheetTargetName").text, "Active target: " + names[names.length - 1]);
+            testContext.stopAccessibilityCount();
             modelSpy.target = null;
+            // Opening captures the scan's current target. (This fixture's lifecycle host is not running a session,
+            // so open() takes the target and leaves the sheet closed; tst_key_sheet.qml covers the open sheet.)
+            keys.open();
+            compare(line.text, "Applies to " + keys.targetName);
+            keys.visible = false;
         }
 
         // The control for case B: hops that pass through the defaults first, as every hop did before the fix, flood

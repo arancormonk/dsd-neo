@@ -17,13 +17,15 @@ Item {
         anchors.fill: parent
         source: uiDir + "/TalkgroupsScreen.qml"
     }
+    // A delegate is parented into its list's contentItem as it is created, so these count every card and chip
+    // built, including one built and then dropped again.
     SignalSpy {
-        id: cardCountSpy
-        signalName: "countChanged"
+        id: cardBuildSpy
+        signalName: "childrenChanged"
     }
     SignalSpy {
-        id: chipCountSpy
-        signalName: "countChanged"
+        id: chipBuildSpy
+        signalName: "childrenChanged"
     }
     TestCase {
         name: "A11yTalkgroups"
@@ -79,8 +81,8 @@ Item {
         }
         function cleanup() {
             testContext.stopAccessibilityCount();
-            cardCountSpy.target = null;
-            chipCountSpy.target = null;
+            cardBuildSpy.target = null;
+            chipBuildSpy.target = null;
             item("talkgroupEditSheet").visible = false;
             item("talkgroupSearch").text = "";
             talkgroupView.filterText = "";
@@ -92,45 +94,57 @@ Item {
         }
 
         // Hidden, tables A and B take turns as a scan's hops bring them: no card and no chip is built, and nothing
-        // under the screen shows or hides. Shown again, it lists table B under the category picked before.
+        // under the screen shows or hides. Shown again, it lists table B under the search and category set before.
         function test_hidden_screen_leaves_its_lists_unbuilt() {
             var cards = item("talkgroupGrid");
             var chips = item("talkgroupChips");
-            // A category picked while the screen was open.
+            var search = item("talkgroupSearch");
+            // A category picked and a search typed while the screen was open.
             talkgroupView.filterTag = "WORKS";
-            tryCompare(cards, "count", 2);
+            search.text = "Water";
+            compare(talkgroupView.filterText, "Water");
+            tryCompare(cards, "count", 1);
             screen.visible = false;
-            cardCountSpy.target = cards;
-            chipCountSpy.target = chips;
-            cardCountSpy.clear();
-            chipCountSpy.clear();
+            cardBuildSpy.target = cards.contentItem;
+            chipBuildSpy.target = chips.contentItem;
+            cardBuildSpy.clear();
+            chipBuildSpy.clear();
             testContext.startAccessibilityCount();
             for (var i = 0; i < switches; ++i) {
                 verify(testContext.applyTalkgroupTable(i % 2));
                 compare(talkgroups.count, i % 2 === 0 ? 3 : tableB.length, "table " + (i % 2 === 0 ? "A" : "B") + " is shown");
             }
-            compare(cardCountSpy.count + chipCountSpy.count, 0, "the hidden lists followed the tables");
+            compare(cardBuildSpy.count, 0, "cards were built under the hidden screen");
+            compare(chipBuildSpy.count, 0, "chips were built under the hidden screen");
             verify(cards.itemAtIndex(0) === null, "a card exists under the hidden screen");
             verify(chips.itemAtIndex(0) === null, "a chip exists under the hidden screen");
             compare(showHide(screen), 0, churn());
 
-            // Shown again: table B's rows, under the category picked before.
+            // Shown again: table B's rows, under the search and category set before.
             screen.visible = true;
+            compare(search.text, "Water");
+            compare(talkgroupView.filterText, "Water");
             compare(talkgroupView.filterTag, "WORKS");
-            tryCompare(cards, "count", 2);
-            tryVerify(function () { return cards.itemAtIndex(1) !== null; });
-            for (var n = 0; n < 2; ++n) {
-                var card = cards.itemAtIndex(n);
-                var row = tableB[n + 2];
-                compare(card.idText, String(row.id));
-                compare(card.name, row.name);
-                compare(card.tags, row.tags);
-                compare(card.listening, row.listening);
-            }
+            tryCompare(cards, "count", 1);
+            tryVerify(function () { return cards.itemAtIndex(0) !== null; });
+            var card = cards.itemAtIndex(0);
+            var row = tableB[3];
+            compare(card.idText, String(row.id));
+            compare(card.name, row.name);
+            compare(card.tags, row.tags);
+            compare(card.listening, row.listening);
+            verify(cardBuildSpy.count > 0, "opening builds the cards, and the spy sees it");
             tryCompare(chips, "count", 3);
             tryVerify(function () { return chips.itemAtIndex(2) !== null; });
+            verify(chipBuildSpy.count > 0, "opening builds the chips, and the spy sees it");
             compare(chipTexts(chips), ["All", "POLICE", "WORKS"]);
             verify(chips.itemAtIndex(2).active, "the picked category is still the active chip");
+            // Without the search, the category alone: both WORKS rows.
+            search.text = "";
+            tryCompare(cards, "count", 2);
+            tryVerify(function () { return cards.itemAtIndex(1) !== null; });
+            compare(cards.itemAtIndex(0).idText, String(tableB[2].id));
+            compare(cards.itemAtIndex(1).idText, String(tableB[3].id));
             // Shown, the lists follow the tables again.
             verify(testContext.applyTalkgroupTable(0));
             talkgroupView.filterTag = "";
