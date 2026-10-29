@@ -4883,6 +4883,64 @@ demod_replay_flush_uplink(struct demod_state* d, struct output_state* o) {
     return 1;
 }
 
+/* The profile, modem and reacquire requests queued for the demodulator, taken before its next block. */
+static void
+demod_consume_pending_requests(struct demod_state* d) {
+    rtl_stream_consume_demod_profile_request();
+    (void)rtl_stream_consume_fsk_modem_config_pending(d);
+    (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
+    int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
+    if (!consumed_fsk_reacquire) {
+        (void)rtl_stream_consume_fsk_modem_reset_pending(d);
+    }
+}
+
+/* Whether the signal search drops this block; when it does, the block is released here. What an uplink look-ahead held
+   from before such blocks would reach the decoder after the gap, spliced to whatever follows. It goes, as the frame
+   sync's history does. */
+static int
+demod_drop_signal_search_block(struct demod_state* d, DemodInputSpan* span, int replay_active) {
+    if (!rtl_signal_search_bypassed()) {
+        return 0;
+    }
+    d->ted_state.ul_lookahead_live = 0;
+    demod_note_replay_flush_owed(d, replay_active);
+    demod_input_span_release_direct(d, span);
+    demod_leave_processing_block(&controller);
+    return 1;
+}
+
+/* What a demodulated block publishes for the other threads: channel power, squelch status and the demod snapshots. */
+static void
+demod_publish_block_state(const struct demod_state* d) {
+    g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
+    demod_publish_squelch_status(d);
+    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_publish_ted_bias();
+    rtl_stream_publish_fsk_phase_cfo_snapshot(d);
+}
+
+/* A block that raised the demod's exit flag ends the program, waking a replay's waiters. */
+static void
+demod_note_exit_flag(const struct demod_state* d, int replay_active) {
+    if (d->exit_flag) {
+        dsd_exitflag_store(1);
+        if (replay_active) {
+            replay_wake_all();
+        }
+    }
+}
+
+/* A replay block's output is written: its chunk is the one an end-of-replay flush follows, and whether a flush is owed
+   is noted again. */
+static void
+demod_note_replay_chunk_written(const struct demod_state* d, const DemodInputSpan* span, int replay_active) {
+    if (replay_active && g_stream) {
+        g_stream->replay_flush_chunk = span->chunk;
+    }
+    demod_note_replay_flush_owed(d, replay_active);
+}
+
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
@@ -4912,48 +4970,24 @@ demod_thread_fn(void* arg) {
         }
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-        rtl_stream_consume_demod_profile_request();
-        (void)rtl_stream_consume_fsk_modem_config_pending(d);
-        (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
-        int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
-        if (!consumed_fsk_reacquire) {
-            (void)rtl_stream_consume_fsk_modem_reset_pending(d);
-        }
+        demod_consume_pending_requests(d);
         demod_feed_signal_search(d);
-        if (rtl_signal_search_bypassed()) {
-            /* The search drops these blocks: what an uplink look-ahead held from before them would reach the decoder
-               after the gap, spliced to whatever follows. It goes, as the frame sync's history does. */
-            d->ted_state.ul_lookahead_live = 0;
-            demod_note_replay_flush_owed(d, replay_active);
-            demod_input_span_release_direct(d, &span);
-            demod_leave_processing_block(&controller);
+        if (demod_drop_signal_search_block(d, &span, replay_active)) {
             continue;
         }
         demod_feed_wideband_spectrum(d);
         demod_take_squelch_setting(d);
         full_demod(d);
-        g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
-        demod_publish_squelch_status(d);
-        rtl_stream_publish_demod_profile_snapshot();
-        rtl_stream_publish_ted_bias();
-        rtl_stream_publish_fsk_phase_cfo_snapshot(d);
+        demod_publish_block_state(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_realtime_mono_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
-        if (d->exit_flag) {
-            dsd_exitflag_store(1);
-            if (replay_active) {
-                replay_wake_all();
-            }
-        }
+        demod_note_exit_flag(d, replay_active);
         demod_maybe_signal_squelch_hop(d);
         uint64_t perf_output_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         size_t perf_output_samples = demod_emit_output_block(d, o, &span, replay_pull);
-        if (replay_active && g_stream) {
-            g_stream->replay_flush_chunk = span.chunk;
-        }
-        demod_note_replay_flush_owed(d, replay_active);
+        demod_note_replay_chunk_written(d, &span, replay_active);
         /* A replay chunk's generation is consumed only after its demodulated
          * output is committed. RESET/rewind boundaries use this generation to
          * avoid entering the reconfigure gate between DSP processing and the
@@ -9123,6 +9157,18 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     return 0;
 }
 
+/* A replay whose decoder read every output of a capture the reader read to its end: the stop comes once the decoder has
+   finished, so the notice follows every line the capture decoded to and starts a line of its own. */
+static void
+stream_log_replay_end_notice(void) {
+    if (g_stream && g_stream->replay_output_drained.load(std::memory_order_acquire)) {
+        const uint64_t end_notice = g_stream->replay_end_notice.exchange(0U, std::memory_order_acq_rel);
+        if (end_notice > 0U) {
+            LOG_INFO("IQ replay: end of capture after %llu samples\n", (unsigned long long)(end_notice - 1U));
+        }
+    }
+}
+
 /**
  * @brief Soft-stop the RTL stream without setting global exitflag.
  *
@@ -9132,14 +9178,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
  */
 extern "C" int
 dsd_rtl_stream_soft_stop(void) {
-    /* A replay whose decoder read every output of a capture the reader read to its end: the stop comes once the
-       decoder has finished, so the notice follows every line the capture decoded to and starts a line of its own. */
-    if (g_stream && g_stream->replay_output_drained.load(std::memory_order_acquire)) {
-        const uint64_t end_notice = g_stream->replay_end_notice.exchange(0U, std::memory_order_acq_rel);
-        if (end_notice > 0U) {
-            LOG_INFO("IQ replay: end of capture after %llu samples\n", (unsigned long long)(end_notice - 1U));
-        }
-    }
+    stream_log_replay_end_notice();
     LOG_INFO("soft stopping...\n");
     ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();
@@ -10185,14 +10224,10 @@ rtl_stream_get_running_symbol_profile(int* out_symbol_rate_hz, int* out_levels, 
     return rc;
 }
 
-extern "C" int
-rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
-    if (symbol_rate_hz <= 0) {
-        return -1;
-    }
-    if (levels != 2 && levels != 4) {
-        return -1;
-    }
+/* The channel profile rtl_stream_set_symbol_profile() installs for a requested @p channel_profile: the request when it
+   names a profile, else the current one, with WIDE wherever the stream does not run the chain it names. */
+static int
+rtl_stream_symbol_channel_profile(int channel_profile) {
     int next_channel_profile = demod.channel_lpf_profile;
     if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_TETRA) {
         next_channel_profile = channel_profile;
@@ -10207,6 +10242,18 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
         /* The M17 encoder's monitor keeps its WIDE channel whatever profile is published (issue #625). */
         next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
     }
+    return next_channel_profile;
+}
+
+extern "C" int
+rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    if (symbol_rate_hz <= 0) {
+        return -1;
+    }
+    if (levels != 2 && levels != 4) {
+        return -1;
+    }
+    const int next_channel_profile = rtl_stream_symbol_channel_profile(channel_profile);
     int changed = (demod.symbol_rate_hz != symbol_rate_hz || demod.symbol_levels != levels
                    || demod.channel_lpf_profile != next_channel_profile);
     demod.symbol_rate_hz = symbol_rate_hz;

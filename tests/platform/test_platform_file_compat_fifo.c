@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -80,9 +81,9 @@ main(void) {
     int code = -1;
     int rc = run_open_in_child(fifo, &code);
     if (rc != 0) {
-        fprintf(stderr, "FAIL: opening a writerless FIFO blocked past %u ms\n", OPEN_BUDGET_MS);
+        DSD_FPRINTF(stderr, "FAIL: opening a writerless FIFO blocked past %u ms\n", OPEN_BUDGET_MS);
     } else if (code != CHILD_OK) {
-        fprintf(stderr, "FAIL: FIFO open returned a stream or wrong errno (child code %d)\n", code);
+        DSD_FPRINTF(stderr, "FAIL: FIFO open returned a stream or wrong errno (child code %d)\n", code);
         rc = -1;
     }
 

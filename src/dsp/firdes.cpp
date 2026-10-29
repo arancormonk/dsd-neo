@@ -13,7 +13,6 @@
 
 #include <cmath>
 #include <dsd-neo/dsp/firdes.h>
-#include <math.h>
 
 /* GNU Radio's M_PI definition */
 #ifndef GR_M_PI
@@ -365,6 +364,58 @@ dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, doubl
     return ntaps;
 }
 
+/* Whether dsd_firdes_root_raised_cosine() can design from these arguments. */
+static bool
+rrc_args_valid(double gain, double sampling_freq, double symbol_rate, double alpha, int ntaps, const float* taps_out) {
+    return taps_out && sampling_freq > 0.0 && symbol_rate > 0.0 && alpha > 0.0 && alpha <= 1.0 && ntaps > 0
+           && std::isfinite(gain) && std::isfinite(sampling_freq) && std::isfinite(symbol_rate);
+}
+
+/* Tap @p i of an @p ntaps root-raised-cosine before its gain normalisation, the loop body of GNU Radio's root_raised_cosine() quoted below. */
+static double
+rrc_tap_unscaled(int i, int ntaps, double spb, double alpha) {
+    const int centre = ntaps / 2;
+    double num = 0.0;
+    double den = 0.0;
+    const double xindx = (double)(i - centre);
+    const double x1 = GR_M_PI * xindx / spb;
+    double x2 = 4.0 * alpha * xindx / spb;
+    double x3 = x2 * x2 - 1.0;
+
+    if (fabs(x3) >= 0.000001) {
+        if (i != centre) {
+            num = cos((1.0 + alpha) * x1) + sin((1.0 - alpha) * x1) / (4.0 * alpha * xindx / spb);
+        } else {
+            num = cos((1.0 + alpha) * x1) + (1.0 - alpha) * GR_M_PI / (4.0 * alpha);
+        }
+        den = x3 * GR_M_PI;
+    } else {
+        if (fabs(alpha - 1.0) < 1e-12) {
+            return -1.0;
+        }
+        x3 = (1.0 - alpha) * x1;
+        x2 = (1.0 + alpha) * x1;
+        num = (sin(x2) * (1.0 + alpha) * GR_M_PI - cos(x3) * ((1.0 - alpha) * GR_M_PI * spb) / (4.0 * alpha * xindx)
+               + sin(x3) * spb * spb / (4.0 * alpha * xindx * xindx));
+        den = -32.0 * GR_M_PI * alpha * alpha * xindx / spb;
+    }
+    return 4.0 * alpha * num / den;
+}
+
+/* The @p ntaps (odd) taps of a root-raised-cosine at @p spb samples per symbol, normalised to a sum of @p gain. */
+static void
+rrc_fill(double gain, double spb, double alpha, int ntaps, float* taps_out) {
+    double scale = 0.0;
+    for (int i = 0; i < ntaps; i++) {
+        taps_out[i] = (float)rrc_tap_unscaled(i, ntaps, spb, alpha);
+        scale += taps_out[i];
+    }
+
+    for (int i = 0; i < ntaps; i++) {
+        taps_out[i] = (float)(taps_out[i] * gain / scale);
+    }
+}
+
 /*
  * Direct port of GNU Radio's firdes::root_raised_cosine() from gr-filter/lib/firdes.cc:
  *
@@ -408,8 +459,7 @@ dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, doubl
 int
 dsd_firdes_root_raised_cosine(double gain, double sampling_freq, double symbol_rate, double alpha, int ntaps,
                               float* taps_out, int max_taps) {
-    if (!taps_out || !(sampling_freq > 0.0) || !(symbol_rate > 0.0) || !(alpha > 0.0) || alpha > 1.0 || ntaps <= 0
-        || !std::isfinite(gain) || !std::isfinite(sampling_freq) || !std::isfinite(symbol_rate)) {
+    if (!rrc_args_valid(gain, sampling_freq, symbol_rate, alpha, ntaps, taps_out)) {
         return -1;
     }
     ntaps |= 1;
@@ -417,43 +467,7 @@ dsd_firdes_root_raised_cosine(double gain, double sampling_freq, double symbol_r
         return -1;
     }
 
-    const double spb = sampling_freq / symbol_rate;
-    double scale = 0.0;
-    for (int i = 0; i < ntaps; i++) {
-        double num = 0.0;
-        double den = 0.0;
-        const double xindx = (double)(i - ntaps / 2);
-        const double x1 = GR_M_PI * xindx / spb;
-        double x2 = 4.0 * alpha * xindx / spb;
-        double x3 = x2 * x2 - 1.0;
-
-        if (fabs(x3) >= 0.000001) {
-            if (i != ntaps / 2) {
-                num = cos((1.0 + alpha) * x1) + sin((1.0 - alpha) * x1) / (4.0 * alpha * xindx / spb);
-            } else {
-                num = cos((1.0 + alpha) * x1) + (1.0 - alpha) * GR_M_PI / (4.0 * alpha);
-            }
-            den = x3 * GR_M_PI;
-        } else {
-            if (fabs(alpha - 1.0) < 1e-12) {
-                taps_out[i] = -1.0f;
-                scale += taps_out[i];
-                continue;
-            }
-            x3 = (1.0 - alpha) * x1;
-            x2 = (1.0 + alpha) * x1;
-            num = (sin(x2) * (1.0 + alpha) * GR_M_PI - cos(x3) * ((1.0 - alpha) * GR_M_PI * spb) / (4.0 * alpha * xindx)
-                   + sin(x3) * spb * spb / (4.0 * alpha * xindx * xindx));
-            den = -32.0 * GR_M_PI * alpha * alpha * xindx / spb;
-        }
-        taps_out[i] = (float)(4.0 * alpha * num / den);
-        scale += taps_out[i];
-    }
-
-    for (int i = 0; i < ntaps; i++) {
-        taps_out[i] = (float)(taps_out[i] * gain / scale);
-    }
-
+    rrc_fill(gain, sampling_freq / symbol_rate, alpha, ntaps, taps_out);
     return ntaps;
 }
 
@@ -468,21 +482,22 @@ dsd_tetra_rrc_design(int sps, float* taps_out, int max_taps) {
         return -1;
     }
     const int ntaps = 2 * kTetraRrcHalfSpanSymbols * sps + 1;
-    const int n = dsd_firdes_root_raised_cosine(1.0, (double)sps, 1.0, kTetraRrcAlpha, ntaps, taps_out, max_taps);
-    if (n != ntaps) {
+    if (ntaps > max_taps) {
         return -1;
     }
+    /* dsd_firdes_root_raised_cosine(1.0, sps, 1.0, alpha, ntaps, ...): an odd count, at sps samples per symbol. */
+    rrc_fill(1.0, (double)sps, kTetraRrcAlpha, ntaps, taps_out);
     /* Scale to an energy of 1/sps. */
     double energy = 0.0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < ntaps; i++) {
         energy += (double)taps_out[i] * (double)taps_out[i];
     }
     if (!(energy > 0.0)) {
         return -1;
     }
     const double k = sqrt((1.0 / (double)sps) / energy);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < ntaps; i++) {
         taps_out[i] = (float)((double)taps_out[i] * k);
     }
-    return n;
+    return ntaps;
 }

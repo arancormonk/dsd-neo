@@ -82,7 +82,7 @@ ul_training_score(const dsd_tetra_ul_timing* t, const dsd_tetra_ul_training* tr,
     *phase = 0.0f;
     *conj = 0;
     const int sps = t->sps;
-    if (newest < (uint64_t)(tr->len * sps)) {
+    if (newest < (uint64_t)tr->len * (uint64_t)sps) {
         return 0.0f;
     }
     float p_re = 0.0f;
@@ -149,42 +149,60 @@ ul_spans_overlap(const dsd_tetra_ul_burst* a, const dsd_tetra_ul_burst* b) {
     return a->start < b->end && b->start < a->end;
 }
 
-/* Keep @p b unless a burst still ahead of the strobe overlaps it with a training that scored as high; it replaces
-   those ahead of the strobe it overlaps. A burst the strobe passed blocks nothing: it was a peak on noise, or the burst
-   before this one, and a training that did not move the strobe yet is all that can still decide. With every slot taken
-   it replaces the burst that starts first. */
-static void
-ul_burst_found(dsd_tetra_ul_timing* t, const dsd_tetra_ul_burst* b) {
+/* Whether a burst still ahead of the strobe overlaps @p b with a training that scored at least as high. */
+static int
+ul_burst_outscored(const dsd_tetra_ul_timing* t, const dsd_tetra_ul_burst* b) {
     for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
         const dsd_tetra_ul_burst* o = &t->bursts[i];
         if (o->end != 0 && o->pending && ul_spans_overlap(o, b) && o->score >= b->score) {
-            return;
+            return 1;
         }
     }
+    return 0;
+}
+
+/* Clear every burst still ahead of the strobe that overlaps @p b. */
+static void
+ul_burst_clear_overlapped(dsd_tetra_ul_timing* t, const dsd_tetra_ul_burst* b) {
     for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
         dsd_tetra_ul_burst* o = &t->bursts[i];
         if (o->end != 0 && o->pending && ul_spans_overlap(o, b)) {
             DSD_MEMSET(o, 0, sizeof(*o));
         }
     }
-    int slot = -1;
-    for (int i = 0; i < DSD_TETRA_UL_BURSTS && slot < 0; i++) {
+}
+
+/* The slot a new burst takes: the first free one, else the burst that starts first, one the strobe passed before one
+   still ahead of it. */
+static int
+ul_burst_slot(const dsd_tetra_ul_timing* t) {
+    for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
         if (t->bursts[i].end == 0) {
+            return i;
+        }
+    }
+    int slot = 0;
+    for (int i = 1; i < DSD_TETRA_UL_BURSTS; i++) {
+        const dsd_tetra_ul_burst* o = &t->bursts[i];
+        const dsd_tetra_ul_burst* k = &t->bursts[slot];
+        if (o->pending < k->pending || (o->pending == k->pending && o->start < k->start)) {
             slot = i;
         }
     }
-    if (slot < 0) {
-        /* Every slot taken: the burst that starts first, one the strobe passed before one still ahead of it. */
-        slot = 0;
-        for (int i = 1; i < DSD_TETRA_UL_BURSTS; i++) {
-            const dsd_tetra_ul_burst* o = &t->bursts[i];
-            const dsd_tetra_ul_burst* k = &t->bursts[slot];
-            if (o->pending < k->pending || (o->pending == k->pending && o->start < k->start)) {
-                slot = i;
-            }
-        }
+    return slot;
+}
+
+/* Keep @p b unless a burst still ahead of the strobe overlaps it with a training that scored as high; it replaces
+   those ahead of the strobe it overlaps. A burst the strobe passed blocks nothing: it was a peak on noise, or the burst
+   before this one, and a training that did not move the strobe yet is all that can still decide. With every slot taken
+   it replaces the burst that starts first. */
+static void
+ul_burst_found(dsd_tetra_ul_timing* t, const dsd_tetra_ul_burst* b) {
+    if (ul_burst_outscored(t, b)) {
+        return;
     }
-    t->bursts[slot] = *b;
+    ul_burst_clear_overlapped(t, b);
+    t->bursts[ul_burst_slot(t)] = *b;
 }
 
 /* The peak's fractional offset from its best sample: the vertex of the parabola through it and its neighbours. */

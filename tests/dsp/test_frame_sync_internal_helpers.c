@@ -6,6 +6,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>

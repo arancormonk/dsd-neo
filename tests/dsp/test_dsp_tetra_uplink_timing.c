@@ -21,7 +21,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #define TEST_PI   3.14159265358979323846
 #define SPS       4
@@ -338,9 +337,9 @@ test_passed_burst_blocks_nothing(void) {
     dsd_tetra_ul_timing_reset(&g_t, SPS);
     const uint64_t delay = (uint64_t)(DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * SPS);
     dsd_tetra_ul_burst* passed = &g_t.bursts[0];
-    passed->start = (uint64_t)(LEAD * SPS) + delay - 100U * SPS;
-    passed->end = passed->start + 231U * SPS;
-    passed->anchor = passed->start + 120U * SPS;
+    passed->start = (uint64_t)(LEAD * SPS) + delay - 100U * (uint64_t)SPS;
+    passed->end = passed->start + 231U * (uint64_t)SPS;
+    passed->anchor = passed->start + 120U * (uint64_t)SPS;
     passed->score = 0.999f;
     passed->pending = 0;
     float out_r = 0.0f;
@@ -359,9 +358,9 @@ test_passed_burst_blocks_nothing(void) {
     /* A burst still ahead of the strobe that scored higher does block it. */
     dsd_tetra_ul_timing_reset(&g_t, SPS);
     passed = &g_t.bursts[0];
-    passed->start = (uint64_t)(LEAD * SPS) + delay - 100U * SPS;
-    passed->end = passed->start + 231U * SPS;
-    passed->anchor = passed->start + 120U * SPS;
+    passed->start = (uint64_t)(LEAD * SPS) + delay - 100U * (uint64_t)SPS;
+    passed->end = passed->start + 231U * (uint64_t)SPS;
+    passed->anchor = passed->start + 120U * (uint64_t)SPS;
     passed->score = 0.999f;
     passed->pending = 1;
     for (int i = 0; i < count; i++) {

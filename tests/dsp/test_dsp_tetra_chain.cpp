@@ -12,6 +12,7 @@
  * TETRA profile on the demodulator directly.
  */
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <dsd-neo/core/power.h>
@@ -465,8 +466,8 @@ test_agc_alpha_wiring(void) {
         s->tetra_chain = chain;
         s->cqpsk_agc_avg = 1.0f;
         for (int k = 0; k < n; k++) {
-            s->input_cb_buf[k * 2] = amp;
-            s->input_cb_buf[(k * 2) + 1] = 0.0f;
+            s->input_cb_buf[(size_t)k * 2] = amp;
+            s->input_cb_buf[((size_t)k * 2) + 1] = 0.0f;
         }
         s->lowpassed = s->input_cb_buf;
         s->lp_len = n * 2;
@@ -790,8 +791,8 @@ test_uplink_keeps_channel_filter_only(void) {
     dsd_demod_update_tetra_chain(s);
     s->cqpsk_agc_avg = 1.0f;
     for (int k = 0; k < 8; k++) {
-        s->input_cb_buf[k * 2] = 0.5f;
-        s->input_cb_buf[(k * 2) + 1] = 0.0f;
+        s->input_cb_buf[(size_t)k * 2] = 0.5f;
+        s->input_cb_buf[((size_t)k * 2) + 1] = 0.0f;
     }
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 16;

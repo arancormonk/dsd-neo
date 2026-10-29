@@ -1282,6 +1282,24 @@ dsd_fll_band_edge_params_for(int tetra_chain) {
     return p;
 }
 
+/* The DSD_NEO_DEBUG_CQPSK line for an FLL init: which of first init, sps change, parameter change or same-design retune
+ * reset it is. */
+static void
+fll_log_init(const dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p, int is_first_init,
+             int is_sps_change, int is_params_change) {
+    if (is_first_init) {
+        DSD_FPRINTF(stderr, "[FLL-INIT] first init sps=%d\n", sps);
+    } else if (is_sps_change) {
+        DSD_FPRINTF(stderr, "[FLL-INIT] sps change %d->%d (freq preserved)\n", f->sps, sps);
+    } else if (is_params_change) {
+        DSD_FPRINTF(stderr,
+                    "[FLL-INIT] params change sps=%d rolloff %.2f->%.2f loop_bw x%.0f->x%.0f (freq preserved)\n", sps,
+                    f->rolloff, p.rolloff, f->loop_bw_scale, p.loop_bw_scale);
+    } else {
+        DSD_FPRINTF(stderr, "[FLL-INIT] retune reset sps=%d (freq preserved)\n", sps);
+    }
+}
+
 /*
  * Initialize FLL band-edge filter for a given samples-per-symbol and design parameters.
  *
@@ -1309,17 +1327,7 @@ dsd_fll_band_edge_init_params(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_ban
 
     /* Debug: log FLL init when DSD_NEO_DEBUG_CQPSK=1 */
     if (debug_cqpsk_enabled()) {
-        if (is_first_init) {
-            DSD_FPRINTF(stderr, "[FLL-INIT] first init sps=%d\n", sps);
-        } else if (is_sps_change) {
-            DSD_FPRINTF(stderr, "[FLL-INIT] sps change %d->%d (freq preserved)\n", f->sps, sps);
-        } else if (is_params_change) {
-            DSD_FPRINTF(stderr,
-                        "[FLL-INIT] params change sps=%d rolloff %.2f->%.2f loop_bw x%.0f->x%.0f (freq preserved)\n",
-                        sps, f->rolloff, p.rolloff, f->loop_bw_scale, p.loop_bw_scale);
-        } else {
-            DSD_FPRINTF(stderr, "[FLL-INIT] retune reset sps=%d (freq preserved)\n", sps);
-        }
+        fll_log_init(f, sps, p, is_first_init, is_sps_change, is_params_change);
     }
 
     /* Redesign filters only on first init or when SPS or the parameters change.

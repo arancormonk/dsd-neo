@@ -116,6 +116,7 @@ check_upper_taps(const dsd_fll_band_edge_state_t* f, const float* exp_r, const f
  * 4.5e-8 absolute in a tap and 3.5e-7 relative in a gain (measured over sps 1..24), so the bounds allow a few times
  * that and stay far below any parameter change: rolloff 0.2 -> 0.35 moves the taps by ~1e-2 and a loop-bandwidth
  * scale moves the gains by whole factors. */
+namespace {
 struct p25_pin {
     int sps;
     float loop_bw;
@@ -124,6 +125,7 @@ struct p25_pin {
     float upper_r[21];
     float upper_i[21];
 };
+} // namespace
 
 static const p25_pin kP25Pins[] = {
     {2,
@@ -360,7 +362,7 @@ check_tetra_design(void) {
 
         double bb[FLL_BAND_EDGE_MAX_TAPS];
         double power = 0.0;
-        const double m = (double)(int)((double)n / (double)sps + 0.5);
+        const double m = round((double)n / (double)sps);
         for (int i = 0; i < n; i++) {
             const double k = -m + (double)i * 2.0 / (double)sps;
             const double am = rolloff * k - 0.5;
@@ -481,6 +483,18 @@ mixer_state(dsd_fll_band_edge_state_t* f, float pre, float freq) {
     f->pre_im = 0.8f;
 }
 
+/* Whether two states hold the same bits. A read that changes nothing leaves every bit as it was, which is stricter
+ * than equal values (+0 and -0, say); the state is all 4-byte members, so it has no padding to differ in, and the copy
+ * it is checked against is a byte copy. */
+static bool
+fll_state_same_bits(const dsd_fll_band_edge_state_t& a, const dsd_fll_band_edge_state_t& b) {
+    unsigned char a_bytes[sizeof(dsd_fll_band_edge_state_t)];
+    unsigned char b_bytes[sizeof(dsd_fll_band_edge_state_t)];
+    DSD_MEMCPY(a_bytes, &a, sizeof(a_bytes));
+    DSD_MEMCPY(b_bytes, &b, sizeof(b_bytes));
+    return memcmp(a_bytes, b_bytes, sizeof(a_bytes)) == 0;
+}
+
 /* The combined estimate is pre_freq + freq, and reading it changes nothing. */
 static int
 check_total_accessor(void) {
@@ -491,8 +505,9 @@ check_total_accessor(void) {
     DSD_MEMCPY(&before, &f, sizeof(f));
     const float a = dsd_fll_band_edge_total_freq(&f);
     const float b = dsd_fll_band_edge_total_freq(&f);
-    if (!closef(a, 0.2f, 1e-7f) || !closef(a, b, 0.0f) || memcmp(&before, &f, sizeof(f)) != 0) {
-        DSD_FPRINTF(stderr, "FLL total: a=%.9f b=%.9f mutated=%d\n", a, b, memcmp(&before, &f, sizeof(f)) != 0);
+    const bool mutated = !fll_state_same_bits(before, f);
+    if (!closef(a, 0.2f, 1e-7f) || !closef(a, b, 0.0f) || mutated) {
+        DSD_FPRINTF(stderr, "FLL total: a=%.9f b=%.9f mutated=%d\n", a, b, mutated ? 1 : 0);
         return 1;
     }
     /* Off the TETRA chain the total is the FLL frequency exactly. */
@@ -624,23 +639,23 @@ check_premix_cancels_tone(void) {
     const double phi0 = 0.4;
     for (int i = 0; i < n; i++) {
         const double ph = phi0 + (double)w * (double)i;
-        iq[2 * i] = (float)(0.5 * cos(ph));
-        iq[2 * i + 1] = (float)(0.5 * sin(ph));
+        iq[(size_t)2 * i] = (float)(0.5 * cos(ph));
+        iq[(size_t)2 * i + 1] = (float)(0.5 * sin(ph));
     }
     dsd_fll_band_edge_state_t f;
     DSD_MEMSET(&f, 0, sizeof(f)); /* a zeroed phasor reads as (1, 0) */
     f.pre_freq = -w;
     for (int off = 0; off < n; off += 512) {
         const int len = (n - off) < 512 ? (n - off) : 512;
-        dsd_tetra_premix_block(&f, iq + 2 * off, len);
+        dsd_tetra_premix_block(&f, iq + (size_t)2 * off, len);
     }
     const double dc_r = 0.5 * cos(phi0);
     const double dc_i = 0.5 * sin(phi0);
     double resid = 0.0;
     double power = 0.0;
     for (int i = 0; i < n; i++) {
-        const double er = iq[2 * i] - dc_r;
-        const double ei = iq[2 * i + 1] - dc_i;
+        const double er = iq[(size_t)2 * i] - dc_r;
+        const double ei = iq[(size_t)2 * i + 1] - dc_i;
         resid += er * er + ei * ei;
         power += 0.25;
     }
@@ -681,7 +696,7 @@ check_premix_partitions(void) {
             if (len > n - off) {
                 len = n - off;
             }
-            dsd_tetra_premix_block(&f, out + 2 * off, len);
+            dsd_tetra_premix_block(&f, out + (size_t)2 * off, len);
             off += len;
         }
         double worst = 0.0;
@@ -689,9 +704,9 @@ check_premix_partitions(void) {
             const double ph = (double)w * (double)i;
             const double c = cos(ph);
             const double s = sin(ph);
-            const double wr = in[2 * i] * c - in[2 * i + 1] * s;
-            const double wi = in[2 * i] * s + in[2 * i + 1] * c;
-            const double e = fabs(out[2 * i] - wr) + fabs(out[2 * i + 1] - wi);
+            const double wr = in[(size_t)2 * i] * c - in[(size_t)2 * i + 1] * s;
+            const double wi = in[(size_t)2 * i] * s + in[(size_t)2 * i + 1] * c;
+            const double e = fabs(out[(size_t)2 * i] - wr) + fabs(out[(size_t)2 * i + 1] - wi);
             worst = e > worst ? e : worst;
         }
         if (worst > 1e-4) {
@@ -710,8 +725,8 @@ check_premix_partitions(void) {
         DSD_MEMCPY(out, in, sizeof(out));
         dsd_tetra_premix_block(&g, out, 64);
         for (int i = 0; i < 64; i++) {
-            const double a = hypot((double)in[2 * i], (double)in[2 * i + 1]);
-            const double b = hypot((double)out[2 * i], (double)out[2 * i + 1]);
+            const double a = hypot((double)in[(size_t)2 * i], (double)in[(size_t)2 * i + 1]);
+            const double b = hypot((double)out[(size_t)2 * i], (double)out[(size_t)2 * i + 1]);
             if (fabs(a - b) > 1e-6) {
                 DSD_FPRINTF(stderr, "TETRA premix: gain %.9f at n=%d with a stray phasor\n", b / a, i);
                 return 1;
@@ -740,10 +755,12 @@ check_premix_partitions(void) {
 }
 
 /* A QPSK-like stream: random (+-1, +-j) symbols held for sps samples, carried at an offset of w rad/sample. */
+namespace {
 struct qpsk_source {
     uint32_t seed;
     double phase;
 };
+} // namespace
 
 static void
 qpsk_block(qpsk_source* src, float* buf, int pairs, int sps, double w) {
@@ -755,8 +772,8 @@ qpsk_block(qpsk_source* src, float* buf, int pairs, int sps, double w) {
         const double si = ((src->seed >> 29) & 1U) ? 1.0 : -1.0;
         const double c = cos(src->phase);
         const double s = sin(src->phase);
-        buf[2 * n] = (float)(0.5 * (sr * c - si * s));
-        buf[2 * n + 1] = (float)(0.5 * (sr * s + si * c));
+        buf[(size_t)2 * n] = (float)(0.5 * (sr * c - si * s));
+        buf[(size_t)2 * n + 1] = (float)(0.5 * (sr * s + si * c));
         src->phase += w;
     }
 }

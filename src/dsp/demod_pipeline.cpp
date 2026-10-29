@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
+#include "dsd-neo/dsp/tetra_uplink_timing.h"
 #ifdef DSD_NEO_TEST_HOOKS
 #include "demod_pipeline_test_support.h"
 #endif
@@ -199,12 +200,11 @@ static const double kChannelLpfP25C4fmCutoffHz = kChannelEdge12k5Hz + kChannelLp
 static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
 /* TETRA's 25 kHz channel: GNU Radio's window design with the transition centred on 12.5 kHz, so the passband ends at
  * 11.25 kHz and the stopband starts at 13.75 kHz. Its own transition, not the shared 1200 Hz one, and no clamp or
- * fallback: 49 / 97 / 193 taps at 36 / 72 / 144 kHz. */
+ * fallback: 49 / 97 / 193 taps at 36 / 72 / 144 kHz, all within DSD_CHANNEL_LPF_MAX_TAPS (test_dsp_channel_filters.cpp
+ * designs each rate and pins those counts). */
 static const double kChannelEdgeTetraHz = 11250.0;
 static const double kChannelLpfTetraCutoffHz = 12500.0;
 static const double kChannelLpfTetraTransitionHz = 2500.0;
-static_assert((74 * 144000) / (22 * 2500) <= DSD_CHANNEL_LPF_MAX_TAPS,
-              "the TETRA channel design at the 144 kHz top of its rate domain fits the plan array");
 /* Fixed fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
@@ -717,6 +717,29 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     d->squelch_noise_ran = 0;
 }
 
+/* The analog width the channel plan is designed for, or 0 for the profile design. Gated on the analog family's monitor
+   output on its WIDE channel (dsd_demod_analog_monitor_active()), not on the profile alone: WIDE is also the digital
+   fallback profile, and the M17 encoder shares the analog front end without being part of that family. CQPSK toggled
+   on under -fA, or a typed digital scan row's symbol profile, keeps its own profile filter. */
+static int
+channel_lpf_plan_width_hz(const struct demod_state* d) {
+    return (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
+}
+
+/* Whether the TETRA channel filter runs keys only the TETRA profile's plan: no other profile's design depends on it. */
+static int
+channel_lpf_plan_tetra(const struct demod_state* d, int profile, int width_hz) {
+    return (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && dsd_demod_tetra_channel_runs(d)) ? 1 : 0;
+}
+
+/* Whether the cached plan is the one for this key. */
+static int
+channel_lpf_plan_current(const struct demod_state* d, int rate_out, int profile, int width_hz, int tetra) {
+    const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
+    return planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
+           && d->channel_lpf_plan_width_hz == width_hz && d->channel_lpf_plan_tetra == tetra;
+}
+
 /**
  * @brief Ensure channel LPF taps are generated for this demodulator state.
  *
@@ -737,17 +760,9 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     }
     const int profile = d->channel_lpf_profile;
     const int rate_out = d->rate_out;
-    /* Gated on the analog family's monitor output on its WIDE channel (dsd_demod_analog_monitor_active()), not on the
-       profile alone: WIDE is also the digital fallback profile, and the M17 encoder shares the analog front end
-       without being part of that family. CQPSK toggled on under -fA, or a typed digital scan row's symbol profile,
-       keeps its own profile filter. */
-    const int width_hz =
-        (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
-    /* Whether the TETRA channel filter runs keys only the TETRA profile's plan: no other profile's design depends on it. */
-    const int tetra = (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && dsd_demod_tetra_channel_runs(d)) ? 1 : 0;
-    const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
-    if (planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
-        && d->channel_lpf_plan_width_hz == width_hz && d->channel_lpf_plan_tetra == tetra) {
+    const int width_hz = channel_lpf_plan_width_hz(d);
+    const int tetra = channel_lpf_plan_tetra(d, profile, width_hz);
+    if (channel_lpf_plan_current(d, rate_out, profile, width_hz, tetra)) {
         return;
     }
 

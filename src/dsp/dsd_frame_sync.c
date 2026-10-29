@@ -4809,6 +4809,45 @@ frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state)
     }
 }
 
+/* After a symbol's window advanced: whether the call ends on a no-sync exit (the no-sync timeout or the hunt budget).
+ * A CQPSK mod-compare trial whose pass ended, or a hunt-chain handback, rebuilds the window in place instead and the
+ * call goes on. */
+static int
+frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now) {
+    if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt->synctest_pos)) {
+        frame_sync_runtime_init(rt, opts, state);
+        return 0;
+    }
+    const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, rt, now);
+    if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
+        frame_sync_runtime_init(rt, opts, state);
+        return 0;
+    }
+    if (timeout_step != 0) {
+        return 1;
+    }
+
+    /* The timeout above is the usual trigger, but it needs a whole matchless pass
+     * inside one call. Syncs arriving more often than that -- the permissive 4800/4
+     * matchers do, on signals belonging to another profile entirely -- would otherwise
+     * keep the hunt from ever running. The budget spans calls, so they cannot.
+     *
+     * One pass is the smallest dwell frame_sync_sps_hunt_dwell_symbols() can return, so
+     * the compare below is a necessary condition for the step and keeps the policy call
+     * out of the per-symbol path.
+     *
+     * This is a no-sync exit like the timeout above and owes the P25 SM the same
+     * accounting, in the same order (frame_sync_hunt_budget_exit()). A CQPSK trial's
+     * handback is not an exit: the window is rebuilt in place, as a new call would build it,
+     * and the hunt goes on in the same dwell. */
+    const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
+    if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
+        frame_sync_runtime_init(rt, opts, state);
+        return 0;
+    }
+    return budget_step != 0;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -4879,41 +4918,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         frame_sync_advance_sync_window(opts, state, &rt);
-        if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt.synctest_pos)) {
-            frame_sync_runtime_init(&rt, opts, state);
-            continue;
-        }
-        const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, &rt, now);
-        if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-            frame_sync_runtime_init(&rt, opts, state);
-            continue;
-        }
-        if (timeout_step != 0) {
+        if (frame_sync_pass_end_step(opts, state, &rt, now)) {
             /* A matchless pass ends the call, not the stream: the next call goes on from this history. */
-            frame_sync_history_keep(&rt, state);
-            frame_sync_sps_hunt_mark_return(state);
-            return -1;
-        }
-
-        /* The timeout above is the usual trigger, but it needs a whole matchless pass
-         * inside one call. Syncs arriving more often than that -- the permissive 4800/4
-         * matchers do, on signals belonging to another profile entirely -- would otherwise
-         * keep the hunt from ever running. The budget spans calls, so they cannot.
-         *
-         * One pass is the smallest dwell frame_sync_sps_hunt_dwell_symbols() can return, so
-         * the compare below is a necessary condition for the step and keeps the policy call
-         * out of the per-symbol path.
-         *
-         * This is a no-sync exit like the timeout above and owes the P25 SM the same
-         * accounting, in the same order (frame_sync_hunt_budget_exit()). A CQPSK trial's
-         * handback is not an exit: the window is rebuilt in place, as a new call would build it,
-         * and the hunt goes on in the same dwell. */
-        const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
-        if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-            frame_sync_runtime_init(&rt, opts, state);
-            continue;
-        }
-        if (budget_step != 0) {
             frame_sync_history_keep(&rt, state);
             frame_sync_sps_hunt_mark_return(state);
             return -1;

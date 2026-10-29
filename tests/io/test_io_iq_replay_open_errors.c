@@ -19,7 +19,6 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "iq_replay_test_hooks.h"

@@ -227,6 +227,36 @@ dsd_fopen_private(const char* path, const char* mode) {
     return dsd_fopen_private_ex(path, mode, NULL);
 }
 
+/* Close @p fd and fail with errno kept, or EINVAL when there was none. */
+static int
+dsd_close_failed_fd(int fd) {
+    int saved_errno = errno ? errno : EINVAL;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+}
+
+/* An fd dsd_fopen_existing_regular_file() opened non-blocking: refuse (EINVAL) anything but a regular file, then make
+   its reads blocking. On failure @p fd is closed and -1 returned with errno set. */
+static int
+dsd_existing_regular_fd_ready(int fd) {
+    dsd_stat_t st;
+    if (fstat(fd, &st) != 0) {
+        return dsd_close_failed_fd(fd);
+    }
+    if (!dsd_stat_is_regular(&st)) {
+        close(fd);
+        errno = EINVAL;
+        return -1;
+    }
+
+    int fl = fcntl(fd, F_GETFL);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) {
+        return dsd_close_failed_fd(fd);
+    }
+    return 0;
+}
+
 FILE*
 dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     if (!path || path[0] == '\0' || !mode || mode[0] != 'r' || strchr(mode, '+') != NULL) {
@@ -246,25 +276,7 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     if (fd < 0) {
         return NULL;
     }
-
-    dsd_stat_t st;
-    if (fstat(fd, &st) != 0) {
-        int saved_errno = errno ? errno : EINVAL;
-        close(fd);
-        errno = saved_errno;
-        return NULL;
-    }
-    if (!dsd_stat_is_regular(&st)) {
-        close(fd);
-        errno = EINVAL;
-        return NULL;
-    }
-
-    int fl = fcntl(fd, F_GETFL);
-    if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) {
-        int saved_errno = errno ? errno : EINVAL;
-        close(fd);
-        errno = saved_errno;
+    if (dsd_existing_regular_fd_ready(fd) != 0) {
         return NULL;
     }
 
