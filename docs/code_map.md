@@ -7512,9 +7512,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
     0xFF read as themselves and wider ones as `UI_KEY_WIDE_CHAR`, which no hotkey handles. ncurses and a narrow
     PDCurses keep `getch()`. Prompts (`menu_prompts.c`) never drop a typed character silently: one the field cannot
-    hold adds one `?` (a UTF-8 lead byte on ncurses, any non-printable 0x80-0xFF byte on PDCurses,
-    `UI_KEY_WIDE_CHAR`), PDCurses keypad `+ - * /` type their characters, other keys are ignored and `isprint()` only
-    sees 0..0xFF. Integer prompts refuse a value outside `int` instead of wrapping. Every Enter check (main screen,
+    hold adds one `?`: `UI_KEY_WIDE_CHAR`; on ncurses in a multibyte (UTF-8) locale (`MB_CUR_MAX > 1`) every byte
+    0x80-0xFF except a continuation byte 0x80-0xBF, which adds nothing (the locale kind decides, not `isprint()`,
+    which macOS calls true for 0xA0-0xFF in a UTF-8 locale); on PDCurses or in a single-byte locale a byte 0x80-0xFF
+    that `isprint()` refuses. PDCurses keypad `+ - * /` type their characters, other keys are ignored and `isprint()`
+    only sees 0..0xFF. Integer prompts refuse a value outside `int` instead of wrapping. Every Enter check (main screen,
     menu, prompt, help, chooser, RadioReference panel) asks `ui_key_is_enter()`: `'\n'`, `'\r'`, `KEY_ENTER`, and
     PDCurses keypad Enter `PADENTER`, which PDCurses sends instead of `KEY_ENTER` (no fallback define on ncurses;
     modified keypad Enter stays unbound). Extra accept keys such as Right stay at the call site. Tests:

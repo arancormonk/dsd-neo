@@ -581,27 +581,29 @@ ui_prompt_keypad_operator_byte(int ch) {
     return -1;
 }
 
-/* The byte a key 0x80-0xFF adds: itself when printable, else one '?' for a character the field cannot hold (any byte
- * on PDCurses, a UTF-8 lead byte on ncurses), or -1 for any other byte on ncurses (a continuation byte adds nothing). */
+/* The byte a key 0x80-0xFF adds, or -1 for none. PDCurses and a single-byte locale deliver each byte as a whole
+ * character: itself when printable, else one '?'. In a multibyte (UTF-8) locale ncurses delivers a character one
+ * byte at a time, so a continuation byte 0x80-0xBF adds nothing and any other byte (a lead byte, or a byte that
+ * cannot start a sequence) adds one '?'. The locale kind decides, not isprint(): macOS calls 0xA0-0xFF printable in
+ * a UTF-8 locale, which would insert the raw bytes of a character. */
 static int
 ui_prompt_high_byte_for_key(int ch) {
-    if (isprint(ch)) {
-        return ch; // a printable byte of a single-byte locale
+#if !defined(DSD_USE_PDCURSES)
+    if (MB_CUR_MAX > 1) {
+        return (ch >= 0x80 && ch <= 0xBF) ? -1 : '?';
     }
-#if defined(DSD_USE_PDCURSES)
-    return '?';
-#else
-    return (ch >= 0xC2 && ch <= 0xF4) ? '?' : -1;
 #endif
+    return isprint(ch) ? ch : '?';
 }
 
 /**
  * @brief The byte a typed key adds to a prompt, or -1 for a key that is not a character.
  *
- * Nothing typed is lost silently: a character the field cannot hold adds one '?'. ncurses delivers UTF-8 one byte
- * at a time, so a lead byte stands for the whole character and its continuation bytes add nothing; PDCurses
- * delivers each byte 0x80-0xFF as a whole character and anything wider as UI_KEY_WIDE_CHAR. Function keys,
- * ncurses extended keys above KEY_MAX and KEY_MOUSE are not characters. isprint() only ever sees 0..0xFF.
+ * Nothing typed is lost silently: a character the field cannot hold adds one '?'. In a UTF-8 locale ncurses delivers
+ * a character one byte at a time, so a lead byte stands for the whole character and its continuation bytes add
+ * nothing; PDCurses and a single-byte locale deliver each byte 0x80-0xFF as a whole character, and a wide PDCurses
+ * build delivers anything wider as UI_KEY_WIDE_CHAR. Function keys, ncurses extended keys above KEY_MAX and
+ * KEY_MOUSE are not characters. isprint() only ever sees 0..0xFF.
  */
 static int
 ui_prompt_byte_for_key(int ch) {

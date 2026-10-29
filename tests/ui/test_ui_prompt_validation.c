@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <ctype.h>
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
@@ -11,6 +12,7 @@
 #include <locale.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <time.h>
@@ -338,9 +340,31 @@ test_prompt_ignores_non_character_keys(void) {
     submit_plain_prompt("ab");
 }
 
-/* A character the field cannot hold shows as one '?', so typed input is never silently lost (D8). */
+/* Type the bytes 0x80-0xFF one key at a time, between "1" and "2", and return what the field shows. */
+static const char*
+type_high_bytes(const int* bytes, size_t count) {
+    static char shown[64];
+    open_plain_prompt();
+    type_text("1");
+    for (size_t i = 0; i < count; i++) {
+        assert(ui_prompt_handle_key(bytes[i]) == 1);
+    }
+    type_text("2");
+    assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
+    return shown;
+}
+
+/* In a multibyte (UTF-8) locale one character shows as one '?' whatever isprint() says of its bytes: macOS calls
+   0xA0-0xFF printable in a UTF-8 locale, glibc does not, and the field must read the same on both (D8). */
 static void
-test_prompt_marks_unholdable_characters(void) {
+test_prompt_marks_unholdable_multibyte_characters(void) {
+#if defined(DSD_USE_PDCURSES)
+    return; // PDCurses delivers whole characters; see test_prompt_marks_unholdable_characters()
+#else
+    if (MB_CUR_MAX <= 1) {
+        printf("UI_PROMPT_VALIDATION: no UTF-8 locale here; multibyte case not run\n");
+        return;
+    }
     /* U+FF0E FULLWIDTH FULL STOP as UTF-8: one character, one '?'. */
     open_plain_prompt();
     type_text("145");
@@ -350,14 +374,64 @@ test_prompt_marks_unholdable_characters(void) {
     type_text("5");
     char shown[64];
     assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
-#if defined(DSD_USE_PDCURSES)
-    /* PDCurses delivers each byte 0x80-0xFF as a whole character, so each shows. */
-    assert(strcmp(shown, "145???5") == 0);
-    submit_plain_prompt("145???5");
-#else
     assert(strcmp(shown, "145?5") == 0);
     submit_plain_prompt("145?5");
+
+    /* Every UTF-8 lead byte opens one character: a 2-byte, 3-byte and 4-byte sequence; é has a continuation byte
+       0xA9 that macOS calls printable. */
+    static const int utf8[] = {0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x93, 0xBB};
+    assert(strcmp(type_high_bytes(utf8, sizeof utf8 / sizeof utf8[0]), "1???2") == 0);
+    submit_plain_prompt("1???2");
+
+    /* A byte that cannot start a sequence (0xC0, 0xC1, 0xF5-0xFF) is a character the field cannot hold too. */
+    static const int invalid[] = {0xC0, 0xC1, 0xF5, 0xFF};
+    assert(strcmp(type_high_bytes(invalid, sizeof invalid / sizeof invalid[0]), "1????2") == 0);
+    submit_plain_prompt("1????2");
 #endif
+}
+
+/* In a single-byte locale each byte 0x80-0xFF is a whole character: itself when isprint() accepts it, else one
+   '?'. The "C" locale is single-byte; which bytes it calls printable is the libc's choice, so ask it (D8). */
+static void
+test_prompt_marks_unholdable_single_byte_characters(void) {
+    const char* saved = setlocale(LC_CTYPE, NULL);
+    char saved_name[128];
+    DSD_SNPRINTF(saved_name, sizeof saved_name, "%s", saved ? saved : "C");
+    assert(setlocale(LC_CTYPE, "C") != NULL);
+    assert(MB_CUR_MAX == 1);
+
+    static const int bytes[] = {0xEF, 0xBC, 0x8E, 0xE9, 0x80, 0xA0, 0xFF};
+
+    enum { BYTE_COUNT = sizeof bytes / sizeof bytes[0] };
+
+    char want[BYTE_COUNT + 3];
+    size_t n = 0;
+    want[n++] = '1';
+    for (size_t i = 0; i < BYTE_COUNT; i++) {
+        want[n++] = isprint(bytes[i]) ? (char)bytes[i] : '?';
+    }
+    want[n++] = '2';
+    want[n] = '\0';
+    assert(strcmp(type_high_bytes(bytes, BYTE_COUNT), want) == 0);
+    submit_plain_prompt(want);
+
+    assert(setlocale(LC_CTYPE, saved_name) != NULL);
+}
+
+/* A character the field cannot hold shows as one '?', so typed input is never silently lost (D8). */
+static void
+test_prompt_marks_unholdable_characters(void) {
+#if defined(DSD_USE_PDCURSES)
+    /* PDCurses delivers each byte 0x80-0xFF as a whole character, so each shows. */
+    static const int fullwidth_stop[] = {0xEF, 0xBC, 0x8E};
+    char want[8];
+    DSD_SNPRINTF(want, sizeof want, "1%c%c%c2", isprint(0xEF) ? 0xEF : '?', isprint(0xBC) ? 0xBC : '?',
+                 isprint(0x8E) ? 0x8E : '?');
+    assert(strcmp(type_high_bytes(fullwidth_stop, 3), want) == 0);
+    submit_plain_prompt(want);
+#endif
+    test_prompt_marks_unholdable_multibyte_characters();
+    test_prompt_marks_unholdable_single_byte_characters();
 
     /* A wide PDCurses character above 0xFF arrives as one sentinel. */
     open_plain_prompt();
@@ -365,18 +439,6 @@ test_prompt_marks_unholdable_characters(void) {
     assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
     type_text("2");
     submit_plain_prompt("1?2");
-
-    /* Every UTF-8 lead byte opens one character: a 2-byte, 3-byte and 4-byte sequence. */
-    open_plain_prompt();
-    static const int utf8[] = {0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x93, 0xBB};
-    for (size_t i = 0; i < sizeof utf8 / sizeof utf8[0]; i++) {
-        assert(ui_prompt_handle_key(utf8[i]) == 1);
-    }
-#if defined(DSD_USE_PDCURSES)
-    submit_plain_prompt("?????????");
-#else
-    submit_plain_prompt("???");
-#endif
 
     /* The '?' obeys the capacity like any other byte. */
     reset_string_capture();
@@ -859,10 +921,13 @@ test_prompt_layout_and_view_contracts(void) {
 
 int
 main(void) {
-    /* A UTF-8 locale where one exists: every non-ASCII byte then fails isprint(), and glibc reads key codes above
-       0xFF past its table (B7), which is the input the prompt must still handle. */
-    if (!setlocale(LC_CTYPE, "C.UTF-8")) {
-        (void)setlocale(LC_CTYPE, "en_US.UTF-8");
+    /* A UTF-8 locale where one exists, whatever the environment says: the multibyte rule is the input the prompt
+       must handle, and glibc reads key codes above 0xFF past its table there (B7). */
+    static const char* const utf8_locales[] = {"C.UTF-8", "en_US.UTF-8", "UTF-8"};
+    for (size_t i = 0; i < sizeof utf8_locales / sizeof utf8_locales[0]; i++) {
+        if (setlocale(LC_CTYPE, utf8_locales[i]) && MB_CUR_MAX > 1) {
+            break;
+        }
     }
     test_string_prompt_completion_paths();
     test_string_prompt_key_edges();
