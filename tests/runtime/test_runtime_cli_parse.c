@@ -3971,6 +3971,94 @@ test_cli_wav_mode_overrides_the_ini_recording_mode(void) {
     return rc;
 }
 
+/* One bootstrap of @p ini plus @p cli (NULL-terminated, up to four); the resulting delete-after-upload, or -1. */
+static int
+journal_rdio_delete_after_bootstrap(const char* tag, const char* ini, const char* const* cli) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "%s: temp ini failed\n", tag);
+        freeState(state);
+        free(opts);
+        free(state);
+        return -1;
+    }
+    char args[7][1024];
+    char* argv[8] = {NULL};
+    int argc = 0;
+    DSD_SNPRINTF(args[argc++], sizeof args[0], "%s", "dsd-neo");
+    DSD_SNPRINTF(args[argc++], sizeof args[0], "%s", "--config");
+    DSD_SNPRINTF(args[argc++], sizeof args[0], "%s", cfg_path);
+    for (int i = 0; i < 4 && cli[i] != NULL; i++) {
+        DSD_SNPRINTF(args[argc++], sizeof args[0], "%s", cli[i]);
+    }
+    for (int i = 0; i < argc; i++) {
+        argv[i] = args[i];
+    }
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc_boot = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, &exit_rc);
+    int result = -1;
+    if (rc_boot != DSD_BOOTSTRAP_CONTINUE) {
+        DSD_FPRINTF(stderr, "%s: bootstrap rc=%d exit=%d\n", tag, rc_boot, exit_rc);
+    } else {
+        result = opts->rdio_api_delete_after_upload;
+    }
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return result;
+}
+
+/* Issue #708: a run that names a recording journal keeps the files it uploads, however delete-after-upload was turned
+   on (the INI the app's extra options can name with --config, or the command line); without a journal it stands. */
+static int
+test_wav_journal_turns_rdio_delete_after_upload_off(void) {
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    static const char ini_delete[] = "[recording]\n"
+                                     "rdio_mode = \"api\"\n"
+                                     "rdio_api_delete_after_upload = true\n";
+    static const char ini_plain[] = "[recording]\n"
+                                    "rdio_mode = \"api\"\n";
+    const char* const journal_only[] = {"--wav-journal", "calls.jsonl", NULL};
+    const char* const nothing[] = {NULL};
+    const char* const cli_delete_and_journal[] = {"--rdio-api-delete-after-upload", "--wav-journal", "calls.jsonl",
+                                                  NULL};
+    const char* const cli_delete[] = {"--rdio-api-delete-after-upload", NULL};
+
+    const struct {
+        const char* tag;
+        const char* ini;
+        const char* const* cli;
+        int want;
+    } cases[] = {
+        {"INI delete-after-upload with a journal", ini_delete, journal_only, 0},
+        {"INI delete-after-upload without a journal", ini_delete, nothing, 1},
+        {"CLI delete-after-upload with a journal", ini_plain, cli_delete_and_journal, 0},
+        {"CLI delete-after-upload without a journal", ini_plain, cli_delete, 1},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const int got = journal_rdio_delete_after_bootstrap(cases[i].tag, cases[i].ini, cases[i].cli);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: delete-after-upload %d, want %d\n", cases[i].tag, got, cases[i].want);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_open_mbe_missing_file_leaves_stream_null(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -10976,6 +11064,7 @@ main(void) {
     rc |= test_per_call_wav_flag_opens_nothing_while_parsing();
     rc |= test_per_call_and_static_wav_flags_refuse_each_other();
     rc |= test_cli_wav_mode_overrides_the_ini_recording_mode();
+    rc |= test_wav_journal_turns_rdio_delete_after_upload_off();
     rc |= test_open_mbe_missing_file_leaves_stream_null();
     rc |= test_sdrtrunk_json_forced_dmr_algid_uses_talkgroup_key();
     rc |= test_rdio_long_options_parse();

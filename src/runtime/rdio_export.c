@@ -1107,6 +1107,17 @@ dsd_rdio_mode_to_string(int mode) {
 }
 
 int
+dsd_rdio_keep_journaled_uploads(dsd_opts* opts) {
+    if (!opts || opts->wav_journal_file[0] == '\0' || !opts->rdio_api_delete_after_upload) {
+        return 0;
+    }
+    opts->rdio_api_delete_after_upload = 0;
+    LOG_WARN("WARNING: Rdio API delete-after-upload is off: this run keeps a call recording journal (--wav-journal), "
+             "whose owner manages the recordings' retention.\n");
+    return 1;
+}
+
+int
 dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened) {
     return dsd_rdio_export_call_ex(opts, event_struct, wav_path, opened, NULL);
 }

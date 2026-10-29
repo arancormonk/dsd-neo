@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -1116,6 +1117,81 @@ run_transition_case(const transition_case* tc) {
     return rc;
 }
 
+/* A live config that turns delete-after-upload on leaves it off in a run that names a recording journal, whose owner
+   manages the recordings' retention; without a journal the config's choice stands. */
+static int
+test_config_delete_after_upload_yields_to_the_journal(void) {
+    int rc = 0;
+    for (int journaled = 0; journaled < 2; journaled++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_rec_cfg_rdio");
+        if (journaled) {
+            DSD_SNPRINTF(r.opts->wav_journal_file, sizeof r.opts->wav_journal_file, "%s/recordings.jsonl", r.dir);
+        }
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_recording = 1;
+        DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
+        cfg.rdio_mode = DSD_RDIO_MODE_API;
+        cfg.rdio_api_delete_after_upload = 1;
+        rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config drained", drain(&r), 1);
+        rc |= expect_int(journaled ? "journaled: delete-after-upload off" : "no journal: delete-after-upload on",
+                         r.opts->rdio_api_delete_after_upload, journaled ? 0 : 1);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* A config whose only recording change is the raw WAV switches the raw WAV and leaves the per-call files alone: a slot
+   waiting to reopen still waits for its call end, and no per-call open is tried (opens failing here would count one). */
+static int
+test_config_changing_only_the_raw_wav_leaves_a_waiting_slot(void) {
+    rig r;
+    char side[DSD_TEST_PATH_MAX];
+    char r1[DSD_TEST_PATH_MAX * 2];
+    char r2[DSD_TEST_PATH_MAX * 2];
+    int rc = rig_open(&r, "dsdneo_rec_cfg_raw");
+    rc |= expect_true("side folder", dsd_test_mkdtemp(side, sizeof side, "dsdneo_rec_cfg_raw_s") != NULL);
+    (void)dsd_test_path_join(r1, sizeof r1, side, "r1.wav");
+    (void)dsd_test_path_join(r2, sizeof r2, side, "r2.wav");
+    (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_RAW_OPEN, r1);
+    (void)drain(&r);
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    SNDFILE* const slot1 = r.opts->wav_out_f;
+    r.opts->wav_out_fR = close_wav_file(r.opts->wav_out_fR);
+    (void)remove(r.opts->wav_out_fileR);
+    r.opts->wav_out_fileR[0] = '\0';
+    r.opts->wav_out_reopen = 2;
+    dsd_wav_test_fail_opens_after(0);
+    r.state->ui_msg[0] = '\0';
+
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.per_call_wav = 1;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
+    DSD_SNPRINTF(cfg.raw_wav_path, sizeof cfg.raw_wav_path, "%s", r2);
+    rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config drained", drain(&r), 1);
+    dsd_wav_test_fail_opens_after(-1);
+
+    dsd_wav_recording_status status;
+    dsd_wav_recording_status_get(&status);
+    rc |= expect_int("no per-call open tried", status.failures[DSD_WAV_RECORDING_ERROR_OPEN], 0);
+    rc |= expect_true("no recording toast", strstr(r.state->ui_msg, "did not open") == NULL);
+    rc |= expect_int("slot 2 still waits for its call end", r.opts->wav_out_reopen, 2);
+    rc |= expect_true("slot 1 keeps its file", r.opts->wav_out_f == slot1 && r.opts->wav_out_fR == NULL);
+    rc |= expect_int("per-call recording on", r.opts->dmr_stereo_wav, 1);
+    rc |= expect_true("the raw WAV switched", r.opts->wav_out_raw != NULL && strcmp(r.opts->wav_out_file_raw, r2) == 0);
+    rc |= expect_true("the new raw WAV is on disk", file_exists(r2));
+    r.opts->wav_out_raw = close_wav_file(r.opts->wav_out_raw);
+    rig_close(&r);
+    remove_folder(side);
+    return rc;
+}
+
 static int
 test_recording_transition_table(void) {
     int rc = 0;
@@ -1496,6 +1572,8 @@ main(void) {
     rc |= test_config_moving_the_folder_publishes_in_the_old_one();
     rc |= test_config_moving_the_folder_and_stopping_publishes_in_the_old_one();
     rc |= test_config_that_changes_no_recording_leaves_it();
+    rc |= test_config_changing_only_the_raw_wav_leaves_a_waiting_slot();
+    rc |= test_config_delete_after_upload_yields_to_the_journal();
     rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
     rc |= test_full_segment_table_is_reported_once_per_run();
     rc |= test_recording_transition_table();

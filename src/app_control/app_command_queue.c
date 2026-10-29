@@ -80,6 +80,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -8010,6 +8011,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     cfg_recording recording_before;
     cfg_recording_of(opts, &recording_before);
     dsd_stage_user_config_to_opts(&cfg, opts, state);
+    (void)dsd_rdio_keep_journaled_uploads(opts);
     const int recording_rc = apply_cfg_recording(opts, state, &recording_before);
     g_config_recording_applied = recording_rc == 0;
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
