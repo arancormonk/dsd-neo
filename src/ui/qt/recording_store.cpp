@@ -550,11 +550,11 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
         const std::lock_guard<std::mutex> lock(m_mutex);
         rootPath = m_roots.at(root);
     }
-    // The folder table first, folder.json only: what a session start needs. The journals are read after
-    // (loadPendingFolders()), so a start never waits for them.
     if (m_rootReadHook) {
         m_rootReadHook(rootPath);
     }
+    // The folder table first, folder.json only: what a session start needs. The journals are read after
+    // (loadPendingFolders()), so a start never waits for them.
     QList<Folder> table;
     const QStringList subdirs = QDir(rootPath).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden, QDir::Name);
     for (const QString& subdir : subdirs) {

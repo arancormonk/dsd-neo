@@ -1394,7 +1394,7 @@ folder_away(const RecordingStore& store, const QString& uid) {
  * delete that waits for it stays queued and runs once the storage is back for good. */
 void
 test_root_gone_as_it_is_read_again(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
@@ -1432,7 +1432,7 @@ test_root_gone_as_it_is_read_again(void) {
  * (after the folder.json, before the journal) drops none of the folder's recordings, which read as away. */
 void
 test_root_gone_as_a_journal_is_read_again(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
@@ -1472,7 +1472,7 @@ test_root_gone_as_a_journal_is_read_again(void) {
  * storage is back, even when it is back before the next pass begins. */
 void
 test_root_gone_as_a_journal_is_tailed(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
@@ -1505,7 +1505,7 @@ test_root_gone_as_a_journal_is_tailed(void) {
  * once the storage is back, and the oldest goes then. */
 void
 test_root_gone_during_the_limit(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     const QString outer = roots.external + QStringLiteral("/County (1a2b3c4d)");
@@ -1541,7 +1541,7 @@ test_root_gone_during_the_limit(void) {
  * storage is back. */
 void
 test_root_gone_during_an_unlink(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list(), false);
@@ -1578,7 +1578,7 @@ test_root_gone_during_an_unlink(void) {
  * and makes its folder in the fallback, and the pass it asks for marks the storage away. */
 void
 test_root_gone_before_a_session_start(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
@@ -1621,7 +1621,7 @@ counted_soon(const RecordingStore& store, int count) {
  * begins it in an unchanged folder or the host reports a session no starter began. */
 void
 test_session_start_wakes_the_worker(void) {
-    Roots roots;
+    const Roots roots;
     const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
     write_folder_json(folder, QString(kUidA), QStringLiteral("County"));
     Store s(roots.list());
