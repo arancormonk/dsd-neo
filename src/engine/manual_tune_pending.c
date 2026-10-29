@@ -146,3 +146,12 @@ dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out) {
         *out = g_settled;
     }
 }
+
+int
+dsd_engine_manual_tune_landed(dsd_manual_tune_kind kind) {
+    if (!atomic_load(&g_record_pending) || g_record.kind != kind) {
+        return 0;
+    }
+    const uint64_t packed = dsd_atomic_u64_load_acquire(&g_completion);
+    return (uint32_t)(packed >> 32) == (uint32_t)g_record.id && (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
+}

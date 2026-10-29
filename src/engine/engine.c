@@ -111,6 +111,7 @@
 #include <string.h>
 #include <time.h>
 #include "engine_hooks_install.h"
+#include "engine_test_support.h"
 #include "manual_tune_pending.h"
 #include "scan_step_untyped.h"
 
@@ -182,12 +183,9 @@ dsd_engine_legacy_tune_caches_forget(void) {
 
 static void
 reset_device_io_caches(void) {
-    dsd_engine_rigctl_tune_cache_forget();
+    dsd_engine_legacy_tune_caches_forget();
     no_carrier_clear_generic_recovery_tracking();
     dsd_trunk_tuning_requests_reset();
-#ifdef USE_RADIO
-    s_last_rtl_freq = 0;
-#endif
 }
 
 static int
@@ -1628,6 +1626,9 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // hangtime each, so a long run of avoids does not stall the scan.
     const int row = dsd_engine_scan_untyped_find_row(state, state->lcn_freq_roll, 0);
     if (row < 0) {
+        /* Nowhere to go (an empty list, or every row avoided): the receiver stays, so the windows an expired cap or
+           voice gate would otherwise keep closing on every frame reopen, as after an abandoned step (issue #671). */
+        no_carrier_rearm_abandoned_scan(opts, state, now);
         return 0;
     }
     state->lcn_freq_roll = row;
@@ -3510,6 +3511,13 @@ static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
+        /* An untyped -Y row whose tune timed out has landed (issue #671): the reception ends before another frame
+           decodes, so the outer pass commits the row (dsd_engine_scan_untyped_poll(): the boundary under the row left,
+           then its keys) and the hunt finds the frame again under them. One load while no tune is noted. */
+        if (dsd_engine_manual_tune_landed(DSD_MANUAL_TUNE_UNTYPED_STEP)) {
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
@@ -3572,6 +3580,14 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         state->synctype = getFrameSync(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
     }
+}
+
+void
+dsd_engine_test_process_synced_frames(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_slicer_threshold_cache cache;
+    dsd_engine_slicer_threshold_cache_init(&cache);
+    uint64_t frame_tune_generation = dsd_trunk_tuning_generation();
+    live_scanner_process_synced_frames(opts, state, &cache, &frame_tune_generation);
 }
 
 /* Whether the input that ended still runs, closed: a command pumped since it ended (in the synced-frames loop, say) may

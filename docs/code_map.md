@@ -2667,22 +2667,26 @@ coalesced wait and a stop), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared
 pieces engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It
 finds the next row (`dsd_engine_scan_untyped_find_row()`: not avoided; a placeholder parks the timed step where it is,
-and `skip_placeholders` skips it) and tunes every configured front end, rigctl first, then RTL through
+and `skip_placeholders` skips it; with none, an empty or all-avoided list, the scan's windows reopen as after an
+abandoned step, so an expired cap or voice gate does not cut every reception after one frame) and tunes every configured front end, rigctl first, then RTL through
 `io_control_set_rtl_freq_tagged()`, so the cached centre follows the outcome as a manual tune's does. A tune that
 landed runs the `SCAN_STEP` carrier boundary (in `no_carrier_run()`, after the playout drain and any control-channel
 return), then installs the row: the cursor past it, its keys, the analog reset, fresh scan clocks. An RTL timeout notes
 an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`, moved by every
 `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start) and `trunk_chan_map_seq`; until the
-completion the cursor, the keys and the deadline stay. A landing commits the row (boundary, then install) only while the
-scan is still that one: `-Y` on, no modes, the same session and map, the row still on the frequency tuned. Otherwise
+completion the cursor, the keys and the deadline stay. The synced-frames loop checks for the landing before every frame
+(`dsd_engine_manual_tune_landed()`, one atomic load while nothing is noted) and ends the reception when it has come, so
+no frame of the new row decodes under the row left. The outer pass's poll then commits the row (boundary, then
+install), but only while the scan is still that one: `-Y` on, no modes, the same session and map, the row still on the frequency tuned. Otherwise
 nothing commits, and only the frequency stands. A late failure abandons the row as a failure inside the wait does: the
 cursor stays for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the
 outgoing boundary and resets the received tone, but keeps the cursor and the deadline.
 `dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary inside, for a caller outside the
 no-carrier pass. The legacy legs skip a frequency they last sent; a manual tune moves the receiver without them, so
 `dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every tune `request_manual_tune()`'s
-direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing and late failure, a
-landing after a stop or a list replacement, a failure's centre, the find and enter pieces), `APP_COMMAND_QUEUE`.
+direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing
+and late failure, a landing in the middle of a reception, a landing after a rigctl move, under a hold, after a stop or a
+list replacement, a failure's centre, an empty or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 ## App-Control
 

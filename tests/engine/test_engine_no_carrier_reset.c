@@ -75,6 +75,10 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "test_support.h"
 
+#ifdef DSD_NEO_TEST_RTL_WRAP
+#include <dsd-neo/core/channel_label.h>
+#include "engine_test_support.h"
+#endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
@@ -812,6 +816,71 @@ int
 __wrap_rtl_stream_request_fsk_reacquire(void) {
     g_rtl_fsk_reacquire_requests++;
     return 1;
+}
+#endif
+
+/* The live loop's hunt and frame decoder, scripted for its synced-frames pass (issue #671): while a script runs, the
+ * hunt finds sync g_frame_syncs_left more times, and each decoded frame records the row it was decoded under (the
+ * cursor, the channel label, a key the row's set installs). The controller lands the outstanding tune while frame
+ * g_frame_land_at is decoded. With no script both reach the real ones. */
+#define FAKE_FRAMES_MAX 16
+static int g_frame_script = 0;
+static int g_frame_syncs_left = 0;
+static int g_frame_land_at = -1;
+static int g_frame_count = 0;
+static int g_frame_roll[FAKE_FRAMES_MAX];
+static unsigned long long g_frame_rkey[FAKE_FRAMES_MAX];
+static char g_frame_label[FAKE_FRAMES_MAX][DSD_CHANNEL_LABEL_SIZE];
+int __real_getFrameSync(dsd_opts* opts, dsd_state* state);
+int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
+void __real_processFrame(dsd_opts* opts, dsd_state* state);
+void __wrap_processFrame(dsd_opts* opts, dsd_state* state);
+
+int
+__wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
+    if (!g_frame_script) {
+        return __real_getFrameSync(opts, state);
+    }
+    if (g_frame_syncs_left <= 0) {
+        return DSD_SYNC_NONE;
+    }
+    g_frame_syncs_left--;
+    return DSD_SYNC_NXDN_POS;
+}
+
+void
+__wrap_processFrame(dsd_opts* opts, dsd_state* state) {
+    if (!g_frame_script) {
+        __real_processFrame(opts, state);
+        return;
+    }
+    if (g_frame_count < FAKE_FRAMES_MAX) {
+        g_frame_roll[g_frame_count] = state->lcn_freq_roll;
+        g_frame_rkey[g_frame_count] = state->rkey_array[9];
+        (void)dsd_channel_label_current(opts, state, g_frame_label[g_frame_count], sizeof g_frame_label[0]);
+    }
+#ifdef USE_RADIO
+    if (g_frame_count == g_frame_land_at) {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    }
+#else
+    (void)g_frame_land_at;
+#endif
+    g_frame_count++;
+}
+
+#ifdef USE_RADIO
+/* Run the live loop's synced-frames pass on a sync the hunt found, with @p more_syncs found after the first frame and
+   the outstanding tune landing while frame @p land_at decodes (-1: never). */
+static void
+run_synced_frames(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at) {
+    g_frame_script = 1;
+    g_frame_syncs_left = more_syncs;
+    g_frame_land_at = land_at;
+    g_frame_count = 0;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    dsd_engine_test_process_synced_frames(opts, state);
+    g_frame_script = 0;
 }
 #endif
 
@@ -2035,6 +2104,157 @@ test_untyped_find_and_enter_row(void) {
     rc |= expect_true("enter-row-pending-lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                                      && state->lcn_freq_roll == 4 && state->rkey_array[9] == 0ULL);
     free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+frame_was(const char* tag, int frame, const char* label, unsigned long long rkey) {
+    if (frame >= FAKE_FRAMES_MAX || strcmp(g_frame_label[frame], label) != 0 || g_frame_rkey[frame] != rkey) {
+        DSD_FPRINTF(stderr, "%s: frame %d decoded under \"%s\", rkey %llu (want \"%s\", %llu)\n", tag, frame,
+                    frame < FAKE_FRAMES_MAX ? g_frame_label[frame] : "?",
+                    frame < FAKE_FRAMES_MAX ? g_frame_rkey[frame] : 0ULL, label, rkey);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #671 (B22, through the live loop): a scan stops on a busy row, so a row whose tune timed out usually lands and
+   syncs at once, inside one reception. The live loop's synced-frames pass must end that reception as the landing comes,
+   before another frame decodes, so the outer pass commits the row and the frames after the landing decode under the new
+   row's name and keys, not for a whole reception under the row left. */
+static int
+test_legacy_step_landing_ends_the_reception_on_it(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 995012500, 996012500) != 0
+        || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
+        || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    /* Row 0 lands at once: the reception on it decodes under ALPHA and its keys. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    run_synced_frames(opts, state, 1, -1);
+    rc |= expect_true("mid-reception-row-0-frames", g_frame_count == 2);
+    rc |= frame_was("mid-reception-row-0", 0, "ALPHA", 999ULL);
+
+    /* Row 1's tune times out. The hunt syncs, and the controller lands row 1 while frame 1 decodes; the hunt goes on
+       finding sync, now on row 1. */
+    (void)step_into_a_timed_out_tune(opts, state);
+    rc |= expect_true("mid-reception-row-1-pending", g_retune_in_flight.active && state->lcn_freq_roll == 1);
+    run_synced_frames(opts, state, 6, 1);
+    if (g_frame_count != 2) {
+        DSD_FPRINTF(stderr, "mid-reception: %d frames decoded in the reception the landing came in (want 2)\n",
+                    g_frame_count);
+    }
+    rc |= expect_true("mid-reception-ends-at-the-landing", g_frame_count == 2 && state->synctype == DSD_SYNC_NONE);
+    rc |= frame_was("mid-reception-before-landing", 1, "ALPHA", 999ULL);
+
+    /* The outer pass commits the row; the next reception decodes under BRAVO, whose list row carries no keys. */
+    rc |= expect_true("mid-reception-outer-pass-commits",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED && state->lcn_freq_roll == 2);
+    run_synced_frames(opts, state, 1, -1);
+    rc |= expect_true("mid-reception-next-reception-frames", g_frame_count == 2);
+    rc |= frame_was("mid-reception-after-landing", 0, "BRAVO", 0ULL);
+    rc |= frame_was("mid-reception-after-landing", 1, "BRAVO", 0ULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #671: the rigctl leg moves and the RTL tune then times out. The receiver has left the row, so the outgoing
+   boundary runs and the tone heard there goes at once, while the row itself waits for the RTL landing, whose own
+   boundary and install then commit it. And an operator hold taken meanwhile does not undo the landing: it stops the
+   rotation, but the receiver is on the row, so its name and keys follow. */
+static int
+test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold(void) {
+    int rc = 0;
+    for (int hold = 0; hold <= 1; hold++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        /* Frequencies of their own per pass: the legacy legs' caches outlive the runtime. */
+        const long int row0_hz = hold ? 997512500 : 997012500;
+        if (setup_untyped_keyed_list(opts, state, row0_hz, hold ? 998512500 : 998012500) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        const char* what = hold ? "rigctl-move-hold" : "rigctl-move";
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = 1;
+        g_rigctl_setfreq_calls = 0;
+        seed_rx_tone_publication(state, 1318);
+        const uint32_t tone_generation = state->analog_rx.generation;
+        const uint32_t carrier_seq = state->carrier_seq;
+        const time_t deadline = step_into_a_timed_out_tune(opts, state);
+        rc |= expect_case(what, "rigctl moved",
+                          g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == row0_hz && g_retune_in_flight.active);
+        rc |= expect_case(what, "the outgoing boundary ran once", state->carrier_seq == carrier_seq + 1U);
+        rc |= expect_case(what, "the tone went", rx_tone_publication_cleared(state, tone_generation));
+        rc |= expect_case(what, "the row waits",
+                          state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL
+                              && state->last_cc_sync_time == deadline);
+        state->lcn_scan_hold = (uint8_t)hold;
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+        rc |= expect_case(what, "the landing runs its own boundary", state->carrier_seq == carrier_seq + 2U);
+        rc |= expect_case(what, "the row commits",
+                          state->lcn_freq_roll == 1 && state->rkey_array[9] == 999ULL
+                              && state->last_cc_sync_time > deadline);
+        g_rigctl_setfreq_ok = 0;
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* A -Y list with no row to step to (every row avoided, or none at all) keeps the receiver where it is. The windows an
+   expired voice gate or visit cap keeps closing must reopen as after an abandoned step: otherwise the voice gate, lapsed
+   on the frequency on air, cuts every reception there after one frame, for good (issue #671). */
+static int
+test_legacy_step_with_no_row_reopens_its_windows(void) {
+    int rc = 0;
+    for (int empty = 0; empty <= 1; empty++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        const char* what = empty ? "empty-list" : "all-avoided";
+        reset_rtl_profile_fakes();
+        opts->scanner_mode = 1;
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->trunk_hangtime = 1;
+        opts->scan_voice_only = 1;
+        state->rtl_ctx = (RtlSdrContext*)state;
+        if (!empty) {
+            state->trunk_lcn_freq[0] = 999012500;
+            state->trunk_lcn_freq[1] = 999512500;
+            state->lcn_freq_count = 2;
+            (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 1);
+            (void)dsd_state_trunk_lcn_avoid_set(state, 1U, 1);
+        }
+        const double now_m = dsd_decode_now_mono_s();
+        dsd_scan_voice_gate_note_retune(state, now_m - 30.0);
+        state->scan_voice_gate_sync_m = now_m - 20.0; /* synced this visit; the qualify window long lapsed */
+        rc |= expect_case(what, "the lapsed gate cuts receptions",
+                          dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 1);
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+        rc |= expect_case(what, "nothing is tuned", g_rtl_tune_calls == 0);
+        rc |= expect_case(what, "the windows reopen",
+                          dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0
+                              && state->last_cc_sync_time >= time(NULL) - 1);
+        free_test_runtime(opts, state);
+    }
     return rc;
 }
 
@@ -7698,6 +7918,9 @@ main(void) {
     rc |= test_legacy_step_landing_after_the_scan_changed_commits_nothing();
     rc |= test_legacy_step_failure_reconciles_the_cached_centre();
     rc |= test_untyped_find_and_enter_row();
+    rc |= test_legacy_step_landing_ends_the_reception_on_it();
+    rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
+    rc |= test_legacy_step_with_no_row_reopens_its_windows();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_moves_on_while_an_nfm_retune_is_in_flight(DSD_TRUNK_SCAN_CONTROL_ADVANCE,

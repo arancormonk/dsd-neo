@@ -28,6 +28,11 @@ typedef struct {
    for the caller to settle what the tune was for (an untyped -Y step's row). Decoder thread. */
 void dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out);
 
+/* Whether a tune of @p kind is noted and its completion has come as a landing, which the next
+   dsd_engine_manual_tune_poll() will take: the synced-frames loop ends a reception on it, so an untyped -Y row commits
+   before more of its frames decode. One atomic load while nothing is noted. Decoder thread. */
+int dsd_engine_manual_tune_landed(dsd_manual_tune_kind kind);
+
 /* Store the completion of the manual tune @p id (an rtl_stream_tune_result) for the decoder's next poll. Called on
    the RTL controller thread, or on the thread stopping the stream; never blocks. */
 void dsd_engine_manual_tune_completion(uint64_t id, int result);
