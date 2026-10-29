@@ -109,7 +109,8 @@ set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_TARGET_SDK_VERSION 36)
 # Pinned rather than whichever platform is installed newest: the manifest's
 # configChanges uses assetsPaths, which aapt2 knows only from android-36 (#782).
 # CI installs this platform from ANDROID_COMPILE_SDK in tools/ci-dependency-pins.env;
-# launch_policy in tests/android/run_jvm_tests.py keeps the two equal.
+# launch_policy in tests/android/run_jvm_tests.py keeps the two equal, and equal to
+# the platform the configChanges list was audited for (AUDITED_COMPILE_SDK).
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_COMPILE_SDK_VERSION 36)
 
 # Without these two androiddeployqt substitutes the CMake target name into

@@ -47,9 +47,12 @@
              waits for but does not send. See DsdNeoActivity. -->
         <!-- One instance per process (#782): Qt 6.11.2 restarts the whole process, skipping
              the app's teardown, when a second instance is created in a process it already
-             started. singleTask sends a USB attachment to onNewIntent of the running
-             instance instead of a new one on top of a picker or share sheet, and
-             configChanges lists every configuration change the platform defines
+             started. singleTask brings the running instance forward for a USB attachment
+             (to onNewIntent), the launcher icon and the decoding notification, where
+             singleTop could create a new one on top of a picker or permission dialog. The
+             cost: those three close a picker or permission dialog open in the app's task,
+             which then returns cancelled; the flows treat that as a cancel. configChanges
+             lists every configuration change the platform defines
              (android-36, so compileSdk 36), assetsPaths (a runtime overlay turned on) included,
              so none recreates the activity. resourcesUnused is left out on purpose: it is
              for activities that use no resources, and this one uses the splash, the strings

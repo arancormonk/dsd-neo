@@ -565,14 +565,17 @@ def a11y_bridge_order():
 
 # Every android:configChanges flag that android-36's attrs_manifest.xml defines, except resourcesUnused, which overrides
 # them all and is for activities that use no resources (#782). A flag missing here recreates the activity, and Qt 6.11.2
-# then restarts the process without the app's teardown.
+# then restarts the process without the app's teardown. Audited for AUDITED_COMPILE_SDK only.
 PINNED_CONFIG_CHANGES = (
     "mcc", "mnc", "locale", "touchscreen", "keyboard", "keyboardHidden", "navigation", "orientation", "screenLayout",
     "uiMode", "screenSize", "smallestScreenSize", "density", "layoutDirection", "colorMode", "grammaticalGender",
     "fontScale", "fontWeightAdjustment", "assetsPaths",
 )
-# assetsPaths, the newest of them, exists from this platform on; aapt2 refuses it with an older one.
-MIN_COMPILE_SDK = 36
+# The platform PINNED_CONFIG_CHANGES was audited against; assetsPaths, the newest flag, exists from it on. Android adds a
+# flag in most releases, so a compile SDK bump fails launch_policy until the list is audited for the new platform.
+AUDITED_COMPILE_SDK = 36
+# The heading in docs/code_map.md that lists the runs a Qt bump repeats.
+QT_UPGRADE_CHECKS = 'the "Qt upgrade checks" in docs/code_map.md'
 # An element's opening tag outside comments, and its android: attributes. The manifest is the app's own, so plain
 # patterns do; no XML parser is needed for it.
 XML_COMMENT = re.compile(r"<!--.*?-->", re.S)
@@ -583,8 +586,10 @@ ANDROID_ATTRIBUTE = re.compile(r'\bandroid:(\w+)\s*=\s*"([^"]*)"')
 def launch_policy():
     """#782: Qt 6.11.2 restarts the process inside onCreate, without the app's teardown, when a second activity instance
     is created in a process it started, so the manifest allows none: singleTask, and every configuration change handled
-    in place, against a compile SDK that knows every flag, the one CI installs. LaunchGuard's exit-line text names the
-    Qt the restart path was audited on, so a Qt bump fails here until it is audited again."""
+    in place, against the compile SDK the list was audited for, the one CI installs. LaunchGuard's summary names the Qt
+    the restart path was audited on, so a Qt bump fails here until it is audited again; this proves only that the text
+    was edited, not that the checks ran. The record's plumbing (ProcessFacts) is pinned by source, since recreation
+    cannot be triggered on a fixed build."""
     manifest_path = REPO / "android/package/AndroidManifest.xml"
     cmake_path = REPO / "android/CMakeLists.txt"
     pins_path = REPO / "tools/ci-dependency-pins.env"
@@ -623,9 +628,12 @@ def launch_policy():
     pinned = re.findall(r"^ANDROID_COMPILE_SDK=(\d+)$", pins, re.M)
     if len(pinned) != 1:
         return "tools/ci-dependency-pins.env: no single ANDROID_COMPILE_SDK"
-    if int(compile_sdk[0]) < MIN_COMPILE_SDK:
+    if int(compile_sdk[0]) != AUDITED_COMPILE_SDK:
         return (
-            f"android/CMakeLists.txt: compile SDK {compile_sdk[0]}; assetsPaths needs android-{MIN_COMPILE_SDK} or newer"
+            f"android/CMakeLists.txt: compile SDK {compile_sdk[0]}, but configChanges was audited for "
+            f"android-{AUDITED_COMPILE_SDK}: compare the configChanges flags in platforms/android-{compile_sdk[0]}/data/"
+            "res/values/attrs_manifest.xml with PINNED_CONFIG_CHANGES (all but resourcesUnused), update the manifest and "
+            "the list, then AUDITED_COMPILE_SDK"
         )
     if compile_sdk[0] != pinned[0]:
         return (
@@ -634,17 +642,37 @@ def launch_policy():
         )
     try:
         guard = (REPO / APP_SOURCES / "LaunchGuard.kt").read_text(encoding="utf-8")
+        facts = (REPO / APP_SOURCES / "ProcessFacts.kt").read_text(encoding="utf-8")
     except OSError as error:
-        return f"cannot read LaunchGuard: {error}"
+        return f"cannot read LaunchGuard or ProcessFacts: {error}"
+    problem = launch_record_plumbing(facts)
+    if problem:
+        return f"{APP_SOURCES / 'ProcessFacts.kt'}: {problem}"
     qt = re.findall(r"^ANDROID_QT_VERSION=(\S+)$", pins, re.M)
     audited = re.findall(r'const val QT_RESTART = "Qt (\S+) restarts the process"', guard)
     if len(qt) != 1 or len(audited) != 1:
         return "cannot find ANDROID_QT_VERSION in tools/ci-dependency-pins.env or QT_RESTART in LaunchGuard.kt"
     if qt[0] != audited[0]:
         return (
-            f"Qt is pinned at {qt[0]}, but LaunchGuard.QT_RESTART was audited on {audited[0]}: check Qt's restart of a "
-            "second instance again (the Qt-upgrade checks in docs/code_map.md) and update the text"
+            f"Qt is pinned at {qt[0]}, but LaunchGuard.QT_RESTART was audited on {audited[0]}: run {QT_UPGRADE_CHECKS} "
+            "again, then update the text (or the record and the documented limit, if Qt no longer restarts the process)"
         )
+    return None
+
+
+def launch_record_plumbing(facts):
+    """What is wrong with how ProcessFacts.kt carries LaunchGuard's record, or None: the summary is set on API 30+ and
+    read back into each exit record. Nothing else exercises this path."""
+    setter = method_body(facts, "fun setStateSummary(")
+    if setter is None:
+        return "no setStateSummary"
+    gate = re.search(r"if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.R\) \{\s*return\s*\}", setter)
+    call = setter.find("setProcessStateSummary(summary)")
+    if call < 0 or gate is None or gate.start() > call:
+        return "setStateSummary must call setProcessStateSummary(summary) after returning below API 30 (R)"
+    reader = method_body(facts, "fun exitLines(")
+    if reader is None or not re.search(r"ExitFacts\.Record\([^)]*it\.processStateSummary", reader, re.S):
+        return "exitLines must pass it.processStateSummary into each ExitFacts.Record"
     return None
 
 

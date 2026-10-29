@@ -736,7 +736,9 @@ DecoderHostAndroid::refreshLocation() {
     const auto locationRecord =
         QJniObject::callStaticObjectMethod(kLocationClass, "pollResult", "()Ljava/lang/String;");
     const auto location = QJsonDocument::fromJson(locationRecord.toString().toUtf8()).object();
-    if (!location.isEmpty()) {
+    if (location.value(QStringLiteral("cancelled")).toBool()) {
+        Q_EMIT locationCancelled(location.value(QStringLiteral("id")).toInteger());
+    } else if (!location.isEmpty()) {
         Q_EMIT locationResult(
             location.value(QStringLiteral("id")).toInteger(), location.value(QStringLiteral("fixOk")).toBool(),
             location.value(QStringLiteral("lat")).toDouble(), location.value(QStringLiteral("lon")).toDouble(),

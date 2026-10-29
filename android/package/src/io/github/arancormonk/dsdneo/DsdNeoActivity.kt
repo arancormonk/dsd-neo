@@ -66,8 +66,11 @@ import org.qtproject.qt.android.bindings.QtActivity
  *
  * Qt 6.11.2 restarts the whole process, with none of the teardown below, when a second instance of this activity is
  * created in a process Qt already started (#782). The manifest keeps that from happening: `singleTask`, so a USB
- * attachment reaches [onNewIntent] of the one instance, and every configuration change handled in place. One that gets
- * through anyway is recorded by [LaunchGuard], first among the launch statements, for the next process's `exit:` line.
+ * attachment (to [onNewIntent]), the launcher icon and the decoding notification all bring this one instance forward,
+ * and every configuration change handled in place. Those three also close a document picker or permission dialog open
+ * in the app's task, which comes back cancelled: the pickers' flows end quietly, and so does a location request
+ * ([LocationSupport]). One recreation that gets through anyway is recorded by [LaunchGuard], first among the launch
+ * statements, for the next process's `exit:` line.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null

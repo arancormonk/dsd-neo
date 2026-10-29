@@ -183,7 +183,7 @@ private fun permissionAndTeardown() {
     check(LocationSupport.onRequestPermissionsResult(activity, 4303, intArrayOf(-1)))
     val denied = JSONObject(LocationSupport.pollResult())
     check(denied.optLong("id") == 1L && !denied.optBoolean("fixOk"))
-    check(denied.optString("error").contains("permission denied"))
+    check(denied.optString("error").contains("permission denied") && !denied.optBoolean("cancelled"))
     activity.permission = 0
     request(activity, 2)
     val pending = activity.manager.signal!!
@@ -191,6 +191,31 @@ private fun permissionAndTeardown() {
     check(pending.cancelled)
     check(JSONObject(LocationSupport.pollResult()).optString("error").contains("cancelled"))
     check(Handler.timeouts.isEmpty())
+}
+
+// #782: the launcher icon or the notification brings the singleTask activity forward and closes the permission prompt.
+// Android then answers with empty arrays, a cancellation: the request ends with nothing to report, not a denial.
+private fun interruptedPermissionPromptIsCancelled() {
+    for (forSites in listOf(false, true)) {
+        val activity = Activity().apply { permission = -1 }
+        if (forSites) LocationSupport.requestSiteLocation(activity, 30) else LocationSupport.requestCurrentLocation(activity, 30)
+        Handler.drain()
+        check(activity.permissionRequests == 1)
+        check(LocationSupport.onRequestPermissionsResult(activity, 4303, intArrayOf()))
+        val cancelled = JSONObject(LocationSupport.pollResult())
+        check(cancelled.optLong("id") == 30L && cancelled.optBoolean("cancelled")) { "an interrupted prompt is a cancel" }
+        check(!cancelled.optBoolean("fixOk") && cancelled.optString("error").isEmpty()) {
+            "an interrupted prompt reports no denial: ${cancelled.optString("error")}"
+        }
+        check(activity.manager.callback == null && activity.manager.signals.isEmpty() && Handler.timeouts.isEmpty()) {
+            "a cancelled request asks no provider"
+        }
+        // The next request asks again.
+        request(activity, 31)
+        check(activity.permissionRequests == 2) { "a cancelled prompt does not block the next request" }
+        check(LocationSupport.onRequestPermissionsResult(activity, 4303, intArrayOf(-1)))
+        check(!JSONObject(LocationSupport.pollResult()).optBoolean("cancelled"))
+    }
 }
 
 private fun siteFixIsFreshAndDoesNotGeocode() {
@@ -340,6 +365,7 @@ private fun timeoutWithFixAndLateReplacement() {
 fun main() {
     try {
         permissionAndTeardown()
+        interruptedPermissionPromptIsCancelled()
         slowPermissionGrant()
         recentCacheAvoidsThrottledRequest()
         cachedFixCompletesInsideRequestDrain()

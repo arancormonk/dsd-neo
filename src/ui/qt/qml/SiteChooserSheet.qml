@@ -154,6 +154,11 @@ ModalSheet {
             }
             sheet.notice = sheet.locationUpdated ? "" : (prefs.lastFixAt > 0 ? qsTr("Location unavailable. Distances still use your saved location. Try again or choose a site manually.") : qsTr("Location unavailable. Check location access in your device settings, then try again or choose a site manually."));
         }
+        // A permission prompt Android closed unanswered (#782): nothing failed, so the sheet just returns to idle.
+        function onLocationCancelled(requestId) {
+            if (requestId === sheet.locationId && sheet.locationId)
+                sheet.locationId = 0;
+        }
     }
     Text {
         text: qsTr("Choose a site")

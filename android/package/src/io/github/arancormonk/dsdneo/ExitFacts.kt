@@ -79,13 +79,9 @@ object ExitFacts {
             "status ${record.status} importance ${record.importance} pss ${record.pssKb} kB"
         val description = printable(record.description, MAX_DESCRIPTION)
         val described = if (description.isEmpty()) base else "$base \"$description\""
+        // The summary is the exited process's own words (LaunchGuard.SUMMARY in the build that wrote it), shown as is.
         val summary = printable(record.summary, MAX_SUMMARY)
-        return when {
-            summary.isEmpty() -> described
-            // What the record means is the app's own knowledge, not Android's: said only for the summary it knows.
-            summary == LaunchGuard.SECOND_INSTANCE -> "$described ($summary; ${LaunchGuard.QT_RESTART})"
-            else -> "$described ($summary)"
-        }
+        return if (summary.isEmpty()) described else "$described ($summary)"
     }
 
     /** [text] on one line, trimmed and cut to [max] characters; empty for null. */

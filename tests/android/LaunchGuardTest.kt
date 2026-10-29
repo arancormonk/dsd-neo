@@ -21,7 +21,8 @@ private fun anInstanceAfterQtStartedIsTheSecond() {
     check(LaunchGuard.onCreate(setSummary) == LaunchGuard.Launch.SECOND_IN_PROCESS) { "Qt started: a second instance" }
     check(summaries.size == 1) { "the second instance sets the summary once: ${summaries.size}" }
     val summary = summaries.single()
-    check(summary.toString(Charsets.UTF_8) == "activity: second instance in a running process") {
+    // The writer names its own Qt, so a later build reading the record back cannot put its own version on it.
+    check(summary.toString(Charsets.UTF_8) == "activity: second instance in a running process; Qt 6.11.2 restarts the process") {
         "unexpected summary: ${summary.toString(Charsets.UTF_8)}"
     }
     check(summary.size <= LaunchGuard.MAX_SUMMARY_BYTES) { "ActivityManager refuses ${summary.size} bytes" }

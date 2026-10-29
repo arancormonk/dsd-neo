@@ -2005,6 +2005,7 @@ class ReadingMap : public QQmlPropertyMap {
     void runResultChanged();
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postal, const QString& country, const QString& error);
+    void locationCancelled(qint64 requestId);
 
   private:
     void

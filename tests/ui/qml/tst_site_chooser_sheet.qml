@@ -150,6 +150,19 @@ Item {
             decoderHost.locationResult(current, true, 41, -91, 25, Date.now(), false, "", "", "")
             compare(sheet.nearest, 0)
         }
+        function test_interrupted_permission_prompt_returns_to_idle() {
+            sheet.useLocation()
+            var interrupted = sheet.locationId
+            verify(interrupted !== 0)
+            decoderHost.locationCancelled(interrupted + 1)
+            compare(sheet.locationId, interrupted)
+            decoderHost.locationCancelled(interrupted)
+            compare(sheet.locationId, 0)
+            compare(sheet.notice, "")
+            verify(!sheet.locationUpdated)
+            compare(findChild(sheet, "siteLocationNotice").text, "Use your location to find the nearest saved site in this system.")
+            verify(findChild(sheet, "siteLocationButton").enabled)
+        }
         function test_accuracy_and_saved_fix_feedback() {
             prefs.setLocationFix(41.5, -91, Date.now(), 2000)
             verify(sheet.uncertainNearest)
