@@ -6402,6 +6402,24 @@ target_link_libraries(
 )
 add_test(NAME DSP_SYMBOL_ANCHOR COMMAND dsd-neo_test_dsp_symbol_anchor)
 
+add_executable(
+    dsd-neo_test_dsp_tetra_uplink_timing
+    dsp/test_dsp_tetra_uplink_timing.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_tetra_uplink_timing
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dsp_tetra_uplink_timing
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_TETRA_UPLINK_TIMING
+    COMMAND dsd-neo_test_dsp_tetra_uplink_timing
+)
+set_tests_properties(DSP_TETRA_UPLINK_TIMING PROPERTIES LABELS "tetra")
+
 add_executable(dsd-neo_test_dsp_symbol_replay dsp/test_dsp_symbol_replay.c)
 target_include_directories(
     dsd-neo_test_dsp_symbol_replay
@@ -16626,6 +16644,62 @@ if(DSD_HAS_RADIO)
         "${_dsd_tetra_ul_mode}"
         "${_dsd_tetra_nub}2002.*${_dsd_tetra_nub}2004.*${_dsd_tetra_nub}2005.*${_dsd_tetra_nub}2008.*${_dsd_tetra_nub}2010.*${_dsd_tetra_nub}2011.*${_dsd_tetra_nub}2013.*${_dsd_tetra_nub}2015"
     )
+    # The same uplink with every burst 1 to 7 samples later and the noise unchanged
+    # (TETRA_UPLINK_PHASE_OFFSETS): with the fixture above as offset 0 each burst meets the receiver at every sampling
+    # phase, twice over. The symbol timing and the carrier loop free-run on noise between bursts and pull in too slowly
+    # for a burst; from half a symbol off the timing loop hangs for most of a normal burst. So an uplink session takes
+    # each burst's timing and carrier phase from its training sequence (tetra_uplink_timing.h), and every burst must
+    # decode, in order, at every offset. Before, each of offsets 1 to 7 lost one or two of them (2009; 2003; 2001; 2015;
+    # 2003 and 2009; 2003 and 2016; 2001): 119 of the 128.
+    set(_dsd_tetra_ul_all "")
+    set(_dsd_tetra_ul_ssi 2001)
+    foreach(
+        _kind
+        cb
+        nub
+        cb
+        nub
+        nub
+        cb
+        cb
+        nub
+        cb
+        nub
+        nub
+        cb
+        nub
+        cb
+        nub
+        cb
+    )
+        if(_dsd_tetra_ul_all)
+            string(APPEND _dsd_tetra_ul_all ".*")
+        endif()
+        string(
+            APPEND _dsd_tetra_ul_all
+            "${_dsd_tetra_${_kind}}${_dsd_tetra_ul_ssi}"
+        )
+        math(EXPR _dsd_tetra_ul_ssi "${_dsd_tetra_ul_ssi} + 1")
+    endforeach()
+    foreach(
+        _offset
+        1
+        2
+        3
+        4
+        5
+        6
+        7
+    )
+        dsd_neo_add_iq_decode_test(
+            DECODE_IQ_TETRA_UPLINK_PHASE_O${_offset}
+            tetra_uplink_bursts_o${_offset}_72k
+            "${_dsd_tetra_ul_mode}"
+            "${_dsd_tetra_ul_all}"
+        )
+    endforeach()
+    unset(_dsd_tetra_ul_all)
+    unset(_dsd_tetra_ul_ssi)
     unset(_dsd_tetra_ul_mode)
     unset(_dsd_tetra_cb)
     unset(_dsd_tetra_nub)

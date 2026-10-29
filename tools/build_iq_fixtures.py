@@ -420,6 +420,15 @@ TETRA_UPLINK_LEVEL_LSB = 4.8
 TETRA_UPLINK_NOISE_LSB = 0.6
 TETRA_UPLINK_SSI_BASE = 2001
 TETRA_UPLINK_NET = (460, 4242, 17)
+# The same uplink with every burst a whole number of samples later, the noise unchanged: offsets 1 to 7 at 72 kHz, with
+# the committed fixture as offset 0, put each burst at every sampling phase twice over (4 samples a symbol), whatever
+# phase the receiver's symbol timing free-runs to between bursts.
+TETRA_UPLINK_PHASE_OFFSETS = tuple(range(1, 8))
+
+
+def tetra_uplink_phase_name(offset):
+    """The name of the uplink fixture with every burst offset samples later (TETRA_UPLINK_PHASE_OFFSETS)."""
+    return f"tetra_uplink_bursts_o{offset}_72k"
 # EN 300 392-2 clause 9.4.4.3: the tail bits 1100, and the control uplink burst's extended training sequence
 # (include/dsd-neo/core/sync_patterns.h TETRA_CB_SYNC).
 TETRA_TAIL_DIBITS = (3, 0)
@@ -1923,8 +1932,10 @@ def tetra_ul_burst_dibits(kind, ssi):
     return tail + coded[:half] + training + coded[half:] + tail
 
 
-def tetra_uplink_samples():
-    """The uplink fixture's samples (TETRA_UPLINK_BURSTS) in cu8 units over 127.5, and each burst's (kind, ssi)."""
+def tetra_uplink_samples(offset=0):
+    """The uplink fixture's samples (TETRA_UPLINK_BURSTS) in cu8 units over 127.5, and each burst's (kind, ssi).
+
+    offset delays every burst by that many samples; the length, the random draws and so the noise stay the same."""
     rate = TETRA_UPLINK_RATE_HZ
     sps = rate // TETRA_SYMBOL_RATE
     slot = TETRA_SLOT_SYMBOLS * sps
@@ -1939,7 +1950,7 @@ def tetra_uplink_samples():
         ssi = TETRA_UPLINK_SSI_BASE + index
         position += gap * slot
         dibits = tetra_ul_burst_dibits(kind, ssi)
-        start = position + TETRA_UPLINK_GUARD_SYMBOLS * sps
+        start = position + TETRA_UPLINK_GUARD_SYMBOLS * sps + offset
         impulses = np.zeros(len(dibits) * sps, dtype=np.complex128)
         phase = rng.uniform(0.0, 2.0 * math.pi)
         for symbol, dibit in enumerate(dibits):
@@ -1960,24 +1971,29 @@ def tetra_uplink_samples():
 
 
 def build_tetra_uplink(out_dir):
-    """Write the trunked mode uplink fixture (TETRA_UPLINK_BURSTS)."""
-    samples, _bursts = tetra_uplink_samples()
-    peak = max(np.max(np.abs(samples.real)), np.max(np.abs(samples.imag)))
-    if peak >= 1.0:
-        raise ValueError(f"{TETRA_UPLINK_NAME}: the strongest burst reaches the cu8 rails")
-    # to_cu8(normalize=False) scales by its default headroom; divide it back out (build_attenuated()).
-    written = write_fixture(
-        out_dir,
-        TETRA_UPLINK_NAME,
-        samples / 0.9,
-        normalize=False,
-        sample_rate=TETRA_UPLINK_RATE_HZ,
-        dsp_bw_khz=TETRA_UPLINK_RATE_HZ // 1000,
-        center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
-        capture_center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
-    )
-    print(f"{TETRA_UPLINK_NAME:28s} synth   {written // 1024:6d} KiB")
-    return written
+    """Write the trunked mode uplink fixture (TETRA_UPLINK_BURSTS) and its sampling-phase offsets
+    (TETRA_UPLINK_PHASE_OFFSETS)."""
+    total = 0
+    for offset in (0,) + TETRA_UPLINK_PHASE_OFFSETS:
+        name = tetra_uplink_phase_name(offset) if offset else TETRA_UPLINK_NAME
+        samples, _bursts = tetra_uplink_samples(offset)
+        peak = max(np.max(np.abs(samples.real)), np.max(np.abs(samples.imag)))
+        if peak >= 1.0:
+            raise ValueError(f"{name}: the strongest burst reaches the cu8 rails")
+        # to_cu8(normalize=False) scales by its default headroom; divide it back out (build_attenuated()).
+        written = write_fixture(
+            out_dir,
+            name,
+            samples / 0.9,
+            normalize=False,
+            sample_rate=TETRA_UPLINK_RATE_HZ,
+            dsp_bw_khz=TETRA_UPLINK_RATE_HZ // 1000,
+            center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+            capture_center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+        )
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+        total += written
+    return total
 
 
 def analog_voice_band(rng, count):
@@ -2250,6 +2266,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_TETRA_GAP]
         + [entry[0] for entry in TETRA_STRESS]
         + [TETRA_UPLINK_NAME]
+        + [tetra_uplink_phase_name(offset) for offset in TETRA_UPLINK_PHASE_OFFSETS]
     )
 
 

@@ -1441,6 +1441,14 @@ dsd_demod_tetra_stage(const struct demod_state* d) {
     return dsd_demod_tetra_channel_runs(d) ? DSD_SNR_TETRA_STAGE_CHANNEL : DSD_SNR_TETRA_STAGE_WIDE;
 }
 
+extern "C" int
+dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps) {
+    if (!d || !d->tetra_uplink || d->tetra_chain || sps < DSD_TETRA_UL_MIN_SPS || sps > DSD_TETRA_UL_MAX_SPS) {
+        return 0;
+    }
+    return dsd_demod_tetra_channel_runs(d);
+}
+
 /* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
    chain of its own; say why, once per cause and stream. Nothing is said for a chain the mode does not ask for. */
 static void

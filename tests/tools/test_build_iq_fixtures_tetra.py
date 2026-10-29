@@ -7,6 +7,7 @@
 - simulcast_two_ray() rotates its second ray at the sample rate it is given, 48 kHz by default.
 - The control-block CRC-16 is computed directly, as the search over every candidate found it.
 - The uplink fixture's bursts have the control and normal uplink burst layouts and carry their SSIs in the MAC vectors.
+- Its sampling-phase variants move only the bursts, by their offset in samples, over the same noise.
 - The stress set's 144 kHz round trip leaves an unstressed call alone and keeps a neighbour's set ratio.
 """
 
@@ -143,6 +144,36 @@ class TetraUplinkBursts(unittest.TestCase):
         for index, (kind, ssi) in enumerate(bursts):
             self.assertEqual(kind, fixtures.TETRA_UPLINK_BURSTS[index][0])
             self.assertEqual(ssi, fixtures.TETRA_UPLINK_SSI_BASE + index)
+
+
+class TetraUplinkPhaseOffsets(unittest.TestCase):
+    """The uplink fixture at every sampling phase (TETRA_UPLINK_PHASE_OFFSETS)."""
+
+    def test_offsets_and_names(self):
+        self.assertEqual(fixtures.TETRA_UPLINK_PHASE_OFFSETS, (1, 2, 3, 4, 5, 6, 7))
+        names = fixtures.derived_fixture_names()
+        for offset in fixtures.TETRA_UPLINK_PHASE_OFFSETS:
+            self.assertIn(f"tetra_uplink_bursts_o{offset}_72k", names)
+
+    def test_offset_moves_only_the_bursts(self):
+        base, base_bursts = fixtures.tetra_uplink_samples()
+        power = np.abs(base) ** 2
+        for offset in (1, 3, 7):
+            moved, bursts = fixtures.tetra_uplink_samples(offset)
+            self.assertEqual(len(moved), len(base))
+            self.assertEqual(bursts, base_bursts)
+            # The noise is the same draw, so the difference is the bursts alone: zero wherever neither copy has a
+            # burst, as in the lead-in and the tail.
+            difference = moved - base
+            lead = int(round(fixtures.TETRA_UPLINK_LEAD_S * fixtures.TETRA_UPLINK_RATE_HZ))
+            tail = int(round(fixtures.TETRA_UPLINK_TAIL_S * fixtures.TETRA_UPLINK_RATE_HZ))
+            self.assertFalse(np.any(difference[: lead // 2]))
+            self.assertFalse(np.any(difference[len(base) - tail // 2 :]))
+            # The bursts' energy arrives offset samples later.
+            moved_power = np.abs(moved) ** 2
+            lags = list(range(-8, 9))
+            scores = [float(np.dot(power[8:-8], moved_power[8 + lag : len(moved_power) - 8 + lag])) for lag in lags]
+            self.assertEqual(lags[int(np.argmax(scores))], offset)
 
 
 class TetraStress(unittest.TestCase):

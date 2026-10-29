@@ -27,6 +27,7 @@
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/platform/threading.h>
 
 /* Buffer sizing constants shared by the demodulator and radio front-end. */
@@ -369,6 +370,9 @@ struct demod_state {
 
     /* TED module state */
     ted_state_t ted_state;
+    /* The Gardner's look-ahead and training search on a TETRA uplink session (dsd_demod_tetra_uplink_timing_runs());
+       starts over with the TED (ted_state_t::ul_lookahead_live). */
+    dsd_tetra_ul_timing tetra_ul_timing;
 
     /* Minimal 2-thread worker pool bookkeeping */
     int mt_enabled;

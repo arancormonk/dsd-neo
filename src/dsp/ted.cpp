@@ -33,6 +33,7 @@ ted_init_state(ted_state_t* state) {
     state->dl_index = 0;
     state->twice_sps = 0;
     state->sps = 0;
+    state->ul_lookahead_live = 0;
 }
 
 void
@@ -46,4 +47,5 @@ ted_soft_reset(ted_state_t* state) {
     state->lock_accum = 0.0f;
     state->lock_count = 0;
     state->event_count = 0;
+    state->ul_lookahead_live = 0;
 }

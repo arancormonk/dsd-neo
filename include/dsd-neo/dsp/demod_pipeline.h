@@ -216,6 +216,19 @@ int dsd_demod_tetra_channel_runs(const struct demod_state* d);
 int dsd_demod_tetra_stage(const struct demod_state* d);
 
 /**
+ * @brief Whether the Gardner TED takes a TETRA uplink session's burst timing from the training sequences
+ *        (tetra_uplink_timing.h).
+ *
+ * On a trunked mode uplink session (demod_state::tetra_uplink) off the TETRA chain while the TETRA channel filter runs
+ * (dsd_demod_tetra_channel_runs()), at @p sps from DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS. Nothing else runs it.
+ *
+ * @param d Demodulator state (NULL reads false).
+ * @param sps Samples per symbol the Gardner runs at (dsd_cqpsk_timing_sps()).
+ * @return 1 when the uplink burst timing runs, else 0.
+ */
+int dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps);
+
+/**
  * @brief Evaluate the TETRA chain's activation predicate and run the state transition when the answer changed.
  *
  * full_demod() calls this at every block boundary, after the half-band decimation. A stream open calls it once its

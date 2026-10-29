@@ -4525,7 +4525,20 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `demod_state::tetra_uplink`, which `rtl_demod_init_for_mode()` writes on every open) never runs the chain (D10):
   measured on `tetra_uplink_bursts_72k` the chain lost bursts that path decoded, so its predicate is false, nothing is
   warned, and the stream keeps that path with the TETRA channel filter in place of WIDE wherever the rate domain
-  admits the rate and the channel LPF is on (`dsd_demod_tetra_channel_runs()`). The stream publishes TETRA as the running channel
+  admits the rate and the channel LPF is on (`dsd_demod_tetra_channel_runs()`). On that stage
+  (`dsd_demod_tetra_uplink_timing_runs()`, sps 2 to 8) the Gardner and Costas loops take each burst's timing and carrier
+  phase from its training sequence (`include/dsd-neo/dsp/tetra_uplink_timing.h`, `src/dsp/tetra_uplink_timing.c`):
+  both loops free-run on noise between bursts and pull in too slowly for a 103- or 231-symbol burst. The Gardner input
+  passes through a 128-symbol look-ahead that correlates every sample's differential phasor against the extended
+  (control burst) and normal (normal burst) training sequences, normalized by the Cauchy-Schwarz bound and the larger
+  of each sequence and its conjugate; a peak of at least 0.85 places the burst's grid and rotation (a normal burst only
+  once the two symbols after it showed no extended sequence, a control burst only when the extended sequence's four
+  outer symbols agree; overlapping bursts keep the higher score). When the strobe comes within two symbols of a burst's
+  first symbol it moves onto the grid by less than half a symbol, and the Costas loop takes the burst's rotation within
+  a quarter turn, frequency and smoothing reset, from the symbol after. `op25_gardner_cc()` runs a separate template
+  instantiation for it, so every other stream runs the loop unchanged; `ted_state_t::ul_lookahead_live`, cleared by
+  every TED reset and every block off the stage, starts the look-ahead over with the TED. Tests:
+  `DSP_TETRA_UPLINK_TIMING`, `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`. The stream publishes TETRA as the running channel
   profile (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag
   and so the UI channel width) only while the TETRA channel filter runs, WIDE otherwise; `rtl_stream_get_symbol_profile_full()`
   keeps the configured profile the trunk-tuning restore puts back, and an open on the FSK discriminator turns a TETRA

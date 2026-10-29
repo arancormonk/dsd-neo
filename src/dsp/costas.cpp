@@ -22,7 +22,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <iterator>
 #include "dsd-neo/core/safe_api.h"
@@ -472,6 +474,7 @@ gardner_reinit_state(demod_state* d, ted_state_t* ted, int sps, int is_first_ini
     ted->twice_sps = twice_sps_required;
     ted->dl_index = 0;
     ted->sps = sps;
+    ted->ul_lookahead_live = 0;
     ted->dl[0] = 0.0f;
     ted->dl[1] = 0.0f;
     return 1;
@@ -539,8 +542,11 @@ gardner_push_delay_sample(gardner_loop_context_t* ctx, float in_r, float in_j) {
     }
 }
 
+/* With kUplinkTiming each sample passes through the TETRA uplink look-ahead (tetra_uplink_timing.h) on its way into
+   the delay line. */
+template <bool kUplinkTiming>
 static inline int
-gardner_consume_until_ready(gardner_loop_context_t* ctx) {
+gardner_consume_until_ready(gardner_loop_context_t* ctx, dsd_tetra_ul_timing* ul) {
     while (ctx->mu > 1.0f && ctx->i < ctx->nc) {
         ctx->mu -= 1.0f;
 
@@ -548,6 +554,11 @@ gardner_consume_until_ready(gardner_loop_context_t* ctx) {
         float in_r = 0.0f;
         float in_j = 0.0f;
         load_pair_components_or_zero(ctx->iq_in + (size_t)ctx->i * 2, &in_r, &in_j);
+        if (kUplinkTiming) {
+            dsd_tetra_ul_timing_push(ul, in_r, in_j, &in_r, &in_j);
+        } else {
+            (void)ul;
+        }
 
         gardner_push_delay_sample(ctx, in_r, in_j);
         ctx->i++;
@@ -914,6 +925,52 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
 
 } // namespace
 
+/* The Gardner loop over a block. With kUplinkTiming the samples come through the TETRA uplink look-ahead, and after
+   each symbol the next strobe moves onto the grid of a burst its training placed (dsd_tetra_ul_timing_align()). */
+template <bool kUplinkTiming>
+static void
+gardner_run_loop(gardner_loop_context_t* ctx_ptr, const ted_state_t* ted, dsd_tetra_ul_timing* ul) {
+    gardner_loop_context_t& ctx = *ctx_ptr;
+    while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
+        if (!gardner_consume_until_ready<kUplinkTiming>(&ctx, ul)) {
+            break;
+        }
+
+        int half_sps = 0;
+        float half_mu = 0.0f;
+        gardner_compute_half_timing(ctx.mu, ctx.omega, &half_sps, &half_mu);
+
+        float mid_r = 0.0f;
+        float mid_j = 0.0f;
+        float sym_r = 0.0f;
+        float sym_j = 0.0f;
+        if (!gardner_interpolate_symbol(&ctx, half_sps, half_mu, &mid_r, &mid_j, &sym_r, &sym_j)) {
+            ctx.mu += ctx.omega;
+            continue;
+        }
+
+        const float symbol_error = gardner_compute_symbol_error(ctx.last_r, ctx.last_j, sym_r, sym_j, mid_r, mid_j);
+        gardner_update_lock_accum(&ctx, sym_r, sym_j, mid_r, mid_j);
+        gardner_update_loop(&ctx, ted, symbol_error, sym_r, sym_j);
+        if (kUplinkTiming) {
+            /* The next strobe reads x[3 + mu + omega/2] of the delay line once mu is consumed down to (0, 1]: from
+               the next sample taken, that is -twice_sps + 3 + mu + omega/2 (gardner_compute_half_timing()). */
+            const double next_strobe = (double)(3 - ctx.twice_sps) + (double)ctx.mu + 0.5 * (double)ctx.omega;
+            float move = 0.0f;
+            if (dsd_tetra_ul_timing_align(ul, next_strobe, ctx.omega, &move)) {
+                ctx.mu += move;
+            }
+        }
+        ctx.last_r = sym_r;
+        ctx.last_j = sym_j;
+        ctx.iq_out[ctx.o++] = sym_r;
+        ctx.iq_out[ctx.o++] = sym_j;
+        if (kUplinkTiming) {
+            ul->symbols_out++;
+        }
+    }
+}
+
 /*
  * OP25-compatible Gardner timing recovery block.
  *
@@ -966,31 +1023,16 @@ op25_gardner_cc(struct demod_state* d) {
     gardner_init_loop_context(d, ted, gain_mu, gain_omega, &ctx);
     ctx.omega = omega;
 
-    while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
-        if (!gardner_consume_until_ready(&ctx)) {
-            break;
+    if (dsd_demod_tetra_uplink_timing_runs(d, sps)) {
+        dsd_tetra_ul_timing* ul = &d->tetra_ul_timing;
+        if (!ted->ul_lookahead_live || ul->sps != sps) {
+            dsd_tetra_ul_timing_reset(ul, sps);
+            ted->ul_lookahead_live = 1;
         }
-
-        int half_sps = 0;
-        float half_mu = 0.0f;
-        gardner_compute_half_timing(ctx.mu, ctx.omega, &half_sps, &half_mu);
-
-        float mid_r = 0.0f;
-        float mid_j = 0.0f;
-        float sym_r = 0.0f;
-        float sym_j = 0.0f;
-        if (!gardner_interpolate_symbol(&ctx, half_sps, half_mu, &mid_r, &mid_j, &sym_r, &sym_j)) {
-            ctx.mu += ctx.omega;
-            continue;
-        }
-
-        const float symbol_error = gardner_compute_symbol_error(ctx.last_r, ctx.last_j, sym_r, sym_j, mid_r, mid_j);
-        gardner_update_lock_accum(&ctx, sym_r, sym_j, mid_r, mid_j);
-        gardner_update_loop(&ctx, ted, symbol_error, sym_r, sym_j);
-        ctx.last_r = sym_r;
-        ctx.last_j = sym_j;
-        ctx.iq_out[ctx.o++] = sym_r;
-        ctx.iq_out[ctx.o++] = sym_j;
+        gardner_run_loop<true>(&ctx, ted, ul);
+    } else {
+        ted->ul_lookahead_live = 0;
+        gardner_run_loop<false>(&ctx, ted, nullptr);
     }
 
     gardner_commit_loop_context(d, ted, &ctx);
@@ -1084,11 +1126,20 @@ op25_costas_loop_cc(struct demod_state* d) {
 
     costas_loop_context_t ctx;
     costas_prepare_loop_context(c, &ctx);
+    const bool uplink = d->ted_state.ul_lookahead_live != 0;
 
     for (int n = 0; n < pairs; n++) {
         const size_t nn = (size_t)n;
         float out_r = 0.0f;
         float out_j = 0.0f;
+        if (uplink) {
+            float ph = 0.0f;
+            if (dsd_tetra_ul_timing_carrier(&d->tetra_ul_timing, &ph)) {
+                ctx.phase = ph;
+                ctx.freq = 0.0f;
+                ctx.error_smooth = 0.0f;
+            }
+        }
         costas_process_symbol(&ctx, iq + nn * 2, &out_r, &out_j);
         iq[nn * 2] = out_r;
         iq[nn * 2 + 1] = out_j;
