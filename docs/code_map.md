@@ -615,11 +615,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - DSP `getFrameSync()` builds its sync windows from a dibit history that a no-sync exit (the timeout after a matchless
   1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`. The next call takes it
   up only when nothing came between: the same symbol clock, clock epoch, input, carrier count, trunk tuning generation,
-  SPS hunt profile and modulation (the profile and modulation the history was read under), and no
-  `dsd_state_forget_sync_join_histories()` (every decoder-thread trunk retune, off-thread tune applied, carrier change
-  and acquisition reset runs it) since the history began, so a P25 release's retune in the exit's own no-sync hooks
-  keeps nothing. Its first read checks the clock, epoch, carrier count, generation and drops again, for a flush an RTL
-  reader finds only when it reads. A matcher that reads only its window or reads its frame forward from the sync (TETRA,
+  SPS hunt profile and modulation (the profile and modulation the history was read under), no off-thread tune awaiting
+  reconciling, and no `dsd_state_forget_sync_join_histories()` since the history began. The decoder thread's trunk
+  retunes run it (a tune through the trunk tuning hooks, `dsd_engine_rxid_trunk_tune()`, and noCarrier's direct
+  control-channel return, `no_carrier_accept_direct_cc_return()`), and so do every off-thread tune applied, every
+  carrier boundary (a typed scanner step whose rigctl leg moved before its RTL leg failed is one,
+  `dsd_engine_scan_tune_moved()`) and every acquisition reset; so a P25 release's retune, or a direct return, in the
+  exit's own no-sync hooks keeps nothing. Its first read checks the clock, epoch, carrier count, generation, drops and
+  pending off-thread tunes again, for a flush an RTL reader finds only when it reads. A matcher that reads only its window or reads its frame forward from the sync (TETRA,
   P25, NXDN, YSF, dPMR, D-STAR, M17) then matches a frame that straddles the exit; before, a TETRA control uplink burst
   that began fewer than 20 symbols before it was lost. DMR and X2-TDMA read their pre-sync half from the rolling dibit
   buffers, which the no-carrier reset clears, so for them nothing changes. A sync, an input interruption, a

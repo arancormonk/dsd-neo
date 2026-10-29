@@ -47,6 +47,10 @@ void dsd_engine_set_decoder_thread(int is_decoder);
  */
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                    uint64_t* out_request_id);
+/** @brief Whether the last dsd_engine_scan_tune_to_freq() on this thread failed after its rigctl leg had moved the
+ * radio (a conventional scan with rigctl and an RTL front end whose RTL leg then failed): the receiver is on another
+ * carrier though the row did not land. 0 after a tune that succeeded or failed before anything moved. */
+int dsd_engine_scan_tune_moved(void);
 /** @brief DSP (demodulator) rate of a running RTL-family stream in Hz, which an analog row width must fit: the rate the
  * stream holds an analog request to (rtl_stream_get_request_rate_hz()), published from its start; 0 when no RTL stream
  * runs. */

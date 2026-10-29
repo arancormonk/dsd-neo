@@ -41,6 +41,12 @@ static double g_pushed = -1.0;
 static int g_tunes;
 
 /* The tune always lands: the scanner commits the row as it would after a real retune. */
+/* No scanner tune here moves a backend and then fails (dsd_engine_scan_tune_moved()). */
+int
+dsd_engine_scan_tune_moved(void) {
+    return 0;
+}
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
     (void)sps;

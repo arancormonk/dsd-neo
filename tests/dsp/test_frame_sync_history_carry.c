@@ -57,6 +57,9 @@ static char g_stream[STREAM_LEN];
 static int g_pos = 0;
 /* 1: the next read finds a stream flush, as an RTL reader does after a retune (dsd_symbol.c bumps the clock's epoch). */
 static int g_flush_on_next_read = 0;
+/* 1: a tune off the decoder thread (the watchdog's) is noted while the next read runs, after the call reconciled the
+   ones pending at its start (dsd_frame_sync_apply_off_thread_tunes()). */
+static int g_off_thread_tune_on_next_read = 0;
 static char g_block1[CB_HALF];
 
 /* Filler that runs 0, 1, 2, 3 over and over, which no training sequence matches in any rotation (each holds a dibit
@@ -106,6 +109,12 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     if (g_flush_on_next_read) {
         g_flush_on_next_read = 0;
         state->symbol_clock_epoch++;
+    }
+    if (g_off_thread_tune_on_next_read) {
+        g_off_thread_tune_on_next_read = 0;
+        dsd_p25p1_decision read;
+        dsd_frame_sync_p25p1_read_decision(&read);
+        dsd_frame_sync_note_off_thread_tune(&read);
     }
     dsd_symbol_history_push(state, symbol);
     state->symbolcnt++;
@@ -324,6 +333,20 @@ test_flush_at_first_read_starts_blind(void) {
     free_state_buffers(&state);
 }
 
+/* A watchdog tune noted after the next call reconciled the pending ones and before its first read was confirmed: the
+   history taken up at the call's start goes again. */
+static void
+test_off_thread_tune_during_first_read_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    first_call_times_out(&opts, &state);
+    g_off_thread_tune_on_next_read = 1;
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    assert(!dsd_frame_sync_off_thread_tune_pending());
+    free_state_buffers(&state);
+}
+
 /* The modulation changed between the calls: a lock the next call applies at its start (frame_sync_apply_cli_mod_lock())
    moves rf_mod off the CQPSK the history was sliced on. */
 static void
@@ -371,6 +394,7 @@ main(void) {
     test_off_thread_tune_between_calls_starts_blind();
     test_completed_tune_between_calls_starts_blind();
     test_flush_at_first_read_starts_blind();
+    test_off_thread_tune_during_first_read_starts_blind();
     test_new_modulation_starts_blind();
     test_profile_step_keeps_the_read_profile();
     printf("FRAME_SYNC_HISTORY_CARRY: OK\n");

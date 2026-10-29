@@ -3096,7 +3096,8 @@ frame_sync_history_drop(dsd_state* state) {
 }
 
 /* A call's start: take up the history the last call kept when the stream went on from there unbroken, and drop it either
- * way, so it is taken up once. */
+ * way, so it is taken up once. An off-thread tune noted after this call applied the pending ones
+ * (dsd_frame_sync_apply_off_thread_tunes()) and not applied yet counts as a retune too. */
 static void
 frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
     dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
@@ -3105,7 +3106,8 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
                          && carry->symbol_clock_input == state->symbol_clock_input
                          && carry->carrier_seq == state->carrier_seq && carry->sps_hunt_idx == state->sps_hunt_idx
                          && carry->rf_mod == state->rf_mod && carry->tune_generation == rt->history_tune_gen
-                         && carry->head >= 0 && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
+                         && !dsd_frame_sync_off_thread_tune_pending() && carry->head >= 0
+                         && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
                          && carry->count <= FRAME_SYNC_HISTORY_CAPACITY;
     carry->valid = 0;
     if (!unbroken) {
@@ -3121,18 +3123,18 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
 }
 
 /* The first symbol a call that took up a history reads: it must follow the history on the same stream (one symbol on
- * the clock, the same epoch and carrier count, no tune completed, nothing dropped), or the history goes and the call
- * starts from this symbol. */
+ * the clock, the same epoch and carrier count, no tune completed or noted off the decoder thread, nothing dropped), or
+ * the history goes and the call starts from this symbol. */
 static void
 frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
     if (!rt->resumed) {
         return;
     }
     rt->resumed = 0;
-    const int unbroken = state->symbol_clock == rt->resume_clock + 1U && state->symbol_clock_epoch == rt->resume_epoch
-                         && state->carrier_seq == rt->resume_carrier_seq
-                         && state->frame_sync_carry.drops == rt->history_drops
-                         && dsd_trunk_tuning_generation() == rt->history_tune_gen;
+    const int unbroken =
+        state->symbol_clock == rt->resume_clock + 1U && state->symbol_clock_epoch == rt->resume_epoch
+        && state->carrier_seq == rt->resume_carrier_seq && state->frame_sync_carry.drops == rt->history_drops
+        && dsd_trunk_tuning_generation() == rt->history_tune_gen && !dsd_frame_sync_off_thread_tune_pending();
     if (!unbroken) {
         rt->history_head = 0;
         rt->history_count = 0;

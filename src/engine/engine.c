@@ -2033,6 +2033,11 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
 static void
 no_carrier_accept_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
                                    int clear_generic_p25_alias, time_t now) {
+    /* A retune like any through the trunk tuning hooks (dsd_engine_rxid_trunk_tune()): what the sync histories hold, the
+       NXDN96 and M17 join hits and the frame sync's carried history among them, is the voice channel's. The raw
+       rigctl or RTL tune carries no tag and moves no carrier count, and runs inside the frame sync's no-sync hooks, so
+       this is what keeps the carried history from being matched on the control channel. */
+    dsd_state_forget_sync_join_histories(state);
     no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
     if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
         /* The tuner frequency the decoder reads, as a tune through the trunk tuning hooks records it: left on the voice

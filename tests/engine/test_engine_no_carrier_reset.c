@@ -990,6 +990,120 @@ test_direct_return_after_hook_tune(void) {
     return rc;
 }
 
+/* The direct control-channel return is a retune like one through the trunk tuning hooks: it forgets the sync join
+   histories, and with them the frame sync's history carried from its last no-sync exit, which is the voice channel's.
+   noCarrier runs inside the frame sync's no-sync hooks, before the exit keeps its history, and its raw rigctl tune
+   moves no carrier count, carries no tag and flushes no stream, so nothing else would tell the next call that the
+   carrier changed. A pass with no return forgets nothing: the carried history survives noCarrier. */
+static int
+test_direct_return_forgets_the_carried_history(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_trunk_tuning_requests_reset();
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long cc = 942062500L; // a frequency no other case uses: engine.c caches the last rigctl tune across cases
+
+    /* Trunking off: no return, nothing forgotten. */
+    opts->trunk_enable = 0;
+    state->frame_sync_carry.valid = 1U;
+    uint32_t drops = state->frame_sync_carry.drops;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    noCarrier(opts, state);
+    rc |= expect_true("no return keeps the carried history",
+                      state->frame_sync_carry.valid == 1U && state->frame_sync_carry.drops == drops);
+
+    /* An NXDN hangtime return on rigctl: the direct return tunes, and the carried history goes. */
+    opts->trunk_enable = 1;
+    g_rigctl_setfreq_calls = 0;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_vc_sync_time = 0;
+    state->frame_sync_carry.valid = 1U;
+    drops = state->frame_sync_carry.drops;
+    noCarrier(opts, state);
+    rc |= expect_true("the direct return tuned", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+    rc |= expect_true("the direct return forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A typed scanner step whose rigctl leg moved the radio before its RTL leg failed: the row did not land, but the
+   receiver left the carrier, so it is a carrier boundary (the carrier count moves, the sync histories and the frame
+   sync's carried history are forgotten). A step whose rigctl leg itself failed moved nothing: no boundary. */
+static int
+test_typed_scan_partial_move_is_a_carrier_boundary(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 941025000;
+    state->trunk_lcn_freq[1] = 941037500;
+    rc |= expect_true("typed row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NXDN48) == 0);
+    rc |= expect_true("typed row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NXDN48) == 0);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("first row committed", state->lcn_freq_roll == 1);
+
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+
+    /* The rigctl leg fails first: nothing moved, no boundary. */
+    g_rigctl_setfreq_ok = 0;
+    uint32_t carrier_seq = state->carrier_seq;
+    state->frame_sync_carry.valid = 1U;
+    uint32_t drops = state->frame_sync_carry.drops;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("a failed rigctl leg is no boundary", state->carrier_seq == carrier_seq
+                                                                && state->frame_sync_carry.valid == 1U
+                                                                && state->frame_sync_carry.drops == drops);
+
+    /* The rigctl leg moves, the RTL leg fails: a boundary. */
+    g_rigctl_setfreq_ok = 1;
+    carrier_seq = state->carrier_seq;
+    state->frame_sync_carry.valid = 1U;
+    drops = state->frame_sync_carry.drops;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("the partial move left the row unlanded", state->lcn_freq_roll != 2 || opts->frame_nxdn48);
+    rc |= expect_true("a partial move is a carrier boundary", state->carrier_seq != carrier_seq);
+    rc |= expect_true("a partial move forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rigctl_setfreq_ok = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
 /* An NXDN call's hangtime return on an RTL input tunes the stream directly: the tuner frequency the decoder reads
    moves to the control channel with it, or the next CAC would be attributed to the voice channel. */
 static int
@@ -7063,6 +7177,8 @@ main(void) {
     rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_direct_return_after_hook_tune();
+    rc |= test_direct_return_forgets_the_carried_history();
+    rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_direct_rtl_return_records_the_tuner_frequency();
     rc |= test_no_carrier_drops_dmr_precall_pi();

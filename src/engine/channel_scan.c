@@ -959,6 +959,11 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     }
     /* A failed second backend may already have moved the first one. Keep the tune
      * ledger's frame gate closed until a subsequent successful request recovers. */
+    if (dsd_engine_scan_tune_moved()) {
+        /* The rigctl leg did move the radio before the RTL leg failed: the receiver left the carrier, so this is a
+           carrier boundary (issue #575) as a committed row's is, and what the carrier left sent is forgotten. */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    }
     channel_scan_end_calls(opts, state);
     if (result == DSD_TRUNK_TUNE_RESULT_FAILED) {
         /* A bad row must not prevent a later successful row from recovering
