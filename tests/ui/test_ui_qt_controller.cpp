@@ -555,7 +555,7 @@ test_target_change_while_stopped_clears() {
     check(metrics.radioInput() && metrics.optionsKnown());
     host.setPhase(Host::Idle);
     pollController(controller, &opts, &state); // The stopped session's target is the one on record now.
-    metrics.refresh(&opts, &state);            // A frame read after the stop: nothing upstream clears it.
+    metrics.refresh(&opts, &state);            // Readings left over from the stopped session, seeded directly.
     check(metrics.radioInput() && metrics.optionsKnown() && !metrics.syncLabel().isEmpty());
 
     int controlChanges = 0;

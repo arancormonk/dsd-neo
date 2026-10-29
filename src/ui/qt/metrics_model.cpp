@@ -1252,7 +1252,8 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, 
     next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
 
     /* Sync is held for a moment after the last synced frame rather than sampled;
-     * the hold decays on its own rather than being cleared on a retune. See
+     * the hold decays on its own rather than being cleared on a retune (a new scan
+     * target starts it over: refresh() with new_target). See
      * fillDecoderView(), which documents why a one-shot reset was a race. The hold
      * smooths what this poll sees, so it runs on real time: it has to decay while a
      * stalled input leaves the decode clock where it stopped. */
