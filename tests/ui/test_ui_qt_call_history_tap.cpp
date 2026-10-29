@@ -18,8 +18,8 @@
  * reported once, which reaches History with the handoff, or the model's teardown, when the spill is still unwritable
  * then (a call whose first sighting the bound dropped included, from its updates). Notices fold once like calls, a replay begun in the
  * background included. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's
- * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. The deliberate
- * failures' warnings are counted, not printed. */
+ * oldest go first, and neither the log nor the fold's reader and seen map ever hold the whole backlog. A read that fails
+ * partway keeps the spill whole for the next fold. The deliberate failures' warnings are counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -72,6 +72,7 @@ int g_failures = 0;
 /* The model's and the tap's once-only warnings, counted (from any thread) and kept out of the output. */
 std::atomic<int> g_saveFailedWarnings{0};
 std::atomic<int> g_spillDropWarnings{0};
+std::atomic<int> g_spillReadWarnings{0};
 QtMessageHandler g_previousHandler = nullptr;
 
 void
@@ -82,6 +83,10 @@ count_warnings(QtMsgType type, const QMessageLogContext& context, const QString&
     }
     if (message.startsWith(QLatin1String("call history: the background capture cannot write its spill"))) {
         g_spillDropWarnings++;
+        return;
+    }
+    if (message.startsWith(QLatin1String("call history: reading the background spill failed"))) {
+        g_spillReadWarnings++;
         return;
     }
     if (g_previousHandler != nullptr) {
@@ -824,6 +829,43 @@ test_long_spill_of_repeated_notices_folds_bounded(void) {
     expect("the reader holds one short line and a chunk", model.peakSpillReadBytesForTest() <= qsizetype{32} * 1024);
 }
 
+/* A read error partway through the spill (an I/O error) used to end the read as its end would, and the whole spill
+ * went at the next acknowledged save, the rows after the error with it. The fold keeps what it read before the error
+ * and takes none of the spill as read: the save keeps it whole, and the next fold reads it again, adding only what the
+ * failed one missed. */
+void
+test_failed_spill_read_keeps_the_spill(void) {
+    resetStorage();
+    const int spilled = 500;
+    const qulonglong tg = 500000U;
+    expect("read error: the spill is written", write_spill(spilled, 1754950000, tg, false));
+    const qint64 size = spill_size();
+    g_spillReadWarnings = 0;
+    CallHistoryModel::failNextSpillReadAfterLinesForTest(120);
+    {
+        CallHistoryModel model;
+        expect("read error: the rows before it fold",
+               model.count() == 120 && rows_in_tg_range(model, tg, tg + 119) == 120);
+        expect("read error: it is reported", g_spillReadWarnings == 1);
+        model.saveNow();
+        settle_save(model);
+        expect("read error: an acknowledged save keeps the spill", !model.saveFailing() && spill_size() == size);
+    }
+    expect("read error: and so does the teardown", spill_size() == size);
+    {
+        CallHistoryModel retried;
+        expect("read error: the next fold adds the rest",
+               retried.count() == spilled && rows_in_tg_range(retried, tg, tg + spilled - 1) == spilled);
+        retried.saveNow();
+        settle_save(retried);
+        expect("read error: the spill goes once a fold read it whole", spill_size() == 0);
+    }
+    CallHistoryModel last;
+    expect("read error: the log has every call once",
+           last.count() == spilled && rows_in_tg_range(last, tg, tg + spilled - 1) == spilled);
+    expect("read error: reported only for the failed read", g_spillReadWarnings == 1);
+}
+
 } // namespace
 
 int
@@ -859,6 +901,7 @@ main(int argc, char** argv) {
     test_spill_fold_trims_oldest_session_first();
     test_very_long_spill_folds_in_bounded_memory();
     test_long_spill_of_repeated_notices_folds_bounded();
+    test_failed_spill_read_keeps_the_spill();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

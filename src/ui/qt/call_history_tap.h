@@ -99,8 +99,14 @@ class CallHistorySpillReader {
     /** @brief Read @p device from where it is, at most @p limit bytes. */
     CallHistorySpillReader(QIODevice* device, qint64 limit);
 
-    /** @brief Read the next line into line(); @return false at the end. */
+    /** @brief Read the next line into line(); @return false at the end, or once a read fails (failed()). */
     bool next();
+
+    /** @brief Whether a read failed before the limit: the lines after it were not read. */
+    bool
+    failed() const {
+        return m_failed;
+    }
 
     /** @brief The line next() read, without its newline; valid until the next call. */
     const QByteArray&
@@ -114,12 +120,24 @@ class CallHistorySpillReader {
         return m_peakBytes;
     }
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Fail the read after @p lines more lines, as a device error there would. */
+    void
+    failAfterLinesForTest(int lines) {
+        m_failAfterLinesForTest = lines;
+    }
+#endif
+
   private:
     QIODevice* m_device;
     qint64 m_remaining;
     QByteArray m_chunk;
     QByteArray m_line;
     qsizetype m_peakBytes = 0;
+    bool m_failed = false;
+#ifdef DSD_NEO_TEST_HOOKS
+    int m_failAfterLinesForTest = -1;
+#endif
 };
 
 /**

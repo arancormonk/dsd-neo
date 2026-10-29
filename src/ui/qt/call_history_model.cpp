@@ -97,6 +97,8 @@ constexpr int kMergeScanRows = 32;
 
 #ifdef DSD_NEO_TEST_HOOKS
 std::atomic<void (*)(const QThread*)> g_store_build_observer{nullptr};
+/* The lines the next spill fold reads before its read fails (-1: it does not). */
+std::atomic<int> g_spill_read_fail_after{-1};
 
 void
 note_store_build() {
@@ -1844,6 +1846,11 @@ void
 CallHistoryModel::setStoreBuildObserverForTest(void (*observer)(const QThread* thread)) {
     g_store_build_observer.store(observer);
 }
+
+void
+CallHistoryModel::failNextSpillReadAfterLinesForTest(int lines) {
+    g_spill_read_fail_after.store(lines);
+}
 #endif
 
 QJsonArray
@@ -2142,25 +2149,36 @@ CallHistoryModel::foldSpill(const QByteArray& unwritten) {
     }
     bool folded = false;
     bool rowsChanged = false;
+    bool readWhole = false;
     // The spill's lines first: the tap wrote them before the ones it could not. Read a line at a time: a long
     // background stretch spills far more than the log keeps, and the fold holds no more of it than one line.
     if (size > 0) {
         CallHistorySpillReader reader(&file, size);
+#ifdef DSD_NEO_TEST_HOOKS
+        const int failAfter = g_spill_read_fail_after.exchange(-1);
+        if (failAfter >= 0) {
+            reader.failAfterLinesForTest(failAfter);
+        }
+#endif
         rowsChanged = foldSpillLines(reader, &folded);
+        readWhole = !reader.failed();
+        if (!readWhole) {
+            qWarning("call history: reading the background spill failed; it is kept, and read again at the next fold");
+        }
     }
     file.close(); // before a save's acknowledgement below truncates it
     rowsChanged = foldUnwritten(unwritten, &folded) || rowsChanged;
     rowsChanged = trimToCapacity() || rowsChanged;
     pruneSeen();
-    if (size > 0) {
-        m_spillFoldedBytes = size;
-    }
     if (folded) {
         markChanged();
     }
     // The spill's lines go once a save of this generation is acknowledged; at once when they added nothing the disk
-    // lacks. The unwritten ones were never in it: the log's own saves keep them.
-    if (size > 0) {
+    // lacks. The unwritten ones were never in it: the log's own saves keep them. A read that failed takes none of the
+    // spill as read: the lines after the failure are in no store, and the fold that next reads it whole adds them, the
+    // lines read before it again adding nothing.
+    if (readWhole) {
+        m_spillFoldedBytes = size;
         m_spillFoldGeneration = m_generation;
         if (m_ackedGeneration >= m_spillFoldGeneration) {
             acknowledgeSave(m_ackedGeneration);

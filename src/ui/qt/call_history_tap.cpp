@@ -101,14 +101,27 @@ CallHistorySpillReader::CallHistorySpillReader(QIODevice* device, qint64 limit)
 bool
 CallHistorySpillReader::next() {
     m_line.truncate(0); // keeps the buffer
+#ifdef DSD_NEO_TEST_HOOKS
+    if (m_failAfterLinesForTest == 0) {
+        m_remaining = 0;
+        m_failed = true;
+        return false;
+    }
+    if (m_failAfterLinesForTest > 0) {
+        m_failAfterLinesForTest--;
+    }
+#endif
     bool read = false;
     bool tooLong = false;
     while (m_remaining > 0) {
         // readLine() stops after a newline, and keeps a byte for its terminating NUL.
         const qint64 got = m_device->readLine(m_chunk.data(), qMin<qint64>(m_remaining, kChunkBytes) + 1);
         if (got <= 0) {
+            // Short of the length the spill had when opened: a read error, not its end. What follows was not read,
+            // and the line read so far is not whole.
             m_remaining = 0;
-            break;
+            m_failed = true;
+            return false;
         }
         m_remaining -= got;
         read = true;

@@ -285,6 +285,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief Call @p observer with the thread each store's JSON is built on (nullptr stops). */
     static void setStoreBuildObserverForTest(void (*observer)(const QThread* thread));
 
+    /** @brief Make the next fold's read of the spill fail after @p lines lines, as a device error there would. */
+    static void failNextSpillReadAfterLinesForTest(int lines);
+
     /** @brief Start the debounced save now, as its timer would. */
     void
     startSaveForTest() {
