@@ -466,7 +466,12 @@ fixture preserves the Apache-2.0 upstream 50 kHz CS16 capture byte-for-byte and
 also commits a deterministic 54 kHz derivative, made when replay kept a capture's
 rate and the CQPSK path needed an integer samples-per-symbol rate from the capture
 itself. `DECODE_IQ_TETRA_REAL_AIR_SCBS` replays the 54 kHz derivative and asserts
-the independently reported MCC 250, MNC 13 and colour code `0x2C`; replay now
+the independently reported MCC 250, MNC 13 and colour code `0x2C`, and
+`DECODE_IQ_TETRA_REAL_AIR_SCBS_COUNT` asserts at least the 74 identities the receiver
+before the TETRA chain decoded from it (the chain decodes 79). The derivative is a
+linear interpolation of a capture whose sample clock runs about 250 ppm slow, and it
+starts 2.2 kHz off frequency at 3 samples per symbol, so it tests the chain's timing
+recovery and its carrier pull-in more than its filtering; replay now
 resamples the 50 kHz original to 72 kHz under the hand-written sidecar
 `tetra_scbs_real_air_50k.cs16.json`, which `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K`
 checks (see [WAV I/Q replay and replay resampling](#wav-iq-replay-and-replay-resampling-issue-701)).

@@ -4556,12 +4556,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     per-block decision on the first 256 channel samples, measured before the AGC: the pieces run as for an open
     gate, and a closed one puts the FLL (its transfers with it) and the AGC average back, and advances the mixer's
     phasor at the block's frequency (`dsd_tetra_premix_skip()`), as a closed whole block leaves them. The raw CQPSK
-    demodulator, which runs no FLL, runs the block whole. The Gardner runs the requested gain on the chain: the
-    lowered tracking gain (`op25_gardner_gain_mu_for_state()`) is decided from the lock at a block's start, and on
-    TETRA captures it also decoded less. On every committed TETRA fixture and both reporter captures, seven replay
+    demodulator, which runs no FLL, runs the block whole. The Gardner keeps one gain on the chain: the lowered
+    tracking gain (`op25_gardner_gain_mu_for_state()`) is decided from the lock at a block's start, and on TETRA
+    captures it also decoded less. On every committed TETRA fixture and both reporter captures, seven replay
     chunk patterns (1/7, 1/2, 1 and 2 of the replay block, and irregular ones) decode the same lines, byte for byte
     once the input level monitor's warning, which reports per read, is set aside. Test: `DSP_TETRA_CHAIN`
     (`test_block_partitions()`).
+  - Symbol loops on the chain. The Gardner's gain is `kTetraGardnerGain` (0.07) unless one was set (`ted_gain_is_set`,
+    `DSD_NEO_TED_GAIN`, the menu): OP25's 0.025 is a P25 gain, and behind the matched filter it recovered timing too
+    slowly from a fast pull-in and on captures with a sample clock error, losing identities at every rate (the 54 kHz
+    SCBS capture, 250 ppm slow: 73 at 0.025, 79 at 0.07). The Costas loop after the differential detector keeps its
+    phase within +-pi/2 by stepping a quarter turn back past the rail (`costas_loop_context_t::rail_step`), the same
+    lock of its quarter-turn detector, where every other stream clamps it there: a fast pull-in sweeps the differential
+    rotation the loop tracks past the rail, and clamped there it saw the noise clipped, wound its frequency up to its
+    own clamp and stayed off by about 14 degrees (the SCBS capture 3 kHz lower decoded 51 against 73). Tests:
+    `DSP_COSTAS` (`test_tetra_chain_gardner_gain()`, `test_tetra_chain_costas_steps_off_rail()`),
+    `DECODE_IQ_TETRA_REAL_AIR_SCBS_COUNT`.
   - Fallback. A TETRA profile on CQPSK whose chain cannot run warns once per stream per cause (`TETRA receive chain
     inactive: ...`: the rate out of the domain, a TED override that does not match the rate,
     `DSD_NEO_CHANNEL_LPF=0`) and runs the generic CQPSK path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1).
@@ -4671,8 +4681,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     omega, the delay line, the last symbol), so its symbols do not depend on the cut either: a block can make none, and
     a symbol the last block owed comes out of the next one. It writes them to the work buffer its input is not in
     (`hb_workbuf` when the channel filter left the block in `timing_buf`, as after an odd half-band pass count), up to
-    that buffer's capacity. Only its adaptive gain is decided per block, and not on the TETRA chain, which runs the
-    requested gain (TETRA receive chain above). Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks, warm and cold, from
+    that buffer's capacity. Only its adaptive gain is decided per block, and not on the TETRA chain, which keeps one
+    gain (TETRA receive chain above). Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks, warm and cold, from
     each buffer, bit-exact against the whole stream).
   - The post-demod audio decimator (`full_demod_apply_post_audio_decimation()`, only on an I/Q replay whose sidecar
     sets `post_downsample` above 1; every live source and committed fixture runs 1) streams on both paths: the 16-tap

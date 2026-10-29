@@ -2462,7 +2462,8 @@ from the active SPS hunt profile rather than from the front end's published symb
 Gardner/Costas/FLL-band-edge symbol chain.
 
 - `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override, 0.01 to 0.5 (the menu's range; a value
-  outside it is taken as the nearest end, and one that is not a number is ignored)
+  outside it is taken as the nearest end, and one that is not a number is ignored). Without it the gain is OP25's
+  0.025, and the TETRA receive chain's own 0.07 while that chain runs (`-fT`)
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 

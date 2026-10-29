@@ -16254,6 +16254,18 @@ if(DSD_HAS_RADIO)
         -fT
         "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
     )
+    # The same capture's count: at least the 74 identities the receiver before the TETRA chain decoded. The capture
+    # runs 250 ppm off in sample rate and starts 2.2 kHz off frequency at 3 samples per symbol; the chain decoded 63
+    # while its mixer took the carrier once per block and its Gardner timing loop ran OP25's P25 gain, lowered once
+    # locked.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_SCBS_COUNT
+        tetra_scbs_real_air_54k
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+        ""
+        74
+    )
     # Airspy on_cc_sync_loss recording from the same network: ~10 dB
     # in-channel SNR with visibly ISI-smeared pi/4-DQPSK. Require sustained
     # recovery, not one lucky CRC, from the unmodified 144 kHz CS16 bytes.

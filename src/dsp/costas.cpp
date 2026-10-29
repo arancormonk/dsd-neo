@@ -232,10 +232,15 @@ cqpsk_symbol_rate_hz(const demod_state* d) {
     return (d->rate_out + (d->ted_sps / 2)) / d->ted_sps;
 }
 
+/* The TETRA chain's Gardner gain when none was set. OP25's 0.025 is a P25 gain; behind the TETRA matched filter it
+   recovered timing too slowly from a fast carrier pull-in and on real captures' sample clock errors (a 54 kHz capture
+   250 ppm off decoded 73 BSCH at 0.025, 79 at 0.07), and decoded less at every rate from 36 to 144 kHz. */
+static const float kTetraGardnerGain = 0.07f;
+
 /* The Gardner gain: the requested one (ted_gain, else 0.025), lowered to 0.018 at 5500 sym/s and above once 240 symbols
    in the lock metric holds at 0.05, unless a gain was set. The block decides it from the lock at its start, so where a
-   block starts decides when it moves; the TETRA chain, whose output must not depend on the cut, runs the requested gain
-   (on TETRA captures the lowered one also decoded less). */
+   block starts decides when it moves; the TETRA chain, whose output must not depend on the cut, keeps its gain, a set
+   one or kTetraGardnerGain (on TETRA captures the lowered one also decoded less). */
 static float
 op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
     const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
@@ -247,8 +252,11 @@ op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
     if ((d && d->ted_gain_is_set) || (cfg && cfg->ted_gain_is_set)) {
         return requested;
     }
+    if (d && d->tetra_chain) {
+        return kTetraGardnerGain;
+    }
 
-    if (cqpsk_symbol_rate_hz(d) < 5500 || (d && d->tetra_chain)) {
+    if (cqpsk_symbol_rate_hz(d) < 5500) {
         return requested;
     }
     if (!ted || ted->lock_count < 240) {
@@ -419,6 +427,8 @@ struct costas_loop_context_t {
     float min_phase;
     float error_smooth;
     float last_error;
+    /* On the TETRA chain: a phase past +-max_phase steps a quarter turn back (costas_process_symbol()). */
+    int rail_step;
     costas_metrics_acc_t metrics;
 };
 
@@ -658,6 +668,7 @@ costas_prepare_loop_context(const dsd_costas_loop_state_t* c, costas_loop_contex
     ctx->min_freq = c->min_freq;
     ctx->error_smooth = stored_float_is_finite(&c->error_smooth) ? c->error_smooth : 0.0f;
     ctx->last_error = 0.0f;
+    ctx->rail_step = 0;
     ctx->metrics.err_abs_acc = 0.0f;
     ctx->metrics.err_raw_abs_acc = 0.0f;
     ctx->metrics.confidence_acc = 0.0f;
@@ -703,6 +714,16 @@ costas_process_symbol(costas_loop_context_t* ctx, const float* sample, float* ou
 
     ctx->freq += ctx->beta * error;
     ctx->phase += ctx->freq + ctx->alpha * error;
+    if (ctx->rail_step) {
+        /* The detector repeats every quarter turn, so a phase a quarter turn back is the same lock. Pinned at the rail
+           instead, the loop sees the symmetric noise clipped and winds its frequency up to its own clamp: a fast carrier
+           pull-in sweeps the differential rotation it tracks past the rail, and the loop never came back. */
+        if (ctx->phase > ctx->max_phase) {
+            ctx->phase -= kPi / 2.0f;
+        } else if (ctx->phase < ctx->min_phase) {
+            ctx->phase += kPi / 2.0f;
+        }
+    }
     ctx->phase = clampf_range(ctx->phase, ctx->min_phase, ctx->max_phase);
     ctx->freq = clampf_range(ctx->freq, ctx->min_freq, ctx->max_freq);
 
@@ -1156,6 +1177,7 @@ op25_costas_loop_cc(struct demod_state* d) {
 
     costas_loop_context_t ctx;
     costas_prepare_loop_context(c, &ctx);
+    ctx.rail_step = d->tetra_chain ? 1 : 0;
     if (d->ted_state.ul_lookahead_live) {
         costas_run_loop<true>(&ctx, iq, pairs, &d->tetra_ul_timing);
     } else {
