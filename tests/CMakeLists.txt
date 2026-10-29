@@ -3250,6 +3250,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
             ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
             ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c

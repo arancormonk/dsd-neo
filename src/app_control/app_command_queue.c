@@ -432,6 +432,13 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     state->ui_msg_expire = dsd_realtime_time() + ttl_s;
 }
 
+/* A frequency in Hz as every tune toast names it: MHz to the Hz (issue #670). Returns @p out. */
+static const char*
+ui_toast_mhz(uint32_t hz, char* out, size_t out_size) {
+    (void)dsd_freq_hz_mhz_text(hz, out, out_size);
+    return out;
+}
+
 /* An I/Q replay plays the tuning its capture recorded and defers every other retune unseen (issue #575), so a tune or a
    tuner release asked of it would be reported as done and never land. Returns 1, with the reason toasted, while the
    input in force is a replay (dsd_opts_input_is_iq_replay()); the caller fails the command. */
@@ -1883,14 +1890,17 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
 static int
 ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
+    /* The selection stores and tunes this frequency as it is, so it names the one selected whatever the result. */
+    char mhz[16];
+    (void)ui_toast_mhz(hz, mhz, sizeof mhz);
     if (dsd_trunk_tune_result_is_ok(result)) {
         ui_user_move_forgets_identity(state, g_apply_cmd_guard_held); /* the selection ended the calls left */
-        ui_set_toast(state, 3, "%s: P25 control channel -> %u Hz",
-                     result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", hz);
+        ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
+                     result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
     }
-    ui_set_toast(state, 4, "%s: P25 control channel -> %u Hz",
-                 result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "Deferred; retry" : "Failed", hz);
+    ui_set_toast(state, 4, "%s: P25 control channel -> %s MHz",
+                 result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "Deferred; retry" : "Failed", mhz);
     return UI_CMD_APPLY_FAILED;
 }
 
@@ -1955,17 +1965,23 @@ ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
     return 1;
 }
 
+/* A success names @p applied, the frequency the controller applied (a coalesced request can land on another than
+   @p v); a pending, deferred or failed tune names the one asked for. */
 static void
-ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, int stop_scanner) {
+ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int stop_scanner) {
+    char mhz[16];
     if (rc == 0) {
-        ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
-    } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-        ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)%s", v,
+        ui_set_toast(state, 3, "Applied: RTL frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
                      stop_scanner ? " (scanner stopped)" : "");
+    } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+        ui_set_toast(state, 3, "Accepted: RTL frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
+                     stop_scanner ? " (scanner stopped)" : "");
+    } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
+        ui_set_toast(state, 4, "Deferred; retry: RTL frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
     } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
-        ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
+        ui_set_toast(state, 4, "Failed: RTL frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     }
 }
 
@@ -1982,6 +1998,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             return ui_cmd_handle_p25_cc_selection(opts, state, v);
         }
         int rc = svc_rtl_set_freq(opts, state, v);
+        const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
         result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
             /* A new channel: the tone heard on the old one goes now, not when the analog tap
@@ -1990,7 +2007,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             dsd_analog_rx_reset(state);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
-        ui_cmd_rtl_set_freq_toast(state, rc, v, stop_scanner);
+        ui_cmd_rtl_set_freq_toast(state, rc, v, applied, stop_scanner);
     }
     return result;
 }
@@ -2048,7 +2065,9 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         return result;
     }
     int rc = svc_rtl_set_freq(opts, state, v);
+    const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
     result = ui_cmd_apply_status_from_tune_rc(rc);
+    char mhz[16];
     if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
         /* Only after the tune is accepted, matching how trunk_tuning.c and the
          * manual return-to-CC path order this — never on the failure path. */
@@ -2056,14 +2075,17 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         dsd_analog_rx_reset(state); // the tune itself ran the carrier boundary (svc_rtl_set_freq(), issue #575)
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
+            /* The frequency the controller applied, as the frequency entry's toast names it. */
+            ui_set_toast(state, 3, "Applied: tuned -> %s MHz", ui_toast_mhz(applied, mhz, sizeof mhz));
         } else {
-            ui_set_toast(state, 3, "Accepted: tuned -> %u Hz (pending)", v);
+            ui_set_toast(state, 3, "Accepted: tuned -> %s MHz (pending)", ui_toast_mhz(v, mhz, sizeof mhz));
         }
+    } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
+        ui_set_toast(state, 4, "Deferred; retry: tune -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
     } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
-        ui_set_toast(state, 4, "Failed: tune -> %u Hz", v);
+        ui_set_toast(state, 4, "Failed: tune -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     }
     return result;
 }
@@ -6962,8 +6984,11 @@ apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
         ui_set_toast(state, 3, "Failed: scan avoid out of memory");
         return;
     }
-    ui_set_toast(state, 3, "Avoiding %.4f MHz (%u avoided)", (double)freq / 1000000.0,
-                 (unsigned)state->lcn_avoid_count);
+    /* To the Hz, as every frequency is shown: four decimals named another channel of a 6.25 kHz plan (issue #670). A
+       stored row is within the trunk ceiling, so it fits the uint32_t text. */
+    char mhz[16];
+    ui_set_toast(state, 3, "Avoiding %s MHz (%u avoided)",
+                 ui_toast_mhz(freq > 0 ? (uint32_t)freq : 0U, mhz, sizeof mhz), (unsigned)state->lcn_avoid_count);
     if (scan_control_tuner_present(opts)) {
         (void)apply_manual_lcn_cycle(opts, state);
     }
