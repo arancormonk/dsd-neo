@@ -47,6 +47,7 @@
 class QByteArray;
 class QDate;
 class QFileInfo;
+class QIODevice;
 
 namespace dsd_qt {
 
@@ -63,9 +64,16 @@ QString recording_folder_base_name(const QString& kind, const QString& uid, cons
 
 /**
  * @brief The start stamps (Unix seconds, [@p from, @p to)) an export date preset covers, on the local calendar of
- * @p today: "today", "yesterday", "last7" and "last30" (today and the days before it), "all". False for any other.
+ * @p today: "today", "yesterday", "last7" and "last30" (today and the days before it, ending where tomorrow starts),
+ * "all" (unbounded). False for any other.
  */
 bool recording_export_range(const QString& preset, const QDate& today, qint64* from, qint64* to);
+
+/**
+ * @brief Whether the journal open in @p file holds nothing past @p offset that the store has not read: at most a line a
+ * crash tore. False when the bytes past @p offset cannot all be read, so a compaction never drops records it never saw.
+ */
+bool recording_journal_tail_settled(QIODevice& file, qint64 offset);
 
 /**
  * @brief Whether @p path lies strictly inside @p root, both resolved to their canonical forms and compared one path

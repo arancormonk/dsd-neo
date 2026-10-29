@@ -14,6 +14,7 @@
  * every hold; the storage limit removes the oldest first, down to 95%; temp files are unfinished recordings only when
  * an earlier process left them; low free space is reported; exports select by owner and date and hold their files. */
 
+#include <QBuffer>
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
@@ -52,6 +53,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <qflags.h>
@@ -533,6 +535,46 @@ test_compaction(void) {
     }
 }
 
+/* A journal whose bytes past the cursor fail to read is not settled: a compaction must not drop records it never saw. */
+class FailingJournal : public QBuffer {
+  public:
+    FailingJournal(const QByteArray& bytes, qint64 failFrom) : m_failFrom(failFrom) {
+        setData(bytes);
+        (void)open(QIODevice::ReadOnly);
+    }
+
+  protected:
+    qint64
+    readData(char* data, qint64 maxSize) override {
+        if (pos() + maxSize > m_failFrom) {
+            return -1;
+        }
+        return QBuffer::readData(data, maxSize);
+    }
+
+  private:
+    qint64 m_failFrom;
+};
+
+void
+test_journal_tail_settled(void) {
+    const QByteArray read = "{\"v\":1}\n";
+    const QByteArray journal = read + "{\"v\":1,\"later\":1}\n";
+    QBuffer whole;
+    whole.setData(read + "{\"torn");
+    (void)whole.open(QIODevice::ReadOnly);
+    expect("a torn last line past the cursor is settled", dsd_qt::recording_journal_tail_settled(whole, read.size()));
+    QBuffer unread;
+    unread.setData(journal);
+    (void)unread.open(QIODevice::ReadOnly);
+    expect("a whole line past the cursor is not", !dsd_qt::recording_journal_tail_settled(unread, read.size()));
+    FailingJournal failing(journal, read.size());
+    expect("nor is a tail that cannot be read", !dsd_qt::recording_journal_tail_settled(failing, read.size()));
+    QBuffer empty;
+    (void)empty.open(QIODevice::ReadOnly);
+    expect("an offset past the end is not", !dsd_qt::recording_journal_tail_settled(empty, 4));
+}
+
 /* A session that never ran may still reach the decoder: Android's start grace can show a start Failed while its intent
  * waits on a busy main thread, and the engine then opens that folder's journal. Such a folder is compacted only after
  * the host has seen a session running and then inactive. */
@@ -897,14 +939,18 @@ test_export_selection(void) {
     qint64 to = 0;
     const QDate today(2026, 10, 28);
     const qint64 midnight = today.startOfDay().toSecsSinceEpoch();
-    expect("today", dsd_qt::recording_export_range(QStringLiteral("today"), today, &from, &to) && from == midnight);
+    // Every preset but "all" ends where tomorrow starts: a recording stamped later (a clock that ran ahead) is not "today".
+    const qint64 tomorrow = today.addDays(1).startOfDay().toSecsSinceEpoch();
+    expect("today", dsd_qt::recording_export_range(QStringLiteral("today"), today, &from, &to) && from == midnight
+                        && to == tomorrow);
     expect("yesterday", dsd_qt::recording_export_range(QStringLiteral("yesterday"), today, &from, &to)
                             && from == today.addDays(-1).startOfDay().toSecsSinceEpoch() && to == midnight);
     expect("last 7 days", dsd_qt::recording_export_range(QStringLiteral("last7"), today, &from, &to)
-                              && from == today.addDays(-6).startOfDay().toSecsSinceEpoch());
+                              && from == today.addDays(-6).startOfDay().toSecsSinceEpoch() && to == tomorrow);
     expect("last 30 days", dsd_qt::recording_export_range(QStringLiteral("last30"), today, &from, &to)
-                               && from == today.addDays(-29).startOfDay().toSecsSinceEpoch());
-    expect("all", dsd_qt::recording_export_range(QStringLiteral("all"), today, &from, &to) && from < 0);
+                               && from == today.addDays(-29).startOfDay().toSecsSinceEpoch() && to == tomorrow);
+    expect("all", dsd_qt::recording_export_range(QStringLiteral("all"), today, &from, &to) && from < 0
+                      && to == std::numeric_limits<qint64>::max());
     expect("nothing else", !dsd_qt::recording_export_range(QStringLiteral("week"), today, &from, &to));
 
     Roots roots;
@@ -2318,6 +2364,7 @@ main(int argc, char** argv) {
     test_journal_from_the_writer();
     test_recording_roles_from_the_store();
     test_compaction();
+    test_journal_tail_settled();
     test_compaction_waits_for_a_run();
     test_roots_unavailable_vs_deleted();
     test_changes_behind_the_store();

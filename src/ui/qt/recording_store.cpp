@@ -164,6 +164,19 @@ recording_folder_base_name(const QString& kind, const QString& uid, const QStrin
 }
 
 bool
+recording_journal_tail_settled(QIODevice& file, qint64 offset) {
+    if (offset < 0 || !file.seek(offset)) {
+        return false;
+    }
+    const qint64 want = file.size() - offset;
+    if (want < 0) {
+        return false;
+    }
+    const QByteArray tail = file.read(want);
+    return tail.size() == want && !tail.contains('\n');
+}
+
+bool
 recording_export_range(const QString& preset, const QDate& today, qint64* from, qint64* to) {
     if (from == nullptr || to == nullptr || !today.isValid()) {
         return false;
@@ -171,15 +184,19 @@ recording_export_range(const QString& preset, const QDate& today, qint64* from, 
     const auto dayStart = [](const QDate& day) { return day.startOfDay().toSecsSinceEpoch(); };
     qint64 lo = std::numeric_limits<qint64>::min();
     qint64 hi = std::numeric_limits<qint64>::max();
+    // Each preset ends where tomorrow starts: a recording stamped later (a phone clock that ran ahead) is in "all" only.
     if (preset == QLatin1String("today")) {
         lo = dayStart(today);
+        hi = dayStart(today.addDays(1));
     } else if (preset == QLatin1String("yesterday")) {
         lo = dayStart(today.addDays(-1));
         hi = dayStart(today);
     } else if (preset == QLatin1String("last7")) {
         lo = dayStart(today.addDays(-6));
+        hi = dayStart(today.addDays(1));
     } else if (preset == QLatin1String("last30")) {
         lo = dayStart(today.addDays(-29));
+        hi = dayStart(today.addDays(1));
     } else if (preset != QLatin1String("all")) {
         return false;
     }
@@ -1381,12 +1398,13 @@ RecordingStore::compactFolder(const QString& path) {
     bool ok = false;
     qint64 written = 0;
     QFile current(journalPath);
-    if (current.open(QIODevice::ReadOnly) && current.seek(offset)) {
-        // Past the cursor there may only be a line a crash tore; a whole line the store has not read stops it.
-        const bool unread = current.read(current.size() - offset).contains('\n');
+    if (current.open(QIODevice::ReadOnly)) {
+        // Past the cursor there may only be a line a crash tore; a whole line the store has not read, or a tail that
+        // cannot be read in full, stops it.
+        const bool settled = recording_journal_tail_settled(current, offset);
         current.close();
         QSaveFile out(journalPath);
-        if (!unread && out.open(QIODevice::WriteOnly)) {
+        if (settled && out.open(QIODevice::WriteOnly)) {
             // Private, as the decoder creates it (dsd_fopen_private()), where the filesystem keeps modes at all: a
             // FUSE-backed shared storage may refuse the change, and that must not stop the compaction.
             (void)out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
