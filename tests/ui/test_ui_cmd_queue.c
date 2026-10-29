@@ -83,6 +83,7 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdbool.h>
@@ -115,6 +116,8 @@
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
 static long int g_io_control_tune_freq = 0;
+/* The frequency the stub reports the controller applied on success; 0 applies the request (issue #670). */
+static uint32_t g_io_control_applied_freq = 0U;
 static dsd_trunk_tune_result g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 static int g_cc_tune_calls = 0;
 static long int g_cc_tune_freq = 0;
@@ -333,10 +336,16 @@ __wrap_rtl_stream_set_bias_tee(int on) {
 
 int
 __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
-    (void)opts;
     (void)state;
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq;
+    /* As the real one: a success caches the frequency the controller applied, which a coalesced request can make
+       another than this one, and an accepted (timed-out) request caches its own target. */
+    if (opts != NULL && g_io_control_tune_result == RTL_STREAM_TUNE_OK) {
+        opts->rtlsdr_center_freq = g_io_control_applied_freq != 0U ? g_io_control_applied_freq : (uint32_t)freq;
+    } else if (opts != NULL && g_io_control_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+        opts->rtlsdr_center_freq = (uint32_t)freq;
+    }
     return g_io_control_tune_result;
 }
 
@@ -471,6 +480,7 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0;
+    g_io_control_applied_freq = 0U;
 }
 
 static void
@@ -1558,8 +1568,20 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 851500000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted RTL frequency timeout drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("accepted RTL frequency timeout reports pending",
-                      strstr(state.ui_msg, "Accepted: RTL frequency -> 851500000 Hz (pending)") != NULL);
+                      strstr(state.ui_msg, "Accepted: RTL frequency -> 851.500000 MHz (pending)") != NULL);
     rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
+    /* A success names the frequency the controller applied, which a coalesced request can make another than the one
+       asked for (issue #670). */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U);
+    rc |= expect_int("applied RTL frequency drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("applied RTL frequency toast", state.ui_msg, "Applied: RTL frequency -> 851.012500 MHz");
+    g_io_control_applied_freq = 851500000U;
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U);
+    rc |= expect_int("coalesced RTL frequency drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("coalesced RTL frequency names the applied one", state.ui_msg,
+                     "Applied: RTL frequency -> 851.500000 MHz");
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     opts.scanner_mode = 1;
     post_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U);
     rc |= expect_int("legacy scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -1570,7 +1592,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("typed scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("typed manual tune releases scanner", opts.scanner_mode, 0);
     rc |= expect_int("typed manual tune releases mode", dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
-    rc |= expect_contains("manual tune explains scanner exit", state.ui_msg, "scanner stopped");
+    rc |= expect_str("manual tune explains scanner exit", state.ui_msg,
+                     "Accepted: RTL frequency -> 853.000000 MHz (pending) (scanner stopped)");
     freeState(&state);
 #endif
 
@@ -2348,7 +2371,7 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("manual tune reaches the tuner once", g_io_control_tune_calls, 1);
     rc |= expect_true("manual tune targets the tapped frequency", g_io_control_tune_freq == 853125000L);
-    rc |= expect_contains("manual tune reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    rc |= expect_contains("manual tune reports applied", state.ui_msg, "Applied: tuned -> 853.125000 MHz");
     rc |= expect_int("an applied manual tune is no failed command", dsd_app_command_test_last_failed(), 0);
     rc |= expect_call_phase("manual tune ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
     rc |= expect_call_phase("manual tune ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
@@ -2366,7 +2389,8 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("pending manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 854000000U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("pending manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_contains("pending manual tune reports pending", state.ui_msg, "(pending)");
+    rc |=
+        expect_str("pending manual tune reports pending", state.ui_msg, "Accepted: tuned -> 854.000000 MHz (pending)");
     rc |= expect_call_phase("pending manual tune still ends slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
     freeState(&state);
 
@@ -2378,8 +2402,22 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_int("failed manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 855000000U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("failed manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_contains("failed manual tune reports failure", state.ui_msg, "Failed: tune -> 855000000 Hz");
+    rc |= expect_contains("failed manual tune reports failure", state.ui_msg, "Failed: tune -> 855.000000 MHz");
     rc |= expect_call_phase("failed manual tune keeps slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    freeState(&state);
+
+    /* A deferred tune says so and fails; an applied one names the frequency the controller applied (issue #670). */
+    init_test_context(&opts, &state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 855000000U);
+    rc |= expect_int("deferred manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("deferred manual tune toast", state.ui_msg, "Deferred; retry: tune -> 855.000000 MHz");
+    rc |= expect_int("a deferred manual tune is a failed command", dsd_app_command_test_last_failed(), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    g_io_control_applied_freq = 855006250U;
+    post_u32(DSD_APP_CMD_MANUAL_TUNE, 855000000U);
+    rc |= expect_int("coalesced manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("coalesced manual tune names the applied one", state.ui_msg, "Applied: tuned -> 855.006250 MHz");
     freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
@@ -2488,7 +2526,7 @@ test_tuner_release(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tune after release drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tune after release reaches the tuner", g_io_control_tune_calls, 1);
-    rc |= expect_contains("tune after release reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    rc |= expect_contains("tune after release reports applied", state.ui_msg, "Applied: tuned -> 853.125000 MHz");
 #endif
     freeState(&state);
 
@@ -2607,6 +2645,49 @@ test_replay_refuses_tunes_and_release(void) {
     freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* A manual tune's payload is range-checked as the frequency entry's is: refused before the tuner is touched, with the
+ * reason toasted. These cases need no io_control stub, so they run on every radio build. */
+static int
+expect_manual_tune_payload_refused(const char* tag, dsd_opts* opts, dsd_state* state, uint32_t hz, const char* toast) {
+    int rc = 0;
+    state->ui_msg[0] = '\0';
+    const long int center = opts->rtlsdr_center_freq;
+    rc |= expect_int(tag, dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(tag, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains(tag, state->ui_msg, toast);
+    rc |= expect_true(tag, strstr(state->ui_msg, "Failed") == NULL && strstr(state->ui_msg, "Applied") == NULL);
+    rc |= expect_true(tag, opts->rtlsdr_center_freq == center);
+    return rc;
+}
+
+static int
+test_manual_tune_payload_range(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    rc |= expect_manual_tune_payload_refused("manual tune of 0", &opts, &state, 0U, "Invalid frequency");
+#if LONG_MAX < UINT32_MAX // Windows: a payload past what long holds. Not run on a 64-bit long host.
+    rc |= expect_manual_tune_payload_refused("manual tune past LONG_MAX", &opts, &state, (uint32_t)LONG_MAX + 1U,
+                                             "Above 2147.483647 MHz, this build's limit");
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("RTL set freq past LONG_MAX queued",
+                     dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, (uint32_t)LONG_MAX + 1U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("RTL set freq past LONG_MAX drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_contains("RTL set freq past LONG_MAX toast", state.ui_msg, "Above 2147.483647 MHz, this build's limit");
+#endif
+    freeState(&state);
     return rc;
 }
 #endif
@@ -4574,10 +4655,10 @@ test_scan_hold_avoid_commands(void) {
     opts.audio_in_type = AUDIO_IN_RTL;
     state.lcn_freq_count = 4;
     state.trunk_lcn_freq[0] = 0L;
-    state.trunk_lcn_freq[1] = 857000000L;
+    state.trunk_lcn_freq[1] = 769768750L;
     state.trunk_lcn_freq[2] = 0L;
     state.trunk_lcn_freq[3] = 858000000L;
-    state.lcn_freq_roll = 2; /* row 1 (857 MHz) is on air */
+    state.lcn_freq_roll = 2; /* row 1 (769.76875 MHz) is on air */
     state.last_cc_sync_time_m = 42.0;
     opts.scan_max_visit_ms = 1000;
     state.scan_visit_since_m = 42.0;
@@ -4643,7 +4724,8 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("scan avoid tunes", g_io_control_tune_calls, 1);
     rc |= expect_true("scan avoid tunes next usable row", g_io_control_tune_freq == 858000000L);
     rc |= expect_int("scan avoid advances roll", state.lcn_freq_roll, 4);
-    rc |= expect_contains("scan avoid toast", state.ui_msg, "857.0000");
+    /* The avoided channel to the Hz, as every frequency is shown: 769.7687 named another channel (issue #670). */
+    rc |= expect_str("scan avoid toast", state.ui_msg, "Avoiding 769.768750 MHz (1 avoided)");
 
     /* Refused when it would leave no usable row: nothing flagged, nothing tuned. */
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
@@ -7261,7 +7343,13 @@ test_radio_control_unavailable_toasts(void) {
     g_control_unavailable = 0;
     rc |= expect_true("tune failing otherwise queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_str("tune failing otherwise toast", state->ui_msg, "Failed: RTL frequency -> 851012500 Hz");
+    rc |= expect_str("tune failing otherwise toast", state->ui_msg, "Failed: RTL frequency -> 851.012500 MHz");
+    /* A deferred tune (auto-PPM training, a full schedule) says so, and the command fails (issue #670). */
+    g_io_control_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    rc |= expect_true("deferred tune queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("deferred tune toast", state->ui_msg, "Deferred; retry: RTL frequency -> 851.012500 MHz");
+    rc |= expect_int("deferred tune is a failed command", dsd_app_command_test_last_failed(), 1);
     g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 
     const int ppm_before = opts->rtlsdr_ppm_error;
@@ -20585,6 +20673,9 @@ main(void) {
     rc |= test_return_cc_and_mode_change_hand_tetra_over();
     rc |= test_manual_tunes_hand_a_tetra_return_over();
     rc |= test_scan_row_keys_commands();
+#endif
+#ifdef USE_RADIO
+    rc |= test_manual_tune_payload_range();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= expect_int("every case reaching the sink helpers plays to the null output", g_ensure_off_null_calls, 0);

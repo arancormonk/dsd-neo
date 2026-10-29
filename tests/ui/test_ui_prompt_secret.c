@@ -14,6 +14,7 @@
 
 #include <time.h>
 #include "menu_prompts.h"
+#include "ui_keys.h"
 
 static int g_string_done_called = 0;
 static int g_string_was_null = 0;
@@ -162,6 +163,24 @@ test_secret_prompt_capacity_is_cap_minus_one(void) {
     assert(strcmp(g_string_text, "abcd") == 0);
 }
 
+// A character the field cannot hold becomes a '?' byte here too: shown masked,
+// delivered as typed so a wrong secret fails instead of shrinking silently.
+static void
+test_secret_prompt_keeps_unholdable_character_as_placeholder(void) {
+    char shown[64];
+
+    reset_string_capture();
+    ui_prompt_open_secret_async("Secret", 16, capture_string_done, NULL);
+    type_text("a");
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    type_text("b");
+    assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
+    assert(strcmp(shown, "***") == 0);
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_string_done_called == 1);
+    assert(strcmp(g_string_text, "a?b") == 0);
+}
+
 // The display hook is defensive about its own arguments and truncates safely.
 static void
 test_display_text_hook_arguments(void) {
@@ -187,6 +206,7 @@ main(void) {
     test_secret_prompt_cancel_delivers_null();
     test_secret_prompt_force_close_cancels();
     test_secret_prompt_capacity_is_cap_minus_one();
+    test_secret_prompt_keeps_unholdable_character_as_placeholder();
     test_display_text_hook_arguments();
 
     // The prompt widget never echoes typed text to the status line.

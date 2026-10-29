@@ -21,6 +21,15 @@
  *
  * The record is a local USB dongle's alone: an rtl_tcp server keeps every write behind any tuner (gate r4 K2), which
  * IO_RTL_TCP_RECONNECT's hops_write_every_setting pins against its fake server.
+ *
+ * Issue #670 B4 and B16, on the same fake dongle:
+ *
+ * - a centre above 2147.483647 MHz is programmed as it is, on the start and on a retune (it used to be narrowed through
+ *   int, which programmed the dongle near 0 Hz), and a capture frequency past UINT32_MAX is refused with nothing
+ *   written instead of saturated;
+ * - a retune whose actual-rate correction cannot be written (the write fails, or the corrected capture is past
+ *   UINT32_MAX), after a rate write that took or one that failed, is refused: the device goes back on the capture it had, the controller finalizes on the centre it
+ *   kept and the retune completes as failed; a device that will not go back stops the stream.
  */
 
 #include <assert.h>
@@ -34,6 +43,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <memory>
 #include "dsd-neo/core/opts_fwd.h"
@@ -96,18 +107,29 @@ make_rtl_opts(void) {
     return opts;
 }
 
+/* Stops the dongle reading back another rate on its at_call-th rate write: the rate a refused retune's rollback puts
+ * back reads back as given. */
+struct readback_reset {
+    rtl_device_test_usb_dongle* dongle;
+    int at_call;
+};
+
 /* A stream's device on the fake dongle, its start programmed. */
 struct rig {
     std::unique_ptr<input_ring_state> ring = std::make_unique<input_ring_state>();
     /* Heap-held: the device keeps its address in a global while it is installed. */
     std::unique_ptr<rtl_device_test_usb_dongle> dongle = std::make_unique<rtl_device_test_usb_dongle>();
+    /* Heap-held as well: the dongle keeps its address as the op hook's context while a readback is armed. */
+    std::unique_ptr<readback_reset> readback = std::make_unique<readback_reset>();
     dsd_opts* opts = nullptr;
     rtl_device* dev = nullptr;
     rtl_stream_test_capture_result start{};
 };
 
+/* The fake dongle (reading back @p actual_rate for any rate it is given, 0: the rate given) and its device, with a
+ * capture session begun on @p center_hz; the start's result in r.start. */
 void
-rig_open(rig& r, int tuner_type, uint32_t actual_rate = 0U) {
+rig_begin(rig& r, int tuner_type, uint32_t center_hz, uint32_t actual_rate = 0U) {
     assert(input_ring_init(r.ring.get(), 1U << 18) == 0);
     DSD_MEMSET(r.dongle.get(), 0, sizeof *r.dongle);
     r.dongle->tuner.tuner_type = tuner_type;
@@ -120,7 +142,12 @@ rig_open(rig& r, int tuner_type, uint32_t actual_rate = 0U) {
     assert(r.dev != nullptr);
     assert(rtl_device_usb_recovery_eligible(r.dev) == 1);
     r.opts = make_rtl_opts();
-    assert(rtl_stream_test_capture_session_begin(r.dev, r.opts, kCenterHz, &r.start) == 0);
+    assert(rtl_stream_test_capture_session_begin(r.dev, r.opts, center_hz, &r.start) == 0);
+}
+
+void
+rig_open(rig& r, int tuner_type, uint32_t actual_rate = 0U) {
+    rig_begin(r, tuner_type, kCenterHz, actual_rate);
     assert(r.start.rc == 0);
 }
 
@@ -561,6 +588,220 @@ test_soapy_rewrites_every_hop(void) {
     }
 }
 
+/* ---- Issue #670 B4: centres above 2147.483647 MHz, and capture frequencies past UINT32_MAX ---- */
+
+constexpr uint32_t kAbove2147Hz = 2200000000U;
+/* Demod input rate a retune asks for to run the capture at 960 kS/s (32x). */
+constexpr int kRateIn960k = 30000;
+constexpr uint32_t kCapture960kHz = 960000U;
+
+/* The centre frequencies the dongle took from the @p from-th on. */
+uint32_t
+freq_taken(const rig& r, int from) {
+    assert(from < r.dongle->tuner.freq_log_count);
+    return r.dongle->tuner.freq_log[from];
+}
+
+/* A retune the controller applies, finalizes and completes, to @p center_hz at demod input rate @p rate_in. */
+rtl_stream_test_capture_result
+manual_retune(uint32_t center_hz, int rate_in) {
+    rtl_stream_test_capture_result out{};
+    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, center_hz, rate_in, &out) == 0);
+    return out;
+}
+
+/* A retune from 851 MHz to 2.2 GHz with the Fs/4 shift at 960 kS/s: the first frequency the dongle is given is the
+ * shifted 2.2 GHz centre, and the retune lands. */
+void
+test_retune_above_2147_mhz(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    assert(r.start.fs4_rotation == 1);
+    const int from = r.dongle->tuner.freq_log_count;
+    const rtl_stream_test_capture_result got = manual_retune(kAbove2147Hz, kRateIn960k);
+    assert(r.dongle->tuner.freq_log_count > from);
+    assert(freq_taken(r, from) == 2200240000U);
+    expect_capture_at(r, got, kAbove2147Hz, kCapture960kHz, 0);
+    assert(got.applied_hz == kAbove2147Hz);
+    assert(got.completion == RTL_STREAM_TUNE_OK);
+    rig_close(r);
+}
+
+/* A start on 2.2 GHz: the first frequency the dongle is given is the shifted 2.2 GHz centre. */
+void
+test_start_above_2147_mhz(void) {
+    rig r;
+    rig_begin(r, kTunerR820T, kAbove2147Hz);
+    assert(r.start.rc == 0);
+    assert(r.start.fs4_rotation == 1);
+    assert(r.dongle->tuner.freq_log_count >= 1);
+    assert(freq_taken(r, 0) == kAbove2147Hz + r.start.capture_rate_hz / 4U);
+    assert(r.dongle->tuner.freq == kAbove2147Hz + r.start.capture_rate_hz / 4U);
+    rig_close(r);
+}
+
+/* A retune to 4294.967295 MHz with the Fs/4 shift on: its capture frequency is past UINT32_MAX, so the retune is
+ * refused before anything is written, the stream keeps the capture it ran, and the retune completes as failed. */
+void
+test_retune_past_uint32_refused(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    const writes mark = writes_now(r);
+    const rtl_stream_test_capture_result got = manual_retune(UINT32_MAX, kRateIn960k);
+    const writes w = writes_since(r, mark);
+    assert(got.rc != 0);
+    assert(w.freq == 0 && w.rate == 0 && w.bandwidth == 0);
+    assert(got.capture_freq_hz == r.start.capture_freq_hz);
+    assert(got.capture_rate_hz == r.start.capture_rate_hz);
+    assert(got.rate_out_hz == r.start.rate_out_hz);
+    assert(got.applied_hz == kCenterHz);
+    assert(got.completion == RTL_STREAM_TUNE_FAILED);
+    assert(r.dongle->tuner.freq == r.start.capture_freq_hz);
+    rig_close(r);
+}
+
+/* A start on 4294.967295 MHz with the Fs/4 shift on fails with nothing written. */
+void
+test_start_past_uint32_refused(void) {
+    rig r;
+    rig_begin(r, kTunerR820T, UINT32_MAX);
+    assert(r.start.rc != 0);
+    assert(r.dongle->calls[RTL_TEST_DONGLE_FREQ] == 0);
+    assert(r.dongle->calls[RTL_TEST_DONGLE_RATE] == 0);
+    rig_close(r);
+}
+
+/* ---- Issue #670 B16: a retune whose actual-rate correction cannot be written ---- */
+
+void
+readback_reset_on_op(void* ctx, int op) {
+    readback_reset* reset = static_cast<readback_reset*>(ctx);
+    /* Called before the op is counted. */
+    if (op == RTL_TEST_DONGLE_RATE && reset->dongle->calls[RTL_TEST_DONGLE_RATE] + 1 == reset->at_call) {
+        reset->dongle->tuner.actual_rate = 0U;
+    }
+}
+
+/* A rig whose next retune's rate write reads back @p actual_rate and whose rollback's rate write reads back as given. */
+void
+arm_readback(rig& r, uint32_t actual_rate) {
+    readback_reset* reset = r.readback.get();
+    r.dongle->tuner.actual_rate = actual_rate;
+    reset->dongle = r.dongle.get();
+    reset->at_call = r.dongle->calls[RTL_TEST_DONGLE_RATE] + 2;
+    r.dongle->on_op = readback_reset_on_op;
+    r.dongle->on_op_ctx = reset;
+}
+
+void
+disarm_readback(rig& r) {
+    r.dongle->on_op = nullptr;
+    r.dongle->on_op_ctx = nullptr;
+}
+
+/* A refused retune that put the device back: the stream runs the capture it started on, the controller finalized on
+ * the centre it kept, and the retune completes as failed. */
+void
+expect_rolled_back(const rig& r, const rtl_stream_test_capture_result& got) {
+    assert(got.rc != 0);
+    assert(got.completion == RTL_STREAM_TUNE_FAILED);
+    assert(got.applied_hz == kCenterHz);
+    assert(got.capture_freq_hz == r.start.capture_freq_hz);
+    assert(got.capture_rate_hz == r.start.capture_rate_hz);
+    assert(got.rate_out_hz == r.start.rate_out_hz);
+    assert(got.rate_forced == r.start.rate_forced);
+    assert(r.dongle->tuner.freq == r.start.capture_freq_hz);
+    assert(r.dongle->tuner.rate == r.start.capture_rate_hz);
+    assert(dsd_exitflag_load() == 0);
+}
+
+/* The device reads back 960123 Hz for 960 kS/s and refuses the frequency correction for it: the retune is refused and
+ * rolled back onto the capture the stream ran. */
+void
+test_failed_rate_correction_rolls_back(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    arm_readback(r, 960123U);
+    const uint32_t corrected_hz = kHopsHz[0] + 960123U / 4U;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)corrected_hz;
+    const int from = r.dongle->tuner.freq_log_count;
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], kRateIn960k);
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
+    disarm_readback(r);
+    expect_rolled_back(r, got);
+    /* The retune's capture, then the one the stream ran, put back. */
+    assert(r.dongle->tuner.freq_log_count == from + 2);
+    assert(freq_taken(r, from) == kHopsHz[0] + kCapture960kHz / 4U);
+    assert(freq_taken(r, from + 1) == r.start.capture_freq_hz);
+    rig_close(r);
+}
+
+/* The device reads back 960004 Hz for 960 kS/s on a centre whose capture is UINT32_MAX: the correction would be past
+ * it, so the retune is refused and rolled back without writing it. */
+void
+test_rate_correction_past_uint32_rolls_back(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    arm_readback(r, 960004U);
+    const uint32_t center_hz = UINT32_MAX - kCapture960kHz / 4U;
+    const int from = r.dongle->tuner.freq_log_count;
+    const rtl_stream_test_capture_result got = manual_retune(center_hz, kRateIn960k);
+    disarm_readback(r);
+    expect_rolled_back(r, got);
+    assert(r.dongle->tuner.freq_log_count == from + 2);
+    assert(freq_taken(r, from) == UINT32_MAX);
+    assert(freq_taken(r, from + 1) == r.start.capture_freq_hz);
+    rig_close(r);
+}
+
+/* The rate write for 960 kS/s is refused and the device still runs the rate it had, whose capture correction it refuses
+ * too: the retune is refused and rolled back onto the capture the stream ran, as after a rate write that took. */
+void
+test_failed_rate_write_correction_rolls_back(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value = (int)kCapture960kHz;
+    const uint32_t corrected_hz = kHopsHz[0] + r.start.capture_rate_hz / 4U;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)corrected_hz;
+    const int from = r.dongle->tuner.freq_log_count;
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], kRateIn960k);
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 0;
+    r.dongle->faults[RTL_TEST_DONGLE_RATE].fail_value_set = 0;
+    expect_rolled_back(r, got);
+    assert(r.dongle->tuner.freq_log_count == from + 2);
+    assert(freq_taken(r, from) == kHopsHz[0] + kCapture960kHz / 4U);
+    assert(freq_taken(r, from + 1) == r.start.capture_freq_hz);
+    rig_close(r);
+}
+
+/* The correction fails and so does the rollback's frequency write: the device may still run the retune's capture, so
+ * the stream stops, reported as a device failure of the input. */
+void
+test_failed_rollback_stops_stream(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    arm_readback(r, 960123U);
+    /* The retune's own frequency write takes; the correction and the rollback's are refused. */
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_from_call = r.dongle->calls[RTL_TEST_DONGLE_FREQ] + 2;
+    dsd_input_failure_clear();
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], kRateIn960k);
+    r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_from_call = 0;
+    disarm_readback(r);
+    assert(got.rc != 0);
+    assert(got.completion == RTL_STREAM_TUNE_FAILED);
+    assert(got.applied_hz == kCenterHz);
+    assert(dsd_exitflag_load() != 0);
+    dsd_input_failure failure{};
+    dsd_input_failure_get(&failure);
+    assert(failure.kind == DSD_INPUT_FAILURE_DEVICE);
+    dsd_exitflag_store(0);
+    dsd_input_failure_clear();
+    rig_close(r);
+}
+
 } // namespace
 
 int
@@ -591,6 +832,14 @@ main(int argc, char** argv) {
         {"fc2580_bandwidth", test_fc2580_hops_rewrite_bandwidth},
         {"safe_tuners", test_safe_tuners_skip_unchanged},
         {"unknown_tuner", test_unknown_tuner_rewrites_every_hop},
+        {"retune_above_2147", test_retune_above_2147_mhz},
+        {"start_above_2147", test_start_above_2147_mhz},
+        {"retune_past_uint32", test_retune_past_uint32_refused},
+        {"start_past_uint32", test_start_past_uint32_refused},
+        {"failed_rate_correction", test_failed_rate_correction_rolls_back},
+        {"rate_correction_past_uint32", test_rate_correction_past_uint32_rolls_back},
+        {"failed_rate_write_correction", test_failed_rate_write_correction_rolls_back},
+        {"failed_rollback", test_failed_rollback_stops_stream},
     };
 
     /* An argument runs that case alone. */

@@ -568,12 +568,33 @@ test_freq_validation(void) {
     expect("zero is refused", !session_args_freq_valid(QStringLiteral("0")));
     expect("negative is refused", !session_args_freq_valid(QStringLiteral("-851")));
     expect("empty is refused", !session_args_freq_valid(QString()));
+    expect("highest tunable frequency is accepted", session_args_freq_valid(QStringLiteral("4294.967295")));
+    expect("lowest tunable frequency is accepted", session_args_freq_valid(QStringLiteral("0.000001")));
+    expect("one hertz past the ceiling is refused", !session_args_freq_valid(QStringLiteral("4294.967296")));
+    expect("far above the ceiling is refused", !session_args_freq_valid(QStringLiteral("5000")));
+    expect("a value rounding to 0 Hz is refused", !session_args_freq_valid(QStringLiteral("0.0000001")));
+    expect("infinity is refused", !session_args_freq_valid(QStringLiteral("inf")));
+    /* Same exact rounding as the runtime's "<text>M" spec parse (dsd_parse_freq_hz). */
+    expect("7-decimal text rounding above the ceiling is refused",
+           !session_args_freq_valid(QStringLiteral("4294.9672955")));
+    expect("7-decimal text rounding to the ceiling is accepted",
+           session_args_freq_valid(QStringLiteral("4294.9672954")));
+    expect("6-decimal ceiling is accepted", session_args_freq_valid(QStringLiteral("4294.967295")));
+    expect("half a hertz rounds up to 1 Hz and is accepted", session_args_freq_valid(QStringLiteral("0.0000005")));
+    expect("under half a hertz rounds to 0 and is refused", !session_args_freq_valid(QStringLiteral("0.0000004")));
 
     SessionArgsError error = SessionArgsError::None;
     QVariantMap sys = usb_system();
     sys.insert(QStringLiteral("freqMhz"), QStringLiteral("garbage"));
     expect("bad frequency refuses the build",
            session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::Frequency);
+
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    sys.insert(QStringLiteral("freqMhz"), QStringLiteral("5000"));
+    const auto result = builder.build(sys);
+    expect("out-of-range frequency error names the range",
+           !result.value("ok").toBool() && result.value("error") == "frequency"
+               && result.value("errorText") == "Enter a frequency from 0.000001 to 4294.967295 MHz");
 }
 
 /*

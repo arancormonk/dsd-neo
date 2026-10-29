@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "ui_keys.h"
 
 typedef struct {
     int key;
@@ -37,7 +38,7 @@ typedef struct {
 static void
 ncurses_drain_escape_sequence(void) {
     int ch2;
-    while ((ch2 = getch()) != ERR) {
+    while ((ch2 = ui_read_key()) != ERR) {
         (void)ch2;
     }
 }
@@ -197,7 +198,7 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
         (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot);
         return 1;
     }
-    if (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER) {
+    if (ui_key_is_enter(c)) {
         if (opts->m17encoder == 0) {
             ui_menu_open_async(opts, state);
         }

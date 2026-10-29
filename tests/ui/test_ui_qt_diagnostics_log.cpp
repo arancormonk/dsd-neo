@@ -1479,17 +1479,15 @@ producerErrorLinesSurvive() {
     };
 
     const DecoderLine decoderLines[] = {
-        {LOG_LEVEL_WARN, "warn",
-         "WARNING: Failed to adjust fs/4 capture center for actual device rate: center=465975000, capture=1536000 Hz "
-         "(rc=-1)."},
+        {LOG_LEVEL_ERROR, "error",
+         "Failed to adjust fs/4 capture center for actual device rate: center=465975000, capture=1536000 Hz (rc=-1)."},
         {LOG_LEVEL_INFO, "info", "NOTICE: PPM correction request -12 failed (rc=-1); keeping applied value -2."},
         {LOG_LEVEL_ERROR, "error", "Failed to apply RTL-SDR center frequency 465975000 Hz (rc=-1)."},
         {LOG_LEVEL_ERROR, "error", "Failed to apply RTL-SDR sample rate 1536000 Hz (rc=-9)."},
         {LOG_LEVEL_ERROR, "error", "Failed to return the RTL-SDR to center frequency 465975000 Hz (rc=-1)."},
         {LOG_LEVEL_ERROR, "error", "Failed to return the RTL-SDR to sample rate 1536000 Hz (rc=-1)."},
         {LOG_LEVEL_ERROR, "error",
-         "The RTL-SDR could not be put back on 465975000 Hz after a retune refused for the analog channel width "
-         "(rc=-1); the stream stops."},
+         "The RTL-SDR could not be put back on 465975000 Hz after a refused retune (rc=-1); the stream stops."},
         {LOG_LEVEL_ERROR, "error", "Failed to apply initial RTL-SDR center frequency 465975000 Hz (rc=-1)."},
         {LOG_LEVEL_ERROR, "error", "Failed to apply initial RTL-SDR sample rate 1536000 Hz (rc=-1)."},
         {LOG_LEVEL_INFO, "info", "NOTICE: Retune applied with warning: 465975000 Hz (rc=-1)."},

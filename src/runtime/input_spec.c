@@ -19,6 +19,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "freq_parse_internal.h"
 
 static int
 looks_like_soapy_kv_args(const char* tok) {
@@ -57,13 +58,37 @@ parse_int_strict(const char* tok, int* out) {
     return 0;
 }
 
+/* A number with a K, M or G suffix ("851.375M", "5.8G", "+5.8G", "5.8e0G"): the text before the suffix letter is
+   non-empty and all of it is a number strtod() reads, the grammar of dsd_parse_freq_hz(). Such a token is always a
+   frequency, never device args. */
+static int
+is_suffixed_freq_token(const char* tok) {
+    if (!tok) {
+        return 0;
+    }
+    const size_t len = strlen(tok);
+    if (len < 2) {
+        return 0;
+    }
+    const char c = tok[len - 1];
+    if (!(c == 'k' || c == 'K' || c == 'm' || c == 'M' || c == 'g' || c == 'G')) {
+        return 0;
+    }
+    /* No number continues into a K, M or G (none is a hex digit or an exponent), so strtod() stopping at the suffix
+       letter is strtod() consuming all of the text before it. */
+    char* end = NULL;
+    (void)strtod(tok, &end);
+    return end == tok + len - 1;
+}
+
 static int
 parse_freq_hz_token(const char* tok, uint32_t* out_hz) {
     if (!tok || !out_hz || tok[0] == '\0') {
         return -1;
     }
     uint32_t hz = dsd_parse_freq_hz(tok);
-    /* Use a conservative floor to avoid mis-parsing colon-delimited numeric args. */
+    /* Use a conservative floor to avoid mis-parsing colon-delimited numeric args (a suffixed token under it is an
+       out-of-range frequency instead; see parse_soapy_head_tokens()). */
     if (hz < 1000000U) {
         return -1;
     }
@@ -120,6 +145,11 @@ tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size
     return 0;
 }
 
+enum { SOAPY_HEAD_FREQ_OUT_OF_RANGE = -2 };
+
+/* Reads the optional device args and the frequency. Returns 0 when they parse; SOAPY_HEAD_FREQ_OUT_OF_RANGE, with
+   *out_idx at the frequency token, when that place holds a suffixed number out of range; and -1 when the head is not
+   shorthand (opaque args). */
 static int
 parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_tokens, size_t* out_idx,
                         uint32_t* out_freq_hz) {
@@ -139,6 +169,10 @@ parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_toke
 
     uint32_t freq_hz = 0;
     if (parse_freq_hz_token(tok[idx], &freq_hz) != 0) {
+        if (is_suffixed_freq_token(tok[idx])) {
+            *out_idx = idx;
+            return SOAPY_HEAD_FREQ_OUT_OF_RANGE;
+        }
         return -1;
     }
 
@@ -284,7 +318,12 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     size_t arg_tokens = 0;
     size_t idx = 0;
     uint32_t freq_hz = 0;
-    if (parse_soapy_head_tokens(tok, n, &arg_tokens, &idx, &freq_hz) != 0) {
+    const int head_rc = parse_soapy_head_tokens(tok, n, &arg_tokens, &idx, &freq_hz);
+    if (head_rc == SOAPY_HEAD_FREQ_OUT_OF_RANGE) {
+        LOG_ERROR("Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)\n", tok[idx]);
+        return -1;
+    }
+    if (head_rc != 0) {
         restore_opaque_soapy_args(opts, tail_copy);
         return 0;
     }
@@ -342,9 +381,10 @@ rtl_spec_parse_int(const char* token, int* out) {
     return 0;
 }
 
+/* A number at the start of token, as strtod() reads it; *consumed is the length of its text. */
 static int
-rtl_spec_parse_double(const char* token, double* out) {
-    if (!token || !out || token[0] == '\0') {
+rtl_spec_parse_double(const char* token, double* out, size_t* consumed) {
+    if (!token || !out || !consumed || token[0] == '\0') {
         return -1;
     }
     errno = 0;
@@ -354,55 +394,69 @@ rtl_spec_parse_double(const char* token, double* out) {
         return -1;
     }
     *out = value;
+    *consumed = (size_t)(end - token);
     return 0;
 }
 
-/* A frequency field's value: Hz, or a number with a k, M or G suffix; 0 when it does not parse. */
-static double
-rtl_spec_parse_freq_value(const char* s) {
-    const size_t len = strlen(s);
-    if (len == 0) {
-        return 0.0;
-    }
-    double factor = 1.0;
-    switch (s[len - 1]) {
-        case 'g':
-        case 'G': factor = 1e9; break;
-        case 'm':
-        case 'M': factor = 1e6; break;
-        case 'k':
-        case 'K': factor = 1e3; break;
-        default: {
-            double value = 0.0;
-            return rtl_spec_parse_double(s, &value) == 0 ? value : 0.0;
-        }
-    }
-    if (len == 1) {
-        return 0.0;
-    }
-    char unitless[1024];
-    if (len >= sizeof(unitless)) {
-        return 0.0;
-    }
-    DSD_MEMCPY(unitless, s, len - 1);
-    unitless[len - 1] = '\0';
-    double value = 0.0;
-    if (rtl_spec_parse_double(unitless, &value) != 0) {
-        return 0.0;
-    }
-    return value * factor;
-}
-
-/* A frequency field in Hz, rounded to the nearest Hz; 0 when it does not parse or does not fit. Rounded, not
-   truncated: a decimal MHz value is rarely exact in binary, and "128.155625M" multiplies out to 128155624.99999999,
-   which a cast would tune 1 Hz low. */
+/* The number at the start of text times 10^places (factor), rounded to the nearest Hz, not truncated; 0 when it does
+   not parse or does not fit. A plain decimal number rounds half up in exact integer arithmetic. Any other number
+   (a sign, an exponent, hex) rounds in binary64: a decimal MHz value is rarely exact in binary, and "128.155625M"
+   multiplies out to 128155624.99999999, which a cast would tune 1 Hz low. */
 static uint32_t
-rtl_spec_parse_freq(const char* s) {
-    const double rounded = rtl_spec_parse_freq_value(s) + 0.5;
+rtl_spec_round_hz(const char* text, unsigned places, double factor) {
+    double value = 0.0;
+    size_t consumed = 0;
+    if (rtl_spec_parse_double(text, &value, &consumed) != 0) {
+        return 0U;
+    }
+    uint32_t hz = 0;
+    if (dsd_freq_decimal_round_hz(text, consumed, places, &hz)) {
+        return hz;
+    }
+    const double rounded = value * factor + 0.5;
     if (!(rounded >= 0.5 && rounded < 4294967296.0)) {
         return 0U;
     }
     return (uint32_t)rounded;
+}
+
+/* A frequency field in Hz: Hz, or a number with a k, M or G suffix; 0 when it does not parse or does not fit. */
+static uint32_t
+rtl_spec_parse_freq(const char* s) {
+    const size_t len = strlen(s);
+    if (len == 0) {
+        return 0U;
+    }
+    unsigned places = 0;
+    double factor = 1.0;
+    switch (s[len - 1]) {
+        case 'g':
+        case 'G':
+            places = 9;
+            factor = 1e9;
+            break;
+        case 'm':
+        case 'M':
+            places = 6;
+            factor = 1e6;
+            break;
+        case 'k':
+        case 'K':
+            places = 3;
+            factor = 1e3;
+            break;
+        default: return rtl_spec_round_hz(s, 0, 1.0);
+    }
+    if (len == 1) {
+        return 0U;
+    }
+    char unitless[1024];
+    if (len >= sizeof(unitless)) {
+        return 0U;
+    }
+    DSD_MEMCPY(unitless, s, len - 1);
+    unitless[len - 1] = '\0';
+    return rtl_spec_round_hz(unitless, places, factor);
 }
 
 int

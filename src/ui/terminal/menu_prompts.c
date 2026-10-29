@@ -14,17 +14,20 @@
 #include "menu_prompts.h"
 #include <ctype.h>
 #include <curses.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
+#include "ui_keys.h"
 
 typedef struct {
     int active;
@@ -355,16 +358,16 @@ ui_prompt_int_finish(void* u, const char* text) {
         free(pic);
         return;
     }
-    char* end = NULL;
-    long v = strtol(text, &end, 10);
-    if (!end || *end != '\0') {
+    // Out of range is refused, never wrapped or saturated: 5145979796 must not become 851012500.
+    int v = 0;
+    if (dsd_parse_int_strict(text, 10, INT_MIN, INT_MAX, &v) != 0) {
         ui_statusf("Invalid integer input");
         if (pic->cb) {
             pic->cb(pic->user, 0, 0);
         }
     } else {
         if (pic->cb) {
-            pic->cb(pic->user, 1, (int)v);
+            pic->cb(pic->user, 1, v);
         }
     }
     free(pic);
@@ -550,6 +553,72 @@ ui_prompt_insert_char(int ch) {
     }
 }
 
+/* The character a keypad operator key (PDCurses PADPLUS, PADMINUS, PADSTAR, PADSLASH) types, or -1 for any other
+ * key. */
+static int
+ui_prompt_keypad_operator_byte(int ch) {
+#ifdef PADPLUS
+    if (ch == PADPLUS) {
+        return '+';
+    }
+#endif
+#ifdef PADMINUS
+    if (ch == PADMINUS) {
+        return '-';
+    }
+#endif
+#ifdef PADSTAR
+    if (ch == PADSTAR) {
+        return '*';
+    }
+#endif
+#ifdef PADSLASH
+    if (ch == PADSLASH) {
+        return '/';
+    }
+#endif
+    (void)ch;
+    return -1;
+}
+
+/* The byte a key 0x80-0xFF adds, or -1 for none. PDCurses and a single-byte locale deliver each byte as a whole
+ * character: itself when printable, else one '?'. In a multibyte (UTF-8) locale ncurses delivers a character one
+ * byte at a time, so a continuation byte 0x80-0xBF adds nothing and any other byte (a lead byte, or a byte that
+ * cannot start a sequence) adds one '?'. The locale kind decides, not isprint(): macOS calls 0xA0-0xFF printable in
+ * a UTF-8 locale, which would insert the raw bytes of a character. */
+static int
+ui_prompt_high_byte_for_key(int ch) {
+#if !defined(DSD_USE_PDCURSES)
+    if (MB_CUR_MAX > 1) {
+        return (ch >= 0x80 && ch <= 0xBF) ? -1 : '?';
+    }
+#endif
+    return isprint(ch) ? ch : '?';
+}
+
+/**
+ * @brief The byte a typed key adds to a prompt, or -1 for a key that is not a character.
+ *
+ * Nothing typed is lost silently: a character the field cannot hold adds one '?'. In a UTF-8 locale ncurses delivers
+ * a character one byte at a time, so a lead byte stands for the whole character and its continuation bytes add
+ * nothing; PDCurses and a single-byte locale deliver each byte 0x80-0xFF as a whole character, and a wide PDCurses
+ * build delivers anything wider as UI_KEY_WIDE_CHAR. Function keys, ncurses extended keys above KEY_MAX and
+ * KEY_MOUSE are not characters. isprint() only ever sees 0..0xFF.
+ */
+static int
+ui_prompt_byte_for_key(int ch) {
+    if (ch == UI_KEY_WIDE_CHAR) {
+        return '?';
+    }
+    if (ch >= 0x20 && ch <= 0x7E) {
+        return ch;
+    }
+    if (ch < 0x80 || ch > 0xFF) {
+        return ui_prompt_keypad_operator_byte(ch); // PDCurses keypad key codes sit above 0xFF
+    }
+    return ui_prompt_high_byte_for_key(ch);
+}
+
 int
 ui_prompt_handle_key(int ch) {
     if (!g_prompt.active) {
@@ -579,13 +648,13 @@ ui_prompt_handle_key(int ch) {
         ui_prompt_delete_at_cursor();
         return 1;
     }
-    if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+    if (ui_key_is_enter(ch)) {
         ui_prompt_submit();
         return 1;
     }
-    if (isprint(ch)) {
-        ui_prompt_insert_char(ch);
-        return 1;
+    int byte = ui_prompt_byte_for_key(ch);
+    if (byte >= 0) {
+        ui_prompt_insert_char(byte);
     }
     return 1;
 }
@@ -945,7 +1014,7 @@ ui_help_is_close_key(int ch) {
     /* Esc, Left, Enter and h close help; 'q' is deliberately not a close key
        anywhere inside the menu, because it quits the program from the main
        screen and the habit carried over. */
-    return (ch == DSD_KEY_ESC || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_LEFT);
+    return (ch == DSD_KEY_ESC || ch == 'h' || ch == 'H' || ui_key_is_enter(ch) || ch == KEY_LEFT);
 }
 
 static int
@@ -1292,7 +1361,7 @@ ui_chooser_is_cancel_key(int ch) {
 
 static int
 ui_chooser_is_accept_key(int ch) {
-    return (ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_RIGHT);
+    return (ui_key_is_enter(ch) || ch == KEY_RIGHT);
 }
 
 int

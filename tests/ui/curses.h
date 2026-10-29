@@ -12,6 +12,8 @@ typedef int chtype;
 #define ERR           (-1)
 #define TRUE          1
 #define KEY_ENTER     343
+/* PDCurses keypad Enter (0x1cb there). Defined here so every platform runs the keypad Enter cases. */
+#define PADENTER      459
 
 #define COLOR_BLACK   0
 #define COLOR_RED     1

@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -172,6 +173,21 @@ select_cc(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     assert(try_select_cc(opts, state, hz) == 0);
 }
 
+/* The status line a selection through the frequency entry leaves, in MHz (issue #670). Without a radio build there is
+ * no entry command, and the selection is called directly. */
+static void
+expect_cc_toast(const dsd_state* state, const char* want) {
+#ifdef USE_RADIO
+    if (strcmp(state->ui_msg, want) != 0) {
+        DSD_FPRINTF(stderr, "toast: got \"%s\", want \"%s\"\n", state->ui_msg, want);
+        assert(0);
+    }
+#else
+    (void)state;
+    (void)want;
+#endif
+}
+
 static void
 start_voice(dsd_opts* opts, dsd_state* state) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
@@ -245,6 +261,7 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     const uint64_t generation = dsd_trunk_tuning_generation();
     seed_carrier_codes(state);
     select_cc(opts, state, CC_B);
+    expect_cc_toast(state, "Applied: P25 control channel -> 852.000000 MHz");
     expect_carrier_codes_kept(state);
     assert(cc_calls == 1 && last_freq == CC_B && return_calls == 0);
     assert(last_sps
@@ -447,6 +464,9 @@ test_rejected(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
     const p25_sm_ctx_t before = *p25_sm_get_ctx();
     seed_carrier_codes(state);
     select_cc(opts, state, CC_B);
+    expect_cc_toast(state, result == DSD_TRUNK_TUNE_RESULT_DEFERRED
+                               ? "Deferred; retry: P25 control channel -> 852.000000 MHz"
+                               : "Failed: P25 control channel -> 852.000000 MHz");
     expect_carrier_codes_kept(state);
     const p25_sm_ctx_t* after = p25_sm_get_ctx();
     assert(after->state == before.state && after->vc_freq_hz == before.vc_freq_hz);
@@ -485,6 +505,9 @@ test_pending(dsd_opts* opts, dsd_state* state, int early, int fail) {
         early_completion_delay_ns = PENDING_DELAY_NS;
     }
     select_cc(opts, state, CC_B);
+    /* A retune that completed inside the call is applied; one still in flight, or failed later, is pending. */
+    expect_cc_toast(state, early && !fail ? "Applied: P25 control channel -> 852.000000 MHz"
+                                          : "Accepted (pending): P25 control channel -> 852.000000 MHz");
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     const uint64_t request = last_request;
     assert(ctx->cc_sync_pending);
@@ -752,10 +775,19 @@ test_command_scope(dsd_opts* opts, dsd_state* state) {
     opts->trunk_scan_enabled = 0;
     select_cc(opts, state, 0);
     assert(cc_calls == 0);
-#if LONG_MAX < UINT32_MAX
-    select_cc(opts, state, UINT32_MAX);
-    assert(cc_calls == 0);
+    select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ + 1U); // one past the trunk ceiling, on every platform
+    assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
+#if LONG_MAX > DSD_TRUNK_FREQ_MAX_HZ
+    expect_cc_toast(state, "Above 2147.483647 MHz, the trunking limit"); // names the cause, the status stays failed
+#else
+    expect_cc_toast(state, "Above 2147.483647 MHz, this build's limit"); // the payload check refuses it first
 #endif
+    select_cc(opts, state, UINT32_MAX);
+    assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
+    select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ); // the ceiling itself is a control channel
+    assert(cc_calls == 1 && state->p25_cc_freq == DSD_TRUNK_FREQ_MAX_HZ);
+    cc_calls = 0;
+    state->p25_cc_freq = state->trunk_cc_freq = CC_A;
     opts->trunk_enable = 0;
     select_cc(opts, state, CC_B);
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);

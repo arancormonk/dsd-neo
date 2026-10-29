@@ -473,6 +473,13 @@ main(void) {
     assert(ui_menu_handle_key('\r', opts, state) == 1);
     assert_last_action("root2");
 
+#ifdef PADENTER
+    /* Keypad Enter on a Windows terminal activates like Enter (B13). */
+    reset_capture();
+    assert(ui_menu_handle_key(PADENTER, opts, state) == 1);
+    assert_last_action("root2");
+#endif
+
     assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
     ui_menu_open_async(opts, state);

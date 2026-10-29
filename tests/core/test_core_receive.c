@@ -543,6 +543,65 @@ test_analog_tone_change_seen_first_by_a_sync(dsd_opts* opts, dsd_state* state) {
     assert(dsd_test_rmdir(directory) == 0);
 }
 
+/* Issue #670: the NFM row names the frequency as the digital rows do, in MHz with six decimals, and leaves it out when
+   there is none (an audio input: the tuned frequency is 0), in the history and in the -J event log alike. */
+static void
+test_analog_event_frequency(dsd_opts* opts, dsd_state* state) {
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->audio_out = 0;
+    opts->dmr_stereo_wav = 0;
+    opts->wav_out_dir[0] = '\0';
+    char directory[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(directory, sizeof directory, "dsdneo_receive_nfm_freq"));
+    char log_path[DSD_TEST_PATH_MAX];
+    assert(dsd_test_path_join(log_path, sizeof log_path, directory, "events.log") == 0);
+    DSD_SNPRINTF(opts->event_out_file, sizeof opts->event_out_file, "%s", log_path);
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_NONE;
+    float block[960];
+    for (int i = 0; i < 960; ++i) {
+        block[i] = 2000.0f;
+    }
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->rtlsdr_center_freq = 162550000U; /* not the receiver's on an audio input */
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
+    assert(strstr(row->event_string, " NFM; ") != NULL);
+    assert(strstr(row->event_string, "FREQ:") == NULL && strstr(row->event_string, "Frequency:") == NULL);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    assert(!dsd_engine_analog_call_active(state));
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 1);
+    assert(dsd_engine_analog_call_active(state));
+    assert(strstr(row->event_string, " NFM; FREQ: 162.550000 MHz; ") != NULL);
+    dsd_engine_analog_call_block(opts, state, block, 960, 48000, 0);
+    assert(!dsd_engine_analog_call_active(state));
+
+    char log[4096];
+    FILE* f = dsd_fopen_existing_regular_file(log_path, "rb");
+    assert(f != NULL);
+    const size_t n = fread(log, 1U, sizeof log - 1U, f);
+    fclose(f);
+    log[n] = '\0';
+    assert(strstr(log, " NFM; FREQ: 162.550000 MHz; ") != NULL);
+    assert(strstr(log, "Frequency:") == NULL);
+    assert(strstr(log, "FREQ: 0.") == NULL);
+    /* Both calls are logged: the audio input's row with no frequency, then the radio's. */
+    const char* first = strstr(log, " NFM; ");
+    assert(first != NULL && strncmp(first + 6, "FREQ:", 5) != 0);
+    assert(strstr(first + 6, " NFM; FREQ: 162.550000 MHz; ") != NULL);
+    opts->event_out_file[0] = '\0';
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->rtlsdr_center_freq = 0U;
+    static const char* const files[] = {"events.log", NULL};
+    assert(dsd_test_remove_temp_dir(directory, files) == 0);
+}
+
 /* A trunking context remembers the access code verified on each voice channel and refuses a grant to one the policy in
    force rejects; a channel never verified, or one the policy admits again after an edit, is followed. */
 static void
@@ -608,6 +667,12 @@ main(void) {
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
     test_analog_tone_change_seen_first_by_a_sync(opts, state);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->event_history_s = history;
+    init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
+    init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
+    test_analog_event_frequency(opts, state);
     dsd_state_ext_free_all(state);
     free(history);
     free(state);

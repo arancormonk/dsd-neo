@@ -332,7 +332,9 @@ Windows console runs:
   decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
   none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]`), while
-  FDMA rows carry no slot tag.
+  FDMA rows carry no slot tag. An analog (NFM) line names the tuned frequency as digital lines do,
+  `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
+  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). The control API's `event` text is the same row.
   DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
   carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
   as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT, USBD and
@@ -2135,6 +2137,11 @@ Advanced (env)
 - `soapy[:args]` sets backend/device selection only.
 - Optional shorthand supports RTL-style startup tuning in the same `-i` string:
   `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
+- A number with a `K`, `M` or `G` suffix in the `freq` place is always a frequency, never device args, signed or with
+  an exponent too (`+5.8G`, `5.8e0G`). One outside 1 MHz to 4294.967295 MHz (`soapy:driver=hackrf:5.8G`,
+  `soapy:500k`) is an error at startup and in `--print-config`:
+  `Soapy frequency '5.8G' is out of range (1 to 4294.967295 MHz)`. A bare number out of range there still makes the
+  whole string device args.
 - Those trailing fields map to existing shared controls and keys:
   `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
 - Additional `[input]` keys expose Soapy-specific capabilities: `soapy_profile`, `soapy_stream_format`,

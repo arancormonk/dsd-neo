@@ -62,6 +62,7 @@ typedef struct {
 typedef struct {
     char title[128];
     char prefill[256];
+    int prefill_null;
     size_t cap;
     int initial_int;
     double initial_double;
@@ -437,6 +438,7 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
                             void* user) {
     DSD_SNPRINTF(g_prompt.title, sizeof g_prompt.title, "%s", title ? title : "");
     DSD_SNPRINTF(g_prompt.prefill, sizeof g_prompt.prefill, "%s", prefill ? prefill : "");
+    g_prompt.prefill_null = prefill == NULL;
     g_prompt.cap = cap;
     g_prompt.user = user;
     g_prompt.str_cb = on_done;
@@ -610,10 +612,9 @@ cb_rtl_dev(void* u, int ok, int i) {
 }
 
 void
-cb_rtl_freq(void* u, int ok, int f) {
+cb_rtl_freq_text(void* u, const char* text) {
     (void)u;
-    (void)ok;
-    (void)f;
+    (void)text;
 }
 
 void
@@ -1558,6 +1559,25 @@ test_additional_prompt_and_toggle_actions(void) {
     state.trunk_scan_target_count = 0U;
     state.trunk_scan_configured_gain = 0;
     state.trunk_scan_gain_override = 0U;
+
+    /* The frequency row takes MHz as typed (issue #670): an empty field, never the centre as an int (a 2.4 GHz centre
+       wrapped negative), with room past the parser's limit so a cut paste is refused rather than shortened. */
+    reset_capture();
+    opts.rtlsdr_center_freq = 2400000000U;
+    rtl_set_freq(&ctx);
+    rc |= expect_str("rtl freq prompt title", g_prompt.title, "Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)");
+    rc |= expect_int("rtl freq prompt is empty", g_prompt.prefill_null, 1);
+    rc |= expect_int("rtl freq prompt cap", (int)g_prompt.cap, 34);
+    rc |= expect_int("rtl freq prompt callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
+    rc |= expect_int("rtl freq prompt user", g_prompt.user == (void*)&ctx, 1);
+    rc |= expect_int("rtl freq prompt is a string prompt", g_prompt.int_cb == NULL, 1);
+    reset_capture();
+    ui_open_freq_prompt(&ctx, "146,52");
+    rc |= expect_str("rtl freq reopen title", g_prompt.title, "Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)");
+    rc |= expect_str("rtl freq reopen keeps the text", g_prompt.prefill, "146,52");
+    rc |= expect_int("rtl freq reopen cap", (int)g_prompt.cap, 34);
+    rc |= expect_int("rtl freq reopen callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
+    opts.rtlsdr_center_freq = 0U;
 
     /* The squelch row has to be able to express "off". The prompt offered
      * pwr_to_dB() of a disabled squelch, which is -120: retyping what was shown

@@ -32,6 +32,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2318,8 +2319,15 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
     } else if (DSD_SYNC_IS_TETRA(ctx->protocol)) {
         watchdog_event_current_build_event_tetra(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (ctx->protocol == DSD_SYNC_ANALOG) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s NFM; Frequency: %lld Hz; ", datestr, timestr, sys,
-                     (long long)ctx->freq_hz);
+        // As the digital rows: the frequency in MHz, left out when there is none (an audio input tunes nothing).
+        char freq_str[40];
+        freq_str[0] = '\0';
+        if (ctx->freq_hz > 0 && ctx->freq_hz <= (int64_t)UINT32_MAX) {
+            char mhz[16];
+            (void)dsd_freq_hz_mhz_text((uint32_t)ctx->freq_hz, mhz, sizeof mhz);
+            DSD_SNPRINTF(freq_str, sizeof freq_str, "FREQ: %s MHz; ", mhz);
+        }
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s NFM; %s", datestr, timestr, sys, freq_str);
     }
     // A fresh string carries no marker yet.
     watchdog_event_mark_crc(event_string, event_size, 0U, ctx->crc_invalid);

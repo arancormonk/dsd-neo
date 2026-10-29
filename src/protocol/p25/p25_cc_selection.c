@@ -89,8 +89,8 @@ p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     if (!ctx || !opts || !state || hz <= 0 || opts->trunk_enable != 1 || opts->trunk_scan_enabled) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-#if LONG_MAX > UINT32_MAX
-    if ((unsigned long)hz > UINT32_MAX) {
+#if LONG_MAX > DSD_TRUNK_FREQ_MAX_HZ
+    if (hz > DSD_TRUNK_FREQ_MAX_HZ) { // a control channel past the ceiling is refused rather than stored or tuned
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 #endif

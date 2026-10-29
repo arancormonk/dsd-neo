@@ -4,16 +4,20 @@
  */
 
 #include <assert.h>
+#include <ctype.h>
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/ui/keymap.h>
+#include <locale.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <time.h>
 #include "menu_prompts.h"
+#include "ui_keys.h"
 
 static int g_string_done_called = 0;
 static int g_string_was_null = 0;
@@ -270,6 +274,222 @@ test_typed_prompt_validation(void) {
     assert(strcmp(g_status_text, "Invalid numeric input") == 0);
 }
 
+/* An integer the field cannot hold is refused, never wrapped or saturated (B6). */
+static void
+test_int_prompt_rejects_out_of_range(void) {
+    static const char* const too_big[] = {"4294967297", "5145979796", "99999999999999999999", "-2147483649"};
+    for (size_t i = 0; i < sizeof too_big / sizeof too_big[0]; i++) {
+        reset_int_capture();
+        ui_prompt_open_int_async("Integer", 0, capture_int_done, NULL);
+        clear_prompt_prefill();
+        type_text(too_big[i]);
+        assert(ui_prompt_handle_key('\r') == 1);
+        assert(g_int_done_called == 1);
+        assert(g_int_ok == 0);
+        assert(g_int_value == 0);
+        assert(g_status_called == 1);
+        assert(strcmp(g_status_text, "Invalid integer input") == 0);
+    }
+
+    reset_int_capture();
+    ui_prompt_open_int_async("Integer", 0, capture_int_done, NULL);
+    clear_prompt_prefill();
+    type_text("-2147483648");
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_int_ok == 1);
+    assert(g_int_value == -2147483647 - 1);
+    assert(g_status_called == 0);
+
+    reset_int_capture();
+    ui_prompt_open_int_async("Integer", 0, capture_int_done, NULL);
+    clear_prompt_prefill();
+    type_text("2147483647");
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_int_ok == 1);
+    assert(g_int_value == 2147483647);
+    assert(g_status_called == 0);
+}
+
+static void
+open_plain_prompt(void) {
+    reset_string_capture();
+    ui_prompt_open_string_async("Characters", NULL, 32, capture_string_done, NULL);
+    assert(ui_prompt_active() == 1);
+}
+
+static void
+submit_plain_prompt(const char* want) {
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_string_done_called == 1);
+    assert(g_string_was_null == 0);
+    assert(strcmp(g_string_text, want) == 0);
+}
+
+/* Keys that are not characters never reach the field, and never reach isprint() (B7). */
+static void
+test_prompt_ignores_non_character_keys(void) {
+    open_plain_prompt();
+    type_text("a");
+    static const int keys[] = {KEY_UP,      KEY_DOWN,     KEY_NPAGE, KEY_PPAGE, KEY_F(1), KEY_F(12), KEY_MOUSE, KEY_MAX,
+                               KEY_MAX - 1, KEY_MAX + 75, 0x1FF,     0x4FE,     0x10000,  1,         0x1F};
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        assert(ui_prompt_handle_key(keys[i]) == 1);
+        assert(ui_prompt_active() == 1);
+    }
+    type_text("b");
+    submit_plain_prompt("ab");
+}
+
+/* Type the bytes 0x80-0xFF one key at a time, between "1" and "2", and return what the field shows. */
+static const char*
+type_high_bytes(const int* bytes, size_t count) {
+    static char shown[64];
+    open_plain_prompt();
+    type_text("1");
+    for (size_t i = 0; i < count; i++) {
+        assert(ui_prompt_handle_key(bytes[i]) == 1);
+    }
+    type_text("2");
+    assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
+    return shown;
+}
+
+/* In a multibyte (UTF-8) locale one character shows as one '?' whatever isprint() says of its bytes: macOS calls
+   0xA0-0xFF printable in a UTF-8 locale, glibc does not, and the field must read the same on both (D8). */
+static void
+test_prompt_marks_unholdable_multibyte_characters(void) {
+#if defined(DSD_USE_PDCURSES)
+    return; // PDCurses delivers whole characters; see test_prompt_marks_unholdable_characters()
+#else
+    if (MB_CUR_MAX <= 1) {
+        printf("UI_PROMPT_VALIDATION: no UTF-8 locale here; multibyte case not run\n");
+        return;
+    }
+    /* U+FF0E FULLWIDTH FULL STOP as UTF-8: one character, one '?'. */
+    open_plain_prompt();
+    type_text("145");
+    assert(ui_prompt_handle_key(0xEF) == 1);
+    assert(ui_prompt_handle_key(0xBC) == 1);
+    assert(ui_prompt_handle_key(0x8E) == 1);
+    type_text("5");
+    char shown[64];
+    assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
+    assert(strcmp(shown, "145?5") == 0);
+    submit_plain_prompt("145?5");
+
+    /* Every UTF-8 lead byte opens one character: a 2-byte, 3-byte and 4-byte sequence; é has a continuation byte
+       0xA9 that macOS calls printable. */
+    static const int utf8[] = {0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x93, 0xBB};
+    assert(strcmp(type_high_bytes(utf8, sizeof utf8 / sizeof utf8[0]), "1???2") == 0);
+    submit_plain_prompt("1???2");
+
+    /* A byte that cannot start a sequence (0xC0, 0xC1, 0xF5-0xFF) is a character the field cannot hold too. */
+    static const int invalid[] = {0xC0, 0xC1, 0xF5, 0xFF};
+    assert(strcmp(type_high_bytes(invalid, sizeof invalid / sizeof invalid[0]), "1????2") == 0);
+    submit_plain_prompt("1????2");
+#endif
+}
+
+/* In a single-byte locale each byte 0x80-0xFF is a whole character: itself when isprint() accepts it, else one
+   '?'. The "C" locale is single-byte; which bytes it calls printable is the libc's choice, so ask it (D8). */
+static void
+test_prompt_marks_unholdable_single_byte_characters(void) {
+    const char* saved = setlocale(LC_CTYPE, NULL);
+    char saved_name[128];
+    DSD_SNPRINTF(saved_name, sizeof saved_name, "%s", saved ? saved : "C");
+    assert(setlocale(LC_CTYPE, "C") != NULL);
+    assert(MB_CUR_MAX == 1);
+
+    static const int bytes[] = {0xEF, 0xBC, 0x8E, 0xE9, 0x80, 0xA0, 0xFF};
+
+    enum { BYTE_COUNT = sizeof bytes / sizeof bytes[0] };
+
+    char want[BYTE_COUNT + 3];
+    size_t n = 0;
+    want[n++] = '1';
+    for (size_t i = 0; i < BYTE_COUNT; i++) {
+        want[n++] = isprint(bytes[i]) ? (char)bytes[i] : '?';
+    }
+    want[n++] = '2';
+    want[n] = '\0';
+    assert(strcmp(type_high_bytes(bytes, BYTE_COUNT), want) == 0);
+    submit_plain_prompt(want);
+
+    assert(setlocale(LC_CTYPE, saved_name) != NULL);
+}
+
+/* A character the field cannot hold shows as one '?', so typed input is never silently lost (D8). */
+static void
+test_prompt_marks_unholdable_characters(void) {
+#if defined(DSD_USE_PDCURSES)
+    /* PDCurses delivers each byte 0x80-0xFF as a whole character, so each shows. */
+    static const int fullwidth_stop[] = {0xEF, 0xBC, 0x8E};
+    char want[8];
+    DSD_SNPRINTF(want, sizeof want, "1%c%c%c2", isprint(0xEF) ? 0xEF : '?', isprint(0xBC) ? 0xBC : '?',
+                 isprint(0x8E) ? 0x8E : '?');
+    assert(strcmp(type_high_bytes(fullwidth_stop, 3), want) == 0);
+    submit_plain_prompt(want);
+#endif
+    test_prompt_marks_unholdable_multibyte_characters();
+    test_prompt_marks_unholdable_single_byte_characters();
+
+    /* A wide PDCurses character above 0xFF arrives as one sentinel. */
+    open_plain_prompt();
+    type_text("1");
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    type_text("2");
+    submit_plain_prompt("1?2");
+
+    /* The '?' obeys the capacity like any other byte. */
+    reset_string_capture();
+    ui_prompt_open_string_async("Capacity", "a", 3, capture_string_done, NULL);
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    submit_plain_prompt("a?");
+}
+
+/* The PDCurses keypad character keys type their characters (D8). */
+static void
+test_prompt_keypad_character_keys(void) {
+    open_plain_prompt();
+#ifdef PADMINUS
+    assert(ui_prompt_handle_key(PADMINUS) == 1);
+#else
+    type_text("-");
+#endif
+    type_text("50");
+#ifdef PADPLUS
+    assert(ui_prompt_handle_key(PADPLUS) == 1);
+#else
+    type_text("+");
+#endif
+#ifdef PADSTAR
+    assert(ui_prompt_handle_key(PADSTAR) == 1);
+#else
+    type_text("*");
+#endif
+#ifdef PADSLASH
+    assert(ui_prompt_handle_key(PADSLASH) == 1);
+#else
+    type_text("/");
+#endif
+    submit_plain_prompt("-50+*/");
+}
+
+/* Keypad Enter on a Windows terminal submits like Enter (B13). */
+static void
+test_prompt_keypad_enter_submits(void) {
+#ifdef PADENTER
+    open_plain_prompt();
+    type_text("146.52");
+    assert(ui_prompt_handle_key(PADENTER) == 1);
+    assert(ui_prompt_active() == 0);
+    assert(g_string_done_called == 1);
+    assert(g_string_was_null == 0);
+    assert(strcmp(g_string_text, "146.52") == 0);
+#endif
+}
+
 static void
 test_typed_prompt_cancel_paths(void) {
     reset_int_capture();
@@ -455,6 +675,14 @@ test_help_activation_and_close_keys(void) {
     assert(ui_help_active() == 1);
     assert(ui_help_handle_key('\r') == 1);
     assert(ui_help_active() == 0);
+
+#ifdef PADENTER
+    /* Keypad Enter on a Windows terminal closes help like Enter (B13). */
+    ui_help_open("close with keypad enter");
+    assert(ui_help_active() == 1);
+    assert(ui_help_handle_key(PADENTER) == 1);
+    assert(ui_help_active() == 0);
+#endif
 
     ui_help_open("close with escape");
     assert(ui_help_active() == 1);
@@ -693,10 +921,23 @@ test_prompt_layout_and_view_contracts(void) {
 
 int
 main(void) {
+    /* A UTF-8 locale where one exists, whatever the environment says: the multibyte rule is the input the prompt
+       must handle, and glibc reads key codes above 0xFF past its table there (B7). */
+    static const char* const utf8_locales[] = {"C.UTF-8", "en_US.UTF-8", "UTF-8"};
+    for (size_t i = 0; i < sizeof utf8_locales / sizeof utf8_locales[0]; i++) {
+        if (setlocale(LC_CTYPE, utf8_locales[i]) && MB_CUR_MAX > 1) {
+            break;
+        }
+    }
     test_string_prompt_completion_paths();
     test_string_prompt_key_edges();
     test_string_prompt_cursor_editing();
     test_typed_prompt_validation();
+    test_int_prompt_rejects_out_of_range();
+    test_prompt_ignores_non_character_keys();
+    test_prompt_marks_unholdable_characters();
+    test_prompt_keypad_character_keys();
+    test_prompt_keypad_enter_submits();
     test_typed_prompt_cancel_paths();
     test_chooser_edge_paths();
     test_chooser_page_navigation_clamps_selection();

@@ -706,7 +706,7 @@ Item {
         function test_15_the_engine_message_is_hidden_while_sweeping() {
             var screen = screenLoader.item
             var toast = findChild(screen, "spectrumToast")
-            testContext.setMetric("uiMessage", "Applied: tuned -> 851000000 Hz")
+            testContext.setMetric("uiMessage", "Applied: tuned -> 851.000000 MHz")
             tryVerify(function () { return toast.visible })
 
             screen.startSweep()
