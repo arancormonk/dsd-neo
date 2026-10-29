@@ -483,8 +483,8 @@ def main() -> int:
     parser.add_argument("summary", type=Path, help="summary.tsv written by tools/replay_ab.sh")
     parser.add_argument("--baseline", help="build to compare against (default: the first one seen)")
     parser.add_argument("--metric", choices=("auto", "digital", "analog", "tetra"), default="auto",
-                        help="which columns to report (default: tetra when the summary has the TETRA columns, else analog "
-                             "when any analog column was measured)")
+                        help="which columns to report (default: tetra when the summary has the TETRA columns, else "
+                             "analog when any analog column was measured)")
     args = parser.parse_args()
 
     metric = args.metric

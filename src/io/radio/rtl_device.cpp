@@ -2836,8 +2836,8 @@ replay_note_capture_end(struct rtl_device* s, uint64_t pass_samples) {
     s->replay_eof.replay_end_notice->store(pass_samples + 1U, std::memory_order_release);
 }
 
-/* An --iq-loop pass ended (@p on 1) or its rewind boundary passed (0): rtl_replay_eof_state::replay_pass_end. Setting it
-   wakes the demod, which may be waiting for input that this pass will not bring, to push out what it holds. */
+/* An --iq-loop pass ended (@p on 1) or its rewind boundary passed (0): rtl_replay_eof_state::replay_pass_end. Setting
+   it wakes the demod, which may be waiting for input that this pass will not bring, to push out what it holds. */
 static void
 replay_set_pass_end(struct rtl_device* s, int on) {
     if (!s->replay_has_eof_state || !s->replay_eof.replay_pass_end) {

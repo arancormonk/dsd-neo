@@ -51,7 +51,8 @@
 
 /* The TETRA receive chain's matched filter (root-raised-cosine, dsd_tetra_rrc_design()): taps for sps up to 8, and a
  * streaming history (simd_fir_complex_apply()) of one less than that, which holds every look-ahead the longest design
- * needs. The filter is redesigned (and its history reset) only when the sps changes, so pending + c never exceeds it. */
+ * needs. The filter is redesigned (and its history reset) only when the sps changes, so pending + c never exceeds
+ * it. */
 #define DSD_TETRA_RRC_HIST_LEN   (DSD_TETRA_RRC_MAX_TAPS - 1)
 
 /* The channel LPF's output work buffers (hb_workbuf, timing_buf), in floats: a call makes at most N + 143 complex

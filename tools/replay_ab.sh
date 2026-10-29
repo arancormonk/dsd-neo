@@ -671,8 +671,9 @@ for r in $(seq 1 "$reps"); do
       if [ "$t_done" = 0 ]; then
         exit_note="$exit_note (incomplete: no end-of-capture notice)"
       fi
-      printf '  r%-3s %-24s shift=%-5s wanted=%-5s other=%-5s unknown=%-4s tch_ok=%-5s tch_bad=%-5s aach=%-5s first=%-5s%s\n' \
-        "$r" "$name" "${shifts[r]}" "$t_wanted" "$t_other" "$t_unknown" "$t_ok" "$t_bad" "$t_aach" "$t_first" "$exit_note"
+      printf '  r%-3s %-24s shift=%-5s wanted=%-5s other=%-5s unknown=%-4s ' \
+        "$r" "$name" "${shifts[r]}" "$t_wanted" "$t_other" "$t_unknown"
+      printf 'tch_ok=%-5s tch_bad=%-5s aach=%-5s first=%-5s%s\n' "$t_ok" "$t_bad" "$t_aach" "$t_first" "$exit_note"
     elif [ "$metric" = analog ]; then
       # analog[] follows the summary header: snr inband clip audible first rms probe_hz probe_dbfs ...
       printf '  r%-3s %-24s shift=%-5s snr=%-8s inband=%-8s audible_ms=%-9s rms=%-8s probe_dbfs=%-8s%s\n' \

@@ -2140,8 +2140,8 @@ rate_plan_fill(dsd_iq_replay_rate_plan* plan, uint32_t capture_hz, uint32_t dsp_
     plan->resample = dsp_in_hz != capture_hz ? 1 : 0;
 }
 
-/* 1 when a chain delivering @p rate_hz to the demodulator meets @p required_hz. TETRA's 18 kHz is the symbol rate, which
- * runs only over its DSP domain (dsd_tetra_dsp_rate_runs()); any other requirement is a plain multiple. */
+/* 1 when a chain delivering @p rate_hz to the demodulator meets @p required_hz. TETRA's 18 kHz is the symbol rate,
+ * which runs only over its DSP domain (dsd_tetra_dsp_rate_runs()); any other requirement is a plain multiple. */
 static int
 rate_meets_required(uint32_t rate_hz, uint32_t required_hz) {
     if (required_hz == (uint32_t)DSD_TETRA_SYMBOL_RATE_HZ) {

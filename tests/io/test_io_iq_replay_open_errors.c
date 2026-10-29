@@ -294,7 +294,8 @@ test_injected_read_errors(void) {
     return rc;
 }
 
-/* A raw capture beside its sidecar, named by its data path or by the bare name given to --iq-capture, still resolves. */
+/* A raw capture beside its sidecar, named by its data path or by the bare name given to --iq-capture, still
+ * resolves. */
 static int
 test_sidecar_fallback(void) {
     int rc = 0;

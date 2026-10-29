@@ -11,8 +11,8 @@ sidecar with every event moved by a fraction of a symbol, the same copy for ever
 ReplayAbRealizations holds the copies to that.
 
 ReplayAbReport runs the report on canned summaries and needs only Python; ReplayAbAnalogMetric, ReplayAbDigitalMetric,
-ReplayAbTetraMetric and ReplayAbRealizations also run replay_ab.sh. Name a class on the command line to run just that one, as
-tests/CMakeLists.txt does.
+ReplayAbTetraMetric and ReplayAbRealizations also run replay_ab.sh. Name a class on the command line to run just that
+one, as tests/CMakeLists.txt does.
 """
 
 import json
@@ -1089,7 +1089,8 @@ def tetra_host(log_text):
 
 
 def bsch(stamp, mcc=228, mnc=8889, cc="0x01"):
-    return f"{stamp} Sync: -TETRA SB  [TETRA SB  rot=0 first12=001000000110][TETRA BSCH] MCC={mcc} MNC={mnc} CC={cc} TN=3 FN=2 MN=23\n"
+    return (f"{stamp} Sync: -TETRA SB  [TETRA SB  rot=0 first12=001000000110][TETRA BSCH] MCC={mcc} MNC={mnc} "
+            f"CC={cc} TN=3 FN=2 MN=23\n")
 
 
 def tch(stamp, crc="ok", mismatches=0, bits=274):
@@ -1137,7 +1138,8 @@ class ReplayAbTetraMetric(unittest.TestCase):
         lines = (self.tmp / "out" / "summary.tsv").read_text(encoding="utf-8").splitlines()
         header = lines[0].split("\t")
         self.assertEqual(header, TETRA_SUMMARY_COLUMNS)
-        return {(row["variant"], row["rep"]): row for row in (dict(zip(header, line.split("\t"))) for line in lines[1:])}
+        rows = (dict(zip(header, line.split("\t"))) for line in lines[1:])
+        return {(row["variant"], row["rep"]): row for row in rows}
 
     def test_accepted_log_is_counted_by_class(self):
         log = (bsch("00:00:03") + bsch("00:00:04") + bsch("00:00:04", mcc=250, mnc=13, cc="0x2c")

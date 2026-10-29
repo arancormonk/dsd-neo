@@ -108,7 +108,8 @@ class SimulcastTwoRay(unittest.TestCase):
 
 class TetraControlCrc(unittest.TestCase):
     def test_protect_is_the_searched_crc(self):
-        """The CRC-16 computed directly is the one a search over all 65536 candidates finds first (the residue 0x1D0F)."""
+        """The CRC-16 computed directly is the one a search over all 65536 candidates finds first (the residue
+        0x1D0F)."""
         info = [1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0]
         searched = None
         for candidate in range(0x10000):
@@ -161,8 +162,8 @@ class TetraUplinkPhaseOffsets(unittest.TestCase):
             self.assertIn(f"tetra_uplink_bursts_o{offset}_72k", names)
 
     def test_burst_starts(self):
-        """Each burst starts its guard into its slot, offset samples later on a variant; the short-tail cut ends its tail
-        after the last one."""
+        """Each burst starts its guard into its slot, offset samples later on a variant; the short-tail cut ends its
+        tail after the last one."""
         sps = fixtures.TETRA_UPLINK_RATE_HZ // fixtures.TETRA_SYMBOL_RATE
         starts = fixtures.tetra_uplink_burst_starts()
         lead = int(round(fixtures.TETRA_UPLINK_LEAD_S * fixtures.TETRA_UPLINK_RATE_HZ))

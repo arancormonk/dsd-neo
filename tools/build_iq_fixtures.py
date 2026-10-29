@@ -359,13 +359,13 @@ DERIVED_TETRA_GAP = [
 # downlink of another network (MCC 460 / MNC 4242 / colour code 0x11, tetra_synth_bursts()), shaped with the spec
 # root-raised-cosine and running continuously: each group of identity bursts is followed by nine slots of random
 # dibits, so its spectrum is a busy TETRA carrier's (EN 300 392-2 clause 6.6.2.3.0) rather than the spectral lines of
-# the zero-filled bursts. Both are built at 144 kHz, where a neighbour 25 kHz away still lies wholly inside the band, and
-# taken to 72 kHz by resample_to_fixture_rate(), whose ideal low-pass at 36 kHz stands for an RTL-SDR's decimation.
+# the zero-filled bursts. Both are built at 144 kHz, where a neighbour 25 kHz away still lies wholly inside the band,
+# and taken to 72 kHz by resample_to_fixture_rate(), whose ideal low-pass at 36 kHz stands for an RTL-SDR's decimation.
 #
 # Placement: the wanted carrier sits at +offset Hz and the neighbour at neighbour + offset Hz, so a positive offset is
-# a receiver whose LO sits that far below the wanted carrier; the sidecar's centre frequency says so. Levels are set over
-# each signal's whole 144 kHz content; the realized neighbour ratio after decimation is printed and written into the
-# sidecar's notes. The noise is complex Gaussian at the SNR given against the wanted carrier's power over the 72 kHz
+# a receiver whose LO sits that far below the wanted carrier; the sidecar's centre frequency says so. Levels are set
+# over each signal's whole 144 kHz content; the realized neighbour ratio after decimation is printed and written into
+# the sidecar's notes. The noise is complex Gaussian at the SNR given against the wanted carrier's power over the 72 kHz
 # band, seeded. The neighbour starts TETRA_NEIGHBOUR_LEAD_S into its own transmission, past its acquisition preamble.
 #
 # name, AWGN SNR dB over 72 kHz (None: none), neighbour dB re wanted (None: none), neighbour Hz, offset Hz, noise seed
@@ -383,8 +383,8 @@ TETRA_NEIGHBOUR_RANDOM_SLOTS = 9
 TETRA_SLOT_SYMBOLS = 255  # one timeslot
 
 # A trunked mode uplink carrier as --tetra-uplink receives it (EN 300 392-2 clause 9.4.4.2): control uplink bursts
-# (103 symbols, one SCH/HU) and normal uplink bursts (231 symbols, one SCH/F under NTS1), each from a different radio, on
-# a 255-symbol slot grid with noise-only slots between some of them. One burst to the next the level steps by 20 dB,
+# (103 symbols, one SCH/HU) and normal uplink bursts (231 symbols, one SCH/F under NTS1), each from a different radio,
+# on a 255-symbol slot grid with noise-only slots between some of them. One burst to the next the level steps by 20 dB,
 # up or down, and the carrier by 500 Hz, as different radios arrive. Each burst carries the MAC vectors of
 # tests/protocol/tetra/test_tetra_ul.c (a MAC-ACCESS or a MAC-DATA with a U-LOCATION UPDATE DEMAND) from an SSI of its
 # own, TETRA_UPLINK_SSI_BASE + its index, so a decode names the burst it came from. The cell is MCC 460 / MNC 4242 /
@@ -1943,7 +1943,8 @@ def tetra_uplink_phase_name(offset):
 
 
 def tetra_uplink_burst_starts(offset=0):
-    """The sample each uplink burst's first symbol starts at (TETRA_UPLINK_BURSTS), as tetra_uplink_samples() puts it."""
+    """The sample each uplink burst's first symbol starts at (TETRA_UPLINK_BURSTS), as tetra_uplink_samples() puts
+    it."""
     sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
     slot = TETRA_SLOT_SYMBOLS * sps
     position = int(round(TETRA_UPLINK_LEAD_S * TETRA_UPLINK_RATE_HZ))

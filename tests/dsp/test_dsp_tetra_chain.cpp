@@ -950,12 +950,12 @@ test_squelch_close_reopen(void) {
     return rc;
 }
 
-/* A block the signal search drops never reaches full_demod() (demod_thread_fn() releases it unprocessed), so the chain
- * next sees the block after it, spliced to the one before. It runs on across the gap: the next block makes symbols, no
- * more than a block's worth. The drop itself is the demod thread's, outside full_demod(): here a dropped block is one
- * never offered. */
+/* The chain runs on across a gap in its input (a block the signal search drops never reaches full_demod(), so the
+ * block after it comes spliced to the one before): the block after the gap makes symbols, no more than a block's
+ * worth. What it checks is the output's length only; the drop itself, and the uplink look-ahead it clears, are the
+ * demod thread's (demod_drop_signal_search_block()), outside full_demod(). */
 int
-test_resume_after_dropped_block(void) {
+test_block_after_gap_makes_symbols(void) {
     int rc = 0;
     demod_state* s = new_demod();
     if (!s) {
@@ -968,7 +968,7 @@ test_resume_after_dropped_block(void) {
     /* Block 1 is dropped: the next full_demod() call takes block 2. */
     const std::vector<float> out = run_block(s, iq.data() + (size_t)block * 4U, block);
     if ((int)out.size() > block / 4 + 2 || out.empty()) {
-        rc |= fail("resume after a dropped block: output length");
+        rc |= fail("block after a gap: output length");
     }
     free_demod(s);
     return rc;
@@ -1180,7 +1180,7 @@ main(void) {
     rc |= test_uplink_keeps_channel_filter_only();
     rc |= test_pull_in();
     rc |= test_squelch_close_reopen();
-    rc |= test_resume_after_dropped_block();
+    rc |= test_block_after_gap_makes_symbols();
     rc |= test_partition_invariance();
     rc |= test_p25_after_tetra_session();
     rc |= test_filter_reset();

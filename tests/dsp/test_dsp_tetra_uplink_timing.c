@@ -4,15 +4,15 @@
  */
 
 /*
- * The TETRA uplink burst timing (src/dsp/tetra_uplink_timing.c): a control and a normal uplink burst, root-raised-cosine
- * shaped at 4 samples a symbol, placed at every quarter sample of two symbol periods and turned by a carrier offset. The
- * look-ahead must return each sample its length later, find the burst's training on its last symbol to within half a
- * sample (an eighth of a symbol), tell a control burst from the normal training sequence inside its extended one and a
- * normal burst from payload that resembles the rest of the extended one, give the carrier rotation, and move the
- * Gardner's strobe onto the burst's grid once, two symbols before its first symbol. Noise alone and a burst without its
- * training find no burst scoring like a training. A later peak never takes a burst's slot, a burst the strobe passed
- * blocks none after it, a normal burst whose neighbouring payload matches three of the extended sequence's four outer
- * symbols stays a normal burst, and the look-ahead counts the signal it holds back.
+ * The TETRA uplink burst timing (src/dsp/tetra_uplink_timing.c): a control and a normal uplink burst,
+ * root-raised-cosine shaped at 4 samples a symbol, placed at every quarter sample of two symbol periods and turned by a
+ * carrier offset. The look-ahead must return each sample its length later, find the burst's training on its last symbol
+ * to within half a sample (an eighth of a symbol), tell a control burst from the normal training sequence inside its
+ * extended one and a normal burst from payload that resembles the rest of the extended one, give the carrier rotation,
+ * and move the Gardner's strobe onto the burst's grid once, two symbols before its first symbol. Noise alone and a
+ * burst without its training find no burst scoring like a training. A later peak never takes a burst's slot, a burst
+ * the strobe passed blocks none after it, a normal burst whose neighbouring payload matches three of the extended
+ * sequence's four outer symbols stays a normal burst, and the look-ahead counts the signal it holds back.
  */
 
 #include <assert.h>
@@ -90,8 +90,9 @@ add_symbols(int first, int offset, const int* dibits, int count, double rot_per_
 
 /* What a normal burst's payload next to its training holds (make_burst()). */
 enum outer_payload {
-    OUTER_RANDOM,     /* random payload */
-    OUTER_THREE_OF_4, /* the extended training sequence's first two and last two symbols, one of them a quarter turn off */
+    OUTER_RANDOM, /* random payload */
+    /* the extended training sequence's first two and last two symbols, one of them a quarter turn off */
+    OUTER_THREE_OF_4,
 };
 static enum outer_payload g_outer = OUTER_RANDOM;
 

@@ -371,7 +371,8 @@ rrc_args_valid(double gain, double sampling_freq, double symbol_rate, double alp
            && std::isfinite(gain) && std::isfinite(sampling_freq) && std::isfinite(symbol_rate);
 }
 
-/* Tap @p i of an @p ntaps root-raised-cosine before its gain normalisation, the loop body of GNU Radio's root_raised_cosine() quoted below. */
+/* Tap @p i of an @p ntaps root-raised-cosine before its gain normalisation: the loop body of GNU Radio's
+ * root_raised_cosine() quoted below. */
 static double
 rrc_tap_unscaled(int i, int ntaps, double spb, double alpha) {
     const int centre = ntaps / 2;

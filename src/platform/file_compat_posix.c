@@ -264,7 +264,8 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
         return NULL;
     }
 
-    /* O_NONBLOCK keeps open(2) from waiting on a FIFO with no writer; it is cleared once the target is known regular. */
+    /* O_NONBLOCK keeps open(2) from waiting on a FIFO with no writer; it is cleared once the target is known
+       regular. */
     int flags = O_RDONLY | O_NONBLOCK;
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
