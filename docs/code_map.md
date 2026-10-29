@@ -2594,8 +2594,16 @@ published data while a frontend also does (the control API) registers a telemetr
 (`include/dsd-neo/app_control/telemetry_observers.h`). The two app-control publishers call the observers on the decode
 thread with the live `dsd_state`/`dsd_opts`, after releasing their own locks. Callbacks run under the observer
 registry lock, so `dsd_app_telemetry_observer_remove()` returns only once no callback of that observer is running; a
-callback must not block, submit commands, or add/remove observers. Live event-history rows are read under
-`dsd_event_history_transaction_begin()`, as every other cross-thread reader does.
+callback must not block, submit commands, add/remove observers, or take the P25 SM tick guard. Live event-history rows
+are read under `dsd_event_history_transaction_begin()`, as every other cross-thread reader does.
+
+**Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
+control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25
+SM tick guard on its own thread. `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
+therefore hold that guard for the whole publish: the copy, the notification record and the observers. A publisher
+already under it (a frame dispatch) is used as held (`p25_sm_tick_guard_held_by_caller()`); the guard is not
+re-entrant. Publishers run on the decoder thread only; the hold is one copy long, and a watchdog tick that meets it
+waits for its next period.
 
 ### Control Pump (DSP/Protocol → Runtime ← App-Control)
 

@@ -17,6 +17,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
@@ -189,7 +190,7 @@ _Static_assert(offsetof(dsd_state, tetra_pub) >= offsetof(dsd_state, vertex_ks_c
 _Static_assert(offsetof(dsd_state, rx_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(rx_id) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "rx_id must ride the vertex_ks_count..ui_msg range");
-/* The P25 watchdog's retunes write it under the tick guard; the publication copies without the guard. */
+/* Decoder bookkeeping the P25 watchdog's retunes write, which no frontend renders: it stays out of the copy. */
 _Static_assert(offsetof(dsd_state, rx_id_trunk_tune_pending) >= UI_SNAPSHOT_FIELD_END(ui_msg),
                "rx_id_trunk_tune_pending must stay outside every snapshot copy range");
 
@@ -332,11 +333,8 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
 }
 #endif
 
-void
-dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
-    if (!state) {
-        return;
-    }
+static void
+ui_snapshot_publish(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, state);
@@ -372,6 +370,25 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
        JNI poll. */
     dsd_app_notification_publish_state(state);
     dsd_app_telemetry_notify_state(state);
+}
+
+void
+dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* The P25 watchdog's tick writes the decoder state (calls, tuned frequencies, site tables, CC candidates) under the
+       tick guard on its own thread, so every read of the live state here -- the copy, the notification and the
+       observers -- holds it too, or a frontend renders a half-written tick. Publishers run on the decoder thread, some
+       of them already under the guard (a frame dispatch), which is not re-entrant. */
+    const int take_guard = !p25_sm_tick_guard_held_by_caller();
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    ui_snapshot_publish(state);
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 const dsd_state*

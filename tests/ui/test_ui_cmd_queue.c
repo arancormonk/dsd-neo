@@ -8868,6 +8868,7 @@ static const dsd_opts* g_guard_probe_opts;
 static guard_probe_input g_guard_probe_left;
 static int g_guard_probe_unguarded;
 static int g_guard_probe_holds;
+static int g_guard_probe_publish_holds;
 /* A watchdog retune that completed just before the command took the guard (0: none): the next entry after it is armed
    moves the options' frequency here, as dsd_engine_tune_rtl() writes it while the watchdog holds the guard, which it
    left just before. A command that read the frequency outside the guard read the one from before the retune. */
@@ -8899,7 +8900,7 @@ guard_probe_check(const dsd_opts* opts) {
 static void
 guard_probe_arm(const dsd_opts* opts) {
     guard_probe_take(opts, &g_guard_probe_left);
-    g_guard_probe_unguarded = g_guard_probe_holds = 0;
+    g_guard_probe_unguarded = g_guard_probe_holds = g_guard_probe_publish_holds = 0;
     g_guard_probe_opts = opts;
 }
 
@@ -8921,6 +8922,29 @@ guard_probe_arm_with_retune(dsd_opts* opts, uint32_t freq_hz) {
     g_guard_probe_retune_hz = freq_hz;
 }
 
+/* The drain publishes the options and state snapshots after each command, each under a hold of its own (the watchdog
+   writes what they copy under the guard): the probe checks the input at those entries like any other, and counts them
+   apart from the command's holds. */
+static int g_guard_probe_publishing;
+void __real_dsd_app_telemetry_publish_snapshot(const dsd_state* state);
+void __real_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
+void __wrap_dsd_app_telemetry_publish_snapshot(const dsd_state* state);
+void __wrap_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
+
+void
+__wrap_dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
+    ++g_guard_probe_publishing;
+    __real_dsd_app_telemetry_publish_snapshot(state);
+    --g_guard_probe_publishing;
+}
+
+void
+__wrap_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
+    ++g_guard_probe_publishing;
+    __real_dsd_app_telemetry_publish_opts_snapshot(opts);
+    --g_guard_probe_publishing;
+}
+
 void __real_p25_sm_tick_guard_enter(void);
 void __real_p25_sm_tick_guard_leave(void);
 void __wrap_p25_sm_tick_guard_enter(void);
@@ -8930,7 +8954,11 @@ void
 __wrap_p25_sm_tick_guard_enter(void) {
     __real_p25_sm_tick_guard_enter();
     if (g_guard_probe_opts) {
-        ++g_guard_probe_holds;
+        if (g_guard_probe_publishing) {
+            ++g_guard_probe_publish_holds;
+        } else {
+            ++g_guard_probe_holds;
+        }
         guard_probe_check(g_guard_probe_opts);
     }
     if (g_guard_probe_retune_opts && g_guard_probe_retune_hz != 0U) {
@@ -20074,6 +20102,8 @@ test_input_switch_holds_the_watchdog_guard(void) {
     rc |=
         expect_int("guarded rtl_tcp to airspy: the watchdog's retune stands", (int)opts.rtlsdr_center_freq, 851387500);
     rc |= expect_int("guarded rtl_tcp to airspy: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("guarded rtl_tcp to airspy: the options and the state published under holds of their own",
+                     g_guard_probe_publish_holds, 2);
     rc |= expect_int("guarded rtl_tcp to airspy: no write outside the guard", g_guard_probe_unguarded, 0);
 
     /* A running Airspy switched to an RTL-SDR that does not open. */
@@ -20089,6 +20119,8 @@ test_input_switch_holds_the_watchdog_guard(void) {
     guard_probe_disarm();
     rc |= expect_str("guarded airspy to rtl: Airspy put back", opts.audio_in_dev, "airspy");
     rc |= expect_int("guarded airspy to rtl: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("guarded airspy to rtl: the options and the state published under holds of their own",
+                     g_guard_probe_publish_holds, 2);
     rc |= expect_int("guarded airspy to rtl: no write outside the guard", g_guard_probe_unguarded, 0);
 
     /* A switch that works rewrites the input under the guard as well. */
@@ -20274,6 +20306,8 @@ test_dsp_bandwidth_change_that_fails_keeps_the_running_input(void) {
     rc |= expect_str("airspy bw 12: still the Airspy", opts.audio_in_dev, "airspy");
     rc |= expect_toast("airspy bw 12 toast", &state, "Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
     rc |= expect_int("airspy bw 12: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("airspy bw 12: the options and the state published under holds of their own",
+                     g_guard_probe_publish_holds, 2);
     rc |= expect_int("airspy bw 12: no write outside the guard", g_guard_probe_unguarded, 0);
 
     /* A DMR session on an RTL-SDR at 48 kHz recording I/Q, whose device does not open at 24 kHz. */

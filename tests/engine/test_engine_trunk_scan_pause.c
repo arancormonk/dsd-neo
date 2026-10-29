@@ -34,7 +34,6 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
-#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -419,7 +418,7 @@ pause_over_a_phase2_call(int entry) {
     rc |= expect_paused("pause over a call");
     rc |= expect(g_state.carrier_change_seen == 1U && g_state.trunk_chan_map[0x1234] == 0,
                  "the carrier left is forgotten, and no target table stays live");
-    rc |= expect(g_vc_tunes == 1 && frames_current(), "nothing tuned back to the target's control channel");
+    rc |= expect(g_vc_tunes == 1 && frames_current(), "no voice tune besides the grant's, and no tune left pending");
 
     const int tunes = g_cc_tunes;
     rc |= expect(run_action(DSD_APP_CMD_SCAN_RESUME) == 1 && toast_is("Trunk scan resumed"), "SCAN_RESUME resumes");
@@ -779,9 +778,8 @@ watchdog_beside_pause_and_resume(void) {
         cleanup();
         return 1;
     }
-    /* No frontend renders here: its snapshot copies the whole state outside the guard, beside what the watchdog's tick
-       writes under it, which is not what this case is about. The command queue stays open. */
-    dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
+    /* The frontend's snapshot, published at the end of every drain, copies the state beside what the watchdog's tick
+       writes: both hold the guard. */
     atomic_store(&g_watchdog.run, 1);
     atomic_store(&g_watchdog.reads, 0);
     atomic_store(&g_watchdog.paused_reads, 0);
@@ -824,14 +822,17 @@ watchdog_beside_pause_and_resume(void) {
 
 /* ---- The guard held elsewhere ----------------------------------------------------------------------------------- */
 
-/* A watchdog tick in progress (a Phase 2 release, say) holds the guard. A `y`, a SCAN_RESUME or a frequency entry that
-   arrives then waits for it: while the tick holds the guard nothing of the pause or resume has happened, not even the
-   entry's tune; once it leaves, the whole step runs. */
+/* A watchdog tick in progress (a Phase 2 release, say) holds the guard. A `y`, a SCAN_RESUME, a tuner release or a
+   frequency entry that arrives then waits for it: while the tick holds the guard nothing of the pause or resume has
+   happened, not even the entry's tune; once it leaves, the whole step runs. */
 static struct {
     dsd_mutex_t mutex;
     dsd_cond_t condition;
     int held;
     atomic_int released;
+    atomic_int done; /* the decoder thread's step returned: a step that never waits ends the holder's wait */
+    int baseline;    /* the drain's guard waits before the command, or -1 for the entry, whose wait is not counted */
+    int stalled;     /* the count never moved: a fixture failure, never evidence of a wait */
     int untouched;
     uint8_t paused;
 } g_holder;
@@ -844,8 +845,21 @@ guard_holder(void* arg) {
     g_holder.held = 1;
     dsd_cond_broadcast(&g_holder.condition);
     dsd_mutex_unlock(&g_holder.mutex);
-    /* Long enough for the decoder thread to reach the guard and wait on it. */
-    dsd_sleep_ms(50U);
+    if (g_holder.baseline < 0) {
+        /* The entry's service enters the guard blocking, with no count to watch: long enough for the decoder thread to
+           reach the guard, best effort (the watchdog case holds the entry to the guard too). */
+        dsd_sleep_ms(50U);
+    } else {
+        /* Until the drain counts its wait for the guard: from then on the decoder thread is blocked on it. */
+        const double deadline = dsd_realtime_mono_s() + 10.0;
+        while (dsd_app_command_test_policy_guard_waits() <= g_holder.baseline && atomic_load(&g_holder.done) == 0) {
+            if (dsd_realtime_mono_s() >= deadline) {
+                g_holder.stalled = 1;
+                break;
+            }
+            dsd_thread_yield();
+        }
+    }
     g_holder.untouched = g_state.trunk_scan_paused == g_holder.paused && g_state.ui_msg[0] == '\0' && g_entry_tunes == 0
                          && (g_holder.paused ? dsd_trunk_scan_hook_p25_ctx() == NULL
                                              : dsd_trunk_scan_hook_p25_ctx() != NULL && g_opts.trunk_enable == 1);
@@ -855,12 +869,15 @@ guard_holder(void* arg) {
 }
 
 static int
-start_guard_holder(dsd_thread_t* thread) {
+start_guard_holder(dsd_thread_t* thread, int baseline) {
     g_state.ui_msg[0] = '\0';
     g_holder.held = 0;
+    g_holder.baseline = baseline;
+    g_holder.stalled = 0;
     g_holder.untouched = 0;
     g_holder.paused = g_state.trunk_scan_paused;
     atomic_store(&g_holder.released, 0);
+    atomic_store(&g_holder.done, 0);
     if (dsd_thread_create(thread, guard_holder, NULL) != 0) {
         return 0;
     }
@@ -872,21 +889,30 @@ start_guard_holder(dsd_thread_t* thread) {
     }
     const int held = g_holder.held;
     dsd_mutex_unlock(&g_holder.mutex);
+    if (!held) {
+        /* Not left running into the cleanup: whenever it takes the guard, it leaves at once. */
+        atomic_store(&g_holder.done, 1);
+        dsd_thread_join(*thread);
+    }
     return held;
 }
 
 static int
 drain_while_the_guard_is_held(int cmd_id, const char* toast, const char* stage) {
+    const int baseline = dsd_app_command_test_policy_guard_waits();
     dsd_thread_t holder;
-    if (!start_guard_holder(&holder)) {
+    if (!start_guard_holder(&holder, baseline)) {
         return expect(0, stage);
     }
     const int queued = dsd_app_command_action(cmd_id) > 0;
     const int drained = queued && dsd_app_drain_cmds(&g_opts, &g_state) == 1;
+    atomic_store(&g_holder.done, 1);
     const int waited = atomic_load(&g_holder.released) == 1;
     dsd_thread_join(holder);
-    if (!(drained && waited && g_holder.untouched && toast_is(toast))) {
-        DSD_FPRINTF(stderr, "%s: drained=%d waited=%d untouched=%d\n", stage, drained, waited, g_holder.untouched);
+    const int counted = dsd_app_command_test_policy_guard_waits() == baseline + 1;
+    if (!(drained && waited && counted && !g_holder.stalled && g_holder.untouched && toast_is(toast))) {
+        DSD_FPRINTF(stderr, "%s: drained=%d waited=%d counted=%d stalled=%d untouched=%d\n", stage, drained, waited,
+                    counted, g_holder.stalled, g_holder.untouched);
         return expect(0, stage);
     }
     return 0;
@@ -905,14 +931,21 @@ pause_and_resume_wait_for_the_guard(void) {
     rc |=
         drain_while_the_guard_is_held(DSD_APP_CMD_SCAN_RESUME, "Trunk scan resumed", "SCAN_RESUME waits, then resumes");
     rc |= expect_running_on("SCAN_RESUME after the guard", "p25");
+    rc |= drain_while_the_guard_is_held(DSD_APP_CMD_TUNER_RELEASE, "Automatic tuning paused",
+                                        "a release waits, then pauses");
+    rc |= expect_paused("release after the guard");
+    rc |= drain_while_the_guard_is_held(DSD_APP_CMD_SCAN_RESUME, "Trunk scan resumed",
+                                        "SCAN_RESUME after the release waits, then resumes");
+    rc |= expect_running_on("SCAN_RESUME after the release", "p25");
 #ifdef USE_RADIO
     dsd_thread_t holder;
-    if (!start_guard_holder(&holder)) {
+    if (!start_guard_holder(&holder, -1)) {
         rc |= expect(0, "guard holder for the entry");
     } else {
         int paused = 0;
         const int tuned =
             svc_pause_trunk_scan_for_tune(&g_opts, &g_state, k_entry_hz, entry_leg, &paused) == RTL_STREAM_TUNE_OK;
+        atomic_store(&g_holder.done, 1);
         const int waited = atomic_load(&g_holder.released) == 1;
         dsd_thread_join(holder);
         rc |= expect(tuned && paused == 1 && waited && g_holder.untouched && g_entry_tunes == 1,

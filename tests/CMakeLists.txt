@@ -4887,10 +4887,13 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
     dsd-neo_test_app_control_snapshot_event_history
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_event_history
@@ -4968,10 +4971,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
     dsd-neo_test_app_control_opts_snapshot
@@ -7544,12 +7551,14 @@ add_test(
 )
 
 # A trunk scan paused and resumed (issue #671) through the real P25/DMR state machines, carrier boundary, tuning ledger
-# and P25 SM tick guard, driven by the app-control services and commands; only the tuner is simulated.
+# and P25 SM tick guard, driven by the app-control services and commands; only the tuner is simulated. The command
+# queue is built in with its test hooks, for the drain's count of its waits for the guard.
 add_executable(
     dsd-neo_test_engine_trunk_scan_pause
     engine/test_engine_trunk_scan_pause.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan_pause
@@ -8159,6 +8168,8 @@ if(
             "LINKER:--wrap=rtl_stream_replay_checkpoint"
             "LINKER:--wrap=p25_sm_tick_guard_enter"
             "LINKER:--wrap=p25_sm_tick_guard_leave"
+            "LINKER:--wrap=dsd_app_telemetry_publish_snapshot"
+            "LINKER:--wrap=dsd_app_telemetry_publish_opts_snapshot"
             "LINKER:--wrap=rtl_stream_tune_tagged"
     )
 endif()

@@ -37,9 +37,10 @@ extern "C" {
  * @brief Observer callback table. Either callback may be NULL.
  *
  * Callbacks run on the decode thread, outside the snapshot locks but under the
- * observer registry lock: they must not block, re-enter the command queue, or
- * add/remove observers. The state/opts pointers are borrowed for the duration
- * of the call.
+ * observer registry lock and the P25 SM tick guard: they must not block,
+ * re-enter the command queue, add/remove observers, or take the tick guard
+ * (it is not re-entrant). The state/opts pointers are borrowed for the
+ * duration of the call.
  */
 typedef struct dsd_app_telemetry_observer {
     void (*state)(const dsd_state* state, void* user);

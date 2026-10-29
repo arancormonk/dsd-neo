@@ -16,10 +16,13 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <sndfile.h>
+#include "p25_tick_guard_stub.h"
 #include "recording_view_internal.h"
 #include "snapshot_internal.h"
 #include "test_support.h"
@@ -201,6 +204,42 @@ test_publish_carries_the_journal_state(void) {
     (void)remove(path);
 }
 
+static int g_observer_saw_guard = -1;
+
+static void
+observe_opts(const dsd_opts* opts, void* user) {
+    (void)opts;
+    (void)user;
+    g_observer_saw_guard = p25_sm_tick_guard_held_by_caller();
+}
+
+/* The P25 watchdog's tunes write the options (trunk_is_tuned, the tuner's centre frequency) under the tick guard on
+   their own thread, so the publication reads them under it: taken for the publish and left after, or, when the
+   decoder thread already holds it (a frame dispatch), used as held, never entered again. */
+static void
+test_publish_holds_the_tick_guard(void) {
+    static dsd_opts opts;
+    static const dsd_app_telemetry_observer observer = {NULL, observe_opts, NULL};
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    assert(dsd_app_telemetry_observer_add(&observer) == 0);
+
+    g_observer_saw_guard = -1;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(g_observer_saw_guard == 1);
+    assert(!p25_sm_tick_guard_held_by_caller());
+    assert(p25_sm_tick_guard_try_enter());
+
+    g_observer_saw_guard = -1;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(g_observer_saw_guard == 1);
+    assert(p25_sm_tick_guard_held_by_caller());
+    assert(dsd_test_p25_tick_guard_reentries() == 0);
+    p25_sm_tick_guard_leave();
+
+    assert(dsd_app_telemetry_observer_remove(&observer) == 0);
+}
+
 int
 main(void) {
     test_initial_snapshot_is_absent();
@@ -209,6 +248,7 @@ main(void) {
     test_publish_also_feeds_the_notification_record();
     test_publish_carries_the_recording_view();
     test_publish_carries_the_journal_state();
+    test_publish_holds_the_tick_guard();
     printf("UI_OPTS_SNAPSHOT: OK\n");
     return 0;
 }

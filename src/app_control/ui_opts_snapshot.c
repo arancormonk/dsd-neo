@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -42,11 +43,8 @@ ensure_opts_mu_init(void) {
     }
 }
 
-void
-dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
+static void
+ui_opts_snapshot_publish(const dsd_opts* opts) {
     ensure_opts_mu_init();
     dsd_mutex_lock(&g_opts_mu);
     DSD_MEMCPY(&g_pub_opts, opts, sizeof(dsd_opts));
@@ -63,6 +61,23 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
        left (issue #708). */
     dsd_app_recording_view_publish(opts);
     dsd_app_telemetry_notify_opts(opts);
+}
+
+void
+dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    /* The P25 watchdog's tunes write the options too (trunk_is_tuned, the tuner's centre frequency) under the tick
+       guard, so the copy holds it, as the state snapshot's does (ui_snapshot.c); not re-entrant. */
+    const int take_guard = !p25_sm_tick_guard_held_by_caller();
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    ui_opts_snapshot_publish(opts);
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
 }
 
 const dsd_opts*
