@@ -7190,8 +7190,11 @@ into the PCM sample domain; scaled, both inner levels would slice as outer ones.
 under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the adaptive
 four-level slicer's `center`/`umid`/`lmid`, which put the inner/outer edge near ±60° instead of ±90°, and the decoder's
 soft costs come from `cqpsk_soft_symbol_to_viterbi_cost()`, taken against the fixed levels ±1 and ±3 (the four-level
-mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). Tests: `FRAME_SYNC_INTERNAL_HELPERS`,
-`TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`, `DIBIT_TETRA_QUADRANT_SLICER`.
+mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). All three read the fixed levels on QPSK
+only (`rf_mod` 1, `dsd_tetra_quadrant_levels()`; the hunt tests `rf_mod` itself): under another modulation (`-fT -mc`,
+not a supported TETRA receiver) the hunt, `digitize()` and the soft costs read TETRA on the adaptive levels together.
+Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`,
+`DIBIT_TETRA_QUADRANT_SLICER`.
 
 #### Signalling decoders
 

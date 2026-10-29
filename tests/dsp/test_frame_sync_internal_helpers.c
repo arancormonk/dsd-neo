@@ -139,6 +139,19 @@ test_tetra_hunt_slices_at_the_quadrant_edges(void) {
         }
     }
 
+    /* Off QPSK (-fT -mc) the hunt keeps the adaptive levels for TETRA, as digitize() does
+       (dsd_tetra_quadrant_levels()): 0.1 below a centre of 0.3 is a -1 there, not the quadrants' +1. */
+    state->rf_mod = 0;
+    state->center = 0.3f;
+    state->umid = 0.8f;
+    state->lmid = -0.2f;
+    state->dibit_buf_p = state->dibit_buf + 200;
+    state->dmr_payload_p = state->dmr_payload_buf + 200;
+    state->dmr_soft_p = state->dmr_soft_buf + 200;
+    (void)dsd_frame_sync_test_process_dibit_and_payload(opts, state, 0.1f);
+    assert(state->dmr_payload_buf[200] == 2);
+    state->rf_mod = 1;
+
 #ifdef USE_RADIO
     dsd_rtl_stream_metrics_hooks metrics_hooks = {
         .cqpsk_status = hunt_slice_cqpsk_status,

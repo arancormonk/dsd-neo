@@ -121,7 +121,8 @@ tetra_burst_colour(const dsd_state* state) {
 }
 
 /* Expand @p count dibits into 2 * @p count soft costs, taken against the fixed CQPSK levels
-   (cqpsk_soft_symbol_to_viterbi_cost()), after undoing the slicer phase step and polarity @p inverted. An
+   (cqpsk_soft_symbol_to_viterbi_cost()) where digitize() slices at them (dsd_tetra_quadrant_levels()), else against
+   the adaptive ones, after undoing the slicer phase step and polarity @p inverted. An
    inverted discriminator swaps the positive and negative symbol pairs, which is dibit XOR 2. A burst whose training
    sequence matched only after a phase step had its soft values sliced in that rotated phase, so it falls back to
    confident hard decisions. Descrambling is the caller's. */
@@ -132,11 +133,14 @@ tetra_expand_dibits_as(const dsd_state* state, int inverted, const uint8_t* dibi
     if (phase_rot != 0) {
         soft_in = NULL;
     }
+    const int fixed = dsd_tetra_quadrant_levels(state);
     for (int i = 0; i < count; i++) {
         const uint8_t d = (uint8_t)((tetra_dibit_derotate(dibits[i], phase_rot) ^ (inverted ? 2 : 0)) & 3);
         if (soft_in) {
-            out[(i * 2) + 0] = cqpsk_soft_symbol_to_viterbi_cost(soft_in[i], 0);
-            out[(i * 2) + 1] = cqpsk_soft_symbol_to_viterbi_cost(soft_in[i], 1);
+            out[(i * 2) + 0] = fixed ? cqpsk_soft_symbol_to_viterbi_cost(soft_in[i], 0)
+                                     : soft_symbol_to_viterbi_cost(soft_in[i], state, 0);
+            out[(i * 2) + 1] = fixed ? cqpsk_soft_symbol_to_viterbi_cost(soft_in[i], 1)
+                                     : soft_symbol_to_viterbi_cost(soft_in[i], state, 1);
             if (inverted) {
                 out[(i * 2) + 0] = (uint16_t)(0xFFFFu - out[(i * 2) + 0]);
             }

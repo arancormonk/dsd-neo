@@ -2786,8 +2786,8 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
 
 /* The level the hunt slices CQPSK symbols about. TETRA's (the 18000/4 profile, a candidate only when TETRA is the
  * decode mode) are arg(z) * 4/pi of the differential phasor, cut at the quadrant edges 0 and +-2 as digitize() cuts
- * their payload: the adaptive centre, the midpoint of the averaged extremes, does not enter. P25's CQPSK hunt keeps it.
-*/
+ * their payload, both on QPSK only (rf_mod 1, the test dsd_tetra_quadrant_levels() makes for digitize()): the
+ * adaptive centre, the midpoint of the averaged extremes, does not enter. P25's CQPSK hunt keeps it. */
 static float
 frame_sync_cqpsk_slice_center(const dsd_state* state) {
     if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && state->rf_mod == 1) {

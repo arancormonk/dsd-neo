@@ -7,7 +7,7 @@
  * TETRA's pi/4-DQPSK symbols are arg(z) * 4/pi of the differential phasor: +-1 for +-pi/4, +-3 for +-3pi/4. Their
  * maximum-likelihood decision boundaries are the quadrant edges, 0 and +-2, whatever the adaptive four-level slicer
  * levels (center, umid, lmid, max, min) have drifted to. The soft costs TETRA decodes with are taken against the fixed
- * levels too.
+ * levels too. All of it on QPSK only: under another modulation the adaptive levels slice TETRA as everything else.
  */
 
 #include <dsd-neo/core/dibit.h>
@@ -232,6 +232,41 @@ test_adaptive_levels_do_not_reach_tetra_slicing(void) {
     return rc;
 }
 
+/* Off QPSK (-fT -mc, which no TETRA receiver runs) the symbols are not arg(z) * 4/pi: TETRA's are sliced on the
+   adaptive levels, as the frame sync hunt slices them there, and the predicate both read says so. */
+static int
+test_tetra_off_qpsk_slices_on_adaptive_levels(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate state buffers\n");
+        return 1;
+    }
+    int rc = 0;
+    set_measured_adaptive_levels(&state);
+    if (dsd_tetra_quadrant_levels(&state) != 1 || dsd_tetra_quadrant_levels(NULL) != 0) {
+        DSD_FPRINTF(stderr, "quadrant levels: not on QPSK\n");
+        rc = 1;
+    }
+    for (int mod = 0; mod <= 2; mod += 2) {
+        state.rf_mod = mod;
+        if (dsd_tetra_quadrant_levels(&state) != 0) {
+            DSD_FPRINTF(stderr, "quadrant levels on rf_mod %d\n", mod);
+            rc = 1;
+        }
+        for (int s = 0; s < 4; s++) {
+            state.synctype = k_tetra_synctypes[s];
+            /* At the measured levels +1.33 is outer and -0.05 positive, where the quadrants say inner and negative. */
+            rc |= check_digitize(&opts, &state, 1.0f + (15.0f / 45.0f), 1, "off QPSK: adaptive outer edge");
+            rc |= check_digitize(&opts, &state, -0.05f, 0, "off QPSK: adaptive centre");
+        }
+    }
+    free_state_buffers(&state);
+    return rc;
+}
+
 static int
 cost_within(uint16_t got, uint16_t want, int tolerance) {
     int diff = (int)got - (int)want;
@@ -323,6 +358,7 @@ main(void) {
     int rc = 0;
     rc |= test_tetra_slices_at_quadrant_boundaries();
     rc |= test_adaptive_levels_do_not_reach_tetra_slicing();
+    rc |= test_tetra_off_qpsk_slices_on_adaptive_levels();
     rc |= test_tetra_soft_costs_at_fixed_levels();
     return rc;
 }

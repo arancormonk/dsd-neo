@@ -945,8 +945,8 @@ select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symb
     /* TETRA's symbols, from the CQPSK demodulator or a capture of them, are arg(z) * 4/pi of the differential phasor:
        the levels are +-1 and +-3 and the maximum-likelihood boundaries the quadrant edges, 0 and +-2. The adaptive
        levels put the inner/outer edge near +-60 degrees. A TETRA sync type is never four-level negative here: the TETRA
-       decoder undoes the burst's polarity itself. */
-    if (DSD_SYNC_IS_TETRA(state->synctype)) {
+       decoder undoes the burst's polarity itself. Only on QPSK, as the hunt slices them (dsd_tetra_quadrant_levels()). */
+    if (DSD_SYNC_IS_TETRA(state->synctype) && dsd_tetra_quadrant_levels(state)) {
         return cqpsk_slice(symbol);
     }
 
@@ -1216,6 +1216,11 @@ soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_positi
     float inv_2sigma2 = 0.5f / (sigma * sigma);
 
     return four_level_viterbi_cost(symbol, n3, n1, p1, p3, inv_2sigma2, bit_position);
+}
+
+int
+dsd_tetra_quadrant_levels(const dsd_state* state) {
+    return (state != NULL && state->rf_mod == 1) ? 1 : 0;
 }
 
 /**
