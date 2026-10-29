@@ -1334,6 +1334,49 @@ test_root_gone_before_a_recheck(void) {
     expect("read again, still there", s.store.unfinishedCount() == 1 && QFileInfo::exists(temp));
 }
 
+/* Issue #708: a delete that finds its file missing after the root went away within the pass (the USB storage left as
+ * the user deleted) marks the root away, keeps the recording indexed and its delete queued, and deletes it once the
+ * storage is back. Laid out as the recheck case above: no journal in the external root, so no tail notices it going. */
+void
+test_root_gone_before_a_delete(void) {
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString internalParent = roots.dir.path() + QStringLiteral("/int");
+    expect("the internal root starts away", QDir(internalParent).removeRecursively());
+    make_file(internalParent, 1);
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    write_folder_json(folder, QString(kUidA), QStringLiteral("County"));
+    const QString temp = folder + QStringLiteral("/TEMP_20261027_120000_0123456789ABCDEF_9.wav");
+    make_file(temp, 7000);
+    Store s(roots.list());
+    expect("the unfinished recording is indexed", s.store.unfinishedCount() == 1);
+
+    std::atomic<bool> moved{false};
+    s.store.setFolderLoadHookForTest([&](const QString&) {
+        if (!moved.exchange(true)) {
+            (void)QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away);
+        }
+    });
+    expect("the internal root comes back", QFile::remove(internalParent));
+    write_folder_json(roots.internal + QStringLiteral("/Metro (5e6f7a8b)"), QString(kUidC), QStringLiteral("Metro"));
+    s.store.deleteRecording(QStringLiteral("unfinished:") + QDir::cleanPath(QFileInfo(temp).absoluteFilePath()));
+    s.pass();
+    expect("the storage went mid-pass", moved.load() && !QFileInfo::exists(temp));
+    expect("the recording stays indexed, its delete waiting",
+           s.store.unfinishedCount() == 1 && s.store.deletesWaiting() == 1);
+    bool countyAway = false;
+    for (const QVariant& f : s.store.folders()) {
+        const QVariantMap m = f.toMap();
+        countyAway = countyAway || (m.value("uid").toString() == kUidA && !m.value("available").toBool());
+    }
+    expect("its folder reads as away", countyAway);
+    s.store.setFolderLoadHookForTest({});
+    expect("the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    s.pass();
+    expect("the delete runs once it is back",
+           !QFileInfo::exists(temp) && s.store.unfinishedCount() == 0 && s.store.deletesWaiting() == 0);
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -1822,6 +1865,7 @@ main(int argc, char** argv) {
     test_folder_gone_before_its_read();
     test_root_gone_mid_pass();
     test_root_gone_before_a_recheck();
+    test_root_gone_before_a_delete();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();

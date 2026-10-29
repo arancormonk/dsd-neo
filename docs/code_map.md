@@ -8201,8 +8201,9 @@ Qt Quick frontend (`src/ui/qt`):
     journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
     first. Free space where new folders go is read (`dsd_path_free_bytes()`) at start, after each publish and every
     minute while a session records; under 200 MB is `lowSpace`. A root that goes away, at a pass's start or within it
-    (a tailed journal, a folder.json or a rechecked recording found gone, the root checked again), is marked away and its recordings'
-    fragments are announced, so History rows read them as away; nothing in it leaves the index. `isIndexedPath()` is the share check.
+    (a tailed journal, a folder.json, or a rechecked or deleted recording found gone, the root checked again), is marked
+    away and its recordings' fragments are announced, so History rows read them as away; nothing in it leaves the index,
+    and a delete it interrupted stays queued and runs once the root is back. `isIndexedPath()` is the share check.
   - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
     pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
     start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass

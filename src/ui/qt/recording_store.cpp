@@ -1031,6 +1031,8 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
     const bool uploading = m_uploadHolds(path);
 
     QString error;
+    bool missing = false;
+    int root = -1;
     {
         yieldToReaders();
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -1051,18 +1053,34 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
         // Right before the unlink, without following a link: what is there now is what gets removed.
         const QFileInfo now(path);
         if (!now.isSymLink() && !now.exists()) {
-            removeEntryLocked(id, pass); // already gone
-            return DeleteResult::Gone;
-        }
-        if (!inside || now.isSymLink() || !now.isFile()) {
+            missing = true;
+            root = m_folders.value(it->folder).root;
+        } else if (!inside || now.isSymLink() || !now.isFile()) {
             // Not a recording the store may remove any more: it leaves the index, and the disk is left alone.
             removeEntryLocked(id, pass);
             return DeleteResult::Kept;
-        }
-        if (m_remove(path, &error)) {
+        } else if (m_remove(path, &error)) {
             removeEntryLocked(id, pass);
             return DeleteResult::Removed;
         }
+    }
+    if (missing) {
+        // Missing: gone with a root that went away since the pass began, which marks the root away and keeps the entry
+        // and the request for when it is back, or deleted behind the store's back.
+        if (!rootStillAvailable(root, pass)) {
+            return DeleteResult::Held;
+        }
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        const auto it = m_entries.constFind(id);
+        if (it == m_entries.cend()) {
+            return DeleteResult::Gone;
+        }
+        const QFileInfo again(it->path);
+        if (again.isSymLink() || again.exists()) {
+            return DeleteResult::Held; // there again: the next pass looks at it afresh
+        }
+        removeEntryLocked(id, pass); // already gone
+        return DeleteResult::Gone;
     }
     noteDeleteFailure(cause, error);
     pass->dirty = true;
