@@ -72,6 +72,8 @@ struct rtl_device;
 namespace {
 
 constexpr uint64_t kWaitMs = 5000U;
+/* How long a flood of commands may take to fill the socket buffers of a server that stopped reading. */
+constexpr uint64_t kFillWaitMs = 30000U;
 /* How soon a stop or an exit request takes effect where everything waits a 50 ms slice at a time: well inside this
  * even under a sanitizer on a loaded runner, while a wait that cannot be cancelled (a back-off of up to 2 s, a send
  * blocked for its whole 2 s budget) does not end inside it. */
@@ -426,6 +428,12 @@ server_main(void* arg) {
         g_srv.conns.emplace_back();
         const size_t idx = g_srv.conns.size() - 1U;
         dsd_mutex_unlock(&g_srv.lock);
+        if (sc.rcvbuf > 0) {
+            /* The same size again on the accepted socket: the listener's sets the window the handshake advertises,
+             * and setting it here as well keeps macOS from growing the buffer by autotuning, which a server that stops
+             * reading would otherwise take megabytes and seconds to fill. */
+            (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &sc.rcvbuf, sizeof sc.rcvbuf);
+        }
         g_srv.kill.store(0);
         g_srv.connected.store(1);
         server_serve(sock, sc, idx);
@@ -1497,7 +1505,8 @@ test_stop_during_backpressured_send(void) {
     flood_ctx fc{r.dev};
     dsd_thread_t flood{};
     start_thread(&flood, flood_main, &fc);
-    /* Blocked: no new send for 300 ms, and no failure yet. */
+    /* Blocked: no new send for 300 ms, and no failure yet. The budget is long because a stack that sizes its buffers
+     * past the asked 4 KiB (macOS) takes the 5-byte commands seconds to fill; on Linux this blocks within milliseconds. */
     uint64_t seen = 0U;
     uint64_t since = now_ms();
     const bool blocked = wait_until(
@@ -1510,7 +1519,11 @@ test_stop_during_backpressured_send(void) {
             }
             return now_ms() - since >= 300U;
         },
-        kWaitMs);
+        kFillWaitMs);
+    if (!blocked) {
+        DSD_FPRINTF(stderr, "stop_during_backpressured_send: %llu sends in %llu ms and still not blocked\n",
+                    (unsigned long long)g_send_calls.load(), (unsigned long long)kFillWaitMs);
+    }
     assert(blocked);
     assert(fc.done.load() == 0);
     const uint64_t t0 = now_ms();
