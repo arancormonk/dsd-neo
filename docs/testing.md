@@ -1735,10 +1735,13 @@ radio; `tools/replay_ab.sh` on real captures remains the evidence for decode qua
 The same generator writes the I/Q fixture `dmr_voice_synth` (a clear call on slot 1, colour code 2, slot 2 idle),
 which the DMR voice, MBE capture, voice-chain and float-output cases replay: `tools/build_iq_fixtures.py
 --dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen` regenerates it with the other fixtures (without the
-option the script skips it). The two sigidwiki DMR fixtures, `dmr_voice` and `dmr_t3_cc`, are control channels received
-at inverted polarity; before issue #729 `-fs` read their data bursts as voice, and the old voice cases pinned that.
-`DECODE_IQ_DMR_T3_CC` and `DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1,
-found at the polarity the decoder proves, with no voice burst decoded.
+option the script skips it). Its bytes follow mbelib-neo's AMBE encoder: the committed ones are 2.6.5's, whose
+encoder no longer voices background noise at the lowest pitches (2.6.4 gave the earlier bytes), so an mbelib bump
+that changes the encoder fails `--verify --dmr-synth-gen` until the fixture is regenerated. The two sigidwiki DMR
+fixtures, `dmr_voice` and `dmr_t3_cc`, are control channels received at inverted polarity; before issue #729 `-fs`
+read their data bursts as voice, and the old voice cases pinned that. `DECODE_IQ_DMR_T3_CC` and
+`DECODE_IQ_DMR_POLARITY_AUTO` now pin what they are: CSBK and idle bursts on colour code 1, found at the polarity the
+decoder proves, with no voice burst decoded.
 
 ### MBE capture checks (issue #661)
 
