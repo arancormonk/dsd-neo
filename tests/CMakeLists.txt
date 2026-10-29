@@ -19913,6 +19913,21 @@ if(Python3_Interpreter_FOUND)
                 ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
                 TIMEOUT 120
         )
+        # The TETRA metric and WAV captures, read from fake hosts' logs through the real script.
+        add_test(
+            NAME TOOLS_REPLAY_AB_TETRA_METRIC
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_replay_ab_report.py
+                ReplayAbTetraMetric
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_REPLAY_AB_TETRA_METRIC
+            PROPERTIES
+                ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+                TIMEOUT 120
+        )
         # Each repeat replays its own realization of the capture: a sidecar copy with
         # every event shifted by s_r input samples (issue #572).
         add_test(

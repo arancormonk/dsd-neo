@@ -3115,6 +3115,32 @@ Reading it:
   The log is read as text whatever bytes it holds: a D-STAR header decoded from
   noise prints its callsigns raw, and a UTF-8 `grep` then takes the log for a
   binary file and stops printing lines at the first of them.
+- **TETRA runs** (`--metric tetra --tetra-wanted MCC/MNC/CC`, with `-fT -Z` in `--mode`) score the decode itself,
+  since voice-frame errors say nothing about a receive chain judged by the bursts it recovers. The wanted identity is
+  required and fixed for every build in a comparison (`228/8889/0x01` or `228/8889/1`); `summary.tsv` appends
+  `wanted_bsch other_bsch unknown_bsch tch_ok tch_bad aach_fec first_wanted_s completed samples wanted` after `shift`,
+  and the report (`--metric tetra`, chosen automatically for such a summary) pairs each per repeat.
+  - `wanted_bsch` counts CRC-gated `[TETRA BSCH]` identity lines equal to the wanted one, `other_bsch` those of another
+    well-formed identity, `unknown_bsch` the `MCC=` lines that do not parse. Nothing is promoted by frequency: a
+    capture another network dominates reads as `wanted_bsch` 0 beside a large `other_bsch`, and the report notes it.
+  - `tch_ok` is accepted speech: `[TETRA TCH/FS]` with `dec_bits=274`, `crc=ok` and `mismatches` at most 28
+    (`TETRA_TCH_MAX_MISMATCH`). Every other TCH/FS line is `tch_bad`. `aach_fec` counts bursts whose AACH FEC decoded
+    (`AACH a/b/c]`, not `AACH ?]`).
+  - `completed` is 1 when the replay printed `IQ replay: end of capture after <N> samples`, matched wherever it sits in
+    a line (it may follow other text under `--iq-loop`), and `samples` is N. A run without it stopped early or lost its
+    reader. The report leaves such a run, and one that exited non-zero, out of every column and names it, while a
+    complete run that decoded nothing keeps its zero row. The exit status is 1 when a build completed no run.
+  - `first_wanted_s` is the time of the first wanted BSCH from the capture's start. It reads the decode clock's
+    `HH:MM:SS` stamp of the line that printed the BSCH, less the capture's start time as the replay anchored its clock
+    (`capture_started_utc`, a WAV's start time, else 2000-01-01T00:00:00Z) in the same local time zone, so the
+    resolution is one second, and the capture is taken to start and end within one day and one UTC offset. It is not
+    measured from the first decoded line.
+  - `--capture` takes a WAV as well as a sidecar JSON. A WAV has no events to shift, so every repeat replays it as
+    recorded, one realization, and the run warns as for a capture with no events. The sidecar path is unchanged. Put the
+    centre frequency and the capture time in a WAV's name (`..._NNNHz.wav`) when it carries no `auxi` chunk; replay reads
+    them from there.
+  - A control against a copy of the baseline reads `+0.00 +/- 0.00` in every column. Compare captures, not repeats:
+    each capture, and each of its frequency-shifted copies, is one realization.
 - **Soft-decision error counts are not a quality score on their own.** mbelib's
   soft Golay reports how many data bits of the codeword it chose differ from the
   hard decisions, so a soft decode that lands on the right codeword where the

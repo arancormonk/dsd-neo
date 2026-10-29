@@ -10,8 +10,8 @@ Since replay is deterministic, replay_ab.sh replays each repeat as its own reali
 sidecar with every event moved by a fraction of a symbol, the same copy for every build in that repeat.
 ReplayAbRealizations holds the copies to that.
 
-ReplayAbReport runs the report on canned summaries and needs only Python; ReplayAbAnalogMetric, ReplayAbDigitalMetric
-and ReplayAbRealizations also run replay_ab.sh. Name a class on the command line to run just that one, as
+ReplayAbReport runs the report on canned summaries and needs only Python; ReplayAbAnalogMetric, ReplayAbDigitalMetric,
+ReplayAbTetraMetric and ReplayAbRealizations also run replay_ab.sh. Name a class on the command line to run just that one, as
 tests/CMakeLists.txt does.
 """
 
@@ -40,6 +40,16 @@ COLUMNS = [
 # What replay_ab.sh writes: COLUMNS and, last, the input samples it shifted the capture's events by in that repeat.
 # The canned summaries below use COLUMNS, the layout of a summary written before the shift was recorded.
 SUMMARY_COLUMNS = COLUMNS + ["shift"]
+# replay_ab.sh --metric tetra appends these after shift.
+TETRA_COLUMNS = ["wanted_bsch", "other_bsch", "unknown_bsch", "tch_ok", "tch_bad", "aach_fec", "first_wanted_s",
+                 "completed", "samples", "wanted"]
+TETRA_SUMMARY_COLUMNS = SUMMARY_COLUMNS + TETRA_COLUMNS
+
+
+def tetra_row(build, rep, wanted=0, other=0, unknown=0, ok=0, bad=0, aach=0, first="NA", completed="1",
+              samples="468000", rc="0", ident="228/8889/0x01"):
+    return [build, "cap.json-fast", str(rep), "NA", "0", "0"] + ["NA"] * 12 + [rc, "0", "0"] + [
+        str(wanted), str(other), str(unknown), str(ok), str(bad), str(aach), first, completed, samples, ident]
 
 
 def analog_row(build, rep, snr, inband="30.00", audible="1500.00", tone="NA", lock="NA", probe="NA",
@@ -335,6 +345,106 @@ class ReplayAbReport(unittest.TestCase):
         result = report(self.summary, "--metric", "analog")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no analog", result.stdout)
+
+
+    # TETRA metric (replay_ab.sh --metric tetra): canned summaries in the layout replay_ab.sh writes.
+    def tetra_summary(self, rows):
+        write_summary(self.summary, rows, TETRA_SUMMARY_COLUMNS)
+
+    def test_tetra_report_compares_the_wanted_identity_per_repeat(self):
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=10, ok=5, first="4"), tetra_row("b", 1, wanted=12, ok=6, first="3"),
+            tetra_row("b", 2, wanted=22, ok=8, first="2"), tetra_row("a", 2, wanted=20, ok=7, first="5"),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("metric: tetra", result.stdout)
+        self.assertIn("wanted 228/8889/0x01", result.stdout)
+        self.assertIn("+2.00 +/- 0.00", metric_line(result.stdout, "wanted_bsch", "b"))
+        self.assertIn("+1.00 +/- 0.00", metric_line(result.stdout, "tch_ok", "b"))
+        self.assertIn("-2.00 +/- 1.96", metric_line(result.stdout, "first_wanted_s", "b"))
+        self.assertIn("2/2", metric_line(result.stdout, "completed", "b"))
+
+    def test_tetra_rejected_speech_is_not_counted_as_decoded(self):
+        # Rejected TCH/FS bursts are their own column: a build that decodes the same bursts worse reads as fewer
+        # tch_ok and more tch_bad, never as extra decodes.
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=3, ok=9, bad=0), tetra_row("b", 1, wanted=3, ok=2, bad=7),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("-7.00", metric_line(result.stdout, "tch_ok", "b"))
+        self.assertIn("+7.00", metric_line(result.stdout, "tch_bad", "b"))
+
+    def test_tetra_zero_decode_completed_run_is_kept_and_is_not_incomplete(self):
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=4, ok=3, first="2"),
+            tetra_row("b", 1, wanted=0, ok=0, first="NA", samples="468000"),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("-4.00", metric_line(result.stdout, "wanted_bsch", "b"))
+        self.assertIn("1/1", metric_line(result.stdout, "completed", "b"))
+        self.assertIn("0/1", metric_line(result.stdout, "first_wanted_s", "b"))
+        self.assertNotIn("warning:", result.stdout)
+
+    def test_tetra_incomplete_run_is_left_out_and_named(self):
+        # No end-of-capture notice: the replay stopped early or its reader failed. Whatever it printed before
+        # stopping is not a measurement of the build, so it is counted as incomplete, not as a zero-decode run.
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=4, ok=3), tetra_row("b", 1, wanted=1, ok=1, completed="0", samples="NA"),
+            tetra_row("b", 2, wanted=4, ok=3), tetra_row("a", 2, wanted=4, ok=3),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("warning: b: 1 of 2 runs incomplete", result.stdout)
+        self.assertIn("1/2", metric_line(result.stdout, "completed", "b"))
+        self.assertIn("+0.00", metric_line(result.stdout, "wanted_bsch", "b"))
+
+    def test_tetra_build_with_no_completed_run_fails_the_report(self):
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=4, ok=3), tetra_row("b", 1, wanted=0, completed="0", samples="NA", rc="124"),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("b completed no run", result.stdout)
+
+    def test_tetra_nonzero_exit_makes_a_run_incomplete_even_with_the_notice(self):
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=4, ok=3), tetra_row("b", 1, wanted=4, ok=3, rc="139"),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("exited non-zero", result.stdout)
+
+    def test_tetra_identity_dominance_is_never_used_to_pick_the_wanted_identity(self):
+        # In build b another network outnumbers the wanted one. The wanted column stays the fixed identity's count,
+        # the other network stays in other_bsch, and the report only notes the dominance.
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=20, other=2), tetra_row("b", 1, wanted=3, other=30, unknown=4),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("-17.00", metric_line(result.stdout, "wanted_bsch", "b"))
+        self.assertIn("+28.00", metric_line(result.stdout, "other_bsch", "b"))
+        self.assertIn("note: b: other identities outnumber the wanted one in 1 of 1 runs", result.stdout)
+        self.assertNotIn("note: a: other", result.stdout)
+        line = metric_line(result.stdout, "unknown_bsch", "b")
+        self.assertIn("4.00", line)
+
+    def test_tetra_mixed_wanted_identities_are_refused(self):
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=4), tetra_row("b", 1, wanted=4, ident="228/8889/0x02"),
+        ])
+        result = report(self.summary, "--baseline", "a")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("one --tetra-wanted identity", result.stdout)
+
+    def test_tetra_auto_metric_needs_the_tetra_columns(self):
+        write_summary(self.summary, [["a", "cap.json-fast", "1", "4", "2", "1"]], COLUMNS[:6])
+        result = report(self.summary, "--metric", "tetra")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no TETRA columns", result.stdout)
 
 
 FAKE_HOST = """#!/usr/bin/env bash
@@ -969,6 +1079,210 @@ class ReplayAbRealizations(unittest.TestCase):
         # --no-realizations needs no shift, so it still replays such a capture.
         result = self.replay_ab("--reps", "2", "--no-realizations")
         self.assertEqual(result.returncode, 0, result.stdout)
+
+
+def tetra_host(log_text):
+    """A fake dsd-neo that prints log_text (a replay log) and exits 0 (or the exit status named by a final
+    "EXIT n" line)."""
+    return ("#!/usr/bin/env bash\ncat <<'LOG_EOF'\n" + log_text + "LOG_EOF\n"
+            "exit 0\n")
+
+
+def bsch(stamp, mcc=228, mnc=8889, cc="0x01"):
+    return f"{stamp} Sync: -TETRA SB  [TETRA SB  rot=0 first12=001000000110][TETRA BSCH] MCC={mcc} MNC={mnc} CC={cc} TN=3 FN=2 MN=23\n"
+
+
+def tch(stamp, crc="ok", mismatches=0, bits=274):
+    return (f"{stamp} Sync: -TETRA NDB  [TETRA NDB  NTS1  pol=1 rot=0  AACH 3/51/51]"
+            f"[TETRA TCH/FS] CC=1  dec_bits={bits}  crc={crc}  mismatches={mismatches}\n")
+
+
+def aach_only(stamp, text="0/9/9"):
+    return f"{stamp} Sync: +TETRA NDB  [TETRA NDB  NTS2  pol=1 rot=0  AACH {text}][TETRA MAC raw] 124 bits: 00\n"
+
+
+END = "IQ replay: end of capture after 468000 samples\n"
+
+
+class ReplayAbTetraMetric(unittest.TestCase):
+    """--metric tetra, driven through the real script with fake hosts whose logs follow what dsd-neo prints under
+    -fT -Z. TZ is pinned to UTC, so the decode clock's stamps (the capture's start time, local) are known: a capture
+    whose sidecar has no usable start reads from 2000-01-01T00:00:00Z, stamp 00:00:00. Needs bash and coreutils
+    timeout, so tests/CMakeLists.txt registers it beside the other script halves."""
+
+    WANTED = "228/8889/0x01"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="replay-ab-tetra-"))
+        self.capture = self.tmp / "capture.iq.json"
+        self.capture.write_text("{}\n", encoding="utf-8")
+        self.env = {**os.environ, "TZ": "UTC"}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def replay_ab(self, logs, *extra, capture=None, wanted=WANTED, reps="1"):
+        builds = []
+        for name, text in logs.items():
+            path = self.tmp / name
+            write_script(path, tetra_host(text))
+            builds.append(str(path))
+        args = [BASH, str(REPLAY_AB), "--capture", str(capture or self.capture), "--mode", "-fT -Z", "--rate", "fast",
+                "--reps", reps, "--metric", "tetra", "--out", str(self.tmp / "out")]
+        if wanted:
+            args += ["--tetra-wanted", wanted]
+        return run(args + list(extra) + builds, cwd=str(ROOT), env=self.env)
+
+    def rows(self):
+        lines = (self.tmp / "out" / "summary.tsv").read_text(encoding="utf-8").splitlines()
+        header = lines[0].split("\t")
+        self.assertEqual(header, TETRA_SUMMARY_COLUMNS)
+        return {(row["variant"], row["rep"]): row for row in (dict(zip(header, line.split("\t"))) for line in lines[1:])}
+
+    def test_accepted_log_is_counted_by_class(self):
+        log = (bsch("00:00:03") + bsch("00:00:04") + bsch("00:00:04", mcc=250, mnc=13, cc="0x2c")
+               + tch("00:00:05") + tch("00:00:05", mismatches=28) + aach_only("00:00:06") + aach_only("00:00:06", "?")
+               + "[TETRA BSCH] scrambling seed=0x3922b907\n" + END)
+        result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        row = self.rows()[("host.a", "1")]
+        self.assertEqual([row[k] for k in TETRA_COLUMNS],
+                         ["2", "1", "0", "2", "0", "3", "3", "1", "468000", self.WANTED])
+
+    def test_rejected_speech_is_not_accepted(self):
+        # Accepted needs crc=ok and mismatches <= 28 (TETRA_TCH_MAX_MISMATCH) over the 274 decoded bits; a bad CRC, a
+        # 29th mismatch, another bit count and a line that does not parse are all rejected.
+        log = (tch("00:00:01", crc="bad") + tch("00:00:01", mismatches=29) + tch("00:00:01", bits=137)
+               + "00:00:01 Sync: -TETRA NDB  [TETRA TCH/FS] garbled\n" + tch("00:00:02") + END)
+        result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        row = self.rows()[("host.a", "1")]
+        self.assertEqual((row["tch_ok"], row["tch_bad"]), ("1", "4"))
+
+    def test_mismatch_limit_matches_the_decoder(self):
+        source = (ROOT / "src" / "protocol" / "tetra" / "tetra.c").read_text(encoding="utf-8")
+        self.assertRegex(source, r"#define TETRA_TCH_MAX_MISMATCH\s+28\b")
+
+    def test_empty_completed_log_keeps_its_zero_row(self):
+        result = self.replay_ab({"host.a": END, "host.b": END})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        row = self.rows()[("host.a", "1")]
+        self.assertEqual([row[k] for k in TETRA_COLUMNS],
+                         ["0", "0", "0", "0", "0", "0", "NA", "1", "468000", self.WANTED])
+
+    def test_run_without_the_end_notice_is_incomplete_not_empty(self):
+        log = bsch("00:00:03") + tch("00:00:04")
+        result = self.replay_ab({"host.a": END, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        row = self.rows()[("host.b", "1")]
+        self.assertEqual((row["wanted_bsch"], row["tch_ok"], row["completed"], row["samples"]), ("1", "1", "0", "NA"))
+        self.assertIn("incomplete", result.stdout)
+
+    def test_end_notice_glued_to_another_line_still_completes(self):
+        log = bsch("00:00:03") + "[TETRA SYSINFO] CC=1 carrier=1068" + END + "soft stopping...\n"
+        result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        row = self.rows()[("host.a", "1")]
+        self.assertEqual((row["completed"], row["samples"], row["aach_fec"]), ("1", "468000", "0"))
+
+    def test_identity_dominance_is_not_promoted(self):
+        # Another network outnumbers the wanted one in b. wanted stays the fixed identity's count; the other network
+        # is other_bsch, and a BSCH line whose identity does not parse is unknown_bsch, never merged into either.
+        a = bsch("00:00:02") * 3 + bsch("00:00:03", mcc=250, mnc=13, cc="0x2c") + END
+        b = (bsch("00:00:02") + bsch("00:00:03", mcc=250, mnc=13, cc="0x2c") * 4
+             + "00:00:04 Sync: -TETRA SB  [TETRA BSCH] MCC=999 MNC=xx CC=0x01 TN=1\n" + END)
+        result = self.replay_ab({"host.a": a, "host.b": b})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        rows = self.rows()
+        self.assertEqual([rows[("host.a", "1")][k] for k in ("wanted_bsch", "other_bsch", "unknown_bsch")],
+                         ["3", "1", "0"])
+        self.assertEqual([rows[("host.b", "1")][k] for k in ("wanted_bsch", "other_bsch", "unknown_bsch")],
+                         ["1", "4", "1"])
+
+    def test_wanted_cc_may_be_given_in_decimal(self):
+        log = bsch("00:00:02", cc="0x2c") + END
+        result = self.replay_ab({"host.a": log, "host.b": log}, wanted="228/8889/44")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.rows()[("host.a", "1")]["wanted"], "228/8889/0x2c")
+        self.assertEqual(self.rows()[("host.a", "1")]["wanted_bsch"], "1")
+
+    def test_first_wanted_is_measured_from_the_capture_start(self):
+        # The first decoded line is stamped :03 and an unwanted identity precedes the wanted one; the wanted BSCH is
+        # first seen in the second :07 stamp's burst. 1-second resolution: the stamp is the decode clock's HH:MM:SS.
+        log = (bsch("00:00:03", mcc=250, mnc=13, cc="0x2c") + aach_only("00:00:05") + bsch("00:00:07")
+               + bsch("00:00:09") + END)
+        result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "7")
+
+    def test_first_wanted_uses_the_sidecars_start_time(self):
+        # The decode clock starts at capture_started_utc, so a stamp of 10:20:37 on a capture that started at
+        # 10:20:30Z is 7 s in.
+        self.capture.write_text(json.dumps({"capture_started_utc": "2026-03-04T10:20:30Z"}) + "\n", encoding="utf-8")
+        log = bsch("10:20:37") + END
+        result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "7")
+
+    def test_first_wanted_wraps_midnight(self):
+        self.capture.write_text(json.dumps({"capture_started_utc": "2026-03-04T23:59:58Z"}) + "\n", encoding="utf-8")
+        log = bsch("00:00:03") + END
+        result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "5")
+
+    def test_wav_capture_is_one_realization_and_the_cu8_sidecar_is_unchanged(self):
+        wav = self.tmp / "tetra_426700000Hz.wav"
+        wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        log = bsch("00:00:02") + END
+        result = self.replay_ab({"host.a": log, "host.b": log}, capture=wav, reps="3")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("WAV capture", result.stdout)
+        self.assertFalse((self.tmp / "out" / "realizations").exists())
+        rows = self.rows()
+        self.assertEqual({row["shift"] for row in rows.values()}, {"0"})
+        self.assertEqual(len(rows), 6)
+
+    def test_wav_capture_without_a_start_time_reads_from_the_floor(self):
+        wav = self.tmp / "tetra.wav"
+        wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        log = bsch("00:00:04") + END
+        result = self.replay_ab({"host.a": log, "host.b": log}, capture=wav)
+        self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "4")
+
+    def test_tetra_metric_requires_the_wanted_identity(self):
+        result = self.replay_ab({"host.a": END, "host.b": END}, wanted=None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--metric tetra needs --tetra-wanted", result.stdout)
+
+    def test_wanted_identity_must_be_well_formed_and_tetra_only(self):
+        for bad in ("228/8889", "228/8889/64", "1024/1/1", "a/b/c", "228/8889/0x1g"):
+            result = self.replay_ab({"host.a": END, "host.b": END}, wanted=bad)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn("--tetra-wanted", result.stdout)
+        result = run([BASH, str(REPLAY_AB), "--capture", str(self.capture), "--mode", "-fi", "--tetra-wanted",
+                      self.WANTED, str(self.tmp / "x"), str(self.tmp / "y")], cwd=str(ROOT), env=self.env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--tetra-wanted only applies to --metric tetra", result.stdout)
+
+    def test_report_reads_the_script_summary(self):
+        a = bsch("00:00:03") + tch("00:00:04") + END
+        b = bsch("00:00:02") * 2 + tch("00:00:04") + tch("00:00:04") + END
+        result = self.replay_ab({"host.a": a, "host.b": b}, reps="2")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        out = report(self.tmp / "out" / "summary.tsv", "--baseline", "host.a")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("metric: tetra", out.stdout)
+        self.assertIn("+1.00 +/- 0.00", metric_line(out.stdout, "wanted_bsch", "host.b"))
+
+    def test_non_tetra_summary_header_is_unchanged(self):
+        host = self.tmp / "host.main"
+        write_script(host, FAKE_DIGITAL_HOST)
+        other = self.tmp / "host.other"
+        write_script(other, FAKE_DIGITAL_HOST)
+        result = run([BASH, str(REPLAY_AB), "--capture", str(self.capture), "--mode", "-fp", "--rate", "fast",
+                      "--reps", "1", "--out", str(self.tmp / "out2"), str(host), str(other)], cwd=str(ROOT))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        header = (self.tmp / "out2" / "summary.tsv").read_text(encoding="utf-8").splitlines()[0].split("\t")
+        self.assertEqual(header, SUMMARY_COLUMNS)
 
 
 if __name__ == "__main__":
