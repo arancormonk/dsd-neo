@@ -50,7 +50,7 @@ analog_call_get(const dsd_state* state) {
 /* Close and publish the call's recording against the last accepted block's row, as the call's end does, but leave the
    call running. It is published in the folder it was opened in, which a config may have changed since (issue #708). */
 static void
-analog_call_close_recording(dsd_opts* opts, dsd_state* state, analog_call* call) {
+analog_call_close_recording(const dsd_opts* opts, dsd_state* state, analog_call* call) {
     if (call->wav) {
         call->wav = close_and_publish_call_wav(call->wav, opts, state, 0, call->path,
                                                call->dir[0] ? call->dir : opts->wav_out_dir, call->opened);
