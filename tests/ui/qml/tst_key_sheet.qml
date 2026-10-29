@@ -42,8 +42,10 @@ Item {
                     sheet.systemName = "";
                 }
                 sheet.protocol = "mixed";
+                sheet.targetName = "";
             }
             profileSavedSpy.clear();
+            testContext.setMetric("scanTargetId", "");
             testContext.setMetric("optionsKnown", false);
             testContext.setMetric("configuredForce", 0);
             testContext.setMetric("directKeys", false);
@@ -612,6 +614,85 @@ Item {
             verify(saved.keyConfigured);
             saved = saveDraftAsProfile("mixed", "scrambler", "1234");
             compare(saved.protocol, "mixed", "a type mixed takes keeps mixed");
+        }
+        // Issue #782: the scope choice is a stable pair; the target's name is a
+        // line of its own, so a scan rotating its targets never rebuilds the
+        // choice (which would reset it to session defaults under the user).
+        function openOnTarget(name) {
+            sheet.visible = false;
+            testContext.setMetric("scanTargetId", "target-2");
+            sheet.targetName = name;
+            sheet.open();
+            var scope = findChild(sheet, "keySheetScope");
+            verify(scope !== null, "the scope choice is missing");
+            var line = findChild(sheet, "keySheetTargetName");
+            verify(line !== null, "the target name line is missing");
+            return {scope: scope, line: line};
+        }
+        function test_scope_opens_on_the_target() {
+            var parts = openOnTarget("North site");
+            verify(parts.scope.visible);
+            compare(parts.scope.currentIndex, 1);
+            compare(parts.scope.displayText, "Active scan target");
+            compare(parts.scope.model, ["Session defaults", "Active scan target"]);
+            verify(parts.line.visible, "the name shows under the target scope");
+            compare(parts.line.text, "Active target: North site");
+            // Session defaults name no target.
+            parts.scope.currentIndex = 0;
+            parts.scope.activated(0);
+            compare(sheet.profileScope, 0);
+            verify(!parts.line.visible, "no target name under session defaults");
+            parts.scope.currentIndex = 1;
+            parts.scope.activated(1);
+            verify(parts.line.visible);
+            // Without a target there is no choice and no name.
+            sheet.visible = false;
+            testContext.setMetric("scanTargetId", "");
+            sheet.open();
+            verify(!parts.scope.visible);
+            verify(!parts.line.visible);
+        }
+        function test_scope_holds_while_the_target_name_changes() {
+            var uid = decryptionProfiles.saveProfile({label: "Scan keys", protocol: "dmr", mode: "direct", directType: "basic", directValue: "51"}).uid;
+            verify(uid.length > 0);
+            try {
+                var parts = openOnTarget("North site");
+                sheet.selectedProfileUid = uid;
+                for (var name of ["East site", "South site", "West site"]) {
+                    sheet.targetName = name;
+                    compare(parts.scope.currentIndex, 1, "the scope stays on the target as its name becomes " + name);
+                    compare(parts.scope.displayText, "Active scan target");
+                    compare(parts.line.text, "Active target: " + name);
+                }
+                compare(sheet.profileScope, 1);
+                var apply = visualText(sheet, "Apply profile to this target");
+                verify(apply !== null, "the apply button names the target scope");
+                apply.activate();
+                compare(commands.lastProfileScope(), 1, "apply sends the target scope");
+                uiController.finishDecryption(commands.lastDecryptionRequest(), -2);
+            } finally {
+                sheet.visible = false;
+                verify(decryptionProfiles.removeProfile(uid).ok);
+            }
+        }
+        function test_scope_reopens_on_the_target_with_its_new_name() {
+            var parts = openOnTarget("North site");
+            sheet.visible = false;
+            sheet.targetName = "East site";
+            sheet.open();
+            verify(sheet.visible);
+            compare(parts.scope.currentIndex, 1);
+            verify(parts.line.visible);
+            compare(parts.line.text, "Active target: East site");
+        }
+        function test_scope_keeps_focus_while_the_target_name_changes() {
+            var parts = openOnTarget("North site");
+            waitForRendering(sheet);
+            parts.scope.forceActiveFocus(Qt.TabFocusReason);
+            verify(parts.scope.activeFocus);
+            sheet.targetName = "East site";
+            verify(parts.scope.activeFocus, "a name change keeps focus on the scope choice");
+            compare(parts.scope.currentIndex, 1);
         }
         function test_unchanged_apply_preserves_force_and_keyloader() {
             sheet.apply();

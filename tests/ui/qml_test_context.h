@@ -566,9 +566,16 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE QString
-    applyDecryptionProfile(const QString&, int, const QVariantMap&) {
+    applyDecryptionProfile(const QString&, int scope, const QVariantMap&) {
+        m_last_profile_scope = scope;
         m_last_key_request = QString::number(m_next_key_request++);
         return m_last_key_request;
+    }
+
+    /** @brief The scope the last applyDecryptionProfile() sent (0 session defaults, 1 scan target); -1 for none. */
+    Q_INVOKABLE int
+    lastProfileScope() const {
+        return m_last_profile_scope;
     }
 
     Q_INVOKABLE QString
@@ -1037,6 +1044,7 @@ class CommandRecorder : public QObject {
         m_hold_calls = 0;
         m_last_hold_tg = 0;
         m_key_apply_calls = 0;
+        m_last_profile_scope = -1;
         m_key_payload_valid = false;
         m_key_accepted = true;
         m_last_force_mode = -1;
@@ -1333,6 +1341,7 @@ class CommandRecorder : public QObject {
     int m_hold_calls = 0;
     double m_last_hold_tg = 0;
     int m_key_apply_calls = 0;
+    int m_last_profile_scope = -1;
     bool m_key_payload_valid = false;
     bool m_key_accepted = true;
     int m_last_force_mode = -1;

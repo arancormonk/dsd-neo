@@ -19,6 +19,10 @@ Item {
         id: loader
         source: uiDir + "/Main.qml"
     }
+    SignalSpy {
+        id: modelSpy
+        signalName: "modelChanged"
+    }
     TestCase {
         name: "A11yScanChurn"
         when: windowShown
@@ -28,14 +32,8 @@ Item {
         // package that removes it. Only that part is exempt: the rest of its sheet stays under the strict assertion.
         // The part itself is held to an expected failure, which turns into a failure (XPASS) once the package lands,
         // so the package has to take its entry off this list and the strict assertion covers the part from then on.
-        readonly property var pendingFix: [
-            // TODO(WP-Q2): the KeySheet scope combo carries the target's name in its model, so each hop rebuilds it.
-            {sheet: "keySheet", part: "the scope combo", wp: "WP-Q2", find: function (sheet) {
-                return findItem(sheet, function (item) {
-                    return item.popup !== undefined && item.model && item.model[0] === "Session defaults";
-                });
-            }}
-        ]
+        // Each entry: {sheet: objectName, part: what churns, wp: the package, find: function (sheet) -> the part}.
+        readonly property var pendingFix: []
         property var restore: ({})
 
         // One target's readings per protocol, as a scan that alternates DMR, NXDN and P25 sites publishes them. The
@@ -209,6 +207,32 @@ Item {
                 compare(showHide(pending.item), 0, pending.entry.part + " in " + pending.entry.sheet + ": "
                         + churn(counts));
             }
+        }
+
+        // The closed key sheet follows the target's name without rebuilding its scope choice: the name is a line of
+        // its own, so the choice's model never changes and its popup never reparents a delegate under the hidden
+        // sheet.
+        function test_b2_target_names_leave_the_closed_key_sheet_quiet() {
+            closedSheets();
+            var keys = findChild(app, "keySheet");
+            var scope = findChild(keys, "keySheetScope");
+            verify(scope !== null, "the key sheet's scope choice is missing");
+            modelSpy.target = scope;
+            modelSpy.clear();
+            testContext.startAccessibilityCount();
+            var names = [];
+            for (var i = 0; i < 10; ++i) {
+                var before = keys.targetName;
+                testContext.publishTarget({scanTargetOrdinal: (i % 2) + 2, scanTargetId: "target-" + ((i % 2) + 2)});
+                verify(keys.targetName !== before, "change " + (i + 1) + " renamed the target");
+                names.push(keys.targetName);
+            }
+            var counts = testContext.accessibilityCount();
+            compare(modelSpy.count, 0, "the scope choice's model changed with the name");
+            compare(showHide(keys), 0, churn(counts));
+            compare(testContext.accessibilityCountWithin(keys, "NameChanged"), 0, churn(counts));
+            compare(findChild(keys, "keySheetTargetName").text, "Active target: " + names[names.length - 1]);
+            modelSpy.target = null;
         }
 
         // The control for case B: hops that pass through the defaults first, as every hop did before the fix, flood

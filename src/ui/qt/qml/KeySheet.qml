@@ -273,14 +273,32 @@ ModalSheet {
             sheet.selectedProfileUid = uid;
         }
     }
+    // A fixed pair (issue #782): a model carrying the target's name was rebuilt
+    // on every scan hop, which reset the choice to session defaults and, while
+    // the sheet was closed, sent accessibility events for each rebuilt option.
     PlexComboBox {
+        id: scopeChoice
+        objectName: "keySheetScope"
         width: parent.width
         visible: (metrics.scanTargetId || "").length > 0
         enabled: !applyFlow.pending
         Accessible.name: qsTr("Profile application scope")
-        model: [qsTr("Session defaults"), sheet.targetName.length ? qsTr("Active target: %1").arg(sheet.targetName) : qsTr("Active scan target")]
+        model: [qsTr("Session defaults"), qsTr("Active scan target")]
         currentIndex: sheet.profileScope
         onActivated: sheet.profileScope = currentIndex
+    }
+    // Which target the target scope means now. One line, elided, so the sheet
+    // keeps its layout as a scan rotates the name.
+    Text {
+        objectName: "keySheetTargetName"
+        width: parent.width
+        visible: scopeChoice.visible && sheet.profileScope === 1 && sheet.targetName.length > 0
+        text: qsTr("Active target: %1").arg(sheet.targetName)
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
     }
     GradientButton {
         width: parent.width
