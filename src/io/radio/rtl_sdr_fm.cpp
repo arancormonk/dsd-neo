@@ -4953,6 +4953,26 @@ demod_drop_signal_search_block(struct demod_state* d, DemodInputSpan* span, int 
     return 1;
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_signal_search_drop(int bypass, int* out_dropped, int* out_lookahead_live) {
+    static struct demod_state test_demod;
+    DSD_MEMSET(&test_demod, 0, sizeof(test_demod));
+    test_demod.ted_state.ul_lookahead_live = 1;
+    DemodInputSpan span = {};
+    const int was_bypassed = rtl_signal_search_bypassed();
+    rtl_signal_search_bypass(bypass);
+    const int dropped = demod_drop_signal_search_block(&test_demod, &span, 0);
+    rtl_signal_search_bypass(was_bypassed);
+    if (out_dropped) {
+        *out_dropped = dropped;
+    }
+    if (out_lookahead_live) {
+        *out_lookahead_live = test_demod.ted_state.ul_lookahead_live;
+    }
+}
+#endif
+
 /* What a demodulated block publishes for the other threads: channel power, squelch status and the demod snapshots. */
 static void
 demod_publish_block_state(const struct demod_state* d) {

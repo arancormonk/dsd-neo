@@ -1630,6 +1630,23 @@ live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_op
     return rtl_stream_test_live_read(&req, got, waited_ms);
 }
 
+/* A block the signal search drops (it takes over the tuner) also forgets what a TETRA uplink look-ahead held: pushed
+ * out later, those symbols would reach the decoder after the gap, spliced to whatever follows it. A block the search
+ * does not drop leaves the look-ahead as it was. */
+static int
+test_signal_search_drop_forgets_uplink_lookahead(void) {
+    int failed = 0;
+    int dropped = -1;
+    int live = -1;
+    rtl_stream_test_signal_search_drop(1, &dropped, &live);
+    failed |= expect_int_eq("signal search drop: block dropped", dropped, 1);
+    failed |= expect_int_eq("signal search drop: uplink look-ahead forgotten", live, 0);
+    rtl_stream_test_signal_search_drop(0, &dropped, &live);
+    failed |= expect_int_eq("no signal search: block kept", dropped, 0);
+    failed |= expect_int_eq("no signal search: uplink look-ahead kept", live, 1);
+    return failed;
+}
+
 /* A live read on an input with no stream at all (a USB stall recovery runs: the read sees the device recovering) gives
  * way to a queued command with DSD_RTL_READ_YIELD, at once or as soon as one is queued while it waits, so commands
  * apply during the outage (B3). It never yields without a command: then it waits for the stream as it always has. A
@@ -3393,6 +3410,7 @@ main(void) {
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();
     failed |= test_live_read_without_stream();
+    failed |= test_signal_search_drop_forgets_uplink_lookahead();
 
     return failed ? 1 : 0;
 }

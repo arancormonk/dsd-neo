@@ -23,6 +23,10 @@ void rtl_stream_test_publish_demod_snapshot(void);
 /* Seed the profile mirrors as dsd_rtl_stream_open() does once the demod state is configured, before any thread
  * starts. */
 void rtl_stream_test_seed_open_profile(void);
+/* The signal search's block drop (demod_drop_signal_search_block()) on a demod whose TETRA uplink look-ahead is live,
+   with the search's bypass set to @p bypass for the call: whether the block was dropped, and whether the look-ahead
+   is still live after it. */
+void rtl_stream_test_signal_search_drop(int bypass, int* out_dropped, int* out_lookahead_live);
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
