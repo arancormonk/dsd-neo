@@ -699,6 +699,10 @@ int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_
 int rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* out_passes, int* out_rate_out_hz);
 /* The stream start's DSP rate warnings at @p dsp_rate_hz; returns 1 when it warned that TETRA cannot run there. */
 int rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz);
+/* The derived-SPS lines the rate-chain log writes for an output rate: the info line and the atypical-rate warning,
+ * each empty when there is none. */
+void rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
+                                       size_t warn_size);
 /* Forget the rate the last TETRA rate warning named, so the next one warns again. */
 void rtl_stream_test_reset_tetra_rate_warning(void);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,

@@ -8570,8 +8570,49 @@ stream_open_update_output_rates(void) {
     }
 }
 
+/* The derived-SPS lines of the rate-chain log for an output rate of @p out_hz: the info line in @p info and the
+   atypical-rate warning in @p warn, each empty when there is none. A TETRA stream reports TETRA's samples per symbol
+   (18 ksym/s) and no 48 kHz advice: the CQPSK path times symbols on its own and a resampler to 48 kHz would not help
+   it (dsd_tetra_dsp_rate_advice() says what a rate TETRA cannot run at needs). Other streams are judged against the
+   ~48 kHz rate the digital decoders assume. */
 static void
-stream_open_log_rate_chain_summary(void) {
+stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
+                              size_t warn_size) {
+    info[0] = '\0';
+    warn[0] = '\0';
+    if (out_hz == 0U) {
+        return;
+    }
+    const char* approx = dsd_unicode_or_ascii("≈", "~");
+    if (frame_tetra == 1) {
+        const int sps_tetra = (int)((out_hz + DSD_TETRA_SYMBOL_RATE_HZ / 2) / DSD_TETRA_SYMBOL_RATE_HZ);
+        DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): TETRA%s%d.\n", out_hz, approx, sps_tetra);
+        return;
+    }
+    int sps_p25p1 = (int)((out_hz + 2400) / 4800);
+    int sps_p25p2 = (int)((out_hz + 3000) / 6000);
+    int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
+    DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx,
+                 sps_p25p1, approx, sps_p25p2, approx, sps_nxdn48);
+    if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
+        || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
+        DSD_SNPRINTF(warn, warn_size,
+                     "WARNING: Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider "
+                     "enabling resampler to 48000 Hz.\n",
+                     out_hz);
+    }
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
+                                  size_t warn_size) {
+    stream_open_compose_sps_lines(out_hz, frame_tetra, info, info_size, warn, warn_size);
+}
+#endif
+
+static void
+stream_open_log_rate_chain_summary(int frame_tetra) {
     unsigned int capture_hz = load_dongle_rate();
     int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
     int post = (demod.post_downsample > 0) ? demod.post_downsample : 1;
@@ -8600,19 +8641,14 @@ stream_open_log_rate_chain_summary(void) {
                  "Hz.\n",
                  capture_text, base_decim, post, demod_hz, out_hz);
     }
-    if (out_hz > 0) {
-        int sps_p25p1 = (int)((out_hz + 2400) / 4800);
-        int sps_p25p2 = (int)((out_hz + 3000) / 6000);
-        int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
-        const char* approx = dsd_unicode_or_ascii("≈", "~");
-        LOG_INFO("Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx, sps_p25p1, approx,
-                 sps_p25p2, approx, sps_nxdn48);
-        if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
-            || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
-            LOG_WARN("WARNING: Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider enabling "
-                     "resampler to 48000 Hz.\n",
-                     out_hz);
-        }
+    char sps_text[160];
+    char sps_warn[192];
+    stream_open_compose_sps_lines(out_hz, frame_tetra, sps_text, sizeof sps_text, sps_warn, sizeof sps_warn);
+    if (sps_text[0] != '\0') {
+        LOG_INFO("%s", sps_text);
+    }
+    if (sps_warn[0] != '\0') {
+        LOG_WARN("%s", sps_warn);
     }
 }
 
@@ -8811,7 +8847,7 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
     if (stream_open_finalize_demod_chain(opts) != 0) {
         return -1;
     }
-    stream_open_log_rate_chain_summary();
+    stream_open_log_rate_chain_summary(opts->frame_tetra == 1 ? 1 : 0);
     return 0;
 }
 

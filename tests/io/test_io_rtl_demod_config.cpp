@@ -2037,6 +2037,34 @@ expect_tetra_rate_warning(void) {
     return rc;
 }
 
+/* The rate-chain log's derived-SPS lines: a TETRA stream at 72 kHz reports TETRA's 4 samples per symbol and no advice
+   to enable a 48 kHz resampler (it would not help the CQPSK path); a P25 stream at 72 kHz still gets that warning. */
+static int
+expect_rate_chain_true(const char* label, bool cond) {
+    return expect_int_eq(label, cond ? 1 : 0, 1);
+}
+
+static int
+expect_rate_chain_sps_lines(void) {
+    int rc = 0;
+    char info[256];
+    char warn[256];
+    rtl_stream_test_compose_sps_lines(72000U, 1, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("TETRA at 72 kHz reports its sps",
+                                 strstr(info, "Derived SPS (@72000 Hz): TETRA") != NULL && strstr(info, "4.") != NULL
+                                     && strstr(info, "P25") == NULL);
+    rc |= expect_rate_chain_true("TETRA at 72 kHz gets no resampler advice",
+                                 warn[0] == '\0' && strstr(info, "Consider enabling resampler") == NULL);
+    rtl_stream_test_compose_sps_lines(72000U, 0, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("P25 at 72 kHz keeps the derived-SPS line",
+                                 strstr(info, "Derived SPS (@72000 Hz): P25P1") != NULL);
+    rc |= expect_rate_chain_true("P25 at 72 kHz keeps the resampler warning",
+                                 strstr(warn, "Consider enabling resampler") != NULL);
+    rtl_stream_test_compose_sps_lines(0U, 1, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("no output rate, no lines", info[0] == '\0' && warn[0] == '\0');
+    return rc;
+}
+
 /* A digital start switched live onto AM (rtl_demod_enter_analog_family(), the decoder picker's AM on a DMR session)
  * notes the bypass of a configured I/Q DC blocker and I/Q balance, as an AM start and a live FM -> AM switch do: the
  * family is off until the analog channel goes in, so the notes have to wait for it. Each note is logged once per
@@ -2702,6 +2730,7 @@ main(void) {
     rc |= expect_passes_for_device_rate();
     rc |= expect_capture_plan_for_every_dsp_bandwidth();
     rc |= expect_tetra_rate_warning();
+    rc |= expect_rate_chain_sps_lines();
     rc |= expect_digital_resample_policy();
     rc |= expect_resampler_publishes_the_rate_it_delivers();
     rc |= expect_private_policy_matrices();
