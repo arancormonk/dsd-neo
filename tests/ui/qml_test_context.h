@@ -2336,12 +2336,20 @@ class AccessibilityCounter {
         forward(event);
     }
 
-    /* Qt's own path: with no handler installed, updateAccessibility() gives the event to the platform. */
+    /* Qt's own path: with no handler installed, updateAccessibility() gives the event to the platform. Reaching the
+     * platform that way replays the whole call, including the part that ran before this handler: for
+     * TableModelChanged that part has already applied the change to the table interface, and a replay would apply it
+     * a second time. That event is not replayed, so while counting it does not reach the platform; the offscreen
+     * platform these tests run on has no bridge to tell. While a replay runs the counter is not installed, so an
+     * event raised synchronously from inside it goes to the platform uncounted; with no bridge, none is. */
     static void
     forward(QAccessibleEvent* event) {
         Record& r = record();
         if (r.previous != nullptr) {
             r.previous(event);
+            return;
+        }
+        if (event->type() == QAccessible::TableModelChanged) {
             return;
         }
         QAccessible::installUpdateHandler(nullptr);

@@ -24,11 +24,18 @@ Item {
         when: windowShown
         readonly property var app: loader.item
         readonly property int hops: 30
-        // Closed sheets that still churn on a hop, for a reason the root fix does not reach, and the work package
-        // that removes it. Each is held to an expected failure, which turns into a failure (XPASS) once that package
-        // lands, so the package has to take its sheet off this list and the strict assertion covers it from then on.
-        // TODO(WP-Q2): the KeySheet scope combo carries the target's name in its model, so each hop rebuilds it.
-        readonly property var pendingFix: ({keySheet: "WP-Q2"})
+        // Parts of closed sheets that still churn on a hop, for a reason the root fix does not reach, and the work
+        // package that removes it. Only that part is exempt: the rest of its sheet stays under the strict assertion.
+        // The part itself is held to an expected failure, which turns into a failure (XPASS) once the package lands,
+        // so the package has to take its entry off this list and the strict assertion covers the part from then on.
+        readonly property var pendingFix: [
+            // TODO(WP-Q2): the KeySheet scope combo carries the target's name in its model, so each hop rebuilds it.
+            {sheet: "keySheet", part: "the scope combo", wp: "WP-Q2", find: function (sheet) {
+                return findItem(sheet, function (item) {
+                    return item.popup !== undefined && item.model && item.model[0] === "Session defaults";
+                });
+            }}
+        ]
         property var restore: ({})
 
         // One target's readings per protocol, as a scan that alternates DMR, NXDN and P25 sites publishes them. The
@@ -66,6 +73,24 @@ Item {
 
         function isSheet(item) {
             return item.closesOnOutsideTap !== undefined && typeof item.requestDismiss === "function";
+        }
+        function findItem(item, matches) {
+            var children = item.children || [];
+            for (var i = 0; i < children.length; ++i) {
+                if (matches(children[i]))
+                    return children[i];
+                var found = findItem(children[i], matches);
+                if (found !== null)
+                    return found;
+            }
+            return null;
+        }
+        function isWithin(item, ancestor) {
+            for (var at = item; at; at = at.parent) {
+                if (at === ancestor)
+                    return true;
+            }
+            return false;
         }
         function collectSheets(item, out) {
             var children = item.children || [];
@@ -106,6 +131,9 @@ Item {
         }
 
         function initTestCase() {
+            // This file asserts that events are absent, so it must not run with nothing being raised; the harness
+            // file's controls guard the directory run, this guards a run of this file alone.
+            verify(testContext.accessibilityActive(), "run with DSD_QML_TEST_ACCESSIBILITY=1, or nothing is counted");
             var first = reading(0);
             var defaults = cleared();
             for (var key in first) {
@@ -156,25 +184,37 @@ Item {
             var counts = testContext.accessibilityCount();
             // The hops reached the screens: the key sheet follows the target's name.
             compare(findChild(app, "keySheet").targetName, "Target " + ((hops % 3) + 1));
+            var parts = pendingFix.map(function (entry) {
+                var sheet = findChild(app, entry.sheet);
+                verify(sheet !== null && !sheet.visible, entry.sheet + " must be closed");
+                var part = entry.find(sheet);
+                verify(part !== null, entry.part + " must be in " + entry.sheet);
+                return {entry: entry, item: part};
+            });
             var noisy = [];
             for (var sheet of closed) {
-                var name = sheetName(sheet);
                 var events = showHide(sheet);
-                if (pendingFix[name] === undefined && events !== 0)
-                    noisy.push(name + ": " + events);
+                for (var held of parts) {
+                    if (isWithin(held.item, sheet))
+                        events -= showHide(held.item);
+                }
+                if (events !== 0)
+                    noisy.push(sheetName(sheet) + ": " + events);
             }
             compare(noisy.length, 0, "closed sheets that showed or hid something: " + JSON.stringify(noisy) + " "
                     + churn(counts));
-            for (var pending in pendingFix) {
-                var held = findChild(app, pending);
-                verify(held !== null && !held.visible, pending);
-                expectFailContinue("", "TODO(" + pendingFix[pending] + "): " + pending + " still churns on a hop");
-                compare(showHide(held), 0, pending + " is closed: " + churn(counts));
+            for (var pending of parts) {
+                expectFailContinue("", "TODO(" + pending.entry.wp + "): " + pending.entry.part + " in "
+                                   + pending.entry.sheet + " still churns on a hop");
+                compare(showHide(pending.item), 0, pending.entry.part + " in " + pending.entry.sheet + ": "
+                        + churn(counts));
             }
         }
 
         // The control for case B: hops that pass through the defaults first, as every hop did before the fix, flood
-        // the closed sheets the root fix quietens. So case B fails if the defaults come back.
+        // the closed sheets the root fix quietens. So case B cannot pass because the hops stopped reaching these
+        // sheets. It guards the screens against a publication that passes through the defaults; whether production
+        // publishes that way is UI_QT_CONTROLLER's test_target_change_publishes_once to catch, not this file's.
         function test_c_hops_through_defaults_flood_closed_sheets() {
             closedSheets();
             testContext.startAccessibilityCount();
