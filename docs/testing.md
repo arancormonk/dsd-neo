@@ -478,10 +478,10 @@ checks (see [WAV I/Q replay and replay resampling](#wav-iq-replay-and-replay-res
 `DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC` replays a second unmodified Apache-2.0
 CS16 capture recorded during control-channel reacquisition at about 10 dB
 in-channel SNR. It requires at least 15 clean MCC 250/MNC 13/colour `0x2C`
-BSCH results from the two-second recording; the current run recovered 26 from
-30 synchronized bursts. A deterministic complex conjugate of this capture
+BSCH results from the two-second recording; the current run recovered 36 from
+36 synchronized bursts. A deterministic complex conjugate of this capture
 retains its noise, fading and ISI while reversing all differential phase steps;
-`DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC_INVERTED` also recovers 26 identities and
+`DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC_INVERTED` also recovers 36 identities and
 requires at least 15. `tools/tetra/prepare_real_air_fixture.py` verifies the raw
 SCBS, resampled, marginal, and inverted hashes; the adjacent provenance file
 records the source commits, transforms, and parameters.
@@ -508,15 +508,16 @@ timeslot sends SCH/F blocks of nearly all zero bits under an assigned control AA
 CRC, all zero bits pass the speech CRC too. `tetra_call_gap_noisy_72k` (`DERIVED_TETRA_GAP`, `--derived-only`) is that
 stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 40 LSB (seed 24013): before the AACH
 was read, 3 of its blocks played as speech at sigma 24. The sigma and seed are set for the TETRA receive chain and its
-quadrant slicer, whose matched filter reads these blocks through more noise: at 24 LSB it decoded 53 of the stretch's
-SCH/F blocks, so none failed the CRC and the gate had nothing to read, and past about 42 LSB the AACH itself stops
-reading, so the gate reads less again. `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at least 8 bursts read as
-assigned control that decode nothing. On these bytes the chain reads 16 and decodes 8 SCH/F blocks; the receiver
+quadrant slicer, whose matched filter reads these blocks through more noise: at 24 LSB it decodes 52 of the stretch's
+SCH/F blocks, so none fails the CRC and the gate has nothing to read, and past about 46 LSB the AACH itself stops
+reading, so the gate reads less again (21 at 46 LSB, 2 at 52). `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at least 8 bursts read as
+assigned control that decode nothing. On these bytes the chain reads 14 and decodes 19 SCH/F blocks; the receiver
 before the TETRA chain reads 2 and decodes none (it tries 9 blocks as speech behind a traffic or unread AACH, all
 failing the speech CRC). The seed was swept with the sigma (36 to 41 LSB, seeds 24004 to 24063): at 40 LSB the 60
-seeds give 1 to 18 (median 6), and 24013 holds 14 to 16 from 39 to 41 LSB, where the earlier seed 24004 at 38 LSB,
-which gave 16 before the quadrant slicer, gives 8. Both cases refuse a burst tried as speech behind an AACH saying
-control or unallocated; none was tried in any of the sweep's 220 runs. An AACH that cannot be read (four or more bit
+seeds give 5 to 21 (median 11.5), and 24013 holds 12 to 17 from 39 to 41 LSB, where the earlier seed 24004 at 38 LSB,
+which gave 16 before the quadrant slicer, gives 5. Both cases refuse a burst tried as speech behind an AACH saying
+control or unallocated; none was tried in any of the sweep's 220 runs, nor in the 66 that re-ran it on the chain's
+block-size fix, Gardner gain and narrowed FLL. An AACH that cannot be read (four or more bit
 errors) says nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this
 stretch got through that way, so the gate case asserts the AACH's decisions rather than the absence of every false
 frame.
@@ -527,15 +528,15 @@ pulse, identity bursts followed by nine random-modulated slots, running continuo
 decimated to 72 kHz with the tool's ideal low-pass resampler; the wanted carrier sits at +offset and the neighbour at
 neighbour + offset, so a positive offset is a receiver tuned below the call, which the sidecar's centre frequency
 records, and the sidecar's notes record the realized neighbour ratio after decimation. Counts below are the receiver
-before the TETRA chain against the chain, on the committed bytes. A 60% threshold is 60% of the chain's count rounded
-to the nearest whole number:
+before the TETRA chain against the chain, on the committed bytes. A 60% threshold is 60% of the chain's count when
+the case was set, rounded to the nearest whole number:
 
 | Case | Fixture | Before | Chain | Asserted |
 |---|---|---|---|---|
 | `DECODE_IQ_TETRA_CALL_ADJACENT` | neighbour 25 kHz below at +30 dB (29.99 realized), on frequency | 0 | 232 | at least 139 identities, the SYSINFO and the allocation, never `MCC=460` |
-| `DECODE_IQ_TETRA_CALL_AWGN` | AWGN 3 dB SNR over 72 kHz | 3, no speech | 81 (53 before the quadrant slicer), 20 TCH/FS | at least 49 identities (60% of 81) and one accepted TCH/FS |
+| `DECODE_IQ_TETRA_CALL_AWGN` | AWGN 3 dB SNR over 72 kHz | 3, no speech | 108, 24 TCH/FS (81 and 20 when the case was set, 53 identities before the quadrant slicer) | at least 49 identities (60% of 81) and one accepted TCH/FS |
 | `DECODE_IQ_TETRA_CALL_NEIGHBOUR_REJECT` | receiver 10 kHz below, neighbour +20 dB (20.00 realized) at -15 kHz | 36 neighbour identities | none of either | never `MCC=460`; the replay end notice with all 468000 samples |
-| `DECODE_IQ_TETRA_CALL_OFFSET_10K` | clean, receiver 10 kHz below | 217 | 224 | at least 207 identities (95% of 217) |
+| `DECODE_IQ_TETRA_CALL_OFFSET_10K` | clean, receiver 10 kHz below | 217 | 228 (224 when the case was set) | at least 207 identities (95% of 217) |
 
 The rejection case accepts silence: the chain must not name the neighbour, and need not decode the call.
 

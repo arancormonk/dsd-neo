@@ -4535,11 +4535,15 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     `dsd_fll_band_edge_total_freq()` = `pre_freq + freq`. The access rule: every reader that means the receiver's
     offset reads that sum (the metrics CFO and band-edge exports, so auto-PPM, the terminal, Qt and the API; the
     retune seed cache; the retune debug logs), and only the state transitions below split, reset or seed the parts.
+    The sum is only accurate within the mixer's bound (a limit `docs/cli.md` states): past it the FLL carries the rest
+    behind the matched filter, which cuts into the band edges it reads, and settles short. The real-air call shifted
+    -10, +8 and +10 kHz read 730, 207 and 1300 Hz short, while decoding held (228 identities at +-10 kHz, against
+    main's 219 and 217).
     `freq` alone is the FLL's residual: its loop, and the carrier-lock heuristic's saturation test against the FLL
     clamp, read only it. A retune reset (`demod_reset_on_retune()`) applies the reset plan's decision to the sum,
     clearing both parts or keeping the sum (rescaled to the new rate) and splitting it again with
     `dsd_fll_band_edge_split_total()`, into the mixer up to its bound only while `tetra_chain` is set; every reset but
-    a CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` (once per block, after the FLL)
+    a CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` (at each transfer sub-block boundary, after the FLL)
     and `dsd_fll_band_edge_fold()` move the estimate between the parts without changing the sum. With `pre_freq` 0
     (every non-TETRA chain) all of this is the FLL frequency as before.
   - The predicate. `dsd_demod_update_tetra_chain()` sets `tetra_chain` at every block boundary in `full_demod()`,

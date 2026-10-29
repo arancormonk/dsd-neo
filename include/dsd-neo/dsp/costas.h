@@ -336,8 +336,8 @@ void dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f);
 /**
  * @brief Move the FLL's residual into the mixer, up to its bound, keeping the combined estimate.
  *
- * want = clamp(pre_freq + freq, +-pre_limit); freq -= want - pre_freq; pre_freq = want. Once per block after the
- * FLL. What exceeds the bound stays in freq.
+ * want = clamp(pre_freq + freq, +-pre_limit); freq -= want - pre_freq; pre_freq = want. At each transfer sub-block
+ * boundary after the FLL (DSD_TETRA_SUBBLOCK_SYMBOLS). What exceeds the bound stays in freq.
  *
  * @param f         FLL state.
  * @param pre_limit Mixer bound, rad/sample (dsd_tetra_pre_limit_rad()).
@@ -366,7 +366,7 @@ void dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f);
  * DC and pre_freq + freq is one estimate.
  *
  * Two complex multiplies per sample and no per-sample sin/cos; the phasor's magnitude is renormalized once per
- * block, so the rotation is phase continuous across any partition of the stream into blocks.
+ * call, so the rotation is phase continuous across any partition of the stream into calls.
  *
  * @param f     FLL state holding pre_freq and the phasor.
  * @param iq    Interleaved I/Q, rotated in place.

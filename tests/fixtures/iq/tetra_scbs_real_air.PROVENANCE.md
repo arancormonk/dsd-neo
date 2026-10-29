@@ -37,7 +37,7 @@ CS16 at the `post_mute_pre_widen` stage, 50 kHz, centre 467.913 MHz, a recorded
 gives no timestamp). The capture's bytes are not changed. A TETRA replay resamples it
 to 72 kHz ahead of the demodulator (issue #701), which
 `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K` checks for the same identity with no rate
-warning; the dev-debug build decodes 51 identities from it.
+warning; the dev-debug build decodes 79 identities from it.
 
 `tetra_cc_marginal_real_air_144k.iq` is a second unmodified Apache-2.0
 capture from the same upstream repository, added by commit

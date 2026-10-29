@@ -345,9 +345,9 @@ DERIVED_NOISE = [
 # CRC (all zero bits are a codeword of every linear code); the AACH keeps it out (docs/testing.md). Deterministic from
 # the seed; complex Gaussian noise added at the source's own level, sigma in LSB of the cu8 range. The sidecar keeps the
 # source's centre frequency. Sigma and seed are set for the TETRA receive chain and its quadrant slicer: at 24 LSB it
-# decodes nearly every SCH/F block, leaving none to gate, and past about 42 LSB the AACH itself stops reading. Swept
-# over 36-41 LSB and seeds 24004-24063, seed 24013 at 40 LSB leaves 8 SCH/F CRC ok and 16 gated lines (14 to 16 from
-# 39 to 41 LSB), twice DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE's 8, with no block tried as speech behind control.
+# decodes nearly every SCH/F block, leaving none to gate, and past about 46 LSB the AACH itself stops reading. Swept
+# over 36-41 LSB and seeds 24004-24063, seed 24013 at 40 LSB leaves 19 SCH/F CRC ok and 14 gated lines (12 to 17 from
+# 39 to 41 LSB), above DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE's 8, with no block tried as speech behind control.
 #
 # name, source, start_s, stop_s, seed, sigma (LSB of the cu8 range)
 DERIVED_TETRA_GAP = [

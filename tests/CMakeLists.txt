@@ -16359,7 +16359,7 @@ if(DSD_HAS_RADIO)
     )
 
     # The unmodified 50 kHz source of tetra_scbs_real_air_54k, under a hand-written sidecar: TETRA cannot time its
-    # symbols at 50 kHz, so the replay resamples it to 72 kHz. It decodes 51 identities in the dev-debug build.
+    # symbols at 50 kHz, so the replay resamples it to 72 kHz. It decodes 79 identities in the dev-debug build.
     add_test(
         NAME DECODE_IQ_TETRA_REAL_AIR_SCBS_50K
         COMMAND
@@ -16549,7 +16549,7 @@ if(DSD_HAS_RADIO)
     # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
     # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
     # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP
-    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 16 of
+    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 14 of
     # them under an assigned control AACH and decodes none (before the AACH was read, 3 passed as speech).
     set(_dsd_tetra_aach_not_traffic
         "AACH (0/[0-9]+|[123]/[0-3])/[0-9]+\\]\\[TETRA TCH"
@@ -16598,7 +16598,8 @@ if(DSD_HAS_RADIO)
     )
     # AWGN at 3 dB SNR over the 72 kHz band: 3 identities and no speech against 81 and 20 TCH/FS bursts whose CRC
     # passes (53 and 20 before TETRA sliced at the quadrant boundaries). At least 49 wanted identities (60% of 81)
-    # and one accepted TCH/FS.
+    # and one accepted TCH/FS. The chain now decodes 108 identities and 24 TCH/FS (its block-size fix, its Gardner
+    # gain and its narrowed FLL); the threshold stays at 60% of the 81 it was set from.
     add_test(
         NAME DECODE_IQ_TETRA_CALL_AWGN
         COMMAND
@@ -16625,7 +16626,7 @@ if(DSD_HAS_RADIO)
         MCC=460
     )
     # The control for the rejection test: the clean call with the receiver 10 kHz below it. The receiver before the
-    # chain decoded 217 identities, the chain 224; at least 207 (95% of 217).
+    # chain decoded 217 identities, the chain 224, now 228; at least 207 (95% of 217).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_CALL_OFFSET_10K
         tetra_call_offset_10k_72k

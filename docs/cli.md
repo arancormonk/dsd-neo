@@ -604,14 +604,22 @@ Notes
   the generic CQPSK path.`
   Tuning tolerance: tune to the carrier's own frequency. These cases were measured on test signals at 72 kHz, the rate
   `-fT` sets; other rates were not measured.
-  - On a clear channel, decoding held with the radio up to about ±10 kHz off the carrier, and was lost by 12 to
-    14 kHz off.
+  - On a clear channel, decoding held with the radio up to about ±10 kHz off the carrier. 12 kHz off, it held with
+    the radio above the carrier (228 of 232 identities) and decoded about a fifth with it below (49); 14 kHz below,
+    it was lost.
   - Next to a much stronger carrier (another TETRA network 25 kHz away, 10 to 40 dB stronger), keep any tuning error
     towards the stronger carrier within about 2 kHz: from 3 kHz towards it the decode was lost. Tuned up to 10 kHz the
     other way, away from it, decoding held.
   - In none of those cases did the decoder decode the stronger neighbour's network instead. Tuned 10 kHz towards a
     carrier 20 dB stronger, it decoded neither carrier and never named the other network. That is how it behaved in
     those cases, not a guarantee.
+
+  The frequency error the receiver reports for a TETRA stream (the terminal, Qt, the API and `--auto-ppm` read it) is
+  only accurate within about ±8 kHz, the tracking mixer's reach. Past it the rest of the offset is estimated behind
+  the matched filter, which cuts into the band edges the estimate reads, so the reported error falls short while
+  decoding still holds: a real-air call 10 kHz off read about 0.7 kHz short one way and 1.3 kHz short the other.
+  Within that range the estimate also carries a bias of a few hundred hertz that depends on what the carrier sends
+  (on that call, about 190 Hz above the carrier's own offset).
 
   A receiver's own frequency error adds to how far off you tune, so correct it: give the receiver's error in parts per
   million in the `ppm` field of the `-i` spec (`-i rtl:dev:freq:gain:ppm`, or `rtl_ppm` in a config), or let
