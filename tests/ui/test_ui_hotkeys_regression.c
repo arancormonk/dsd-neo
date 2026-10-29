@@ -27,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "ui_keys.h"
 
 #ifdef USE_RTLSDR
 #error "This test must compile the hotkey handler with USE_RADIO only."
@@ -173,9 +174,9 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-intern
 
 WINDOW* stdscr = NULL;
 
+/* The handler drains an escape sequence through the terminal's key read; no key is waiting here. */
 int
-wgetch(WINDOW* win) {
-    (void)win;
+ui_read_key(void) {
     return ERR;
 }
 

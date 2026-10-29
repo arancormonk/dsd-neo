@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "ui_keys.h"
 
 typedef struct {
     int key;
@@ -37,7 +38,7 @@ typedef struct {
 static void
 ncurses_drain_escape_sequence(void) {
     int ch2;
-    while ((ch2 = getch()) != ERR) {
+    while ((ch2 = ui_read_key()) != ERR) {
         (void)ch2;
     }
 }

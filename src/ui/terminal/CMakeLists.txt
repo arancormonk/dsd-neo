@@ -17,6 +17,7 @@ target_sources(
         ui_prims.c
         ui_row.c
         ui_async.c
+        ui_read_key.c
         menu_core.c
         menu_env.c
         menu_labels.c

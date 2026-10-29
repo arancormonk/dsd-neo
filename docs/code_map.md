@@ -7460,6 +7460,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     Tuning, M17 UDP, Reverse Mute) keep wrapping. Tests: `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS`
     (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
+  - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
+    `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
+    never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
+    0xFF read as themselves and wider ones as `UI_KEY_WIDE_CHAR`, which no hotkey handles. ncurses and a narrow
+    PDCurses keep `getch()`. Prompts (`menu_prompts.c`) never drop a typed character silently: one the field cannot
+    hold adds one `?` (a UTF-8 lead byte on ncurses, any non-printable 0x80-0xFF byte on PDCurses,
+    `UI_KEY_WIDE_CHAR`), PDCurses keypad `+ - * /` type their characters, other keys are ignored and `isprint()` only
+    sees 0..0xFF. Integer prompts refuse a value outside `int` instead of wrapping. Tests: `UI_READ_KEY`,
+    `UI_PROMPT_VALIDATION`, `UI_PROMPT_SECRET`.
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in

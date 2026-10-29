@@ -8,12 +8,14 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/ui/keymap.h>
+#include <locale.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <time.h>
 #include "menu_prompts.h"
+#include "ui_keys.h"
 
 static int g_string_done_called = 0;
 static int g_string_was_null = 0;
@@ -268,6 +270,148 @@ test_typed_prompt_validation(void) {
     assert(g_double_value == 0.0);
     assert(g_status_called == 1);
     assert(strcmp(g_status_text, "Invalid numeric input") == 0);
+}
+
+/* An integer the field cannot hold is refused, never wrapped or saturated (B6). */
+static void
+test_int_prompt_rejects_out_of_range(void) {
+    static const char* const too_big[] = {"4294967297", "5145979796", "99999999999999999999", "-2147483649"};
+    for (size_t i = 0; i < sizeof too_big / sizeof too_big[0]; i++) {
+        reset_int_capture();
+        ui_prompt_open_int_async("Integer", 0, capture_int_done, NULL);
+        clear_prompt_prefill();
+        type_text(too_big[i]);
+        assert(ui_prompt_handle_key('\r') == 1);
+        assert(g_int_done_called == 1);
+        assert(g_int_ok == 0);
+        assert(g_int_value == 0);
+        assert(g_status_called == 1);
+        assert(strcmp(g_status_text, "Invalid integer input") == 0);
+    }
+
+    reset_int_capture();
+    ui_prompt_open_int_async("Integer", 0, capture_int_done, NULL);
+    clear_prompt_prefill();
+    type_text("-2147483648");
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_int_ok == 1);
+    assert(g_int_value == -2147483647 - 1);
+    assert(g_status_called == 0);
+
+    reset_int_capture();
+    ui_prompt_open_int_async("Integer", 0, capture_int_done, NULL);
+    clear_prompt_prefill();
+    type_text("2147483647");
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_int_ok == 1);
+    assert(g_int_value == 2147483647);
+    assert(g_status_called == 0);
+}
+
+static void
+open_plain_prompt(void) {
+    reset_string_capture();
+    ui_prompt_open_string_async("Characters", NULL, 32, capture_string_done, NULL);
+    assert(ui_prompt_active() == 1);
+}
+
+static void
+submit_plain_prompt(const char* want) {
+    assert(ui_prompt_handle_key('\r') == 1);
+    assert(g_string_done_called == 1);
+    assert(g_string_was_null == 0);
+    assert(strcmp(g_string_text, want) == 0);
+}
+
+/* Keys that are not characters never reach the field, and never reach isprint() (B7). */
+static void
+test_prompt_ignores_non_character_keys(void) {
+    open_plain_prompt();
+    type_text("a");
+    static const int keys[] = {KEY_UP,      KEY_DOWN,     KEY_NPAGE, KEY_PPAGE, KEY_F(1), KEY_F(12), KEY_MOUSE, KEY_MAX,
+                               KEY_MAX - 1, KEY_MAX + 75, 0x1FF,     0x4FE,     0x10000,  1,         0x1F};
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        assert(ui_prompt_handle_key(keys[i]) == 1);
+        assert(ui_prompt_active() == 1);
+    }
+    type_text("b");
+    submit_plain_prompt("ab");
+}
+
+/* A character the field cannot hold shows as one '?', so typed input is never silently lost (D8). */
+static void
+test_prompt_marks_unholdable_characters(void) {
+    /* U+FF0E FULLWIDTH FULL STOP as UTF-8: one character, one '?'. */
+    open_plain_prompt();
+    type_text("145");
+    assert(ui_prompt_handle_key(0xEF) == 1);
+    assert(ui_prompt_handle_key(0xBC) == 1);
+    assert(ui_prompt_handle_key(0x8E) == 1);
+    type_text("5");
+    char shown[64];
+    assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
+#if defined(DSD_USE_PDCURSES)
+    /* PDCurses delivers each byte 0x80-0xFF as a whole character, so each shows. */
+    assert(strcmp(shown, "145???5") == 0);
+    submit_plain_prompt("145???5");
+#else
+    assert(strcmp(shown, "145?5") == 0);
+    submit_plain_prompt("145?5");
+#endif
+
+    /* A wide PDCurses character above 0xFF arrives as one sentinel. */
+    open_plain_prompt();
+    type_text("1");
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    type_text("2");
+    submit_plain_prompt("1?2");
+
+    /* Every UTF-8 lead byte opens one character: a 2-byte, 3-byte and 4-byte sequence. */
+    open_plain_prompt();
+    static const int utf8[] = {0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x93, 0xBB};
+    for (size_t i = 0; i < sizeof utf8 / sizeof utf8[0]; i++) {
+        assert(ui_prompt_handle_key(utf8[i]) == 1);
+    }
+#if defined(DSD_USE_PDCURSES)
+    submit_plain_prompt("?????????");
+#else
+    submit_plain_prompt("???");
+#endif
+
+    /* The '?' obeys the capacity like any other byte. */
+    reset_string_capture();
+    ui_prompt_open_string_async("Capacity", "a", 3, capture_string_done, NULL);
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    assert(ui_prompt_handle_key(UI_KEY_WIDE_CHAR) == 1);
+    submit_plain_prompt("a?");
+}
+
+/* The PDCurses keypad character keys type their characters (D8). */
+static void
+test_prompt_keypad_character_keys(void) {
+    open_plain_prompt();
+#ifdef PADMINUS
+    assert(ui_prompt_handle_key(PADMINUS) == 1);
+#else
+    type_text("-");
+#endif
+    type_text("50");
+#ifdef PADPLUS
+    assert(ui_prompt_handle_key(PADPLUS) == 1);
+#else
+    type_text("+");
+#endif
+#ifdef PADSTAR
+    assert(ui_prompt_handle_key(PADSTAR) == 1);
+#else
+    type_text("*");
+#endif
+#ifdef PADSLASH
+    assert(ui_prompt_handle_key(PADSLASH) == 1);
+#else
+    type_text("/");
+#endif
+    submit_plain_prompt("-50+*/");
 }
 
 static void
@@ -693,10 +837,19 @@ test_prompt_layout_and_view_contracts(void) {
 
 int
 main(void) {
+    /* A UTF-8 locale where one exists: every non-ASCII byte then fails isprint(), and glibc reads key codes above
+       0xFF past its table (B7), which is the input the prompt must still handle. */
+    if (!setlocale(LC_CTYPE, "C.UTF-8")) {
+        (void)setlocale(LC_CTYPE, "en_US.UTF-8");
+    }
     test_string_prompt_completion_paths();
     test_string_prompt_key_edges();
     test_string_prompt_cursor_editing();
     test_typed_prompt_validation();
+    test_int_prompt_rejects_out_of_range();
+    test_prompt_ignores_non_character_keys();
+    test_prompt_marks_unholdable_characters();
+    test_prompt_keypad_character_keys();
     test_typed_prompt_cancel_paths();
     test_chooser_edge_paths();
     test_chooser_page_navigation_clamps_selection();

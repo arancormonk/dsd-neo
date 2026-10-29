@@ -2482,6 +2482,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_async_lifecycle
         ui/test_ui_async_lifecycle.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
     )
     # NCURSES_REENTRANT=0 keeps stdscr an extern variable (rather than a
     # function-call macro) so the curses stubs below can define and assign it.
@@ -3862,6 +3863,22 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_PROMPT_SECRET COMMAND dsd-neo_test_ui_prompt_secret)
+
+    add_executable(
+        dsd-neo_test_ui_read_key
+        ui/test_ui_read_key.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_read_key
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/terminal ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_read_key
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(dsd-neo_test_ui_read_key PRIVATE ${CURSES_LIBRARIES})
+    add_test(NAME UI_READ_KEY COMMAND dsd-neo_test_ui_read_key)
 endif()
 
 # The Qt Quick frontend itself only builds for Android, but the session-phase
