@@ -738,7 +738,8 @@ dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id) {
                 (ctx->session_avoid_count - index) * sizeof(*ctx->session_avoids));
     ctx->session_avoids[index] = id;
     ++ctx->session_avoid_count;
-    tg_policy_table_note_mutation_kind(ctx, 0);
+    /* The avoids sit outside the rows, so the row keys stay as they are. */
+    tg_policy_table_note_changed(ctx, 0);
     return 0;
 }
 
@@ -747,7 +748,7 @@ dsd_tg_policy_session_avoid_clear(dsd_state* state) {
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
     if (ctx && ctx->session_avoid_count) {
         ctx->session_avoid_count = 0;
-        tg_policy_table_note_mutation_kind(ctx, 0);
+        tg_policy_table_note_changed(ctx, 0);
     }
 }
 
