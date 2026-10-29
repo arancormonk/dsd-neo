@@ -2533,6 +2533,7 @@ static std::atomic<int> g_pub_output_kind{0};
 static std::atomic<int> g_pub_symbol_rate{4800};
 static std::atomic<int> g_pub_symbol_levels{4};
 static std::atomic<int> g_pub_channel_profile{0};
+static std::atomic<int> g_pub_tetra_chain{0};
 static std::atomic<int> g_pub_ted_sps{10};
 static std::atomic<int> g_pub_ted_sps_override{0};
 static std::atomic<int> g_pub_cqpsk_enable{0};
@@ -2580,12 +2581,14 @@ static void rtl_stream_publish_ted_bias(void);
 
 /* Main-thread SNR bias/estimator paths: read the published mirrors, not the
  * demod-thread-owned fields (rate_out/ted_sps/channel_lpf_profile are written
- * by the deferred profile consume and retune reconfigure). */
+ * by the deferred profile consume and retune reconfigure, tetra_chain by the
+ * demod block). */
 static void
-rtl_stream_load_snr_bias_inputs(int* rate_out, int* ted_sps, int* channel_profile) {
+rtl_stream_load_snr_bias_inputs(int* rate_out, int* ted_sps, int* channel_profile, int* tetra_chain) {
     *rate_out = g_pub_rate_out.load(std::memory_order_relaxed);
     *ted_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
     *channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+    *tetra_chain = g_pub_tetra_chain.load(std::memory_order_relaxed);
 }
 
 std::atomic<double> g_snr_c4fm_db{-100.0};
@@ -2942,8 +2945,9 @@ rtl_stream_get_snr_bias_c4fm(void) {
     int rate_out;
     int ted_sps;
     int channel_profile;
-    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
-    return dsd_snr_bias_c4fm_db(rate_out, ted_sps, channel_profile);
+    int tetra_chain;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile, &tetra_chain);
+    return dsd_snr_bias_c4fm_db(rate_out, ted_sps, channel_profile, tetra_chain);
 }
 
 /**
@@ -2955,8 +2959,9 @@ rtl_stream_get_snr_bias_evm(void) {
     int rate_out;
     int ted_sps;
     int channel_profile;
-    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
-    return dsd_snr_bias_evm_db(rate_out, ted_sps, channel_profile);
+    int tetra_chain;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile, &tetra_chain);
+    return dsd_snr_bias_evm_db(rate_out, ted_sps, channel_profile, tetra_chain);
 }
 
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
@@ -3780,7 +3785,7 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
         return;
     }
     double snr_raw = 10.0 * log10(ratio);
-    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile, d->tetra_chain);
     double snr = snr_raw - bias;
     /* A NaN or infinite I/Q sample makes the ratio non-finite; publishing it would leave the EMA stuck there. */
     if (!dsd::io::radio::rtl_is_finite(snr)) {
@@ -3960,7 +3965,7 @@ demod_snr_update_c4fm_direct(const struct demod_state* d, const float* vals, int
     if (sig_var <= 1e-9) {
         return;
     }
-    double bias = dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+    double bias = dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile, d->tetra_chain);
     double snr = 10.0 * log10(sig_var / noise_var) - bias;
     demod_snr_publish_c4fm_direct(snr, flags);
 }
@@ -4008,7 +4013,7 @@ demod_snr_update_gfsk_direct(const struct demod_state* d, const float* vals, int
     if (sig_var <= 1e-9) {
         return;
     }
-    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile, d->tetra_chain);
     double snr = 10.0 * log10(sig_var / noise_var) - bias;
     demod_snr_publish_gfsk_direct(snr, flags);
 }
@@ -4072,7 +4077,7 @@ demod_snr_update_fsk_discriminator_direct(const struct demod_state* d, DemodSnrU
         win = 1;
     }
 
-    double c4fm_bias = dsd_snr_bias_c4fm_db(d->rate_out, sps, d->channel_lpf_profile);
+    double c4fm_bias = dsd_snr_bias_c4fm_db(d->rate_out, sps, d->channel_lpf_profile, d->tetra_chain);
     double c4fm_snr = dsd_snr_estimate_c4fm_real_db(d->result, d->result_len, sps, win, c4fm_bias);
     if (demod_snr_valid(c4fm_snr)) {
         demod_snr_publish_c4fm_direct(c4fm_snr, flags);
@@ -4082,7 +4087,7 @@ demod_snr_update_fsk_discriminator_direct(const struct demod_state* d, DemodSnrU
     }
 
     if (d->symbol_levels == 2) {
-        double gfsk_bias = dsd_snr_bias_evm_db(d->rate_out, sps, d->channel_lpf_profile);
+        double gfsk_bias = dsd_snr_bias_evm_db(d->rate_out, sps, d->channel_lpf_profile, d->tetra_chain);
         double gfsk_snr = dsd_snr_estimate_gfsk_real_db(d->result, d->result_len, sps, win, gfsk_bias);
         demod_snr_publish_gfsk_direct(gfsk_snr, flags);
     }
@@ -7008,7 +7013,7 @@ rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
 static rtl_view_snr_inputs
 rtl_stream_view_snr_inputs(void) {
     rtl_view_snr_inputs in;
-    rtl_stream_load_snr_bias_inputs(&in.rate_out, &in.ted_sps, &in.channel_profile);
+    rtl_stream_load_snr_bias_inputs(&in.rate_out, &in.ted_sps, &in.channel_profile, &in.tetra_chain);
     return in;
 }
 
@@ -9937,6 +9942,7 @@ rtl_stream_publish_demod_profile_snapshot(void) {
     g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
     g_pub_symbol_levels.store(demod.symbol_levels, std::memory_order_relaxed);
     g_pub_channel_profile.store(demod.channel_lpf_profile, std::memory_order_relaxed);
+    g_pub_tetra_chain.store(demod.tetra_chain ? 1 : 0, std::memory_order_relaxed);
     g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
     g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
     g_pub_rate_out.store(demod.rate_out, std::memory_order_relaxed);
@@ -10075,7 +10081,7 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
         return -1;
     }
     int next_channel_profile = demod.channel_lpf_profile;
-    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
+    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_TETRA) {
         next_channel_profile = channel_profile;
     }
     if (rtl_stream_runs_m17_encoder()) {

@@ -127,6 +127,8 @@ clamp_float(float value, float lo, float hi) {
  *   - ProVoice: 6250 Hz protected passband edge.
  *   - P25 C4FM: 6250 Hz protected passband edge.
  *   - P25 CQPSK/LSM: 6250 Hz protected passband edge plus guard.
+ *   - TETRA: 11250 Hz protected passband edge (cutoff 12.5 kHz, 2.5 kHz transition) while the TETRA chain runs
+ *     (demod_state::tetra_chain); otherwise the legacy WIDE design, exactly as TETRA ran before it had a profile.
  *
  * GNU Radio firdes::low_pass() interprets cutoff_freq as the center of the
  * transition band, not the last flat passband frequency. The design centers
@@ -191,6 +193,14 @@ static const double kChannelLpf12k5CutoffHz = kChannelEdge12k5Hz + kChannelLpfGu
 static const double kChannelLpfProvoiceCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
 static const double kChannelLpfP25C4fmCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
 static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
+/* TETRA's 25 kHz channel: GNU Radio's window design with the transition centred on 12.5 kHz, so the passband ends at
+ * 11.25 kHz and the stopband starts at 13.75 kHz. Its own transition, not the shared 1200 Hz one, and no clamp or
+ * fallback: 49 / 97 / 193 taps at 36 / 72 / 144 kHz. */
+static const double kChannelEdgeTetraHz = 11250.0;
+static const double kChannelLpfTetraCutoffHz = 12500.0;
+static const double kChannelLpfTetraTransitionHz = 2500.0;
+static_assert((74 * 144000) / (22 * 2500) <= DSD_CHANNEL_LPF_MAX_TAPS,
+              "the TETRA channel design at the 144 kHz top of its rate domain fits the plan array");
 /* Fixed fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
@@ -268,6 +278,7 @@ dsd_channel_lpf_protected_edge_hz(int profile) {
         case DSD_CH_LPF_PROFILE_PROVOICE:
         case DSD_CH_LPF_PROFILE_P25_C4FM:
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelEdge12k5Hz;
+        case DSD_CH_LPF_PROFILE_TETRA: return kChannelEdgeTetraHz;
         default: return kChannelEdgeWideHz;
     }
 }
@@ -566,6 +577,7 @@ channel_lpf_fallback_taps(int profile, int* taps_len) {
         case DSD_CH_LPF_PROFILE_PROVOICE:
         case DSD_CH_LPF_PROFILE_P25_C4FM:
         case DSD_CH_LPF_PROFILE_P25_CQPSK:
+        case DSD_CH_LPF_PROFILE_TETRA: /* inactive TETRA chain: the legacy WIDE plan */
         case DSD_CH_LPF_PROFILE_WIDE:
         default: *taps_len = kChannelLpfFallbackTaps; return channel_lpf_wide;
     }
@@ -579,14 +591,40 @@ channel_lpf_cutoff_for_profile(int profile) {
         case DSD_CH_LPF_PROFILE_PROVOICE: return kChannelLpfProvoiceCutoffHz;
         case DSD_CH_LPF_PROFILE_P25_C4FM: return kChannelLpfP25C4fmCutoffHz;
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelLpfP25CqpskCutoffHz;
+        case DSD_CH_LPF_PROFILE_TETRA: /* inactive TETRA chain: the legacy WIDE plan */
         case DSD_CH_LPF_PROFILE_WIDE:
         default: return kChannelLpfWideCutoffHz;
     }
 }
 
-/* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. */
+int
+dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps) {
+    if (rate_hz <= 0 || !taps_out || max_taps <= 0) {
+        return -1;
+    }
+    const double rate = (double)rate_hz;
+    /* The whole transition, up to the stopband edge, must sit below Nyquist. */
+    if (kChannelLpfTetraCutoffHz + kChannelLpfTetraTransitionHz * 0.5 >= rate * 0.5) {
+        return -1;
+    }
+    const int cap = max_taps < DSD_CHANNEL_LPF_MAX_TAPS ? max_taps : DSD_CHANNEL_LPF_MAX_TAPS;
+    return dsd_firdes_low_pass(1.0, rate, kChannelLpfTetraCutoffHz, kChannelLpfTetraTransitionHz, DSD_WIN_BLACKMAN,
+                               taps_out, cap);
+}
+
+/* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. The TETRA
+ * profile designs its own channel, with no cap below the plan array and no fallback, only while the TETRA chain runs;
+ * otherwise it runs the WIDE design. */
 static int
 channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out) {
+    if (profile == DSD_CH_LPF_PROFILE_TETRA) {
+        if (d->tetra_chain) {
+            const int tetra_len =
+                dsd_tetra_channel_design(rate_out, d->channel_lpf_plan_taps, DSD_CHANNEL_LPF_MAX_TAPS);
+            return tetra_len > 0 ? tetra_len : 0;
+        }
+        profile = DSD_CH_LPF_PROFILE_WIDE;
+    }
     int taps_len = 0;
     if (rate_out > 0) {
         taps_len = channel_lpf_design_low_pass((double)rate_out, channel_lpf_cutoff_for_profile(profile),
@@ -666,8 +704,9 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
  *
  * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
  * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
- * per-block profile dispatch. The plan is cached by (rate_out, profile, width): the analog
- * family's width-driven design when it has a width, the profile design otherwise.
+ * per-block profile dispatch. The plan is cached by (rate_out, profile, width, TETRA chain): the analog
+ * family's width-driven design when it has a width, the profile design otherwise (for the TETRA profile, the TETRA
+ * design while the TETRA chain runs and the WIDE design while it does not).
  *
  * A plan for another rate_out than the previous one starts the channel over, since its history holds samples at the
  * old rate. A width or profile change at the same rate keeps the history and pending outputs: the streaming FIR
@@ -686,9 +725,11 @@ channel_lpf_ensure_plan(struct demod_state* d) {
        keeps its own profile filter. */
     const int width_hz =
         (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
+    /* The chain flag keys only the TETRA profile's plan: no other profile's design depends on it. */
+    const int tetra = (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && d->tetra_chain) ? 1 : 0;
     const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
     if (planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
-        && d->channel_lpf_plan_width_hz == width_hz) {
+        && d->channel_lpf_plan_width_hz == width_hz && d->channel_lpf_plan_tetra == tetra) {
         return;
     }
 
@@ -709,6 +750,7 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     d->channel_lpf_plan_rate_out = rate_out;
     d->channel_lpf_plan_profile = profile;
     d->channel_lpf_plan_width_hz = width_hz;
+    d->channel_lpf_plan_tetra = tetra;
     d->channel_lpf_plan_taps_len = taps_len;
 }
 

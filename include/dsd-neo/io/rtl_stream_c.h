@@ -46,6 +46,7 @@ typedef enum DSD_ATTR_PACKED rtl_stream_channel_profile {
     RTL_STREAM_CHANNEL_PROFILE_PROVOICE = 3,
     RTL_STREAM_CHANNEL_PROFILE_P25_C4FM = 4,
     RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
+    RTL_STREAM_CHANNEL_PROFILE_TETRA = 6,
 } rtl_stream_channel_profile;
 
 typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {

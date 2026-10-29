@@ -4459,8 +4459,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `dsd_channel_lpf_legacy_wide_width_hz()` reports the passband the legacy WIDE plan has at a rate (the 144-tap design,
   its cutoff held to 0.9 x Nyquist, or above ~51.4 kHz the 63-tap fallback prototype, cut at a third of the rate), the
   width published for an unset default that plan runs.
-  The plan cache key is (rate_out, profile, width). The SIMD complex FIR kernels size their scratch per call, so the
-  288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless (issue #572):
+  The TETRA profile (`DSD_CH_LPF_PROFILE_TETRA`, 6 in all three profile enums) runs its own design,
+  `dsd_tetra_channel_design()` (GNU Radio's window design, cutoff 12.5 kHz, 2.5 kHz Blackman transition: 49 / 97 / 193
+  taps at 36 / 72 / 144 kHz, no clamp and no fallback, protected edge 11250 Hz), only while `demod_state::tetra_chain`
+  is set; with the flag clear it runs the legacy WIDE plan exactly. `DSP_CHANNEL_FILTERS` pins every other profile's
+  plan at 24-144 kHz.
+  The plan cache key is (rate_out, profile, width, TETRA chain). The SIMD complex FIR kernels size their scratch per
+  call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless
+  (issue #572):
   `rtl_stream_apply_analog_request()` drops only the plan, and the half-band cascade and the channel FIR keep their
   histories and pending counts, so the new width's taps run over the true past and no sample is lost or repeated at
   the edit. The exception is an NFM edit between an explicit width and the unset default when
@@ -4615,7 +4621,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   samples, demod-thread appends, retune clears) and the fallback estimates over them behind
   `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer
   count raised for it, a batch count bumped when it ends). Each estimate caches per thread, keyed by batch count, TED
-  SPS, output rate and channel profile, and returns exactly a fresh estimate's answer; a read a batch raced is answered
+  SPS, output rate, channel profile and TETRA chain flag (the SNR noise bandwidth, `dsd_snr_noise_bandwidth_hz()`,
+  follows the chain that runs: 18000 Hz for the TETRA chain, WIDE's for an inactive TETRA profile), and returns exactly
+  a fresh estimate's answer; a read a batch raced is answered
   (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
   `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
 - CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;

@@ -1907,6 +1907,80 @@ expect_landing_cqpsk_truth_table(void) {
 }
 
 /*
+ * The TETRA channel profile (6) passes every profile validator, and the first id past it does not: the symbol-profile
+ * setter keeps the previous profile and a digital-family switch falls back to WIDE. An open that lands on CQPSK keeps a
+ * TETRA filter (the TETRA chain is CQPSK), and one turned onto the FSK discriminator runs WIDE, the filter TETRA had
+ * before its own profile existed.
+ */
+static int
+expect_tetra_profile_validators(void) {
+    int rc = 0;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.rate_out = 72000;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    int channel_profile = -1;
+    rc |= expect_int_eq("symbol profile accepts TETRA",
+                        rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &channel_profile);
+    rc |= expect_int_eq("  TETRA channel profile", channel_profile, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("  TETRA demod profile", demod.channel_lpf_profile, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("symbol profile past TETRA", rtl_stream_set_symbol_profile(18000, 4, 7), 0);
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &channel_profile);
+    rc |= expect_int_eq("  keeps TETRA", channel_profile, DSD_CH_LPF_PROFILE_TETRA);
+
+    const int profiles[] = {DSD_CH_LPF_PROFILE_TETRA, 7};
+    const int want[] = {DSD_CH_LPF_PROFILE_TETRA, DSD_CH_LPF_PROFILE_WIDE};
+    for (int i = 0; i < 2; i++) {
+        demod_state* d = alloc_zeroed_demod();
+        if (!d) {
+            DSD_FPRINTF(stderr, "TETRA digital family: allocation failed\n");
+            return 1;
+        }
+        output_state output;
+        DSD_MEMSET(&output, 0, sizeof(output));
+        d->rate_out = 72000;
+        output.rate = 72000U;
+        rtl_demod_enter_digital_family(d, &output, profiles[i], 1, 18000, 0);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "digital family with profile %d", profiles[i]);
+        rc |= expect_int_eq(label, d->channel_lpf_profile, want[i]);
+        rtl_demod_cleanup(d);
+        dsd_neo_aligned_free(d);
+    }
+
+    static const struct {
+        int landing;
+        int requested;
+        int profile;
+        int symbol_rate_hz;
+        int lpf_enabled;
+        int want;
+    } rows[] = {
+        {1, 1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, -1, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_TETRA},
+        {0, 1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
+        {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_WIDE},
+        {1, 0, DSD_CH_LPF_PROFILE_12K5, 4800, 1, DSD_CH_LPF_PROFILE_P25_CQPSK},
+        {0, 1, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 1, DSD_CH_LPF_PROFILE_P25_C4FM},
+    };
+
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "open profile: landing %d requested %d profile %d rate %d lpf %d",
+                     rows[i].landing, rows[i].requested, rows[i].profile, rows[i].symbol_rate_hz, rows[i].lpf_enabled);
+        rc |= expect_int_eq(label,
+                            rtl_demod_open_channel_profile(rows[i].landing, rows[i].requested, rows[i].profile,
+                                                           rows[i].symbol_rate_hz, rows[i].lpf_enabled),
+                            rows[i].want);
+    }
+    return rc;
+}
+
+/*
  * The analog family's monitor audio comes from the FM discriminator. DSD_NEO_CQPSK=1, or a QPSK modulation left on the
  * options, must not put a -fA open on the CQPSK path, which would hand the monitor differential phase symbols instead
  * of audio; a live switch to analog lands on FM the same way. A digital open under the override still runs CQPSK.
@@ -2707,6 +2781,7 @@ main(void) {
     rc |= expect_m17_encoder_real_options();
     rc |= expect_analog_open_ignores_cqpsk();
     rc |= expect_landing_cqpsk_truth_table();
+    rc |= expect_tetra_profile_validators();
     rc |= expect_analog_am_open();
     rc |= expect_audio_monitor_reset_clears_am_carrier();
     rc |= expect_analog_kind_switch();

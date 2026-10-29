@@ -37,37 +37,42 @@ static const double kNoiseBw12K5Hz = 6665.0;     /* 12.5 kHz modes, 6250 Hz prot
 static const double kNoiseBwProvoiceHz = 6665.0; /* ProVoice, 6250 Hz protected edge */
 static const double kNoiseBwP25C4fmHz = 6665.0;  /* P25 C4FM, 6250 Hz protected edge */
 static const double kNoiseBwP25CqpskHz = 7065.0; /* P25 CQPSK/LSM, 12.5 kHz edge plus guard */
+/* The TETRA chain: its RRC matched filter, not the wider channel filter ahead of it, bounds the noise. The figure is
+ * the RRC's two-sided equivalent noise bandwidth, the 18000 sym/s symbol rate. */
+static const double kNoiseBwTetraHz = 18000.0;
 
-static double
-dsd_snr_noise_bandwidth_hz(int lpf_profile) {
+double
+dsd_snr_noise_bandwidth_hz(int lpf_profile, int tetra_chain) {
     switch (lpf_profile) {
         case DSD_CH_LPF_PROFILE_6K25: return kNoiseBw6K25Hz;
         case DSD_CH_LPF_PROFILE_12K5: return kNoiseBw12K5Hz;
         case DSD_CH_LPF_PROFILE_PROVOICE: return kNoiseBwProvoiceHz;
         case DSD_CH_LPF_PROFILE_P25_C4FM: return kNoiseBwP25C4fmHz;
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return kNoiseBwP25CqpskHz;
+        /* An inactive TETRA chain runs the WIDE channel plan. */
+        case DSD_CH_LPF_PROFILE_TETRA: return tetra_chain ? kNoiseBwTetraHz : kNoiseBwWideHz;
         default: return kNoiseBwWideHz;
     }
 }
 
 double
-dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile) {
+dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_chain) {
     if (rate_out <= 0 || ted_sps <= 0) {
         return kC4fmEstimatorBiasDb + 2.2; /* fallback to original ~7.95 dB */
     }
     double symbol_rate = (double)rate_out / (double)ted_sps;
-    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile);
+    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile, tetra_chain);
     /* Total bias = estimator bias + bandwidth penalty */
     return kC4fmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
 }
 
 double
-dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile) {
+dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_chain) {
     if (rate_out <= 0 || ted_sps <= 0) {
         return kEvmEstimatorBiasDb + 0.5; /* fallback to original ~2.43 dB */
     }
     double symbol_rate = (double)rate_out / (double)ted_sps;
-    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile);
+    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile, tetra_chain);
     /* Total bias = estimator bias + bandwidth penalty */
     return kEvmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
 }

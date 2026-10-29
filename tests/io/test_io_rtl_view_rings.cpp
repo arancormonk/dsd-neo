@@ -137,7 +137,7 @@ check_qpsk(const rtl_view_snr_inputs* in, uint64_t expect_computes) {
 void
 test_eye_cache_tracks_inputs(void) {
     Lcg rng = {12345u};
-    rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM};
+    rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM, 0};
     rtl_view_eye_clear();
     append_eye(&rng, 1700, in.ted_sps, 0.4f); /* fills the 16384-sample ring */
 
@@ -173,9 +173,17 @@ test_eye_cache_tracks_inputs(void) {
     assert(!same_bits(c4fm_profile, c4fm_rate));
     (void)check_gfsk(&in, 1u);
     (void)check_gfsk(&in, 0u);
+    /* The TETRA chain flag keys the TETRA profile's noise bandwidth. */
+    in.channel_profile = DSD_CH_LPF_PROFILE_TETRA;
+    const double c4fm_tetra_off = check_c4fm(&in, 1u);
+    in.tetra_chain = 1;
+    const double c4fm_tetra_on = check_c4fm(&in, 1u);
+    assert(!same_bits(c4fm_tetra_on, c4fm_tetra_off));
+    (void)check_gfsk(&in, 1u);
+    (void)check_gfsk(&in, 0u);
 
     /* Returning to earlier inputs recomputes too: the cache holds one entry. */
-    in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM};
+    in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM, 0};
     assert(same_bits(check_c4fm(&in, 1u), c4fm_batch));
 
     /* A clear empties the ring: no estimate, and not the cached one. */
@@ -198,7 +206,7 @@ test_eye_cache_tracks_inputs(void) {
 void
 test_qpsk_cache_tracks_inputs(void) {
     Lcg rng = {777u};
-    rtl_view_snr_inputs in = {8, 48000, DSD_CH_LPF_PROFILE_P25_CQPSK};
+    rtl_view_snr_inputs in = {8, 48000, DSD_CH_LPF_PROFILE_P25_CQPSK, 0};
     rtl_view_constellation_clear();
     append_qpsk(&rng, 8192, 0.2f);
 
@@ -222,7 +230,7 @@ test_qpsk_cache_tracks_inputs(void) {
     /* An eye batch leaves the constellation estimate cached, and the reverse. */
     append_eye(&rng, 10, 10, 0.1f);
     (void)check_qpsk(&in, 0u);
-    rtl_view_snr_inputs eye_in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM};
+    rtl_view_snr_inputs eye_in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM, 0};
     (void)check_c4fm(&eye_in, 1u);
     append_qpsk(&rng, 10, 0.1f);
     (void)check_c4fm(&eye_in, 0u);
@@ -236,7 +244,7 @@ test_qpsk_cache_tracks_inputs(void) {
 void
 test_raced_read_not_cached(void) {
     Lcg rng = {4242u};
-    const rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM};
+    const rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM, 0};
     rtl_view_eye_clear();
     append_eye(&rng, 1700, in.ted_sps, 0.4f);
     rtl_view_constellation_clear();
@@ -260,7 +268,7 @@ test_raced_read_not_cached(void) {
 void
 test_threads_keep_own_cache(void) {
     Lcg rng = {99u};
-    const rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM};
+    const rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM, 0};
     rtl_view_eye_clear();
     append_eye(&rng, 1700, in.ted_sps, 0.4f);
     const double main_value = check_c4fm(&in, 1u);
@@ -283,7 +291,7 @@ test_threads_keep_own_cache(void) {
  * equals a fresh estimate. Under TSan this also checks the batch bracketing for data races. */
 void
 test_concurrent_writers_and_readers(void) {
-    const rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM};
+    const rtl_view_snr_inputs in = {10, 48000, DSD_CH_LPF_PROFILE_P25_C4FM, 0};
     rtl_view_eye_clear();
     rtl_view_constellation_clear();
     std::atomic<int> writers_done{0};

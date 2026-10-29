@@ -10381,6 +10381,15 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
 
+# Root-raised-cosine design against the closed form, and the TETRA matched filter built on it.
+add_executable(dsd-neo_test_dsp_firdes_rrc dsp/test_dsp_firdes_rrc.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_firdes_rrc
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes_rrc ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FIRDES_RRC COMMAND dsd-neo_test_dsp_firdes_rrc)
+
 # CTCSS detection (issue #522) through the pure analog receive core, in sample time: every
 # tone's lock bound at four rates and two SNRs, adjacent and unsupported frequencies, loss
 # and reverse burst, speech and noise that must never lock, and scale invariance.

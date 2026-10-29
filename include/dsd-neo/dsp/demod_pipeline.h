@@ -186,7 +186,8 @@ void dsd_demod_reset_filter_state(struct demod_state* d);
  *
  * The half-width of the nominal channel — 12.5 kHz modes return 6250. This is
  * the channel, not the filter: DSD_CH_LPF_PROFILE_P25_CQPSK runs a roomier
- * 7250 Hz cutoff and still protects a 12.5 kHz channel.
+ * 7250 Hz cutoff and still protects a 12.5 kHz channel. DSD_CH_LPF_PROFILE_TETRA
+ * returns 11250, the edge its TETRA chain design protects.
  *
  * @param profile DSD_CH_LPF_PROFILE_* value.
  * @return Channel half-width in Hz; the wide/analog edge for unknown profiles.
@@ -213,6 +214,24 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  * @return Number of taps written, or -1 when the width cannot be designed.
  */
 int dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, int max_taps);
+
+/**
+ * Design the TETRA chain's channel filter for a rate.
+ *
+ * GNU Radio's window design (firdes::low_pass()) with cutoff 12.5 kHz and a
+ * 2.5 kHz Blackman transition, so it protects the 11250 Hz channel edge: 49 / 97 /
+ * 193 taps at 36 / 72 / 144 kHz. The channel plan installs it for
+ * DSD_CH_LPF_PROFILE_TETRA only while demod_state::tetra_chain is set. There is
+ * no Nyquist clamp and no fallback prototype: a rate whose Nyquist frequency
+ * does not clear the 13750 Hz stopband edge, or a design longer than the
+ * capacity, is an error.
+ *
+ * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param taps_out Output taps; must hold @p max_taps floats.
+ * @param max_taps Capacity of @p taps_out (at most DSD_CHANNEL_LPF_MAX_TAPS is used).
+ * @return Number of taps written, or -1 when the rate cannot be designed for (nothing written).
+ */
+int dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps);
 
 /**
  * Channel width the legacy WIDE profile plan protects at a rate.

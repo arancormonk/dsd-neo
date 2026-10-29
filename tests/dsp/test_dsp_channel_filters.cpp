@@ -3,8 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests for channel filters: RRC input filters (DC preservation) and the
- * width-driven analog channel low-pass. */
+/* Unit tests for channel filters: RRC input filters (DC preservation), the
+ * width-driven analog channel low-pass, the profile designs and the TETRA
+ * channel profile. */
 
 #include <atomic>
 #include <cmath>
@@ -12,8 +13,10 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/firdes.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -437,6 +440,291 @@ test_legacy_wide_width(demod_state* s) {
     return 0;
 }
 
+/* A plan's fingerprint: its tap count and three sums over the taps (DC gain, energy, and the second moment about the
+ * centre tap), each sensitive to any change of the design. */
+namespace {
+struct plan_fingerprint {
+    int taps_len;
+    double sum;
+    double energy;
+    double moment2;
+};
+
+struct pinned_profile_plan {
+    int profile;
+    int rate_hz;
+    plan_fingerprint fp;
+};
+} // namespace
+
+static plan_fingerprint
+fingerprint_of(const float* taps, int len) {
+    plan_fingerprint fp = {len, 0.0, 0.0, 0.0};
+    const double c = (double)(len - 1) * 0.5;
+    for (int n = 0; n < len; n++) {
+        const double h = (double)taps[n];
+        const double k = (double)n - c;
+        fp.sum += h;
+        fp.energy += h * h;
+        fp.moment2 += h * k * k;
+    }
+    return fp;
+}
+
+/* Every pre-TETRA profile's plan as the design produced it before the TETRA profile existed, at the rates TETRA runs
+ * at and the 24/48 kHz rates the other modes run at: the 144-tap profile designs, and the 63-tap fallback prototypes
+ * where those do not fit. Fingerprints within a tolerance rather than a hash of the float bits, as for kPinnedWide. */
+static const pinned_profile_plan kPinnedProfilePlans[] = {
+    {DSD_CH_LPF_PROFILE_WIDE, 24000, {67, 1.000000044123e+00, 7.010672899040e-01, 1.246256990636e-03}},
+    {DSD_CH_LPF_PROFILE_WIDE, 36000, {101, 1.000000047609e+00, 4.674807939356e-01, 6.170353924117e-03}},
+    {DSD_CH_LPF_PROFILE_WIDE, 48000, {135, 1.000000043625e+00, 3.506488793216e-01, 1.163743565682e-02}},
+    {DSD_CH_LPF_PROFILE_WIDE, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_WIDE, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_6K25, 24000, {67, 1.000000029227e+00, 2.948037693301e-01, 2.315160999963e-02}},
+    {DSD_CH_LPF_PROFILE_6K25, 36000, {101, 9.999999974000e-01, 1.966430407009e-01, 3.010174991654e-02}},
+    {DSD_CH_LPF_PROFILE_6K25, 48000, {135, 9.999999585420e-01, 1.475220596537e-01, 3.172625972043e-02}},
+    {DSD_CH_LPF_PROFILE_6K25, 72000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
+    {DSD_CH_LPF_PROFILE_6K25, 144000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
+    {DSD_CH_LPF_PROFILE_12K5, 24000, {67, 1.000000005881e+00, 5.552399412907e-01, -4.978083753815e-03}},
+    {DSD_CH_LPF_PROFILE_12K5, 36000, {101, 9.999999773692e-01, 3.702645817960e-01, -1.284346668253e-02}},
+    {DSD_CH_LPF_PROFILE_12K5, 48000, {135, 1.000000012621e+00, 2.777366960401e-01, -2.093521426676e-02}},
+    {DSD_CH_LPF_PROFILE_12K5, 72000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
+    {DSD_CH_LPF_PROFILE_12K5, 144000, {63, 1.000061035156e+00, 4.001026339829e-01, -2.777099609375e-02}},
+    {DSD_CH_LPF_PROFILE_PROVOICE, 24000, {67, 1.000000005881e+00, 5.552399412907e-01, -4.978083753815e-03}},
+    {DSD_CH_LPF_PROFILE_PROVOICE, 36000, {101, 9.999999773692e-01, 3.702645817960e-01, -1.284346668253e-02}},
+    {DSD_CH_LPF_PROFILE_PROVOICE, 48000, {135, 1.000000012621e+00, 2.777366960401e-01, -2.093521426676e-02}},
+    {DSD_CH_LPF_PROFILE_PROVOICE, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_PROVOICE, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, 24000, {67, 1.000000005881e+00, 5.552399412907e-01, -4.978083753815e-03}},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, 36000, {101, 9.999999773692e-01, 3.702645817960e-01, -1.284346668253e-02}},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, 48000, {135, 1.000000012621e+00, 2.777366960401e-01, -2.093521426676e-02}},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_P25_C4FM, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_P25_CQPSK, 24000, {67, 1.000000035420e+00, 5.885637850060e-01, 4.549548854177e-03}},
+    {DSD_CH_LPF_PROFILE_P25_CQPSK, 36000, {101, 9.999999938664e-01, 3.924798176319e-01, 9.664304763394e-03}},
+    {DSD_CH_LPF_PROFILE_P25_CQPSK, 48000, {135, 9.999999959922e-01, 2.943987285497e-01, 1.357281783322e-02}},
+    {DSD_CH_LPF_PROFILE_P25_CQPSK, 72000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+    {DSD_CH_LPF_PROFILE_P25_CQPSK, 144000, {63, 9.999694824219e-01, 6.500525316224e-01, 3.027343750000e-02}},
+};
+
+static int
+fingerprint_matches(double got, double want) {
+    return std::fabs(got - want) <= 1e-6 * std::fabs(want) + 1e-9;
+}
+
+static int
+test_profile_plans_pinned(demod_state* s) {
+    static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    for (const pinned_profile_plan& pin : kPinnedProfilePlans) {
+        int len = 0;
+        design_plan(s, pin.rate_hz, pin.profile, 0, taps, &len);
+        const plan_fingerprint fp = fingerprint_of(taps, len);
+        if (fp.taps_len != pin.fp.taps_len || !fingerprint_matches(fp.sum, pin.fp.sum)
+            || !fingerprint_matches(fp.energy, pin.fp.energy) || !fingerprint_matches(fp.moment2, pin.fp.moment2)) {
+            DSD_FPRINTF(stderr,
+                        "profile %d at %d Hz: %d taps sum %.12e energy %.12e moment %.12e, pinned %d taps sum %.12e "
+                        "energy %.12e moment %.12e\n",
+                        pin.profile, pin.rate_hz, fp.taps_len, fp.sum, fp.energy, fp.moment2, pin.fp.taps_len,
+                        pin.fp.sum, pin.fp.energy, pin.fp.moment2);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The TETRA profile id is the same in all three mirrored enums. */
+static int
+test_tetra_profile_ids(void) {
+    if (DSD_CH_LPF_PROFILE_TETRA != 6 || RTL_STREAM_CHANNEL_PROFILE_TETRA != 6
+        || DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA != 6) {
+        DSD_FPRINTF(stderr, "TETRA profile ids %d/%d/%d, want 6 in each enum\n", (int)DSD_CH_LPF_PROFILE_TETRA,
+                    (int)RTL_STREAM_CHANNEL_PROFILE_TETRA, (int)DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+        return 1;
+    }
+    return 0;
+}
+
+/* The protected edge is the channel each profile keeps: TETRA's 25 kHz channel at 11250 Hz, the others unchanged. */
+static int
+test_protected_edges(void) {
+    struct edge_case {
+        int profile;
+        double edge_hz;
+    };
+
+    const edge_case cases[] = {
+        {DSD_CH_LPF_PROFILE_WIDE, 8000.0},
+        {DSD_CH_LPF_PROFILE_6K25, 3125.0},
+        {DSD_CH_LPF_PROFILE_12K5, 6250.0},
+        {DSD_CH_LPF_PROFILE_PROVOICE, 6250.0},
+        {DSD_CH_LPF_PROFILE_P25_C4FM, 6250.0},
+        {DSD_CH_LPF_PROFILE_P25_CQPSK, 6250.0},
+        {DSD_CH_LPF_PROFILE_TETRA, 11250.0},
+        {7, 8000.0},
+        {-1, 8000.0},
+    };
+    for (const edge_case& c : cases) {
+        const double got = dsd_channel_lpf_protected_edge_hz(c.profile);
+        if (std::fabs(got - c.edge_hz) > 1e-9) {
+            DSD_FPRINTF(stderr, "profile %d protects %.1f Hz, want %.1f\n", c.profile, got, c.edge_hz);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The TETRA channel design: GNU Radio's window design (cutoff 12.5 kHz, 2.5 kHz Blackman transition) at every rate the
+ * TETRA chain runs at, odd and symmetric, within its measured mask. */
+static int
+test_tetra_channel_design(void) {
+    static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    static float gr[DSD_CHANNEL_LPF_MAX_TAPS];
+    for (int rate = 36000; rate <= 144000; rate += 18000) {
+        const int n = dsd_tetra_channel_design(rate, taps, DSD_CHANNEL_LPF_MAX_TAPS);
+        const int want = rate == 36000 ? 49 : rate == 72000 ? 97 : rate == 144000 ? 193 : -1;
+        if (n < 3 || (n % 2) == 0 || n > 193 || (want > 0 && n != want)) {
+            DSD_FPRINTF(stderr, "TETRA channel at %d Hz: %d taps (want odd, <= 193, %d)\n", rate, n, want);
+            return 1;
+        }
+        const int gr_n =
+            dsd_firdes_low_pass(1.0, (double)rate, 12500.0, 2500.0, DSD_WIN_BLACKMAN, gr, DSD_CHANNEL_LPF_MAX_TAPS);
+        if (gr_n != n || std::memcmp(taps, gr, (size_t)n * sizeof(float)) != 0) {
+            DSD_FPRINTF(stderr, "TETRA channel at %d Hz is not the 12.5 kHz / 2.5 kHz Blackman design\n", rate);
+            return 1;
+        }
+        /* Symmetric to float rounding: the Blackman window's two halves come from separate cos() evaluations. */
+        double peak = 0.0;
+        for (int i = 0; i < n; i++) {
+            peak = std::fmax(peak, std::fabs((double)taps[i]));
+        }
+        for (int i = 0; i < n / 2; i++) {
+            if (std::fabs((double)taps[i] - (double)taps[n - 1 - i]) > 1e-6 * peak) {
+                DSD_FPRINTF(stderr, "TETRA channel at %d Hz: tap %d is not symmetric\n", rate, i);
+                return 1;
+            }
+        }
+        const double fs = (double)rate;
+        for (int f_hz = 0; f_hz <= 11250; f_hz += 25) {
+            const double db = tap_response_db(taps, n, fs, (double)f_hz);
+            if (db < -0.35) {
+                DSD_FPRINTF(stderr, "TETRA channel at %d Hz: %d Hz at %.3f dB (< -0.35 dB)\n", rate, f_hz, db);
+                return 1;
+            }
+        }
+        const double edge_db = tap_response_db(taps, n, fs, 12150.0);
+        if (std::fabs(edge_db - -3.2) > 0.5) {
+            DSD_FPRINTF(stderr, "TETRA channel at %d Hz: 12150 Hz at %.3f dB (want -3.2 +- 0.5 dB)\n", rate, edge_db);
+            return 1;
+        }
+        const double skirt_db = tap_response_db(taps, n, fs, 13750.0);
+        if (skirt_db > -28.0) {
+            DSD_FPRINTF(stderr, "TETRA channel at %d Hz: 13750 Hz at %.3f dB (> -28 dB)\n", rate, skirt_db);
+            return 1;
+        }
+        for (int f_hz = 15000; f_hz <= rate / 2; f_hz += 25) {
+            const double db = tap_response_db(taps, n, fs, (double)f_hz);
+            if (db > -75.0) {
+                DSD_FPRINTF(stderr, "TETRA channel at %d Hz: %d Hz at %.3f dB (> -75 dB)\n", rate, f_hz, db);
+                return 1;
+            }
+        }
+    }
+    /* No clamp and no fallback: a rate that cannot hold the transition, a short buffer or a bad argument is refused
+       without writing. */
+    for (int i = 0; i < DSD_CHANNEL_LPF_MAX_TAPS; i++) {
+        taps[i] = 7.0f;
+    }
+    if (dsd_tetra_channel_design(18000, taps, DSD_CHANNEL_LPF_MAX_TAPS) != -1
+        || dsd_tetra_channel_design(27000, taps, DSD_CHANNEL_LPF_MAX_TAPS) != -1
+        || dsd_tetra_channel_design(144000, taps, 192) != -1 || dsd_tetra_channel_design(0, taps, 288) != -1
+        || dsd_tetra_channel_design(72000, NULL, DSD_CHANNEL_LPF_MAX_TAPS) != -1) {
+        DSD_FPRINTF(stderr, "TETRA channel design accepted an unrealizable rate, a short buffer or a bad argument\n");
+        return 1;
+    }
+    if (std::fabs((double)taps[0] - 7.0) > 1e-9) {
+        DSD_FPRINTF(stderr, "a refused TETRA channel design wrote taps\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* One squelched block of a TETRA-profile CQPSK stream at rate_hz, with the chain marked active or not: the block
+ * designs its channel plan and emits zero symbols without running the CQPSK loops. An inactive block is not CQPSK, the
+ * plain cause that keeps the chain off. */
+static void
+run_tetra_profile_block(demod_state* s, int rate_hz, int active) {
+    s->rate_in = rate_hz;
+    s->rate_out = rate_hz;
+    s->rate_out2 = 0;
+    s->mode_demod = &raw_demod;
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = 1024;
+    s->channel_lpf_enable = 1;
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_TETRA;
+    s->symbol_rate_hz = 18000;
+    s->ted_sps = rate_hz / 18000;
+    s->cqpsk_enable = active ? 1 : 0;
+    s->output_kind = active ? DSD_DEMOD_OUTPUT_SYMBOL_CQPSK : DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    s->tetra_chain = active ? 1 : 0;
+    s->channel_squelch_level.store(1.0f);
+    full_demod(s);
+}
+
+/* The TETRA profile installs its own design only while the TETRA chain runs. Inactive, it runs the legacy WIDE plan
+ * exactly as before the profile existed (the 144-tap design, or the 63-tap fallback where that does not fit), and the
+ * plan follows the chain both ways at one rate and profile. */
+static int
+test_tetra_profile_plan(demod_state* s) {
+    static float wide[DSD_CHANNEL_LPF_MAX_TAPS];
+    static float want[DSD_CHANNEL_LPF_MAX_TAPS];
+    const int inactive_rates[] = {24000, 36000, 48000, 72000, 144000};
+    for (int rate : inactive_rates) {
+        int wide_len = 0;
+        design_plan(s, rate, DSD_CH_LPF_PROFILE_WIDE, 0, wide, &wide_len);
+        DSD_MEMSET(s, 0, sizeof(*s));
+        run_tetra_profile_block(s, rate, 0);
+        const int len = s->channel_lpf_plan_taps_len;
+        if (wide_len <= 0 || len != wide_len
+            || std::memcmp(s->channel_lpf_plan_taps, wide, (size_t)wide_len * sizeof(float)) != 0) {
+            DSD_FPRINTF(stderr, "inactive TETRA profile at %d Hz planned %d taps, want the %d-tap WIDE plan\n", rate,
+                        len, wide_len);
+            return 1;
+        }
+    }
+    for (int rate = 36000; rate <= 144000; rate += 18000) {
+        const int want_len = dsd_tetra_channel_design(rate, want, DSD_CHANNEL_LPF_MAX_TAPS);
+        DSD_MEMSET(s, 0, sizeof(*s));
+        run_tetra_profile_block(s, rate, 1);
+        if (want_len <= 0 || s->channel_lpf_plan_taps_len != want_len
+            || std::memcmp(s->channel_lpf_plan_taps, want, (size_t)want_len * sizeof(float)) != 0) {
+            DSD_FPRINTF(stderr, "active TETRA chain at %d Hz planned %d taps, want the %d-tap TETRA design\n", rate,
+                        s->channel_lpf_plan_taps_len, want_len);
+            return 1;
+        }
+    }
+    /* Same rate and profile, the chain leaving and entering: the plan is redesigned each way. */
+    int wide_len = 0;
+    design_plan(s, 72000, DSD_CH_LPF_PROFILE_WIDE, 0, wide, &wide_len);
+    const int tetra_len = dsd_tetra_channel_design(72000, want, DSD_CHANNEL_LPF_MAX_TAPS);
+    DSD_MEMSET(s, 0, sizeof(*s));
+    run_tetra_profile_block(s, 72000, 1);
+    run_tetra_profile_block(s, 72000, 0);
+    if (s->channel_lpf_plan_taps_len != wide_len
+        || std::memcmp(s->channel_lpf_plan_taps, wide, (size_t)wide_len * sizeof(float)) != 0) {
+        DSD_FPRINTF(stderr, "TETRA chain leaving at 72 kHz kept a %d-tap plan, want the %d-tap WIDE plan\n",
+                    s->channel_lpf_plan_taps_len, wide_len);
+        return 1;
+    }
+    run_tetra_profile_block(s, 72000, 1);
+    if (s->channel_lpf_plan_taps_len != tetra_len
+        || std::memcmp(s->channel_lpf_plan_taps, want, (size_t)tetra_len * sizeof(float)) != 0) {
+        DSD_FPRINTF(stderr, "TETRA chain entering at 72 kHz kept a %d-tap plan, want the %d-tap TETRA design\n",
+                    s->channel_lpf_plan_taps_len, tetra_len);
+        return 1;
+    }
+    return 0;
+}
+
 /* The runtime validator mirrors the DSP design constants. */
 static int
 test_runtime_mirror(void) {
@@ -488,6 +776,11 @@ main(void) {
     rc |= test_digital_row_profile_under_analog_family(s);
     rc |= test_legacy_wide_width(s);
     rc |= test_runtime_mirror();
+    rc |= test_profile_plans_pinned(s);
+    rc |= test_tetra_profile_ids();
+    rc |= test_protected_edges();
+    rc |= test_tetra_channel_design();
+    rc |= test_tetra_profile_plan(s);
     dsd_neo_aligned_free(s);
     return rc;
 }

@@ -460,7 +460,7 @@ snr_c4fm_eye_compute(const rtl_view_snr_inputs* in) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    double bias = dsd_snr_bias_c4fm_db(in->rate_out, in->ted_sps, in->channel_profile);
+    double bias = dsd_snr_bias_c4fm_db(in->rate_out, in->ted_sps, in->channel_profile, in->tetra_chain);
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
@@ -494,7 +494,7 @@ snr_qpsk_const_compute(const rtl_view_snr_inputs* in) {
             best_snr = snr_d;
         }
     }
-    double bias = dsd_snr_bias_evm_db(in->rate_out, in->ted_sps, in->channel_profile);
+    double bias = dsd_snr_bias_evm_db(in->rate_out, in->ted_sps, in->channel_profile, in->tetra_chain);
     return best_snr - bias;
 }
 
@@ -539,7 +539,7 @@ snr_gfsk_eye_compute(const rtl_view_snr_inputs* in) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    double bias = dsd_snr_bias_evm_db(in->rate_out, in->ted_sps, in->channel_profile);
+    double bias = dsd_snr_bias_evm_db(in->rate_out, in->ted_sps, in->channel_profile, in->tetra_chain);
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
@@ -549,7 +549,10 @@ typedef double (*snr_compute_fn)(const rtl_view_snr_inputs* in);
 
 static int
 snr_inputs_equal(const rtl_view_snr_inputs* a, const rtl_view_snr_inputs* b) {
-    return (a->ted_sps == b->ted_sps && a->rate_out == b->rate_out && a->channel_profile == b->channel_profile) ? 1 : 0;
+    return (a->ted_sps == b->ted_sps && a->rate_out == b->rate_out && a->channel_profile == b->channel_profile
+            && a->tetra_chain == b->tetra_chain)
+               ? 1
+               : 0;
 }
 
 static double

@@ -73,6 +73,7 @@ enum DSD_ATTR_PACKED {
     DSD_CH_LPF_PROFILE_PROVOICE = 3,  /* ProVoice: protects the 6250 Hz channel edge */
     DSD_CH_LPF_PROFILE_P25_C4FM = 4,  /* P25 C4FM: protects the 6250 Hz channel edge */
     DSD_CH_LPF_PROFILE_P25_CQPSK = 5, /* P25 CQPSK/LSM: 12.5 kHz edge plus guard */
+    DSD_CH_LPF_PROFILE_TETRA = 6,     /* TETRA: protects the 11250 Hz edge while the TETRA chain runs, else WIDE */
 };
 
 enum DSD_ATTR_PACKED dsd_demod_output_kind {
@@ -233,6 +234,7 @@ struct demod_state {
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
     int channel_lpf_plan_width_hz; /* cached analog width for channel_lpf_plan_taps (0 = profile design) */
+    int channel_lpf_plan_tetra;    /* cached: 1 when channel_lpf_plan_taps is the TETRA chain's design */
     int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed, or the analog width is unrealizable */
     /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
        channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
@@ -366,6 +368,10 @@ struct demod_state {
     int output_kind;    /* dsd_demod_output_kind */
     int symbol_rate_hz; /* FSK/CQPSK protocol symbol rate */
     int symbol_levels;  /* 2 or 4 for FSK; 4 for SYMBOL_CQPSK */
+    /* 1 while the TETRA receive chain runs (DSD_CH_LPF_PROFILE_TETRA with the TETRA symbol profile); 0, the zeroed
+       default, runs every stream as before that chain existed, a TETRA-profile one with the legacy WIDE channel filter.
+       Keys the channel-filter plan and the SNR noise bandwidth. */
+    int tetra_chain;
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;
