@@ -1054,7 +1054,7 @@ QStringList
 SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
                                   SessionArgsError* error, bool* recording) const {
     QStringList args = buildArgs(system, error);
-    *recording = *error == SessionArgsError::None && host && m_recordingSessions;
+    *recording = *error == SessionArgsError::None && host != nullptr && m_recordingSessions != nullptr;
     if (*recording) {
         // A saved system records into its own folder; Explore and Signal search share one, whatever uid the map
         // carries. The folder goes into the argv, so the system is built again with it once it is known valid.

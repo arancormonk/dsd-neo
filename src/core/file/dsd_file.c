@@ -1333,7 +1333,7 @@ wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* d
 /* An empty segment (the header alone) at @p path: removed, and journaled as discarded. */
 static void
 wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
-    remove(path);
+    (void)remove(path);
     if (journal->on) {
         wav_journal_discard(wav_close_journal_id(journal));
     }
