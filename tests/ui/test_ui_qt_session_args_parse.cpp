@@ -728,6 +728,13 @@ test_extras_judged_as_the_parser_reads_them(const QString& scratch) {
         {"-o --strict-crc -7 %1", false, SessionArgsError::None, false, false, Applied::Folder},
         {"-o --strict-crc -w %1/out.wav", false, SessionArgsError::None, true, false, Applied::StaticWav},
         {"-o --strict-crc -P", false, SessionArgsError::None, false, true, Applied::PerCall},
+        // A "--" that is a value ends nothing: getopt reads on after it, as the long-option pass does.
+        {"-o -- -7 %1 -o null", true, SessionArgsError::CallRecordingOption, false, false, Applied::Folder},
+        {"--key-profile-ref -- -7 %1", true, SessionArgsError::CallRecordingOption, false, false, Applied::Folder},
+        // One that is no value ends the options: what follows is an operand.
+        {"-o null -- -7 %1", false, SessionArgsError::None, false, false, Applied::Folder},
+        {"-o -- -- -7 %1", false, SessionArgsError::None, false, false, Applied::Folder},
+        {"-- -w %1/out.wav", false, SessionArgsError::None, true, false, Applied::StaticWav},
     };
     for (const Case& c : cases) {
         const QString extras = QString::fromLatin1(c.extras).arg(scratch);
@@ -740,6 +747,63 @@ test_extras_judged_as_the_parser_reads_them(const QString& scratch) {
                    c.honoured ? QStringLiteral("refused") : QStringLiteral("accepted"), extras)),
                session_args_recording_extra_error(extras, c.recordCalls, c.noStorage) == c.refusal);
     }
+}
+
+/*
+ * Every short option that takes a value, by the parser's own option string, with a refused option where its value
+ * goes: as its value the option is none (-L -7 <dir>); after a "--" that is the value, it is one again
+ * (-L -- -7 <dir>); after a second "--", the terminator, it is an operand (-L -- -- -7 <dir>). Each is parsed as the
+ * decoder parses it, in a scratch working folder (some options make files there), and then judged. A parse that fails
+ * at the value before the refused option is reached applies nothing; the refusal stands there too.
+ */
+void
+test_refused_option_after_each_value_option(const QString& scratch) {
+    using dsd_qt::session_args_recording_extra_error;
+    using dsd_qt::SessionArgsError;
+
+    QTemporaryDir cwd;
+    const QString was = QDir::currentPath();
+    expect("matrix: a scratch working folder", cwd.isValid() && QDir::setCurrent(cwd.path()));
+    int letters = 0;
+    int honoured = 0;
+    for (const char* at = dsd_cli_short_options(); *at != '\0'; ++at) {
+        const char letter = *at;
+        if (letter == ':' || letter == '7' || dsd_cli_short_option_takes_value(letter) == 0) {
+            continue;
+        }
+        letters++;
+        const QString option = QStringLiteral("-") + QLatin1Char(letter);
+        const QString asValue = QStringLiteral("%1 -7 %2").arg(option, scratch);
+        const QString afterValue = QStringLiteral("%1 -- -7 %2").arg(option, scratch);
+        const QString afterEnd = QStringLiteral("%1 -- -- -7 %2").arg(option, scratch);
+
+        Decoder valueDecoder;
+        (void)parse(asValue.split(QLatin1Char(' ')), valueDecoder);
+        expect(qPrintable(QStringLiteral("matrix: the parser ignores: %1").arg(asValue)),
+               !applied(Applied::Folder, *valueDecoder.opts, scratch));
+        expect(qPrintable(QStringLiteral("matrix: accepted: %1").arg(asValue)),
+               session_args_recording_extra_error(asValue, false) == SessionArgsError::None);
+
+        Decoder afterDecoder;
+        const bool parsed = parse(afterValue.split(QLatin1Char(' ')), afterDecoder);
+        const bool honours = applied(Applied::Folder, *afterDecoder.opts, scratch);
+        honoured += honours ? 1 : 0;
+        expect(qPrintable(QStringLiteral("matrix: the parser honours, or fails before it: %1").arg(afterValue)),
+               honours || !parsed);
+        expect(qPrintable(QStringLiteral("matrix: refused: %1").arg(afterValue)),
+               session_args_recording_extra_error(afterValue, false) == SessionArgsError::CallRecordingOption);
+
+        Decoder endDecoder;
+        (void)parse(afterEnd.split(QLatin1Char(' ')), endDecoder);
+        expect(qPrintable(QStringLiteral("matrix: the parser ignores: %1").arg(afterEnd)),
+               !applied(Applied::Folder, *endDecoder.opts, scratch));
+        expect(qPrintable(QStringLiteral("matrix: accepted: %1").arg(afterEnd)),
+               session_args_recording_extra_error(afterEnd, false) == SessionArgsError::None);
+    }
+    expect("matrix: every value option was tried", letters >= 30);
+    // Those whose value is free text (-i, -o, -w, file names); the others refuse "--" and fail the parse there.
+    expect("matrix: a \"--\" value lets the option after it apply", honoured > 0);
+    expect("matrix: back in the working folder", QDir::setCurrent(was));
 }
 
 } // namespace
@@ -773,6 +837,7 @@ main(int argc, char** argv) {
         test_status_follows_the_session(prefs);
         test_status_waits_for_the_run(prefs, sessions);
         test_extras_judged_as_the_parser_reads_them(dir.filePath(QStringLiteral("extras")));
+        test_refused_option_after_each_value_option(dir.filePath(QStringLiteral("extras")));
     }
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

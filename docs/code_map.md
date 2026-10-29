@@ -1930,7 +1930,11 @@ suite runs under this compiler.
     `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. A frontend reading options a user typed
     walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
     `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads), in the
-    parser's order: the long options out of the whole argv first, then getopt over what is left
+    parser's order: the long options out of the whole argv first, up to the first `--` that is no long option's value
+    (compaction keeps that `--` and everything after it), then getopt over what is left, where a `--` that is a short
+    option's value ends nothing and only one that is no value ends the options. The parse itself is no validator: it
+    creates folders (`-Q`, `-d`), imports CSVs and key files, reads token files, prints usage and leaves getopt's
+    globals behind
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -8060,11 +8064,16 @@ Qt Quick frontend (`src/ui/qt`):
     `session_args_recording_extra_error()` walks the tokens as the decoder walks its argv, by the parser's own arity
     (`dsd_cli_long_option_arity()`, `dsd_cli_short_option_takes_value()`; Runtime, CLI), so an option's value is never
     taken for an option and an option never for a value: the long options first, out of the whole list wherever they
-    stand (a short option's value position included), as the pre-scan and compaction take them, then the short options
-    getopt reads in what is left (`-o --wav-journal x null` names the journal; `-o --strict-crc -7 x` gives `-o` the
-    value `-7`). A target CSV's options cell refuses every recording switch
-    already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store `recordingLimitMb` before `start()` and
-    on every change.
+    stand (a short option's value position included), up to the first `--` that is no long option's value, as the
+    pre-scan and compaction take them, then getopt's own reading of what is left, that `--` and its tail included
+    (`-o --wav-journal x null` names the journal; `-o --strict-crc -7 x` gives `-o` the value `-7`; `-o -- -7 x` gives
+    `-o` the value `--` and applies `-7`; `-o x -- -7 y` ends the options before `-7`). Short options are read letter by
+    letter (`-F7x` is `-F`, then `-7` with `x`), an operand is stepped over (glibc's getopt permutes past it; one that
+    stops there reads fewer options, never more), and an unknown option ends the walk where the parse fails; a long
+    option the first pass does not know (`--wav-journal=x`) is still refused by name. Validation by running the parser
+    on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
+    every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
+    `recordingLimitMb` before `start()` and on every change.
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or WAV
     stop then unknown-only off, best effort once the stop is in (`RecordingStatus::noteFollowUp()`: the status keeps
     describing the stop, whose outcome the follow-up's stands in for, as the queue applies in order); it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on

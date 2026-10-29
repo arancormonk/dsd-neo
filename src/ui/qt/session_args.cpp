@@ -55,13 +55,26 @@ short_option_grouped(const QString& token) {
     return !short_takes_value(token.at(1));
 }
 
+/* Whether getopt knows the short option @p letter, by the parser's own option string (its ':'s are no option). */
+bool
+short_known(QChar letter) {
+    return letter != QLatin1Char(':') && QLatin1String(dsd_cli_short_options()).contains(letter);
+}
+
 /**
- * @brief The tokens of @p tokens the parser reads as options, not as the value of the option before them, found as the
- * decoder finds them, in two passes up to "--". First its long options come out of the whole list wherever they stand,
- * a short option's value position included, each with the value its arity takes (dsd_cli_long_option_arity()), as
- * dsd_parse_args()' pre-scan and dsd_cli_compact_args() take them. Then getopt reads what is left: a short option that
- * takes a value and has none attached takes the next token whatever it looks like. Both kinds are returned, and the
- * operands getopt leaves too.
+ * @brief The options the parser reads in @p tokens, found as the decoder finds them, in its two passes.
+ *
+ * First its long options come out of the whole list wherever they stand, a short option's value position included,
+ * each with the value its arity takes (dsd_cli_long_option_arity()), up to the first "--" that is no long option's
+ * value, as dsd_parse_args()' pre-scan and dsd_cli_compact_args() take them; that "--" and everything after it stay, as
+ * the compaction keeps them. Then getopt reads what is left, by its own rules: an element starting with '-' is a group
+ * of short options, and the first of them that takes a value takes the rest of the element, or the next element
+ * whatever it is ("--" included); a "--" that is no value ends the options; an operand is stepped over (glibc's getopt
+ * permutes past it; one that stops there reads fewer options, never more); an unknown option ends the parse with an
+ * error, and nothing after it is read. A long option the first pass does not know reaches getopt as option '-', which
+ * is unknown: it is returned as typed, so its name can still be refused, and ends the parse.
+ *
+ * Long options are returned as typed, short ones as "-" and the letter.
  */
 QStringList
 option_tokens(const QString& tokens) {
@@ -71,6 +84,7 @@ option_tokens(const QString& tokens) {
     for (qsizetype i = 0; i < split.size(); ++i) {
         const QString& token = split.at(i);
         if (token == QLatin1String("--")) {
+            rest.append(split.mid(i));
             break;
         }
         const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
@@ -89,9 +103,28 @@ option_tokens(const QString& tokens) {
     }
     for (qsizetype i = 0; i < rest.size(); ++i) {
         const QString& token = rest.at(i);
-        options.append(token);
-        if (token.size() == 2 && token.at(0) == QLatin1Char('-') && short_takes_value(token.at(1))) {
-            ++i;
+        if (token == QLatin1String("--")) {
+            break;
+        }
+        if (token.size() < 2 || !token.startsWith(QLatin1Char('-'))) {
+            continue;
+        }
+        if (token.startsWith(QLatin1String("--"))) {
+            options.append(token);
+            break;
+        }
+        for (qsizetype at = 1; at < token.size(); ++at) {
+            const QChar letter = token.at(at);
+            if (!short_known(letter)) {
+                return options;
+            }
+            options.append(QLatin1Char('-') + letter);
+            if (short_takes_value(letter)) {
+                if (at + 1 == token.size()) {
+                    ++i;
+                }
+                break;
+            }
         }
     }
     return options;
@@ -388,16 +421,13 @@ SessionArgsError
 session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool noStorage) {
     const QStringList options = option_tokens(tokens);
     const bool owned = std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
-        return token.startsWith(QLatin1String("-7")) || long_option_is(token, QLatin1String("--wav-journal"))
+        return token == QLatin1String("-7") || long_option_is(token, QLatin1String("--wav-journal"))
                || long_option_is(token, QLatin1String("--rdio-api-delete-after-upload"));
     });
     if (owned) {
         return SessionArgsError::CallRecordingOption;
     }
-    const bool staticWav = std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
-        return token.startsWith(QLatin1String("-w")) && !token.startsWith(QLatin1String("--"));
-    });
-    if (recordCalls && staticWav) {
+    if (recordCalls && options.contains(QStringLiteral("-w"))) {
         return SessionArgsError::CallRecordingStaticWav;
     }
     return noStorage && options.contains(QStringLiteral("-P")) ? SessionArgsError::CallRecordingNoStorage

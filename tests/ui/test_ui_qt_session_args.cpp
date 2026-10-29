@@ -259,7 +259,9 @@ test_recording_refused_extras(void) {
                      // A switch takes no value: the -7 after it is an option, as the decoder reads it.
                      "--record-unknown-only -7 /x", "--enc-lockout -7 /x",
                      // --config takes the next argument only when it is not an option.
-                     "--config -7 /x", "--frontend=none -7 /x"}) {
+                     "--config -7 /x", "--frontend=none -7 /x",
+                     // getopt reads a group letter by letter, and a "--" that is a value ends nothing.
+                     "-F7/x", "-o -- -7 /x"}) {
         expect(qPrintable(QStringLiteral("refused: %1").arg(tokens)),
                session_args_recording_extra_error(tokens, false) == SessionArgsError::CallRecordingOption);
     }
@@ -269,9 +271,10 @@ test_recording_refused_extras(void) {
         expect(qPrintable(QStringLiteral("-w kept without Record calls: %1").arg(tokens)),
                session_args_recording_extra_error(tokens, false) == SessionArgsError::None);
     }
-    for (const auto& tokens : QStringList{"", "-P", "--record-unknown-only", "--input-level-warn-db -7",
-                                          "--frame-log -7", "-c -7", "-o -w", "--api-token -7", "--config cfg.ini -P",
-                                          "--wav-journalx /x", "--rdio-api-delete-after-uploads", "-Z -- -7 /x"}) {
+    for (const auto& tokens :
+         QStringList{"", "-P", "--record-unknown-only", "--input-level-warn-db -7", "--frame-log -7", "-c -7", "-o -w",
+                     "--api-token -7", "--config cfg.ini -P", "--wav-journalx /x", "--rdio-api-delete-after-uploads",
+                     "-Z -- -7 /x", "-o x -- -7 /x", "-o -- -- -7 /x"}) {
         expect(qPrintable(QStringLiteral("kept: %1").arg(tokens)),
                session_args_recording_extra_error(tokens, true) == SessionArgsError::None);
     }
