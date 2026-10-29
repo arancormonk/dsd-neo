@@ -126,7 +126,7 @@ analog_call_ensure(dsd_state* state) {
 }
 
 void
-dsd_engine_analog_call_stop_recording(dsd_opts* opts, dsd_state* state) {
+dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* state) {
     analog_call* call = (opts && state) ? analog_call_get(state) : NULL;
     if (!call) {
         return;

@@ -208,7 +208,7 @@ close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* s
 }
 
 void
-dsd_engine_analog_call_stop_recording(dsd_opts* opts, dsd_state* state) {
+dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
 }
