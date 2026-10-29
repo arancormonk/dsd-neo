@@ -1798,6 +1798,9 @@ def tetra_stress_samples(wanted, snr_db, neighbour_db, neighbour_hz, offset_hz, 
     """The wanted 72 kHz call with the stress applied (TETRA_STRESS); returns (samples at 72 kHz, realized neighbour
     ratio in dB after decimation, or None)."""
     rate = TETRA_STRESS_SYNTH_RATE_HZ
+    # Unpadded: the circular resampler joins the call's end to its start, and the ringing at that join, which fades
+    # within about a millisecond of each end, is part of the committed bytes. Padding here now would change every
+    # fixture of the set; no case depends on those first and last bursts.
     up = resample_to_fixture_rate(wanted, TETRA_EXCERPT_RATE_HZ, rate)
     n = np.arange(len(up))
     shifted = up * np.exp(2j * math.pi * offset_hz * n / rate)

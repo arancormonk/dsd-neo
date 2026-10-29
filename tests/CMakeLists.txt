@@ -13952,7 +13952,9 @@ add_test(
 
 # Why a replay path cannot be opened: a symbolic link, a missing or unreadable file, a sniff read that fails (through
 # a seam built with DSD_NEO_TEST_HOOKS, on both the path's and a sidecar's data_file sniff), short input, and the
-# sidecar fallback.
+# sidecar fallback. iq_replay.c is compiled in again with DSD_NEO_TEST_HOOKS for those seams, and dsd-neo_io_iq links
+# for the rest of the reader (iq_wav.c, iq_capture.c): the test's object already defines every replay symbol, so the
+# linker never pulls the library's own iq_replay.c object, which has no seams.
 add_executable(
     dsd-neo_test_io_iq_replay_open_errors
     io/test_io_iq_replay_open_errors.c

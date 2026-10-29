@@ -40,13 +40,13 @@ static int g_pushes;
 static double g_pushed = -1.0;
 static int g_tunes;
 
-/* The tune always lands: the scanner commits the row as it would after a real retune. */
 /* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()). */
 int
 dsd_engine_scan_tune_moved(void) {
     return 0;
 }
 
+/* The tune always lands: the scanner commits the row as it would after a real retune. */
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
     (void)sps;
