@@ -7991,7 +7991,9 @@ Qt Quick frontend (`src/ui/qt`):
     of failures. Any other application state owes the handoff (`backgroundCaptureHandoffOwed()`): the next `refresh()`,
     which `UiController::tick()` forces with `flushHistory()` when no redraw would, stops the tap (a last poll, then its
     last append), adopts the clear mark the tap bound if the model's was still pending, and folds the spill in before
-    its own ring walk (`foldSpill()`). The fold also runs at load, so a process killed in the background loses nothing
+    its own ring walk (`foldSpill()`). Rows that last append could not write either (the spill still unwritable) come
+    back with the stop (`Result::unwritten`) and fold after the spill's lines: only the model has them then (the next
+    start clears what the tap holds), and the log's own saves keep them. The fold also runs at load, so a process killed in the background loses nothing
     its batches wrote. It is idempotent by fragment: a line whose fragment a row already holds can only refine it, and
     its seen entry joins the model's as a fresh read would; lines a clear covers are skipped. A spill longer than the log
     is trimmed as it folds, whenever the log passes 1250 rows, so a long background stretch (50,000 rows: 0.26 s at
@@ -8009,7 +8011,8 @@ Qt Quick frontend (`src/ui/qt`):
     210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy does); a
     minimal row spills as about 440 bytes (a named row about a kilobyte).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
-    while suspended, a spill across a process death, a stop and a clear while away, write volume, a 50,000-row spill;
+    while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable
+    at the handoff, a 50,000-row spill;
     the real publisher, tap and consumer), `UI_QT_CONTROLLER` (the handoff on a tick with no redraw), `UI_QT_TALKGROUP_LIST_MODEL`,
     `UI_QT_QML_CALL_LISTS` (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
 - Call recording store (issue #708; `recording_store.{h,cpp}`, `recording_journal.{h,cpp}`, `recording_sessions.h`).

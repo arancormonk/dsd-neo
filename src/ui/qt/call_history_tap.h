@@ -96,12 +96,16 @@ class CallHistoryTap {
         CallHistoryModel::ClearMark clear;
     };
 
-    /** @brief What the tap leaves: the clear mark as its reads settled it, and the ring position it read last. */
+    /** @brief What the tap leaves: the clear mark as its reads settled it, the ring position it read last, and the
+     * rows its last append could not write. */
     struct Result {
         CallHistoryModel::ClearMark clear;
         bool read = false;
         qulonglong pushSeq[2] = {0U, 0U};
         quint64 ring = 0U;
+        /* Spill lines, oldest first, that never reached the spill (it was still unwritable at stop). Only the model
+         * has them now: the next start clears what the tap holds. */
+        QByteArray unwritten;
     };
 
     CallHistoryTap(CallHistoryTapSource source, CallHistorySpill* spill);
@@ -113,7 +117,8 @@ class CallHistoryTap {
     /** @brief Start polling from @p context. @return false when already running or the ring buffers cannot be had. */
     bool start(Context context);
 
-    /** @brief Poll once more, write what is held to the spill, and stop. A tap that is not running returns {}. */
+    /** @brief Poll once more, write what is held to the spill, and stop; what could not be written comes back in
+     * Result::unwritten. A tap that is not running returns {}. */
     Result stop();
 
     bool

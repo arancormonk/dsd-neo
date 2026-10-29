@@ -620,8 +620,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void handOffBackgroundCapture();
     /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
     void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
-    /** @brief Fold the spill into the log, idempotently by fragment; @return whether the row count changed. */
-    bool foldSpill();
+    /** @brief Fold the spill into the log, then @p unwritten (the lines the tap could not write to it), idempotently by
+     * fragment; @return whether the row count changed. */
+    bool foldSpill(const QByteArray& unwritten = QByteArray());
+    /** @brief Fold spill @p lines into the log; @p folded is set when any line folded. @return whether rows changed. */
+    bool foldSpillLines(const QByteArray& lines, bool* folded);
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
         Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);

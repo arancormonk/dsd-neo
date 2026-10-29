@@ -1504,7 +1504,7 @@ void
 CallHistoryModel::clearAll() {
     // A clear while the background tap runs (the app hidden but its loop running) covers what the tap read too: the
     // tap stops, its read position joins the model's, and it starts again behind the new mark. Everything spilled so
-    // far is cleared rows.
+    // far is cleared rows, and so is what the tap could not write.
     // A tap the app's return already owes a handoff (no ingest since) is handed off instead: stopped, its clear
     // adopted and its spill folded, as the next ingest would have, and it stays stopped in the foreground.
     const bool tapWasRunning = m_tap && m_tap->running();
@@ -2110,22 +2110,48 @@ CallHistoryModel::handOffBackgroundCapture() {
         m_clear = tapped.clear;
         saveClear();
     }
-    if (foldSpill()) {
+    // What the tap's last append could not write (the spill still unwritable) is folded with the spill: only the model
+    // has it now.
+    if (foldSpill(tapped.unwritten)) {
         Q_EMIT countChanged();
     }
 }
 
 bool
-CallHistoryModel::foldSpill() {
+CallHistoryModel::foldSpill(const QByteArray& unwritten) {
     qint64 size = 0;
     const QByteArray data = m_spill->read(&size);
-    if (size <= 0) {
+    if (size <= 0 && unwritten.isEmpty()) {
         return false;
     }
-    bool rowsChanged = false;
     bool folded = false;
+    // The spill's lines first: the tap wrote them before the ones it could not.
+    bool rowsChanged = foldSpillLines(data, &folded);
+    rowsChanged = foldSpillLines(unwritten, &folded) || rowsChanged;
+    rowsChanged = trimToCapacity() || rowsChanged;
+    pruneSeen();
+    if (size > 0) {
+        m_spillFoldedBytes = size;
+    }
+    if (folded) {
+        markChanged();
+    }
+    // The spill's lines go once a save of this generation is acknowledged; at once when they added nothing the disk
+    // lacks. The unwritten ones were never in it: the log's own saves keep them.
+    if (size > 0) {
+        m_spillFoldGeneration = m_generation;
+        if (m_ackedGeneration >= m_spillFoldGeneration) {
+            acknowledgeSave(m_ackedGeneration);
+        }
+    }
+    return rowsChanged;
+}
+
+bool
+CallHistoryModel::foldSpillLines(const QByteArray& lines, bool* folded) {
+    bool rowsChanged = false;
     const bool cleared = clearApplies();
-    for (const QByteArray& line : data.split('\n')) {
+    for (const QByteArray& line : lines.split('\n')) {
         // A line a kill tore, or one a newer build wrote, is skipped; the rest still fold.
         const QJsonObject obj = QJsonDocument::fromJson(line).object();
         if (obj.value(QLatin1String("v")).toInt() != 1) {
@@ -2159,21 +2185,10 @@ CallHistoryModel::foldSpill() {
         const bool isUpdate = obj.value(QLatin1String("upd")).toBool() || known;
         const bool again = obj.value(QLatin1String("again")).toBool() && !known;
         rowsChanged = ingestRow(row, isUpdate, again) || rowsChanged;
-        folded = true;
+        *folded = true;
         if (m_rows.size() > kMaxRows + kSpillFoldTrimSlack) {
             rowsChanged = trimToCapacity() || rowsChanged;
         }
-    }
-    rowsChanged = trimToCapacity() || rowsChanged;
-    pruneSeen();
-    m_spillFoldedBytes = size;
-    if (folded) {
-        markChanged();
-    }
-    // The lines go once a save of this generation is acknowledged; at once when they added nothing the disk lacks.
-    m_spillFoldGeneration = m_generation;
-    if (m_ackedGeneration >= m_spillFoldGeneration) {
-        acknowledgeSave(m_ackedGeneration);
     }
     return rowsChanged;
 }

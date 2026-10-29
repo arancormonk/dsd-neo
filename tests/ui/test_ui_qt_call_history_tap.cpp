@@ -15,9 +15,9 @@
  * stopped decoder left published are captured; a clear made while the tap runs keeps its rows cleared, and one made
  * after the app returned but before its first ingest hands the tap off instead of restarting it; the spill is written
  * in batches of about a kilobyte a row; and a spill that cannot be written holds a bounded backlog, the newest rows,
- * reported once. Notices fold once like calls. A spill far longer than the log folds bounded: the newest rows stay, the
- * oldest session's oldest go first, and the log never holds the whole backlog. The deliberate failures' warnings are
- * counted, not printed. */
+ * reported once, which reaches History with the handoff when the spill is still unwritable then. Notices fold once
+ * like calls. A spill far longer than the log folds bounded: the newest rows stay, the oldest session's oldest go
+ * first, and the log never holds the whole backlog. The deliberate failures' warnings are counted, not printed. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -479,6 +479,47 @@ test_unwritable_spill_keeps_a_bounded_backlog(void) {
     expect("the oldest held rows were dropped", rows_in_tg_range(model, 37001U, 37242U) == 0);
 }
 
+/* A spill still unwritable when the app returns: the tap's last append fails too, and the rows it holds go to the
+ * model with the handoff, not to the next start, which clears them. 350 calls on one slot while suspended, under the
+ * 508-row bound, more than the ring keeps: every one is in History. Once the spill can be written, the next background
+ * run writes only what is new, and no call comes twice. */
+void
+test_unwritable_spill_hands_off_what_it_holds(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1754870000;
+    CallHistoryModel model;
+    start_tap(model);
+    gui_ingest(model);
+    expect("handoff: the spill is blocked", QDir().mkpath(spill_path()));
+    g_spillDropWarnings = 0;
+    set_app_state(Qt::ApplicationSuspended);
+    for (int batch = 0; batch < 7; batch++) {
+        decoder.commitCalls(0, 50, 38001U + static_cast<uint32_t>(batch) * 50U,
+                            when + static_cast<time_t>(batch) * 1500);
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+    }
+    expect("handoff: nothing reached the spill", spill_lines() == 0);
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("handoff: every call held is in History",
+           model.count() == 350 && rows_in_tg_range(model, 38001U, 38350U) == 350);
+    expect("handoff: none was dropped", g_spillDropWarnings == 0);
+    gui_ingest(model);
+    expect("handoff: reading the ring again adds nothing", model.count() == 350);
+
+    QDir(spill_path()).removeRecursively();
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commitCalls(0, 10, 38401U, when + 20000);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("handoff: the spill, writable again, takes only the new calls", spill_lines() == 10);
+    expect("handoff: no call twice", model.count() == 360 && rows_in_tg_range(model, 38001U, 38410U) == 360);
+}
+
 /* The spill is written in batches, never per row: a call a poll for 100 polls appends at most once every five
  * polls (five seconds at the app's pace), about a kilobyte a row, so even ten calls a second stay under the 16 KiB/s
  * the History stores budget. */
@@ -619,6 +660,7 @@ main(int argc, char** argv) {
     test_sustained_write_volume();
     test_clear_before_the_first_ingest_after_return();
     test_unwritable_spill_keeps_a_bounded_backlog();
+    test_unwritable_spill_hands_off_what_it_holds();
     test_long_spill_folds_bounded();
     test_spill_fold_trims_oldest_session_first();
 

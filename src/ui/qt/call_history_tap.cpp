@@ -149,6 +149,12 @@ CallHistoryTap::stop() {
     m_running = false;
     m_rings.reset();
     m_context = Context();
+    // The final append failed too (the spill is still unwritable): the rows go to the model with the rest of the
+    // result, since the next start clears what the tap holds.
+    for (const QByteArray& line : std::as_const(m_pending)) {
+        m_result.unwritten.append(line);
+    }
+    m_pending.clear();
     return std::exchange(m_result, Result());
 }
 
