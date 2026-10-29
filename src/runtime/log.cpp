@@ -15,7 +15,6 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>

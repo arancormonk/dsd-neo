@@ -14,12 +14,12 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <mutex>
-#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
+#include <stdlib.h> // atexit
 #include <windows.h>
 #endif
 

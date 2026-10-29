@@ -1501,7 +1501,7 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
         return;
     }
     opts->rtl_auto_ppm = cfg->rtl_auto_ppm ? 1 : 0;
-    /* An exported DSD_NEO_AUTO_PPM, or one an option already set, wins over the INI key. */
+    /* An exported DSD_NEO_AUTO_PPM, or one this session already set, wins over the INI key. */
     (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUTO_PPM", opts->rtl_auto_ppm ? "1" : "0");
 }
 
@@ -1831,7 +1831,7 @@ apply_dsp_config(const dsdneoUserConfig* cfg) {
     if (!cfg || !cfg->has_dsp) {
         return;
     }
-    /* An exported variable, or one a toggle already set, wins over the INI key. */
+    /* An exported variable, or one this session already set, wins over the INI key. */
     (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_BALANCE", cfg->iq_balance ? "1" : "0");
     (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0");
 }
