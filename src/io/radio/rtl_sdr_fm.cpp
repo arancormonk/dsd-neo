@@ -3305,8 +3305,8 @@ demod_copy_wrapped_input_block(struct demod_state* d, const DemodInputSpan* span
    input stops at (an --iq-loop pass end, a RETUNE or a RESET), brings none, so the flush the loop top runs
    (demod_replay_flush_uplink()) would never come and the replay would neither end nor go past the boundary. Returns 1
    to read the ring (there is input, or no flush is owed: the flag is the demod thread's own, so it cannot change
-   during the wait), 0 to go back to the loop top (the input ended or stopped at a boundary, or the stream stops). The wait is 10 ms at a time, so a wake lost between the look and the wait costs at most
-   that. */
+   during the wait), 0 to go back to the loop top (the input ended or stopped at a boundary, or the stream stops). The
+   wait is 10 ms at a time, so a wake lost between the look and the wait costs at most that. */
 static int
 demod_replay_input_or_flush(void) {
     struct RtlSdrInternals* s = g_stream;
@@ -4553,18 +4553,20 @@ demod_wait_for_replay_demand(struct output_state* o) {
    before it, not dropped by the reset or spliced to the next pass. */
 static int
 replay_pipeline_idle_locked(const struct RtlSdrInternals* s) {
-    if (s->replay_input_boundary.load(std::memory_order_acquire)
-        && s->replay_demod_flush_owed.load(std::memory_order_acquire)) {
+    const int drained = (input_ring_used(&input_ring) == 0U
+                         && s->replay_last_consume_gen.load(std::memory_order_acquire)
+                                >= s->replay_last_submit_gen.load(std::memory_order_acquire)
+                         && ring_is_empty(&output)
+                         && s->replay_out_acked.load(std::memory_order_relaxed)
+                                == s->replay_out_written.load(std::memory_order_relaxed));
+    /* Read the flush flag only after the consume generation: the demod stores it before acknowledging that
+       generation (release), so an acknowledged block's flag is the one read here, never the block before's. */
+    if (!drained
+        || (s->replay_input_boundary.load(std::memory_order_acquire)
+            && s->replay_demod_flush_owed.load(std::memory_order_acquire))) {
         return 0;
     }
-    return (input_ring_used(&input_ring) == 0U
-            && s->replay_last_consume_gen.load(std::memory_order_acquire)
-                   >= s->replay_last_submit_gen.load(std::memory_order_acquire)
-            && ring_is_empty(&output)
-            && s->replay_out_acked.load(std::memory_order_relaxed)
-                   == s->replay_out_written.load(std::memory_order_relaxed))
-               ? 1
-               : 0;
+    return 1;
 }
 
 /* rtl_replay_eof_state::wait_event_boundary: 1 once the pipeline is idle, 0 when the replay stops. */
