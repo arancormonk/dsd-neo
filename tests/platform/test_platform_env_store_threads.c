@@ -9,8 +9,10 @@
  *
  * Readers loop dsd_env_read() while a writer sets, hides and clears overrides (each replaced value is zeroed and freed)
  * and adds and frees names. Every value a reader copies must be NULL or one of the strings that could be in force.
- * The writer waits for a read by every reader before its first write and after every CHECKPOINT writes, so the test
- * proves overlap however the threads are scheduled. The first calls of every thread race the store's lazy lock
+ * Each stretch of CHECKPOINT writes starts from a snapshot of every reader's count, and the writer does not start the
+ * next stretch until each count has grown by two: so every reader completes at least one whole read that began after
+ * the stretch's snapshot and ended before the next stretch, whatever the scheduling. (One increment is not enough: it
+ * can finish a read that began before the snapshot.) The first calls of every thread race the store's lazy lock
  * initialisation. Run under tsan-debug too.
  */
 
@@ -80,13 +82,16 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
-/* Wait until every reader has finished at least one more read than `seen` records, then record the new counts. */
+/* Wait until every reader's count has grown by two since `seen` was taken, so each has made a whole read since; then
+   take a fresh snapshot for the next stretch. */
 static void
 wait_for_every_reader(int* seen) {
     for (int r = 0; r < READERS; r++) {
-        while (atomic_load(&g_reads[r]) <= seen[r]) {
+        while (atomic_load(&g_reads[r]) < seen[r] + 2) {
             dsd_thread_yield();
         }
+    }
+    for (int r = 0; r < READERS; r++) {
         seen[r] = atomic_load(&g_reads[r]);
     }
 }
@@ -117,8 +122,8 @@ main(void) {
         assert(dsd_thread_create(&readers[i], reader_main, &g_reads[i]) == 0);
     }
     atomic_store(&g_start, 1);
-    /* Every reader reads before the first write and between every CHECKPOINT writes, so reads and writes overlap
-       throughout, however the threads are scheduled. */
+    /* Every reader makes a whole read before the first write and within every stretch of CHECKPOINT writes and the
+       wait that ends it (see wait_for_every_reader()). */
     int seen[READERS] = {0};
     int checkpoints = 0;
     wait_for_every_reader(seen);

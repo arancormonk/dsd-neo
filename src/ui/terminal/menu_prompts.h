@@ -228,6 +228,9 @@ UiPromptViewTestSnapshot ui_prompt_view_for_test(const char* text, size_t cursor
 /** @brief Test hook: 1 when the active prompt masks its input, 0 otherwise. */
 int ui_prompt_mask_active_for_test(void);
 
+/** @brief Test hook: the bytes the last prompt close zeroed in the input buffer (its capacity), then reset to 0. */
+size_t ui_prompt_zeroed_on_close_for_test(void);
+
 /**
  * @brief Test hook: the text ui_prompt_render() would draw for the whole buffer.
  *

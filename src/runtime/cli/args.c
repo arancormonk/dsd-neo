@@ -236,28 +236,40 @@ cli_env_override(const char* name, const char* value) {
     }
 }
 
-/* Room for an API option's environment fallback. A longer value is cut to fit, and every caller then refuses it as
-   too long or invalid, as it does any bad value. */
+/* Room for an API option's environment fallback, terminator included. A longer value is refused, never cut: a cut
+   token-file path would name another file. */
 #define CLI_API_ENV_CAP DSD_ENV_PATH_MAX
 
 /* An option's CLI value, else (when @p use_env) its non-empty environment fallback, copied into @p env_buf
-   (CLI_API_ENV_CAP bytes); *src names the one used. */
-static const char*
-cli_api_value(const char* cli, const char* cli_name, const char* env_name, int use_env, const char** src,
-              char* env_buf) {
+   (CLI_API_ENV_CAP bytes), in *out (NULL when neither is set); *src names the one used. -1, logged, when the fallback
+   does not fit; its text is never printed, since it may be the token. */
+static int
+cli_api_value(const char* cli, const char* cli_name, const char* env_name, int use_env, const char** src, char* env_buf,
+              const char** out) {
     *src = cli_name;
+    *out = cli;
     if (cli || !use_env) {
-        return cli;
+        return 0;
     }
     *src = env_name;
-    return dsd_env_copy(env_name, env_buf, CLI_API_ENV_CAP) > 1U ? env_buf : NULL;
+    errno = 0;
+    const char* value = dsd_env_read(env_name, env_buf, CLI_API_ENV_CAP);
+    if (!value && errno == ERANGE) {
+        LOG_ERROR("%s is too long (at most %u bytes)\n", env_name, (unsigned)(CLI_API_ENV_CAP - 1));
+        return -1;
+    }
+    *out = (value && value[0] != '\0') ? value : NULL;
+    return 0;
 }
 
 static int
 cli_resolve_api_port(dsd_opts* opts, const char* cli) {
     const char* src = NULL;
     char env_buf[CLI_API_ENV_CAP];
-    const char* port = cli_api_value(cli, "--api", "DSD_NEO_API_PORT", 1, &src, env_buf);
+    const char* port = NULL;
+    if (cli_api_value(cli, "--api", "DSD_NEO_API_PORT", 1, &src, env_buf, &port) != 0) {
+        return -1;
+    }
     unsigned long parsed = 0;
     if (!port) {
         return 0;
@@ -274,7 +286,10 @@ static int
 cli_resolve_api_bind(dsd_opts* opts, const char* cli, int enabled) {
     const char* src = NULL;
     char env_buf[CLI_API_ENV_CAP];
-    const char* bind = cli_api_value(cli, "--api-bind", "DSD_NEO_API_BIND", enabled, &src, env_buf);
+    const char* bind = NULL;
+    if (cli_api_value(cli, "--api-bind", "DSD_NEO_API_BIND", enabled, &src, env_buf, &bind) != 0) {
+        return -1;
+    }
     if (!bind) {
         return 0;
     }
@@ -292,7 +307,11 @@ cli_resolve_api_token(dsd_opts* opts, const cli_net_args* net, int enabled) {
     const unsigned max_len = (unsigned)(sizeof opts->api_token - 1U);
     const char* src = NULL;
     char env_buf[CLI_API_ENV_CAP];
-    const char* token = cli_api_value(net->api_token, "--api-token", "DSD_NEO_API_TOKEN", enabled, &src, env_buf);
+    const char* token = NULL;
+    if (cli_api_value(net->api_token, "--api-token", "DSD_NEO_API_TOKEN", enabled, &src, env_buf, &token) != 0) {
+        DSD_SECURE_ZERO(env_buf, sizeof env_buf);
+        return -1;
+    }
     if (token) {
         const int ok = token[0] != '\0' && strlen(token) <= max_len;
         if (ok) {
@@ -305,8 +324,11 @@ cli_resolve_api_token(dsd_opts* opts, const cli_net_args* net, int enabled) {
         }
         return 0;
     }
-    const char* file =
-        cli_api_value(net->api_token_file, "--api-token-file", "DSD_NEO_API_TOKEN_FILE", enabled, &src, env_buf);
+    const char* file = NULL;
+    if (cli_api_value(net->api_token_file, "--api-token-file", "DSD_NEO_API_TOKEN_FILE", enabled, &src, env_buf, &file)
+        != 0) {
+        return -1;
+    }
     if (file && cli_read_api_token_file(file, opts->api_token, sizeof opts->api_token) != 0) {
         LOG_ERROR("Cannot read an API token from %s \"%s\" (expected one line of 1 to %u bytes)\n", src, file, max_len);
         return -1;

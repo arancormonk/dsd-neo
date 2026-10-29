@@ -22,6 +22,7 @@
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -5891,6 +5892,36 @@ test_api_options(void) {
         char* argv[] = {a0, api, port9911, NULL};
         api_parse_result r = api_parse(3, argv);
         test_rc |= api_expect("DSD_NEO_API_TOKEN_FILE missing", &r, DSD_PARSE_ERROR, 0, "", "");
+    }
+
+    /* A fallback longer than the room for it (4095 bytes) is refused as too long, never cut and opened as another
+       path (#782), and the message says so without echoing the value. */
+    {
+        const size_t len = DSD_ENV_PATH_MAX;
+        char* long_path = (char*)malloc(len + 1U);
+        if (!long_path) {
+            return 1;
+        }
+        DSD_MEMSET(long_path, 'a', len);
+        long_path[len] = '\0';
+        (void)dsd_test_setenv("DSD_NEO_API_TOKEN_FILE", long_path, 1);
+        char* argv[] = {a0, api, port9911, NULL};
+        dsd_test_capture_stderr cap;
+        const int captured = dsd_test_capture_stderr_begin(&cap, "api_token_file_long") == 0;
+        api_parse_result r = api_parse(3, argv);
+        char err[512];
+        err[0] = '\0';
+        if (captured) {
+            (void)dsd_test_capture_stderr_end(&cap);
+            (void)dsd_test_capture_stderr_read(&cap, err, sizeof err);
+        }
+        test_rc |= api_expect("DSD_NEO_API_TOKEN_FILE too long", &r, DSD_PARSE_ERROR, 0, "", "");
+        if (!captured || strstr(err, "DSD_NEO_API_TOKEN_FILE is too long (at most 4095 bytes)") == NULL
+            || strstr(err, "aaaa") != NULL) {
+            DSD_FPRINTF(stderr, "DSD_NEO_API_TOKEN_FILE too long: want the too-long refusal, got: %.200s\n", err);
+            test_rc = 1;
+        }
+        free(long_path);
     }
     api_env_clear();
     return test_rc;

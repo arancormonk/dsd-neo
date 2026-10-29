@@ -119,8 +119,30 @@ test_string_prompt_is_not_masked(void) {
     type_text("s3c");
     assert(ui_prompt_display_text_for_test(shown, sizeof shown) == 1);
     assert(strcmp(shown, "s3c") == 0);
+    (void)ui_prompt_zeroed_on_close_for_test();
     assert(ui_prompt_handle_key('\r') == 1);
     assert(strcmp(g_string_text, "s3c") == 0);
+    // Unmasked, its whole buffer is still zeroed on close: the environment editor's value prompt can hold a token.
+    assert(ui_prompt_zeroed_on_close_for_test() == 16);
+}
+
+// A plain prompt closed by force, or cancelled, zeroes its buffer as a submitted one does (#782).
+static void
+test_plain_prompt_zeroes_on_every_close(void) {
+    reset_string_capture();
+    ui_prompt_open_string_async("Env value", "prefilled", 32, capture_string_done, NULL);
+    (void)ui_prompt_zeroed_on_close_for_test();
+    ui_prompt_close_all();
+    assert(g_string_done_called == 1 && g_string_was_null == 1);
+    assert(ui_prompt_zeroed_on_close_for_test() == 32);
+
+    reset_string_capture();
+    ui_prompt_open_string_async("Env value", NULL, 24, capture_string_done, NULL);
+    type_text("tok");
+    (void)ui_prompt_zeroed_on_close_for_test();
+    assert(ui_prompt_handle_key(DSD_KEY_ESC) == 1);
+    assert(g_string_was_null == 1);
+    assert(ui_prompt_zeroed_on_close_for_test() == 24);
 }
 
 // Esc delivers NULL, exactly as it does for a plain string prompt.
@@ -203,6 +225,7 @@ int
 main(void) {
     test_secret_prompt_masks_display_but_not_payload();
     test_string_prompt_is_not_masked();
+    test_plain_prompt_zeroes_on_every_close();
     test_secret_prompt_cancel_delivers_null();
     test_secret_prompt_force_close_cancels();
     test_secret_prompt_capacity_is_cap_minus_one();
