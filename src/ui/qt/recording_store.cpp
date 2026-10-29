@@ -960,6 +960,15 @@ RecordingStore::insertEntryLocked(Entry entry, Pass* pass) {
     }
     entry.order = m_nextOrder++;
     if (!entry.unfinished) {
+        // One path, one owner: the newest publish in journal order. A journal not yet compacted can still name a
+        // recording deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated); that
+        // id goes, so it never comes back on its History row, its file counts once, and deleting it cannot unlink
+        // the newer recording.
+        const auto owner = m_byPath.constFind(entry.path);
+        if (owner != m_byPath.cend() && owner.value() != entry.id) {
+            const QString evicted = owner.value();
+            removeEntryLocked(evicted, pass);
+        }
         m_byPath.insert(entry.path, entry.id);
     }
     if (!entry.fragment.isEmpty()) {

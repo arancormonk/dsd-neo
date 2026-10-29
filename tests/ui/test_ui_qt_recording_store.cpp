@@ -1908,6 +1908,47 @@ test_limit_counts_only_files_still_there(void) {
                && !s.store.isIndexedPath(folder + QStringLiteral("/newer.wav")) && spied(news, fragment(701)));
 }
 
+/* Issue #708: an I/Q replay can reuse a final file name once its 16-bit suffix repeats, after the first recording of
+ * that name was deleted (by hand or by the limit) but before its journal was compacted. Rebuilt from that journal, both
+ * publishes named the one file under two ids: the deleted recording came back on its History row, the file counted
+ * twice, and deleting the old id unlinked the new recording. One path has one owner, the newest publish in journal
+ * order. */
+void
+test_path_reused_by_a_later_publish(void) {
+    const Roots roots;
+    const QString a = QStringLiteral("00000000000000AA-1");
+    const QString b = QStringLiteral("00000000000000AA-2");
+    const QString name = QStringLiteral("20261020_120000_01234_NFM.wav");
+    QString path;
+    {
+        Store s(roots.list());
+        const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        path = folder + QLatin1Char('/') + name;
+        record(folder, a, name, 1792497600, 1, 4000);
+        s.pass();
+        s.store.deleteRecording(a);
+        s.pass();
+        expect("path reused: the first recording is deleted",
+               !QFileInfo::exists(path) && s.store.recordingCount() == 0);
+        record(folder, b, name, 1792497600, 2, 6000);
+        s.pass();
+        expect("path reused: the later publish owns the file", s.store.recordingCount() == 1
+                                                                   && s.store.usedBytes() == 6000
+                                                                   && !s.store.hasRecordingForFragments({fragment(1)})
+                                                                   && s.store.hasRecordingForFragments({fragment(2)}));
+    }
+    Store s(roots.list());
+    expect("path reused: rebuilt from the journal, one recording owns the file",
+           s.store.recordingCount() == 1 && s.store.isIndexedPath(path));
+    expect("path reused: the deleted recording stays off its row", !s.store.hasRecordingForFragments({fragment(1)}));
+    expect("path reused: the later one is on its row", s.store.recordingsForFragments({fragment(2)}).size() == 1);
+    expect("path reused: the file counts once", s.store.usedBytes() == 6000);
+    s.store.deleteRecording(a);
+    s.pass();
+    expect("path reused: deleting the old id leaves the new file",
+           QFileInfo::exists(path) && s.store.recordingCount() == 1);
+}
+
 /* Issue #708: the limit's look at the files it counts keeps the storage-loss rule. A file missing because its storage
  * went as the pass ran is away, not deleted: it stays indexed and its storage reads as away. Laid out so nothing else
  * notices the storage going first: the external folder holds no journal for a tail to miss, only an unfinished
@@ -2414,6 +2455,7 @@ main(int argc, char** argv) {
     test_session_start_wakes_the_worker();
     test_recheck_recordings();
     test_limit_counts_only_files_still_there();
+    test_path_reused_by_a_later_publish();
     test_limit_count_keeps_storage_that_went();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();

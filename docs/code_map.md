@@ -8205,7 +8205,10 @@ Qt Quick frontend (`src/ui/qt`):
     journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
     index. The index keeps {id -> path, start, duration, fragment, folder, flags, size}: a `publish` of a file that is
     not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
-    (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. Temp
+    (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. One
+    path has one owner, the newest publish in journal order: a journal not yet compacted can still name a recording
+    deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated), and the later publish
+    evicts that id, its fragment and its size (`insertEntryLocked()`). Temp
     files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
     unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
     journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
