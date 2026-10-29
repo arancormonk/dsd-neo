@@ -2756,6 +2756,18 @@ dsd_decode_clock_use_system(); /* on every return path */
   gets the clock from `dsd-neo_test_decode_clock`: add its target to `_DSD_NEO_DECODE_CLOCK_TEST_TARGETS` in
   `tests/CMakeLists.txt`.
 
+### Environment variables in tests
+
+Production code never writes the process environment (#782): an option, an INI key or a menu sets a session
+override in `<dsd-neo/platform/env.h>`, and every reader goes through `dsd_env_get()`. A test that needs a user's
+exported variable seeds the real environment with `dsd_test_setenv()`/`dsd_test_unsetenv()` from
+`tests/test_support/test_env.h` (every test target can include it), before it starts a thread that reads it. An
+override wins over the environment, so a test that runs code which sets one (a parse, a bootstrap, a menu toggle) and
+then exports a new value calls `dsd_env_clear_layer(DSD_ENV_LAYER_SESSION)` first, or sets the override itself with
+`dsd_env_set()`. To prove that a path writes nothing, compare `environ` before and after, as
+`RUNTIME_ENV_NO_PROCESS_WRITES` does: neither ASan nor TSan intercepts `setenv()`/`getenv()`, so a sanitizer run cannot
+see the race itself.
+
 ### Temporary files and directories
 
 A test must remove every temporary file and directory it creates, on its failure

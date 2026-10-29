@@ -2463,6 +2463,13 @@ Out-of-range decimal keys are rejected without changing the installed key.
 
 These environment variables provide fine‑grained control for power users.
 
+Export them before starting `dsd-neo`. An option that sets one of them (`--auto-ppm`, `--input-volume`, the P25
+timing options and others below), an `[input] auto_ppm` or `[dsp]` config key, and the terminal menus' toggles and
+environment editor override the variable inside the process only, for the rest of that session; they never change
+the process environment, so a child process or `/proc/self/environ` still shows what was exported. An option wins over
+an exported variable; an exported variable wins over the config keys. A host that runs one session after another in
+one process (the Android app) starts each session from the exported values, without the last session's overrides.
+
 Control/telemetry API (fallbacks for the `--api*` options, read only when the option is absent and the API is enabled)
 
 - `DSD_NEO_API_PORT=<port>` — enable the API on this port (as `--api`); `--api 0` still disables it
@@ -2574,7 +2581,8 @@ Misc
 - `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
 - `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM`/`SIGHUP` handlers; for hosts that embed
-  the decoder in their own process and drive shutdown themselves. Without it, a hangup (`SIGHUP`, the terminal closed
+  the decoder in their own process and drive shutdown themselves (a host can also set it in-process with
+  `dsd_env_set(DSD_ENV_LAYER_HOST, ...)` from `<dsd-neo/platform/env.h>`, as the Android app does). Without it, a hangup (`SIGHUP`, the terminal closed
   or an SSH session dropped) shuts down as `SIGINT` does, finalizing recordings and the call in progress, unless the
   session was started ignoring it (`nohup`)
 - `DSD_NEO_LOG_SINK=stderr|platform` — destination for runtime log messages (default `stderr`). `platform`
@@ -2603,7 +2611,8 @@ P25 trunking timing
 - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` — extend hangtime when P25p1 IMBE error % exceeds threshold (default 0 = off)
 - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` — additional hold seconds when threshold exceeded (default 0 = off)
 - `DSD_NEO_CC_CACHE=0|1` — enable/disable loading historical control-channel cache files
-- `DSD_NEO_CACHE_DIR=<path>` — locate historical control-channel cache files written by older releases
+- `DSD_NEO_CACHE_DIR=<path>` — locate historical control-channel cache files written by older desktop releases
+  (the Android app sets none: no Android build wrote them)
 
 DMR Tier III (env helpers for `--calc-lcn`)
 
