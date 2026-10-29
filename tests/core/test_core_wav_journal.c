@@ -172,6 +172,23 @@ field_s(const char* line, const char* key) {
     return out;
 }
 
+/* @p path as a JSON string body, the form field() returns: '\\' and '"' escaped (a Windows path's separators). */
+static const char*
+json_path(const char* path) {
+    static char v[4][LINE_CAP];
+    static int next;
+    char* out = v[next++ & 3];
+    size_t n = 0;
+    for (const char* p = path; *p && n + 2 < LINE_CAP; p++) {
+        if (*p == '\\' || *p == '"') {
+            out[n++] = '\\';
+        }
+        out[n++] = *p;
+    }
+    out[n] = '\0';
+    return out;
+}
+
 /* A segment id as the journal writes it: 16 uppercase hex digits, '-', a decimal sequence. */
 static int
 is_segment_id(const char* id) {
@@ -429,7 +446,7 @@ test_commit_publishes_under_the_pushed_row(void) {
     rc |= expect_str("no short write", field_s(pub, "failed"), "false");
     rc |= expect_str("target as shown", field_s(pub, "target"), "100");
     rc |= expect_str("source as shown", field_s(pub, "source"), "77");
-    rc |= expect_str("the folder it was published in", field_s(pub, "folder"), r.canon);
+    rc |= expect_str("the folder it was published in", field_s(pub, "folder"), json_path(r.canon));
     char path[DSD_TEST_PATH_MAX * 2];
     (void)dsd_test_path_join(path, sizeof path, r.dir, field_s(pub, "file"));
     FILE* f = dsd_fopen_existing_regular_file(path, "rb");
@@ -602,7 +619,7 @@ test_rename_failure_is_an_error_record(void) {
     rc |= expect_true("one error for slot 1's recording", err && strcmp(field_s(err, "id"), id) == 0);
     rc |= expect_str("a rename failure", err ? field_s(err, "kind") : "", "publish");
     rc |= expect_str("the temp name it keeps", err ? field_s(err, "temp") : "", temp + strlen(r.dir) + 1);
-    rc |= expect_str("in the folder it was recorded in", err ? field_s(err, "folder") : "", r.canon);
+    rc |= expect_str("in the folder it was recorded in", err ? field_s(err, "folder") : "", json_path(r.canon));
     FILE* f = dsd_fopen_existing_regular_file(temp, "rb");
     rc |= expect_true("the temp file is kept", f != NULL);
     if (f) {
@@ -1301,7 +1318,7 @@ test_error_failed_and_rdio_shapes(void) {
         rc |= expect_str("kind open", err ? field_s(err, "kind") : "", "open");
         rc |= expect_true("it names the segment", err && is_segment_id(field_s(err, "id")));
         rc |= expect_true("and the temp name it would have had", err && strncmp(field_s(err, "temp"), "TEMP_", 5) == 0);
-        rc |= expect_str("in the recording folder", err ? field_s(err, "folder") : "", r.canon);
+        rc |= expect_str("in the recording folder", err ? field_s(err, "folder") : "", json_path(r.canon));
         rig_close(&r);
     }
     {
