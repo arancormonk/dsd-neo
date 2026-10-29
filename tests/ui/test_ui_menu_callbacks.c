@@ -762,10 +762,21 @@ test_key_callbacks_validate_and_pack(void) {
     rc |= expect_int("basic key command", g_cmd.id, DSD_APP_CMD_KEY_BASIC_SET);
     rc |= expect_int("basic key clamp", (int)cmd_u32(), 255);
 
+    /* A negative number is refused; it used to wrap to the clamp ceiling. */
+    reset_capture();
+    cb_key_basic(&ctx, 1, -1);
+    rc |= expect_int("negative basic key posts nothing", g_cmd.calls, 0);
+    rc |= expect_int("negative basic key toasts", g_status_calls, 1);
+
     reset_capture();
     cb_key_scrambler(&ctx, 1, 999999);
     rc |= expect_int("scrambler key command", g_cmd.id, DSD_APP_CMD_KEY_SCRAMBLER_SET);
     rc |= expect_int("scrambler key clamp", (int)cmd_u32(), 0x7FFF);
+
+    reset_capture();
+    cb_key_scrambler(&ctx, 1, -1);
+    rc |= expect_int("negative scrambler key posts nothing", g_cmd.calls, 0);
+    rc |= expect_int("negative scrambler key toasts", g_status_calls, 1);
 
     reset_capture();
     cb_key_rc4des(&ctx, "not-hex");

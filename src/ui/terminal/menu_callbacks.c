@@ -526,8 +526,10 @@ cb_key_basic(void* v, int ok, int val) {
     if (!c) {
         return;
     }
-    if (ok) {
-        unsigned long long vdec = val;
+    if (ok && val < 0) {
+        ui_statusf("Basic Privacy key must be 0..255");
+    } else if (ok) {
+        unsigned long long vdec = (unsigned long long)val;
         if (vdec > 255ULL) {
             vdec = 255ULL;
         }
@@ -542,8 +544,10 @@ cb_key_scrambler(void* v, int ok, int val) {
     if (!c) {
         return;
     }
-    if (ok) {
-        unsigned long long vdec = val;
+    if (ok && val < 0) {
+        ui_statusf("Scrambler key must be 0..32767");
+    } else if (ok) {
+        unsigned long long vdec = (unsigned long long)val;
         if (vdec > 0x7FFFULL) {
             vdec = 0x7FFFULL;
         }

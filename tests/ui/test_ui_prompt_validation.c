@@ -272,6 +272,37 @@ test_typed_prompt_validation(void) {
     assert(g_double_value == 0.0);
     assert(g_status_called == 1);
     assert(strcmp(g_status_text, "Invalid numeric input") == 0);
+
+    /* Spellings strtod() reads but a decimal field must not: non-finite, overflowing and hex values. */
+    static const char* const refused[] = {"nan",  "NaN", "inf", "-inf", "infinity", "1e999",
+                                          "0x10", "1e",  ".",   "+",    "1.5 "};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        reset_double_capture();
+        ui_prompt_open_double_async("Number", 0.0, capture_double_done, NULL);
+        clear_prompt_prefill();
+        type_text(refused[i]);
+        assert(ui_prompt_handle_key('\r') == 1);
+        assert(g_double_done_called == 1);
+        assert(g_double_ok == 0);
+        assert(g_status_called == 1);
+        assert(strcmp(g_status_text, "Invalid numeric input") == 0);
+    }
+
+    static const struct {
+        const char* text;
+        double want;
+    } accepted[] = {{"1.5", 1.5}, {"-2", -2.0}, {"3e2", 300.0}, {".5", 0.5}, {"+4.", 4.0}};
+
+    for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+        reset_double_capture();
+        ui_prompt_open_double_async("Number", 0.0, capture_double_done, NULL);
+        clear_prompt_prefill();
+        type_text(accepted[i].text);
+        assert(ui_prompt_handle_key('\r') == 1);
+        assert(g_double_ok == 1);
+        assert(g_double_value > accepted[i].want - 1e-9 && g_double_value < accepted[i].want + 1e-9);
+        assert(g_status_called == 0);
+    }
 }
 
 /* An integer the field cannot hold is refused, never wrapped or saturated (B6). */
