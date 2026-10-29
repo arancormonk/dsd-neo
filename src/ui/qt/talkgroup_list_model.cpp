@@ -322,9 +322,15 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
      * "every other talkgroup" and covers none: a heard talkgroup keeps its card, so it can still be named, tuned or
      * prioritised on its own (issue #773). */
     QVector<dsd_id_pattern> patterns;
+    /* The `*` row that decides the talkgroups no other row matches (the last one, as equal patterns go), whose
+     * listening and record a heard talkgroup's card shows, so its first tap changes what the decoder does. */
+    const Row* catchAll = nullptr;
     spans.reserve(rows.size());
     for (const Row& row : rows) {
         dsd_id_pattern parsed;
+        if (row.isPattern() && row.pattern == QStringLiteral("*")) {
+            catchAll = &row;
+        }
         if (!row.isPattern()) {
             spans.push_back({row.idStart, row.idEnd});
         } else if (row.pattern != QStringLiteral("*")
@@ -336,6 +342,10 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
     for (qsizetype i = 1; i < spans.size(); ++i) {
         spans[i].reach = std::max(spans[i].reach, spans[i - 1].reach);
     }
+    const bool heardListening = catchAll != nullptr ? catchAll->listening : !allowListedOnly;
+    /* A heard talkgroup without a row records whenever it would be tuned, as a row added for it would. */
+    const bool heardRecord = catchAll != nullptr ? catchAll->listening && catchAll->record : heardListening;
+    QVector<Row> heardRows;
     for (const uint32_t tg : heard) {
         const auto after = std::upper_bound(spans.cbegin(), spans.cend(), tg,
                                             [](uint32_t id, const Span& span) { return id < span.start; });
@@ -347,12 +357,12 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
             Row row;
             row.idStart = tg;
             row.idEnd = tg;
-            row.listening = !allowListedOnly;
-            /* A heard talkgroup has no row: it records whenever it would be tuned, as a row added for it would. */
-            row.record = !allowListedOnly;
-            rows.push_back(std::move(row));
+            row.listening = heardListening;
+            row.record = heardRecord;
+            heardRows.push_back(std::move(row));
         }
     }
+    rows.append(std::move(heardRows));
 }
 
 void

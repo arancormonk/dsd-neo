@@ -747,7 +747,7 @@ Important behavior:
 - Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges/patterns plus voice
   talkgroups heard this session that no listed row covers. A pattern row shows its pattern as its ID, after the
   numeric rows in list order; a heard talkgroup it matches is covered, except by the `*` catch-all, beside which every
-  heard talkgroup keeps its own card. Searching for a number also finds the patterns that match it. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
+  heard talkgroup keeps its own card, showing whether the `*` row tunes and records it. Searching for a number also finds the patterns that match it. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
   waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
   retained tags (RadioReference imports supply their category names).
 - **Listen all** and **Do not tune all** edit listed rows in the selected category, or every listed row under

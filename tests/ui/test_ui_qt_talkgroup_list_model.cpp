@@ -568,6 +568,42 @@ test_catch_all_keeps_heard_talkgroups() {
            find(model, 5000).isValid() && find(model, 7311).isValid());
     expect("a narrower pattern still covers its talkgroups", !find(model, 1234).isValid());
     expect("two pattern rows and two heard talkgroups", model.count() == 4);
+    expect("a listening catch-all shows its heard talkgroups listening and recording",
+           model.data(find(model, 5000), TalkgroupListModel::ListeningRole).toBool()
+               && model.data(find(model, 5000), TalkgroupListModel::RecordRole).toBool()
+               && !model.data(find(model, 5000), TalkgroupListModel::ListedRole).toBool());
+}
+
+/* A heard talkgroup's card shows what the deciding catch-all row does with it, so its first tap changes the decoder's
+ * verdict: `*,B` blocks it (shown not tuned, recording nothing), and under the allow list `*,A` admits it. */
+void
+test_catch_all_decides_heard_card_state() {
+    struct Case {
+        const char* tag;
+        const char* mode;
+        int allowList;
+        bool listening;
+    };
+
+    const Case cases[] = {{"blocking catch-all", "B", 0, false},
+                          {"catch-all under the allow list", "A", 1, true},
+                          {"blocking catch-all under the allow list", "B", 1, false}};
+    for (const Case& c : cases) {
+        Fixture fixture;
+        fixture.opts->trunk_use_allow_list = c.allowList;
+        fixture.appendPattern("*", c.mode, "Other", "");
+        CallHistoryModel history;
+        TalkgroupListModel model(&history);
+        history.beginSession();
+        model.setHistorySession(history.session());
+        fixture.commit(5000, time(nullptr));
+        history.refresh(fixture.state);
+        model.refresh(fixture.opts, fixture.state);
+        const QModelIndex heard = find(model, 5000);
+        expect(c.tag, heard.isValid() && !model.data(heard, TalkgroupListModel::ListedRole).toBool());
+        expect(c.tag, model.data(heard, TalkgroupListModel::ListeningRole).toBool() == c.listening);
+        expect(c.tag, model.data(heard, TalkgroupListModel::RecordRole).toBool() == c.listening);
+    }
 }
 
 /* Row equality includes kind and pattern: another pattern in the same place is a different row, never a field edit of
@@ -621,6 +657,7 @@ main(int argc, char** argv) {
     test_overlapping_ranges_cover_heard_talkgroups();
     test_pattern_rows();
     test_catch_all_keeps_heard_talkgroups();
+    test_catch_all_decides_heard_card_state();
     test_pattern_row_equality();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {
