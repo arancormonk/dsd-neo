@@ -734,7 +734,10 @@ channel_lpf_plan_tetra(const struct demod_state* d, int profile, int width_hz) {
     return (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && dsd_demod_tetra_channel_runs(d)) ? 1 : 0;
 }
 
-/* Whether the cached plan is the one for this key. */
+/* Whether the cached plan is the one for this key. A profile plan that made no taps is never current, so an
+   unrealizable design is tried again every block. Not reachable for the TETRA key: dsd_demod_tetra_channel_runs() and
+   the chain's predicate admit a rate only where the TETRA design makes taps (memoized by rate,
+   tetra_design_memo_refresh()). */
 static int
 channel_lpf_plan_current(const struct demod_state* d, int rate_out, int profile, int width_hz, int tetra) {
     const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
