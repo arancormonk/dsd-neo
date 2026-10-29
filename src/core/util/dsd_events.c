@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../file/wav_journal.h"
 #include "call_state_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -44,7 +45,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd_event_staging.h"
-#include "file/wav_journal.h"
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
