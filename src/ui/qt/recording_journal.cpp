@@ -13,6 +13,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QStringView>
+#include <algorithm>
 #include <utility>
 
 namespace dsd_qt {
@@ -22,28 +23,17 @@ namespace {
 /* 16 uppercase hex digits: a journal token or ring instance. */
 bool
 is_hex16(QStringView text) {
-    if (text.size() != 16) {
-        return false;
-    }
-    for (const QChar c : text) {
-        if (!((c >= QLatin1Char('0') && c <= QLatin1Char('9')) || (c >= QLatin1Char('A') && c <= QLatin1Char('F')))) {
-            return false;
-        }
-    }
-    return true;
+    return text.size() == 16 && std::all_of(text.begin(), text.end(), [](QChar c) {
+               return (c >= QLatin1Char('0') && c <= QLatin1Char('9'))
+                      || (c >= QLatin1Char('A') && c <= QLatin1Char('F'));
+           });
 }
 
 bool
 is_digits(QStringView text) {
-    if (text.isEmpty()) {
-        return false;
-    }
-    for (const QChar c : text) {
-        if (c < QLatin1Char('0') || c > QLatin1Char('9')) {
-            return false;
-        }
-    }
-    return true;
+    return !text.isEmpty() && std::all_of(text.begin(), text.end(), [](QChar c) {
+        return c >= QLatin1Char('0') && c <= QLatin1Char('9');
+    });
 }
 
 /* A file name the store may resolve against the journal's folder: relative, '/'-separated, no way out. */
@@ -54,12 +44,9 @@ plain_relative_name(const QString& file) {
         return false;
     }
     const QList<QStringView> parts = QStringView(file).split(QLatin1Char('/'));
-    for (const QStringView part : parts) {
-        if (part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..")) {
-            return false;
-        }
-    }
-    return true;
+    return std::none_of(parts.cbegin(), parts.cend(), [](QStringView part) {
+        return part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..");
+    });
 }
 
 /* A non-negative JSON integer, else @p fallback. */
@@ -87,6 +74,34 @@ read_owner(const QJsonObject& object, RecordingJournalRecord* out) {
         out->hasRow = true;
         out->row = static_cast<qulonglong>(row);
     }
+}
+
+/* A publish's file and the call it records; false for a file outside the journal's folder. */
+bool
+read_publish(const QJsonObject& object, RecordingJournalRecord* record) {
+    record->file = object.value(QLatin1String("file")).toString();
+    if (!plain_relative_name(record->file)) {
+        return false;
+    }
+    record->start = integer_or(object.value(QLatin1String("start")), 0);
+    record->durationMs = integer_or(object.value(QLatin1String("duration_ms")), 0);
+    record->rate = static_cast<int>(qMin<qint64>(integer_or(object.value(QLatin1String("rate")), 0), 1000000));
+    read_owner(object, record);
+    record->pending = object.value(QLatin1String("pending")).toBool(false);
+    record->epoch = static_cast<qulonglong>(integer_or(object.value(QLatin1String("epoch")), 0));
+    record->rdio = object.value(QLatin1String("rdio")).toBool(false);
+    record->failed = object.value(QLatin1String("failed")).toBool(false);
+    record->system = object.value(QLatin1String("system")).toString();
+    record->target = object.value(QLatin1String("target")).toString();
+    record->source = object.value(QLatin1String("source")).toString();
+    return true;
+}
+
+/* A link's call; false unless it names a recording and the whole of its row. */
+bool
+read_link(const QJsonObject& object, RecordingJournalRecord* record) {
+    read_owner(object, record);
+    return !record->id.isEmpty() && record->hasInstance && record->slot >= 0 && record->hasRow;
 }
 
 bool
@@ -131,25 +146,12 @@ recording_journal_parse(const QByteArray& line, RecordingJournalRecord* out) {
     record.id = object.value(QLatin1String("id")).toString();
     switch (record.type) {
         case RecordingJournalRecord::Publish:
-            record.file = object.value(QLatin1String("file")).toString();
-            if (!plain_relative_name(record.file)) {
+            if (!read_publish(object, &record)) {
                 return false;
             }
-            record.start = integer_or(object.value(QLatin1String("start")), 0);
-            record.durationMs = integer_or(object.value(QLatin1String("duration_ms")), 0);
-            record.rate = static_cast<int>(qMin<qint64>(integer_or(object.value(QLatin1String("rate")), 0), 1000000));
-            read_owner(object, &record);
-            record.pending = object.value(QLatin1String("pending")).toBool(false);
-            record.epoch = static_cast<qulonglong>(integer_or(object.value(QLatin1String("epoch")), 0));
-            record.rdio = object.value(QLatin1String("rdio")).toBool(false);
-            record.failed = object.value(QLatin1String("failed")).toBool(false);
-            record.system = object.value(QLatin1String("system")).toString();
-            record.target = object.value(QLatin1String("target")).toString();
-            record.source = object.value(QLatin1String("source")).toString();
             break;
         case RecordingJournalRecord::Link:
-            read_owner(object, &record);
-            if (record.id.isEmpty() || !record.hasInstance || record.slot < 0 || !record.hasRow) {
+            if (!read_link(object, &record)) {
                 return false;
             }
             break;
