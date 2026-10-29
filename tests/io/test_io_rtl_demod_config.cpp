@@ -666,6 +666,67 @@ expect_rtl_metrics_do_not_nudge_cqpsk_bandedge(void) {
     return 0;
 }
 
+/* Run the metrics block often enough for the lock heuristic's two stable blocks, on a steady loop state. */
+static int
+rtl_metrics_settled_lock(int rate_hz) {
+    static float iq[128];
+    for (int n = 0; n < 64; n++) {
+        iq[(size_t)(n << 1)] = 1.0f;
+        iq[(size_t)(n << 1) + 1] = 0.0f;
+    }
+    for (int i = 0; i < 4; i++) {
+        rtl_metrics_update_spectrum_from_iq(iq, 128, rate_hz);
+    }
+    return rtl_stream_get_carrier_lock();
+}
+
+/* The CFO the metrics publish (NCO total and the band-edge export) is the combined carrier estimate, the TETRA mixer
+ * included; the lock heuristic's saturation test reads only the FLL's residual, whose clamp the mixer does not
+ * share. */
+static int
+expect_rtl_metrics_combined_cfo(void) {
+    int rc = 0;
+    const double kTwoPi = 6.28318530717958647692;
+    const int rate_hz = 72000;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.cqpsk_enable = 1;
+    demod.rate_out = rate_hz;
+    demod.ted_sps = 4;
+    demod.fll_band_edge_state.initialized = 1;
+    demod.fll_band_edge_state.min_freq = -1.0f;
+    demod.fll_band_edge_state.max_freq = 1.0f;
+    demod.fll_band_edge_state.pre_freq = 0.3f;
+    demod.fll_band_edge_state.freq = 0.01f;
+    demod.costas_state.initialized = 1;
+    demod.costas_state.freq = 0.02f;
+    demod.ted_state.lock_count = 32;
+    demod.ted_state.lock_accum = 32.0f;
+
+    const int locked = rtl_metrics_settled_lock(rate_hz);
+    const double combined_rad = 0.3 + 0.01;
+    const double total_rad = combined_rad + 0.02 / 4.0;
+    rc |= expect_double_near("RTL metrics NCO CFO includes the TETRA mixer", rtl_stream_get_cfo_hz(),
+                             total_rad * (double)rate_hz / kTwoPi, 0.05);
+    rc |= expect_double_near("RTL metrics band-edge CFO includes the TETRA mixer",
+                             rtl_stream_get_fll_band_edge_freq_hz(), combined_rad * (double)rate_hz / kTwoPi, 0.05);
+    rc |= expect_int_eq("RTL metrics NCO q15 includes the TETRA mixer", rtl_stream_get_nco_q15(),
+                        (int)lrint(total_rad * (32768.0 / kTwoPi)));
+    rc |= expect_int_eq("RTL lock with a mixer and a small residual", locked, 1);
+
+    /* A combined estimate beyond the FLL's clamp is not saturation while the residual is small. */
+    demod.fll_band_edge_state.pre_freq = 1.2f;
+    demod.fll_band_edge_state.freq = 0.01f;
+    rc |= expect_int_eq("RTL lock reads the residual, not the combined estimate", rtl_metrics_settled_lock(rate_hz), 1);
+
+    /* A residual at the FLL's clamp is saturation whatever the mixer holds. */
+    demod.fll_band_edge_state.pre_freq = 0.2f;
+    demod.fll_band_edge_state.freq = 0.97f;
+    rc |= expect_int_eq("RTL lock refuses a saturated residual", rtl_metrics_settled_lock(rate_hz), 0);
+    demod.fll_band_edge_state.pre_freq = 0.0f;
+    rc |= expect_int_eq("RTL lock refuses a saturated residual with no mixer", rtl_metrics_settled_lock(rate_hz), 0);
+    return rc;
+}
+
 static int
 expect_rtl_metrics_exports_and_toggles(void) {
     int rc = 0;
@@ -2795,6 +2856,7 @@ main(void) {
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
     rc |= expect_rtl_metrics_do_not_nudge_cqpsk_bandedge();
     rc |= expect_rtl_metrics_exports_and_toggles();
+    rc |= expect_rtl_metrics_combined_cfo();
     rc |= expect_public_control_wrapper_contracts();
     rc |= expect_fsk_snr_sps_uses_active_profile();
     rc |= expect_retune_preserves_active_profile();

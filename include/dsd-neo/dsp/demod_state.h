@@ -332,7 +332,8 @@ struct demod_state {
 
     /* OP25-compatible CQPSK carrier recovery.
      * Signal flow: FLL band-edge (coarse freq) -> Gardner TED -> diff_phasor -> Costas (fine freq)
-     * Total CFO for metrics = fll_band_edge_state.freq + costas_state.freq/sps */
+     * Total CFO for metrics = dsd_fll_band_edge_total_freq(&fll_band_edge_state) + costas_state.freq/sps, where the
+     * band-edge total is the TETRA mixer's pre_freq plus the FLL's residual freq. */
     dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
     dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
     dsd_fsk_modem_state fsk_modem_state;           /* FSK discriminator state */

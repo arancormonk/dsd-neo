@@ -1298,6 +1298,118 @@ dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
     dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(0));
 }
 
+/* The TETRA tracking mixer and the combined carrier estimate (costas.h). The carrier estimate is pre_freq + freq: the
+ * mixer ahead of the channel filter carries up to its bound, and the FLL tracks the residual within its own clamp. */
+
+extern "C" float
+dsd_fll_band_edge_total_freq(const dsd_fll_band_edge_state_t* f) {
+    return f ? f->pre_freq + f->freq : 0.0f;
+}
+
+/* A bound that is not a positive finite value means no mixer. */
+static float
+tetra_premix_limit_or_zero(float pre_limit) {
+    return (stored_float_is_finite(&pre_limit) && pre_limit > 0.0f) ? pre_limit : 0.0f;
+}
+
+extern "C" void
+dsd_fll_band_edge_split_total(dsd_fll_band_edge_state_t* f, float total, float pre_limit) {
+    if (!f) {
+        return;
+    }
+    if (!stored_float_is_finite(&total)) {
+        f->pre_freq = 0.0f;
+        f->freq = 0.0f;
+        return;
+    }
+    const float limit = tetra_premix_limit_or_zero(pre_limit);
+    const float pre = clampf_range(total, -limit, limit);
+    f->pre_freq = pre;
+    f->freq = clampf_range(total - pre, f->min_freq, f->max_freq);
+}
+
+extern "C" void
+dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f) {
+    if (!f) {
+        return;
+    }
+    float total = f->freq + f->pre_freq;
+    if (!stored_float_is_finite(&total)) {
+        total = 0.0f;
+    }
+    f->freq = clampf_range(total, f->min_freq, f->max_freq);
+    f->pre_freq = 0.0f;
+    f->pre_re = 1.0f;
+    f->pre_im = 0.0f;
+}
+
+extern "C" void
+dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit) {
+    if (!f) {
+        return;
+    }
+    const float pre = f->pre_freq;
+    const float freq = f->freq;
+    const float total = pre + freq;
+    if (!stored_float_is_finite(&total)) {
+        return; /* a corrupt estimate stays where it is; the next reset clears it */
+    }
+    const float limit = tetra_premix_limit_or_zero(pre_limit);
+    const float want = clampf_range(total, -limit, limit);
+    f->freq = freq - (want - pre);
+    f->pre_freq = want;
+}
+
+extern "C" void
+dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs) {
+    if (!f || !iq || pairs <= 0) {
+        return;
+    }
+    if (!stored_float_is_finite(&f->pre_freq)) {
+        f->pre_freq = 0.0f;
+        f->pre_re = 1.0f;
+        f->pre_im = 0.0f;
+        return;
+    }
+    /* The phasor is renormalized once per block, here, so the stored float's rounding never accumulates into a gain;
+     * a zeroed phasor (a state never reset) or a corrupt one starts from (1, 0). Within the block the recurrence runs in
+     * double: a float recurrence drifts in magnitude and phase by ~1e-7 per sample, which over a long block would
+     * leave the -60 dB the mixer must hold. */
+    double pr = 1.0;
+    double pi = 0.0;
+    if (stored_float_is_finite(&f->pre_re) && stored_float_is_finite(&f->pre_im)) {
+        const double mag2 = (double)f->pre_re * (double)f->pre_re + (double)f->pre_im * (double)f->pre_im;
+        if (mag2 > 0.25 && mag2 < 4.0) {
+            const double inv = 1.0 / std::sqrt(mag2);
+            pr = (double)f->pre_re * inv;
+            pi = (double)f->pre_im * inv;
+        }
+    }
+    /* exp(-j * pre_freq): the mixer removes a carrier at +pre_freq, as the FLL's NCO removes one at +freq. */
+    const double step_r = std::cos((double)f->pre_freq);
+    const double step_i = -std::sin((double)f->pre_freq);
+    for (int n = 0; n < pairs; n++) {
+        const size_t nn = (size_t)n;
+        const double xr = (double)iq[nn * 2];
+        const double xi = (double)iq[nn * 2 + 1];
+        iq[nn * 2] = (float)(xr * pr - xi * pi);
+        iq[nn * 2 + 1] = (float)(xr * pi + xi * pr);
+        const double next_r = pr * step_r - pi * step_i;
+        pi = pr * step_i + pi * step_r;
+        pr = next_r;
+    }
+    f->pre_re = (float)pr;
+    f->pre_im = (float)pi;
+}
+
+extern "C" float
+dsd_tetra_pre_limit_rad(int rate_out) {
+    if (rate_out <= 0) {
+        return 0.0f;
+    }
+    return (float)(2.0 * 3.14159265358979323846 * (double)DSD_TETRA_PREMIX_LIMIT_HZ / (double)rate_out);
+}
+
 /*
  * OP25-compatible FLL band-edge frequency lock loop.
  *

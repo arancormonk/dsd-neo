@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 static int
@@ -451,6 +452,292 @@ check_same_sps_param_switch(void) {
     return 0;
 }
 
+/* The TETRA mixer bound: 2*pi*8000/rate_out rad/sample, and 0 for a rate that is not positive. */
+static int
+check_pre_limit(void) {
+    const int rates[] = {36000, 72000, 144000, 48000};
+    for (int rate : rates) {
+        const double want = 2.0 * 3.14159265358979323846 * 8000.0 / (double)rate;
+        const float got = dsd_tetra_pre_limit_rad(rate);
+        if (fabs((double)got - want) > 1e-6) {
+            DSD_FPRINTF(stderr, "TETRA pre limit: rate=%d got=%.9f want=%.9f\n", rate, got, want);
+            return 1;
+        }
+    }
+    if (!closef(dsd_tetra_pre_limit_rad(0), 0.0f, 0.0f) || !closef(dsd_tetra_pre_limit_rad(-72000), 0.0f, 0.0f)) {
+        DSD_FPRINTF(stderr, "TETRA pre limit: a non-positive rate gives a nonzero bound\n");
+        return 1;
+    }
+    return 0;
+}
+
+static void
+mixer_state(dsd_fll_band_edge_state_t* f, float pre, float freq) {
+    DSD_MEMSET(f, 0, sizeof(*f));
+    dsd_fll_band_edge_init_params(f, 4, dsd_fll_band_edge_params_for(1));
+    f->pre_freq = pre;
+    f->freq = freq;
+    f->pre_re = 0.6f;
+    f->pre_im = 0.8f;
+}
+
+/* The combined estimate is pre_freq + freq, and reading it changes nothing. */
+static int
+check_total_accessor(void) {
+    dsd_fll_band_edge_state_t f;
+    mixer_state(&f, 0.3f, -0.1f);
+    f.phase = 0.25f;
+    dsd_fll_band_edge_state_t before;
+    DSD_MEMCPY(&before, &f, sizeof(f));
+    const float a = dsd_fll_band_edge_total_freq(&f);
+    const float b = dsd_fll_band_edge_total_freq(&f);
+    if (!closef(a, 0.2f, 1e-7f) || !closef(a, b, 0.0f) || memcmp(&before, &f, sizeof(f)) != 0) {
+        DSD_FPRINTF(stderr, "FLL total: a=%.9f b=%.9f mutated=%d\n", a, b, memcmp(&before, &f, sizeof(f)) != 0);
+        return 1;
+    }
+    /* Off the TETRA chain the total is the FLL frequency exactly. */
+    mixer_state(&f, 0.0f, 0.123456f);
+    if (!closef(dsd_fll_band_edge_total_freq(&f), f.freq, 0.0f)) { /* exact: 0 + x == x */
+        DSD_FPRINTF(stderr, "FLL total: pre 0 changes the value\n");
+        return 1;
+    }
+    if (!closef(dsd_fll_band_edge_total_freq(nullptr), 0.0f, 0.0f)) {
+        DSD_FPRINTF(stderr, "FLL total: null state\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* Transfer moves what fits under the bound into the mixer and conserves the total; the clamp leaves the excess in
+ * the FLL. */
+static int
+check_transfer(void) {
+    const float limit = dsd_tetra_pre_limit_rad(72000); /* ~0.698 rad */
+
+    const struct {
+        float pre;
+        float freq;
+    } cases[] = {
+        {0.0f, 0.1f}, {0.2f, 0.3f}, {-0.4f, 0.05f}, {0.0f, -0.65f}, {0.6f, 0.5f}, {-0.6f, -0.9f}, {0.698f, 0.0f},
+    };
+
+    for (const auto& c : cases) {
+        dsd_fll_band_edge_state_t f;
+        mixer_state(&f, c.pre, c.freq);
+        const double total = (double)c.pre + (double)c.freq;
+        dsd_fll_band_edge_transfer(&f, limit);
+        const double after = (double)dsd_fll_band_edge_total_freq(&f);
+        double want_pre = total;
+        if (want_pre > limit) {
+            want_pre = limit;
+        } else if (want_pre < -limit) {
+            want_pre = -limit;
+        }
+        if (fabs(after - total) > 1e-6 || fabs((double)f.pre_freq - want_pre) > 1e-6
+            || fabs((double)f.freq - (total - want_pre)) > 1e-6) {
+            DSD_FPRINTF(stderr, "FLL transfer: pre=%.6f freq=%.6f -> pre=%.9f freq=%.9f total %.9f->%.9f\n", c.pre,
+                        c.freq, f.pre_freq, f.freq, total, after);
+            return 1;
+        }
+    }
+    /* Repeated transfers with the FLL still adding converge on the bound and keep the total. */
+    dsd_fll_band_edge_state_t f;
+    mixer_state(&f, 0.0f, 0.0f);
+    double total = 0.0;
+    for (int i = 0; i < 1000; i++) {
+        f.freq += 0.003f;
+        total += 0.003;
+        dsd_fll_band_edge_transfer(&f, limit);
+    }
+    if (fabs((double)dsd_fll_band_edge_total_freq(&f) - total) > 1e-4 || !closef(f.pre_freq, limit, 1e-6f)) {
+        DSD_FPRINTF(stderr, "FLL transfer drift: total=%.9f want=%.9f pre=%.9f\n", dsd_fll_band_edge_total_freq(&f),
+                    total, f.pre_freq);
+        return 1;
+    }
+    return 0;
+}
+
+/* Split puts min(|total|, bound) in the mixer and the rest in the FLL, clamped to its range; fold puts the total
+ * back in the FLL and resets the mixer. Both round-trip the total. */
+static int
+check_split_fold(void) {
+    const float limit = dsd_tetra_pre_limit_rad(36000); /* ~1.396 rad */
+    const float totals[] = {0.0f, 0.25f, -0.5f, 1.3f, -1.39f, 2.0f, -2.2f};
+    for (float total : totals) {
+        dsd_fll_band_edge_state_t f;
+        mixer_state(&f, 0.4f, 0.2f);
+        dsd_fll_band_edge_split_total(&f, total, limit);
+        float want_pre = total > limit ? limit : (total < -limit ? -limit : total);
+        if (!closef(f.pre_freq, want_pre, 1e-7f) || !closef(dsd_fll_band_edge_total_freq(&f), total, 1e-6f)) {
+            DSD_FPRINTF(stderr, "FLL split: total=%.6f -> pre=%.9f freq=%.9f\n", total, f.pre_freq, f.freq);
+            return 1;
+        }
+        dsd_fll_band_edge_fold(&f);
+        /* |total| <= 1 folds whole; beyond, the FLL's own +-1 clamp holds. */
+        const float want_freq = total > 1.0f ? 1.0f : (total < -1.0f ? -1.0f : total);
+        if (!closef(f.pre_freq, 0.0f, 0.0f) || !closef(f.freq, want_freq, 1e-6f) || !closef(f.pre_re, 1.0f, 0.0f)
+            || !closef(f.pre_im, 0.0f, 0.0f)) {
+            DSD_FPRINTF(stderr, "FLL fold: total=%.6f -> pre=%.9f freq=%.9f phasor=(%f,%f)\n", total, f.pre_freq,
+                        f.freq, f.pre_re, f.pre_im);
+            return 1;
+        }
+    }
+    /* Beyond bound + FLL range the excess is dropped: the FLL part clamps. */
+    dsd_fll_band_edge_state_t f;
+    mixer_state(&f, 0.0f, 0.0f);
+    dsd_fll_band_edge_split_total(&f, 3.0f, limit);
+    if (!closef(f.pre_freq, limit, 1e-7f) || !closef(f.freq, 1.0f, 0.0f)) {
+        DSD_FPRINTF(stderr, "FLL split excess: pre=%.9f freq=%.9f\n", f.pre_freq, f.freq);
+        return 1;
+    }
+    /* A zero bound (TETRA chain inactive) leaves the whole estimate in the FLL, bit for bit. */
+    const float plain[] = {0.0f, 0.0123456f, -0.75f, 0.999999f};
+    for (float x : plain) {
+        mixer_state(&f, 0.0f, 0.0f);
+        dsd_fll_band_edge_split_total(&f, x, 0.0f);
+        if (!closef(f.freq, x, 0.0f) || !closef(f.pre_freq, 0.0f, 0.0f)) { /* exact by design: x - 0 == x */
+            DSD_FPRINTF(stderr, "FLL split, zero bound: x=%.9f -> pre=%.9f freq=%.9f\n", x, f.pre_freq, f.freq);
+            return 1;
+        }
+    }
+    /* A non-finite total clears rather than poisoning the loop. */
+    mixer_state(&f, 0.1f, 0.1f);
+    dsd_fll_band_edge_split_total(&f, NAN, limit);
+    if (!closef(f.pre_freq, 0.0f, 0.0f) || !closef(f.freq, 0.0f, 0.0f)) {
+        DSD_FPRINTF(stderr, "FLL split NaN: pre=%f freq=%f\n", f.pre_freq, f.freq);
+        return 1;
+    }
+    return 0;
+}
+
+/* premix_block() of a tone at the mixer frequency leaves DC: residual power at least 60 dB under the tone. */
+static int
+check_premix_cancels_tone(void) {
+    const int rate = 72000;
+    const int n = 72000; /* one second */
+    const float w = (float)(2.0 * 3.14159265358979323846 * 6000.0 / (double)rate);
+    float* iq = static_cast<float*>(dsd_neo_aligned_malloc(sizeof(float) * 2U * (size_t)n));
+    if (!iq) {
+        return 1;
+    }
+    const double phi0 = 0.4;
+    for (int i = 0; i < n; i++) {
+        const double ph = phi0 + (double)w * (double)i;
+        iq[2 * i] = (float)(0.5 * cos(ph));
+        iq[2 * i + 1] = (float)(0.5 * sin(ph));
+    }
+    dsd_fll_band_edge_state_t f;
+    DSD_MEMSET(&f, 0, sizeof(f)); /* a zeroed phasor reads as (1, 0) */
+    f.pre_freq = w;
+    for (int off = 0; off < n; off += 512) {
+        const int len = (n - off) < 512 ? (n - off) : 512;
+        dsd_tetra_premix_block(&f, iq + 2 * off, len);
+    }
+    const double dc_r = 0.5 * cos(phi0);
+    const double dc_i = 0.5 * sin(phi0);
+    double resid = 0.0;
+    double power = 0.0;
+    for (int i = 0; i < n; i++) {
+        const double er = iq[2 * i] - dc_r;
+        const double ei = iq[2 * i + 1] - dc_i;
+        resid += er * er + ei * ei;
+        power += 0.25;
+    }
+    dsd_neo_aligned_free(iq);
+    const double db = 10.0 * log10(resid / power + 1e-30);
+    const double mag = sqrt((double)f.pre_re * f.pre_re + (double)f.pre_im * f.pre_im);
+    if (!(db < -60.0) || fabs(mag - 1.0) > 1e-6) {
+        DSD_FPRINTF(stderr, "TETRA premix: residual %.1f dB (want < -60), phasor |p|=%.9f\n", db, mag);
+        return 1;
+    }
+    return 0;
+}
+
+/* The rotation is phase continuous across block boundaries: blocks of 1, 7, 256 and irregular pairs all give the
+ * one-block rotation x[n] * exp(-j*w*n). */
+static int
+check_premix_partitions(void) {
+    const int n = 4096;
+    const float w = 0.37f;
+    static float in[2 * 4096];
+    static float out[2 * 4096];
+    uint32_t seed = 0x9e3779b9U;
+    for (int i = 0; i < 2 * n; i++) {
+        seed = seed * 1664525U + 1013904223U;
+        in[i] = static_cast<float>(seed >> 8) / 16777216.0f - 0.5f;
+    }
+    const int irregular[] = {3, 1, 50, 129, 2, 400, 17, 1000, 5};
+    for (int pattern = 0; pattern < 4; pattern++) {
+        DSD_MEMCPY(out, in, sizeof(out));
+        dsd_fll_band_edge_state_t f;
+        DSD_MEMSET(&f, 0, sizeof(f));
+        f.pre_re = 1.0f;
+        f.pre_freq = w;
+        int off = 0;
+        int k = 0;
+        while (off < n) {
+            int len = pattern == 0 ? 1 : (pattern == 1 ? 7 : (pattern == 2 ? 256 : irregular[k++ % 9]));
+            if (len > n - off) {
+                len = n - off;
+            }
+            dsd_tetra_premix_block(&f, out + 2 * off, len);
+            off += len;
+        }
+        double worst = 0.0;
+        for (int i = 0; i < n; i++) {
+            const double ph = -(double)w * (double)i;
+            const double c = cos(ph);
+            const double s = sin(ph);
+            const double wr = in[2 * i] * c - in[2 * i + 1] * s;
+            const double wi = in[2 * i] * s + in[2 * i + 1] * c;
+            const double e = fabs(out[2 * i] - wr) + fabs(out[2 * i + 1] - wi);
+            worst = e > worst ? e : worst;
+        }
+        if (worst > 1e-4) {
+            DSD_FPRINTF(stderr, "TETRA premix partition %d: worst error %.3g\n", pattern, worst);
+            return 1;
+        }
+    }
+    /* A phasor whose magnitude has strayed is renormalized: the rotation has unit gain, and the phasor it leaves is a
+     * unit one. */
+    {
+        dsd_fll_band_edge_state_t g;
+        DSD_MEMSET(&g, 0, sizeof(g));
+        g.pre_re = 0.9f;
+        g.pre_im = 1.2f; /* |p| = 1.5 */
+        g.pre_freq = w;
+        DSD_MEMCPY(out, in, sizeof(out));
+        dsd_tetra_premix_block(&g, out, 64);
+        for (int i = 0; i < 64; i++) {
+            const double a = hypot((double)in[2 * i], (double)in[2 * i + 1]);
+            const double b = hypot((double)out[2 * i], (double)out[2 * i + 1]);
+            if (fabs(a - b) > 1e-6) {
+                DSD_FPRINTF(stderr, "TETRA premix: gain %.9f at n=%d with a stray phasor\n", b / a, i);
+                return 1;
+            }
+        }
+        const double mag = hypot((double)g.pre_re, (double)g.pre_im);
+        if (fabs(mag - 1.0) > 1e-6) {
+            DSD_FPRINTF(stderr, "TETRA premix: left |p|=%.9f\n", mag);
+            return 1;
+        }
+    }
+    /* No pairs, no state: nothing moves. */
+    dsd_fll_band_edge_state_t f;
+    DSD_MEMSET(&f, 0, sizeof(f));
+    f.pre_re = 0.6f;
+    f.pre_im = 0.8f;
+    f.pre_freq = w;
+    dsd_tetra_premix_block(&f, out, 0);
+    dsd_tetra_premix_block(nullptr, out, 4);
+    dsd_tetra_premix_block(&f, nullptr, 4);
+    if (!closef(f.pre_re, 0.6f, 0.0f) || !closef(f.pre_im, 0.8f, 0.0f)) {
+        DSD_FPRINTF(stderr, "TETRA premix: an empty block moved the phasor\n");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     const float tol = 1e-5f;
@@ -500,6 +787,10 @@ main(void) {
     }
     if (check_params_for() != 0 || check_init_paths_agree() != 0 || check_tetra_design() != 0
         || check_same_sps_param_switch() != 0) {
+        return 1;
+    }
+    if (check_pre_limit() != 0 || check_total_accessor() != 0 || check_transfer() != 0 || check_split_fold() != 0
+        || check_premix_cancels_tone() != 0 || check_premix_partitions() != 0) {
         return 1;
     }
     return check_convolution();

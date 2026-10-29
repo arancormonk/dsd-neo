@@ -84,7 +84,18 @@ typedef struct {
     float rolloff;       /* Band-edge rolloff the taps were designed for (for reinit detection) */
     float loop_bw_scale; /* Loop-bandwidth scale the gains were set for (for reinit detection) */
     int initialized;
+
+    /* TETRA tracking mixer ahead of the channel filter (dsd_tetra_premix_block()). The carrier estimate is the sum
+     * pre_freq + freq (dsd_fll_band_edge_total_freq()); freq alone is the FLL's residual, which keeps its own
+     * +-max_freq clamp. pre_freq is 0 off the TETRA chain. (pre_re, pre_im) is the mixer's running rotation, (1, 0)
+     * after a reset; a zeroed phasor reads as (1, 0). */
+    float pre_freq; /* Mixer frequency (rad/sample) */
+    float pre_re;   /* Mixer phasor, real part */
+    float pre_im;   /* Mixer phasor, imaginary part */
 } dsd_fll_band_edge_state_t;
+
+/** @brief Bound on the TETRA mixer frequency, in Hz either side of the tuned centre. */
+#define DSD_TETRA_PREMIX_LIMIT_HZ 8000
 
 /**
  * @brief Per-chain band-edge FLL design parameters.
@@ -262,6 +273,68 @@ dsd_fll_band_edge_params dsd_fll_band_edge_params_for(int tetra_chain);
  * @param p   Design parameters, normally dsd_fll_band_edge_params_for(demod_state::tetra_chain).
  */
 void dsd_fll_band_edge_init_params(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p);
+
+/**
+ * @brief The combined carrier-frequency estimate: the TETRA mixer's frequency plus the FLL's residual.
+ *
+ * Pure: it reads the state and changes nothing. Every reader that means the receiver's carrier offset (metrics, the
+ * retune seed cache, logs) uses this; only the FLL's own loop and its saturation test read freq alone. Off the TETRA
+ * chain pre_freq is 0 and this is freq exactly.
+ *
+ * @param f FLL state (NULL reads 0).
+ * @return pre_freq + freq, rad/sample.
+ */
+float dsd_fll_band_edge_total_freq(const dsd_fll_band_edge_state_t* f);
+
+/**
+ * @brief Set the combined estimate, split between the mixer and the FLL.
+ *
+ * pre_freq = clamp(total, +-pre_limit), then freq = clamp(total - pre_freq, min_freq, max_freq): whatever exceeds
+ * both bounds is dropped. A pre_limit of 0 (the TETRA chain inactive) puts the whole value in freq. A non-finite
+ * total clears both. The phasor is left as it is.
+ *
+ * @param f         FLL state.
+ * @param total     Combined estimate, rad/sample.
+ * @param pre_limit Mixer bound, rad/sample (dsd_tetra_pre_limit_rad()), or 0.
+ */
+void dsd_fll_band_edge_split_total(dsd_fll_band_edge_state_t* f, float total, float pre_limit);
+
+/**
+ * @brief Fold the mixer back into the FLL: freq = clamp(freq + pre_freq, min_freq, max_freq), pre_freq = 0, and the
+ * phasor to (1, 0). Used when the TETRA chain stops.
+ *
+ * @param f FLL state.
+ */
+void dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f);
+
+/**
+ * @brief Move the FLL's residual into the mixer, up to its bound, keeping the combined estimate.
+ *
+ * want = clamp(pre_freq + freq, +-pre_limit); freq -= want - pre_freq; pre_freq = want. Once per block after the
+ * FLL. What exceeds the bound stays in freq.
+ *
+ * @param f         FLL state.
+ * @param pre_limit Mixer bound, rad/sample (dsd_tetra_pre_limit_rad()).
+ */
+void dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit);
+
+/**
+ * @brief Rotate a block by the TETRA mixer: x[n] * p, with the phasor p advanced by exp(-j * pre_freq) per sample.
+ *
+ * Two complex multiplies per sample and no per-sample sin/cos; the phasor's magnitude is renormalized once per
+ * block, so the rotation is phase continuous across any partition of the stream into blocks.
+ *
+ * @param f     FLL state holding pre_freq and the phasor.
+ * @param iq    Interleaved I/Q, rotated in place.
+ * @param pairs Number of complex samples.
+ */
+void dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs);
+
+/**
+ * @brief The TETRA mixer bound at a DSP rate: 2*pi*DSD_TETRA_PREMIX_LIMIT_HZ/rate_out rad/sample, 0 for a rate that
+ * is not positive.
+ */
+float dsd_tetra_pre_limit_rad(int rate_out);
 
 /**
  * @brief OP25-compatible FLL band-edge frequency lock loop.

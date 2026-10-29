@@ -4472,6 +4472,17 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `dsd_fll_band_edge_init()` is the P25-parameter wrapper for callers without a demod. The CQPSK RMS AGC averages
   with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA, OP25's 0.45 otherwise. `DSP_FLL_BAND_EDGE` pins the P25
   design (taps, loop bandwidth, gains) to its values before the parameters existed.
+  The FLL state also holds the TETRA tracking mixer (`pre_freq` and a phasor; `dsd_tetra_premix_block()` rotates a
+  block by it, bounded by `dsd_tetra_pre_limit_rad()`, 8 kHz either side). The carrier estimate is the sum,
+  `dsd_fll_band_edge_total_freq()` = `pre_freq + freq`, and every reader that means the receiver's offset reads that
+  sum: the metrics CFO and band-edge exports (so auto-PPM, the terminal, Qt and the API), the retune seed cache and the
+  retune debug logs. `freq` alone is the FLL's residual: its loop, and the carrier-lock heuristic's saturation test
+  against the FLL clamp, read only it. A retune reset (`demod_reset_on_retune()`) applies the reset plan's decision
+  to the sum, clearing both parts or keeping the sum (rescaled to the new rate) and splitting it again with
+  `dsd_fll_band_edge_split_total()`, into the mixer up to its bound only while `tetra_chain` is set; every reset but a
+  CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` and `dsd_fll_band_edge_fold()` move
+  the estimate between the parts without changing the sum. With `pre_freq` 0 (every non-TETRA chain) all of this is
+  the FLL frequency as before.
   The plan cache key is (rate_out, profile, width, TETRA chain). The SIMD complex FIR kernels size their scratch per
   call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless
   (issue #572):

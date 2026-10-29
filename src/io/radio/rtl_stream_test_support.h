@@ -753,6 +753,7 @@ int rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int te
 typedef struct rtl_stream_test_fll_retune_result {
     float fll_freq_before;
     float fll_freq_after;
+    float fll_pre_after; /* the TETRA mixer frequency, which stays 0 off the TETRA chain */
     float retained_fll_scale;
     int reset_retained_fll;
     int restored_cached_fll;
@@ -776,6 +777,40 @@ typedef struct rtl_stream_test_fll_retune_cache_result {
 
 int rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_result* out_result);
 int rtl_stream_test_fll_retune_cache_stores(float leaving_fll_freq, int* out_restored);
+
+/* One retune reset (demod_reset_on_retune()) of a test demod whose band-edge FLL holds pre_freq + freq rad/sample at
+ * previous_rate_out_hz, behind a mixer phasor that is not (1, 0). @p reason is a reset reason's name (as the RETUNE
+ * debug log prints it, or a stream-gap reason); @p tetra_chain is demod_state::tetra_chain. The seed cache starts
+ * empty. */
+typedef struct rtl_stream_test_fll_mixer_retune_result {
+    float total_before; /* pre_freq + freq before the reset, rad/sample at the previous rate */
+    float pre_after;
+    float freq_after;
+    float phasor_re_after;
+    float phasor_im_after;
+    int reset_retained_fll;
+    int restored_cached_fll;
+    char reason[32]; /* the plan's reason after the reset */
+} rtl_stream_test_fll_mixer_retune_result;
+
+int rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_freq, float freq,
+                                     uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,
+                                     int previous_rate_out_hz, int next_rate_out_hz,
+                                     rtl_stream_test_fll_mixer_retune_result* out_result);
+
+/* Leave a control channel whose FLL holds pre_freq + freq at cc_rate_hz for an uncached voice channel at the same
+ * rate, then return to the control channel at return_rate_hz. */
+typedef struct rtl_stream_test_fll_mixer_cache_result {
+    int hop_reset;
+    float hop_pre_after;
+    float hop_freq_after;
+    int return_restored;
+    float return_pre_after;
+    float return_freq_after;
+} rtl_stream_test_fll_mixer_cache_result;
+
+int rtl_stream_test_fll_mixer_cache_round_trip(int tetra_chain, float pre_freq, float freq, int cc_rate_hz,
+                                               int return_rate_hz, rtl_stream_test_fll_mixer_cache_result* out_result);
 int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
                                                    uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
                                                    uint32_t* out_first_request_id, uint32_t* out_second_request_id);
@@ -843,6 +878,8 @@ typedef struct rtl_stream_test_demod_fields {
     int costas_phase_urad;
     int fll_freq_urad;
     int fll_phase_urad;
+    int fll_pre_freq_urad;  /* the TETRA mixer frequency */
+    int fll_pre_phase_urad; /* the mixer phasor's angle; (1, 0) and a zeroed phasor both read 0 */
     int ted_awaiting_init;
     /* Monitor audio state, in millionths: a fresh open starts de-emphasis, DC and the audio LPF at zero and the
        squelch envelope open (1000000). */

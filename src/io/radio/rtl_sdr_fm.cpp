@@ -2147,7 +2147,9 @@ demod_prepare_fll_seed_for_retune(const struct demod_state* s, DemodRetuneResetP
         return;
     }
 
-    fll_retune_seed_cache_store(plan->previous_center_freq_hz, plan->previous_rate_out_hz, s->fll_band_edge_state.freq);
+    /* The seed is the combined estimate (the TETRA mixer's part included), in Hz, so it restores at any rate. */
+    fll_retune_seed_cache_store(plan->previous_center_freq_hz, plan->previous_rate_out_hz,
+                                dsd_fll_band_edge_total_freq(&s->fll_band_edge_state));
     float cached_fll_freq = 0.0f;
     if (fll_retune_seed_cache_lookup(plan->next_center_freq_hz, plan->next_rate_out_hz, &cached_fll_freq)) {
         plan->reset_retained_fll = false;
@@ -2367,22 +2369,31 @@ demod_reset_common_state_for_retune(struct demod_state* s) {
     }
 }
 
+/* The reset plan's frequency decision, applied to the combined estimate pre_freq + freq: clear both parts, or keep the
+ * combined value (rescaled to the new rate) and split it again. While the TETRA chain is active the TETRA mixer takes
+ * up to its bound at the new rate and the FLL the rest within its clamp; otherwise the FLL takes it all, clamped, and
+ * the mixer stays at 0. */
 static void
 demod_refresh_fll_band_edge_state(struct demod_state* s, int reset_retained_fll, float retained_fll_scale) {
     int sps = demod_effective_ted_sps(s);
+    dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;
     if (reset_retained_fll) {
-        s->fll_band_edge_state.freq = 0.0f;
-    } else {
-        s->fll_band_edge_state.freq *= retained_fll_scale;
-    }
-    dsd_fll_band_edge_init_params(&s->fll_band_edge_state, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
-    if (reset_retained_fll) {
+        f->pre_freq = 0.0f;
+        f->freq = 0.0f;
+        dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
         return;
     }
-    if (s->fll_band_edge_state.freq > s->fll_band_edge_state.max_freq) {
-        s->fll_band_edge_state.freq = s->fll_band_edge_state.max_freq;
-    } else if (s->fll_band_edge_state.freq < s->fll_band_edge_state.min_freq) {
-        s->fll_band_edge_state.freq = s->fll_band_edge_state.min_freq;
+    const float total = dsd_fll_band_edge_total_freq(f) * retained_fll_scale;
+    dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
+    const float pre_limit = s->tetra_chain ? dsd_tetra_pre_limit_rad(s->rate_out) : 0.0f;
+    dsd_fll_band_edge_split_total(f, total, pre_limit);
+    if (debug_cqpsk_enabled()) {
+        const float kept = dsd_fll_band_edge_total_freq(f);
+        if (fabsf(kept - total) > 1e-6f) {
+            const float hz_per_rad = (float)s->rate_out / 6.28318530717958647692f;
+            DSD_FPRINTF(stderr, "[RETUNE] combined FLL estimate %.1fHz clamped to %.1fHz (mixer %.1fHz, FLL %.1fHz)\n",
+                        total * hz_per_rad, kept * hz_per_rad, f->pre_freq * hz_per_rad, f->freq * hz_per_rad);
+        }
     }
 }
 
@@ -2446,7 +2457,8 @@ demod_log_post_retune_state(const struct demod_state* s, const DemodRetuneResetP
     }
     const int previous_rate_out_hz = plan.previous_rate_out_hz > 0 ? plan.previous_rate_out_hz : s->rate_out;
     float fll_be_before_hz = fll_freq_before * ((float)previous_rate_out_hz / 6.28318530717958647692f);
-    float fll_be_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
+    float fll_be_freq_hz =
+        dsd_fll_band_edge_total_freq(&s->fll_band_edge_state) * ((float)s->rate_out / 6.28318530717958647692f);
     float costas_freq_hz =
         s->costas_state.freq
         * (((float)s->rate_out / (float)(s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
@@ -2496,7 +2508,8 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     if (!s) {
         return plan;
     }
-    const float fll_freq_before = s->fll_band_edge_state.freq;
+    /* The combined carrier estimate (the TETRA mixer's part included) is what every decision below acts on. */
+    const float fll_freq_before = dsd_fll_band_edge_total_freq(&s->fll_band_edge_state);
     demod_prepare_fll_seed_for_retune(s, &plan);
     DemodRetuneResetReason reason = plan.reason;
     if (reason != DemodRetuneResetReason::CqpskReacquire) {
@@ -2504,9 +2517,16 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     }
     demod_reset_common_state_for_retune(s);
     if (plan.restore_cached_fll) {
+        /* The seed is a combined value: it is split again at the new rate below. */
+        s->fll_band_edge_state.pre_freq = 0.0f;
         s->fll_band_edge_state.freq = plan.cached_fll_freq;
     }
     demod_refresh_fll_band_edge_state(s, plan.reset_retained_fll ? 1 : 0, plan.retained_fll_scale);
+    if (reason != DemodRetuneResetReason::CqpskReacquire) {
+        /* The mixer restarts its rotation with the filters; a CQPSK reacquire keeps the stream it rotates. */
+        s->fll_band_edge_state.pre_re = 1.0f;
+        s->fll_band_edge_state.pre_im = 0.0f;
+    }
     demod_reset_ted_delay_for_retune(s);
     if (reason != DemodRetuneResetReason::CqpskReacquire) {
         demod_apply_pending_ted_override(s);
@@ -3354,7 +3374,8 @@ demod_log_retune_diag_block(const struct demod_state* d, int got, const DemodRet
     if (!d || !diag || diag->block <= 0) {
         return;
     }
-    float fll_be_freq_hz = d->fll_band_edge_state.freq * ((float)d->rate_out / 6.28318530717958647692f);
+    float fll_be_freq_hz =
+        dsd_fll_band_edge_total_freq(&d->fll_band_edge_state) * ((float)d->rate_out / 6.28318530717958647692f);
     float symbol_rate_hz = (float)d->rate_out / (float)(d->ted_sps > 0 ? d->ted_sps : 5);
     float costas_freq_hz = d->costas_state.freq * (symbol_rate_hz / 6.28318530717958647692f);
     double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
@@ -14299,6 +14320,85 @@ rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t nex
     out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
     out_result->distant_frequency_reason = plan.reason == DemodRetuneResetReason::DistantFrequencyRetune ? 1 : 0;
     out_result->fll_freq_after = test_demod.fll_band_edge_state.freq;
+    out_result->fll_pre_after = test_demod.fll_band_edge_state.pre_freq;
+    return 0;
+}
+
+/* A CQPSK test demod on the TETRA symbol rate (or P25's, off the chain) at @p rate_out_hz, its FLL holding @p pre_freq
+ * + @p freq behind a mixer phasor that is not (1, 0). */
+static void
+fll_mixer_test_init_demod(struct demod_state* test_demod, int tetra_chain, float pre_freq, float freq,
+                          int rate_out_hz) {
+    cqpsk_reacquire_test_init_demod(test_demod, 1, tetra_chain ? 18000 : 4800, 4);
+    test_demod->tetra_chain = tetra_chain ? 1 : 0;
+    test_demod->rate_out = rate_out_hz;
+    dsd_fll_band_edge_init_params(&test_demod->fll_band_edge_state, test_demod->ted_sps,
+                                  dsd_fll_band_edge_params_for(test_demod->tetra_chain));
+    test_demod->fll_band_edge_state.pre_freq = pre_freq;
+    test_demod->fll_band_edge_state.freq = freq;
+    test_demod->fll_band_edge_state.pre_re = 0.6f;
+    test_demod->fll_band_edge_state.pre_im = 0.8f;
+}
+
+extern "C" int
+rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_freq, float freq,
+                                 uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,
+                                 int previous_rate_out_hz, int next_rate_out_hz,
+                                 rtl_stream_test_fll_mixer_retune_result* out_result) {
+    if (!out_result || !reason || previous_rate_out_hz <= 0 || next_rate_out_hz <= 0) {
+        return -1;
+    }
+    *out_result = {};
+    fll_retune_seed_cache_clear();
+    static struct demod_state test_demod;
+    fll_mixer_test_init_demod(&test_demod, tetra_chain, pre_freq, freq, previous_rate_out_hz);
+    out_result->total_before = dsd_fll_band_edge_total_freq(&test_demod.fll_band_edge_state);
+    /* The device has moved to the new rate before the reset runs (controller_finalize_dsp_chain()). */
+    test_demod.rate_out = next_rate_out_hz;
+    DemodRetuneResetPlan plan = demod_retune_reset_plan(retune_reset_reason_from_name(reason), previous_center_freq_hz,
+                                                        next_center_freq_hz, previous_rate_out_hz, next_rate_out_hz);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->pre_after = test_demod.fll_band_edge_state.pre_freq;
+    out_result->freq_after = test_demod.fll_band_edge_state.freq;
+    out_result->phasor_re_after = test_demod.fll_band_edge_state.pre_re;
+    out_result->phasor_im_after = test_demod.fll_band_edge_state.pre_im;
+    out_result->reset_retained_fll = plan.reset_retained_fll ? 1 : 0;
+    out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
+    DSD_SNPRINTF(out_result->reason, sizeof(out_result->reason), "%s", retune_reset_reason_name(plan.reason));
+    fll_retune_seed_cache_clear();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_fll_mixer_cache_round_trip(int tetra_chain, float pre_freq, float freq, int cc_rate_hz,
+                                           int return_rate_hz, rtl_stream_test_fll_mixer_cache_result* out_result) {
+    if (!out_result || cc_rate_hz <= 0 || return_rate_hz <= 0) {
+        return -1;
+    }
+    *out_result = {};
+    fll_retune_seed_cache_clear();
+    const uint32_t kCc = 770418750U;
+    const uint32_t kVc = 769668750U;
+    static struct demod_state test_demod;
+    fll_mixer_test_init_demod(&test_demod, tetra_chain, pre_freq, freq, cc_rate_hz);
+
+    DemodRetuneResetPlan plan =
+        demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, kCc, kVc, cc_rate_hz, cc_rate_hz);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->hop_reset = plan.reset_retained_fll ? 1 : 0;
+    out_result->hop_pre_after = test_demod.fll_band_edge_state.pre_freq;
+    out_result->hop_freq_after = test_demod.fll_band_edge_state.freq;
+
+    /* The voice channel learns an estimate of its own before the return. */
+    test_demod.fll_band_edge_state.pre_freq = tetra_chain ? -0.2f : 0.0f;
+    test_demod.fll_band_edge_state.freq = -0.05f;
+    test_demod.rate_out = return_rate_hz;
+    plan = demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, kVc, kCc, cc_rate_hz, return_rate_hz);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->return_restored = plan.restore_cached_fll ? 1 : 0;
+    out_result->return_pre_after = test_demod.fll_band_edge_state.pre_freq;
+    out_result->return_freq_after = test_demod.fll_band_edge_state.freq;
+    fll_retune_seed_cache_clear();
     return 0;
 }
 
@@ -14964,6 +15064,9 @@ family_test_capture(void) {
     f.costas_phase_urad = (int)lrintf(demod.costas_state.phase * 1e6f);
     f.fll_freq_urad = (int)lrintf(demod.fll_band_edge_state.freq * 1e6f);
     f.fll_phase_urad = (int)lrintf(demod.fll_band_edge_state.phase * 1e6f);
+    f.fll_pre_freq_urad = (int)lrintf(demod.fll_band_edge_state.pre_freq * 1e6f);
+    f.fll_pre_phase_urad =
+        (int)lrintf(atan2f(demod.fll_band_edge_state.pre_im, demod.fll_band_edge_state.pre_re) * 1e6f);
     /* The Gardner loop's first-initialisation test (gardner_need_reinit()), with a tolerance on omega_mid. */
     f.ted_awaiting_init = (fabsf(demod.ted_state.omega_mid) < 1e-12f || demod.ted_state.twice_sps < 2) ? 1 : 0;
     f.deemph_avg_u = family_test_micro(demod.deemph_avg);
@@ -14993,6 +15096,9 @@ family_test_seed_running_loops(void) {
     demod.costas_state.phase = 1.25f;
     demod.fll_band_edge_state.freq = 0.02f;
     demod.fll_band_edge_state.phase = 0.5f;
+    demod.fll_band_edge_state.pre_freq = 0.03f;
+    demod.fll_band_edge_state.pre_re = 0.6f;
+    demod.fll_band_edge_state.pre_im = 0.8f;
     demod.ted_state.omega_mid = 10.0f;
     demod.ted_state.twice_sps = 22;
     demod.ted_state.mu = 3.5f;

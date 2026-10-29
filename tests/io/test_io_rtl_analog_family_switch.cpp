@@ -164,6 +164,8 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(costas_phase_urad);
     FIELD(fll_freq_urad);
     FIELD(fll_phase_urad);
+    FIELD(fll_pre_freq_urad);
+    FIELD(fll_pre_phase_urad);
     FIELD(ted_awaiting_init);
     FIELD(deemph_avg_u);
     FIELD(dc_avg_u);
@@ -216,6 +218,8 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(costas_phase_urad);
     FIELD(fll_freq_urad);
     FIELD(fll_phase_urad);
+    FIELD(fll_pre_freq_urad);
+    FIELD(fll_pre_phase_urad);
     FIELD(ted_awaiting_init);
     FIELD(deemph_avg_u);
     FIELD(dc_avg_u);
