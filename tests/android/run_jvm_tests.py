@@ -185,7 +185,8 @@ def playback_states_match():
 
 
 def recordings_provider_contract():
-    """#708: the recordings provider serves the two "Call recordings" folders RecordingShare names, and no more."""
+    """#708: the recordings provider serves the two "Call recordings" folders and the share copies' cache folder that
+    RecordingShare names, and no more."""
     package = REPO / "android/package"
     try:
         manifest = (package / "AndroidManifest.xml").read_text(encoding="utf-8")
@@ -207,10 +208,22 @@ def recordings_provider_contract():
         if attribute not in ours[0]:
             return f"AndroidManifest.xml: the recordings provider needs {attribute}"
     entries = re.findall(r"<([\w-]+)\s+name=\"(\w+)\"\s+path=\"([^\"]*)\"\s*/>", paths)
-    if sorted(entries) != [("external-files-path", "external", "Call recordings/"), ("files-path", "internal", "Call recordings/")]:
-        return f"res/xml/recordings_paths.xml: only the two Call recordings folders may be served, not {entries}"
-    if 'const val FOLDER = "Call recordings"' not in share or 'const val AUTHORITY_SUFFIX = ".recordings"' not in share:
-        return f"{APP_SOURCES / 'RecordingShare.kt'}: FOLDER and AUTHORITY_SUFFIX must match the provider"
+    served = [
+        ("cache-path", "shares", "recording-shares/"),
+        ("external-files-path", "external", "Call recordings/"),
+        ("files-path", "internal", "Call recordings/"),
+    ]
+    if sorted(entries) != served:
+        return (
+            "res/xml/recordings_paths.xml: only the two Call recordings folders and the share copies' folder may be "
+            f"served, not {entries}"
+        )
+    if (
+        'const val FOLDER = "Call recordings"' not in share
+        or 'const val AUTHORITY_SUFFIX = ".recordings"' not in share
+        or 'const val SHARE_FOLDER = "recording-shares"' not in share
+    ):
+        return f"{APP_SOURCES / 'RecordingShare.kt'}: FOLDER, SHARE_FOLDER and AUTHORITY_SUFFIX must match the provider"
     if 'json_store_path(QStringLiteral("Call recordings"))' not in host:
         return "src/ui/qt/decoder_host.cpp: the base host's root must use the same folder name"
     if "FLAG_GRANT_WRITE_URI_PERMISSION" in share:

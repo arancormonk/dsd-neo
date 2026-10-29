@@ -284,7 +284,22 @@ DecoderHostAndroid::closeRecordingWork() {
 
 bool
 DecoderHostAndroid::shareRecordingFile(const QString& path, const QString& title) {
-    return platformShareRecording(path, title);
+    if (documentTransfersAborted() || !platformCanShareRecording(path)) {
+        return false;
+    }
+    // The copy is a file's worth of I/O, so it runs on the transfer worker, never the GUI or Android main thread.
+    m_transfer_worker->start([link = m_transfer_link, path, title]() {
+        if (platformShareRecording(path, title)) {
+            return;
+        }
+        const std::lock_guard<std::mutex> lock(link->mutex);
+        DecoderHostAndroid* host = link->host;
+        if (host != nullptr) {
+            QMetaObject::invokeMethod(
+                host, [host, path]() { host->noteRecordingShareFailed(path); }, Qt::QueuedConnection);
+        }
+    });
+    return true;
 }
 
 void
@@ -295,13 +310,23 @@ DecoderHostAndroid::refreshRecordingShares() {
         if (path.isEmpty()) {
             return;
         }
-        Q_EMIT recordingShareFailed(path);
-        // Gone by the time the share started (deleted from a computer, say): the store looks again, as a play or an
-        // export that finds a file missing has it do.
-        if (!QFileInfo(path).isFile()) {
-            reportRecordingsMissing({path});
-        }
+        noteRecordingShareFailed(path);
     }
+}
+
+void
+DecoderHostAndroid::noteRecordingShareFailed(const QString& path) {
+    Q_EMIT recordingShareFailed(path);
+    // Gone by the time the share copied it (deleted from a computer, say): the store looks again, as a play or an
+    // export that finds a file missing has it do.
+    if (!QFileInfo(path).isFile()) {
+        reportRecordingsMissing({path});
+    }
+}
+
+void
+DecoderHostAndroid::startRecordingShareClean() {
+    m_transfer_worker->start([]() { platformCleanRecordingShares(); });
 }
 
 } // namespace dsd_android

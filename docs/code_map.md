@@ -8134,10 +8134,17 @@ Qt Quick frontend (`src/ui/qt`):
     never calls into the host. A single save to a file URL takes the base copy
     (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
     reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
-    whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder), then the
-    chooser on the Android main thread through `RecordingsProvider` (`${applicationId}.recordings`,
-    `res/xml/recordings_paths.xml`: the two folders only), read grant only; a share that fails there is queued
-    (`RecordingShare.takeFailure()`) and each refresh emits `DecoderHost::recordingShareFailed(path)`. A player open
+    whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder) on the GUI
+    thread; then, on the transfer worker (behind a running export), `RecordingShare.stage()` copies it, under its own
+    name, into a folder of its own in `cacheDir/recording-shares/`, so retention or a delete cannot take the file from
+    the app it went to; then `RecordingShare.offer()` starts the chooser for the copy on the Android main thread through
+    `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two folders and the share
+    copies' folder only), read grant only. A copy goes when it is a day old by its modification time (either way), at
+    the next share or host start (`RecordingShare.clean()` on the transfer worker), but never one this process made
+    less than an hour ago (a monotonic clock); a chooser that cannot start removes its copy. A share that fails in
+    either step (the source gone before the copy included) is queued by the recording's path
+    (`RecordingShare.takeFailure()`) and each refresh emits `DecoderHost::recordingShareFailed(path)`, with the store
+    told when the file is gone. A player open
     failure is "missing" only when the file does not exist. The store compacts a journal only while the session reads
     inactive: the engine's run opens and closes the journal inside `nativeRun()`, the service reports IDLE after it
     returns, and a lifecycle record that cannot be read while the engine runs reads RUNNING, not IDLE. Tests:

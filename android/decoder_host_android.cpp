@@ -213,6 +213,7 @@ android_exit_lines_logged() {
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
     dsd_qt::DiagnosticsLog::installTap();
     hold_content_resolver();
+    startRecordingShareClean();
     refreshPresentation();
 }
 
@@ -631,29 +632,58 @@ DecoderHostAndroid::platformCancelRecordingTransfer(qint64 id) {
 }
 
 bool
+DecoderHostAndroid::platformCanShareRecording(const QString& path) {
+    const QJniObject context = android_context();
+    if (!context.isValid()) {
+        return false;
+    }
+    // Must match RecordingShare.kt: @JvmStatic fun canShare(context: Context, path: String): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kRecordingShareClass, "canShare",
+                                                  "(Landroid/content/Context;Ljava/lang/String;)Z", context.object(),
+                                                  QJniObject::fromString(path).object())
+           == JNI_TRUE;
+}
+
+bool
 DecoderHostAndroid::platformShareRecording(const QString& path, const QString& title) {
     const QJniObject context = android_context();
     if (!context.isValid()) {
         return false;
     }
-    const QJniObject file = QJniObject::fromString(path);
-    // Must match RecordingShare.kt: @JvmStatic fun canShare(context: Context, path: String): Boolean.
-    if (QJniObject::callStaticMethod<jboolean>(kRecordingShareClass, "canShare",
-                                               "(Landroid/content/Context;Ljava/lang/String;)Z", context.object(),
-                                               file.object())
-        != JNI_TRUE) {
+    // Must match RecordingShare.kt: @JvmStatic fun stage(context: Context, path: String): String.
+    const QJniObject copy = QJniObject::callStaticObjectMethod(
+        kRecordingShareClass, "stage", "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+        context.object(), QJniObject::fromString(path).object());
+    if (!copy.isValid()) {
         return false;
     }
+    const QString copyPath = copy.toString();
+    if (copyPath.isEmpty()) {
+        return true; // RecordingShare queued the failure
+    }
     /* Not waited for; a share that fails from here on is queued in RecordingShare for refreshRecordingShares(). The
-     * context checked here goes along (a global reference), so the share always runs and always reports. */
-    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([context, path, title]() -> QVariant {
-        // Must match RecordingShare.kt: @JvmStatic fun share(context: Context, path: String, title: String): Boolean.
+     * context goes along (a global reference), so the offer always runs and always reports. */
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([context, copyPath, path, title]() -> QVariant {
+        /* Must match RecordingShare.kt: @JvmStatic fun offer(context: Context, copy: String, path: String,
+         * title: String): Boolean. */
         (void)QJniObject::callStaticMethod<jboolean>(
-            kRecordingShareClass, "share", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z",
-            context.object(), QJniObject::fromString(path).object(), QJniObject::fromString(title).object());
+            kRecordingShareClass, "offer",
+            "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z", context.object(),
+            QJniObject::fromString(copyPath).object(), QJniObject::fromString(path).object(),
+            QJniObject::fromString(title).object());
         return {};
     });
     return true;
+}
+
+void
+DecoderHostAndroid::platformCleanRecordingShares() {
+    const QJniObject context = android_context();
+    if (context.isValid()) {
+        // Must match RecordingShare.kt: @JvmStatic fun clean(context: Context).
+        QJniObject::callStaticMethod<void>(kRecordingShareClass, "clean", "(Landroid/content/Context;)V",
+                                           context.object());
+    }
 }
 
 QString

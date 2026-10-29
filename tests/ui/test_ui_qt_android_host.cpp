@@ -89,18 +89,23 @@ struct PlatformRecordings {
     QStringList names;
     QString reference;
     QStringList answer = {QStringLiteral("0")};
-    // Shares.
+    // Shares: what the worker's share saw (under mutex), and the failures it left queued (GUI thread).
     QString sharedPath;
     QString sharedTitle;
+    bool shareOnWorker = false;
     QStringList shareFailures;
     std::mutex mutex;
     int plays = 0;
     int nextGeneration = 0;
     int statusReads = 0;
     std::atomic<int> transfers{0};
-    int shares = 0;
+    std::atomic<int> shares{0};
+    int canShares = 0;
+    std::atomic<int> cleans{0};
+    std::atomic<bool> cleanOnWorker{false};
     bool zip = false;
     bool onWorker = false;
+    bool canShareAnswer = true;
     bool shareAnswer = true;
     std::atomic<bool> hold{false};
     // A held call that ignores its cancel, as a write blocked on a provider's pipe does.
@@ -145,7 +150,12 @@ reset_recordings() {
     r.progress = -1;
     r.cancelled = 0;
     r.shares = 0;
+    r.canShares = 0;
+    r.canShareAnswer = true;
     r.shareAnswer = true;
+    r.sharedPath.clear();
+    r.sharedTitle.clear();
+    r.shareOnWorker = false;
     r.shareFailures.clear();
     r.ignoresCancel = false;
 }
@@ -185,7 +195,8 @@ usb_record() {
 // Only platform transport is replaced. The real Android host's refresh, stop,
 // phase publication and failureText getter are compiled by this desktop target.
 namespace dsd_android {
-DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : DecoderHost(parent) {}
+// As the real constructor (decoder_host_android.cpp) does, less its platform calls: the share copies' clean.
+DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : DecoderHost(parent) { startRecordingShareClean(); }
 
 QJsonObject
 DecoderHostAndroid::readLifecycleStatus() const {
@@ -447,12 +458,32 @@ DecoderHostAndroid::platformCancelRecordingTransfer(qint64 id) {
 }
 
 bool
+DecoderHostAndroid::platformCanShareRecording(const QString&) {
+    PlatformRecordings& r = recordings();
+    ++r.canShares;
+    return r.canShareAnswer;
+}
+
+bool
 DecoderHostAndroid::platformShareRecording(const QString& path, const QString& title) {
     PlatformRecordings& r = recordings();
+    bool answer = false;
+    {
+        const std::lock_guard<std::mutex> lock(r.mutex);
+        r.sharedPath = path;
+        r.sharedTitle = title;
+        r.shareOnWorker = QThread::currentThread() != QCoreApplication::instance()->thread();
+        answer = r.shareAnswer;
+    }
     ++r.shares;
-    r.sharedPath = path;
-    r.sharedTitle = title;
-    return r.shareAnswer;
+    return answer;
+}
+
+void
+DecoderHostAndroid::platformCleanRecordingShares() {
+    PlatformRecordings& r = recordings();
+    r.cleanOnWorker = QThread::currentThread() != QCoreApplication::instance()->thread();
+    ++r.cleans;
 }
 
 QString
@@ -1044,22 +1075,33 @@ check_recording_transfers() {
           "failed, without the platform");
 }
 
-/* #708: a share reaches the platform only for a recording the store manages that is there. */
+/* #708: a share reaches the platform only for a recording the store manages that is there. Its copy (G2: a stable copy,
+ * which retention cannot take from the app it went to) is made on the transfer worker, never the GUI thread. */
 static void
 check_recording_share() {
     using dsd_android::DecoderHostAndroid;
     const QTemporaryDir dir;
     const QString a = temp_recording(dir, "a.wav", "RIFF");
-    DecoderHostAndroid host;
     reset_recordings();
+    recordings().cleans = 0;
+    DecoderHostAndroid host;
+    check(wait_for([]() { return recordings().cleans.load() == 1; }) && recordings().cleanOnWorker.load(),
+          "a host cleans old share copies once, at its start, on the transfer worker");
     host.setRecordingIndex([&a](const QString& path) { return path == a; });
-    check(host.shareRecording(a, QStringLiteral("Call recording")) && recordings().shares == 1
-              && recordings().sharedPath == a && recordings().sharedTitle == QStringLiteral("Call recording"),
-          "an indexed recording is shared through the platform");
-    recordings().shareAnswer = false;
+    const auto shared = [](const QString& path, const QString& title) {
+        return with_transfer([&path, &title](const PlatformRecordings& r) {
+            return r.sharedPath == path && r.sharedTitle == title && r.shareOnWorker;
+        });
+    };
+    check(host.shareRecording(a, QStringLiteral("Call recording")) && wait_for([]() {
+              return recordings().shares.load() == 1;
+          }) && shared(a, QStringLiteral("Call recording")),
+          "an indexed recording is shared through the platform, copied on the transfer worker");
+    recordings().canShareAnswer = false;
     check(!host.shareRecording(a, QStringLiteral("Call recording")), "the platform's refusal is the answer");
+    recordings().canShareAnswer = true;
     check(!host.shareRecording(dir.filePath(QStringLiteral("other.wav")), QStringLiteral("x"))
-              && recordings().shares == 2,
+              && recordings().canShares == 2 && recordings().shares.load() == 1,
           "a path the store does not manage never reaches the platform");
 
     // A share the platform took can still fail on its way; the next refresh reports it. One whose file is gone (here
@@ -1076,6 +1118,12 @@ check_recording_share() {
     check(gone == QStringList({dir.filePath(QStringLiteral("b.wav"))}), "and the one whose file is gone is missing");
     host.refresh();
     check(failed.size() == 2 && gone.size() == 1, "once");
+
+    // A worker that could not ask the platform at all (no RecordingShare to queue the failure) reports it itself.
+    recordings().shareAnswer = false;
+    check(host.shareRecording(a, QStringLiteral("Call recording"))
+              && wait_for([&failed]() { return failed.size() == 3; }) && failed.last() == a && gone.size() == 1,
+          "a share the worker could not hand to the platform is a failure");
 }
 
 static QString

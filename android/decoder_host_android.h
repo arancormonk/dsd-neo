@@ -280,7 +280,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
                                 bool zip) override;
 
-    /** @brief RecordingShare: only a .wav inside a recording root is offered, read-only, through the app's chooser. */
+    /**
+     * @brief RecordingShare: only a .wav inside a recording root is offered, read-only, through the app's chooser, as a
+     * copy the transfer worker makes in the app's cache: retention or a delete may take the original while the app it
+     * went to still opens it. A share waits behind a running export.
+     */
     bool shareRecordingFile(const QString& path, const QString& title) override;
 
   private:
@@ -292,6 +296,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void refreshRecordingTransfer();
     /** @brief Emit recordingShareFailed() for each share RecordingShare could not hand over (#708). */
     void refreshRecordingShares();
+    /** @brief Emit recordingShareFailed(@p path), and have the store look again if the recording is gone. */
+    void noteRecordingShareFailed(const QString& path);
+    /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()). */
+    void startRecordingShareClean();
     /** @brief How a transfer job reaches its host; defined in decoder_host_android_recordings.cpp. */
     struct TransferLink;
     static std::shared_ptr<TransferLink> newTransferLink(DecoderHostAndroid* host);
@@ -371,8 +379,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief RecordingExport.progress(): the source bytes written, -1 when transfer @p id is not running. */
     static qint64 platformRecordingTransferProgress(qint64 id);
     static void platformCancelRecordingTransfer(qint64 id);
-    /** @brief RecordingShare.canShare(), then RecordingShare.share() on the Android main thread, not waited for. */
+    /** @brief RecordingShare.canShare(); false when the call failed. */
+    static bool platformCanShareRecording(const QString& path);
+    /**
+     * @brief RecordingShare.stage() on the calling (worker) thread, then RecordingShare.offer() of its copy on the
+     * Android main thread, not waited for. A share that fails in either is queued in RecordingShare
+     * (platformTakeRecordingShareFailure()).
+     * @return false when RecordingShare could not be asked, so nothing queued the failure.
+     */
     static bool platformShareRecording(const QString& path, const QString& title);
+    /** @brief RecordingShare.clean() on the calling (worker) thread: the share copies past their day go. */
+    static void platformCleanRecordingShares();
     /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
     static QString platformTakeRecordingShareFailure();
     /**

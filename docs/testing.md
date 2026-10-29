@@ -168,9 +168,11 @@ preparing, focus denied or lost, completion, seeks before the player is ready, a
 provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the export after
 it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;
 `ANDROID_RECORDING_SHARE_JVM` (`recording_share`) runs
-`RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks and the share intent.
+`RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks, the share copy that
+outlives its original, the copies' clean and the share intent.
 Each first checks what crosses JNI or the manifest (the playback states and transfer results against `DecoderHost`'s
-enums, the provider serving only the two "Call recordings" folders with a read grant). They skip the FIFO and
+enums, the provider serving only the two "Call recordings" folders and the share copies' cache folder, with a read
+grant). They skip the FIFO and
 symbolic-link cases where the host cannot make them.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two

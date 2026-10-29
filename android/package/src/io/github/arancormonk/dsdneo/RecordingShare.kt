@@ -15,9 +15,14 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.abs
 
-/** #708: its own provider, so only the call recording folders (res/xml/recordings_paths.xml) are ever served. */
+/**
+ * #708: its own provider, so only the call recording folders and the share copies' cache folder
+ * (res/xml/recordings_paths.xml) are ever served.
+ */
 class RecordingsProvider : FileProvider()
 
 /**
@@ -26,7 +31,8 @@ class RecordingsProvider : FileProvider()
  * Recordings go to the app's folder on shared storage, which a computer sees over USB under
  * Android/data/<package>/files and which needs no permission, and fall back to the app's internal storage. Both roots
  * are always named, mounted or not, so the recording store can tell storage that is away from recordings deleted.
- * A share hands one recording, read-only, through [RecordingsProvider] to the app the user picks.
+ * A share hands a copy of one recording, read-only, through [RecordingsProvider] to the app the user picks: the
+ * original stays under the store's retention and deletes, and the app it went to may open it long after the chooser.
  */
 object RecordingShare {
     private const val TAG = "dsd-neo"
@@ -36,6 +42,18 @@ object RecordingShare {
 
     /** The provider's authority after the package name, as in AndroidManifest.xml. */
     const val AUTHORITY_SUFFIX = ".recordings"
+
+    /** The cache folder share copies go in, a folder each. Must match res/xml/recordings_paths.xml. */
+    const val SHARE_FOLDER = "recording-shares"
+
+    /** A share copy is kept this long (by its modification time), and removed at the next share or app start after. */
+    internal const val SHARE_KEEP_MS = 24 * 60 * 60 * 1000L
+
+    /** A copy a share in this process made is never removed sooner than this, whatever the wall clock says. */
+    internal const val SHARE_HOLD_MS = 60 * 60 * 1000L
+
+    /** The copies this process made, by folder name, with when they were made ([monotonicMs]). */
+    private val madeHere = ConcurrentHashMap<String, Long>()
 
     /** The recording roots, preferred first: shared storage, then internal storage. */
     @JvmStatic
@@ -53,15 +71,41 @@ object RecordingShare {
     fun takeFailure(): String = failures.poll() ?: ""
 
     /**
-     * Offer the recording at [path] to another app under [title]; nothing outside the roots is ever offered.
+     * Copy the recording at [path] for a share, off the main thread (the host's transfer worker), and remove the share
+     * copies that are past [SHARE_KEEP_MS]; nothing outside the roots is ever copied.
      *
-     * @return whether the chooser started. A share that cannot (the file went, the provider refuses the path, nothing
-     *     can take it) is queued for [takeFailure], since the host hands it over without waiting.
+     * The copy keeps the recording's name, in a folder of its own under [SHARE_FOLDER].
+     * @return the copy's path; empty when it cannot be made (the recording went, the cache is full), and then [path]
+     *     is queued for [takeFailure].
      */
     @JvmStatic
-    fun share(context: Context, path: String, title: String): Boolean {
+    fun stage(context: Context, path: String): String {
         try {
             val file = sharable(path, rootFolders(context)) ?: throw IllegalArgumentException("not a call recording")
+            val shares = shareFolder(context)
+            clean(shares, System.currentTimeMillis(), monotonicMs())
+            return copyForShare(file, shares, monotonicMs()).path
+        } catch (e: Exception) {
+            Log.w(TAG, "could not copy a call recording to share it", e)
+            failures.add(path)
+            return ""
+        }
+    }
+
+    /**
+     * Offer [copy], which [stage] made of the recording at [path], to another app under [title], on the main thread.
+     * Nothing but a share copy is ever offered.
+     *
+     * @return whether the chooser started. A share that cannot (the provider refuses the path, nothing can take it)
+     *     removes its copy and queues [path] for [takeFailure], since the host hands it over without waiting.
+     */
+    @JvmStatic
+    fun offer(context: Context, copy: String, path: String, title: String): Boolean {
+        val file = File(copy)
+        try {
+            if (!isShareCopy(file, shareFolder(context))) {
+                throw IllegalArgumentException("not a share copy")
+            }
             val uri = FileProvider.getUriForFile(context, context.packageName + AUTHORITY_SUFFIX, file)
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "audio/wav"
@@ -76,10 +120,69 @@ object RecordingShare {
             return true
         } catch (e: Exception) {
             Log.w(TAG, "could not share a call recording", e)
+            if (isShareCopy(file, shareFolder(context))) {
+                madeHere.remove(file.parentFile.name)
+                file.parentFile.deleteRecursively()
+            }
             failures.add(path)
             return false
         }
     }
+
+    /** Remove the share copies past [SHARE_KEEP_MS], at app start; off the main thread (the host's transfer worker). */
+    @JvmStatic
+    fun clean(context: Context) {
+        try {
+            clean(shareFolder(context), System.currentTimeMillis(), monotonicMs())
+        } catch (e: Exception) {
+            Log.w(TAG, "could not remove old call recording share copies", e)
+        }
+    }
+
+    /**
+     * Remove each share copy in [shares] whose modification time is more than [SHARE_KEEP_MS] from [wallNowMs] (either
+     * way, so a clock set back does not keep it for good), except one this process made less than [SHARE_HOLD_MS]
+     * before [monoNowMs]: the app it went to may still be opening it.
+     */
+    internal fun clean(shares: File, wallNowMs: Long, monoNowMs: Long) {
+        for (entry in shares.listFiles() ?: return) {
+            val made = madeHere[entry.name]
+            if (made != null && monoNowMs - made < SHARE_HOLD_MS) {
+                continue
+            }
+            if (abs(wallNowMs - entry.lastModified()) > SHARE_KEEP_MS) {
+                entry.deleteRecursively()
+                madeHere.remove(entry.name)
+            }
+        }
+    }
+
+    /** Copy [file] into a new folder of its own in [shares], made at [monoNowMs]; the copy keeps [file]'s name. */
+    internal fun copyForShare(file: File, shares: File, monoNowMs: Long): File {
+        if (!shares.isDirectory && !shares.mkdirs()) {
+            throw IOException("cannot make ${shares.path}")
+        }
+        val folder = Files.createTempDirectory(shares.toPath(), "share-").toFile()
+        madeHere[folder.name] = monoNowMs
+        try {
+            val copy = File(folder, file.name)
+            Files.copy(file.toPath(), copy.toPath())
+            return copy
+        } catch (e: Exception) {
+            madeHere.remove(folder.name)
+            folder.deleteRecursively()
+            throw e
+        }
+    }
+
+    private fun shareFolder(context: Context): File = File(context.cacheDir, SHARE_FOLDER)
+
+    /** Whether [file] is a regular file, not a link, one folder down in [shares]: where [copyForShare] puts copies. */
+    private fun isShareCopy(file: File, shares: File): Boolean =
+        file.isAbsolute && file.parentFile?.parentFile == shares &&
+            Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+
+    private fun monotonicMs(): Long = System.nanoTime() / 1_000_000
 
     private fun rootFolders(context: Context): List<File> {
         // Null while shared storage is away; its path stays the one Android gives this app there.

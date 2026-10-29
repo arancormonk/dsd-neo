@@ -283,9 +283,10 @@ time, system, talkgroup, radio; see [`-P`](../docs/cli.md)): 8 kHz mono for digi
 A call row (in History, the Monitor's Recent calls or Home's Recent activity) whose call has a recording shows a small
 play mark before its time (TalkBack adds "has a recording"). Open the row: the **Call recording** block above Hold
 plays, pauses and seeks. A call heard in several parts (the signal faded and came back) lists each part, with **Play all
-parts**. **Share** opens Android's share sheet with read-only access to that one file, **Save to file** copies it to a
-place you pick, and **Delete recording** deletes the file; the call stays in History. A recording whose write failed
-part-way says the end may be missing.
+parts**. **Share** opens Android's share sheet with read-only access to a copy of that one file, so the app you pick
+can still open it if the storage limit or a delete removes the recording meanwhile; DSD-neo removes the copy a day
+later, when it next shares or starts. **Save to file** copies it to a place you pick, and **Delete recording** deletes
+the file; the call stays in History. A recording whose write failed part-way says the end may be missing.
 
 Live audio keeps playing while a recording plays, and decoding and recording go on. Playback pauses when DSD-neo leaves
 the screen, and closing the call's sheet stops it. While another app holds the audio (a phone call), it reads **Can't

@@ -3,11 +3,12 @@ package android.content
 import android.net.Uri
 import java.io.File
 
-// The context, intents and clip a share uses, with the platform's names. A test's context sets its folders and keeps
-// the activities it was asked to start.
+// The context, intents and clip a share uses, with the platform's names. A test's context sets its folders (the cache
+// one included) and keeps the activities it was asked to start.
 open class Context {
     open val packageName: String = "io.github.arancormonk.dsdneo"
     open val filesDir: File = File("/data/user/0/io.github.arancormonk.dsdneo/files")
+    open val cacheDir: File = File("/data/user/0/io.github.arancormonk.dsdneo/cache")
     open fun getExternalFilesDir(type: String?): File? = null
     val started = mutableListOf<Intent>()
     open fun startActivity(intent: Intent) {
