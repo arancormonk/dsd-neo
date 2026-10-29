@@ -52,7 +52,8 @@ typedef enum {
  * Grammar: optional ASCII spaces, a number `[0-9]*('.'[0-9]*)?` with at least one digit, optional
  * spaces, an optional unit `Hz`, `k`, `kHz`, `M`, `MHz`, `G` or `GHz` (any case; `m` is mega), optional
  * spaces. A number without a unit is MHz when its integer part (leading zeros aside) has at most six
- * digits, and Hz otherwise. The text is read up to DSD_FREQ_ENTRY_MAX_LEN bytes.
+ * digits, and Hz otherwise. Text longer than DSD_FREQ_ENTRY_MAX_LEN bytes
+ * is refused with DSD_FREQ_ENTRY_TOO_LONG, never truncated.
  *
  * @param text   Text to parse (NULL is EMPTY).
  * @param out_hz Receives the frequency in Hz, written only on DSD_FREQ_ENTRY_OK (NULL is EMPTY).

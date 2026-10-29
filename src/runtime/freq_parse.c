@@ -76,6 +76,8 @@ dsd_parse_freq_hz(const char* s) {
 /* A bare number whose integer part has at most this many digits (leading zeros aside) is MHz, so
  * every bare MHz value is below DSD_FREQ_ENTRY_BARE_HZ_MIN (999999 is the largest 6-digit value). */
 #define FREQ_ENTRY_BARE_MHZ_DIGITS 6u
+_Static_assert(DSD_FREQ_ENTRY_BARE_HZ_MIN == 1000000u && FREQ_ENTRY_BARE_MHZ_DIGITS == 6u,
+               "the bare-number digit rule and DSD_FREQ_ENTRY_BARE_HZ_MIN are 10^digits");
 
 static int
 freq_entry_is_digit(char c) {

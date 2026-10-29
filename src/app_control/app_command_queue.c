@@ -1899,6 +1899,10 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
     }
+    if (hz > (uint32_t)DSD_TRUNK_FREQ_MAX_HZ) { /* the selection refuses a control channel past the trunk ceiling */
+        ui_set_toast(state, 4, "Above 2147.483647 MHz, the trunking limit");
+        return UI_CMD_APPLY_FAILED;
+    }
     ui_set_toast(state, 4, "%s: P25 control channel -> %s MHz",
                  result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "Deferred; retry" : "Failed", mhz);
     return UI_CMD_APPLY_FAILED;

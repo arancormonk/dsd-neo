@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -776,6 +777,11 @@ test_command_scope(dsd_opts* opts, dsd_state* state) {
     assert(cc_calls == 0);
     select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ + 1U); // one past the trunk ceiling, on every platform
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
+#if LONG_MAX > DSD_TRUNK_FREQ_MAX_HZ
+    expect_cc_toast(state, "Above 2147.483647 MHz, the trunking limit"); // names the cause, the status stays failed
+#else
+    expect_cc_toast(state, "Above 2147.483647 MHz, this build's limit"); // the payload check refuses it first
+#endif
     select_cc(opts, state, UINT32_MAX);
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
     select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ); // the ceiling itself is a control channel

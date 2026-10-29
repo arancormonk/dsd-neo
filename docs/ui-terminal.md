@@ -380,9 +380,10 @@ Input > RTL-SDR > `Frequency...` tunes the radio that runs. The row reads the tu
   decimal key types what the keyboard layout gives it: `,` on a German layout, which is refused rather than read as
   another number.
 - Nothing above 4294.967295 MHz can be entered, in any unit (`Above the 4294.967295 MHz input limit`). On Windows the
-  tune is refused above 2147.483647 MHz with `Above 2147.483647 MHz, this build's limit`.
-- A sign, an exponent (`1e6`), hex, a second `.` or a character the prompt shows as `?` is refused with
-  `Not a frequency. Type MHz, e.g. 146.52`; another unit with `Unknown unit. Use Hz, k, M or G`; 0 with
+  tune is refused above 2147.483647 MHz with `Above 2147.483647 MHz, this build's limit`; under P25 trunking a
+  control channel above 2147.483647 MHz is refused on every platform with `Above 2147.483647 MHz, the trunking limit`.
+- A sign, an exponent (`1e6`), a second `.` or a character the prompt shows as `?` is refused with
+  `Not a frequency. Type MHz, e.g. 146.52`; a letter suffix that is not a unit (`0xff`, `5X`) with `Unknown unit. Use Hz, k, M or G`; 0 with
   `Frequency must be above 0`; more than 32 characters with `Too long: at most 32 characters`.
 
 A refused entry reopens the prompt with the text typed and the reason inside it, so a typo is fixed in place. `Esc`, or

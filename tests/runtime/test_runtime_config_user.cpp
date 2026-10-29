@@ -1106,9 +1106,6 @@ test_load_and_apply_alerts_empty_event_mask(void) {
     return rc;
 }
 
-/* Issue #669 B10: an INI rtl_volume outside 0..3 reads as the default 1 on every radio source, as the local RTL setup
-   and the menu always read it: 10 would multiply the monitor audio tenfold, and the menu cycle could never return to
-   it. */
 /* Issue #670 B3: an rtl_freq too long for the config's 64-byte field is refused at load, with a warning, instead of
    cut: the 64-character "146520000.000...M" lost its M and loaded as 146520000 Hz. The key keeps what it had. */
 static int
@@ -1161,6 +1158,9 @@ test_rtl_freq_too_long_is_refused(void) {
     return rc;
 }
 
+/* Issue #669 B10: an INI rtl_volume outside 0..3 reads as the default 1 on every radio source, as the local RTL setup
+   and the menu always read it: 10 would multiply the monitor audio tenfold, and the menu cycle could never return to
+   it. */
 static int
 test_rtl_volume_out_of_range_reads_as_default(void) {
     static const char* const sources[] = {"rtl", "soapy", "rtltcp"};

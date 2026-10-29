@@ -2404,7 +2404,7 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     replay and owner refusals: 0 is `Invalid frequency`, and where `long` is 32 bits (Windows) a value above
     `LONG_MAX` is `Above 2147.483647 MHz, this build's limit`, both `UI_CMD_APPLY_INVALID_PAYLOAD`.
     `p25_sm_select_control_channel()` refuses a frequency above `DSD_TRUNK_FREQ_MAX_HZ` on every platform, as
-    `state.h` promises, rather than storing it. Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
+    `state.h` promises, rather than storing it. The entry toasts that refusal as `Above 2147.483647 MHz, the trunking limit` (`UI_CMD_APPLY_FAILED`). Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
