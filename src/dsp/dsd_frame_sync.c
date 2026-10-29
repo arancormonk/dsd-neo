@@ -511,6 +511,8 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     frame_sync_p25p1_chain_step_end(taken);
     state->symbol_history_count = 0;
     state->symbol_history_head = 0;
+    /* The hunt's own dibit history goes with the soft one: the next call starts blind. */
+    state->frame_sync_carry.valid = 0;
     state->sidx = 0;
     state->midx = 0;
     state->min = -15000;
@@ -2938,6 +2940,10 @@ typedef struct frame_sync_runtime_ctx {
     int t_max;
     int history_head;
     int history_count;
+    /* The SPS hunt profile and modulation the history was read under (the window's build): an exit that steps either
+       leaves a history the next call cannot use (frame_sync_history_keep()). */
+    int history_sps_idx;
+    int history_rf_mod;
     /* The 79- and 119-symbol TETRA burst windows are only built when TETRA is enabled. */
     int tetra_windows;
     unsigned int ready_windows;
@@ -3007,6 +3013,8 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->lmin = state->min;
     rt->lmax = state->max;
     rt->tetra_windows = opts->frame_tetra == 1;
+    rt->history_sps_idx = state->sps_hunt_idx;
+    rt->history_rf_mod = state->rf_mod;
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -3039,6 +3047,54 @@ frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* 
         dst[i] = (uint8_t)((rt->symbol_history[idx] - '0') & 0x3);
     }
     return 1;
+}
+
+_Static_assert(DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS == FRAME_SYNC_HISTORY_CAPACITY,
+               "the carried history is the whole history ring");
+
+/* A no-sync exit: keep the history for the next call, with where the stream is (dsd_frame_sync_history_carry). */
+static void
+frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
+    dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
+    DSD_MEMCPY(carry->dibits, rt->symbol_history, sizeof(carry->dibits));
+    carry->head = rt->history_head;
+    carry->count = rt->history_count;
+    carry->symbol_clock = state->symbol_clock;
+    carry->symbol_clock_epoch = state->symbol_clock_epoch;
+    carry->symbol_clock_input = state->symbol_clock_input;
+    carry->carrier_seq = state->carrier_seq;
+    /* The profile the history was read under: when the exit stepped the hunt or the modulation, the next call's
+       profile differs and frame_sync_history_resume() drops it. */
+    carry->sps_hunt_idx = rt->history_sps_idx;
+    carry->rf_mod = rt->history_rf_mod;
+    carry->valid = 1;
+}
+
+/* Any other exit: the next call starts with no history. */
+static void
+frame_sync_history_drop(dsd_state* state) {
+    state->frame_sync_carry.valid = 0;
+}
+
+/* A call's start: take up the history the last call kept when the stream went on from there unbroken, and drop it either
+ * way, so it is taken up once. */
+static void
+frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
+    dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
+    const int unbroken = carry->valid && carry->symbol_clock == state->symbol_clock
+                         && carry->symbol_clock_epoch == state->symbol_clock_epoch
+                         && carry->symbol_clock_input == state->symbol_clock_input
+                         && carry->carrier_seq == state->carrier_seq && carry->sps_hunt_idx == state->sps_hunt_idx
+                         && carry->rf_mod == state->rf_mod && carry->head >= 0
+                         && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
+                         && carry->count <= FRAME_SYNC_HISTORY_CAPACITY;
+    carry->valid = 0;
+    if (!unbroken) {
+        return;
+    }
+    DSD_MEMCPY(rt->symbol_history, carry->dibits, sizeof(rt->symbol_history));
+    rt->history_head = carry->head;
+    rt->history_count = carry->count;
 }
 
 static void
@@ -4708,6 +4764,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
+    frame_sync_history_resume(&rt, state);
 
     frame_sync_publish_ui_throttled(opts, state);
     dsd_event_sync_slot(opts, state, 0);
@@ -4719,6 +4777,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             frame_sync_publish_ui_throttled(opts, state);
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+                frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;
             }
@@ -4729,6 +4788,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* The read left a silent input's wait for a queued command, the input ended (issue #634) or the read
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
+            frame_sync_history_drop(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
@@ -4741,6 +4801,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
                 g_unsynced_dmr_dump_symbols = 0;
+                frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return sync_type;
             }
@@ -4749,6 +4810,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
+            frame_sync_history_drop(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
@@ -4764,6 +4826,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         if (timeout_step != 0) {
+            /* A matchless pass ends the call, not the stream: the next call goes on from this history. */
+            frame_sync_history_keep(&rt, state);
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }
@@ -4787,6 +4851,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         if (budget_step != 0) {
+            frame_sync_history_keep(&rt, state);
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }

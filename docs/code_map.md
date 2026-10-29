@@ -612,6 +612,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   and detector (the AM detector on a blank row of an `-fM` session), and gets them back after a typed digital row; a
   width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
   and `-fM` blank rows among them).
+- DSP `getFrameSync()` builds its sync windows from a dibit history that a no-sync exit (the timeout after a matchless
+  1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`, which takes it up only
+  when nothing came between: the same symbol clock, clock epoch, input, carrier count, SPS hunt profile and modulation
+  (the profile and modulation the history was read under). A burst that straddles the exit is then matched as one that
+  does not; before, a TETRA control uplink burst that began fewer than 20 symbols before it was lost. A sync, an input
+  interruption, a signal-search yield, shutdown and `dsd_frame_sync_reset_acquisition()` drop it. Test:
+  `FRAME_SYNC_HISTORY_CARRY`.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned

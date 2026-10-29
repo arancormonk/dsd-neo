@@ -13241,6 +13241,39 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_sps_hunt_false_sync
 )
 
+# The frame sync's history across a no-sync exit: a TETRA control uplink burst that straddles the end of a matchless
+# pass locks in the next call when the stream went on unbroken, and not across a carrier, epoch, read or modulation
+# change.
+add_executable(
+    dsd-neo_test_frame_sync_history_carry
+    dsp/test_frame_sync_history_carry.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_history_carry
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_history_carry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_history_carry
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_HISTORY_CARRY
+    COMMAND dsd-neo_test_frame_sync_history_carry
+)
+set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
+
 # Frame sync level-window estimator parity with the established sync scanner.
 add_executable(
     dsd-neo_test_frame_sync_level_window
@@ -16551,10 +16584,11 @@ if(DSD_HAS_RADIO)
     # radio of its own SSI (2001 to 2016), control uplink bursts (one SCH/HU) and normal uplink bursts (one SCH/F),
     # with noise-only slots before most of them, each 20 dB above or below the one before it and 500 Hz away. Every
     # burst's MAC PDU must decode, in order, the first burst after each gap included (2001 after the lead-in's noise,
-    # 2003, 2006, 2008, 2011, 2013, 2015 and 2016). Burst 2009, a weak control burst after seven slots of noise, never
-    # synchronizes, on the receiver before the chain or on this one, and is not required. The receiver before the
-    # chain decoded 13 bursts (not 2001, 2009 and 2016); the TETRA chain, before uplink kept the earlier path with only
-    # the TETRA channel filter (D10), decoded 7; with it, 15.
+    # 2003, 2006, 2008, 2009, 2011, 2013, 2015 and 2016). Burst 2009 began 7 symbols before a matchless pass ended the
+    # frame sync's call, which used to start the next call with no history, too little for its 79-symbol window
+    # (FRAME_SYNC_HISTORY_CARRY). The receiver before the chain decoded 13 bursts (not 2001, 2009 and 2016); the
+    # TETRA chain, before uplink kept the earlier path with only the TETRA channel filter (D10), decoded 7; with it, 15;
+    # with the history carried across the exit, all 16.
     set(_dsd_tetra_ul_mode "-fT --tetra-uplink --tetra-net 460,4242,17")
     set(_dsd_tetra_cb "\\[TETRA SCH/HU\\] CC=17 MAC-ACCESS enc=0 ssi=")
     set(_dsd_tetra_nub "\\[TETRA SCH/F\\] CC=17 MAC-DATA enc=0 ssi=")
@@ -16562,7 +16596,7 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS
         tetra_uplink_bursts_72k
         "${_dsd_tetra_ul_mode}"
-        "${_dsd_tetra_cb}2001.*${_dsd_tetra_cb}2003.*${_dsd_tetra_cb}2006.*${_dsd_tetra_cb}2007.*${_dsd_tetra_cb}2012.*${_dsd_tetra_cb}2014.*${_dsd_tetra_cb}2016"
+        "${_dsd_tetra_cb}2001.*${_dsd_tetra_cb}2003.*${_dsd_tetra_cb}2006.*${_dsd_tetra_cb}2007.*${_dsd_tetra_cb}2009.*${_dsd_tetra_cb}2012.*${_dsd_tetra_cb}2014.*${_dsd_tetra_cb}2016"
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_UPLINK_NORMAL_BURSTS

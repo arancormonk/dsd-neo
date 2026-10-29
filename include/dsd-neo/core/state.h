@@ -185,6 +185,29 @@ typedef struct {
     uint8_t b2_lead_soft_valid;
 } dsd_tetra_sync_capture;
 
+/* Dibits of frame-sync history a getFrameSync() call hands the next (dsd_frame_sync_history_carry). */
+#define DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS 128
+
+/* The dibit history the frame sync's windows are built from, as a getFrameSync() call left it on a no-sync exit (the
+ * timeout after a matchless pass, or the hunt budget's), with where the stream was then. The next call starts from it
+ * when nothing came between: the symbol clock has not moved, and neither the clock's epoch, the input, the carrier, the
+ * SPS hunt profile nor the modulation changed. So a burst that began before the exit and ends after it is matched like
+ * one that does not straddle it; before, the new call started with no history, and a TETRA uplink burst whose training
+ * ended fewer than its window's symbols into the call was never matched. Every other exit, a sync above all, drops it.
+ * Written and read by the frame sync alone (src/dsp/dsd_frame_sync.c); decoder-thread private. */
+typedef struct {
+    char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
+    int head;                                         /* the next slot to write */
+    int count;                                        /* dibits held, up to the capacity */
+    uint64_t symbol_clock;                            /* dsd_state::symbol_clock at the exit */
+    uint32_t symbol_clock_epoch;
+    uint32_t symbol_clock_input;
+    uint32_t carrier_seq;
+    int sps_hunt_idx;
+    int rf_mod;
+    uint8_t valid;
+} dsd_frame_sync_history_carry;
+
 /* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value
  * a 32-bit long holds (long is 32-bit on Windows, and trunk frequencies are stored as long), which also fits the
  * uint32_t tuner path. No trunking band comes near it. A channel-map row, an over-the-air channel computation or a
@@ -2504,6 +2527,8 @@ struct dsd_state {
      * frame sync and read by the TETRA decoder for the same burst. Decoder-thread private; never published.
      * The rest of the TETRA decoder state lives in its state extension (src/protocol/tetra/tetra_state.h). */
     dsd_tetra_sync_capture tetra_sync;
+    /* The frame sync's history from its last no-sync exit, for the next call (dsd_frame_sync_history_carry). */
+    dsd_frame_sync_history_carry frame_sync_carry;
 
     /* 1 from initState() until an engine run starts on this state, which clears it (dsd_engine_run_with_lifecycle()).
      * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the

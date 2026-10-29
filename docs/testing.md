@@ -532,10 +532,13 @@ The rejection case accepts silence: the chain must not name the neighbour, and n
 SCH/F), carrying the MAC-ACCESS and MAC-DATA vectors of `tests/protocol/tetra/test_tetra_ul.c` from SSIs 2001 to 2016.
 Each is a radio of its own, 20 dB above or below the burst before it and 500 Hz away, and most follow noise-only
 slots. `DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS` and `_NORMAL_BURSTS` require each burst's PDU in order, the first after
-every gap included, except burst 2009, a weak control burst after seven slots of noise that neither receiver
-synchronizes to. The receiver before the TETRA chain decodes 13 of the 16 (not 2001, 2009 or 2016); the chain decoded
+every gap included. The receiver before the TETRA chain decodes 13 of the 16 (not 2001, 2009 or 2016); the chain decoded
 7. So an uplink session keeps the earlier path and takes only the TETRA channel filter (decision D10,
-`dsd_demod_tetra_channel_runs()`), which decodes 15.
+`dsd_demod_tetra_channel_runs()`), which decodes 15. The 16th, burst 2009, began 7 symbols before a matchless pass of
+1800 symbols ended a `getFrameSync()` call, and the next call used to start with no dibit history: 69 symbols after it
+the burst's training ended, short of the 79-symbol control burst window. The frame sync now carries its history across
+a no-sync exit when the stream went on unbroken from there (`dsd_frame_sync_history_carry`;
+`FRAME_SYNC_HISTORY_CARRY` drives `getFrameSync()` across such an exit), and all 16 decode.
 
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are
 pi/4-DQPSK shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
