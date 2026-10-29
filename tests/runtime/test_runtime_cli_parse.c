@@ -4032,8 +4032,12 @@ test_wav_journal_turns_rdio_delete_after_upload_off(void) {
                                     "rdio_mode = \"api\"\n";
     const char* const journal_only[] = {"--wav-journal", "calls.jsonl", NULL};
     const char* const nothing[] = {NULL};
-    const char* const cli_delete_and_journal[] = {"--rdio-api-delete-after-upload", "--wav-journal", "calls.jsonl",
-                                                  NULL};
+    const char* const cli_delete_and_journal[] = {
+        "--rdio-api-delete-after-upload",
+        "--wav-journal",
+        "calls.jsonl",
+        NULL,
+    };
     const char* const cli_delete[] = {"--rdio-api-delete-after-upload", NULL};
 
     const struct {

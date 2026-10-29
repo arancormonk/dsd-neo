@@ -7,6 +7,7 @@
 #include <QIODevice>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -22,7 +23,6 @@
 #include <atomic>
 #include <cstdio>
 #include <functional>
-#include <initializer_list>
 #include <mutex>
 #include <stdint.h>
 #include <utility>

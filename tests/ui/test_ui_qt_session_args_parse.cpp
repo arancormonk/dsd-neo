@@ -38,6 +38,7 @@
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/runtime/cli.h>
 #include <memory>
+#include <stdint.h>
 #include <utility>
 #include "../../src/app_control/commands_internal.h"
 #include "../test_support/qt_test_paths.h"
@@ -53,7 +54,9 @@
 #ifdef DSD_NEO_TEST_SUBMIT_WRAP
 /* The queue refuses a submission only for a session that closed between two of the bridge's; this stands in for that
    race: the bridge's submission of g_refuse_cmd is refused, every other one goes to the real queue. */
-static int g_refuse_cmd = 0;
+namespace {
+int g_refuse_cmd = 0;
+} // namespace
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* and __real_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -362,7 +365,7 @@ test_live_record_off_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
         const bool stop_refused = refused == DSD_APP_CMD_WAV_STOP;
         bool started = false;
         LiveSession live(prefs, sessions, &started);
-        dsd_opts* opts = live.decoder.opts.get();
+        const dsd_opts* opts = live.decoder.opts.get();
         expect("a session recording unknown talkgroups starts",
                started && opts->dmr_stereo_wav == 1 && opts->record_unknown_only == 1);
         dsd_qt::CommandBridge bridge;

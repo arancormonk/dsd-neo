@@ -50,6 +50,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <mutex>
@@ -591,7 +592,7 @@ test_roots_unavailable_vs_deleted(void) {
         s.pass();
         expect("both recordings, not the stray file", s.store.recordingCount() == 2 && s.store.usedBytes() == 2000);
 
-        QSignalSpy away_news(&s.store, &RecordingStore::recordingFragmentsChanged);
+        const QSignalSpy away_news(&s.store, &RecordingStore::recordingFragmentsChanged);
         expect("the storage goes away", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
         s.pass();
         const QVariantMap a = s.store.recordingsForFragments({fragment(60)}).value(0).toMap();
@@ -1248,7 +1249,7 @@ test_root_gone_mid_pass(void) {
                 (void)QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away);
             }
         });
-        QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
+        const QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
         s.pass();
         expect("tail: the storage went mid-pass", moved.load() && !QFileInfo::exists(folder));
         const QVariantMap a = s.store.recordingsForFragments({fragment(60)}).value(0).toMap();

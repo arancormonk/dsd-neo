@@ -1317,12 +1317,14 @@ probe_journal_at_start(dsd_opts* opts, dsd_state* state, void* context) {
     if (opts->wav_out_f == NULL) {
         return 0;
     }
-    const dsd_call_observation call = {.protocol = DSD_SYNC_P25P1_POS,
-                                       .slot = 0U,
-                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
-                                       .ota_target_id = 708U,
-                                       .policy_target_id = 708U,
-                                       .ota_source_id = 7U};
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 708U,
+        .policy_target_id = 708U,
+        .ota_source_id = 7U,
+    };
     (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN);
     dsd_event_sync_slot(opts, state, 0);
     write_slot_voice(opts, state, 2);
@@ -1404,7 +1406,10 @@ test_run_journals_its_recordings_from_start_to_end(void) {
     journal_run_probe probe;
     DSD_MEMSET(&probe, 0, sizeof probe);
     const dsd_engine_lifecycle_hooks hooks = {
-        .start = probe_journal_at_start, .stop = probe_journal_at_stop, .context = &probe};
+        .start = probe_journal_at_start,
+        .stop = probe_journal_at_stop,
+        .context = &probe,
+    };
     rc |= expect_true("run journal: the run", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
     rc |= expect_true("run journal: started and stopped once", probe.starts == 1 && probe.stops == 1);
     rc |= expect_true("run journal: on at start, in the new -7 folder", probe.journal_at_start == DSD_WAV_JOURNAL_ON);
@@ -1417,7 +1422,7 @@ test_run_journals_its_recordings_from_start_to_end(void) {
     if (f) {
         const size_t n = fread(text, 1, sizeof text - 1, f);
         text[n] = '\0';
-        fclose(f);
+        (void)fclose(f);
     }
     const char* pending = probe.pending_id[0] ? journal_record_for(text, "publish", probe.pending_id) : NULL;
     rc |= expect_true("run journal: the recording closed before its row is published waiting for it",
