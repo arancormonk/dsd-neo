@@ -10785,15 +10785,11 @@ add_test(
     COMMAND dsd-neo_test_dsp_squelch_auto_demod
 )
 
-# The NFM noise squelch inside full_demod() (issue #518 follow-up): on the discriminator's
-# output with the channel filter's plan, flags instead of zeroing, the tracker standing in
-# on AM and narrow channels, a retune or reset starting it over without touching the
-# tracker's floors, the post-decimator carrying its flags, and the same flags whatever the
-# block cuts.
 # The TETRA receive chain inside full_demod(): its activation predicate and the
-# transitions between blocks, the chain's order, the squelch and signal-search
-# behaviour, the once-per-stream fallback warnings, the pull-in on a clean stream,
-# and a P25 stream after a TETRA session running as a fresh one.
+# transitions between blocks, the chain's order, the squelch and the resume after a
+# dropped block, the once-per-stream fallback warnings, the pull-in on a clean stream,
+# and a P25 stream after a TETRA session, through the leave transition, running as a
+# fresh one seeded with its estimate.
 add_executable(dsd-neo_test_dsp_tetra_chain dsp/test_dsp_tetra_chain.cpp)
 target_include_directories(
     dsd-neo_test_dsp_tetra_chain
@@ -10805,6 +10801,11 @@ target_link_libraries(
 )
 add_test(NAME DSP_TETRA_CHAIN COMMAND dsd-neo_test_dsp_tetra_chain)
 
+# The NFM noise squelch inside full_demod() (issue #518 follow-up): on the discriminator's
+# output with the channel filter's plan, flags instead of zeroing, the tracker standing in
+# on AM and narrow channels, a retune or reset starting it over without touching the
+# tracker's floors, the post-decimator carrying its flags, and the same flags whatever the
+# block cuts.
 add_executable(
     dsd-neo_test_dsp_noise_squelch_demod
     dsp/test_dsp_noise_squelch_demod.cpp
@@ -19869,26 +19870,19 @@ if(Python3_Interpreter_FOUND)
     endif()
     # The synthetic TETRA fixtures' signal model in tools/build_iq_fixtures.py: the
     # modulator's root-raised-cosine pulse and the two-ray helper's sample rate. The
-    # tool imports numpy, so it registers only where the tests' Python has it.
-    execute_process(
-        COMMAND ${Python3_EXECUTABLE} -c "import numpy"
-        RESULT_VARIABLE _dsd_iq_fixtures_py
-        OUTPUT_QUIET
-        ERROR_QUIET
+    # tool imports numpy; where the tests' Python has none the test says so and is
+    # reported skipped (77), rather than left unregistered.
+    add_test(
+        NAME TOOLS_BUILD_IQ_FIXTURES_TETRA
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_build_iq_fixtures_tetra.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
-    if(_dsd_iq_fixtures_py EQUAL 0)
-        add_test(
-            NAME TOOLS_BUILD_IQ_FIXTURES_TETRA
-            COMMAND
-                ${Python3_EXECUTABLE}
-                ${PROJECT_SOURCE_DIR}/tests/tools/test_build_iq_fixtures_tetra.py
-            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-        )
-        set_tests_properties(
-            TOOLS_BUILD_IQ_FIXTURES_TETRA
-            PROPERTIES TIMEOUT 120
-        )
-    endif()
+    set_tests_properties(
+        TOOLS_BUILD_IQ_FIXTURES_TETRA
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(

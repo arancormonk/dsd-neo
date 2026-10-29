@@ -17,7 +17,12 @@ from pathlib import Path
 import sys
 import unittest
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    # The fixtures tool needs numpy; without it this is a skip CTest reports (SKIP_RETURN_CODE 77), not a pass.
+    print(f"SKIP: tools/build_iq_fixtures.py needs numpy, which {sys.executable} does not have")
+    sys.exit(77)
 
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT / "tools"))

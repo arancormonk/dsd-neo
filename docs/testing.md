@@ -563,9 +563,10 @@ raised cosine at roll-off 0.2, which put inter-symbol interference behind the re
 `_TWO_RAY` variant offsets the second path by 3 Hz at the fixtures' own 54 kHz (`simulcast_two_ray(...,
 sample_rate=54000)`; the helper defaults to the 48 kHz of every other caller). `TOOLS_BUILD_IQ_FIXTURES_TETRA`
 (`tests/tools/test_build_iq_fixtures_tetra.py`) checks the pulse against the closed form within 1e-9 and the helper's
-phase step. Regenerating them with `--derived-only` into a copy of `tests/fixtures/iq` changed the ten `tetra_bsch_*`
-captures and `tetra_call_gap_noisy_72k` and left every other derived fixture byte for byte; `--verify` passes on the
-committed set. They repeat one
+phase step; it needs numpy, and where the tests' Python has none CTest reports it skipped. Regenerating them with
+`--derived-only` into a copy of `tests/fixtures/iq` changed the ten `tetra_bsch_*` captures and
+`tetra_call_gap_noisy_72k` and left every other derived fixture byte for byte; `--verify` passes on the committed set.
+They repeat one
 sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
 normal downlink burst whose two SCH/HD half slots carry SYSINFO and a MAC-RESOURCE channel allocation, and a full-slot
 TCH/S burst whose class-2 CRC passes. `DECODE_IQ_TETRA_BSCH`, `_SYSINFO`, `_CHANNEL_ALLOCATION` and `_TCH_FS` assert

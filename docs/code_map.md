@@ -4592,8 +4592,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     goes with CQPSK: CQPSK off returns it to WIDE, and the symbol-profile setter stores WIDE for it on the FSK
     discriminator.
   - Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions, warnings, the WIDE-identical fallback,
-    pull-in from +6 kHz and +600 Hz, squelch and signal-search, partition invariance of the linear filters, P25 after
-    a TETRA session, the uplink's channel filter alone), `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the
+    pull-in from +6 kHz and +600 Hz, squelch, the resume after a dropped block, partition invariance of the linear
+    filters, P25 after a TETRA session through the leave transition, the uplink's channel filter alone), `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the
     22.5 kHz width a TETRA open, downlink or uplink, publishes), `DSP_CHANNEL_FILTERS`, `DSP_FLL_BAND_EDGE`, and the
     `DECODE_IQ_TETRA_*` I/Q cases (`docs/testing.md`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,

@@ -950,35 +950,27 @@ test_squelch_close_reopen(void) {
     return rc;
 }
 
-/* A block signal search discards never reaches full_demod(): nothing advances, and the stream resumes as if the block
- * were never there. Two demods, one that runs A, C and one that also had B offered and skipped, agree exactly. */
+/* A block the signal search drops never reaches full_demod() (demod_thread_fn() releases it unprocessed), so the chain
+ * next sees the block after it, spliced to the one before. It runs on across the gap: the next block makes symbols, no
+ * more than a block's worth. The drop itself is the demod thread's, outside full_demod(): here a dropped block is one
+ * never offered. */
 int
-test_signal_search_skip(void) {
+test_resume_after_dropped_block(void) {
     int rc = 0;
-    demod_state* a = new_demod();
-    demod_state* b = new_demod();
-    if (!a || !b) {
-        free_demod(a);
-        free_demod(b);
+    demod_state* s = new_demod();
+    if (!s) {
         return fail("alloc");
     }
-    configure_tetra(a, 72000);
-    configure_tetra(b, 72000);
+    configure_tetra(s, 72000);
     const int block = 2400;
     const std::vector<float> iq = make_tetra_stream(72000, 2000.0, block * 3, 0.3f, 0x5151u);
-    (void)run_block(a, iq.data(), block);
-    (void)run_block(b, iq.data(), block);
-    /* b's block 1 is discarded by signal search: no full_demod() call. */
-    const std::vector<float> oa = run_block(a, iq.data() + (size_t)block * 4U, block);
-    const std::vector<float> ob = run_block(b, iq.data() + (size_t)block * 4U, block);
-    if (oa.size() != ob.size() || (!oa.empty() && std::memcmp(oa.data(), ob.data(), oa.size() * sizeof(float)) != 0)) {
-        rc |= fail("signal-search resume differs");
+    (void)run_block(s, iq.data(), block);
+    /* Block 1 is dropped: the next full_demod() call takes block 2. */
+    const std::vector<float> out = run_block(s, iq.data() + (size_t)block * 4U, block);
+    if ((int)out.size() > block / 4 + 2 || out.empty()) {
+        rc |= fail("resume after a dropped block: output length");
     }
-    if ((int)oa.size() > block / 4 + 2 || oa.empty()) {
-        rc |= fail("signal-search resume: output length");
-    }
-    free_demod(a);
-    free_demod(b);
+    free_demod(s);
     return rc;
 }
 
@@ -1051,9 +1043,10 @@ test_partition_invariance(void) {
 
 /* --- A P25 stream after a TETRA session --------------------------------------------------------------------- */
 
-/* What a stream switch resets (the filters, and the loops as a family switch starts them). */
+/* What a stream switch at the same frequency resets: the filters, and the loops as a family switch starts them, but
+ * not the FLL's carrier estimate, which a switch that does not retune keeps (the retune layer clears or seeds it). */
 void
-stream_switch_reset(demod_state* s) {
+stream_switch_reset_keeping_estimate(demod_state* s) {
     dsd_demod_reset_filter_state(s);
     ted_init_state(&s->ted_state);
     s->ted_mu = 0.0f;
@@ -1062,18 +1055,26 @@ stream_switch_reset(demod_state* s) {
     s->costas_state.error = 0.0f;
     s->costas_state.error_smooth = 0.0f;
     s->costas_state.initialized = 0;
-    s->fll_band_edge_state.freq = 0.0f;
-    s->fll_band_edge_state.pre_freq = 0.0f;
-    s->fll_band_edge_state.pre_re = 1.0f;
-    s->fll_band_edge_state.pre_im = 0.0f;
-    s->fll_band_edge_state.phase = 0.0f;
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
     s->cqpsk_agc_avg = 1.0f;
 }
 
-/* P25 CQPSK at the same 72 kHz rate after a TETRA session runs exactly as on a fresh demodulator: no mixer, no TETRA
- * FLL design, AGC weight or matched filter left behind. */
+/* ... and with the estimate cleared too, as on a fresh stream. */
+void
+stream_switch_reset(demod_state* s) {
+    stream_switch_reset_keeping_estimate(s);
+    s->fll_band_edge_state.freq = 0.0f;
+    s->fll_band_edge_state.pre_freq = 0.0f;
+    s->fll_band_edge_state.pre_re = 1.0f;
+    s->fll_band_edge_state.pre_im = 0.0f;
+    s->fll_band_edge_state.phase = 0.0f;
+}
+
+/* P25 CQPSK at the same 72 kHz rate after a TETRA session runs exactly as on a fresh demodulator seeded with the
+ * session's carrier estimate: the switch keeps the estimate, the block boundary leaves the chain (the mixer folded into
+ * the FLL, which is designed with the P25 parameters again), and no mixer, TETRA FLL design, AGC weight or matched
+ * filter is left behind. */
 int
 test_p25_after_tetra_session(void) {
     int rc = 0;
@@ -1092,10 +1093,16 @@ test_p25_after_tetra_session(void) {
     if (!a->tetra_chain || std::fabs(a->fll_band_edge_state.pre_freq) < 1e-4f) {
         rc |= fail("TETRA session did not run its mixer");
     }
-    stream_switch_reset(a);
+    /* The combined estimate the session leaves, mostly in the mixer. */
+    const float total = dsd_fll_band_edge_total_freq(&a->fll_band_edge_state);
+    stream_switch_reset_keeping_estimate(a);
     configure_cqpsk(a, 72000, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 15);
+    /* The fresh demod: its FLL designed for P25 at the stream's sps and seeded with the total, as the retune layer
+     * seeds one. */
     stream_switch_reset(b);
     configure_cqpsk(b, 72000, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 15);
+    dsd_fll_band_edge_init_params(&b->fll_band_edge_state, dsd_cqpsk_timing_sps(b), dsd_fll_band_edge_params_for(0));
+    b->fll_band_edge_state.freq = total;
 
     /* A pi/4 stream at 4800 sym/s stands in for P25: the content does not matter, only that both see the same. */
     std::vector<float> p25((size_t)7200 * 4U * 2U);
@@ -1122,6 +1129,8 @@ test_p25_after_tetra_session(void) {
     }
     rc |= expect_int("P25 after TETRA: chain off", a->tetra_chain, 0);
     rc |= expect_near("P25 after TETRA: no mixer", a->fll_band_edge_state.pre_freq, 0.0, 0.0);
+    rc |= expect_near("P25 after TETRA: phasor reset (re)", a->fll_band_edge_state.pre_re, 1.0, 0.0);
+    rc |= expect_near("P25 after TETRA: phasor reset (im)", a->fll_band_edge_state.pre_im, 0.0, 0.0);
     rc |= expect_near("P25 after TETRA: FLL rolloff", a->fll_band_edge_state.rolloff, 0.2, 1e-6);
     rc |= expect_near("P25 after TETRA: AGC as fresh", a->cqpsk_agc_avg, b->cqpsk_agc_avg, 0.0);
     rc |= expect_near("P25 after TETRA: FLL as fresh", a->fll_band_edge_state.freq, b->fll_band_edge_state.freq, 0.0);
@@ -1171,7 +1180,7 @@ main(void) {
     rc |= test_uplink_keeps_channel_filter_only();
     rc |= test_pull_in();
     rc |= test_squelch_close_reopen();
-    rc |= test_signal_search_skip();
+    rc |= test_resume_after_dropped_block();
     rc |= test_partition_invariance();
     rc |= test_p25_after_tetra_session();
     rc |= test_filter_reset();
