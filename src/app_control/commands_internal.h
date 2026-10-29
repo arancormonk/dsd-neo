@@ -34,6 +34,8 @@ int dsd_app_command_test_tail_padding_cleared(void);
 /* 1 when the last command the drain applied failed (a refusal, or a change it could not make), 0 otherwise. */
 int dsd_app_command_test_last_failed(void);
 int dsd_app_command_test_last_invalid_payload(void);
+/* 1 when the last command the drain applied asked for a change only a restart makes, 0 otherwise. */
+int dsd_app_command_test_last_restart_required(void);
 #endif
 
 #ifdef __cplusplus

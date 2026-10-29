@@ -6846,9 +6846,14 @@ test_init_failure_restores_saved_trunk_opts(void) {
     if (make_temp_dir(dir, sizeof dir) != 0) {
         return 1;
     }
+    /* The target's own modulation is in force when its channel map fails to import, so the rollback has the
+       configured modulation to put back as well as the trunking flags. */
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
     if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
         || write_text_file(chan_path, "channel,frequency\n1,851012500\n") != 0
-        || write_targets_file(dir, "dmr,dmr-trunk,452000000,chan.csv,250,,\n", target_path, sizeof target_path) != 0) {
+        || write_targets_file_with_header(dir, header, "dmr,dmr-trunk,452000000,chan.csv,250,,,gfsk\n", target_path,
+                                          sizeof target_path)
+               != 0) {
         cleanup_paths(dir, NULL, chan_path);
         return 1;
     }
@@ -6858,6 +6863,10 @@ test_init_failure_restores_saved_trunk_opts(void) {
     reset_scan_opts_state(&opts, &state);
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     g_csv_import_result = -1;
@@ -6875,12 +6884,172 @@ test_init_failure_restores_saved_trunk_opts(void) {
                     opts.trunk_is_tuned);
         test_rc = 1;
     }
+    if (opts.mod_cli_lock != 1 || opts.mod_c4fm != 0 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
+        DSD_FPRINTF(stderr, "scan init failure did not restore modulation lock=%d c4fm=%d qpsk=%d gfsk=%d\n",
+                    opts.mod_cli_lock, opts.mod_c4fm, opts.mod_qpsk, opts.mod_gfsk);
+        test_rc = 1;
+    }
     if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
         DSD_FPRINTF(stderr, "failed scan init attached a coordinator\n");
         test_rc = 1;
     }
 
     cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+/* Issue #671 (B6): each target's type sets the live trunking flag while it is parked, so a save made then writes the
+   trunking setting the session runs outside the scan, which the coordinator publishes, not the parked target's. */
+static int
+test_save_writes_configured_trunking_under_scan(void) {
+    static const struct {
+        const char* type;
+        const char* row;
+        int configured;
+        int parked;
+    } cases[] = {
+        {"p25-trunk", "p25,p25-trunk,851000000,,250,,\n", 0, 1},
+        {"dmr-conventional", "dmr,dmr-conventional,452000000,,250,,\n", 1, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        if (make_runtime_targets(cases[i].row, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+            return 1;
+        }
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_scan_opts_state(&opts, &state);
+        opts.trunk_enable = cases[i].configured;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        static dsdneoUserConfig cfg;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+        if (rc != 0 || opts.trunk_enable != cases[i].parked
+            || state.trunk_scan_configured_trunk_enable != (uint8_t)cases[i].configured
+            || cfg.trunk_enabled != cases[i].configured) {
+            DSD_FPRINTF(stderr,
+                        "save under trunk scan (%s): rc=%d live=%d published=%u saved=%d, want live=%d saved=%d\n",
+                        cases[i].type, rc, opts.trunk_enable, (unsigned)state.trunk_scan_configured_trunk_enable,
+                        cfg.trunk_enabled, cases[i].parked, cases[i].configured);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        if (opts.trunk_enable != cases[i].configured || state.trunk_scan_configured_trunk_enable != 0U) {
+            DSD_FPRINTF(stderr, "shutdown (%s): trunk_enable=%d published=%u, want %d and cleared\n", cases[i].type,
+                        opts.trunk_enable, (unsigned)state.trunk_scan_configured_trunk_enable, cases[i].configured);
+            test_rc = 1;
+        }
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+    }
+    return test_rc;
+}
+
+/* The configured trunking setting a scan restores at shutdown can be edited while it runs: the edit is published for
+   the save and kept for shutdown, and never reaches the parked target's live flag. */
+static int
+test_set_configured_trunk_enable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_set_configured_trunk_enable(&state, 1) != -1
+        || state.trunk_scan_configured_trunk_enable != 0U) {
+        DSD_FPRINTF(stderr, "configured trunking set without a scan\n");
+        test_rc = 1;
+    }
+
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("dmr,dmr-conventional,452000000,,250,,\n", target_path, sizeof target_path, dir,
+                             sizeof dir)
+        != 0) {
+        return 1;
+    }
+    opts.trunk_enable = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "configured trunking scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const int set_rc = dsd_engine_trunk_scan_set_configured_trunk_enable(&state, 1);
+    static dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+    if (set_rc != 0 || state.trunk_scan_configured_trunk_enable != 1U || opts.trunk_enable != 0
+        || cfg.trunk_enabled != 1) {
+        DSD_FPRINTF(stderr, "configured trunking edit rc=%d published=%u live=%d saved=%d\n", set_rc,
+                    (unsigned)state.trunk_scan_configured_trunk_enable, opts.trunk_enable, cfg.trunk_enabled);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.trunk_enable != 1) {
+        DSD_FPRINTF(stderr, "shutdown did not restore the edited trunking setting: %d\n", opts.trunk_enable);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #671 (B7): a modulation change made during the scan is the configured modulation (app-control runs it inside
+   the scope's suspend/resume bracket, which recaptures the configured settings). Shutdown keeps it, so the exit autosave
+   writes it, rather than putting back the modulation the scan started with. */
+static int
+test_shutdown_keeps_modulation_changed_during_scan(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("p25,p25-trunk,851000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.mod_cli_lock = 0;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "modulation scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    /* What DSD_APP_CMD_MOD_SET does for CQPSK under a scan row. */
+    if (dsd_scan_mode_suspend(&opts, &state) != 1) {
+        DSD_FPRINTF(stderr, "modulation edit found no scan scope to suspend\n");
+        test_rc = 1;
+    }
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    (void)dsd_scan_mode_resume(&opts, &state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    static dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+    if (opts.mod_cli_lock != 1 || opts.mod_c4fm != 0 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0 || !cfg.has_demod
+        || cfg.demod_path != DSDCFG_DEMOD_QPSK) {
+        DSD_FPRINTF(
+            stderr,
+            "shutdown lost the modulation changed during the scan lock=%d c4fm=%d qpsk=%d gfsk=%d saved=%d/%d\n",
+            opts.mod_cli_lock, opts.mod_c4fm, opts.mod_qpsk, opts.mod_gfsk, cfg.has_demod, (int)cfg.demod_path);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
@@ -14138,6 +14307,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_switch_forgets_the_received_identity);
     rc |= run_with_default_tune_hook(test_target_switch_and_rollback_reset_dmr_ras);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
+    rc |= run_with_default_tune_hook(test_save_writes_configured_trunking_under_scan);
+    rc |= run_with_default_tune_hook(test_set_configured_trunk_enable);
+    rc |= run_with_default_tune_hook(test_shutdown_keeps_modulation_changed_during_scan);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_iq_replay_input);

@@ -269,6 +269,16 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `dsd_engine_trunk_scan_set_configured_autogain()` (1 in force now, 0 shadowed by the parked target's own gain, -1 no
   scan), and the coordinator publishes `trunk_scan_configured_gain`, `trunk_scan_gain_override` and
   `trunk_scan_configured_autogain` beside the parked target for the frontends and the config save.
+- Configured trunking and modulation (issue #671): each target's type sets `trunk_enable` while it is parked, so the
+  setting the session runs outside the scan lives in the coordinator (captured at scan start, put back at shutdown) and
+  is published as `trunk_scan_configured_trunk_enable`, which the config save writes while `trunk_scan_target_count`
+  is nonzero. `dsd_engine_trunk_scan_set_configured_trunk_enable()` edits it without touching the live flag (0 stored,
+  -1 no scan). Shutdown puts back only the configured gain and the trunking flags: the scope leave restores the
+  configured modulation, which a modulation change made during the scan recaptured; an init that fails after attaching
+  puts back the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running
+  coordinator's target-list path, idle dwell and activity hold, and the global channel map and band plan (which the
+  scan refuses at startup), as they were and reports restart-required (`cfg_restore_lifecycle_owned()` in
+  app_control).
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.

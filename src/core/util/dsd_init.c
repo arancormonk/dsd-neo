@@ -1080,6 +1080,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_configured_gain = 0;
     state->trunk_scan_gain_override = 0;
     state->trunk_scan_configured_autogain = 0;
+    state->trunk_scan_configured_trunk_enable = 0;
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;

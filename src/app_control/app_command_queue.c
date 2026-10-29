@@ -7891,6 +7891,45 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The settings whose lifecycle startup owns (cfg_restore_lifecycle_owned()), as the session ran them before a config
+   was staged over them. */
+typedef struct {
+    dsd_frontend_kind frontend_kind;
+    int trunk_scan_enabled;
+    int trunk_scan_idle_dwell_ms;
+    int trunk_scan_activity_hold_ms;
+    char trunk_scan_targets_csv[sizeof(((dsd_opts*)0)->trunk_scan_targets_csv)];
+    char chan_in_file[sizeof(((dsd_opts*)0)->chan_in_file)];
+    char p25_bandplan_in_file[sizeof(((dsd_opts*)0)->p25_bandplan_in_file)];
+} cfg_lifecycle_owned;
+
+static void
+cfg_capture_lifecycle_owned(const dsd_opts* opts, cfg_lifecycle_owned* out) {
+    out->frontend_kind = opts->frontend_kind;
+    out->trunk_scan_enabled = opts->trunk_scan_enabled;
+    out->trunk_scan_idle_dwell_ms = opts->trunk_scan_idle_dwell_ms;
+    out->trunk_scan_activity_hold_ms = opts->trunk_scan_activity_hold_ms;
+    DSD_SNPRINTF(out->trunk_scan_targets_csv, sizeof out->trunk_scan_targets_csv, "%s", opts->trunk_scan_targets_csv);
+    DSD_SNPRINTF(out->chan_in_file, sizeof out->chan_in_file, "%s", opts->chan_in_file);
+    DSD_SNPRINTF(out->p25_bandplan_in_file, sizeof out->p25_bandplan_in_file, "%s", opts->p25_bandplan_in_file);
+}
+
+/* Put the path @p before back into @p live (@p size bytes); nonzero when the config had changed it. */
+static int
+cfg_restore_owned_path(char* live, size_t size, const char* before) {
+    const int changed = strcmp(live, before) != 0;
+    DSD_SNPRINTF(live, size, "%s", before);
+    return changed;
+}
+
+/* The same for a number. */
+static int
+cfg_restore_owned_int(int* live, int before) {
+    const int changed = *live != before;
+    *live = before;
+    return changed;
+}
+
 /*
  * Settings whose lifecycle startup owns. The frontend kind belongs to startup and
  * ui_start/ui_stop: runtime config/profile loads may carry persisted frontend
@@ -7898,17 +7937,34 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
  * UI thread has a chance to shut it down. The trunk-scan coordinator is likewise
  * only installed at startup, and its flag must keep saying whether one is
  * installed: the scanner-exclusivity refusals and P25 recovery admission read it
- * (#554). Both are put back after the config is applied; nonzero means the config
- * asked to change one of them, which the caller reports as restart-required.
+ * (#554). A running coordinator also loaded its target list and resolved the list's
+ * dwell and hold defaults at startup, and refused the global channel map and band plan
+ * then (each target names its own), so under it those are the coordinator's too: a
+ * config that changed them would have the next save write a list the session never
+ * ran (issue #671). All of them are put back after the config is applied; nonzero
+ * means the config asked to change one of them, which the caller reports as
+ * restart-required.
  */
 static int
-cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_frontend_kind old_frontend_kind,
-                            int old_trunk_scan_enabled) {
-    opts->frontend_kind = old_frontend_kind;
-    opts->trunk_scan_enabled = old_trunk_scan_enabled;
-    const int frontend_changed = cfg->frontend_kind_is_set && cfg->frontend_kind != old_frontend_kind;
-    const int trunk_scan_changed = cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != old_trunk_scan_enabled;
-    return frontend_changed || trunk_scan_changed;
+cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
+    opts->frontend_kind = before->frontend_kind;
+    opts->trunk_scan_enabled = before->trunk_scan_enabled;
+    const int frontend_changed = cfg->frontend_kind_is_set && cfg->frontend_kind != before->frontend_kind;
+    const int trunk_scan_changed =
+        cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != before->trunk_scan_enabled;
+    int coordinator_changed = 0;
+    if (before->trunk_scan_enabled == 1) {
+        coordinator_changed |= cfg_restore_owned_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
+                                                      before->trunk_scan_targets_csv);
+        coordinator_changed |= cfg_restore_owned_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms);
+        coordinator_changed |=
+            cfg_restore_owned_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms);
+        coordinator_changed |=
+            cfg_restore_owned_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file);
+        coordinator_changed |= cfg_restore_owned_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file,
+                                                      before->p25_bandplan_in_file);
+    }
+    return frontend_changed || trunk_scan_changed || coordinator_changed;
 }
 
 /*
@@ -8125,8 +8181,6 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_samples_per_symbol = state->samplesPerSymbol;
     int old_symbol_center = state->symbolCenter;
     int old_jitter = state->jitter;
-    dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
-    const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
     const cfg_rx_profile old_rx = cfg_rx_profile_of(opts);
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
@@ -8141,6 +8195,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
+    cfg_lifecycle_owned lifecycle_before;
+    cfg_capture_lifecycle_owned(opts, &lifecycle_before);
     ui_stage_analog_entry(opts, state);
 #ifdef USE_RADIO
     ui_cfg_rollback rollback;
@@ -8160,7 +8216,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
        the layout the decoder writes. */
     opts->pulse_digi_out_channels = old_audio_channels;
     opts->pulse_digi_rate_out = old_audio_rate;
-    const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, old_frontend_kind, old_trunk_scan_enabled);
+    const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, &lifecycle_before);
 #ifdef USE_RADIO
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
@@ -9212,6 +9268,11 @@ dsd_app_command_test_last_failed(void) {
 int
 dsd_app_command_test_last_invalid_payload(void) {
     return g_test_last_result == UI_CMD_APPLY_INVALID_PAYLOAD;
+}
+
+int
+dsd_app_command_test_last_restart_required(void) {
+    return g_test_last_result == UI_CMD_APPLY_RESTART_REQUIRED;
 }
 
 static int

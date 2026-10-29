@@ -2089,7 +2089,12 @@ static void
 snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_trunking = 1;
-    cfg->trunk_enabled = (opts->trunk_enable) ? 1 : 0;
+    /* Under --trunk-scan each target's type sets the live flag while it is parked; the save writes the setting the
+       session runs outside the scan, which the coordinator publishes (issue #671). */
+    const bool trunk_scan_running =
+        state != nullptr && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U;
+    const int trunk_enable = trunk_scan_running ? state->trunk_scan_configured_trunk_enable : opts->trunk_enable;
+    cfg->trunk_enabled = (trunk_enable != 0) ? 1 : 0;
     DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", opts->chan_in_file);
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s",

@@ -2161,6 +2161,7 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_configured_gain = 0;
     state->trunk_scan_gain_override = 0U;
     state->trunk_scan_configured_autogain = 0U;
+    state->trunk_scan_configured_trunk_enable = 0U;
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
@@ -2200,6 +2201,7 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     state->trunk_scan_configured_gain = (int16_t)coord->configured_rtl_gain_value;
     state->trunk_scan_gain_override = trunk_scan_active_target_sets_gain(coord) ? 1U : 0U;
     state->trunk_scan_configured_autogain = coord->configured_tuner_autogain_on ? 1U : 0U;
+    state->trunk_scan_configured_trunk_enable = coord->saved_trunk_enable ? 1U : 0U;
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     const dsd_scan_option_values* listed = rt->profile ? &rt->profile->values : &rt->target.row_options;
     state->scan_row_session = coord->session;
@@ -3311,14 +3313,27 @@ trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_
     return 1;
 }
 
+/* What the end of a scan puts back beside the scope leave: the configured gain and the trunking flags. The leave
+   restores the configured modulation, which a modulation change made during the scan recaptured
+   (dsd_scan_mode_resume()), so the modulation the scan started with is not put back over it (issue #671). */
+static void
+trunk_scan_restore_saved_trunk_gain_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord) {
+    if (!opts || !coord) {
+        return;
+    }
+    opts->rtl_gain_value = coord->configured_rtl_gain_value;
+    opts->trunk_enable = coord->saved_trunk_enable;
+    opts->trunk_is_tuned = coord->saved_trunk_is_tuned;
+}
+
+/* A failed init puts back everything it captured, the modulation too: nothing can have changed it since. */
 static void
 trunk_scan_restore_saved_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord) {
     if (!opts || !coord) {
         return;
     }
     trunk_scan_restore_saved_mod_gain_opts(opts, coord);
-    opts->trunk_enable = coord->saved_trunk_enable;
-    opts->trunk_is_tuned = coord->saved_trunk_is_tuned;
+    trunk_scan_restore_saved_trunk_gain_opts(opts, coord);
 }
 
 static void
@@ -4423,6 +4438,45 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
     return coord;
 }
 
+// Each target carries its own missing-channel ledger and channel map, so the exit summary the
+// engine logs once for a single system becomes one line per target with a channel map here.
+static void
+trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
+    if (!coord || coord->count == 0) {
+        return;
+    }
+    if (coord->active < coord->count) {
+        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
+            continue;
+        }
+        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, trunk_scan_snapshot_chan_lookup,
+                                        &rt->snapshot);
+    }
+}
+
+/* Detach the attached coordinator @p coord and release it. @p failed_init: an init that attached it and then failed,
+   whose rollback puts back the scan-start modulation as well (trunk_scan_restore_saved_opts()). */
+static void
+trunk_scan_detach(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int failed_init) {
+    trunk_scan_log_nxdn_diag_summaries(coord, state);
+    dsd_engine_channel_scan_leave(opts, state);
+    if (failed_init) {
+        trunk_scan_restore_saved_opts(opts, coord);
+    } else {
+        trunk_scan_restore_saved_trunk_gain_opts(opts, coord);
+    }
+    dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
+    dsd_scan_keys_leave(state);
+    trunk_scan_uninstall_runtime_hooks(coord);
+    trunk_scan_clear_published_target(state);
+    (void)dsd_engine_scan_own(state, 0, NULL, NULL);
+}
+
 /* Undo a partially-attached init: restore the global opts the coordinator
  * captured, release the coordinator and its snapshots, and drop the target
  * list's owned storage. */
@@ -4478,7 +4532,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     trunk_scan_install_runtime_hooks(coord);
     const int switch_rc = trunk_scan_switch_to(opts, state, coord, 0, 0);
     if (switch_rc == TRUNK_SCAN_PREPARE_FAILED) {
-        dsd_engine_trunk_scan_shutdown(opts, state);
+        trunk_scan_detach(opts, state, coord, 1);
         scan_set_error(err, err_sz, "unable to prepare initial trunk scan key/policy scope");
         return -1;
     }
@@ -4489,41 +4543,13 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     return 0;
 }
 
-// Each target carries its own missing-channel ledger and channel map, so the exit summary the
-// engine logs once for a single system becomes one line per target with a channel map here.
-static void
-trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
-    if (!coord || coord->count == 0) {
-        return;
-    }
-    if (coord->active < coord->count) {
-        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
-    }
-    for (size_t i = 0; i < coord->count; i++) {
-        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
-        if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
-            continue;
-        }
-        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, trunk_scan_snapshot_chan_lookup,
-                                        &rt->snapshot);
-    }
-}
-
 void
 dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!coord) {
         return;
     }
-    trunk_scan_log_nxdn_diag_summaries(coord, state);
-    dsd_engine_channel_scan_leave(opts, state);
-    trunk_scan_restore_saved_opts(opts, coord);
-    dsd_scan_groups_leave(state);
-    dsd_scan_maps_leave(state);
-    dsd_scan_keys_leave(state);
-    trunk_scan_uninstall_runtime_hooks(coord);
-    trunk_scan_clear_published_target(state);
-    (void)dsd_engine_scan_own(state, 0, NULL, NULL);
+    trunk_scan_detach(opts, state, coord, 0);
 }
 
 #ifdef DSD_TRUNK_SCAN_TEST_CLOCK
@@ -4730,6 +4756,17 @@ dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_state* s
     /* A retune forces the supervisor off under a manual gain (the scan's gain profile), so the setting is in force only
        while the gain in force is AGC. */
     return opts->rtl_gain_value > 0 ? 0 : 1;
+}
+
+int
+dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!coord) {
+        return -1;
+    }
+    coord->saved_trunk_enable = enabled ? 1 : 0;
+    state->trunk_scan_configured_trunk_enable = (uint8_t)coord->saved_trunk_enable;
+    return 0;
 }
 
 /* The target @p target_id of the scan session @p session names, or -1 when this coordinator is another session or has

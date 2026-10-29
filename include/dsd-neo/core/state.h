@@ -2468,6 +2468,10 @@ struct dsd_state {
     int16_t trunk_scan_configured_gain;     /**< dB in driver units; 0 = AGC */
     uint8_t trunk_scan_gain_override;       /**< 1 = the parked target runs its own rtl_gain */
     uint8_t trunk_scan_configured_autogain; /**< 1 = the configured tuner autogain is on */
+    /* The trunking setting (dsd_opts::trunk_enable) the session runs outside the scan, which each target's type
+     * overrides while it is parked and shutdown puts back; a save writes it. Written by the coordinator beside the
+     * configured gain. Valid while trunk_scan_target_count > 0. */
+    uint8_t trunk_scan_configured_trunk_enable; /**< 1 = trunking configured on */
     /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
      * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
      * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields

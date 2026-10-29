@@ -8381,7 +8381,71 @@ test_config_keeps_trunk_scan_lifecycle(void) {
         rc |= expect_true("trunk-scan lifecycle config queued", dsd_app_command_apply_config(&cfg) > 0);
         rc |= expect_int("trunk-scan lifecycle config drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("live config keeps the coordinator flag", opts.trunk_scan_enabled, installed);
-        rc |= expect_int("live config still applies trunk-scan tuning", opts.trunk_scan_idle_dwell_ms, 4321);
+        rc |= expect_int("a changed coordinator flag needs a restart", dsd_app_command_test_last_restart_required(), 1);
+        /* Without a coordinator nothing runs the list's defaults, so the config's stand for the next save; a running
+           coordinator resolved its own at startup (issue #671). */
+        rc |= expect_int("live config applies trunk-scan tuning only without a coordinator",
+                         opts.trunk_scan_idle_dwell_ms, installed ? 100 : 4321);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* Issue #671 (B8): a running coordinator loaded its target list and resolved the list's dwell and hold defaults at
+   startup, and refused the global channel map and band plan then. A config that changes any of them leaves the session
+   on what it runs, so the next save does not write a list the session never ran, and reports that a restart is
+   needed; one that names the same values applies as before. */
+static int
+test_config_keeps_the_running_trunk_scan_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    static const struct {
+        const char* what;
+        const char* targets;
+        int dwell_ms;
+        int hold_ms;
+        const char* chan_csv;
+        const char* bandplan_csv;
+        int restart;
+    } cases[] = {
+        {"another list", "other-targets.csv", 3000, 1200, "", "", 1},
+        {"another idle dwell", "targets.csv", 4321, 1200, "", "", 1},
+        {"another activity hold", "targets.csv", 3000, 2500, "", "", 1},
+        {"a global channel map", "targets.csv", 3000, 1200, "chan.csv", "", 1},
+        {"a global band plan", "targets.csv", 3000, 1200, "", "plan.csv", 1},
+        {"the running list", "targets.csv", 3000, 1200, "", "", 0},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+        opts.trunk_scan_idle_dwell_ms = 3000;
+        opts.trunk_scan_activity_hold_ms = 1200;
+        dsdneoUserConfig cfg = {0};
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", cases[i].targets);
+        cfg.trunk_scan_idle_dwell_ms = cases[i].dwell_ms;
+        cfg.trunk_scan_activity_hold_ms = cases[i].hold_ms;
+        cfg.has_trunking = 1;
+        DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", cases[i].chan_csv);
+        DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", cases[i].bandplan_csv);
+        rc |= expect_true("trunk-scan list config queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_int("trunk-scan list config drained", dsd_app_drain_cmds(&opts, &state), 1);
+        int bad = expect_str("the running list stays", opts.trunk_scan_targets_csv, "targets.csv");
+        bad |= expect_int("the running idle dwell stays", opts.trunk_scan_idle_dwell_ms, 3000);
+        bad |= expect_int("the running activity hold stays", opts.trunk_scan_activity_hold_ms, 1200);
+        bad |= expect_str("no global channel map", opts.chan_in_file, "");
+        bad |= expect_str("no global band plan", opts.p25_bandplan_in_file, "");
+        bad |= expect_int("restart needed", dsd_app_command_test_last_restart_required(), cases[i].restart);
+        bad |= expect_int("not failed", dsd_app_command_test_last_failed(), 0);
+        if (bad) {
+            DSD_FPRINTF(stderr, "  config with %s\n", cases[i].what);
+            rc = 1;
+        }
         freeState(&state);
     }
     return rc;
@@ -20698,6 +20762,7 @@ main(void) {
 #endif
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
+    rc |= test_config_keeps_the_running_trunk_scan_list();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_am_width_asks_the_rigctl_peer();

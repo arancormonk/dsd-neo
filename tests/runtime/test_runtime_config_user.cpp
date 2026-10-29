@@ -1581,6 +1581,42 @@ test_snapshot_names_switched_inputs(void) {
     return rc;
 }
 
+/* Issue #671: under --trunk-scan the parked target's type sets the live trunking flag, so a save writes the configured
+   setting the coordinator publishes; with no target published (no scan, or before the first target), the live flag. */
+static int
+test_snapshot_trunking_reads_the_trunk_scan_configured_value(void) {
+    static const struct {
+        int scan_enabled;
+        uint16_t targets;
+        int live;
+        uint8_t configured;
+        int want;
+    } cases[] = {
+        {1, 2, 1, 0, 0},
+        {1, 2, 0, 1, 1},
+        {1, 0, 1, 0, 1},
+        {0, 2, 1, 0, 1},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        opts.trunk_scan_enabled = cases[i].scan_enabled;
+        opts.trunk_enable = cases[i].live;
+        state.trunk_scan_target_count = cases[i].targets;
+        state.trunk_scan_configured_trunk_enable = cases[i].configured;
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (snap.trunk_enabled != cases[i].want) {
+            DSD_FPRINTF(stderr, "trunking save case %zu: wrote %d, want %d\n", i, snap.trunk_enabled, cases[i].want);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
@@ -5172,6 +5208,7 @@ main(void) {
     rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_names_switched_inputs();
+    rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_roundtrip_agc_rtl_gain();

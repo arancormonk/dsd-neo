@@ -227,6 +227,10 @@ context or band-plan seeding. Its hold follows conventional voice activity, not 
 Global mode/modulation commands update the configured settings while the parked target remains constrained.
 Stopping trunk scan restores those configured settings, and configuration saves record them rather than the parked
 target's decoder. Target gain, trunking state, and learned P25 modulation retain their existing coordinator ownership.
+A save records the configured trunking setting (`[trunking] enabled`), not the one the parked target's type runs. A
+config loaded while the scan runs cannot change its `[trunk_scan]` target list or dwell and hold defaults, nor add a
+global `[trunking] chan_csv` or `p25_bandplan_csv`: those keep the values the scan started with and take effect at the
+next start.
 The restored frontend rate and slicer levels follow the saved hunt profile, including a global AUTO preset captured
 on a rate other than 4800 symbols/s. Modulation controls display the saved configuration while a target is active.
 

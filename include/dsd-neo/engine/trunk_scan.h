@@ -242,6 +242,16 @@ int dsd_engine_trunk_scan_set_configured_gain(dsd_opts* opts, dsd_state* state, 
  *         gain suspends it (every trunk-scan retune forces the supervisor off then), -1 when no trunk scan runs.
  */
 int dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_state* state, int on);
+/**
+ * @brief Make @p enabled the trunking setting (dsd_opts::trunk_enable) the trunk scan restores at shutdown, and publish
+ * it as state->trunk_scan_configured_trunk_enable for the config save (issue #671).
+ *
+ * Each target's type sets the live flag while it is parked, so the configured setting lives in the coordinator; the
+ * live flag is never written here. Decoder thread.
+ *
+ * @return 0 when it is stored, -1 when no trunk scan runs (nothing changed).
+ */
+int dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**
  * @brief Symbol rate of the parked four-level GFSK scan target, or 0 when there is none.

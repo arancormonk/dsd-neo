@@ -803,6 +803,9 @@ When `[trunk_scan] enabled = true`:
   with scan rows; the source-label fallback uses whichever group policy table is active.
 - One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
 - Runtime still needs a retuning path, either RTL-family input opened by DSD-neo or rigctl tuning. IQ replay is rejected.
+- While a trunk scan runs, a loaded config leaves `[trunk_scan]` (`enabled`, `targets_csv`, `idle_dwell_ms`,
+  `activity_hold_ms`) and the global `[trunking] chan_csv` / `p25_bandplan_csv` as the scan started with them; a change
+  to any of them takes effect at the next start.
 - Full user workflow, examples, and troubleshooting: `docs/trunk-scan.md`.
 
 Example:
