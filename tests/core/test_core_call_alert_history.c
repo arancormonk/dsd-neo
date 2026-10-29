@@ -8025,7 +8025,7 @@ test_patched_call_member_stream_off(void) {
 
 // Consecutive calls on a slot with opposite verdicts each close their recording with their own: a call that takes the
 // slot from one still running (the epoch change closes the outgoing recording), then calls run to their ends in the
-// other order. Both slots.
+// other order, then a takeover the other way round. Both slots.
 static int
 test_consecutive_calls_opposite_verdicts(void) {
     static dsd_opts opts;
@@ -8066,6 +8066,25 @@ test_consecutive_calls_opposite_verdicts(void) {
                                   run_stream_call(&opts, &state, slot, DSD_SYNC_DMR_BS_VOICE_POS,
                                                   DSD_CALL_KIND_GROUP_VOICE, 1201U, 1201U, 45U),
                                   0, 1201U);
+
+        const int closes_before_e = g_close_wav_capture_count;
+        rc |= expect_int("call E begins",
+                         observe_test_call(&state, slot, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1202U,
+                                           46U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                         1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        rc |= expect_int("call F takes the slot",
+                         observe_test_call(&state, slot, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1201U,
+                                           47U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                         1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        const int closes_before_f = g_close_wav_capture_count;
+        DSD_SNPRINTF(label, sizeof label, "call E (stream=on), closed by call F, slot %u", (unsigned)slot);
+        rc |= expect_stream_close(label, closes_before_f - closes_before_e, 1, 1202U);
+        rc |= expect_int("call F ends", end_test_call(&state, slot, DSD_CALL_END_TERMINATOR), 1);
+        dsd_event_sync_slot(&opts, &state, slot);
+        DSD_SNPRINTF(label, sizeof label, "call F (stream=off), slot %u", (unsigned)slot);
+        rc |= expect_stream_close(label, g_close_wav_capture_count - closes_before_f, 0, 1201U);
         dsd_state_ext_free_all(&state);
     }
     return rc;
