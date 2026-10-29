@@ -29,6 +29,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLatin1String>
 #include <QModelIndex>
 #include <QObject>
@@ -548,7 +549,7 @@ write_spill(int rows, qint64 when, qulonglong tg, bool alternate) {
     QByteArray data;
     for (int i = 0; i < rows; i++) {
         const qint64 session = alternate && i % 2 != 0 ? 2 : 1;
-        data += spill_line(static_cast<qulonglong>(i + 1), when + 30 * static_cast<qint64>(i),
+        data += spill_line(static_cast<qulonglong>(i) + 1U, when + 30 * static_cast<qint64>(i),
                            tg + static_cast<qulonglong>(i), session);
     }
     QFile file(spill_path());

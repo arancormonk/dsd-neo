@@ -13,6 +13,7 @@
  */
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QList>
@@ -25,6 +26,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <cstdio>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
