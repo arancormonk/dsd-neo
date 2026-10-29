@@ -28,6 +28,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
@@ -2277,14 +2278,20 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
 
 /* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. An accepted one
    (applied or pending) puts the receiver on another carrier, which can sync before any no-carrier pass: the carrier
-   boundary runs at this success point (issue #575). @p guard_held says whether the caller holds the P25 SM tick
-   guard. */
+   boundary runs at this success point (issue #575). One that reached the tuner replaces any manual tune still pending,
+   and an RTL tune that timed out is followed to its completion, a late failure putting the cached frequency back
+   (issue #671). @p guard_held says whether the caller holds the P25 SM tick guard. */
 static int
 svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
     if (!opts) {
         return -1;
     }
-    const int rc = io_control_set_freq(opts, state, hz);
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
+    uint64_t pending_id = 0U;
+    const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
+    if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
+        dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
+    }
     if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
     }

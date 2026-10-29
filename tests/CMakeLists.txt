@@ -8025,7 +8025,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
-            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
             "LINKER:--wrap=dmr_data_burst_handler"
             "LINKER:--wrap=dsd_audio_write"
@@ -8192,7 +8192,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_options(
         dsd-neo_test_app_control_rr_apply
         PRIVATE
-            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
@@ -14554,6 +14554,53 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_retune_prepare
     )
 
+    # A manual tune whose RTL wait timed out, followed to its late completion through the real controller stood in for
+    # without a device (issue #671). The orchestrator's started-stream check is stepped over by renaming
+    # rtl_stream_tune_tagged() to the test's stand-in tune in the sources compiled here.
+    add_executable(
+        dsd-neo_test_engine_manual_tune_pending
+        engine/test_engine_manual_tune_pending.c
+        ${PROJECT_SOURCE_DIR}/src/engine/manual_tune_pending.c
+        ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning_hooks_install.c
+        ${PROJECT_SOURCE_DIR}/src/io/control/dsd_rigctl.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_manual_tune_pending
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_manual_tune_pending
+        PRIVATE rtl_stream_tune_tagged=test_rtl_stream_tune_tagged
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_manual_tune_pending
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_platform
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_engine_manual_tune_pending
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    if(WIN32)
+        target_link_libraries(
+            dsd-neo_test_engine_manual_tune_pending
+            PRIVATE ws2_32
+        )
+    endif()
+    add_test(
+        NAME ENGINE_MANUAL_TUNE_PENDING
+        COMMAND dsd-neo_test_engine_manual_tune_pending
+    )
+    set_tests_properties(ENGINE_MANUAL_TUNE_PENDING PROPERTIES TIMEOUT 60)
+
     add_executable(
         dsd-neo_test_io_rtl_control_edges
         io/test_io_rtl_control_edges.cpp
@@ -20371,7 +20418,7 @@ if(
             "LINKER:--wrap=rtl_stream_airspy_controls"
             "LINKER:--wrap=rtl_stream_airspy_info"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
-            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
     )
     add_test(

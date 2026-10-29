@@ -69,6 +69,7 @@ static int g_no_sigpipe_result;
 static int g_rtl_tune_calls;
 static uint32_t g_rtl_tune_freq;
 static int g_rtl_tune_result;
+static uint64_t g_rtl_tune_id;
 static uint32_t g_rtl_last_applied_freq;
 static dsdneoRuntimeConfig g_config;
 /* What the scan scope says of a manual tune's request (dsd_scan_mode_rigctl_request_is_session(); 1: the session's,
@@ -110,6 +111,7 @@ reset_stubs(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0U;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_tune_id = 0U;
     g_rtl_last_applied_freq = 0U;
     DSD_MEMSET(&g_config, 0, sizeof(g_config));
     g_config.rigctl_rcvtimeo_ms = 1500;
@@ -132,10 +134,11 @@ dsd_channel_modes_present(const dsd_state* state) {
 }
 
 int
-rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
+rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
     (void)ctx;
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
+    g_rtl_tune_id = request_id;
     return g_rtl_tune_result;
 }
 
@@ -2886,6 +2889,50 @@ test_io_control_set_freq_retains_accepted_rtl_timeout_target(void) {
     return 0;
 }
 
+/* Every RTL tune carries a manual-tune ID of its own, never a trunk-ledger one (issue #671), and only a timed-out one
+   hands it back: its completion is still to come under it. */
+static int
+test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
+    reset_stubs();
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+    g_rtl_last_applied_freq = 851000000U;
+
+    uint64_t pending_id = UINT64_MAX;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    assert(io_control_set_freq_tagged(&opts, &state, 851125000U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    const uint64_t first_id = g_rtl_tune_id;
+    assert((first_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+    assert((uint32_t)first_id != 0U);
+    assert(pending_id == first_id);
+
+    pending_id = UINT64_MAX;
+    assert(io_control_set_freq_tagged(&opts, &state, 851150000U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert((g_rtl_tune_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+    assert(g_rtl_tune_id != first_id);
+    assert(pending_id == g_rtl_tune_id);
+
+    const int not_pending[] = {RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED};
+    for (size_t i = 0; i < sizeof not_pending / sizeof not_pending[0]; i++) {
+        g_rtl_tune_result = not_pending[i];
+        pending_id = UINT64_MAX;
+        assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == not_pending[i]);
+        assert((g_rtl_tune_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+        assert(pending_id == 0U);
+    }
+
+    /* A refusal before any backend runs says no request either. */
+    pending_id = UINT64_MAX;
+    assert(io_control_set_freq_tagged(&opts, &state, 0U, &pending_id) == -1);
+    assert(pending_id == 0U);
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2939,6 +2986,7 @@ main(void) {
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
     rc |= test_io_control_set_freq_retains_accepted_rtl_timeout_target();
+    rc |= test_io_control_set_freq_tagged_reports_the_pending_rtl_id();
     return rc;
 }
 

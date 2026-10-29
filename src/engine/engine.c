@@ -45,6 +45,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -1366,6 +1367,8 @@ no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t r
         if (tune_result == RTL_STREAM_TUNE_DEFERRED) {
             return DSD_TRUNK_TUNE_RESULT_DEFERRED;
         }
+        /* The step now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        dsd_engine_manual_tune_supersede(state);
         if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
             return DSD_TRUNK_TUNE_RESULT_TIMEOUT;
         }
@@ -3572,6 +3575,8 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         dsd_runtime_pump_controls(opts, state);
+        /* A manual tune that timed out lands or fails late (issue #671): one load while none is pending. */
+        (void)dsd_engine_manual_tune_poll(opts, state);
         /* An interrupted idle read skips noCarrier(), but a stalled NFM call still expires. */
         dsd_engine_analog_call_tick(opts, state);
         if (dsd_engine_signal_search_tick(opts, state)) {

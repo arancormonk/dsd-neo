@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -850,6 +851,10 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
     }
     const int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
                                     : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+    if (rc != RTL_STREAM_TUNE_DEFERRED) {
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        dsd_engine_manual_tune_supersede(state);
+    }
     if (rc == RTL_STREAM_TUNE_OK) {
         uint32_t applied = 0U;
         opts->rtlsdr_center_freq =

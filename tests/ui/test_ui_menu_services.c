@@ -32,6 +32,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
@@ -519,11 +520,27 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
 static int g_io_control_set_freq_result = -1;
 
 int
-io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
     (void)opts;
     (void)state;
     (void)freq_hz;
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
     return g_io_control_set_freq_result;
+}
+
+void
+dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
+                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint32_t map_seq) {
+    (void)state;
+    (void)kind;
+    (void)id;
+    (void)requested_hz;
+    (void)prior_applied_hz;
+    (void)row;
+    (void)scan_session;
+    (void)map_seq;
 }
 
 /* The engine's carrier boundary and the stream-start source note (issue #575), recorded: these services call them at

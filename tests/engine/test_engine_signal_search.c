@@ -18,6 +18,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -286,6 +287,14 @@ dsd_analog_rx_carrier_observed_now(const dsd_opts* opts, const dsd_state* state)
     return observed;
 }
 
+static int manual_supersedes;
+
+void
+dsd_engine_manual_tune_supersede(dsd_state* state) {
+    (void)state;
+    ++manual_supersedes;
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind reason, int guard) {
     (void)opts;
@@ -495,10 +504,13 @@ test_stop_restore_is_a_carrier_boundary(dsd_opts* o, dsd_state* s, dsd_signal_se
     live = 1;
     o->rtlsdr_center_freq = 100000000;
     config->session_id = 46;
+    const int supersedes = manual_supersedes;
     assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
     tick(o, s);
     visit_strongest(o, s);
     assert(status.phase == DSD_SEARCH_LISTENING && o->rtlsdr_center_freq == 100025000);
+    /* Its tunes decide where the receiver goes: a manual tune still pending can no longer put it back (issue #671). */
+    assert(manual_supersedes > supersedes);
     const int before = boundary;
     act(o, s, DSD_SEARCH_ACTION_STOP);
     assert(boundary == before + 1 && target == 100000000);

@@ -18,6 +18,7 @@
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -998,18 +999,35 @@ set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq
 }
 
 #ifdef USE_RADIO
+/* Manual-tune IDs: the marker bit over a 32-bit count that skips 0, so the low half tells IDs apart (issue #671). */
+static dsd_atomic_u64 s_manual_tune_seq = {0U};
+
+static uint64_t
+next_manual_tune_id(void) {
+    uint32_t seq = 0U;
+    do {
+        seq = (uint32_t)(dsd_atomic_u64_fetch_add_relaxed(&s_manual_tune_seq, 1U) + 1U);
+    } while (seq == 0U);
+    return RTL_STREAM_TUNE_ID_MANUAL_BIT | (uint64_t)seq;
+}
+
 static int
-set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_freq, uint32_t* applied_freq) {
+set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_freq, uint32_t* applied_freq,
+                  uint64_t* out_pending_id) {
     if (!state || !state->rtl_ctx) {
         return -1;
     }
 
-    int tune_result = rtl_stream_tune(state->rtl_ctx, requested_freq);
+    const uint64_t request_id = next_manual_tune_id();
+    int tune_result = rtl_stream_tune_tagged(state->rtl_ctx, requested_freq, request_id);
     if (tune_result != RTL_STREAM_TUNE_OK) {
         if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
             /* The controller accepted the request and may complete after the
-             * synchronous wait expires. */
+             * synchronous wait expires, which it reports under request_id. */
             opts->rtlsdr_center_freq = requested_freq;
+            if (out_pending_id) {
+                *out_pending_id = request_id;
+            }
         }
         return tune_result;
     }
@@ -1025,7 +1043,8 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
 #endif
 
 /**
- * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping).
+ * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping), and say which RTL request
+ * is pending.
  *
  * This is the canonical way for UI and non-trunking code to request frequency changes.
  * It handles both RTL-SDR and rigctl backends but does NOT update trunking state fields
@@ -1037,11 +1056,15 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
  *              request from the session's, dsd_channel_modes_rigctl_request_is_session()).
  * @param freq_hz Target frequency in Hz, as the tuner path carries it end to end (issue #671): a 32-bit long (Windows)
  *                cannot hold one past 2147.483647 MHz.
+ * @param out_pending_id May be NULL; the ID a timed-out RTL tune's completion will be reported under, 0 otherwise.
  * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code. An RTL timeout leaves an
  *         accepted request active and retains its target in opts->rtlsdr_center_freq.
  */
 int
-io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
     if (!opts || freq_hz == 0U) {
         return -1;
     }
@@ -1054,7 +1077,7 @@ io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
         rc = set_rigctl_frequency(opts, state, freq_hz);
 #ifdef USE_RADIO
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-        rc = set_rtl_frequency(opts, state, applied_freq, &applied_freq);
+        rc = set_rtl_frequency(opts, state, applied_freq, &applied_freq, out_pending_id);
 #endif
     }
     if (rc != 0) {

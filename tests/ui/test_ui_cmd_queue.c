@@ -198,7 +198,8 @@ int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
-int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id);
 void __real_dsd_frame_sync_reset_mod_state(void);
 void __wrap_dsd_frame_sync_reset_mod_state(void);
 #ifdef USE_RADIO
@@ -338,8 +339,11 @@ __wrap_rtl_stream_set_bias_tee(int on) {
 #endif
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
     (void)state;
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq_hz;
     /* As the real one: a success caches the frequency the controller applied, which a coalesced request can make

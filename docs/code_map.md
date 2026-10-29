@@ -2644,6 +2644,22 @@ that fails after the read waits for the next pass. The synced-frames loop then g
 `dsd_trunk_tuning_frame_is_current()`, never with `dsd_trunk_tuning_frame_is_dispatchable()`, whose retirement does not
 reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`).
 
+A manual tune stays out of that ledger (issue #671, `include/dsd-neo/engine/manual_tune.h`,
+`src/engine/manual_tune_pending.c`). `io_control_set_freq_tagged()` tags each RTL leg with an ID from its own space
+(`RTL_STREAM_TUNE_ID_MANUAL_BIT`, bit 63, above any ledger ID). On `RTL_STREAM_TUNE_TIMEOUT` it hands the ID back, and
+the caller notes one pending record (`dsd_engine_manual_tune_note_pending()`; `svc_rtl_tune()` for the frequency entry,
+tap-to-tune and the Airspy live apply). The engine's one RTL completion callback (`trunk_tuning_hooks_install.c`) sends
+manual IDs into a single atomic slot and every other ID to the ledger, so `dsd_trunk_tuning_frame_is_current()` never
+waits on a manual tune. The decoder loop polls (`dsd_engine_manual_tune_poll()`, one atomic load while nothing is
+pending). A late failure puts `opts->rtlsdr_center_freq` back on the stream's applied centre and toasts
+`Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. Every other tune of the receiver
+that reached the controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual tune, an owner
+tune (`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg, a Signal search visit, `request_manual_tune()`'s
+direct leg and the RadioReference apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`),
+since a stop fails the queued request under its tag. The record is process-wide, as the controller and its callback
+are. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer
+entry, coalescing and a stop), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+
 ## App-Control
 
 - Path: `src/app_control`, `include/dsd-neo/app_control`
@@ -4839,6 +4855,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   gain/PPM supervision is suspended during discovery. `rtl_stream_tune_async()` and
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
+- Tagged retune ownership (issue #671): a queued tagged retune defers a tune of another owner, but a manual tune's tag
+  (`RTL_STREAM_TUNE_ID_MANUAL_BIT`) only asks for its completion. It owns nothing, so a second frequency entry or an owner
+  tune coalesces into a queued manual request as into an untagged one. `rtl_stream_session_generation()` moves at every
+  `dsd_rtl_stream_open()` and soft stop, and at nothing else. Before it fails the queued retune, the stop moves it, so
+  a completion read under another session belongs to a stream that is gone.
 - View rings and SNR fallbacks (`radio/rtl_view_rings.{h,cpp}`): the constellation and eye rings (relaxed-atomic
   samples, demod-thread appends, retune clears) and the fallback estimates over them behind
   `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer

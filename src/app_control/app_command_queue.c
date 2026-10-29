@@ -52,6 +52,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -3179,6 +3180,10 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         result = (freq > 0 && (long long)freq <= (long long)UINT32_MAX)
                      ? io_control_set_freq(opts, state, (uint32_t)freq)
                      : -1;
+        if (result != RTL_STREAM_TUNE_DEFERRED) {
+            /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+            dsd_engine_manual_tune_supersede(state);
+        }
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
         if (accepted) {
             /* This leg has no correlated tune request to await, so an accepted
@@ -6132,9 +6137,10 @@ rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload
 }
 
 static void
-rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    if (rr_apply_tune_frequency_fits(p)) {
-        (void)io_control_set_freq(opts, state, p->tune_hz);
+rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    if (rr_apply_tune_frequency_fits(p) && io_control_set_freq(opts, state, p->tune_hz) != RTL_STREAM_TUNE_DEFERRED) {
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        dsd_engine_manual_tune_supersede(state);
     }
 }
 

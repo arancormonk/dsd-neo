@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -313,6 +314,8 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
         search_error(c, "The receiver refused the tune");
         return -1;
     }
+    /* The search now decides where the receiver goes, not a manual tune still pending (issue #671). */
+    dsd_engine_manual_tune_supersede(state);
     c->status.phase = DSD_SEARCH_TUNING;
     /* A refusal (a full avoid list) belonged to the detection being left; the next one starts clean. */
     if (visit) {

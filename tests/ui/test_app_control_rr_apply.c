@@ -39,12 +39,16 @@ static uint32_t g_io_control_tune_freq = 0U;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id);
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
     (void)opts;
     (void)state;
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
     g_io_control_tune_calls++;
     g_io_control_tune_freq = freq_hz;
     return g_io_control_tune_result;
