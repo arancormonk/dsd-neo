@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import QtQuick
+import QtTest
+
+// Issue #782: what a trunk scan costs an accessibility client, end to end through Main.
+//
+// On Android every ObjectShow and ObjectHide costs the main thread a runnable that makes eight blocking calls into
+// the Qt thread. A scan used to raise them on every hop from sheets nobody had open: each hop swung the readings to
+// their defaults and back, and a closed sheet whose list model followed a reading rebuilt its delegates, each new
+// delegate raising ObjectHide as it was parented under the hidden sheet. The hops here publish each target's
+// readings once, as MetricsModel does since the fix (the C++ regression for that is UI_QT_CONTROLLER's
+// test_target_change_publishes_once); these cases hold the screens to costing nothing on such hops.
+//
+// tst_a11y_harness.qml proves first that the counter sees the events these cases assert are absent.
+Item {
+    width: 420
+    height: 900
+    Loader {
+        id: loader
+        source: uiDir + "/Main.qml"
+    }
+    TestCase {
+        name: "A11yScanChurn"
+        when: windowShown
+        readonly property var app: loader.item
+        readonly property int hops: 30
+        // Closed sheets that still churn on a hop, for a reason the root fix does not reach, and the work package
+        // that removes it. Each is held to an expected failure, which turns into a failure (XPASS) once that package
+        // lands, so the package has to take its sheet off this list and the strict assertion covers it from then on.
+        // TODO(WP-Q2): the KeySheet scope combo carries the target's name in its model, so each hop rebuilds it.
+        readonly property var pendingFix: ({keySheet: "WP-Q2"})
+        property var restore: ({})
+
+        // One target's readings per protocol, as a scan that alternates DMR, NXDN and P25 sites publishes them. The
+        // decryption slots stay as the fixture has them: the closed key sheet's churn on those is WP-Q3's, measured
+        // in its own case.
+        function reading(i) {
+            var ordinal = (i % 3) + 1;
+            var common = {radioInput: true, optionsKnown: true, scanRotationActive: true, squelchNoiseOffered: true,
+                scanTargetCount: 3, scanTargetOrdinal: ordinal, scanTargetId: "target-" + ordinal, syncedHere: true,
+                siteLine: "Site " + ordinal, siteConfirmed: true, p25WacnValid: i % 3 === 2, p25Wacn: 0xBEE00,
+                p25SysIdValid: i % 3 === 2, p25SysId: 0x3A0, p25Rfss: i % 3 === 2 ? 1 : 0,
+                p25Site: i % 3 === 2 ? ordinal : 0, dmrSiteText: i % 3 === 0 ? "Site " + ordinal : "",
+                nxdnSysCode: i % 3 === 1 ? 100 + ordinal : 0, nxdnSiteCode: i % 3 === 1 ? ordinal : 0};
+            if (i % 3 === 0)
+                return Object.assign(common, {siteProtocol: "DMR", twoSlotCarrier: true, syncLabel: "DMR",
+                    dmrColorCode: 1, nxdnRan: -1, p25NacValid: false, p25Nac: 0, centerFreqHz: 451012500,
+                    channelBandwidthHz: 12500});
+            if (i % 3 === 1)
+                return Object.assign(common, {siteProtocol: "NXDN", twoSlotCarrier: false, syncLabel: "NXDN48",
+                    dmrColorCode: -1, nxdnRan: 5, p25NacValid: false, p25Nac: 0, centerFreqHz: 452500000,
+                    channelBandwidthHz: 6250});
+            return Object.assign(common, {siteProtocol: "P25", twoSlotCarrier: false, syncLabel: "P25p1",
+                dmrColorCode: -1, nxdnRan: -1, p25NacValid: true, p25Nac: 0x293, centerFreqHz: 851012500,
+                channelBandwidthHz: 12500});
+        }
+        // The same readings as MetricsModel::clear() publishes them: what every hop passed through before the fix.
+        function cleared() {
+            return {radioInput: false, optionsKnown: false, scanRotationActive: false, squelchNoiseOffered: false,
+                scanTargetCount: 0, scanTargetOrdinal: 0, scanTargetId: "", syncedHere: false, siteLine: "",
+                siteConfirmed: false, p25WacnValid: false, p25Wacn: 0, p25SysIdValid: false, p25SysId: 0, p25Rfss: 0,
+                p25Site: 0, dmrSiteText: "", nxdnSysCode: 0, nxdnSiteCode: 0, siteProtocol: "", twoSlotCarrier: false,
+                syncLabel: "", dmrColorCode: -1, nxdnRan: -1, p25NacValid: false, p25Nac: 0, centerFreqHz: 0,
+                channelBandwidthHz: 0};
+        }
+
+        function isSheet(item) {
+            return item.closesOnOutsideTap !== undefined && typeof item.requestDismiss === "function";
+        }
+        function collectSheets(item, out) {
+            var children = item.children || [];
+            for (var i = 0; i < children.length; ++i) {
+                var child = children[i];
+                if (isSheet(child))
+                    out.push(child);
+                collectSheets(child, out);
+            }
+            return out;
+        }
+        function sheetName(sheet) {
+            return sheet.objectName || sheet.panelObjectName || sheet.accessibleName || String(sheet);
+        }
+        function showHide(scope) {
+            return testContext.accessibilityCountWithin(scope, "ObjectShow")
+                + testContext.accessibilityCountWithin(scope, "ObjectHide");
+        }
+        function typed(counts, type) {
+            return counts.types[type] ? counts.types[type] : 0;
+        }
+        function churn(counts) {
+            return JSON.stringify(Object.keys(counts.chains).filter(function (chain) {
+                return /^(ObjectShow|ObjectHide|NameChanged) /.test(chain);
+            }).map(function (chain) {
+                return counts.chains[chain] + "x " + chain;
+            }));
+        }
+        function closedSheets() {
+            var sheets = collectSheets(app.contentItem, []);
+            var closed = sheets.filter(function (sheet) { return !sheet.visible; });
+            compare(closed.length, sheets.length, "every sheet starts closed");
+            verify(!findChild(app, "talkgroupsScreen").visible, "the talkgroups screen starts closed");
+            var names = closed.map(sheetName);
+            for (var name of ["sessionMenu", "radioSheet", "squelchSheet", "keySheet"])
+                verify(names.indexOf(name) >= 0, name + " must be among the closed sheets: " + JSON.stringify(names));
+            return closed;
+        }
+
+        function initTestCase() {
+            var first = reading(0);
+            var defaults = cleared();
+            for (var key in first) {
+                verify(key in defaults, key + " needs its cleared value, or case C would hop past it");
+                restore[key] = metrics[key];
+            }
+        }
+        function init() {
+            failOnWarning(/Binding loop detected/);
+            verify(app !== null);
+            testContext.useLifecycleHost(true);
+            testContext.setLifecyclePhase(2);
+            prefs.onboardingDone = true;
+            app.currentTab = 0;
+            app.requestActivate();
+            tryCompare(app, "active", true);
+            testContext.publishTarget(reading(0));
+            verify(app.monitorMode, "the scan runs on the monitor");
+            var keys = findChild(app, "keySheet");
+            tryCompare(keys, "targetName", "Target 1");
+        }
+        function cleanup() {
+            testContext.stopAccessibilityCount();
+            testContext.publishTarget(restore);
+            testContext.setLifecyclePhase(0);
+            testContext.useLifecycleHost(false);
+        }
+
+        // A tick that changes no reading costs nothing. Qt already keeps it so (an equal model is not reloaded, an
+        // equal name not announced); this guards it.
+        function test_a_steady_ticks_raise_nothing() {
+            closedSheets();
+            testContext.startAccessibilityCount();
+            testContext.tickMetrics(20);
+            var counts = testContext.accessibilityCount();
+            compare(typed(counts, "ObjectShow"), 0, churn(counts));
+            compare(typed(counts, "ObjectHide"), 0, churn(counts));
+            compare(typed(counts, "NameChanged"), 0, churn(counts));
+        }
+
+        // Hops between targets of different protocols, one publication each: no closed sheet shows or hides
+        // anything, the session menu among them.
+        function test_b_hops_leave_closed_sheets_quiet() {
+            var closed = closedSheets();
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= hops; ++i)
+                testContext.publishTarget(reading(i));
+            var counts = testContext.accessibilityCount();
+            // The hops reached the screens: the key sheet follows the target's name.
+            compare(findChild(app, "keySheet").targetName, "Target " + ((hops % 3) + 1));
+            var noisy = [];
+            for (var sheet of closed) {
+                var name = sheetName(sheet);
+                var events = showHide(sheet);
+                if (pendingFix[name] === undefined && events !== 0)
+                    noisy.push(name + ": " + events);
+            }
+            compare(noisy.length, 0, "closed sheets that showed or hid something: " + JSON.stringify(noisy) + " "
+                    + churn(counts));
+            for (var pending in pendingFix) {
+                var held = findChild(app, pending);
+                verify(held !== null && !held.visible, pending);
+                expectFailContinue("", "TODO(" + pendingFix[pending] + "): " + pending + " still churns on a hop");
+                compare(showHide(held), 0, pending + " is closed: " + churn(counts));
+            }
+        }
+
+        // The control for case B: hops that pass through the defaults first, as every hop did before the fix, flood
+        // the closed sheets the root fix quietens. So case B fails if the defaults come back.
+        function test_c_hops_through_defaults_flood_closed_sheets() {
+            closedSheets();
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= hops; ++i) {
+                testContext.publishTarget(cleared());
+                testContext.publishTarget(reading(i));
+            }
+            var counts = testContext.accessibilityCount();
+            for (var name of ["sessionMenu", "radioSheet", "squelchSheet"])
+                verify(showHide(findChild(app, name)) >= hops, name + ": " + churn(counts));
+        }
+    }
+}

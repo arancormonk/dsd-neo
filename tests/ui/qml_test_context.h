@@ -35,6 +35,7 @@
 #define DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_
 
 #include <QAbstractListModel>
+#include <QAccessible>
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -47,11 +48,13 @@
 #include <QIODevice>
 #include <QInputMethodEvent>
 #include <QList>
+#include <QMetaEnum>
 #include <QMetaObject>
 #include <QMetaProperty>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlPropertyMap>
+#include <QQuickItem>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
@@ -2179,6 +2182,174 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
     void locationRequestAllocated(qint64 requestId);
 };
 
+/**
+ * @brief Issue #782: counts the accessibility events the screens raise, for the tests in tests/ui/qml_a11y.
+ *
+ * On Android every ObjectShow and ObjectHide costs the main thread a runnable that makes eight blocking calls into the
+ * Qt thread, so a screen that raises them on every metrics tick floods the platform bridge. The counter is a
+ * QAccessible update handler, which Qt calls for every event whether or not accessibility is active; it records the
+ * event and hands it on exactly as Qt would have, to the previous handler or else to the platform.
+ *
+ * Each event is counted by its type; by the objectName of the nearest named object, the emitter included (`owners`);
+ * by the named chain up from it, for failure messages (`chains`); and under every object on its parent chain, so a
+ * case can ask for the events raised anywhere inside a sheet, named or not (countWithin()). The walk reads only C++
+ * state (objectName, parentItem, parent): the handler runs inside object construction, where reading a QML property
+ * can run deferred creation and recurse.
+ *
+ * The per-object counts are keyed by address. A destroyed delegate's address can be reused by a later object, so ask
+ * them only for objects that outlive the count, such as a sheet.
+ *
+ * The handler is a plain function pointer, so the counts live in one process-wide record.
+ */
+class AccessibilityCounter {
+  public:
+    static void
+    start() {
+        Record& r = record();
+        if (!r.installed) {
+            r.previous = QAccessible::installUpdateHandler(&AccessibilityCounter::handle);
+            r.installed = true;
+        }
+        r.total = 0;
+        r.types.clear();
+        r.owners.clear();
+        r.scopes.clear();
+        r.chains.clear();
+    }
+
+    /** @brief Put the handler that was installed before start() back. The counts stay readable. */
+    static void
+    stop() {
+        Record& r = record();
+        if (!r.installed) {
+            return;
+        }
+        QAccessible::installUpdateHandler(r.previous);
+        r.previous = nullptr;
+        r.installed = false;
+    }
+
+    /**
+     * @brief The counts since start(): {total, types: {Type: n}, owners: {name: {Type: n}},
+     * chains: {"Type name < named ancestor < ...": n}}. Emitters with no named object on their chain count under
+     * "<unnamed>".
+     */
+    static QVariantMap
+    counts() {
+        const Record& r = record();
+        QVariantMap out;
+        out.insert(QStringLiteral("total"), r.total);
+        out.insert(QStringLiteral("types"), toMap(r.types));
+        out.insert(QStringLiteral("owners"), nested(r.owners));
+        out.insert(QStringLiteral("chains"), toMap(r.chains));
+        return out;
+    }
+
+    /** @brief How many events of @p type (an enum key such as "ObjectHide") @p scope or anything under it raised. */
+    static qint64
+    countWithin(const QObject* scope, const QString& type) {
+        const Record& r = record();
+        const auto it = r.scopes.constFind(scope);
+        return it == r.scopes.cend() ? 0 : it->value(type);
+    }
+
+  private:
+    struct Record {
+        bool installed = false;
+        QAccessible::UpdateHandler previous = nullptr;
+        qint64 total = 0;
+        QHash<QString, qint64> types;
+        QHash<QString, QHash<QString, qint64>> owners;
+        QHash<const QObject*, QHash<QString, qint64>> scopes;
+        QHash<QString, qint64> chains;
+    };
+
+    /* Distinct chains kept for failure messages; the totals above are never capped. */
+    static constexpr int kMaxChains = 2000;
+    /* Far deeper than any screen nests; it only bounds the walk. */
+    static constexpr int kMaxDepth = 256;
+
+    static Record&
+    record() {
+        static Record r;
+        return r;
+    }
+
+    static QVariantMap
+    toMap(const QHash<QString, qint64>& counts) {
+        QVariantMap out;
+        for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
+            out.insert(it.key(), it.value());
+        }
+        return out;
+    }
+
+    static QVariantMap
+    nested(const QHash<QString, QHash<QString, qint64>>& counts) {
+        QVariantMap out;
+        for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
+            out.insert(it.key(), toMap(it.value()));
+        }
+        return out;
+    }
+
+    static QString
+    typeName(QAccessible::Event type) {
+        const char* key = QMetaEnum::fromType<QAccessible::Event>().valueToKey(static_cast<int>(type));
+        return key != nullptr ? QString::fromLatin1(key) : QStringLiteral("0x%1").arg(static_cast<uint>(type), 0, 16);
+    }
+
+    /* The visual parent where there is one, else the object parent: a popup's content item has no parent item while
+     * closed, and its object parent leads back to the control that owns it. */
+    static QObject*
+    up(QObject* object) {
+        if (auto* item = qobject_cast<QQuickItem*>(object)) {
+            if (item->parentItem() != nullptr) {
+                return item->parentItem();
+            }
+        }
+        return object->parent();
+    }
+
+    static void
+    handle(QAccessibleEvent* event) {
+        Record& r = record();
+        const QString type = typeName(event->type());
+        ++r.total;
+        ++r.types[type];
+        QStringList names;
+        int depth = 0;
+        for (QObject* object = event->object(); object != nullptr && depth < kMaxDepth; object = up(object)) {
+            const QString name = object->objectName();
+            if (!name.isEmpty() && !names.contains(name)) {
+                names.append(name);
+            }
+            ++r.scopes[object][type];
+            ++depth;
+        }
+        ++r.owners[names.isEmpty() ? QStringLiteral("<unnamed>") : names.constFirst()][type];
+        const QString chain = type + QLatin1Char(' ')
+                              + (names.isEmpty() ? QStringLiteral("<unnamed>") : names.join(QStringLiteral(" < ")));
+        if (r.chains.contains(chain) || r.chains.size() < kMaxChains) {
+            ++r.chains[chain];
+        }
+        forward(event);
+    }
+
+    /* Qt's own path: with no handler installed, updateAccessibility() gives the event to the platform. */
+    static void
+    forward(QAccessibleEvent* event) {
+        Record& r = record();
+        if (r.previous != nullptr) {
+            r.previous(event);
+            return;
+        }
+        QAccessible::installUpdateHandler(nullptr);
+        QAccessible::updateAccessibility(event);
+        QAccessible::installUpdateHandler(&AccessibilityCounter::handle);
+    }
+};
+
 /** @brief Installs the context the screens expect before any QML is loaded. */
 class Setup : public QObject {
     Q_OBJECT
@@ -2366,6 +2537,76 @@ class Setup : public QObject {
             }
             Q_EMIT m_metric_readings->controlChanged();
         }
+    }
+
+    /**
+     * @brief Issue #782: a metrics tick that changes nothing, @p times over.
+     *
+     * Re-setting the `metrics` context property to the same object signals it every time, so every `metrics.*`
+     * binding re-evaluates with the values it already had: what each poll tick does to a binding whose notify signal
+     * is shared with a reading that moved. setMetric() cannot stand in, as a map signals nothing for an equal value.
+     */
+    Q_INVOKABLE void
+    tickMetrics(int times) {
+        if (m_engine == nullptr) {
+            return;
+        }
+        for (int i = 0; i < times; ++i) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("metrics"), m_metric_readings);
+        }
+    }
+
+    /**
+     * @brief Issue #782: publish a scan target's readings in one go, as MetricsModel does on a target change.
+     *
+     * Every key in @p readings is written in one batch and the reading groups are signalled once afterwards, with no
+     * defaults in between: one publication per target change.
+     */
+    Q_INVOKABLE void
+    publishTarget(const QVariantMap& readings) {
+        if (m_engine == nullptr) {
+            return;
+        }
+        QVariantHash batch;
+        for (auto it = readings.cbegin(); it != readings.cend(); ++it) {
+            m_metrics[it.key()] = it.value();
+            batch.insert(it.key(), it.value());
+        }
+        m_metric_readings->insert(batch);
+        Q_EMIT m_metric_readings->tunerChanged();
+        Q_EMIT m_metric_readings->controlChanged();
+        Q_EMIT m_metric_readings->siteChanged();
+        Q_EMIT m_metric_readings->qualityChanged();
+    }
+
+    /** @brief Issue #782: whether accessibility is active (DSD_QML_TEST_ACCESSIBILITY=1 turns it on at startup). */
+    Q_INVOKABLE bool
+    accessibilityActive() const {
+        return QAccessible::isActive();
+    }
+
+    /** @brief Issue #782: count accessibility events from now on, forgetting earlier counts. */
+    Q_INVOKABLE void
+    startAccessibilityCount() {
+        AccessibilityCounter::start();
+    }
+
+    /** @brief Issue #782: the counts since startAccessibilityCount(); see AccessibilityCounter::counts(). */
+    Q_INVOKABLE QVariantMap
+    accessibilityCount() const {
+        return AccessibilityCounter::counts();
+    }
+
+    /** @brief Issue #782: how many events of @p type @p scope or anything under it raised since the count started. */
+    Q_INVOKABLE double
+    accessibilityCountWithin(QObject* scope, const QString& type) const {
+        return static_cast<double>(AccessibilityCounter::countWithin(scope, type));
+    }
+
+    /** @brief Issue #782: stop counting and put the earlier update handler back. */
+    Q_INVOKABLE void
+    stopAccessibilityCount() {
+        AccessibilityCounter::stop();
     }
 
     /** @brief Set one recordingStatus reading (issue #708), as setMetric() does for metrics. */
@@ -3129,6 +3370,29 @@ class Setup : public QObject {
               QStringLiteral("IBMPlexMono-Medium.ttf")}) {
             QFontDatabase::addApplicationFont(QStringLiteral(DSD_QML_FONT_DIR "/") + file);
         }
+
+        /* Issue #782: the qml_a11y cases measure what an accessibility client would receive, so accessibility has to
+         * be on before any engine or item exists. Controls attach their accessible objects only once it is on, and
+         * items raise LocationChanged only while it is on; with it off those cases would count nothing and pass. The
+         * offscreen platform's accessibility tells the activation observers, as a platform bridge would. */
+        if (qEnvironmentVariable("DSD_QML_TEST_ACCESSIBILITY") == QStringLiteral("1")) {
+            QAccessible::setActive(true);
+            if (!QAccessible::isActive()) {
+                qFatal("DSD_QML_TEST_ACCESSIBILITY=1: QAccessible::setActive(true) did not take on platform '%s'",
+                       qPrintable(QGuiApplication::platformName()));
+            }
+            m_accessibility_activated = true;
+        }
+    }
+
+    /** @brief Issue #782: undo what applicationAvailable() turned on, once every test file has run. */
+    void
+    cleanupTestCase() {
+        AccessibilityCounter::stop();
+        if (m_accessibility_activated) {
+            QAccessible::setActive(false);
+            m_accessibility_activated = false;
+        }
     }
 
     void
@@ -3710,6 +3974,8 @@ class Setup : public QObject {
     }
 
   private:
+    /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
+    bool m_accessibility_activated = false;
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
     ReadingMap* m_metric_readings = nullptr;
     ReadingMap* m_host_readings = nullptr;

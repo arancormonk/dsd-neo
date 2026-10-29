@@ -4837,6 +4837,23 @@ if(DSD_ENABLE_QT_UI)
                         "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
             )
         endforeach()
+        # Issue #782: accessibility event churn. Its own directory and run,
+        # because accessibility has to be on before the first engine exists
+        # (DSD_QML_TEST_ACCESSIBILITY=1, see qml_test_context.h), and the other
+        # QML runs must not measure or pay for it.
+        add_test(
+            NAME UI_QT_QML_A11Y_CHURN
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml_a11y
+        )
+        set_tests_properties(
+            UI_QT_QML_A11Y_CHURN
+            PROPERTIES
+                LABELS qml
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
+        )
         qt_add_resources(
             dsd-neo_test_ui_qt_qml "test_license_notices"
             PREFIX "/dsdneo/notices"
