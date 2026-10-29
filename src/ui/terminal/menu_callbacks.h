@@ -78,7 +78,9 @@ void cb_input_vol(void* u, int ok, int m);
 
 // ---- RTL callbacks ----
 void cb_rtl_dev(void* u, int ok, int i);
-void cb_rtl_freq(void* u, int ok, int f);
+/* The frequency as typed (dsd_parse_freq_entry_hz(): MHz, or a unit): DSD_APP_CMD_RTL_SET_FREQ; a blank field cancels
+   silently; a refusal puts the reason on the status line and reopens the prompt with the text kept. */
+void cb_rtl_freq_text(void* u, const char* text);
 void cb_rtl_gain(void* u, int ok, int g);
 void cb_rtl_ppm(void* u, int ok, int p);
 void cb_rtl_bw(void* u, int ok, int bw);

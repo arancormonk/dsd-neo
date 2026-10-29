@@ -24,6 +24,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "rr_panel.h"
+#include "ui_keys.h"
 
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
@@ -69,7 +70,7 @@ ui_read_key_nonblocking(const dsd_opts* osnap) {
     if (osnap->audio_in_type == AUDIO_IN_STDIN) {
         return ERR;
     }
-    return getch();
+    return ui_read_key();
 }
 
 static void

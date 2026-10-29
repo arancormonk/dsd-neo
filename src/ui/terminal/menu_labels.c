@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -109,12 +110,13 @@ scan_rotation_active(const void* ctx) {
     return c->opts->scanner_mode == 1 || c->opts->trunk_scan_enabled == 1;
 }
 
-/* The frequency row tunes the receiver by hand, which --trunk-scan refuses: its coordinator owns the tuner and would
-   undo a manual tune at the next dwell. The row is hidden there rather than opening a prompt whose answer is refused. */
+/* The frequency row tunes the receiver by hand, which --trunk-scan and an I/Q replay refuse: the scan coordinator owns
+   the tuner and would undo a manual tune at the next dwell, and a replay plays the tuning its capture recorded. The row
+   is hidden there rather than opening a prompt whose answer is refused. */
 bool
 rtl_freq_offered(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;
-    return !(c && c->opts && c->opts->trunk_scan_enabled == 1);
+    return !(c && c->opts && (c->opts->trunk_scan_enabled == 1 || dsd_opts_input_is_iq_replay(c->opts)));
 }
 
 bool
@@ -1477,11 +1479,17 @@ lbl_tcp_waitall(const void* v, char* b, size_t n) {
 
 #ifdef USE_RADIO
 
+/* The tuned frequency every frontend shows (dsd_opts_tuned_freq_hz(): a replay's capture centre, 0 off a radio). */
 const char*
 lbl_rtl_freq(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const double mhz = ((c && c->opts) ? (double)c->opts->rtlsdr_center_freq : 0.0) / 1e6;
-    DSD_SNPRINTF(b, n, "Frequency... [%.6f MHz]", mhz);
+    const uint32_t hz = c ? dsd_opts_tuned_freq_hz(c->opts) : 0U;
+    char mhz[16];
+    if (hz == 0U || dsd_freq_hz_mhz_text(hz, mhz, sizeof mhz) < 0) {
+        DSD_SNPRINTF(b, n, "Frequency... [-]");
+        return b;
+    }
+    DSD_SNPRINTF(b, n, "Frequency... [%s MHz]", mhz);
     return b;
 }
 

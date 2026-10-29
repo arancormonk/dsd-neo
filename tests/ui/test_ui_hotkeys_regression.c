@@ -9,6 +9,8 @@
  *  - 'k'/'l' (TG hold) must capture slot TG deterministically at keypress time.
  *  - ','/'.' (spectrum FFT size) must work in a radio build without librtlsdr
  *    (SoapySDR or Airspy only), so the handler is compiled with USE_RADIO alone.
+ *  - Enter and keypad Enter (PDCurses PADENTER) open the menu unless the M17
+ *    encoder is active.
  */
 
 #include <assert.h>
@@ -27,6 +29,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "ui_keys.h"
 
 #ifdef USE_RTLSDR
 #error "This test must compile the hotkey handler with USE_RADIO only."
@@ -173,9 +176,9 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-intern
 
 WINDOW* stdscr = NULL;
 
+/* The handler drains an escape sequence through the terminal's key read; no key is waiting here. */
 int
-wgetch(WINDOW* win) {
-    (void)win;
+ui_read_key(void) {
     return ERR;
 }
 
@@ -383,6 +386,19 @@ main(void) {
     cap_reset();
     opts->m17encoder = 1;
     assert(dsd_terminal_handle_input(opts, state, DSD_KEY_ENTER) == 1);
+    assert(g_menu_open_async_calls == 0);
+    assert(g_cap.calls == 0);
+
+    /* Keypad Enter on Windows (PDCurses PADENTER) is Enter too, inert the same way under the M17 encoder (B13). */
+    cap_reset();
+    opts->m17encoder = 0;
+    assert(dsd_terminal_handle_input(opts, state, PADENTER) == 1);
+    assert(g_menu_open_async_calls == 1);
+    assert(g_cap.calls == 0);
+
+    cap_reset();
+    opts->m17encoder = 1;
+    assert(dsd_terminal_handle_input(opts, state, PADENTER) == 1);
     assert(g_menu_open_async_calls == 0);
     assert(g_cap.calls == 0);
 

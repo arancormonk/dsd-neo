@@ -221,6 +221,11 @@ test_predicates(void) {
     opts.trunk_scan_enabled = 1;
     rc |= expect_int("frequency row hidden under trunk scan", rtl_freq_offered(&ctx), 0);
     opts.trunk_scan_enabled = 0;
+    /* An I/Q replay plays the tuning its capture recorded and refuses every manual tune (issue #670). */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    rc |= expect_int("frequency row hidden during an I/Q replay", rtl_freq_offered(&ctx), 0);
+    opts.audio_in_dev[0] = '\0';
+    rc |= expect_int("frequency row back on a live radio", rtl_freq_offered(&ctx), 1);
 
     rc |= expect_int("provoice predicate null ctx", provoice_active(NULL), 0);
     rc |= expect_int("provoice predicate off", provoice_active(&ctx), 0);

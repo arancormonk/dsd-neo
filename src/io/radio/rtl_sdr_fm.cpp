@@ -773,17 +773,6 @@ store_dongle_rate(uint32_t sample_rate_hz) {
     dongle.rate.store(sample_rate_hz, std::memory_order_release);
 }
 
-static uint32_t
-clamp_capture_frequency_hz(int64_t frequency_hz) {
-    if (frequency_hz <= 0) {
-        return 0U;
-    }
-    if (frequency_hz > (int64_t)UINT32_MAX) {
-        return UINT32_MAX;
-    }
-    return (uint32_t)frequency_hz;
-}
-
 /* Whether the capture sits Fs/4 above the centre and is rotated back in software: unless the dongle's hardware offset
  * tuning took, the driver delivers centred I/Q (Airspy), or the shift is turned off. */
 static inline int
@@ -791,14 +780,32 @@ capture_fs4_shift_active(void) {
     return (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift) ? 1 : 0;
 }
 
-static uint32_t
-capture_frequency_for_rate(int64_t center_freq_hz, uint32_t capture_rate_hz) {
-    int64_t capture_freq_hz = center_freq_hz;
+/* The return code of a capture frequency out of the device's range (capture_frequency_for_rate()). */
+static const int kCaptureFrequencyOutOfRange = -1;
+
+/* The capture frequency the device is tuned to for @p center_freq_hz at @p capture_rate_hz: the centre, Fs/4 above it
+ * while the shift is active, moved by the edge offset. Software rotation counts on that whole shift, so a capture
+ * outside 1..UINT32_MAX, which the device cannot be given, is refused rather than clamped (issue #670 B4).
+ * @return 0 with @p out_capture_freq_hz set, or kCaptureFrequencyOutOfRange (nothing set). */
+static int
+capture_frequency_for_rate(uint32_t center_freq_hz, uint32_t capture_rate_hz, uint32_t* out_capture_freq_hz) {
+    int64_t capture_freq_hz = (int64_t)center_freq_hz;
     if (capture_fs4_shift_active()) {
         capture_freq_hz += (int64_t)(capture_rate_hz / 4U);
     }
     capture_freq_hz += ((int64_t)controller.edge * (int64_t)demod.rate_in) / 2;
-    return clamp_capture_frequency_hz(capture_freq_hz);
+    if (capture_freq_hz <= 0 || capture_freq_hz > (int64_t)UINT32_MAX) {
+        return kCaptureFrequencyOutOfRange;
+    }
+    *out_capture_freq_hz = (uint32_t)capture_freq_hz;
+    return 0;
+}
+
+/* Log a capture frequency that cannot be programmed for @p center_freq_hz at @p capture_rate_hz. */
+static void
+log_capture_frequency_out_of_range(uint32_t center_freq_hz, uint32_t capture_rate_hz) {
+    LOG_ERROR("Cannot tune the RTL-SDR to %u Hz: its capture frequency at %u Hz sample rate is outside 1..%u Hz.\n",
+              center_freq_hz, capture_rate_hz, (unsigned)UINT32_MAX);
 }
 
 static int
@@ -818,12 +825,20 @@ demod_output_rate_for_capture_rate(uint32_t capture_rate_hz) {
     return out_rate;
 }
 
-static void
+/* Move the capture to where @p center_freq_hz sits at the rate the device delivers. Returns 0 when it is there (moved,
+ * or nothing to move), else the device's return code or kCaptureFrequencyOutOfRange: the device then still runs
+ * @p requested_capture_freq_hz while the rate chain runs @p actual_capture_rate_hz, so the caller gives the capture up
+ * (issue #670 B16). */
+static int
 retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
                                          uint32_t actual_capture_rate_hz) {
-    uint32_t actual_capture_freq_hz = capture_frequency_for_rate((int64_t)center_freq_hz, actual_capture_rate_hz);
+    uint32_t actual_capture_freq_hz = 0U;
+    if (capture_frequency_for_rate(center_freq_hz, actual_capture_rate_hz, &actual_capture_freq_hz) != 0) {
+        log_capture_frequency_out_of_range(center_freq_hz, actual_capture_rate_hz);
+        return kCaptureFrequencyOutOfRange;
+    }
     if (actual_capture_freq_hz == requested_capture_freq_hz) {
-        return;
+        return 0;
     }
 
     int rc = rtl_device_set_frequency(rtl_device_handle, actual_capture_freq_hz);
@@ -834,10 +849,10 @@ retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t reque
                  actual_capture_freq_hz);
     } else {
         capture_writes_forget_tuning();
-        LOG_WARN(
-            "WARNING: Failed to adjust fs/4 capture center for actual device rate: center=%u, capture=%u Hz (rc=%d).\n",
-            center_freq_hz, actual_capture_freq_hz, rc);
+        LOG_ERROR("Failed to adjust fs/4 capture center for actual device rate: center=%u, capture=%u Hz (rc=%d).\n",
+                  center_freq_hz, actual_capture_freq_hz, rc);
     }
+    return rc;
 }
 
 /* Run the rate chain at @p actual_capture_rate_hz, a rate the device delivers in place of the one requested. */
@@ -861,14 +876,19 @@ note_actual_capture_rate(uint32_t requested_capture_rate_hz, uint32_t actual_cap
     return actual_capture_rate_hz;
 }
 
-static uint32_t
+/* Run the rate chain at the rate the device delivers (@p out_rate_hz) and move the capture for it. Returns 0, or the
+ * failed correction's code (retune_capture_frequency_for_actual_rate()) with the rate chain already moved. */
+static int
 apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_freq_hz,
-                          uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz) {
+                          uint32_t requested_capture_rate_hz, uint32_t actual_capture_rate_hz, uint32_t* out_rate_hz) {
     const uint32_t rate_hz = note_actual_capture_rate(requested_capture_rate_hz, actual_capture_rate_hz);
-    if (rate_hz != requested_capture_rate_hz) {
-        retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, rate_hz);
+    if (out_rate_hz) {
+        *out_rate_hz = rate_hz;
     }
-    return rate_hz;
+    if (rate_hz == requested_capture_rate_hz) {
+        return 0;
+    }
+    return retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, rate_hz);
 }
 
 namespace {
@@ -898,7 +918,8 @@ static CaptureSettingsSnapshot
 capture_settings_snapshot_for_center(uint32_t center_freq_hz) {
     CaptureSettingsSnapshot snapshot = capture_settings_snapshot();
     if (center_freq_hz != 0U && snapshot.dongle_rate_hz != 0U) {
-        snapshot.dongle_frequency_hz = capture_frequency_for_rate((int64_t)center_freq_hz, snapshot.dongle_rate_hz);
+        /* Out of range keeps the capture the device was given. */
+        (void)capture_frequency_for_rate(center_freq_hz, snapshot.dongle_rate_hz, &snapshot.dongle_frequency_hz);
     }
     return snapshot;
 }
@@ -4952,9 +4973,11 @@ rtl_choose_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz) {
  *
  * @param freq Desired RF center frequency in Hz.
  * @param rate Current input sample rate (unused).
+ * @return 0, or kCaptureFrequencyOutOfRange (logged) when the capture frequency for @p freq is out of the device's
+ * range; the dongle frequency and rate are then left as they were, and the caller puts back the demod fields staged.
  */
-static void
-optimal_settings(int freq, int rate) {
+static int
+optimal_settings(uint32_t freq, int rate) {
     UNUSED(rate);
 
     struct demod_state* dm = &demod;
@@ -4974,7 +4997,11 @@ optimal_settings(int freq, int rate) {
         capture_rate_hz = deliverable_hz;
         dm->capture_rate_device_forced = 1;
     }
-    uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)freq, capture_rate_hz);
+    uint32_t capture_freq_hz = 0U;
+    if (capture_frequency_for_rate(freq, capture_rate_hz, &capture_freq_hz) != 0) {
+        log_capture_frequency_out_of_range(freq, capture_rate_hz);
+        return kCaptureFrequencyOutOfRange;
+    }
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
     dm->output_scale = kMonitorDiscriminatorOutputScale;
     /* Update the effective discriminator output sample rate based on current settings.
@@ -4982,25 +5009,76 @@ optimal_settings(int freq, int rate) {
     dm->rate_out = demod_output_rate_for_capture_rate(capture_rate_hz);
     store_dongle_frequency(capture_freq_hz);
     store_dongle_rate(capture_rate_hz);
+    return 0;
 }
 
 /* A rate write that failed (@p rc) after the frequency was set: the rate chain follows what the device runs now, or
- * goes back to @p previous when it cannot say. Returns @p rc. */
+ * goes back to @p previous when it cannot say. A device running another rate whose capture correction it does not take
+ * sets @p out_correction_failed, as capture_rate_write_took() does for a readback after a rate write that took (issue
+ * #670 B16). Returns @p rc. */
 static int
 capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz,
-                          const CaptureSettingsSnapshot* previous, int rc) {
+                          const CaptureSettingsSnapshot* previous, int rc, int* out_correction_failed) {
     capture_writes_forget_tuning();
     LOG_ERROR("Failed to apply RTL-SDR sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     if (actual > 0) {
-        if ((uint32_t)actual != capture_rate_hz) {
-            (void)apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
+        if ((uint32_t)actual != capture_rate_hz
+            && apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual, NULL) != 0
+            && out_correction_failed) {
+            *out_correction_failed = 1;
         }
     } else {
         restore_capture_rate_settings(previous);
     }
     stream_refresh_watermark_for_current_rate();
     return rc;
+}
+
+/* A rate write that took (@p capture_rate_hz, asked for as @p requested_rate_hz) after the frequency was set: the rate
+ * chain syncs to the rate the device reads back, which the write record keeps for the next hop (@p cacheable and
+ * @p generation from capture_writes_generation()), then the tuner bandwidth and the watermark follow it. A readback
+ * whose capture correction the device does not take sets @p out_correction_failed and returns the correction's code
+ * (issue #670 B16); otherwise returns 0. */
+static int
+capture_rate_write_took(uint32_t center_freq_hz, uint32_t capture_freq_hz, uint32_t capture_rate_hz, int cacheable,
+                        uint32_t generation, uint32_t requested_rate_hz, int* out_correction_failed) {
+    /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
+    int actual = rtl_device_get_sample_rate(rtl_device_handle);
+    capture_writes_note_rate(cacheable, generation, requested_rate_hz, actual > 0 ? (uint32_t)actual : 0U);
+    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
+        const int rc = apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual,
+                                                 &capture_rate_hz);
+        if (rc != 0) {
+            if (out_correction_failed) {
+                *out_correction_failed = 1;
+            }
+            return rc;
+        }
+    }
+    /* Use driver auto hardware bandwidth by default, or override via env */
+    (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
+    stream_refresh_watermark_for_current_rate();
+    return 0;
+}
+
+/* A hop that keeps the rate the device was last set to (@p kept_rate_hz, CaptureWriteRecord) in place of the
+ * @p requested_rate_hz the plan chose: the rate chain and the capture frequency follow the kept rate, as the readback
+ * after that write did. Returns 0, with nothing to move when the two rates match, or kCaptureFrequencyOutOfRange
+ * (logged, nothing moved) when the capture for the kept rate is out of the device's range (issue #670 B4). */
+static int
+capture_follow_kept_rate(uint32_t center_freq_hz, uint32_t requested_rate_hz, uint32_t kept_rate_hz) {
+    if (kept_rate_hz == requested_rate_hz) {
+        return 0;
+    }
+    uint32_t kept_capture_freq_hz = 0U;
+    if (capture_frequency_for_rate(center_freq_hz, kept_rate_hz, &kept_capture_freq_hz) != 0) {
+        log_capture_frequency_out_of_range(center_freq_hz, kept_rate_hz);
+        return kCaptureFrequencyOutOfRange;
+    }
+    run_capture_rate_chain_at(kept_rate_hz);
+    store_dongle_frequency(kept_capture_freq_hz);
+    return 0;
 }
 
 /**
@@ -5011,25 +5089,38 @@ capture_rate_write_failed(uint32_t center_freq_hz, uint32_t capture_freq_hz, uin
  * asks for the rate the device was last set to runs the rate chain and the fs/4 centre for the rate it read back then,
  * as the readback after a write would, and writes the frequency alone.
  *
+ * A capture frequency out of the device's range is refused before anything is written, with the settings it had put
+ * back (issue #670 B4). A device that took the frequency and then reads back a rate whose capture correction it does
+ * not take (a refused write, or a corrected capture out of range), after a rate write that took or one that failed,
+ * sets @p out_correction_failed: it runs neither the
+ * capture the stream asked for nor the one the rate chain now follows, so the caller refuses the retune and puts the
+ * previous capture back (issue #670 B16).
+ *
  * @param center_freq_hz Desired RF center frequency in Hz.
  */
 static int
 program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSettingsSnapshot* restore_on_frequency_failure,
-                                   int* out_hardware_changed) {
+                                   int* out_hardware_changed, int* out_correction_failed) {
     if (out_hardware_changed) {
         *out_hardware_changed = 0;
     }
+    if (out_correction_failed) {
+        *out_correction_failed = 0;
+    }
     CaptureSettingsSnapshot previous =
         restore_on_frequency_failure ? *restore_on_frequency_failure : capture_settings_snapshot();
-    optimal_settings((int)center_freq_hz, demod.rate_in);
+    if (optimal_settings(center_freq_hz, demod.rate_in) != 0) {
+        restore_capture_settings(&previous);
+        return kCaptureFrequencyOutOfRange;
+    }
     const uint32_t requested_rate_hz = load_dongle_rate();
     uint32_t generation = 0U;
     const int cacheable = capture_writes_generation(&generation);
     uint32_t kept_rate_hz = 0U;
     const int rate_kept = capture_writes_kept_rate(requested_rate_hz, &kept_rate_hz);
-    if (rate_kept && kept_rate_hz != requested_rate_hz) {
-        run_capture_rate_chain_at(kept_rate_hz);
-        store_dongle_frequency(capture_frequency_for_rate((int64_t)center_freq_hz, kept_rate_hz));
+    if (rate_kept && capture_follow_kept_rate(center_freq_hz, requested_rate_hz, kept_rate_hz) != 0) {
+        restore_capture_settings(&previous);
+        return kCaptureFrequencyOutOfRange;
     }
     uint32_t capture_freq_hz = load_dongle_frequency();
     uint32_t capture_rate_hz = load_dongle_rate();
@@ -5051,18 +5142,11 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     }
     rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
     if (rc != 0) {
-        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc);
+        return capture_rate_write_failed(center_freq_hz, capture_freq_hz, capture_rate_hz, &previous, rc,
+                                         out_correction_failed);
     }
-    /* Sync to actual device rate (USB may quantize). If it changed, update rate_out. */
-    int actual = rtl_device_get_sample_rate(rtl_device_handle);
-    capture_writes_note_rate(cacheable, generation, requested_rate_hz, actual > 0 ? (uint32_t)actual : 0U);
-    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        capture_rate_hz = apply_actual_capture_rate(center_freq_hz, capture_freq_hz, capture_rate_hz, (uint32_t)actual);
-    }
-    /* Use driver auto hardware bandwidth by default, or override via env */
-    (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
-    stream_refresh_watermark_for_current_rate();
-    return 0;
+    return capture_rate_write_took(center_freq_hz, capture_freq_hz, capture_rate_hz, cacheable, generation,
+                                   requested_rate_hz, out_correction_failed);
 }
 
 /**
@@ -5074,13 +5158,14 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
 static int
 apply_capture_settings(uint32_t center_freq_hz, int ppm_error,
                        const CaptureSettingsSnapshot* restore_on_frequency_failure, int* out_ppm_rc,
-                       int* out_hardware_changed) {
+                       int* out_hardware_changed, int* out_correction_failed) {
     int ppm_rc = apply_ppm_setting(ppm_error);
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
     controller_arm_retune_mute("program", 0);
-    return program_capture_frequency_and_rate(center_freq_hz, restore_on_frequency_failure, out_hardware_changed);
+    return program_capture_frequency_and_rate(center_freq_hz, restore_on_frequency_failure, out_hardware_changed,
+                                              out_correction_failed);
 }
 
 /*
@@ -5379,7 +5464,8 @@ controller_refused_capture_device(void) {
  * then that capture frequency and rate on the device, synced to the rate the device then reports as any programming
  * is (apply_actual_capture_rate()). With no device open there is nothing to program.
  * @return 0 when the device took the capture frequency and rate back (or none is open); otherwise the return code of
- * the first of the two calls it refused, after which the device can still run the capture the retune programmed. */
+ * the first of the two calls it refused, or of the capture correction for the rate it then reports, after which the
+ * device can still run the capture the retune programmed. */
 static int
 controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint32_t center_freq_hz) {
     restore_capture_settings(previous);
@@ -5401,14 +5487,15 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
         LOG_ERROR("Failed to return the RTL-SDR to sample rate %u Hz (rc=%d).\n", previous->dongle_rate_hz, rate_rc);
     }
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
+    int correction_rc = 0;
     const int actual = device->get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
-        capture_rate_hz =
-            apply_actual_capture_rate(center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz, (uint32_t)actual);
+        correction_rc = apply_actual_capture_rate(center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz,
+                                                  (uint32_t)actual, &capture_rate_hz);
     }
     (void)apply_capture_tuner_bandwidth(capture_rate_hz, g_stream ? g_stream->opts : NULL, 0);
     stream_refresh_watermark_for_current_rate();
-    return frequency_rc != 0 ? frequency_rc : rate_rc;
+    return frequency_rc != 0 ? frequency_rc : (rate_rc != 0 ? rate_rc : correction_rc);
 }
 
 /* A refused retune whose capture the device would not take back: the device can still run the capture the retune
@@ -5417,11 +5504,41 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
  * rather than run on a capture it cannot vouch for. */
 static void
 controller_stop_for_unrestored_capture(uint32_t kept_center_hz, int device_rc) {
-    LOG_ERROR("The RTL-SDR could not be put back on %u Hz after a retune refused for the analog channel width (rc=%d); "
-              "the stream stops.\n",
+    LOG_ERROR("The RTL-SDR could not be put back on %u Hz after a refused retune (rc=%d); the stream stops.\n",
               kept_center_hz, device_rc);
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, device_rc);
     dsd_exitflag_store(1);
+}
+
+/* Refuse a retune the device was programmed for: the device goes back to the capture it had (@p previous_capture), and
+ * the retune finalizes on the centre it left (@p previous_center_freq_hz, or the centre it asked for with none
+ * applied yet) without its profile, which the caller reports as a failed retune. A device that refuses to go back
+ * stops the stream (controller_stop_for_unrestored_capture()). @p center_freq_hz and @p profile are updated to what
+ * the retune then finalizes on. */
+static void
+controller_roll_back_refused_retune(const CaptureSettingsSnapshot* previous_capture, uint32_t previous_center_freq_hz,
+                                    uint32_t* center_freq_hz, const RtlRetuneProfile** profile) {
+    const uint32_t kept_center_hz = previous_center_freq_hz != 0U ? previous_center_freq_hz : *center_freq_hz;
+    const int restore_rc = controller_restore_refused_capture(previous_capture, kept_center_hz);
+    if (restore_rc != 0) {
+        controller_stop_for_unrestored_capture(kept_center_hz, restore_rc);
+    }
+    *center_freq_hz = kept_center_hz;
+    *profile = NULL;
+}
+
+/* A retune whose device took the frequency but not the capture correction for the rate it read back
+ * (program_capture_frequency_and_rate()'s out_correction_failed, issue #670 B16) runs a capture neither the stream nor
+ * its rate chain asked for: it is refused and rolled back like one refused for its analog width. */
+static void
+controller_refuse_retune_for_rate_correction(const CaptureSettingsSnapshot* previous_capture,
+                                             uint32_t previous_center_freq_hz, uint32_t* center_freq_hz,
+                                             const RtlRetuneProfile** profile) {
+    const uint32_t kept_center_hz = previous_center_freq_hz != 0U ? previous_center_freq_hz : *center_freq_hz;
+    LOG_ERROR("The retune to %u Hz is refused: the RTL-SDR did not take the capture correction for the sample rate "
+              "it reports; the front end stays on %u Hz.\n",
+              *center_freq_hz, kept_center_hz);
+    controller_roll_back_refused_retune(previous_capture, previous_center_freq_hz, center_freq_hz, profile);
 }
 
 /* The return code of a retune refused for its analog width (controller_refuse_retune_for_analog_width()). */
@@ -5455,13 +5572,31 @@ controller_refuse_retune_for_analog_width(const CaptureSettingsSnapshot* previou
         LOG_ERROR("%s. The retune to %u Hz is refused; the front end stays on %u Hz at the %d Hz DSP rate.\n", err,
                   *center_freq_hz, kept_center_hz, previous_rate_out_hz);
     }
-    const int restore_rc = controller_restore_refused_capture(previous_capture, kept_center_hz);
-    if (restore_rc != 0) {
-        controller_stop_for_unrestored_capture(kept_center_hz, restore_rc);
-    }
-    *center_freq_hz = kept_center_hz;
-    *profile = NULL;
+    controller_roll_back_refused_retune(previous_capture, previous_center_freq_hz, center_freq_hz, profile);
     return 1;
+}
+
+/* The refusals of a retune the device was programmed for, before it finalizes: one whose capture correction the device
+ * did not take (@p correction_failed, controller_refuse_retune_for_rate_correction(); @p rc stays the correction's),
+ * else one that would run the analog monitor's width at a rate that cannot realize it
+ * (controller_refuse_retune_for_analog_width(); @p rc becomes kRetuneRefusedForAnalogWidth). @p center_freq_hz and
+ * @p profile are updated to what the retune then finalizes on.
+ * @return 1 when the retune is refused, 0 when it lands. */
+static int
+controller_refuse_programmed_retune(int correction_failed, const CaptureSettingsSnapshot* previous_capture,
+                                    int previous_rate_out_hz, uint32_t previous_center_freq_hz,
+                                    uint32_t* center_freq_hz, const RtlRetuneProfile** profile, int* rc) {
+    if (correction_failed) {
+        controller_refuse_retune_for_rate_correction(previous_capture, previous_center_freq_hz, center_freq_hz,
+                                                     profile);
+        return 1;
+    }
+    if (controller_refuse_retune_for_analog_width(previous_capture, previous_rate_out_hz, previous_center_freq_hz,
+                                                  center_freq_hz, profile)) {
+        *rc = kRetuneRefusedForAnalogWidth;
+        return 1;
+    }
+    return 0;
 }
 
 /* A retune that leaves the stream on another demod rate resolves the analog channel for that rate. Stream open makes
@@ -5703,7 +5838,9 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(previous_center_freq_hz);
     controller_arm_retune_mute("program", 0);
     int hardware_changed = 0;
-    int rc = program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed);
+    int correction_failed = 0;
+    int rc =
+        program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed, &correction_failed);
     int ppm_changed = (reset_reason == DemodRetuneResetReason::PpmCorrection);
     if (!controller_reconfigure_requires_finalize(rc, hardware_changed, ppm_changed)) {
         rtl_device_end_capture_reconfigure(rtl_device_handle);
@@ -5713,10 +5850,9 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
         controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, rc, hardware_changed);
     const RtlRetuneProfile* finalized_profile = NULL;
     controller_arm_retune_mute("post", 1);
-    if (controller_refuse_retune_for_analog_width(&previous_capture, previous_rate_out_hz, previous_center_freq_hz,
-                                                  &finalized_center_freq_hz, &finalized_profile)) {
-        rc = kRetuneRefusedForAnalogWidth;
-    }
+    (void)controller_refuse_programmed_retune(correction_failed, &previous_capture, previous_rate_out_hz,
+                                              previous_center_freq_hz, &finalized_center_freq_hz, &finalized_profile,
+                                              &rc);
     rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
                                      load_dongle_rate(), retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
@@ -5729,9 +5865,10 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     return rc;
 }
 
-/* @p out_refused is set to 1 when the retune was refused for the analog monitor's width
- * (controller_refuse_retune_for_analog_width()): it then finalized without its profile on the centre it left, which
- * can be the centre it asked for, and reports kRetuneRefusedForAnalogWidth. */
+/* @p out_refused is set to 1 when the retune was refused once the device was programmed: for the analog monitor's width
+ * (controller_refuse_retune_for_analog_width(), reporting kRetuneRefusedForAnalogWidth) or for a capture correction the
+ * device did not take (controller_refuse_retune_for_rate_correction(), reporting the correction's code). It then
+ * finalized without its profile on the centre it left, which can be the centre it asked for. */
 static int
 controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz, int ppm_error,
                              const RtlRetuneProfile* retune_profile, int* out_ppm_rc, int* out_reconfigured,
@@ -5752,7 +5889,9 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     controller_begin_reconfigure(s);
     int ppm_rc = 0;
     int hardware_changed = 0;
-    int apply_rc = apply_capture_settings(center_freq_hz, ppm_error, &previous_capture, &ppm_rc, &hardware_changed);
+    int correction_failed = 0;
+    int apply_rc = apply_capture_settings(center_freq_hz, ppm_error, &previous_capture, &ppm_rc, &hardware_changed,
+                                          &correction_failed);
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
@@ -5769,12 +5908,9 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         controller_reconfigure_finalized_profile(retune_profile, center_freq_hz, finalized_center_freq_hz);
     controller_arm_retune_mute("post", 1);
     store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
-    const int refused =
-        controller_refuse_retune_for_analog_width(&previous_capture, previous_rate_out_hz, previous_center_freq_hz,
-                                                  &finalized_center_freq_hz, &finalized_profile);
-    if (refused) {
-        apply_rc = kRetuneRefusedForAnalogWidth;
-    }
+    const int refused = controller_refuse_programmed_retune(correction_failed, &previous_capture, previous_rate_out_hz,
+                                                            previous_center_freq_hz, &finalized_center_freq_hz,
+                                                            &finalized_profile, &apply_rc);
     if (out_refused) {
         *out_refused = refused;
     }
@@ -6222,7 +6358,12 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
     uint32_t actual_rate_hz = 0U;
     capture_rate_hz = controller_sync_initial_capture_rate(capture_rate_hz, &actual_rate_hz);
     controller_apply_initial_offset_tuning(opts);
-    const uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)s->freqs[0], capture_rate_hz);
+    uint32_t capture_freq_hz = 0U;
+    if (capture_frequency_for_rate(s->freqs[0], capture_rate_hz, &capture_freq_hz) != 0) {
+        /* The rate the device read back moved the capture out of range: the start fails (issue #670 B4). */
+        log_capture_frequency_out_of_range(s->freqs[0], capture_rate_hz);
+        return kCaptureFrequencyOutOfRange;
+    }
     store_dongle_frequency(capture_freq_hz);
     if (apply_capture_tuner_bandwidth(capture_rate_hz, opts, 1) != 0) {
         return -1;
@@ -6244,7 +6385,11 @@ static int
 controller_program_initial_device(const struct controller_state* s, const dsd_opts* opts) {
     /* A fresh device has no offset tuning until it takes, so the planned centre carries the Fs/4 shift. */
     dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
-    optimal_settings(s->freqs[0], demod.rate_in);
+    /* A centre whose capture frequency is out of range fails the start before anything is written (issue #670 B4). */
+    const int rc = optimal_settings(s->freqs[0], demod.rate_in);
+    if (rc != 0) {
+        return rc;
+    }
     if (dongle.direct_sampling) {
         (void)rtl_device_set_direct_sampling(rtl_device_handle, dongle.direct_sampling);
     }
@@ -6538,8 +6683,9 @@ controller_gate_tune_timeout(struct controller_state* s, uint32_t request_id) {
     }
 }
 
-/* A retune refused for the analog monitor's width (@p refused) fails whatever centre it finalized on: it kept the
- * capture it had and dropped its profile, even when the centre it kept is the one it asked for. Any other failed apply
+/* A retune refused once the device was programmed (@p refused: for the analog monitor's width, or for a capture
+ * correction the device did not take, controller_apply_reconfigure()) fails whatever centre it finalized on: it kept
+ * the capture it had and dropped its profile, even when the centre it kept is the one it asked for. Any other failed apply
  * that still reconfigured onto its target reports OK, with a warning logged. */
 static int
 controller_manual_retune_completion_result(int retune_rc, int reconfigured, int refused, uint32_t target_hz,
@@ -11501,6 +11647,7 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->rate_out_hz = demod.rate_out;
     out->rate_forced = demod.capture_rate_device_forced;
     out->downsample_passes = demod.downsample_passes;
+    out->applied_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
 }
 
 static void
@@ -11546,7 +11693,7 @@ rtl_stream_test_program_retune_capture(struct rtl_device* dev, const dsd_opts* o
     if (rc == 0) {
         int hardware_changed = 0;
         demod.rate_in = retune_rate_in_hz;
-        rc = program_capture_frequency_and_rate(retune_center_hz, NULL, &hardware_changed);
+        rc = program_capture_frequency_and_rate(retune_center_hz, NULL, &hardware_changed, NULL);
     }
     test_capture_program_result(rc, out);
     test_capture_program_leave(&saved);
@@ -11564,6 +11711,7 @@ struct TestCaptureSession {
     int squelch_gain;
     int ppm_error;
     int rate_out;
+    uint32_t applied_hz;
 };
 
 TestCaptureSession g_test_capture_session{};
@@ -11580,9 +11728,13 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     g_test_capture_session.squelch_gain = g_squelch_tuner_gain.load(std::memory_order_relaxed);
     g_test_capture_session.ppm_error = load_dongle_ppm_error();
     g_test_capture_session.rate_out = demod.rate_out;
+    g_test_capture_session.applied_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     g_test_capture_session.saved = test_capture_program_enter(dev, center_hz, 0);
     store_dongle_ppm_error(0);
-    test_capture_program_result(controller_program_initial_device(&controller, opts), out);
+    const int rc = controller_program_initial_device(&controller, opts);
+    /* The start finalizes on its centre (controller_apply_initial_settings()), which a manual retune step leaves. */
+    controller.last_applied_freq_hz.store(rc == 0 ? center_hz : 0U, std::memory_order_release);
+    test_capture_program_result(rc, out);
     return 0;
 }
 
@@ -11597,7 +11749,7 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
             demod.rate_in = value;
         }
         int hardware_changed = 0;
-        rc = program_capture_frequency_and_rate(center_hz, NULL, &hardware_changed);
+        rc = program_capture_frequency_and_rate(center_hz, NULL, &hardware_changed, NULL);
     } else if (step == RTL_STREAM_TEST_CAPTURE_GAIN_AUTO || step == RTL_STREAM_TEST_CAPTURE_GAIN_MANUAL) {
         RtlRetuneProfile profile{};
         profile.active = 1;
@@ -11614,8 +11766,22 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
     } else if (step == RTL_STREAM_TEST_CAPTURE_OFFSET) {
         rc = capture_set_offset_tuning(value);
     }
+    int completion = RTL_STREAM_TUNE_OK;
+    if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE) {
+        if (value > 0) {
+            demod.rate_in = value;
+        }
+        int ppm_rc = 0;
+        int reconfigured = 0;
+        int refused = 0;
+        rc = controller_apply_reconfigure(&controller, center_hz, load_dongle_ppm_error(), NULL, &ppm_rc, &reconfigured,
+                                          &refused);
+        completion = controller_manual_retune_completion_result(
+            rc, reconfigured, refused, center_hz, controller.last_applied_freq_hz.load(std::memory_order_acquire));
+    }
     if (out) {
         test_capture_program_result(rc, out);
+        out->completion = completion;
     }
     return 0;
 }
@@ -11630,6 +11796,7 @@ rtl_stream_test_capture_session_end(void) {
     g_squelch_tuner_gain.store(g_test_capture_session.squelch_gain, std::memory_order_relaxed);
     store_dongle_ppm_error(g_test_capture_session.ppm_error);
     demod.rate_out = g_test_capture_session.rate_out;
+    controller.last_applied_freq_hz.store(g_test_capture_session.applied_hz, std::memory_order_release);
     rtl_stream_publish_tuner_gain();
     g_test_capture_session = TestCaptureSession{};
 }
@@ -12336,8 +12503,10 @@ rtl_stream_store_capture_frequency_for_center(uint32_t center_freq_hz) {
         return;
     }
     uint32_t capture_rate_hz = load_dongle_rate();
-    uint32_t capture_freq_hz =
-        (capture_rate_hz == 0U) ? center_freq_hz : capture_frequency_for_rate((int64_t)center_freq_hz, capture_rate_hz);
+    uint32_t capture_freq_hz = center_freq_hz;
+    if (capture_rate_hz != 0U && capture_frequency_for_rate(center_freq_hz, capture_rate_hz, &capture_freq_hz) != 0) {
+        return; /* out of range: the capture the device was given stands */
+    }
     store_dongle_frequency(capture_freq_hz);
 }
 
@@ -12788,13 +12957,13 @@ dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz,
     store_dongle_rate(960000U);
 
     CaptureSettingsSnapshot before = capture_settings_snapshot_for_center(851000000U);
-    optimal_settings(855000000, demod.rate_in);
+    (void)optimal_settings(855000000U, demod.rate_in);
     restore_capture_settings(&before);
     *out_full_freq_hz = load_dongle_frequency();
     *out_full_rate_hz = load_dongle_rate();
     *out_full_rate_out_hz = demod.rate_out;
 
-    optimal_settings(855000000, demod.rate_in);
+    (void)optimal_settings(855000000U, demod.rate_in);
     restore_capture_rate_settings(&before);
     *out_partial_freq_hz = load_dongle_frequency();
     *out_partial_rate_hz = load_dongle_rate();
@@ -13519,7 +13688,7 @@ rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* 
     const int outer_post_downsample = demod.post_downsample;
     demod.rate_in = dsp_bw_hz;
     demod.post_downsample = 1;
-    optimal_settings(851375000, demod.rate_in);
+    (void)optimal_settings(851375000U, demod.rate_in);
     *out_capture_rate_hz = load_dongle_rate();
     *out_passes = demod.downsample_passes;
     *out_rate_out_hz = demod.rate_out;
@@ -15908,7 +16077,9 @@ rtl_stream_test_audio_monitor_restore_failure(int rate_before_hz, int rate_after
     }
     /* The capture the stream ran before the retune: 20 times the DSP rate, placed for the running centre. */
     store_dongle_rate((uint32_t)rate_before_hz * 20U);
-    store_dongle_frequency(capture_frequency_for_rate((int64_t)kFamilyTestCenterHz, load_dongle_rate()));
+    uint32_t capture_before_hz = 0U;
+    (void)capture_frequency_for_rate(kFamilyTestCenterHz, load_dongle_rate(), &capture_before_hz);
+    store_dongle_frequency(capture_before_hz);
     out->capture_freq_before_hz = load_dongle_frequency();
     out->capture_rate_before_hz = load_dongle_rate();
     g_refused_capture_test_device = {};

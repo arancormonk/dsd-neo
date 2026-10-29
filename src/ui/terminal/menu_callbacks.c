@@ -21,12 +21,14 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/ui/menu_core.h"
+#include "menu_actions.h"
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
@@ -1006,17 +1008,23 @@ cb_rtl_dev(void* u, int ok, int i) {
 }
 
 void
-cb_rtl_freq(void* u, int ok, int f) {
-    const UiCtx* c = mutable_ui_ctx_from_callback(u);
+cb_rtl_freq_text(void* u, const char* text) {
+    UiCtx* c = mutable_ui_ctx_from_callback(u);
     if (!c) {
         return;
     }
-    if (ok) {
-        int adjusted = 0;
-        f = clamp_int_with_notice("RTL frequency", f, 0, 2147483647, &adjusted);
-        uint32_t v = (uint32_t)f;
-        (void)dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, v);
+    uint32_t hz = 0U;
+    const int result = dsd_parse_freq_entry_hz(text, &hz);
+    if (result == DSD_FREQ_ENTRY_EMPTY) {
+        return;
     }
+    if (result != DSD_FREQ_ENTRY_OK) {
+        /* The prompt shows the status in its own rows, so the reason sits next to the text it refers to (issue #670). */
+        ui_statusf("%s", dsd_freq_entry_result_text(result));
+        ui_open_freq_prompt(c, text);
+        return;
+    }
+    (void)dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, hz);
 }
 
 void

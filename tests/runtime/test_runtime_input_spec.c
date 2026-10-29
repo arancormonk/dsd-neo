@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/input_spec.h>
+#include <dsd-neo/runtime/log.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,6 +14,18 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+
+static char g_log_text[4096];
+
+static void
+capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    size_t used = strlen(g_log_text);
+    if (text && used < sizeof g_log_text - 1U) {
+        DSD_SNPRINTF(g_log_text + used, sizeof g_log_text - used, "%s", text);
+    }
+}
 
 static dsd_opts*
 alloc_seeded_opts(void) {
@@ -513,6 +526,8 @@ test_spec_frequency_rounds_to_the_hz(void) {
             {"0.128155625G", 128155625U},
             {"4294967295", 4294967295U},
             {"4294967296", 0U},
+            {"4294967295.4999999", 4294967295U},
+            {"4294967295.5", 0U},
             {"-5M", 0U},
             {"nanM", 0U},
             {"junk", 0U},
@@ -589,9 +604,84 @@ test_spec_monitor_volume_range(void) {
     return rc;
 }
 
+/* Issue #670 B2: a number with a K, M or G suffix in the frequency place is a frequency, never device args. One out of
+   range (refused, as 5.8G is above 4294967295 Hz, or under the 1 MHz floor, as 500k is) fails normalization with a
+   message naming it, where it once fell back to opaque args and opened the device with "5.8G" as its arguments. The
+   number is anything strtod() reads, as the frequency parser does: a sign or an exponent is still a frequency. */
+static int
+test_soapy_suffixed_frequency_out_of_range(void) {
+    static const struct {
+        const char* spec;
+        const char* tok;
+    } cases[] = {
+        {"soapy:5.8G", "5.8G"},   {"soapy:driver=x:5.8G", "5.8G"},
+        {"soapy:500k", "500k"},   {"soapy:driver=x:500k:30", "500k"},
+        {"soapy:0.9M", "0.9M"},   {"soapy:4294.9672956M", "4294.9672956M"},
+        {"soapy:+5.8G", "+5.8G"}, {"soapy:driver=hackrf:5.8e0G", "5.8e0G"},
+        {"soapy:-5M", "-5M"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].spec);
+        g_log_text[0] = '\0';
+        int applied = 99;
+        int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
+        char want[128];
+        DSD_SNPRINTF(want, sizeof want, "Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)", cases[i].tok);
+        if (nrc == 0 || applied != 0) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d, want an error\n", cases[i].spec, nrc, applied);
+            rc = 1;
+        }
+        if (!strstr(g_log_text, want)) {
+            DSD_FPRINTF(stderr, "%s: log '%s' lacks '%s'\n", cases[i].spec, g_log_text, want);
+            rc = 1;
+        }
+        if (strcmp(opts->audio_in_dev, cases[i].spec) != 0 || opts->rtlsdr_center_freq != 155340000U
+            || opts->rtl_gain_value != 11) {
+            DSD_FPRINTF(stderr, "%s: refused spec changed opts dev=%s freq=%u gain=%d\n", cases[i].spec,
+                        opts->audio_in_dev, opts->rtlsdr_center_freq, opts->rtl_gain_value);
+            rc = 1;
+        }
+        free(opts);
+    }
+
+    /* The in-range edges still tune. */
+    static const struct {
+        const char* spec;
+        uint32_t hz;
+    } ok[] = {
+        {"soapy:1M", 1000000U},
+        {"soapy:driver=x:4294.967295M", 4294967295U},
+        {"soapy:driver=x:+851.375M", 851375000U},
+    };
+
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", ok[i].spec);
+        int applied = 0;
+        int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
+        if (nrc != 0 || applied != 1 || opts->rtlsdr_center_freq != ok[i].hz) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d freq=%u, want %u\n", ok[i].spec, nrc, applied,
+                        opts->rtlsdr_center_freq, ok[i].hz);
+            rc = 1;
+        }
+        free(opts);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    dsd_neo_log_set_tap(capture_log, NULL);
     rc |= test_spec_frequency_rounds_to_the_hz();
     rc |= test_spec_squelch_grammar();
     rc |= test_spec_bandwidth_field();
@@ -603,6 +693,7 @@ main(void) {
     rc |= test_soapy_numeric_colon_tail_fallback();
     rc |= test_soapy_args_partial_tuning();
     rc |= test_soapy_invalid_tuning_field_fallback();
+    rc |= test_soapy_suffixed_frequency_out_of_range();
     rc |= test_spec_monitor_volume_range();
     return rc;
 }

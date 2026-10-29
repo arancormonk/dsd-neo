@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -1851,6 +1852,18 @@ act_toggle_ui_p25_callsign(void* v) {
     (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
 }
 
+// ---- Frequency prompt ----
+
+/* Kept by pointer while the prompt is open. The capacity leaves room past the parser's limit, so a paste cut at the
+   capacity is still too long and refused rather than read as a shorter valid value. */
+static const char k_freq_prompt_title[] = "Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)";
+#define UI_FREQ_PROMPT_CAP ((size_t)DSD_FREQ_ENTRY_MAX_LEN + 2U)
+
+void
+ui_open_freq_prompt(UiCtx* c, const char* prefill) {
+    ui_prompt_open_string_async(k_freq_prompt_title, prefill, UI_FREQ_PROMPT_CAP, cb_rtl_freq_text, c);
+}
+
 // ---- RTL-SDR actions ----
 
 #ifdef USE_RADIO
@@ -1991,8 +2004,7 @@ rtl_set_dev(void* v) {
 
 void
 rtl_set_freq(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Frequency (Hz)", (int)c->opts->rtlsdr_center_freq, cb_rtl_freq, c);
+    ui_open_freq_prompt((UiCtx*)v, NULL);
 }
 
 static void

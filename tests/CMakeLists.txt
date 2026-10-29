@@ -85,9 +85,11 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
@@ -118,9 +120,11 @@ elseif(MSVC)
         io/test_io_signal_measure.cpp
         protocol/m17/test_m17_state_dispatch.c
         runtime/test_runtime_decode_clock.c
+        runtime/test_runtime_freq_parse.c
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
@@ -2480,6 +2484,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_async_lifecycle
         ui/test_ui_async_lifecycle.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
     )
     # NCURSES_REENTRANT=0 keeps stdscr an extern variable (rather than a
     # function-call macro) so the curses stubs below can define and assign it.
@@ -2668,6 +2673,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -2781,6 +2787,27 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
+
+    # The real panel; the wizard core, prompt widgets and app-control commands are stubbed in the test.
+    add_executable(
+        dsd-neo_test_ui_rr_panel_keys
+        ui/test_ui_rr_panel_keys.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel_format.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_panel_keys
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_rr_panel_keys
+        PRIVATE dsd-neo_runtime ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
 
     add_executable(
         dsd-neo_test_ui_rr_library
@@ -3223,6 +3250,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
             ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
             ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -3265,6 +3293,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
@@ -3860,6 +3889,22 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_PROMPT_SECRET COMMAND dsd-neo_test_ui_prompt_secret)
+
+    add_executable(
+        dsd-neo_test_ui_read_key
+        ui/test_ui_read_key.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_read_key.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_read_key
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/terminal ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_read_key
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(dsd-neo_test_ui_read_key PRIVATE ${CURSES_LIBRARIES})
+    add_test(NAME UI_READ_KEY COMMAND dsd-neo_test_ui_read_key)
 endif()
 
 # The Qt Quick frontend itself only builds for Android, but the session-phase

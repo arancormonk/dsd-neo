@@ -36,11 +36,17 @@ extern "C" {
  * - If trailing fields are ambiguous or not valid shorthand, the full string is
  *   treated as opaque Soapy args so valid third-party device strings are not
  *   misinterpreted as shorthand fields.
+ * - A number with a K/M/G suffix in the frequency place (`5.8G`, `500k`) is
+ *   always a frequency, never device args: one that does not parse or is
+ *   outside 1 MHz to 4294.967295 MHz is logged as out of range and refused,
+ *   leaving `opts` unchanged. A bare number out of range keeps the opaque
+ *   fallback.
  *
  * @param opts Decoder options containing `audio_in_dev` and shared radio fields.
  * @param out_tuning_applied Optional out-flag set to 1 when shorthand tuning was
  *        parsed and applied; otherwise set to 0.
- * @return 0 on success; negative on invalid arguments.
+ * @return 0 on success; negative on invalid arguments or an out-of-range
+ *         suffixed frequency.
  */
 int dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied);
 

@@ -52,6 +52,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -597,7 +598,8 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
             ui_io_row_begin(&row);
             ui_row_field(&row, "|");
         } else if (soapy_input) {
-            ui_row_field(&row, "| SoapySDR;");
+            /* The short name (-i soapy) leaves room at 80 columns for the frequency ahead of the arguments' cut. */
+            ui_row_field(&row, "| Soapy;");
         } else {
             ui_row_field(&row, "| RTL: %d;", opts->rtl_dev_index);
         }
@@ -605,9 +607,15 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_row_rtl_ppm_field(&row);
         ui_row_field(&row, " Mon: %dX;", opts->rtl_volume_multiplier);
         ui_row_field(&row, " DSP-BW: %2d kHz;", opts->rtl_dsp_bw_khz);
-        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in the ten places any
-           32-bit Hz value takes, so a Soapy device's arguments after it hold their column across a retune. */
-        ui_row_field(&row, " FRQ: %10u;", (unsigned int)dsd_opts_tuned_freq_hz(opts));
+        /* The tuned frequency, which follows an I/Q replay's recorded retunes (issue #575), in MHz to the Hz in the
+           eleven places any 32-bit Hz value takes (4294.967295), none (0) a dash in the same room, so a Soapy
+           device's arguments after it hold their column across a retune (issue #670). */
+        const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
+        char frq[16] = "-";
+        if (tuned_hz != 0U) {
+            (void)dsd_freq_hz_mhz_text(tuned_hz, frq, sizeof frq);
+        }
+        ui_row_field(&row, " FRQ: %11s MHz;", frq);
         if (soapy_input && strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
             ui_row_field(&row, " Args: %s;", opts->audio_in_dev + 6);
         }

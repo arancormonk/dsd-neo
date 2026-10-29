@@ -255,6 +255,19 @@ wgetch(WINDOW* win) {
     return g_getch_value;
 }
 
+#if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+/* A wide PDCurses build reads keys through wget_wch(): the same scripted key, as a key code or a character. */
+int
+wget_wch(WINDOW* win, wint_t* wch) {
+    int key = wgetch(win);
+    if (key == ERR) {
+        return ERR;
+    }
+    *wch = (wint_t)key;
+    return key >= KEY_MIN ? KEY_CODE_YES : OK;
+}
+#endif
+
 int
 clearok(WINDOW* win, bool bf) {
     (void)win;

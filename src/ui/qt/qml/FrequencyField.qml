@@ -78,7 +78,7 @@ Column {
     Text {
         width: parent.width
         visible: field.text.length > 0 && !sessionArgs.freqValid(field.text)
-        text: qsTr("Enter a positive frequency in MHz.")
+        text: qsTr("Enter a frequency from 0.000001 to 4294.967295 MHz")
         wrapMode: Text.Wrap
         color: Theme.alert
         font.pixelSize: Theme.fontSize(12)

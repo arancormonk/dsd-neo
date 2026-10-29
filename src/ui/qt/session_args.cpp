@@ -27,6 +27,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 
 #include "app_prefs.h"
@@ -416,7 +417,12 @@ bool
 session_args_freq_valid(const QString& freqMhz) {
     bool ok = false;
     const double mhz = freqMhz.trimmed().toDouble(&ok);
-    return ok && std::isfinite(mhz) && mhz > 0.0;
+    if (!ok || !std::isfinite(mhz) || mhz <= 0.0) {
+        return false;
+    }
+    /* The start path splices "<text>M" into the rtl spec; use the runtime's own exact rounding and 1..UINT32_MAX range. */
+    const QByteArray spec = freqMhz.trimmed().toLatin1() + 'M';
+    return dsd_parse_freq_hz(spec.constData()) != 0U;
 }
 
 bool
@@ -530,7 +536,7 @@ struct SessionArgsErrorText {
 /* One row per SessionArgsError value, in the enum's order (None has no text), so a value is its row's index. */
 constexpr SessionArgsErrorText k_error_texts[] = {
     {SessionArgsError::None, ""},
-    {SessionArgsError::Frequency, "Enter a positive frequency in MHz."},
+    {SessionArgsError::Frequency, "Enter a frequency from 0.000001 to 4294.967295 MHz"},
     {SessionArgsError::Ppm, "Enter a whole number for PPM."},
     {SessionArgsError::Hangtime, "Enter hang time in seconds from 0 to 30."},
     {SessionArgsError::KeyType, "Choose one encryption key type."},

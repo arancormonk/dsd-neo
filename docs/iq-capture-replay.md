@@ -505,14 +505,15 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
   than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control
   channel (`return_cc`), and the channel cycle (`channel_cycle`: the next LCN, P25 control channel candidate or `-Y`
-  row; `--trunk-scan` refuses a replay input altogether). Commands whose main effect is not a retune still act: the
-  scan hold and avoid, skip and lockout. The retunes trunking and the conventional scanner ask for are ignored, as
+  row; `--trunk-scan` refuses a replay input altogether). The terminal hides its `Frequency...` row during a replay
+  rather than open a prompt whose answer is refused. Commands whose main effect is not a retune still act: the scan
+  hold and avoid, skip and lockout. The retunes trunking and the conventional scanner ask for are ignored, as
   described above.
-- The tuned frequency the frontends show (the terminal `FRQ:` field, the `FREQ` reading that opens the Qt/Android
-  Monitor screen's signal strip, the Qt Spectrum label, the Android notification) follows the capture's recorded
-  `RETUNE` events: it reads the centre the samples being decoded were captured on, the capture's opening centre until
-  the first `RETUNE` and again after an `--iq-loop` rewind. The centre option the trunking paths read as the current
-  channel keeps the opening centre, as before, so replay decoding is unchanged.
+- The tuned frequency the frontends show (the terminal `FRQ:` field, in MHz, the `FREQ` reading that opens the
+  Qt/Android Monitor screen's signal strip, the Qt Spectrum label, the Android notification) follows the capture's
+  recorded `RETUNE` events: it reads the centre the samples being decoded were captured on, the capture's opening
+  centre until the first `RETUNE` and again after an `--iq-loop` rewind. The centre option the trunking paths read as
+  the current channel keeps the opening centre, as before, so replay decoding is unchanged.
 - Event timelines currently require a constant sample rate through the capture. Metadata with event sample-rate changes is
   rejected until segment-rate replay is supported.
 - Replay converts `cu8`, `cf32` captured as the driver delivered it (`capture_stage: "post_driver_cf32_pre_ring"`),

@@ -32,6 +32,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/ui/menu_core.h"
+#include "menu_actions.h"
 #include "menu_callbacks.h"
 #include "menu_env.h"
 #include "menu_internal.h"
@@ -59,6 +60,8 @@ static CmdCapture g_cmd;
 static PromptCapture g_prompt;
 static char g_status[256];
 static int g_status_calls;
+static int g_freq_prompt_calls;
+static char g_freq_prompt_prefill[256];
 static char g_env_name[128];
 static char g_env_value[128];
 static int g_env_set_calls;
@@ -207,6 +210,14 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
     g_prompt.calls++;
 }
 
+/* menu_actions.c owns the frequency prompt (UI_MENU_ACTIONS pins its title and capacity); a refusal reopens it. */
+void
+ui_open_freq_prompt(UiCtx* c, const char* prefill) {
+    (void)c;
+    DSD_SNPRINTF(g_freq_prompt_prefill, sizeof g_freq_prompt_prefill, "%s", prefill ? prefill : "(null)");
+    g_freq_prompt_calls++;
+}
+
 void
 ui_prompt_open_int_async(const char* title, int initial, ui_prompt_int_done_fn cb, void* user) {
     DSD_SNPRINTF(g_prompt.title, sizeof g_prompt.title, "%s", title ? title : "");
@@ -332,6 +343,8 @@ reset_capture(void) {
     DSD_MEMSET(&g_prompt, 0, sizeof g_prompt);
     DSD_MEMSET(g_status, 0, sizeof g_status);
     g_status_calls = 0;
+    g_freq_prompt_calls = 0;
+    DSD_MEMSET(g_freq_prompt_prefill, 0, sizeof g_freq_prompt_prefill);
     DSD_MEMSET(g_env_name, 0, sizeof g_env_name);
     DSD_MEMSET(g_env_value, 0, sizeof g_env_value);
     g_env_set_calls = 0;
@@ -939,10 +952,42 @@ test_gain_rtl_and_env_callbacks(void) {
     rc |= expect_int("rtl dev command", g_cmd.id, DSD_APP_CMD_RTL_SET_DEV);
     rc |= expect_int("rtl dev value", cmd_i32(), 2);
 
-    reset_capture();
-    cb_rtl_freq(&ctx, 1, 851012500);
-    rc |= expect_int("rtl freq command", g_cmd.id, DSD_APP_CMD_RTL_SET_FREQ);
-    rc |= expect_int("rtl freq value", (int)cmd_u32(), 851012500);
+    /* The frequency as typed (issue #670): MHz, or Hz from 1000000 up. A blank field cancels silently; a refusal says
+       why and reopens the prompt with the text kept, so a typo is fixed in place. */
+    {
+        static const char* const blanks[] = {NULL, "", "   "};
+        for (size_t i = 0; i < sizeof blanks / sizeof blanks[0]; i++) {
+            reset_capture();
+            cb_rtl_freq_text(&ctx, blanks[i]);
+            rc |= expect_int("rtl freq blank sends nothing", g_cmd.calls, 0);
+            rc |= expect_int("rtl freq blank says nothing", g_status_calls, 0);
+            rc |= expect_int("rtl freq blank does not reopen", g_freq_prompt_calls, 0);
+        }
+        reset_capture();
+        cb_rtl_freq_text(&ctx, "146.52");
+        rc |= expect_int("rtl freq MHz command", g_cmd.id, DSD_APP_CMD_RTL_SET_FREQ);
+        rc |= expect_int("rtl freq MHz value", (int)cmd_u32(), 146520000);
+        rc |= expect_int("rtl freq MHz no reopen", g_freq_prompt_calls, 0);
+        reset_capture();
+        cb_rtl_freq_text(&ctx, "851012500");
+        rc |= expect_int("rtl freq Hz command", g_cmd.id, DSD_APP_CMD_RTL_SET_FREQ);
+        rc |= expect_int("rtl freq Hz value", (int)cmd_u32(), 851012500);
+        reset_capture();
+        cb_rtl_freq_text(&ctx, "146,52");
+        rc |= expect_int("rtl freq comma sends nothing", g_cmd.calls, 0);
+        rc |= expect_str("rtl freq comma says why", g_status, "Use '.' for decimals, e.g. 146.52");
+        rc |= expect_int("rtl freq comma reopens", g_freq_prompt_calls, 1);
+        rc |= expect_str("rtl freq comma keeps the text", g_freq_prompt_prefill, "146,52");
+        /* The prompt keeps cap-1 = 33 bytes: a paste cut there is still over the parser's 32 and refused, never read
+           as a shorter valid value. */
+        static const char paste[] = "146.52000000000000000000000000000";
+        rc |= expect_int("rtl freq paste is the prompt's 33 bytes", (int)strlen(paste), 33);
+        reset_capture();
+        cb_rtl_freq_text(&ctx, paste);
+        rc |= expect_int("rtl freq over-long sends nothing", g_cmd.calls, 0);
+        rc |= expect_str("rtl freq over-long says why", g_status, "Too long: at most 32 characters");
+        rc |= expect_int("rtl freq over-long reopens", g_freq_prompt_calls, 1);
+    }
 
     reset_capture();
     cb_rtl_gain(&ctx, 1, 77);

@@ -107,6 +107,15 @@ main(void) {
     assert(g_done_sel == -1);
     assert(ui_chooser_active() == 0);
 
+#ifdef PADENTER
+    /* Keypad Enter on a Windows terminal accepts like Enter (B13). */
+    ui_chooser_start("Devices", ITEMS, (int)(sizeof ITEMS / sizeof ITEMS[0]), capture_done, NULL);
+    assert(ui_chooser_handle_key(KEY_DOWN) == 1);
+    assert(ui_chooser_handle_key(PADENTER) == 1);
+    assert(g_done_sel == 1);
+    assert(ui_chooser_active() == 0);
+#endif
+
     printf("UI_CHOOSER_NAVIGATION: OK\n");
     return 0;
 }
