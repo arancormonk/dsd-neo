@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <stdio.h>

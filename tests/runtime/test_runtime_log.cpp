@@ -12,7 +12,6 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include "test_env.h"
 

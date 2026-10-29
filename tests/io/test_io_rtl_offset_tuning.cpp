@@ -19,7 +19,6 @@
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_device.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <memory>

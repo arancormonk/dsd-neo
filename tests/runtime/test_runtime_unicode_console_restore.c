@@ -11,7 +11,6 @@
 
 #include <assert.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #if DSD_PLATFORM_WIN_NATIVE
 #include <stdio.h>

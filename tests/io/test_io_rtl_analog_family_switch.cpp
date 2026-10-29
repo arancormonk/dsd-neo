@@ -94,7 +94,6 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>

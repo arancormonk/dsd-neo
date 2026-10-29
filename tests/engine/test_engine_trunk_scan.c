@@ -35,7 +35,6 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -64,6 +63,7 @@
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
 #include "scan_step_untyped.h"
+#include "test_env.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"

@@ -29,7 +29,6 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/channel_scan_hooks.h>

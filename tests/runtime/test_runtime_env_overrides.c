@@ -35,9 +35,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/platform/posix_compat.h>
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #ifdef USE_RADIO

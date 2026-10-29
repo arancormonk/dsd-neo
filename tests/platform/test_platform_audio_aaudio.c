@@ -23,6 +23,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include "../../src/platform/audio_aaudio.c"

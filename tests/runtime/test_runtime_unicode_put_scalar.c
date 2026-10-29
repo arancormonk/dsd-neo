@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
+#include "test_env.h"
 #include "test_support.h"
 
 static void

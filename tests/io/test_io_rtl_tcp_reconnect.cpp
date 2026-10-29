@@ -51,6 +51,7 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #include <arpa/inet.h>

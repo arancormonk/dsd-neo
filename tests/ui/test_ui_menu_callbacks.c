@@ -20,7 +20,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdarg.h>

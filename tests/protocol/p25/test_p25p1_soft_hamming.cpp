@@ -9,7 +9,6 @@
  */
 
 #include <cstdio>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
 #include "dsd-neo/core/safe_api.h"

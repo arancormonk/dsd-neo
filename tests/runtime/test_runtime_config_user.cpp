@@ -47,6 +47,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/runtime/config_schema.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #if DSD_PLATFORM_WIN_NATIVE

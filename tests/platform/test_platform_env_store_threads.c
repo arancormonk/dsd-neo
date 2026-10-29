@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <dsd-neo/platform/platform.h>
 #include "test_env.h"
 
 #define READERS     4

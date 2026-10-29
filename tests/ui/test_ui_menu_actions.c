@@ -21,7 +21,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>

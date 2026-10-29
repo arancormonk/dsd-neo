@@ -11,11 +11,11 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <string>
 
 #include "rtl_perf.h"
+#include "test_env.h"
 #include "test_support.h"
 
 /* The logger's stream is a real file the test reads back by name, without

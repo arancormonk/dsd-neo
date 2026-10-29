@@ -15,7 +15,6 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
@@ -33,6 +32,7 @@
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 #include "test_support.h"
 
 static int

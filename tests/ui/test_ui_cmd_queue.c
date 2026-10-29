@@ -54,7 +54,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -116,6 +115,7 @@
 #include "manual_tune_pending.h"
 #include "scan_step_untyped.h"
 #include "services.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

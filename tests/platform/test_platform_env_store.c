@@ -154,11 +154,11 @@ test_invalid_arguments(void) {
     assert(dsd_env_set(DSD_ENV_LAYER_SESSION, NULL, "x") == -1);
     assert(dsd_env_set(DSD_ENV_LAYER_SESSION, "", "x") == -1);
     assert(dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TEST=X", "x") == -1);
-    assert(dsd_env_set((dsd_env_layer)7, "DSD_NEO_TEST_ENV_BAD", "x") == -1);
+    /* DSD_ENV_LAYER_COUNT counts the layers; it is no layer. */
     assert(dsd_env_set(DSD_ENV_LAYER_COUNT, "DSD_NEO_TEST_ENV_BAD", "x") == -1);
-    assert(dsd_env_set_if_unset((dsd_env_layer)-1, "DSD_NEO_TEST_ENV_BAD", "x") == -1);
+    assert(dsd_env_set_if_unset(DSD_ENV_LAYER_COUNT, "DSD_NEO_TEST_ENV_BAD", "x") == -1);
     assert(dsd_env_get("DSD_NEO_TEST_ENV_BAD") == NULL);
-    dsd_env_clear_layer((dsd_env_layer)7); /* ignored */
+    dsd_env_clear_layer(DSD_ENV_LAYER_COUNT); /* ignored */
 }
 
 /* Last: the names it adds hold their slots for the rest of the process. */

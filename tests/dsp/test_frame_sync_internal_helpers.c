@@ -18,7 +18,6 @@
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>

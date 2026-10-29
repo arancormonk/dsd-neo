@@ -7,7 +7,6 @@
  * Unit tests for P25P2 soft-decision RS erasure marking.
  */
 
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>

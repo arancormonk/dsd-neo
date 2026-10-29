@@ -10,7 +10,6 @@
 
 #include <atomic>
 #include <cassert>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <thread>

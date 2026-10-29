@@ -19,7 +19,7 @@
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
-#include "test_support.h"
+#include "test_env.h"
 
 #define setenv   dsd_test_setenv
 #define unsetenv dsd_test_unsetenv

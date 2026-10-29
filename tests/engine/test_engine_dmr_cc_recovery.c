@@ -55,6 +55,7 @@
 #endif
 #include "engine_hooks_install.h"
 #include "frame_sync_test_support.h"
+#include "test_env.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 

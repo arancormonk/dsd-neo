@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #define setenv   dsd_test_setenv

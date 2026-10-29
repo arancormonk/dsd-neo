@@ -8,11 +8,11 @@
 
 #include <assert.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "dsd-neo/platform/platform.h"
+#include "test_env.h"
 #include "test_support.h"
 
 int

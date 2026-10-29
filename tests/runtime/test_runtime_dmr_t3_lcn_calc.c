@@ -8,9 +8,9 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include "test_env.h"
 #include "test_support.h"
 
 #if DSD_PLATFORM_WIN_NATIVE

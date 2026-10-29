@@ -17,6 +17,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <dsd-neo/platform/env.h>
+#include <stdlib.h>
 #include "../../src/platform/audio_pulse.c"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/audio.h"
