@@ -1931,6 +1931,13 @@ tg_policy_record_unknown_only(const dsd_opts* opts) {
     return opts && opts->record_unknown_only != 0;
 }
 
+/* Whether a talkgroup row a lookup found makes the talkgroup known to that rule. The `*` catch-all pattern row is the
+ * list's "every other talkgroup", so the talkgroups only it matches stay unknown (issue #773). */
+static int
+tg_policy_lookup_knows_talkgroup(const dsd_tg_policy_lookup* lookup) {
+    return lookup->match != DSD_TG_POLICY_MATCH_PATTERN || strcmp(lookup->entry.pattern, "*") != 0;
+}
+
 static void DSD_ATTR_USED
 tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint32_t tg, dsd_tg_policy_decision* out,
                              int* mode_blocking, int* explicit_audio_block, int* explicit_record_block,
@@ -1946,8 +1953,10 @@ tg_policy_group_apply_lookup(const dsd_opts* opts, const dsd_state* state, uint3
         tg_policy_decision_apply_entry(out, &lookup.entry, lookup.match);
         local_mode_blocking = dsd_tg_policy_mode_blocks(lookup.entry.mode);
         local_audio_block = (!local_mode_blocking && lookup.entry.audio == 0u);
-        local_record_block = (!local_mode_blocking && lookup.entry.audio != 0u
-                              && (lookup.entry.record == 0u || tg_policy_record_unknown_only(opts)));
+        local_record_block =
+            (!local_mode_blocking && lookup.entry.audio != 0u
+             && (lookup.entry.record == 0u
+                 || (tg_policy_record_unknown_only(opts) && tg_policy_lookup_knows_talkgroup(&lookup))));
         local_stream_block = (!local_mode_blocking && lookup.entry.audio != 0u && lookup.entry.stream == 0u);
     }
 
@@ -2100,8 +2109,8 @@ tg_policy_evaluate_group(const dsd_opts* opts, const dsd_state* state, uint32_t 
 
     tg_policy_init_decision(out, tg, src, encrypted, data_call);
 
-    tg_policy_group_apply_lookup(opts, state, row_id, out, &mode_blocking, &explicit_audio_block, &explicit_record_block,
-                                 &explicit_stream_block);
+    tg_policy_group_apply_lookup(opts, state, row_id, out, &mode_blocking, &explicit_audio_block,
+                                 &explicit_record_block, &explicit_stream_block);
     tg_policy_group_set_hold_state(state, tg, out, &hold_mismatch);
     if (hold_mismatch && row_id != tg && state->tg_hold == row_id) {
         out->tg_hold_match = 1;

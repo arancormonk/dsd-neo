@@ -724,8 +724,10 @@ Important behavior:
 - `mode=B`/`DE` forces media fields off regardless of optional values.
 - `record` covers every recording: the per-call WAV (`-P`), the static WAV (`-w`) and MBE capture (`-d`).
 - `--record-unknown-only` (INI `[recording] unknown_talkgroups_only`) records only talkgroups the list does not know:
-  a call that an exact or range row matches records as if that row said `record=off`, and a private call does when
-  either radio has an exact row. Learned radio-ID aliases and mode `D` rows do not make a call known. A matching Hold
+  a call that an exact, range or digit-pattern row matches records as if that row said `record=off`, and a private
+  call does when either radio has an exact row. The `*` catch-all pattern row stands for every other talkgroup, so
+  it does not make a talkgroup known. Learned radio-ID aliases, mode `D` rows and radio ID list rows do not make a
+  call known. A matching Hold
   still records, as it does past `record=off`; tuning and playback are unchanged.
 - `stream` decides whether a call's per-call WAV is exported to rdio-scanner (`--rdio-mode`: the DirWatch JSON sidecar
   and the API upload). With `stream=off` the call still plays and is still recorded; its recording stays local. Local

@@ -252,8 +252,9 @@ No storage permissions are involved; SAF needs none.
 
 Settings → **Call recording** → **Record calls** saves each call you hear as a WAV file, so you can play it again from
 History. It is off until you turn it on. **Only unknown talkgroups** skips talkgroups that have a row in your talkgroup
-list, and private calls when either radio has a row of its own (radio names learned over the air, and talkgroup rows in
-mode D, do not count); a talkgroup you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
+list (a `*` row that catches every other talkgroup does not count), and private calls when either radio has a row of
+its own (radio names learned over the air, radio ID list rows and talkgroup rows in mode D do not count); a talkgroup
+you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
 its card), keeps its calls out of the recordings.
 
 Both switches also change a running session: Settings reads **Applying…** until the decoder confirms. A change the

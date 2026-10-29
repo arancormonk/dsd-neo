@@ -255,9 +255,10 @@ Windows console runs:
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
   for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
   slot's channel is written silent while the other slot is still written.
-- `--record-unknown-only` Record only talkgroups the group list (`-G`) does not know: a call an exact or range row
-  matches is kept out of the per-call WAV, the static WAV and MBE capture as if the row said `record=off`, and so is a
-  private call when either radio has an exact row. Learned radio-ID aliases (mode `D`) do not count. A matching Hold
+- `--record-unknown-only` Record only talkgroups the group list (`-G`) does not know: a call an exact, range or
+  digit-pattern row (not the `*` catch-all) matches is kept out of the per-call WAV, the static WAV and MBE capture as
+  if the row said `record=off`, and so is a private call when either radio has an exact row. Learned radio-ID aliases
+  (mode `D`) and `--src-csv` rows do not count. A matching Hold
   still records; avoids and skips still block; tuning and playback are unchanged. INI:
   `[recording] unknown_talkgroups_only`. A running session changes it through the API's `record_unknown_only_set`
   (`docs/api.md`).

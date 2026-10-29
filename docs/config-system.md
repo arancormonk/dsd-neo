@@ -424,9 +424,10 @@ is lost, since the call may still resume; a terminator alerts immediately.
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
-`unknown_talkgroups_only` treats every call a group list row matches (an exact or range row; a private call when
-either radio has an exact row) as that row's `record=off`: the per-call and static WAVs and MBE capture skip it, and a
-held talkgroup still records. Learned radio-ID aliases and mode `D` rows do not count as rows. Tuning and playback are
+`unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
+than the `*` catch-all; a private call when either radio has an exact row) as that row's `record=off`: the per-call
+and static WAVs and MBE capture skip it, and a held talkgroup still records. Learned radio-ID aliases, mode `D` rows
+and radio ID list (`--src-csv`) rows do not count as rows. Tuning and playback are
 unchanged. Applying a config in a running session changes it at once.
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.

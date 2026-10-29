@@ -162,7 +162,7 @@ ModalSheet {
         width: parent.width
         wrapMode: Text.Wrap
         // D4: Only unknown talkgroups skips every listed talkgroup, this one included.
-        readonly property bool unknownOnly: typeof prefs !== "undefined" && !!prefs && prefs.recordCalls === true && prefs.recordUnknownOnly === true
+        readonly property bool unknownOnly: sheet.pattern !== "*" && typeof prefs !== "undefined" && !!prefs && prefs.recordCalls === true && prefs.recordUnknownOnly === true
         text: !listenToggle.checked ? qsTr("Off while not tuned. Tuning it again turns Record back on.") : unknownOnly ? qsTr("This talkgroup's calls aren't saved while Only unknown talkgroups is on in Settings.") : qsTr("Saves this talkgroup's calls when call recording is on.")
         color: Theme.textSecondary
     }

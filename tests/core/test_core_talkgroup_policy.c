@@ -2333,6 +2333,61 @@ test_record_unknown_only(void) {
     return rc;
 }
 
+/* Record only unknown talkgroups with digit-pattern rows (issue #773): a pattern row knows the talkgroups it decides, as
+   a range row does, but the `*` catch-all is the list's "every other talkgroup" and knows none. */
+static int
+test_record_unknown_only_patterns(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!state || !opts) {
+        free_test_state(state);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    dsd_tg_policy_entry entry;
+    int rc = 0;
+    init_entry(&entry, 0, "A", "Thirteens", DSD_TG_POLICY_SOURCE_IMPORTED);
+    entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(entry.pattern, sizeof entry.pattern, "%s", "13xx");
+    rc |= expect_true("unknown-only seed 13xx", dsd_tg_policy_add_pattern_entry(state, &entry) == 0);
+    init_entry(&entry, 0, "A", "Everything else", DSD_TG_POLICY_SOURCE_IMPORTED);
+    entry.kind = DSD_TG_POLICY_ROW_PATTERN;
+    DSD_SNPRINTF(entry.pattern, sizeof entry.pattern, "%s", "*");
+    rc |= expect_true("unknown-only seed catch-all", dsd_tg_policy_add_pattern_entry(state, &entry) == 0);
+
+    dsd_tg_policy_decision d = eval_record(opts, state, 1, 0, 1350, 1);
+    rc |= expect_true("a pattern row decides the talkgroup",
+                      d.match == DSD_TG_POLICY_MATCH_PATTERN && strcmp(d.name, "Thirteens") == 0);
+    rc |= expect_record_blocked_only("a pattern row makes a talkgroup known", &d);
+    d = eval_record(opts, state, 1, 0, 999, 1);
+    rc |= expect_true("the catch-all decides the talkgroup",
+                      d.match == DSD_TG_POLICY_MATCH_PATTERN && strcmp(d.name, "Everything else") == 0);
+    rc |= expect_records("the catch-all leaves a talkgroup unknown", &d);
+    d = eval_record(opts, state, 0, 0, 1350, 1);
+    rc |= expect_records("a pattern row's talkgroup records with the rule off", &d);
+
+    /* The catch-all's own record=off still keeps the talkgroups it decides out of the recording. */
+    dsd_tg_policy_entry row;
+    const dsd_tg_policy_entry values = {.record = 0};
+    rc |= expect_true("catch-all row index", dsd_tg_policy_entry_at(state, 1, &row) && strcmp(row.pattern, "*") == 0);
+    dsd_tg_policy_row_key key = {.table_index = 1, .kind = DSD_TG_POLICY_ROW_PATTERN};
+    DSD_SNPRINTF(key.pattern, sizeof key.pattern, "%s", "*");
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    rc |= expect_true(
+        "catch-all record off",
+        dsd_tg_policy_set_fields_key(state, context, generation, &key, &values, DSD_TG_POLICY_FIELD_RECORD) == 0);
+    d = eval_record(opts, state, 1, 0, 999, 1);
+    rc |= expect_record_blocked_only("the catch-all's own record=off still applies", &d);
+
+    free_test_state(state);
+    free(opts);
+    return rc;
+}
+
 /* A Record edit (issue #708) lands after a mode change in the same edit, and a row that does not listen records
    nothing whatever was asked. */
 static int
@@ -3441,6 +3496,7 @@ main(void) {
     rc |= test_call_skips();
     rc |= test_ota_final_blocks();
     rc |= test_record_unknown_only();
+    rc |= test_record_unknown_only_patterns();
     rc |= test_set_fields_record();
     rc |= test_lockout_replaces_alias_metadata();
     rc |= test_snapshot_reclones_recreated_context();

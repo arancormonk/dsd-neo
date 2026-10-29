@@ -234,6 +234,20 @@ Item {
             compare(hint.text, "Saves this talkgroup's calls when call recording is on.");
             testContext.setPrefs("recordCalls", false);
         }
+        // Issue #773: the `*` catch-all row stands for every other talkgroup, which the unknown-only rule records, so
+        // its hint says it records; a narrower pattern row is known like any other row.
+        function test_record_hint_catch_all_row() {
+            var sheet = loader.item;
+            testContext.setPrefs("recordCalls", true);
+            testContext.setPrefs("recordUnknownOnly", true);
+            var hint = findChild(sheet, "recordHint");
+            sheet.openRow(0, 0, "Everything else", true, true, 0, false, "7", 3, true, 4, "*");
+            compare(hint.text, "Saves this talkgroup's calls when call recording is on.");
+            sheet.openRow(0, 0, "Twelves", true, true, 0, false, "7", 3, true, 2, "12*");
+            compare(hint.text, "This talkgroup's calls aren't saved while Only unknown talkgroups is on in Settings.");
+            testContext.setPrefs("recordUnknownOnly", false);
+            testContext.setPrefs("recordCalls", false);
+        }
         function test_record_edits_data() {
             return [
                 {tag: "record-off", listening: true, record: true, clicks: ["recordToggle"], changes: {record: false}},

@@ -1496,9 +1496,11 @@ suite runs under this compiler.
   it into the explicit record block a row's `record=off` takes (`record_allowed` 0, `DSD_TG_POLICY_BLOCK_RECORD`), so
   every record gate, MBE capture and the P25 Phase 2 verdict (its `dsd_p25p2_policy_key` carries the switch) follow it
   with today's precedence: a matching Hold still records, avoids and skips block, tuning and playback are untouched. A
-  group call is known when a non-alias row (exact or range) matches the talkgroup the record decision judges (P25: the
-  policy target); a private call when either radio has an exact non-alias row, each looked up on its own (the private
-  evaluator's chosen row can be the other radio's learned alias). The command is a recording command: it waits while a
+  group call is known when a non-alias row (exact, range, or a digit pattern other than the `*` catch-all,
+  `tg_policy_lookup_knows_talkgroup()`) matches the talkgroup the record decision judges (P25: the policy target;
+  NXDN's Type-C source fallback: the row it judges by); radio ID list rows never count; a private call when either
+  radio has an exact non-alias row, each looked up on its own (the private evaluator's chosen row can be the other
+  radio's learned alias). The command is a recording command: it waits while a
   decoder holds a carrier, is refused during Signal search, retakes the P25 Phase 2 verdicts under the tick guard
   (`command_changes_call_verdict()`), and the recording view reports it. A row's own Record is
   `DSD_APP_TG_FIELD_RECORD` / `DSD_TG_POLICY_FIELD_RECORD`, applied after a mode change in the same edit; a row that
