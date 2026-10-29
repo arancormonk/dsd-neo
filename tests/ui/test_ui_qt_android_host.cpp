@@ -30,6 +30,7 @@
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/local_device_state.h"
+#include "../../android/location_record.h"
 #include "../../android/run_status.h"
 #include "../../android/session_state_map.h"
 #include "decoder_host.h"
@@ -545,6 +546,59 @@ check_engine_busy() {
     check(dsd_android::engine_busy(nullptr, false), "a failed service state read counts as busy");
     service_state() = "IDLE";
     running = false;
+}
+
+/*
+ * #782: a location prompt Android closed unanswered comes back as a "cancelled" record. It must reach the UI as
+ * locationCancelled, never as a locationResult, which the RadioReference lookup and the site chooser would show as a
+ * failed lookup.
+ */
+static void
+check_location_record() {
+    dsd_android::DecoderHostAndroid host;
+    QList<qint64> cancels;
+    QList<QString> results;
+    QObject::connect(&host, &dsd_qt::DecoderHost::locationCancelled, &host,
+                     [&cancels](qint64 id) { cancels.append(id); });
+    QObject::connect(&host, &dsd_qt::DecoderHost::locationResult, &host,
+                     [&results](qint64 id, bool fixOk, double, double, double, qint64, bool geocodeOk,
+                                const QString& postal, const QString&, const QString& error) {
+                         results.append(QString::number(id) + (fixOk ? QStringLiteral(" 1 ") : QStringLiteral(" 0 "))
+                                        + (geocodeOk ? QStringLiteral("1 ") : QStringLiteral("0 ")) + postal
+                                        + QLatin1Char(' ') + error);
+                     });
+
+    dsd_android::deliver_location_record(host, QJsonObject());
+    check(cancels.isEmpty() && results.isEmpty(), "no record pending delivers nothing");
+
+    QJsonObject cancelled{{QStringLiteral("id"), 7},
+                          {QStringLiteral("fixOk"), false},
+                          {QStringLiteral("geocodeOk"), false},
+                          {QStringLiteral("postalCode"), QString()},
+                          {QStringLiteral("countryCode"), QString()},
+                          {QStringLiteral("error"), QString()},
+                          {QStringLiteral("cancelled"), true}};
+    dsd_android::deliver_location_record(host, cancelled);
+    check(cancels == QList<qint64>{7}, "a cancelled record delivers locationCancelled with its id");
+    check(results.isEmpty(), "a cancelled record is never delivered as a failed lookup");
+
+    QJsonObject denied = cancelled;
+    denied.insert(QStringLiteral("id"), 8);
+    denied.insert(QStringLiteral("cancelled"), false);
+    denied.insert(QStringLiteral("error"), QStringLiteral("Location permission denied; use Browse."));
+    dsd_android::deliver_location_record(host, denied);
+    QJsonObject fix{{QStringLiteral("id"), 9},
+                    {QStringLiteral("fixOk"), true},
+                    {QStringLiteral("geocodeOk"), true},
+                    {QStringLiteral("postalCode"), QStringLiteral("52401")},
+                    {QStringLiteral("countryCode"), QStringLiteral("US")},
+                    {QStringLiteral("error"), QString()}};
+    dsd_android::deliver_location_record(host, fix);
+    check(cancels == QList<qint64>{7}, "a denial or a fix is not a cancel");
+    check(results
+              == QList<QString>{QStringLiteral("8 0 0  Location permission denied; use Browse."),
+                                QStringLiteral("9 1 1 52401 ")},
+          "a denial and a fix, and a record with no cancelled field, are delivered as results");
 }
 
 static QByteArray
@@ -2299,6 +2353,7 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     using namespace dsd_android;
     check_engine_busy();
+    check_location_record();
     check_document_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();

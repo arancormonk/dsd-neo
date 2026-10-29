@@ -148,7 +148,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     /* The argv of the last start asked for, accepted or not: what the session-args builder made of the system. */
     QStringList lastArgv;
     qint64 locationRequested = 0;
-    qint64 locationCancelled = 0;
+    qint64 locationCancelRequested = 0;
 
     void
     requestCurrentLocation(qint64 id) override {
@@ -157,7 +157,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     void
     cancelLocationRequest(qint64 id) override {
-        locationCancelled = id;
+        locationCancelRequested = id;
     }
 
     qreal keyboardBoundary = -1;
