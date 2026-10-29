@@ -862,18 +862,24 @@ fll_prepare_loop_context(dsd_fll_band_edge_state_t* f, fll_loop_context_t* ctx) 
 }
 
 static inline void
-fll_convolve_band_edges(const dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx, float* lower_r,
-                        float* lower_i, float* upper_r, float* upper_i) {
+fll_convolve_band_edges(const dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx, float newest_r,
+                        float newest_i, float* lower_r, float* lower_i, float* upper_r, float* upper_i) {
     /* Accumulate the four real dot products once for both conjugate filters.
      * Independent sums let the compiler vectorize across taps; combining them
-     * afterward halves the products and coefficient loads in the convolution. */
+     * afterward halves the products and coefficient loads in the convolution.
+     * The newest sample (tap 0) comes from the caller's registers, not the delay line it was just stored in: a
+     * vectorized loop reading it back stalled on the store. The sums run in the same order either way. */
     float rr = 0.0f;
     float ii = 0.0f;
     float ri = 0.0f;
     float ir = 0.0f;
+    rr += newest_r * f->taps_upper_r[0];
+    ii += newest_i * f->taps_upper_i[0];
+    ri += newest_r * f->taps_upper_i[0];
+    ir += newest_i * f->taps_upper_r[0];
 
     const int delay_base = ctx->delay_idx + ctx->n_taps;
-    for (int k = 0; k < ctx->n_taps; k++) {
+    for (int k = 1; k < ctx->n_taps; k++) {
         const int idx = delay_base - k;
         const float dr = ctx->delay_r[idx];
         const float di = ctx->delay_i[idx];
@@ -930,7 +936,7 @@ fll_process_sample(const dsd_fll_band_edge_state_t* f, fll_loop_context_t* ctx, 
     float lower_i = 0.0f;
     float upper_r = 0.0f;
     float upper_i = 0.0f;
-    fll_convolve_band_edges(f, ctx, &lower_r, &lower_i, &upper_r, &upper_i);
+    fll_convolve_band_edges(f, ctx, *out_r, *out_i, &lower_r, &lower_i, &upper_r, &upper_i);
 
     ctx->delay_idx++;
     if (ctx->delay_idx == ctx->n_taps) {

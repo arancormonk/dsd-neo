@@ -4508,7 +4508,10 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     with `dsd_fll_band_edge_params_for(tetra_chain)`: rolloff 0.35 and 4x OP25's loop bandwidth 2*pi/sps/350 for the
     TETRA chain, 0.2 and 1x otherwise (filter size 2*sps+1 either way). A redesign is keyed on (sps, rolloff,
     loop-bandwidth scale) and keeps the frequency estimate; `dsd_fll_band_edge_init()` is the P25-parameter wrapper
-    for callers without a demod. The CQPSK RMS AGC averages with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA,
+    for callers without a demod. The band-edge convolution takes its newest tap from the sample just rotated rather
+    than reading it back from the delay line (`fll_convolve_band_edges()`): the sums run in the same order, and a
+    vectorized build no longer stalls on that store (a quarter of the FLL's time at 144 kHz). The CQPSK RMS AGC
+    averages with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA,
     OP25's 0.45 otherwise (reference 0.85 either way). `DSP_FLL_BAND_EDGE` pins the P25 design (taps, loop
     bandwidth, gains) to its values before the parameters existed.
   - Tracking mixer and the combined estimate. The FLL state also holds the TETRA tracking mixer (`pre_freq` and a
@@ -4640,9 +4643,11 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   - Channel FIR, in complex samples, with c = (taps - 1) / 2: a call makes max(0, pending + N - c) outputs, output k
     centred at `hist_len - pending + k` of [history | block], and leaves pending + N - outputs pending with the newest
     `hist_len` inputs in the history. No variant pads the look-ahead past a block's end; an invalid call or a short
-    `out_cap` returns -1 with nothing touched. Scalar is bit-exact across splits; the SSE2, AVX2 and NEON kernels (and
-    the dispatcher, which keeps blocks shorter than both 16 complex samples and the filter on scalar) agree with
-    their own whole-stream output within 1e-5.
+    `out_cap` returns -1 with nothing touched. Scalar is bit-exact across splits: it copies the windows into one
+    contiguous scratch and runs four outputs side by side, each summed in the order a single one is, so it gives the
+    bits the per-sample form did (`DSP_SIMD_FIR`, `test_scalar_complex_fir_matches_reference()`) at a fraction of its
+    time. The SSE2, AVX2 and NEON kernels (and the dispatcher, which keeps blocks shorter than both 16 complex samples
+    and the filter on scalar) agree with their own whole-stream output within 1e-5.
   - Channel state: `demod_state::channel_lpf_hist_i/q` hold `DSD_CHANNEL_LPF_HIST_LEN` (287) samples whatever the
     taps, and `channel_lpf_pending` the outputs held back. A tap-count change without a reset reconciles through
     pending (up to N + c_old - c_new outputs), so the work buffers the filter writes (`hb_workbuf`, `timing_buf`) are

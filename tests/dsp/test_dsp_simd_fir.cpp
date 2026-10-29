@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include <memory>
@@ -98,6 +99,124 @@ hb_formula_outputs(int pending, int n_in, int taps_len) {
     const int c = (taps_len - 1) / 2;
     const int lt = pending + n_in;
     return lt >= c + 1 ? (lt - c + 1) / 2 : 0;
+}
+
+/* The scalar complex FIR as it read each window sample from history or block one at a time: the reference the
+   scalar kernel must match bit for bit. */
+static int
+reference_complex_fir(const float* in, int n_in, float* out, float* hist_i, float* hist_q, int hist_len, int* pending,
+                      const float* taps, int taps_len) {
+    const int center = (taps_len - 1) >> 1;
+    const int outputs = *pending + n_in - center > 0 ? *pending + n_in - center : 0;
+    const int first_center = hist_len - *pending;
+    auto get_iq = [&](int src_idx, float& xi, float& xq) {
+        if (src_idx < hist_len) {
+            xi = hist_i[src_idx];
+            xq = hist_q[src_idx];
+        } else {
+            const size_t rel = (size_t)(src_idx - hist_len);
+            xi = in[2 * rel];
+            xq = in[2 * rel + 1];
+        }
+    };
+    for (int n = 0; n < outputs; n++) {
+        const int center_idx = first_center + n;
+        float acc_i = 0.0f;
+        float acc_q = 0.0f;
+        float ci = 0.0f;
+        float cq = 0.0f;
+        get_iq(center_idx, ci, cq);
+        acc_i += taps[center] * ci;
+        acc_q += taps[center] * cq;
+        for (int k = 0; k < center; k++) {
+            const float ce = taps[k];
+            if (ce == 0.0f) {
+                continue;
+            }
+            const int d = center - k;
+            float xm_i = 0.0f;
+            float xm_q = 0.0f;
+            float xp_i = 0.0f;
+            float xp_q = 0.0f;
+            get_iq(center_idx - d, xm_i, xm_q);
+            get_iq(center_idx + d, xp_i, xp_q);
+            acc_i += ce * (xm_i + xp_i);
+            acc_q += ce * (xm_q + xp_q);
+        }
+        out[n << 1] = acc_i;
+        out[(n << 1) + 1] = acc_q;
+    }
+    *pending += n_in - outputs;
+    /* Keep the newest hist_len samples of [history | block]. */
+    std::vector<float> all_i((size_t)hist_len + (size_t)n_in);
+    std::vector<float> all_q((size_t)hist_len + (size_t)n_in);
+    for (int k = 0; k < hist_len; k++) {
+        all_i[(size_t)k] = hist_i[k];
+        all_q[(size_t)k] = hist_q[k];
+    }
+    for (int k = 0; k < n_in; k++) {
+        all_i[(size_t)hist_len + (size_t)k] = in[2 * k];
+        all_q[(size_t)hist_len + (size_t)k] = in[2 * k + 1];
+    }
+    for (int k = 0; k < hist_len; k++) {
+        hist_i[k] = all_i[(size_t)n_in + (size_t)k];
+        hist_q[k] = all_q[(size_t)n_in + (size_t)k];
+    }
+    return outputs;
+}
+
+static bool
+same_bits(const float* a, const float* b, int n) {
+    return n <= 0 || std::memcmp(a, b, (size_t)n * sizeof(float)) == 0;
+}
+
+/* The scalar complex FIR (four outputs side by side from one contiguous window) gives the same bits as the reference,
+   at tap counts from 3 to the channel filter's 287, zero taps included, over random block cuts of a stream. */
+static int
+test_scalar_complex_fir_matches_reference(void) {
+    std::printf("Testing scalar complex FIR against the per-sample reference (bit-exact)...\n");
+    const int tap_counts[] = {3, 5, 15, 33, 49, 63, 65, 97, 129, 135, 193, 287};
+    const int hist_len = 287;
+    int failures = 0;
+    for (int taps_len : tap_counts) {
+        std::vector<float> taps((size_t)taps_len);
+        const int center = (taps_len - 1) / 2;
+        for (int k = 0; k <= center; k++) {
+            const float v = (k % 5 == 3) ? 0.0f : randf() * 0.5f;
+            taps[(size_t)k] = v;
+            taps[(size_t)(taps_len - 1 - k)] = v;
+        }
+        std::vector<float> hi_a((size_t)hist_len, 0.0f);
+        std::vector<float> hq_a((size_t)hist_len, 0.0f);
+        std::vector<float> hi_b((size_t)hist_len, 0.0f);
+        std::vector<float> hq_b((size_t)hist_len, 0.0f);
+        int pending_a = 0;
+        int pending_b = 0;
+        for (int blk = 0; blk < 40; blk++) {
+            const int n = (int)(rand_u32() % 300u) + (blk % 7 == 0 ? 0 : 1);
+            std::vector<float> in((size_t)n * 2U + 2U);
+            for (float& v : in) {
+                v = randf();
+            }
+            std::vector<float> out_a((size_t)(n + hist_len) * 2U + 2U, -7.0f);
+            std::vector<float> out_b((size_t)(n + hist_len) * 2U + 2U, -7.0f);
+            const int got = simd_fir_complex_apply_scalar(in.data(), n, out_a.data(), n + hist_len, hi_a.data(),
+                                                          hq_a.data(), hist_len, &pending_a, taps.data(), taps_len);
+            const int want = reference_complex_fir(in.data(), n, out_b.data(), hi_b.data(), hq_b.data(), hist_len,
+                                                   &pending_b, taps.data(), taps_len);
+            if (got != want || pending_a != pending_b || !same_bits(out_a.data(), out_b.data(), want * 2)
+                || !same_bits(hi_a.data(), hi_b.data(), hist_len) || !same_bits(hq_a.data(), hq_b.data(), hist_len)) {
+                DSD_FPRINTF(stderr, "  FAIL: %d taps, block %d (%d samples): %d outputs against %d, pending %d/%d\n",
+                            taps_len, blk, n, got, want, pending_a, pending_b);
+                failures++;
+                break;
+            }
+        }
+    }
+    if (failures == 0) {
+        std::printf("  PASS\n");
+    }
+    return failures;
 }
 
 static int
@@ -1358,6 +1477,7 @@ main(void) {
     failures += test_complex_short_block_history();
     failures += test_zero_output_history_updates();
     failures += test_public_scalar_fallback_edges();
+    failures += test_scalar_complex_fir_matches_reference();
 
 #if defined(__x86_64__) || defined(_M_X64)
     failures += test_direct_complex_fir_backend("sse2", simd_fir_complex_apply_sse2);
