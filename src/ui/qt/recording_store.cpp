@@ -295,11 +295,17 @@ RecordingStore::hostSessionReport(bool known, bool active, bool running) {
         const bool first = !m_hostKnown;
         m_hostKnown = true;
         if (active) {
-            if (!m_hostActive && !m_starterBegan) {
+            const bool began = !m_hostActive;
+            if (began && !m_starterBegan) {
                 m_allActive = true; // a session no starter began here: its folder is not known
             }
             m_hostActive = true;
             m_sawRunning = m_sawRunning || running;
+            if (began) {
+                // A worker on its idle wait takes up the active cadence from this pass.
+                m_passRequested = true;
+                m_wake.notify_all();
+            }
             return;
         }
         const bool ended = m_hostActive;
@@ -1660,12 +1666,9 @@ RecordingStore::beginSession(const QString& kind, const QString& uid, const QStr
     }
     m_active.insert(path);
     m_starterBegan = true;
-    if (m_foldersChanged) {
-        m_passRequested = true;
-    }
-    if (m_passRequested) {
-        m_wake.notify_all();
-    }
+    // Always, a folder unchanged too: a worker on its idle wait takes up the active cadence from this pass.
+    m_passRequested = true;
+    m_wake.notify_all();
     // A compaction already rewriting this journal finishes before the decoder may append to it.
     m_settled.wait(lock, [this, &path]() { return m_compacting != path || m_stop; });
     return path;

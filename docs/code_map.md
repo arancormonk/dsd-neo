@@ -8164,7 +8164,8 @@ Qt Quick frontend (`src/ui/qt`):
     whose folder.json is gone by the time it is read leaves the table; a start is never handed a folder whose
     folder.json no longer names its owner (one not read yet leaves the table there and then); a start's relabel made
     while the worker reads the folder stands. It checks for exit between folders and between slices. Later passes wake
-    every second while a folder is in use, else on request or once a minute, and tail each journal from its byte
+    every second while a folder is in use, else on request or once a minute (a folder turning in use, at a session start
+    in it, changed or not, or a session the host reports, wakes one at once), and tail each journal from its byte
     cursor, complete lines only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name
     inside the folder). A
     journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
@@ -8229,7 +8230,7 @@ Qt Quick frontend (`src/ui/qt`):
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
     lost while a root is listed, a folder read, a journal tailed, an unlink runs, the limit runs or before a session
-    start),
+    start; a session start waking an idle worker),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in

@@ -1605,6 +1605,40 @@ test_root_gone_before_a_session_start(void) {
     expect("start: still nothing where the storage was", !QFileInfo::exists(ext));
 }
 
+/* Wait (at most five seconds) for the store to deliver @p count recordings from a pass the test did not ask for. */
+bool
+counted_soon(const RecordingStore& store, int count) {
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (store.recordingCount() != count && dsd_realtime_mono_ms() < deadline) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return store.recordingCount() == count;
+}
+
+/* Issue #708: a folder that turns active wakes the worker from its idle wait (an hour here, a minute in the app), so
+ * the recordings of a session in an existing folder are read at the active cadence from its start, whether a starter
+ * begins it in an unchanged folder or the host reports a session no starter began. */
+void
+test_session_start_wakes_the_worker(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    write_folder_json(folder, QString(kUidA), QStringLiteral("County"));
+    Store s(roots.list());
+    expect("wake: nothing indexed yet", s.store.recordingCount() == 0);
+    record(folder, QStringLiteral("00000000000000F6-1"), QStringLiteral("a.wav"), 1754705000, 60);
+    expect("wake: the session reuses the folder as it is",
+           QDir::cleanPath(s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County")))
+               == QDir::cleanPath(folder));
+    expect("wake: a starter's session in an unchanged folder wakes a pass", counted_soon(s.store, 1));
+    s.store.endSession();
+    s.pass();
+    record(folder, QStringLiteral("00000000000000F6-2"), QStringLiteral("b.wav"), 1754705010, 61);
+    s.store.hostSessionReport(true, true, false);
+    expect("wake: a session the host reports wakes a pass", counted_soon(s.store, 2));
+    s.store.hostSessionReport(true, false, false);
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -2100,6 +2134,7 @@ main(int argc, char** argv) {
     test_root_gone_during_the_limit();
     test_root_gone_during_an_unlink();
     test_root_gone_before_a_session_start();
+    test_session_start_wakes_the_worker();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
