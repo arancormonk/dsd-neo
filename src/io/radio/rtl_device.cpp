@@ -2789,6 +2789,35 @@ replay_handle_eof_sequence(struct rtl_device* s) {
     replay_wait_for_demod_drain(s);
 }
 
+/* The input stopped at a boundary that starts the demod over (@p on 1: an --iq-loop pass end, a RETUNE or a RESET) or
+   the boundary passed (0): rtl_replay_eof_state::replay_input_boundary. Setting it wakes the demod, which may be
+   waiting for input that will not come before the boundary, to push out what it holds. */
+static void
+replay_set_input_boundary(struct rtl_device* s, int on) {
+    if (!s->replay_has_eof_state || !s->replay_eof.replay_input_boundary) {
+        return;
+    }
+    s->replay_eof.replay_input_boundary->store(on, std::memory_order_release);
+    if (on) {
+        replay_device_wake_all(s);
+    }
+}
+
+/* The idle wait before an event (replay_wait_for_event_boundary_drain()), with the input marked stopped at a boundary
+   (replay_set_input_boundary()) for the kinds that start the demod over. 1 once idle, 0 when the replay stops. */
+static int
+replay_wait_for_event_idle(struct rtl_device* s, dsd_iq_event_kind kind) {
+    const int starts_over = (kind == DSD_IQ_EVENT_RETUNE || kind == DSD_IQ_EVENT_RESET) ? 1 : 0;
+    if (starts_over) {
+        replay_set_input_boundary(s, 1);
+    }
+    const int idle = replay_wait_for_event_boundary_drain(s, (int)kind);
+    if (starts_over) {
+        replay_set_input_boundary(s, 0);
+    }
+    return idle;
+}
+
 static int
 replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uint64_t data_offset, int* phase,
                                int* have_carry, uint8_t* carry_byte, uint64_t* complex_written) {
@@ -2799,8 +2828,8 @@ replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uin
            && s->replay_cfg.events[*event_cursor].byte_offset <= data_offset) {
         const dsd_iq_event* event = &s->replay_cfg.events[*event_cursor];
         /* Every event waits for an idle pipeline, even one at the offset of the event before it (the wait then returns
-           at once). */
-        if (!replay_wait_for_event_boundary_drain(s, (int)event->kind)) {
+           at once). A RETUNE or a RESET starts the demod over, so an uplink look-ahead is pushed out before it. */
+        if (!replay_wait_for_event_idle(s, event->kind)) {
             return 0;
         }
         replay_dispatch_event(s, event, phase, have_carry, carry_byte, complex_written);
@@ -2834,19 +2863,6 @@ replay_note_capture_end(struct rtl_device* s, uint64_t pass_samples) {
         return;
     }
     s->replay_eof.replay_end_notice->store(pass_samples + 1U, std::memory_order_release);
-}
-
-/* An --iq-loop pass ended (@p on 1) or its rewind boundary passed (0): rtl_replay_eof_state::replay_pass_end. Setting
-   it wakes the demod, which may be waiting for input that this pass will not bring, to push out what it holds. */
-static void
-replay_set_pass_end(struct rtl_device* s, int on) {
-    if (!s->replay_has_eof_state || !s->replay_eof.replay_pass_end) {
-        return;
-    }
-    s->replay_eof.replay_pass_end->store(on, std::memory_order_release);
-    if (on) {
-        replay_device_wake_all(s);
-    }
 }
 
 /* The capture's end on this pass: the replay's end, or, under --iq-loop, a rewind (CONTINUE, the next pass begun).
@@ -2890,10 +2906,10 @@ replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io) {
      * reconfigure callback would otherwise purge that work and a short
      * fast-mode capture could loop without ever publishing output. The pass's
      * input ends here as a capture's does at EOF, so an uplink look-ahead is
-     * pushed out before the boundary (rtl_replay_eof_state::replay_pass_end). */
-    replay_set_pass_end(s, 1);
+     * pushed out before the boundary (rtl_replay_eof_state::replay_input_boundary). */
+    replay_set_input_boundary(s, 1);
     const int boundary = replay_wait_for_event_boundary_drain(s, 0);
-    replay_set_pass_end(s, 0);
+    replay_set_input_boundary(s, 0);
     if (!boundary) {
         return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }

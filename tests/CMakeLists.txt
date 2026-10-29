@@ -16766,6 +16766,22 @@ if(DSD_HAS_RADIO)
         "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
         "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
     )
+    # The uplink with a recorded stream gap (a RETUNE and a RESET, as an RTL-SDR stall recovery records it) 20 symbols
+    # after burst 2005 (TETRA_UPLINK_GAP_NAME): the reset starts the burst timing over, so the uplink pushes what it
+    # holds back out before the gap, and every burst decodes, in order (before, the reset dropped 2005's last 108
+    # symbols). Fast and paced in real time, where the demod waits for a chunk the boundary holds back.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_GAP
+        tetra_uplink_bursts_gap_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_ul_all}"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_GAP_REALTIME
+        tetra_uplink_bursts_gap_72k
+        "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
+        "${_dsd_tetra_ul_all}"
+    )
     # The same capture under --iq-loop: each pass ends 20 symbols after the last burst, and the rewind pushes the
     # look-ahead out as the capture's end does, so every pass decodes both bursts (before, the last one decoded on no
     # pass).

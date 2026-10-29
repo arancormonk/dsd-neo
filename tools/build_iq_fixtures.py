@@ -442,6 +442,13 @@ TETRA_UPLINK_PHASE_TRIM_S = 0.15
 TETRA_UPLINK_SHORT_TAIL_NAME = "tetra_uplink_bursts_short_tail_72k"
 TETRA_UPLINK_SHORT_TAIL_SYMBOLS = 20
 TETRA_UPLINK_SHORT_LEAD_SLOTS = 4
+# The uplink with a recorded stream gap (an RTL-SDR stall recovery: a RETUNE and a RESET at the same offset, on the
+# centre in force) TETRA_UPLINK_GAP_TAIL_SYMBOLS after the end of burst TETRA_UPLINK_GAP_AFTER, the last before 18
+# noise-only slots: a receiver that holds symbols back must hand that burst over before the gap starts it over. A
+# sidecar alone, on the uplink fixture's data.
+TETRA_UPLINK_GAP_NAME = "tetra_uplink_bursts_gap_72k"
+TETRA_UPLINK_GAP_AFTER = 4
+TETRA_UPLINK_GAP_TAIL_SYMBOLS = 20
 # EN 300 392-2 clause 9.4.4.3: the tail bits 1100, and the control uplink burst's extended training sequence
 # (include/dsd-neo/core/sync_patterns.h TETRA_CB_SYNC).
 TETRA_TAIL_DIBITS = (3, 0)
@@ -2073,6 +2080,42 @@ def build_tetra_uplink(out_dir):
     return total
 
 
+def build_tetra_uplink_gap(out_dir):
+    """Write the uplink with a recorded stream gap just after a burst (TETRA_UPLINK_GAP_NAME), a sidecar on the uplink
+    fixture's data."""
+    sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
+    index = TETRA_UPLINK_GAP_AFTER
+    if TETRA_UPLINK_BURSTS[index + 1][1] == 0:
+        raise ValueError(f"{TETRA_UPLINK_GAP_NAME}: burst {index} has no noise-only slots after it")
+    symbols = len(tetra_ul_burst_dibits(TETRA_UPLINK_BURSTS[index][0], TETRA_UPLINK_SSI_BASE + index))
+    gap_at = (tetra_uplink_burst_starts()[index] + (symbols + TETRA_UPLINK_GAP_TAIL_SYMBOLS) * sps) * CU8_ALIGN_BYTES
+    with open(os.path.join(out_dir, TETRA_UPLINK_NAME + ".iq"), "rb") as handle:
+        payload = handle.read()
+    gap = {
+        "byte_offset": gap_at,
+        "center_frequency_hz": TETRA_UPLINK_CENTRE_HZ,
+        "capture_center_frequency_hz": TETRA_UPLINK_CENTRE_HZ,
+        "sample_rate_hz": TETRA_UPLINK_RATE_HZ,
+        "reason": "usb_recovery",
+    }
+    written = write_capture(
+        out_dir,
+        TETRA_UPLINK_GAP_NAME,
+        payload,
+        data_file=TETRA_UPLINK_NAME + ".iq",
+        version=2,
+        sample_rate_hz=TETRA_UPLINK_RATE_HZ,
+        rtl_dsp_bw_khz=TETRA_UPLINK_RATE_HZ // 1000,
+        center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+        capture_center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+        contains_retunes=True,
+        capture_retune_count=1,
+        events=(dict(gap, kind="RETUNE"), dict(gap, kind="RESET")),
+    )
+    print(f"{TETRA_UPLINK_GAP_NAME:28s} gap     sidecar on {TETRA_UPLINK_NAME}.iq")
+    return written
+
+
 def analog_voice_band(rng, count):
     """Voice-band audio: noise limited to 300-3000 Hz, louder in syllables than between them.
 
@@ -2345,7 +2388,7 @@ def derived_fixture_names():
         + [TETRA_HALFBAND_NAME]
         + [TETRA_UPLINK_NAME]
         + [tetra_uplink_phase_name(offset) for offset in TETRA_UPLINK_PHASE_OFFSETS]
-        + [TETRA_UPLINK_SHORT_TAIL_NAME]
+        + [TETRA_UPLINK_SHORT_TAIL_NAME, TETRA_UPLINK_GAP_NAME]
     )
 
 
@@ -2381,6 +2424,7 @@ def build_all_derived(out_dir, dmr_synth_gen, cache):
     total += build_tetra_stress(out_dir)
     total += build_tetra_halfband(out_dir)
     total += build_tetra_uplink(out_dir)
+    total += build_tetra_uplink_gap(out_dir)
     total += build_nfm_synth(out_dir)
     total += build_am_synth(out_dir)
     total += build_analog_synth(out_dir)

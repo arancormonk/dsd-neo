@@ -567,12 +567,16 @@ burst meets the receiver at every sampling phase twice over. `DECODE_IQ_TETRA_UP
 bursts in order at each offset. The symbol timing and carrier loops free-run between bursts and could not pull a burst
 in from a bad phase (from half a symbol off the timing loop hangs for most of a normal burst; the carrier loop can sit
 45 degrees off): offsets 1 to 7 lost 9 of 112 bursts before the uplink took each burst's timing and phase from its
-training sequence (`tetra_uplink_timing.h`). That burst timing holds 128 symbols back, so two cases check they come
-out where the Gardner's input stops: `DECODE_IQ_TETRA_UPLINK_SQUELCH` runs the uplink fixture under `--squelch -47`
-(every burst but the weak 2007, which the squelch closes on; before the drain on squelched blocks 4 decoded), and
+training sequence (`tetra_uplink_timing.h`). That burst timing holds 128 symbols back, so two cases check they come out
+where the Gardner's input stops: `DECODE_IQ_TETRA_UPLINK_SQUELCH` runs the uplink fixture under `--squelch -47` (every
+burst but the weak 2007, which the squelch closes on; before the drain on squelched blocks 4 decoded), and
 `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL` (`tetra_uplink_bursts_short_tail_72k`, the last two bursts with the capture ending
-20 symbols after the last) requires the last burst and then the end-of-capture notice. With the weak bursts 3, 6 and
-9 dB lower (not committed) the sweep decoded 121, 114 and 105 of 128 before and 128, 128 and 117 after.
+20 symbols after the last) requires the last burst and then the end-of-capture notice. `DECODE_IQ_TETRA_UPLINK_GAP`
+(`tetra_uplink_bursts_gap_72k`, `TETRA_UPLINK_GAP_NAME`, a sidecar on the uplink fixture's data with a recorded stream
+gap, a `RETUNE` and a `RESET` as an RTL-SDR stall recovery records them, 20 symbols after burst 2005) requires all 16
+bursts in order, fast and in real time (`_REALTIME`): the reset starts the burst timing over, and before the replay
+pushed its look-ahead out at a `RETUNE` or `RESET` it dropped the last 108 symbols of 2005. With the weak bursts 3, 6
+and 9 dB lower (not committed) the sweep decoded 121, 114 and 105 of 128 before and 128, 128 and 117 after.
 
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are pi/4-DQPSK
 shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in

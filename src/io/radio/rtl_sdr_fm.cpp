@@ -1001,7 +1001,7 @@ struct RtlSdrInternals {
     std::atomic<uint64_t> replay_end_notice{0U}; /* see rtl_replay_eof_state::replay_end_notice */
     /* See rtl_replay_eof_state::replay_demod_flush_owed; demod thread writes, both drain decisions read. */
     std::atomic<int> replay_demod_flush_owed{0};
-    std::atomic<int> replay_pass_end{0}; /* see rtl_replay_eof_state::replay_pass_end */
+    std::atomic<int> replay_input_boundary{0}; /* see rtl_replay_eof_state::replay_input_boundary */
     /* The last chunk the demod took, which tags the output of its end-of-capture flush. Demod thread only. */
     struct rtl_replay_chunk_meta replay_flush_chunk{};
     /* The capture chunk in the input ring: the replay reader writes it before the commit, the demod copies it at reserve
@@ -1219,7 +1219,7 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_last_consume_gen.store(0, std::memory_order_release);
     s->replay_end_notice.store(0U, std::memory_order_release);
     s->replay_demod_flush_owed.store(0, std::memory_order_release);
-    s->replay_pass_end.store(0, std::memory_order_release);
+    s->replay_input_boundary.store(0, std::memory_order_release);
     s->replay_flush_chunk = rtl_replay_chunk_meta{};
     s->replay_chunk = rtl_replay_chunk_meta{};
     /* The internals are calloc'ed, so the virtual block 0 is set here. */
@@ -3301,11 +3301,11 @@ demod_copy_wrapped_input_block(struct demod_state* d, const DemodInputSpan* span
 }
 
 /* A replay demod that owes the decoder an uplink look-ahead flush (replay_demod_flush_owed) waits for input here, not
-   in the input ring: the ring's wait returns only with data or at exit, and the end of the capture, or of an --iq-loop
-   pass, brings none, so the flush the loop top runs (demod_replay_flush_uplink()) would never come and the replay
-   would neither end nor rewind. Returns 1 to read the ring (there is input, or no flush is owed: the flag is the demod
-   thread's own, so it cannot change during the wait), 0 to go back to the loop top (the input ended or the pass did,
-   or the stream stops). The wait is 10 ms at a time, so a wake lost between the look and the wait costs at most
+   in the input ring: the ring's wait returns only with data or at exit, and the end of the capture, or a boundary the
+   input stops at (an --iq-loop pass end, a RETUNE or a RESET), brings none, so the flush the loop top runs
+   (demod_replay_flush_uplink()) would never come and the replay would neither end nor go past the boundary. Returns 1
+   to read the ring (there is input, or no flush is owed: the flag is the demod thread's own, so it cannot change
+   during the wait), 0 to go back to the loop top (the input ended or stopped at a boundary, or the stream stops). The wait is 10 ms at a time, so a wake lost between the look and the wait costs at most
    that. */
 static int
 demod_replay_input_or_flush(void) {
@@ -3317,8 +3317,8 @@ demod_replay_input_or_flush(void) {
         if (input_ring_used(&input_ring) != 0U) {
             return 1;
         }
-        if (s->replay_input_eof.load(std::memory_order_acquire) || s->replay_pass_end.load(std::memory_order_acquire)
-            || demod_should_exit_requested()) {
+        if (s->replay_input_eof.load(std::memory_order_acquire)
+            || s->replay_input_boundary.load(std::memory_order_acquire) || demod_should_exit_requested()) {
             return 0;
         }
         dsd_mutex_lock(&input_ring.ready_m);
@@ -4547,12 +4547,13 @@ demod_wait_for_replay_demand(struct output_state* o) {
  * only on a stop, a forced stop or the global exit. It waits on the demand condition, which the decoder's
  * acknowledgement and the demod's (replay_demod_drain_decide()) both broadcast. */
 
-/* Under output.ready_m: the pipeline is idle for an event. At an --iq-loop pass end it is idle only once the demod
-   pushed out what an uplink look-ahead held (demod_replay_flush_uplink()) and the decoder read it, so a burst that ends
-   just before the capture does is decoded on that pass, not dropped or spliced to the next. */
+/* Under output.ready_m: the pipeline is idle for an event. At a boundary that starts the demod over (an --iq-loop pass
+   end, a RETUNE or a RESET: replay_input_boundary) it is idle only once the demod pushed out what an uplink look-ahead
+   held (demod_replay_flush_uplink()) and the decoder read it, so a burst that ends just before the boundary is decoded
+   before it, not dropped by the reset or spliced to the next pass. */
 static int
 replay_pipeline_idle_locked(const struct RtlSdrInternals* s) {
-    if (s->replay_pass_end.load(std::memory_order_acquire)
+    if (s->replay_input_boundary.load(std::memory_order_acquire)
         && s->replay_demod_flush_owed.load(std::memory_order_acquire)) {
         return 0;
     }
@@ -4898,9 +4899,10 @@ demod_note_replay_flush_owed(const struct demod_state* d, int replay_active) {
     g_stream->replay_demod_flush_owed.store(dsd_demod_tetra_uplink_held(d) > 0U ? 1 : 0, std::memory_order_release);
 }
 
-/* The end of a replay, or of an --iq-loop pass, on an uplink session: once the input ended (or the pass did, its rewind
-   waiting) and the decoder took every block, push the symbols the look-ahead holds out as a block of their own
-   (dsd_demod_tetra_uplink_flush()), tagged as the last chunk, then let the demod count as drained, or the rewind's
+/* The end of a replay, or a boundary its input stops at (an --iq-loop pass end, a RETUNE or a RESET), on an uplink
+   session: once the input ended (or stopped there, the boundary waiting) and the decoder took every block, push the
+   symbols the look-ahead holds out as a block of their own (dsd_demod_tetra_uplink_flush()), tagged as the last chunk
+   (so with the centre and stream gap count from before the boundary), then let the demod count as drained, or the
    boundary find the pipeline idle. Returns 1 when it ran. */
 static int
 demod_replay_flush_uplink(struct demod_state* d, struct output_state* o) {
@@ -4908,7 +4910,8 @@ demod_replay_flush_uplink(struct demod_state* d, struct output_state* o) {
     if (!s || !s->replay_demod_flush_owed.load(std::memory_order_acquire) || input_ring_used(&input_ring) != 0U) {
         return 0;
     }
-    if (!s->replay_input_eof.load(std::memory_order_acquire) && !s->replay_pass_end.load(std::memory_order_acquire)) {
+    if (!s->replay_input_eof.load(std::memory_order_acquire)
+        && !s->replay_input_boundary.load(std::memory_order_acquire)) {
         return 0;
     }
     if (!demod_enter_processing_block(&controller)) {
@@ -8294,7 +8297,7 @@ stream_open_fill_replay_eof_state(struct rtl_replay_eof_state* eof_state) {
     eof_state->chunk = &g_stream->replay_chunk;
     eof_state->replay_end_notice = &g_stream->replay_end_notice;
     eof_state->replay_demod_flush_owed = &g_stream->replay_demod_flush_owed;
-    eof_state->replay_pass_end = &g_stream->replay_pass_end;
+    eof_state->replay_input_boundary = &g_stream->replay_input_boundary;
     eof_state->eof_m = &g_stream->replay_eof_m;
     eof_state->eof_cond = &g_stream->replay_eof_cond;
     eof_state->on_input_drained = rtl_replay_on_input_drained;

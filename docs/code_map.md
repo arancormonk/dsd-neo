@@ -4625,15 +4625,20 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     as a block of its own once the input ended and the decoder took every block (`demod_replay_flush_uplink()`);
     `replay_demod_flush_owed`, set after every replay block, keeps both drain decisions (`replay_demod_drain_decide()`,
     `replay_mark_input_drained()`) from counting the demod drained before that, so the end-of-capture notice still
-    follows the last burst. An `--iq-loop` pass end does the same before its rewind: the reader sets `replay_pass_end`
-    while it waits for the rewind's idle boundary, the demod flushes on it as on EOF, and
-    `replay_pipeline_idle_locked()` is not idle while that flush is owed, so the pass's last burst is decoded on its own
-    pass rather than dropped by the rewind. While such a flush is owed the demod waits for the next chunk in
-    `demod_replay_input_or_flush()`, not in the input ring, whose wait returns only with data: paced in real time the
-    demod is already waiting there when the input ends, and would never reach the flush. A live stream's stop drops it
-    with the rest of the pipeline's in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`,
-    `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL` and
-    `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP`, each also `_REALTIME`.
+    follows the last burst. An `--iq-loop` pass end does the same before its rewind, and so does a `RETUNE` or `RESET`
+    event (a retune, or a recorded stream gap) before the reset it brings: the reader sets `replay_input_boundary` while
+    it waits for the boundary's idle pipeline (`replay_wait_for_event_idle()` for an event), the demod flushes on it as
+    on EOF, and `replay_pipeline_idle_locked()` is not idle while that flush is owed, so a burst that ends just before
+    the boundary is decoded before it rather than dropped by the reset or the rewind, and its block carries the centre
+    and stream gap count from before the boundary. A `MUTE` starts nothing over and flushes nothing. While such a flush
+    is owed the demod waits for the next chunk in `demod_replay_input_or_flush()`, not in the input ring, whose wait
+    returns only with data: paced in real time the demod is already waiting there when the input ends, and would never
+    reach the flush. A live stream's stop drops it with the rest of the pipeline's in-flight blocks, and so do a live
+    retune and a live stall recovery: live, the boundary is known only once it happened, and pushed out then the burst
+    would reach the decoder after the gap it reports. Tests: `DSP_TETRA_UPLINK_TIMING`, `IO_RTL_RETUNE_PREPARE` (the
+    signal search's drop), `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`,
+    `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP` and `DECODE_IQ_TETRA_UPLINK_GAP`, each
+    also `_REALTIME`.
   - Published profile. The stream publishes TETRA as the running channel profile
     (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag and so
     the UI channel width) only while the TETRA channel filter runs, WIDE otherwise;

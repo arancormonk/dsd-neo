@@ -427,14 +427,15 @@ or realtime. These replays are outside it altogether:
 
 The last 1.5 ms or so of a capture is never decoded. The front end's filters hold back their look-ahead (about 74
 samples at 48 kHz on the default 1.536 Msps chain, 67 on a 48 kHz capture), and nothing flushes it when the capture
-ends, so a frame that ends inside those samples is lost: the `edacs` fixture's last message fails its BCH check for
-this reason. A `RESET` drops what the filters held the same way, as a live retune does. On a real capture that is a
-small, steady cost at the dwell boundaries: a 593 s P25 Phase 1/2 capture with 36 retunes between the control channel
-and Phase 2 voice channels, replayed under `-f2 -mq -X` without `-T` over 16 realizations (`docs/testing.md`, "Replay
-determinism"), decodes 3.88 +/- 0.18 fewer of its 677 Phase 2 syncs and 2.44 +/- 0.75 fewer of its 1040 voice frames
-than the build before the streaming filters, with audio errors equal (+0.19 +/- 0.40). The whole loss comes from the
-channel filter's streaming change, whose held tail is 67 samples, 1.4 ms at 48 kHz; the half-band decimators add
-nothing measurable.
+ends, so a frame that ends inside those samples is lost: the `edacs` fixture's last message fails its BCH check for this
+reason. A `RESET` drops what the filters held the same way, as a live retune does. (A TETRA uplink session's burst
+timing, which holds 128 symbols back, about 7 ms, is pushed out before a `RETUNE`, a `RESET`, an `--iq-loop` rewind and
+the capture's end.) On a real capture that is a small, steady cost at the dwell boundaries: a 593 s P25 Phase 1/2
+capture with 36 retunes between the control channel and Phase 2 voice channels, replayed under `-f2 -mq -X` without `-T`
+over 16 realizations (`docs/testing.md`, "Replay determinism"), decodes 3.88 +/- 0.18 fewer of its 677 Phase 2 syncs and
+2.44 +/- 0.75 fewer of its 1040 voice frames than the build before the streaming filters, with audio errors equal (+0.19
++/- 0.40). The whole loss comes from the channel filter's streaming change, whose held tail is 67 samples, 1.4 ms at 48
+kHz; the half-band decimators add nothing measurable.
 
 - **At a dwell's end.** Diffing the two decodes at the recorded alignment, the missing lines are almost all frames that
   straddle a dwell's closing `RESET`, decoded partly from the old channel and partly from the new: `DUID ERR`,
