@@ -1252,6 +1252,9 @@ dsd_tg_policy_set_fields_key(dsd_state* state, uint64_t context, unsigned int ge
         return dsd_tg_policy_set_fields(state, key->id_start, key->id_end, values, mask);
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (!ctx) {
+        return 1;
+    }
     const int index = tg_policy_find_key_idx(ctx, key);
     if (index < 0) {
         return 1;
@@ -1430,6 +1433,9 @@ dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int genera
         return dsd_tg_policy_remove_bounds(state, key->id_start, key->id_end);
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (!ctx) {
+        return 1;
+    }
     const int index = tg_policy_find_key_idx(ctx, key);
     if (index < 0) {
         return 1;
