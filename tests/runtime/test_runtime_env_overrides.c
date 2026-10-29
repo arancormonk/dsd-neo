@@ -456,7 +456,7 @@ main(int argc, char** argv) {
         rc = run_session_reset();
     }
     if (rc == 0) {
-        printf("RUNTIME_ENV_OVERRIDES %s: OK\n", argv[1]);
+        printf("RUNTIME_ENV_OVERRIDES: OK\n");
     }
     return rc;
 }
