@@ -653,8 +653,36 @@ void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, 
  * Decoder thread only.
  *
  * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
+ *
+ * A stop ends a paused -Y scan too (issue #671): it clears dsd_state::lcn_scan_paused and a resume still pending, and
+ * leaves dsd_state::operator_tuned alone, since the tuner stays with the operator.
  */
 int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Pause the running -Y scan (dsd_engine_channel_scan_pause(), issue #671) from a command, and keep what became
+ * of its return to the configured monitor for the command drain, as svc_leave_channel_scan() keeps a leave's (issue
+ * #578).
+ *
+ * @p in_place 1 when no tune follows (a tuner release), so the carrier's decoding is forgotten; 0 after an accepted
+ * tune, whose carrier boundary already forgot it. The scan keeps its list, cursor, avoids and session edits, and waits
+ * for svc_resume_channel_scan(). Decoder thread only; safe under the P25 SM tick guard its caller holds.
+ *
+ * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
+ */
+int svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place);
+
+/**
+ * @brief Resume the paused -Y scan (dsd_engine_channel_scan_resume(), issue #671) from a command.
+ *
+ * A resume that finds no row (NO_ROW) or whose row's tune is refused (REFUSED) leaves the scan paused, with the reason
+ * on the status line; the undo of a refused typed row's attempt is recorded as a leave's return to the monitor (issue
+ * #578). A resume still pending answers PENDING and does nothing more. Decoder thread only; safe under the P25 SM tick
+ * guard the guarded scanner commands hold.
+ *
+ * @return A DSD_SCAN_RESUME_* result.
+ */
+int svc_resume_channel_scan(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief How many radio streams app-control has started (svc_rtl_restart_locked()), from 0; always 0 without radio

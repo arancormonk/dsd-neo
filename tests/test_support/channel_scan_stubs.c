@@ -20,6 +20,26 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Nor a -Y scan to pause or resume (issue #671): ENGINE_CHANNEL_SCAN and ENGINE_NO_CARRIER_RESET drive the engine's. */
+int
+dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
+    (void)in_place;
+    return dsd_engine_channel_scan_leave(opts, state);
+}
+
+int
+dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return DSD_SCAN_RESUME_NO_ROW;
+}
+
+int
+dsd_engine_channel_scan_resume_monitor(const dsd_state* state) {
+    (void)state;
+    return 0;
+}
+
 /* Nor a -Y tune or retry staged: a rigctl follow (issue #621) is not left to one. */
 int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {

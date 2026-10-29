@@ -2195,8 +2195,8 @@ struct dsd_state {
     int lcn_freq_count;
     int lcn_freq_roll; //number we have 'rolled' to in search of the CC
     /* The -Y scan session (issue #671): it moves whenever a -Y scan ends (dsd_engine_channel_scan_leave(): a stop, a
-       list replacement, a trunk-scan start), so a row tune that timed out under one scan never commits its row in the
-       next. */
+       list replacement, a trunk-scan start), pauses or resumes, so a row tune that timed out under one scan never
+       commits its row in the next, nor after a pause. */
     uint32_t lcn_scan_session;
     int is_con_plus; //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync
 
@@ -2457,7 +2457,15 @@ struct dsd_state {
      * it and the scanner rotation reads it. lcn_avoid_count mirrors the avoid store for the
      * status line and is maintained by dsd_state_trunk_lcn_avoid_set()/_clear(). The
      * trunk_scan_* trio is written by the trunk-scan coordinator, which owns the truth. */
-    uint8_t lcn_scan_hold;             /**< 1 = -Y rotation paused on the row on air */
+    uint8_t lcn_scan_hold; /**< 1 = -Y rotation held on the row on air */
+    /* A -Y scan the operator paused (issue #671): its list, cursor, avoids and session edits are kept while
+     * scanner_mode is 0, so the receiver stays where the operator put it until a resume
+     * (dsd_engine_channel_scan_pause(), _resume()). lcn_scan_resume_pending: a resume's row tune timed out; until it
+     * lands the scan stays paused and no row is named. operator_tuned: the operator took the tuner from its automatic
+     * owner (a scan pause, a tuner release); a resume and a new session clear it, a stop does not. */
+    uint8_t lcn_scan_paused;
+    uint8_t lcn_scan_resume_pending;
+    uint8_t operator_tuned;
     uint16_t lcn_avoid_count;          /**< Avoided -Y rows within lcn_freq_count */
     uint8_t trunk_scan_hold;           /**< 1 = --trunk-scan dwell paused on the active target */
     uint8_t trunk_scan_active_avoided; /**< 1 = the parked target is itself avoided (fallback) */

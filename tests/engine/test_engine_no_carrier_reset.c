@@ -2166,6 +2166,97 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
     return rc;
 }
 
+/* Issue #671 (N8, N10), through the real untyped step. A step's tune staged before a pause never commits after it. A
+   resume of the paused list whose row tune times out stays paused, naming no row, until the tune lands: a reception
+   heard meanwhile decodes under no row's name or keys, and a second resume tunes nothing. The landing ends that
+   reception, commits the row and only then publishes the scan. A resume's late failure leaves the scan paused, with the
+   reason on the status line. */
+static int
+test_untyped_resume_waits_for_its_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 976012500, 977012500) != 0
+        || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
+        || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    (void)step_into_a_timed_out_tune(opts, state);
+    rc |= expect_true("pause-staged-step-pending", g_retune_in_flight.active && state->lcn_freq_roll == 0);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    uint32_t carrier_seq = state->carrier_seq;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("pause-staged-step-landing-taken",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_true("pause-staged-step-commits-nothing",
+                      state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL && state->carrier_seq == carrier_seq);
+    rc |= expect_true("pause-staged-step-stays-paused", opts->scanner_mode == 0 && state->lcn_scan_paused == 1);
+
+    /* The resume's row (row 0, from the kept cursor) times out. */
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("resume-times-out", dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                                              && g_rtl_tune_freq == 976012500U);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_true("resume-pending-stays-paused",
+                      opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 1
+                          && state->operator_tuned == 1 && state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL);
+    const int tune_calls = g_rtl_tune_calls;
+    rc |=
+        expect_true("resume-again-tunes-nothing", dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                                                      && g_rtl_tune_calls == tune_calls && g_retune_in_flight.active);
+    run_synced_frames(opts, state, 1, -1);
+    rc |= expect_true("resume-pending-reception-frames", g_frame_count == 2);
+    rc |= frame_was("resume-pending-reception", 0, "", 0ULL);
+    rc |= frame_was("resume-pending-reception", 1, "", 0ULL);
+
+    /* The row lands while a reception decodes: it ends there, still unnamed, and the outer pass commits the row. */
+    run_synced_frames(opts, state, 6, 1);
+    rc |= expect_true("resume-landing-ends-the-reception", g_frame_count == 2 && state->synctype == DSD_SYNC_NONE);
+    rc |= frame_was("resume-landing-reception", 1, "", 0ULL);
+    rc |= expect_true("resume-landing-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_true("resume-landing-publishes-the-scan",
+                      opts->scanner_mode == 1 && state->lcn_scan_paused == 0 && state->lcn_scan_resume_pending == 0
+                          && state->operator_tuned == 0 && state->lcn_freq_roll == 1);
+    run_synced_frames(opts, state, 1, -1);
+    rc |= frame_was("resume-landed-reception", 0, "ALPHA", 999ULL);
+
+    /* Paused again, the next resume's row (row 1) times out and fails late. */
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    rc |= expect_true("pause-leaves-the-row-keys", state->rkey_array[9] == 0ULL && opts->scanner_mode == 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("resume-row-1-times-out", dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                                                    && g_rtl_tune_freq == 977012500U);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_hz = 976012500U;
+    state->ui_msg[0] = '\0';
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |=
+        expect_true("resume-late-failure-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    rc |= expect_true("resume-late-failure-stays-paused",
+                      opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0
+                          && state->operator_tuned == 1 && state->lcn_freq_roll == 1);
+    if (strcmp(state->ui_msg, "Scan stays paused: tune to 977.012500 MHz failed") != 0) {
+        DSD_FPRINTF(stderr, "resume late failure toast: \"%s\"\n", state->ui_msg);
+    }
+    rc |= expect_true("resume-late-failure-says-why",
+                      strcmp(state->ui_msg, "Scan stays paused: tune to 977.012500 MHz failed") == 0);
+
+    /* A resume whose row lands at once runs at once. */
+    rc |= expect_true("resume-lands-at-once", dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED
+                                                  && opts->scanner_mode == 1 && state->lcn_freq_roll == 2
+                                                  && g_rtl_tune_freq == 977012500U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #671: the rigctl leg moves and the RTL tune then times out. The receiver has left the row, so the outgoing
    boundary runs and the tone heard there goes at once, while the row itself waits for the RTL landing, whose own
    boundary and install then commit it. And an operator hold taken meanwhile does not undo the landing: it stops the
@@ -7921,6 +8012,7 @@ main(void) {
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
+    rc |= test_untyped_resume_waits_for_its_row();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_moves_on_while_an_nfm_retune_is_in_flight(DSD_TRUNK_SCAN_CONTROL_ADVANCE,

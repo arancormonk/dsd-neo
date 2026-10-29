@@ -15563,6 +15563,79 @@ test_scan_leave_record_goes_with_its_stream(void) {
 }
 
 /*
+ * Issue #671: a -Y pause asks the front end back onto the configured monitor as a stop does, so a refusal of that
+ * return is reported and reconciled as the stop's is (issue #578), and the pause stands. A resume whose row's tune is
+ * refused (an nfm row whose own 20 kHz the 16 kHz DSP rate cannot filter) undoes what it began the same way: its
+ * return to the monitor is recorded and reconciled. Both run inside the guarded scanner commands, so nothing under them
+ * takes the tick guard again.
+ */
+static int
+test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                     DSD_SCAN_MODE_NXDN48, NULL, "pause");
+    state.lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    rc |= expect_int("pause: nfm row", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_NFM), 0);
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    if (!profile) {
+        finish_scan_row_on_analog(&opts, &state);
+        return 1;
+    }
+    profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+    profile->values.channel_bw_hz = 20000;
+    rc |= expect_int("pause: row width", dsd_channel_profile_set(&state, 0, profile), 0);
+    g_fake_analog_req_max_hz = 13200;
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    guard_probe_arm(&opts);
+#endif
+    /* Held as the guarded scanner commands hold it: nothing under the pause takes it again (it is not re-entrant). */
+    p25_sm_tick_guard_enter();
+    rc |= expect_int("pause: return refused at once", svc_pause_channel_scan(&opts, &state, 0), -1);
+    p25_sm_tick_guard_leave();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= expect_int("pause: the caller's hold only", g_guard_probe_holds, 1);
+#endif
+    rc |= expect_int("pause: paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1,
+                     1);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("pause: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("pause: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    rc |= expect_int("pause: still paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+
+    /* The front end takes the default the reconcile asked for; the configured width is set back to 16 kHz. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    const int requests = g_analog_req_calls;
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    const int holds = g_guard_probe_holds;
+#endif
+    p25_sm_tick_guard_enter();
+    rc |= expect_int("resume: refused", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_REFUSED);
+    p25_sm_tick_guard_leave();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= expect_int("resume: the caller's hold only", g_guard_probe_holds, holds + 1);
+#endif
+    rc |= expect_int("resume: still paused",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
+    rc |= expect_int("resume: the undo asked for the monitor", g_analog_req_calls > requests, 1);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("resume: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("resume: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    guard_probe_disarm();
+#endif
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+/*
  * Issue #578: a scan leave refused at once that asked for the AM default, on a stream that runs that default once the
  * requests queued before the leave have settled. An -fM session with the AM default leaves an am row at a 7.5 kHz rate
  * that cannot filter the default, while a request queued before the leave is still on its way; a retune in flight
@@ -20741,6 +20814,50 @@ test_scan_row_edit_commands_without_a_scan(void) {
     return rc;
 }
 
+/* Issue #671: the -Y pause and resume services. A pause keeps the list and its cursor, drops the hold and hands the
+   tuner to the operator. A resume with no row to go to, or whose row's tune is refused (audio input with no rigctl
+   peer tunes nothing), leaves the scan paused and says why. A stop ends a pause, and a resume still waiting on its row,
+   while the tuner stays the operator's. */
+static int
+test_channel_scan_pause_services(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.use_rigctl = 0;
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(&state, 1) = 852375000;
+    state.lcn_freq_roll = 1;
+    state.lcn_scan_hold = 1;
+    int rc = expect_int("pause: nothing asked of a monitor", svc_pause_channel_scan(&opts, &state, 1), 0);
+    rc |= expect_int("pause: paused with the cursor kept",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1
+                         && state.lcn_scan_hold == 0 && state.lcn_freq_roll == 1,
+                     1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 1);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("resume: no row", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_NO_ROW);
+    rc |= expect_str("resume: no row says why", state.ui_msg, "Scan stays paused: no scan channel to resume on");
+    rc |= expect_int("resume: no row stays paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 0);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 0);
+    rc |= expect_int("resume: refused", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_REFUSED);
+    rc |= expect_str("resume: refused says why", state.ui_msg, "Scan stays paused: tune to 852.375000 MHz failed");
+    rc |= expect_int("resume: refused stays paused",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 1 && state.lcn_freq_roll == 1,
+                     1);
+    state.lcn_scan_resume_pending = 1U; /* as a resume still waiting on its row */
+    (void)svc_leave_channel_scan(&opts, &state);
+    rc |= expect_int("stop: ends the pause, the tuner stays the operator's",
+                     state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0 && state.operator_tuned == 1, 1);
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -20750,6 +20867,7 @@ main(void) {
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
+    rc |= test_channel_scan_pause_services();
 #if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
     rc |= test_radio_control_unavailable_toasts();
 #endif
@@ -20872,6 +20990,7 @@ main(void) {
     rc |= test_scan_leave_left_to_later_on_analog_keeps_an_armed_switch();
     rc |= test_scan_leave_retired_by_a_row_keeps_an_armed_switch();
     rc |= test_scan_leave_record_goes_with_its_stream();
+    rc |= test_scan_pause_and_refused_resume_return_to_the_monitor();
     rc |= test_refused_leave_at_once_reads_the_am_default_it_asked_for();
     rc |= test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds();
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();

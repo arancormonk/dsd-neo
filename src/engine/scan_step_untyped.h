@@ -39,10 +39,22 @@ int dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int 
 int dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now);
 
 /* The engine loop's poll of a manual tune that timed out (dsd_engine_manual_tune_poll()). An untyped step's row commits
-   when its tune lands while its scan is still current: a -Y scan without modes in the same session
-   (dsd_state::lcn_scan_session), on the same map (trunk_chan_map_seq), the row still on the frequency tuned. A failure
-   reopens the scan's windows, as a step that failed in its wait does. A row whose scan is no longer current commits
-   nothing: the poll's reconcile of the cached frequency is all. Returns the poll's result. Decoder thread. */
+   when its tune lands while its scan is still current: a -Y scan without modes, running or with a resume pending
+   (dsd_state::lcn_scan_resume_pending), in the same session (dsd_state::lcn_scan_session), on the same map
+   (trunk_chan_map_seq), the row still on the frequency tuned. A resume's landing then publishes the scan
+   (dsd_engine_channel_scan_resume_landed()). A failure reopens the scan's windows, as a step that failed in its wait
+   does; a resume's failure leaves the scan paused instead (dsd_engine_channel_scan_resume_failed()). A row whose scan
+   is no longer current commits nothing: the poll's reconcile of the cached frequency is all. Returns the poll's result.
+   Decoder thread. */
 int dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state);
+
+/* A resume's row has landed and is installed (issue #671): the scan runs again (scanner_mode 1) and is no longer
+   paused, and the operator no longer holds the tuner. Nothing without a resume pending. Decoder thread. */
+void dsd_engine_channel_scan_resume_landed(dsd_opts* opts, dsd_state* state);
+
+/* A resume's row never landed (issue #671): its tune, to @p freq Hz, was refused or failed late. The scan stays paused:
+   the pause runs again over what the attempt began (dsd_engine_channel_scan_pause(), not in place), and the status line
+   says why. Decoder thread. */
+void dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long freq);
 
 #endif /* DSD_NEO_SRC_ENGINE_SCAN_STEP_UNTYPED_H */

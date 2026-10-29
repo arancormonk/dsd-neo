@@ -1518,23 +1518,6 @@ no_carrier_rearm_abandoned_scan(const dsd_opts* opts, dsd_state* state, time_t n
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
 }
 
-int
-dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders) {
-    if (!state || state->lcn_freq_count <= 0) {
-        return -1;
-    }
-    const int count = state->lcn_freq_count;
-    int row = (from_roll < 0 || from_roll >= count) ? 0 : from_roll;
-    for (int examined = 0; examined < count; examined++) {
-        if (!dsd_state_trunk_lcn_avoid_get(state, (size_t)row)
-            && (!skip_placeholders || *dsd_state_trunk_lcn_slot_const(state, row) != 0)) {
-            return row;
-        }
-        row = row + 1 < count ? row + 1 : 0;
-    }
-    return -1;
-}
-
 /* The step moved nothing to land on (failed or pending): the receiver may have moved under a leg that did land, so the
    tone heard on the old frequency no longer describes it (issue #522), and the scan's windows reopen. */
 static void
@@ -1572,9 +1555,9 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
 /* Whether a settled untyped step's row is still the current scan's to commit (dsd_engine_scan_untyped_poll()). */
 static int
 untyped_settled_row_is_current(const dsd_opts* opts, const dsd_state* state, const dsd_manual_tune_settled* settled) {
-    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && !dsd_channel_modes_present(state)
-           && settled->scan_session == state->lcn_scan_session && settled->map_seq == state->trunk_chan_map_seq
-           && settled->row >= 0 && settled->row < state->lcn_freq_count
+    return (opts->scanner_mode == 1 || state->lcn_scan_resume_pending) && opts->trunk_scan_enabled != 1
+           && !dsd_channel_modes_present(state) && settled->scan_session == state->lcn_scan_session
+           && settled->map_seq == state->trunk_chan_map_seq && settled->row >= 0 && settled->row < state->lcn_freq_count
            && *dsd_state_trunk_lcn_slot_const(state, settled->row) == (long int)settled->requested_hz;
 }
 
@@ -1591,8 +1574,13 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     }
     const time_t now = dsd_decode_time();
     if (polled == DSD_MANUAL_TUNE_LANDED) {
+        /* A resume's landing ends the manual session's calls under no row's name, then publishes the scan (issue
+           #671). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
         untyped_install_row(state, settled.row, now);
+        dsd_engine_channel_scan_resume_landed(opts, state);
+    } else if (state->lcn_scan_resume_pending) {
+        dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled.requested_hz);
     } else {
         no_carrier_rearm_abandoned_scan(opts, state, now);
     }
@@ -2627,11 +2615,13 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
     no_carrier_reset_p25_cc_cache(state);
 }
 
+/* A typed -Y row's tune that a resume still waits on is the scan's, though the scan is not published as running until
+   it lands (issue #671): its failure is the resume's to settle. */
 static int
 engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
     return opts
            && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1 || dsd_engine_signal_search_active(state)
-               || (opts->scanner_mode == 1 && dsd_channel_modes_present(state)));
+               || ((opts->scanner_mode == 1 || state->lcn_scan_resume_pending) && dsd_channel_modes_present(state)));
 }
 
 /* A failed asynchronous RTL retune left the radio on the frequency the stream last applied, while the decoder's tuner

@@ -442,27 +442,80 @@ svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, int k
 #endif
 }
 
-int
-svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
+/* Whether a scan leave, pause or a resume's undo can record its return to the monitor: an RTL stream running. With
+   @p earlier_not_run read before the leave queues its request, as symbol_profile_request_monitor() reads it before its
+   own: the demod thread can take an earlier request and the leave's together, and that earlier one ran no more than
+   this does. */
+static int
+symbol_profile_scan_release_begin(const dsd_opts* opts, const dsd_state* state, int* earlier_not_run) {
     const int running = opts && state && symbol_profile_rtl_running(opts, state);
-    /* Read before the leave queues its request, as symbol_profile_request_monitor() reads it before its own: the demod
-       thread can take an earlier request and the leave's together, and that earlier one ran no more than this does. */
-    const int earlier_not_run = running && symbol_profile_earlier_not_run();
-    const int result = dsd_engine_channel_scan_leave(opts, state);
-    /* A leave that asked the monitor for nothing (a digital session, or a second leave with no scan left) keeps the
-       record of the last request that did. */
+    *earlier_not_run = running && symbol_profile_earlier_not_run();
+    return running;
+}
+
+/* Record a scan leave's return to the monitor, @p result as dsd_engine_channel_scan_leave() returns it. A leave that
+   asked the monitor for nothing (a digital session, or a second leave with no scan left) keeps the record of the last
+   request that did. Queued, the request is the last one the leave made; refused at once, it queued nothing, and the
+   number names the request before it, whose effect is what the front end kept. */
+static void
+symbol_profile_scan_release_record(const dsd_opts* opts, int running, int earlier_not_run, int result) {
     if (!running || result == 0 || !dsd_opts_is_analog_family(opts)) {
-        return result;
+        return;
     }
-    /* Queued, the request is the last one the leave made; refused at once, it queued nothing, and the number names the
-       request before it, whose effect is what the front end kept. */
     symbol_profile_record_request(opts, rtl_stream_receive_request_seq(), -1, earlier_not_run);
     g_monitor_request.scan_leave = 1;
     g_monitor_request.refused_at_once = result < 0 ? 1 : 0;
+}
+#endif
+
+int
+svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
+    /* A stop ends a paused scan as well, and a resume waiting on its row (issue #671); the tuner stays the
+       operator's. */
+    if (state) {
+        state->lcn_scan_paused = 0U;
+        state->lcn_scan_resume_pending = 0U;
+    }
+#ifdef USE_RADIO
+    int earlier_not_run = 0;
+    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
+    const int result = dsd_engine_channel_scan_leave(opts, state);
+    symbol_profile_scan_release_record(opts, running, earlier_not_run, result);
     return result;
 #else
     return dsd_engine_channel_scan_leave(opts, state);
+#endif
+}
+
+int
+svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place) {
+#ifdef USE_RADIO
+    int earlier_not_run = 0;
+    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
+    const int result = dsd_engine_channel_scan_pause(opts, state, in_place);
+    symbol_profile_scan_release_record(opts, running, earlier_not_run, result);
+    return result;
+#else
+    return dsd_engine_channel_scan_pause(opts, state, in_place);
+#endif
+}
+
+int
+svc_resume_channel_scan(dsd_opts* opts, dsd_state* state) {
+#ifdef USE_RADIO
+    int earlier_not_run = 0;
+    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
+    const int result = dsd_engine_channel_scan_resume(opts, state);
+    /* A refused typed row's undo detached the scope its attempt began and asked the configured front end back, as a
+       leave does. */
+    if (result == DSD_SCAN_RESUME_REFUSED) {
+        symbol_profile_scan_release_record(opts, running, earlier_not_run,
+                                           dsd_engine_channel_scan_resume_monitor(state));
+    }
+    return result;
+#else
+    return dsd_engine_channel_scan_resume(opts, state);
 #endif
 }
 

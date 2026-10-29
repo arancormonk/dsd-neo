@@ -7391,6 +7391,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_label.c
+    # A refused resume leaves a manual rigctl request the session's (issue #671).
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -7551,7 +7553,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_channel_scan_squelch_gate
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_compile_definitions(
     dsd-neo_test_engine_channel_scan_squelch_gate

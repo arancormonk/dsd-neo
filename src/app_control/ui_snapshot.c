@@ -149,6 +149,14 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(scan_row_scope_seq) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..scan_row_scope_seq must ride the vertex_ks_count..ui_msg range");
+/* The -Y pause flags and operator_tuned (issue #671) sit beside the scan hold, inside that range: every frontend's scan
+ * state reads them. */
+_Static_assert(
+    offsetof(dsd_state, lcn_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
+        && UI_SNAPSHOT_FIELD_END(lcn_scan_resume_pending) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
+        && offsetof(dsd_state, operator_tuned) >= offsetof(dsd_state, trunk_scan_active_id)
+        && UI_SNAPSHOT_FIELD_END(operator_tuned) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+    "lcn_scan_paused, lcn_scan_resume_pending and operator_tuned must ride the vertex_ks_count..ui_msg range");
 /* Voice-gated scan memory and the per-visit cap bookkeeping beside it ride the same range so the
  * status line sees the phase and the Scan Timing row sees the cap. */
 _Static_assert(offsetof(dsd_state, scan_voice_gate_arrive_m) >= offsetof(dsd_state, vertex_ks_count)

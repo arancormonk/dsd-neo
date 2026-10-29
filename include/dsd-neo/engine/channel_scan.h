@@ -33,6 +33,44 @@ int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
  * the monitor: NULL arguments, no active scan, not RTL input, or a digital configured family. The interactive leaves
  * go through svc_leave_channel_scan(), which records the result for the decoder (issue #578). */
 int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
+/** Pause a running -Y scan, typed or untyped (issue #671): the operator takes the tuner and the scan waits for a
+ * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
+ * untyped one has no scope); with @p in_place (no tune follows: a tuner release) the carrier's decoding is forgotten
+ * next, as a carrier boundary would, since none runs. Then the configured decoder, receive profile and rigctl
+ * passband come back as at a leave, and the row keys leave. Kept: the list, the cursor (lcn_freq_roll), the avoids,
+ * the session edits and their session. Dropped: a row tune staged or pending (nothing commits after the pause,
+ * lcn_scan_session moves), a retry, a commit owed, the row on air and its staged options and keys, and an operator
+ * hold. Leaves scanner_mode 0, lcn_scan_paused and operator_tuned 1. Also takes back a resume still pending. Nothing
+ * to do (0) without a -Y scan running or resuming. Returns what the return to the configured profile asked of the
+ * monitor, as dsd_engine_channel_scan_leave() does; the interactive pause goes through svc_pause_channel_scan().
+ * Safe under the P25 SM tick guard: nothing under it takes the guard its caller holds. Decoder thread. */
+int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place);
+
+/** dsd_engine_channel_scan_resume() results. */
+enum {
+    DSD_SCAN_RESUME_LANDED = 0,  /**< The row's tune landed: the scan runs (scanner_mode 1, no longer paused). */
+    DSD_SCAN_RESUME_PENDING = 1, /**< The row's tune is outstanding: the scan stays paused, resume pending, until it
+                                      lands (then it runs) or fails (then it stays paused, with a toast). */
+    DSD_SCAN_RESUME_NO_ROW = 2,  /**< No row to resume on (every row avoided or blank): nothing changed. */
+    DSD_SCAN_RESUME_REFUSED = 3, /**< The row's tune was refused: the scan stays paused, its row attempt undone. */
+};
+
+/** Resume a paused -Y scan on the next row from the kept cursor that has a frequency and is not avoided (issue #671).
+ * With none it never starts: NO_ROW, toasted, and the manual session's calls go on. Otherwise the manual session's
+ * calls end first under no row's name, trunking stays off and the legacy tune caches are forgotten, then the row is
+ * tuned as a step would tune it (a typed row through its staged scope, an untyped one through the untyped step), with
+ * a new lcn_scan_session. Its landing runs the outgoing boundary, installs the row with fresh scan clocks, and only
+ * then publishes the running flags (scanner_mode 1, lcn_scan_paused and operator_tuned 0). Until then the scan is
+ * resume-pending: still paused, no row named. A refused tune leaves it paused (REFUSED, toasted): every scope the
+ * attempt began is detached and the configured front end requested back (dsd_engine_channel_scan_resume_monitor()),
+ * keeping the session edits and the cursor. A resume already pending answers PENDING and changes nothing. A scan not
+ * paused changes nothing either: LANDED while it runs, REFUSED while it is off. Safe under the P25 SM tick guard the
+ * guarded scanner commands hold: nothing under it takes the guard again. Decoder thread. */
+int dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state);
+
+/** What the last refused resume's undo asked of the monitor, as dsd_engine_channel_scan_leave() returns it: for
+ * svc_resume_channel_scan(), which records it as a leave's (issue #578). 0 when it asked nothing. */
+int dsd_engine_channel_scan_resume_monitor(const dsd_state* state);
 /** Count the analog (nfm or am) rows of the loaded channel map whose width the RTL front end refuses at DSP rate
  * @p dsp_rate_hz (issue #526): the row's own width of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), else the
  * configured width of its kind it runs (the AM default, 6 kHz, included), which that rate cannot filter, and any held

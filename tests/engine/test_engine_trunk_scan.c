@@ -62,6 +62,7 @@
 #include <string.h>
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
+#include "scan_step_untyped.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -14416,6 +14417,20 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)kind;
     (void)guard_held;
 }
+
+/* The -Y resume's untyped pieces (engine.c, issue #671), which no trunk-scan case reaches: ENGINE_NO_CARRIER_RESET
+   drives them. */
+int
+dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    (void)now;
+    return DSD_UNTYPED_STEP_FAILED;
+}
+
+void
+dsd_engine_legacy_tune_caches_forget(void) {}
 
 /* What the decoders gathered on a carrier, which a target switch forgets (issue #575): counted, with a stand-in
    assembly the real function drops (an NXDN SACCH superframe's part). */
