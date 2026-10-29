@@ -8005,7 +8005,8 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
     DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", before->raw_path);
     char failed[sizeof target.dir + 32];
     if (svc_recording_transition(opts, state, &target, failed, sizeof failed) != 0) {
-        ui_set_toast(state, 5, "Config applied but its recording was not: %s did not open", failed);
+        // The reason before the file: a long path is cut at the toast's end, never the words that say what failed.
+        ui_set_toast(state, 5, "Config applied, recording unchanged: did not open %s", failed);
         return -1;
     }
     return 0;

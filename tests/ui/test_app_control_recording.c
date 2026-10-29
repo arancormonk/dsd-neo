@@ -1382,6 +1382,26 @@ test_config_static_wav_that_fails_keeps_the_recording(void) {
     return rc;
 }
 
+/* The failure toast names the reason before the file: a long path (a phone's storage, a macOS or Windows temp folder)
+   is cut at the end of the 128-byte toast, never the words that say what went wrong. */
+static int
+test_config_failure_toast_keeps_its_reason_for_a_long_path(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_rec_cfg_long");
+    submit(DSD_APP_CMD_WAV_START);
+    (void)drain(&r);
+    char missing[DSD_TEST_PATH_MAX];
+    (void)dsd_test_path_join(missing, sizeof missing, r.dir,
+                             "a-folder-whose-name-is-long-enough-to-fill-the-toast-on-its-own-and-then-some-more-x");
+    char bad[DSD_TEST_PATH_MAX * 2];
+    (void)dsd_test_path_join(bad, sizeof bad, missing, "out.wav");
+    rc |= apply_recording_config(&r, 0, bad);
+    rc |= expect_true("a long path still leaves the reason in the toast",
+                      strstr(r.state->ui_msg, "did not open") != NULL);
+    rig_close(&r);
+    return rc;
+}
+
 /* A recording command with a malformed payload reads as failed at once, not pending until some later publication. */
 static int
 test_invalid_recording_command_reads_as_failed(void) {
@@ -1571,6 +1591,7 @@ main(void) {
     rc |= test_config_turning_per_call_off_closes_the_slot_files();
     rc |= test_config_turning_per_call_on_closes_the_static_wav();
     rc |= test_config_static_wav_that_fails_keeps_the_recording();
+    rc |= test_config_failure_toast_keeps_its_reason_for_a_long_path();
     rc |= test_invalid_recording_command_reads_as_failed();
     rc |= test_config_moving_the_folder_publishes_in_the_old_one();
     rc |= test_config_moving_the_folder_and_stopping_publishes_in_the_old_one();
