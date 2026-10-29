@@ -544,7 +544,7 @@ cb_key_basic(void* v, int ok, int val) {
         return;
     }
     if (ok && val < 0) {
-        ui_statusf("Basic Privacy key must be 0..255");
+        ui_statusf("Basic privacy key must be 0..255");
     } else if (ok) {
         unsigned long long vdec = (unsigned long long)val;
         if (vdec > 255ULL) {

@@ -111,6 +111,7 @@ hotkey_cell_binds(const HotkeyRow* row, int key) {
 
 static const HotkeyRow k_hotkeys[] = {
     {"exit", {DSD_KEY_QUIT, 0}},
+    {"input.freq", {DSD_KEY_TUNE, 0}},
     {"input.volume", {DSD_KEY_RTL_VOL_CYCLE, 0}},
     {"input.invert", {DSD_KEY_INVERT, 0}},
     {"src.tcp", {DSD_KEY_TCP_AUDIO, 0}},
@@ -177,24 +178,77 @@ static const HotkeyRow k_hotkeys[] = {
 /* Every key keymap.h binds to a command. A key missing from k_hotkeys above
    must be listed in k_keys_without_rows with its reason. */
 static const int k_command_keys[] = {
-    DSD_KEY_QUIT,           DSD_KEY_CONST_VIEW_LOWER, DSD_KEY_CONST_VIEW_UPPER, DSD_KEY_CONST_NORM,
-    DSD_KEY_CONST_GATE_DEC, DSD_KEY_CONST_GATE_INC,   DSD_KEY_EYE_VIEW,         DSD_KEY_EYE_UNICODE,
-    DSD_KEY_EYE_COLOR,      DSD_KEY_FSK_HIST,         DSD_KEY_SPECTRUM,         DSD_KEY_SPEC_DEC,
-    DSD_KEY_SPEC_INC,       DSD_KEY_HISTORY,          DSD_KEY_STOP_PLAYBACK,    DSD_KEY_COMPACT,
-    DSD_KEY_TOGGLE_P25GA,   DSD_KEY_MUTE_LOWER,       DSD_KEY_MUTE_UPPER,       DSD_KEY_TRUNK_TOGGLE,
-    DSD_KEY_SCANNER_TOGGLE, DSD_KEY_CALL_ALERT,       DSD_KEY_RETURN_CC,        DSD_KEY_CHANNEL_CYCLE,
-    DSD_KEY_TRUNK_WLIST,    DSD_KEY_TRUNK_GROUP,      DSD_KEY_TRUNK_PRIV,       DSD_KEY_TRUNK_DATA,
-    DSD_KEY_TRUNK_ENC,      DSD_KEY_LOCKOUT_SLOT1,    DSD_KEY_LOCKOUT_SLOT2,    DSD_KEY_PROVOICE_ESK,
-    DSD_KEY_PROVOICE_MODE,  DSD_KEY_SLOT1_TOGGLE,     DSD_KEY_SLOT2_TOGGLE,     DSD_KEY_SLOT_PREF,
-    DSD_KEY_TG_HOLD1,       DSD_KEY_TG_HOLD2,         DSD_KEY_FORCE_PRIV,       DSD_KEY_FORCE_RC4,
-    DSD_KEY_GAIN_PLUS,      DSD_KEY_GAIN_MINUS,       DSD_KEY_AGAIN_PLUS,       DSD_KEY_AGAIN_MINUS,
-    DSD_KEY_PAYLOAD_TOGGLE, DSD_KEY_INVERT,           DSD_KEY_MOD_TOGGLE,       DSD_KEY_MOD_P2,
-    DSD_KEY_SYMCAP_SAVE,    DSD_KEY_SYMCAP_STOP,      DSD_KEY_REPLAY_LAST,      DSD_KEY_WAV_START,
-    DSD_KEY_WAV_STOP,       DSD_KEY_AGGR_SYNC,        DSD_KEY_DMR_RESET,        DSD_KEY_SIM_NOCAR,
-    DSD_KEY_EH_NEXT,        DSD_KEY_EH_PREV,          DSD_KEY_EH_TOGGLE,        DSD_KEY_TCP_AUDIO,
-    DSD_KEY_RIGCTL_CONN,    DSD_KEY_LPF_TOGGLE,       DSD_KEY_HPF_TOGGLE,       DSD_KEY_PBF_TOGGLE,
-    DSD_KEY_HPF_DIG_TOGGLE, DSD_KEY_RTL_VOL_CYCLE,    DSD_KEY_PPM_UP,           DSD_KEY_PPM_DOWN,
-    DSD_KEY_SCAN_HOLD,      DSD_KEY_SCAN_AVOID,
+    DSD_KEY_QUIT,
+    DSD_KEY_CONST_VIEW_LOWER,
+    DSD_KEY_CONST_VIEW_UPPER,
+    DSD_KEY_CONST_NORM,
+    DSD_KEY_CONST_GATE_DEC,
+    DSD_KEY_CONST_GATE_INC,
+    DSD_KEY_EYE_VIEW,
+    DSD_KEY_EYE_UNICODE,
+    DSD_KEY_EYE_COLOR,
+    DSD_KEY_FSK_HIST,
+    DSD_KEY_SPECTRUM,
+    DSD_KEY_SPEC_DEC,
+    DSD_KEY_SPEC_INC,
+    DSD_KEY_HISTORY,
+    DSD_KEY_STOP_PLAYBACK,
+    DSD_KEY_COMPACT,
+    DSD_KEY_TOGGLE_P25GA,
+    DSD_KEY_MUTE_LOWER,
+    DSD_KEY_MUTE_UPPER,
+    DSD_KEY_TRUNK_TOGGLE,
+    DSD_KEY_SCANNER_TOGGLE,
+    DSD_KEY_CALL_ALERT,
+    DSD_KEY_RETURN_CC,
+    DSD_KEY_CHANNEL_CYCLE,
+    DSD_KEY_TRUNK_WLIST,
+    DSD_KEY_TRUNK_GROUP,
+    DSD_KEY_TRUNK_PRIV,
+    DSD_KEY_TRUNK_DATA,
+    DSD_KEY_TRUNK_ENC,
+    DSD_KEY_LOCKOUT_SLOT1,
+    DSD_KEY_LOCKOUT_SLOT2,
+    DSD_KEY_PROVOICE_ESK,
+    DSD_KEY_PROVOICE_MODE,
+    DSD_KEY_SLOT1_TOGGLE,
+    DSD_KEY_SLOT2_TOGGLE,
+    DSD_KEY_SLOT_PREF,
+    DSD_KEY_TG_HOLD1,
+    DSD_KEY_TG_HOLD2,
+    DSD_KEY_FORCE_PRIV,
+    DSD_KEY_FORCE_RC4,
+    DSD_KEY_GAIN_PLUS,
+    DSD_KEY_GAIN_MINUS,
+    DSD_KEY_AGAIN_PLUS,
+    DSD_KEY_AGAIN_MINUS,
+    DSD_KEY_PAYLOAD_TOGGLE,
+    DSD_KEY_INVERT,
+    DSD_KEY_MOD_TOGGLE,
+    DSD_KEY_MOD_P2,
+    DSD_KEY_SYMCAP_SAVE,
+    DSD_KEY_SYMCAP_STOP,
+    DSD_KEY_REPLAY_LAST,
+    DSD_KEY_WAV_START,
+    DSD_KEY_WAV_STOP,
+    DSD_KEY_AGGR_SYNC,
+    DSD_KEY_DMR_RESET,
+    DSD_KEY_SIM_NOCAR,
+    DSD_KEY_EH_NEXT,
+    DSD_KEY_EH_PREV,
+    DSD_KEY_EH_TOGGLE,
+    DSD_KEY_TCP_AUDIO,
+    DSD_KEY_RIGCTL_CONN,
+    DSD_KEY_LPF_TOGGLE,
+    DSD_KEY_HPF_TOGGLE,
+    DSD_KEY_PBF_TOGGLE,
+    DSD_KEY_HPF_DIG_TOGGLE,
+    DSD_KEY_RTL_VOL_CYCLE,
+    DSD_KEY_PPM_UP,
+    DSD_KEY_PPM_DOWN,
+    DSD_KEY_SCAN_HOLD,
+    DSD_KEY_SCAN_AVOID,
+    DSD_KEY_TUNE,
 };
 
 typedef struct {
@@ -464,6 +518,48 @@ audit_width_rows(const NcMenuItem* root, size_t n) {
     }
 }
 
+static void
+count_freq_rows(const NcMenuItem* items, size_t n, int* count) {
+    for (size_t i = 0; i < n; i++) {
+        const NcMenuItem* it = &items[i];
+        if (it->on_select == act_set_freq || it->label_fn == lbl_input_freq) {
+            (*count)++;
+        }
+        if (it->submenu && it->submenu_len > 0) {
+            count_freq_rows(it->submenu, it->submenu_len, count);
+        }
+    }
+}
+
+/* The frequency row sits in Input right after Switch source (issue #671), in every build: it tunes a radio input or,
+   on any input, a rigctl peer, and Input > RTL-SDR is hidden on audio input. It is the one frequency row. */
+static void
+audit_freq_row(const NcMenuItem* root, size_t n) {
+    size_t sw = INPUT_MENU_ITEMS_LEN;
+    for (size_t i = 0; i < INPUT_MENU_ITEMS_LEN; i++) {
+        if (INPUT_MENU_ITEMS[i].id && strcmp(INPUT_MENU_ITEMS[i].id, "input.switch") == 0) {
+            sw = i;
+        }
+    }
+    if (sw + 1 >= INPUT_MENU_ITEMS_LEN) {
+        fail("root/input", "input.switch", "no Switch source row with the frequency row after it");
+    } else {
+        const NcMenuItem* it = &INPUT_MENU_ITEMS[sw + 1];
+        if (!it->id || strcmp(it->id, "input.freq") != 0) {
+            fail("root/input", it->id, "the frequency row does not follow Switch source");
+        } else if (it->on_select != act_set_freq || it->label_fn != lbl_input_freq
+                   || it->is_enabled != input_freq_offered) {
+            fail("root/input", it->id, "the frequency row runs another handler, label or predicate");
+        }
+    }
+    int count = 0;
+    count_freq_rows(root, n, &count);
+    if (count != 1) {
+        DSD_FPRINTF(stderr, "FAIL: root: %d frequency rows, want Input's one\n", count);
+        g_rc = 1;
+    }
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -476,6 +572,7 @@ main(void) {
     audit_array(root, n, 0, "root");
     audit_hotkeys();
     audit_width_rows(root, n);
+    audit_freq_row(root, n);
     if (g_rc == 0) {
         printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);

@@ -1327,9 +1327,10 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
  * Anywhere else -B is asked for as it always was, strictly, and the client's record of the peer skips a repeat. Where
  * the session runs the peer's own passband (-B 0, or the FM monitor with neither a width nor -B) it asks for FM at 0,
  * best-effort: that undoes a passband this client set (a session width before a switch to a digital mode, say) with
- * the passband read before it, and is a no-op for a peer back on its own or never asked. */
+ * the passband read before it, and is a no-op for a peer back on its own or never asked. The frequency the peer is on
+ * afterwards is the one last sent (dsd_opts::rigctl_set_freq_hz). */
 static dsd_trunk_tune_result
-no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, const dsd_state* state, long int freq) {
+no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long int freq) {
     if (opts->use_rigctl != 1) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -1360,6 +1361,7 @@ no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, const dsd_state* state, l
         }
         s_last_rigctl_freq = freq;
     }
+    opts->rigctl_set_freq_hz = (uint32_t)freq;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 

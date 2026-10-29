@@ -29,6 +29,7 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/app_control/tetra_view.h>
@@ -81,8 +82,8 @@
 #include "ui_row.h"
 #include "ui_snr_readout.h"
 
-#ifdef USE_RADIO
 #include <dsd-neo/ui/keymap.h>
+#ifdef USE_RADIO
 #include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #endif
@@ -1355,8 +1356,25 @@ ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
     ui_row_end(&row);
 }
 
+/* A scan the operator paused (issue #671) keeps its row, in place of the frequency or target it no longer has: the
+   receiver is on the operator's frequency. The row says so, names the key that resumes it, and keeps the list's avoid
+   count. A resume waiting on its row's tune is still paused. */
 static void
-ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
+ui_render_paused_scan_row(const dsd_app_scan_state_view* view, const dsd_state* state) {
+    ui_row row;
+    ui_io_row_begin(&row);
+    if (view->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK) {
+        ui_row_field(&row, "| Trunk Scan: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);
+        ui_row_avoids_field(&row, (unsigned int)state->trunk_scan_avoided_count);
+    } else {
+        ui_row_field(&row, "| Scan Mode: PAUSED (%c resumes)", DSD_KEY_SCANNER_TOGGLE);
+        ui_row_avoids_field(&row, (unsigned int)state->lcn_avoid_count);
+    }
+    ui_row_end(&row);
+}
+
+static void
+ui_render_running_scan_rows(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
         ui_render_scan_mode_row(opts, state);
         // The timing row belongs directly under the scanner row that owns the stay. With
@@ -1370,6 +1388,16 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
     ui_render_trunk_scan_status(opts, state);
     if (opts->trunk_scan_enabled == 1) {
         ui_render_scan_timing_row(opts, state);
+    }
+}
+
+static void
+ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_scan_state_view scan;
+    if (dsd_app_scan_state_view_get(opts, state, &scan) == 0 && scan.paused) {
+        ui_render_paused_scan_row(&scan, state);
+    } else {
+        ui_render_running_scan_rows(opts, state);
     }
 
     if (opts->reverse_mute == 1) {

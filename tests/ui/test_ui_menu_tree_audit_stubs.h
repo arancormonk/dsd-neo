@@ -57,6 +57,7 @@
     X(act_keys_dec)                                                                                                    \
     X(act_keys_hex)                                                                                                    \
     X(act_lcw_toggle)                                                                                                  \
+    X(act_set_freq)                                                                                                    \
     X(act_tg_lockout_persist)                                                                                          \
     X(act_tg_session_avoid_clear)                                                                                      \
     X(act_lockout_slot1)                                                                                               \
@@ -207,7 +208,6 @@
     X(rtl_restart)                                                                                                     \
     X(rtl_set_bw)                                                                                                      \
     X(rtl_set_dev)                                                                                                     \
-    X(rtl_set_freq)                                                                                                    \
     X(rtl_set_gain)                                                                                                    \
     X(rtl_set_ppm)                                                                                                     \
     X(rtl_set_vol)                                                                                                     \
@@ -244,6 +244,7 @@
     X(lbl_history_slot)                                                                                                \
     X(lbl_hpf)                                                                                                         \
     X(lbl_hpf_d)                                                                                                       \
+    X(lbl_input_freq)                                                                                                  \
     X(lbl_input_volume)                                                                                                \
     X(lbl_input_warn)                                                                                                  \
     X(lbl_input_sql)                                                                                                   \
@@ -340,7 +341,6 @@
     X(lbl_rtl_auto_ppm)                                                                                                \
     X(lbl_rtl_bias)                                                                                                    \
     X(lbl_rtl_bw)                                                                                                      \
-    X(lbl_rtl_freq)                                                                                                    \
     X(lbl_rtl_gain)                                                                                                    \
     X(lbl_rtl_ppm)                                                                                                     \
     X(lbl_rtl_rtltcp_autotune)                                                                                         \
@@ -356,7 +356,7 @@
     X(io_rtl_active)                                                                                                   \
     X(io_squelch_offered)                                                                                              \
     X(provoice_active)                                                                                                 \
-    X(rtl_freq_offered)                                                                                                \
+    X(input_freq_offered)                                                                                              \
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \

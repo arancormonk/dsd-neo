@@ -1054,6 +1054,8 @@ test_trunk_cache_with_mode_metadata(void) {
     noCarrier(opts, state);
     rc |= expect_true("return after a rigctl reconnect is sent again",
                       g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == 941012500);
+    /* The control-channel return the peer accepted is the frequency last sent (issue #671). */
+    rc |= expect_true("legacy rigctl return notes the frequency sent", opts->rigctl_set_freq_hz == 941012500U);
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;

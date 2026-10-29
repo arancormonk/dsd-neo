@@ -518,6 +518,13 @@ test_prompt_keypad_enter_submits(void) {
     assert(g_string_done_called == 1);
     assert(g_string_was_null == 0);
     assert(strcmp(g_string_text, "146.52") == 0);
+    /* Shift+keypad Enter, the Windows alias of '=' on the main screen, is Enter inside a prompt (issue #671). */
+    open_plain_prompt();
+    type_text("146.52");
+    assert(ui_prompt_handle_key(SHF_PADENTER) == 1);
+    assert(ui_prompt_active() == 0);
+    assert(g_string_done_called == 1);
+    assert(strcmp(g_string_text, "146.52") == 0);
 #endif
 }
 
@@ -712,6 +719,9 @@ test_help_activation_and_close_keys(void) {
     ui_help_open("close with keypad enter");
     assert(ui_help_active() == 1);
     assert(ui_help_handle_key(PADENTER) == 1);
+    assert(ui_help_active() == 0);
+    ui_help_open("close with shift+keypad enter");
+    assert(ui_help_handle_key(SHF_PADENTER) == 1);
     assert(ui_help_active() == 0);
 #endif
 

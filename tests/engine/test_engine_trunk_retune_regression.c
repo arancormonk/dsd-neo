@@ -1529,10 +1529,13 @@ test_backend_tune_updates_center_freq_cache(void) {
     g_setfreq_result = true;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts->rtlsdr_center_freq == 451000000U);
+    /* A trunking tune the peer accepted is the frequency last sent (issue #671), which the terminal's row shows. */
+    assert(opts->rigctl_set_freq_hz == 451000000U);
     opts->rtlsdr_center_freq = 111111100U;
     g_setfreq_result = false;
-    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->rtlsdr_center_freq == 111111100U);
+    assert(opts->rigctl_set_freq_hz == 451000000U);
     g_setfreq_result = true;
     free(state);
     free(opts);

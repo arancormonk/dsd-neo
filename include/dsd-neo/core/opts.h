@@ -328,6 +328,11 @@ struct dsd_opts {
     dsd_socket_t rigctl_sockfd;
     int use_rigctl;
     int rigctlportno;
+    /* The frequency the rigctl peer last accepted on this connection, from any tune (an entry, a scan, trunking); 0
+       when none was sent since it connected. Written on the decoder thread (the watchdog's under the tick guard), read
+       by the frontends from the options snapshot: the terminal's Frequency... row on audio input (issue #671), where
+       rtlsdr_center_freq holds a made-up startup centre until a tune. */
+    uint32_t rigctl_set_freq_hz;
     dsd_socket_t udp_sockfd;  //digital
     dsd_socket_t udp_sockfdA; //analog 48k1
     int udp_portno;

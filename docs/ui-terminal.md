@@ -19,6 +19,12 @@ Tip: Many screens print a short hotkey hint line in the footer while you’re ru
 Press `Enter` to open the nonblocking menu overlay. While it is open, keypresses go to the menu (hotkeys are not
 processed).
 
+Press `=` to open the frequency prompt alone over the main screen, without the menu (see "Frequency entry" below):
+`Enter` tunes, `Esc` cancels, and either returns to the main screen. Where the input cannot be tuned, `=` opens one
+line of help saying why instead. On Windows, `Shift+Enter` and `Shift`+keypad Enter do the same as `=` on the main
+screen; that needs a console that reports Shift with Enter (Windows Terminal and the classic console do). Elsewhere a
+terminal sends `Shift+Enter` as `Enter`, which opens the menu.
+
 Controls:
 
 - Move selection: `Up`/`Down`, `PageUp`/`PageDown`, `Home`/`End`
@@ -34,7 +40,7 @@ on the quit row, so `End` followed by `Enter` cannot end a running decode. Reach
 `PageDown`, or the `q` hotkey.
 
 The keypad Enter key is `Enter` on the main screen, in the menu, prompts, help, pickers and the RadioReference panel,
-on Windows too. Under tmux with `TERM=tmux-256color`, whose terminal database has no keypad Enter (`kent`), that key
+on Windows too, and `Shift`+keypad Enter is `Enter` everywhere but the main screen. Under tmux with `TERM=tmux-256color`, whose terminal database has no keypad Enter (`kent`), that key
 arrives as `Esc O M`, and its `Esc` cancels a prompt or backs out of the menu; use the main Enter key there. In a
 prompt, a character the field cannot hold (a non-ASCII character in a UTF-8 terminal, a character beyond Latin-1 on
 Windows) is typed as one `?` rather than dropped, so a pasted `145．5` reads `145?5` and is refused instead of tuning
@@ -68,7 +74,8 @@ Display, then housekeeping. Put another way: to find a setting, ask which signal
 Bracketed states and values are examples. `(status)` marks a read-only row; `─────` a separator. Rows marked
 *radio input only* appear while a radio is the input (an RTL-SDR, an rtl_tcp server, a SoapySDR device or an Airspy),
 *Airspy input only* while an Airspy is, and *not on an Airspy* while any other input is. The `RTL-SDR` submenu under
-Input holds the tuning of whichever radio runs. Rows marked *radio builds* need a build with the radio pipeline (any
+Input holds the tuning of whichever radio runs; `Frequency...` sits in Input itself, since it also tunes a rigctl peer
+from audio input. Rows marked *radio builds* need a build with the radio pipeline (any
 SDR backend), and *RadioReference builds* one with libcurl and expat.
 
 ```text
@@ -84,6 +91,7 @@ Main Menu
 │   │   ├── UDP audio...
 │   │   ├── WAV / raw file...
 │   │   └── Symbol file (.bin/.raw/.sym)...
+│   ├── Frequency... [769.768750 MHz]            =   (radio input, or any input with a rigctl peer; not during an I/Q replay)
 │   ├── Input volume... [4X]                     v
 │   ├── Squelch... [off]                         (radio and audio input: a level in dB, off, auto[+N] or noise[+N])
 │   ├── NFM bandwidth... [default]               (-fA, or a width set; radio, or audio input with rigctl)
@@ -103,7 +111,6 @@ Main Menu
 │   │   ├── Mixer AGC (0 off, 1 on)...
 │   │   └── Bias tee (0 off, 1 on)...
 │   └── RTL-SDR                                  (radio input only)
-│       ├── Frequency... [769.768750 MHz]        (MHz; [-] with no frequency; hidden under --trunk-scan and during an I/Q replay)
 │       ├── Gain... [AGC]                        (not on an Airspy; [20] (target: 10) when a trunk-scan target has its own gain)
 │       ├── PPM correction... [0]                { }  (not on an Airspy)
 │       ├── DSP bandwidth... [48 kHz]
@@ -166,12 +173,12 @@ Main Menu
 │   └── M17 encoder user data... [<unset>]
 ├── Trunking
 │   ├── Trunking [Off]                           t
-│   ├── Conventional scanning [Off]              y
+│   ├── Conventional scanning [Off]              y   ([On], [Paused]; Trunk scan [Running] or [Paused] under --trunk-scan)
 │   ├── Return to control channel                C   (while trunking or scanning)
-│   ├── Next channel                             L   (while trunking or scanning)
-│   ├── Scan hold [Off]                          Y   (while scanning with -Y or --trunk-scan)
-│   ├── Avoid current channel                    b   (while scanning with -Y or --trunk-scan)
-│   ├── Clear avoids [0]                             (while scanning with -Y or --trunk-scan)
+│   ├── Next channel                             L   (while trunking or scanning, not while a scan is paused)
+│   ├── Scan hold [Off]                          Y   (while a -Y or --trunk-scan scan runs)
+│   ├── Avoid current channel                    b   (while a -Y or --trunk-scan scan runs)
+│   ├── Clear avoids [0]                             (while a -Y or --trunk-scan scan runs)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -361,8 +368,10 @@ frame is waited for, as before.
 
 ### Frequency entry
 
-Input > RTL-SDR > `Frequency...` tunes the radio that runs. The row reads the tuned frequency in MHz
-(`Frequency... [851.012500 MHz]`, `[-]` while none is known). Its prompt,
+Input > `Frequency...`, or `=` from the main screen, tunes the radio that runs, or the rigctl peer (`-U`) when one is
+connected, from any input but an I/Q replay; with a rigctl peer on a radio input the peer is the one tuned. The row reads
+the tuned frequency in MHz (`Frequency... [851.012500 MHz]`, `[-]` while none is known); on audio input it reads the
+frequency last sent to the rigctl peer since it connected, `[-]` before the first. Its prompt,
 `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)`, opens empty and reads a number the way a radio keypad does
 (issue #670; it used to read every number as Hz):
 
@@ -389,11 +398,17 @@ A refused entry reopens the prompt with the text typed and the reason inside it,
 `Enter` on an empty field, cancels. The toast names the frequency in MHz: `Applied: frequency -> 851.012500 MHz`
 names the frequency the receiver took, `Accepted: frequency -> 851.012500 MHz (pending)` one still being applied,
 `Deferred; retry: frequency -> ...` one the receiver could not take yet (retry it), and `Failed: ...` one that did
-not tune; ` (scanner stopped)` follows a tune that ended a `-Y` scan. A manual tune from Qt/Android or the control API
+not tune; `; scan paused` follows a tune that paused a running scan. A manual tune from Qt/Android or the control API
 (`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding 769.768750 MHz (1 avoided)`) name their frequency
 the same way. During single-system P25 trunking the entry selects a new control channel
-(`Applied: P25 control channel -> 851.012500 MHz`; see "Trunking & Scanning" in `docs/cli.md`). The row is hidden
-during `--trunk-scan`, which owns the tuner, and during an I/Q replay, which plays the tuning its capture recorded.
+(`Applied: P25 control channel -> 851.012500 MHz`; see "Trunking & Scanning" in `docs/cli.md`).
+
+An accepted tune wins over a running scan (issue #671): a `-Y` scan or a `--trunk-scan` pauses, keeping its list,
+avoids, edits and place, and the receiver stays on the frequency typed. `y` resumes it (see the `y` row below and
+"Channel Labels"); a refused tune leaves the scan running. The row is hidden during an I/Q replay, which plays the
+tuning its capture recorded, and on audio input without a connected rigctl peer; there `=` opens one line of help
+instead (`An I/Q replay cannot retune: it plays the tuning it recorded.`, or
+`Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).`).
 
 ### Decoder mode
 
@@ -708,7 +723,8 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | Key | Action |
 |---|---|
 | `t` | Toggle trunking |
-| `y` | Toggle conventional scanning |
+| `=` | Frequency entry over the main screen (Input > `Frequency...`); a running scan pauses on the frequency typed. On Windows also `Shift+Enter` and `Shift`+keypad Enter |
+| `y` | Conventional scanning (`-Y`) on or off; a paused scan resumes. Under `--trunk-scan`, pause or resume the trunk scan (it cannot be stopped at runtime) |
 | `C` | Return to control channel (when following a voice channel) |
 | `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
 | `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
@@ -835,6 +851,14 @@ the list's `Avoids: N`.
 aligned to the count's digits, `( 3/12)`). The row
 shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
+
+A scan paused by a frequency entry (or by `y` under `--trunk-scan`) keeps its row, without a row's frequency, a
+target or a timing row, since the receiver is on the operator's frequency; the list's avoid count stays:
+
+```
+| Scan Mode: PAUSED (y resumes) Avoids: 2
+| Trunk Scan: PAUSED (y resumes)
+```
 
 ### Scan Timing
 

@@ -18,12 +18,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include <dsd-neo/core/opts_fwd.h>
+
 // ---- Visibility/predicate functions ----
 bool io_rtl_active(const void* ctx);
 bool io_squelch_offered(const void* ctx);
 bool trunk_enabled(const void* ctx);
 bool scan_rotation_active(const void* ctx);
-bool rtl_freq_offered(const void* ctx);
+bool input_freq_offered(const void* ctx);
+bool freq_entry_offered(const dsd_opts* opts);
 bool provoice_active(const void* ctx);
 bool const_view_active(const void* ctx);
 bool eye_view_active(const void* ctx);
@@ -66,6 +69,7 @@ const char* lbl_m17_user_data(const void* v, char* b, size_t n);
 // Trunking
 const char* lbl_trunk(const void* v, char* b, size_t n);
 const char* lbl_scan(const void* v, char* b, size_t n);
+const char* lbl_input_freq(const void* v, char* b, size_t n);
 const char* lbl_scan_hold(const void* v, char* b, size_t n);
 const char* lbl_scan_avoid_clear(const void* v, char* b, size_t n);
 const char* lbl_lcw(const void* v, char* b, size_t n);
@@ -168,7 +172,6 @@ const char* lbl_tcp_waitall(const void* v, char* b, size_t n);
 
 // RTL-SDR and DSP (USE_RADIO only)
 #ifdef USE_RADIO
-const char* lbl_rtl_freq(const void* v, char* b, size_t n);
 const char* lbl_rtl_gain(const void* v, char* b, size_t n);
 const char* lbl_rtl_ppm(const void* v, char* b, size_t n);
 const char* lbl_rtl_bw(const void* v, char* b, size_t n);

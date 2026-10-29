@@ -2205,6 +2205,22 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("");
 
+    /* A -Y scan the operator paused (issue #671) keeps its row, saying so and how to resume: the receiver is on the
+       operator's frequency, so no row's frequency, hangtime or name shows; the list's avoid count still closes it. A
+       resume waiting on its row's tune is still paused. */
+    state.lcn_scan_paused = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: PAUSED (y resumes)\n");
+    state.lcn_scan_resume_pending = 1;
+    state.lcn_avoid_count = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode: PAUSED (y resumes) Avoids: 2\n");
+    state.lcn_scan_paused = 0;
+    state.lcn_scan_resume_pending = 0;
+    state.lcn_avoid_count = 0;
+
     /* Issue #669: at 80 columns a named row fits whole, HOLD included; the fields after the name are what a cut takes.
        The frequency and the hangtime keep their columns whatever the channel. */
     g_stub_max_x = 80;
@@ -2293,6 +2309,24 @@ test_trunk_scan_status_row_rendering(void) {
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("");
+
+    /* A paused trunk scan (issue #671) names no target, but its row stays, saying so and how to resume, with the
+       list's avoid count. No timing row: a paused scan runs no timer. */
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_paused = 1;
+    state.trunk_scan_active_id[0] = '\0';
+    state.trunk_scan_active_ordinal = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: PAUSED (y resumes)\n");
+    state.trunk_scan_avoided_count = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: PAUSED (y resumes) Avoids: 2\n");
+    state.trunk_scan_avoided_count = 0;
+    state.trunk_scan_paused = 0;
+    state.trunk_scan_active_ordinal = 3;
+    opts.trunk_scan_enabled = 0;
 
     /* Enabled but between targets: nothing is on air to name. */
     opts.trunk_scan_enabled = 1;

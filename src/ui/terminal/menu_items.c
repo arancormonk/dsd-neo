@@ -163,12 +163,6 @@ static const NcMenuItem AIRSPY_MENU_ITEMS[] = {
 };
 
 static const NcMenuItem RTL_MENU_ITEMS[] = {
-    {.id = "rtl.freq",
-     .is_enabled = rtl_freq_offered,
-     .label_fn = lbl_rtl_freq,
-     .help = "Tune in MHz (146.52) or add a unit (Hz, k, M, G). Without a unit, 1000000 and above is Hz. Selects a new "
-             "CC during P25 trunking. Hidden during trunk scan and I/Q replay.",
-     .on_select = rtl_set_freq},
     {.id = "rtl.gain",
      .is_enabled = is_non_airspy_input,
      .label_fn = lbl_rtl_gain,
@@ -267,6 +261,16 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
      .help = "Change the active input source.",
      .submenu = INPUT_SOURCE_ITEMS,
      .submenu_len = NC_LEN(INPUT_SOURCE_ITEMS)},
+    /* Beside the source it tunes, outside the RTL-SDR submenu, which audio input hides: there it tunes the rigctl peer
+       (issue #671). */
+    {.id = "input.freq",
+     .is_enabled = input_freq_offered,
+     .label_fn = lbl_input_freq,
+     .help = "Tune in MHz (146.52) or add a unit (Hz, k, M, G); without a unit, 1000000 and above is Hz. A running "
+             "scan pauses on the new frequency; y resumes it. Selects a new CC during P25 trunking. With a rigctl "
+             "peer (-U) the peer is tuned. Offered on radio inputs and with a rigctl peer, not during an I/Q replay.",
+     .hotkey = "=",
+     .on_select = act_set_freq},
     {.id = "input.volume",
      .label_fn = lbl_input_volume,
      .help = "Scale non-RTL inputs by 1..16. The hotkey cycles this only while the input is not the RTL front end; "
@@ -315,7 +319,7 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
      .submenu_len = NC_LEN(AIRSPY_MENU_ITEMS)},
     {.id = "input.rtl",
      .label = "RTL-SDR",
-     .help = "Frequency, gain, PPM, bandwidth, calibration, device.",
+     .help = "Gain, PPM, bandwidth, calibration, device.",
      .is_enabled = io_rtl_active,
      .submenu = RTL_MENU_ITEMS,
      .submenu_len = NC_LEN(RTL_MENU_ITEMS)},
@@ -653,7 +657,8 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .on_select = act_trunk_toggle},
     {.id = "trunk.scan",
      .label_fn = lbl_scan,
-     .help = "Scan the channel map as a conventional scanner.",
+     .help = "Scan the channel map as a conventional scanner (-Y), or stop; a paused scan resumes. Under --trunk-scan, "
+             "pause or resume the trunk scan.",
      .hotkey = "y",
      .on_select = act_scan_toggle},
     {.id = "trunk.return_cc",

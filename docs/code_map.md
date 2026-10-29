@@ -5116,8 +5116,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     Both rigctl reconnects, the '9' key (the TCP input's host at the rigctl port) and the menu's host and port, go
     through `svc_rigctl_connect()` (`src/app_control/rigctl_connect.c`): it connects, then, under the P25 SM tick guard
     since the watchdog's retunes use the socket, rebinds, closes the old socket without sending it anything (the old
-    peer keeps what a scan last set on it) and forgets the engine's legacy tune cache; a connect that fails while rigctl
-    is on changes nothing, so the connection in use and its record stay. The connect then asks the new peer for the
+    peer keeps what a scan last set on it) and forgets the engine's legacy tune cache and `rigctl_set_freq_hz` (nothing
+    was sent on the new connection); a connect that fails while rigctl is on changes nothing, so the connection in use
+    and its record stay. The connect then asks the new peer for the
     session's width (`dsd_engine_rigctl_ask_session_passband()`, under the same hold). The engine names the record for a
     run's first connection the same way (`RigctlRebindPeer()` with no old socket) before the P25 watchdog starts. The
     engine's rigctl legs ask for what `dsd_rigctl_passband_of()` (runtime) gives: a request
@@ -8334,15 +8335,29 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
-    too) is the one opener, for Input > RTL-SDR > `Frequency...` (`rtl_set_freq()`, empty field) and for #671's entry:
+    too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
     `DSD_FREQ_ENTRY_MAX_LEN + 2`, so a paste cut at the capacity is still too long and refused, never read as a shorter
     valid value. Its callback `cb_rtl_freq_text()` (`menu_callbacks.c`) parses with `dsd_parse_freq_entry_hz()`: empty
     cancels silently, a refusal puts the parser's message in the status (which the prompt shows inside its box) and
-    reopens the opener with the text typed, and OK posts `DSD_APP_CMD_RTL_SET_FREQ` with the Hz. `lbl_rtl_freq()`
-    reads `dsd_opts_tuned_freq_hz()` in MHz (`[-]` at 0), and `rtl_freq_offered()` hides the row under `--trunk-scan`
-    and during an I/Q replay, both of which refuse the command. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`,
-    `UI_MENU_LABELS`, `UI_MENU_LABELS_RADIO`.
+    reopens the opener with the text typed, and OK posts `DSD_APP_CMD_RTL_SET_FREQ` with the Hz. The row
+    (`input.freq`, after `input.switch`, hotkey `=`, every build) shows `lbl_input_freq()`: `dsd_opts_tuned_freq_hz()`
+    in MHz on a radio input, `dsd_opts::rigctl_set_freq_hz` (the frequency the rigctl peer last accepted on this
+    connection: set by the manual, scan and trunking rigctl legs, 0 after a connect) off one, `[-]` at 0.
+    `input_freq_offered()` / `freq_entry_offered(opts)` offer it on a radio input or with a live rigctl peer
+    (`dsd_opts_rigctl_live()`), never during an I/Q replay; a scan no longer hides it, since an accepted entry pauses
+    the scan. `=` (and, under PDCurses, `SHF_PADENTER` and Enter with `PDC_get_key_modifiers() &
+    PDC_KEY_MODIFIER_SHIFT`, guarded on those names, not on `DSD_USE_PDCURSES`) opens `act_freq_key()` through
+    `ui_menu_open_modal_async()`: the overlay with an empty frame and `g_modal_only` set, which `menu_core.c` closes
+    once no prompt, help, chooser or RadioReference panel is left (in the opener's own call, after the modal routing of
+    each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the published options
+    snapshot (the context's before the first publication), not the live pointers the menu's key handling passes, and
+    opens the prompt or one line of help with the reason (an I/Q replay; no connected rigctl peer). The `y` row
+    (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
+    resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold,
+    avoid and clear avoids (`scan_rotation_active()`) and Next channel under a trunk scan (`trunk_enabled()`) need the
+    scan running. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`,
+    `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
     `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
@@ -8354,10 +8369,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     that `isprint()` refuses. PDCurses keypad `+ - * /` type their characters, other keys are ignored and `isprint()`
     only sees 0..0xFF. Integer prompts refuse a value outside `int` instead of wrapping. Every Enter check (main screen,
     menu, prompt, help, chooser, RadioReference panel) asks `ui_key_is_enter()`: `'\n'`, `'\r'`, `KEY_ENTER`, and
-    PDCurses keypad Enter `PADENTER`, which PDCurses sends instead of `KEY_ENTER` (no fallback define on ncurses;
-    modified keypad Enter stays unbound). Extra accept keys such as Right stay at the call site. Tests:
+    PDCurses keypad Enter `PADENTER`, which PDCurses sends instead of `KEY_ENTER`, and `SHF_PADENTER` (no fallback
+    define on ncurses; Ctrl and Alt keypad Enter stay unbound). The main screen checks the Shift+Enter alias of `=`
+    first. Extra accept keys such as Right stay at the call site. Tests:
     `UI_READ_KEY`, `UI_PROMPT_VALIDATION`, `UI_PROMPT_SECRET`, `UI_HOTKEYS_REGRESSION` (the fake `tests/ui/curses.h`
-    defines `PADENTER`), `UI_RR_PANEL_KEYS`.
+    defines `PADENTER`, `SHF_PADENTER`, `PDC_KEY_MODIFIER_SHIFT` and declares `PDC_get_key_modifiers()`, which the
+    test defines), `UI_RR_PANEL_KEYS`.
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
