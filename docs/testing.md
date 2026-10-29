@@ -510,6 +510,33 @@ tried as speech behind an AACH saying control or unallocated. An AACH that canno
 nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this stretch got
 through that way, so the gate case asserts the AACH's decisions rather than the absence of every false frame.
 
+The TETRA stress set (`TETRA_STRESS`, `build_tetra_stress()`, `--derived-only`) puts the same call under stress. Its
+neighbour is an independent synthetic downlink of another network (MCC 460, MNC 4242, colour code 0x11): the spec
+pulse, identity bursts followed by nine random-modulated slots, running continuously. Both are built at 144 kHz and
+decimated to 72 kHz with the tool's ideal low-pass resampler; the wanted carrier sits at +offset and the neighbour at
+neighbour + offset, so a positive offset is a receiver tuned below the call, which the sidecar's centre frequency
+records, and the sidecar's notes record the realized neighbour ratio after decimation. Counts below are the receiver
+before the TETRA chain against the chain, on the committed bytes:
+
+| Case | Fixture | Before | Chain | Asserted |
+|---|---|---|---|---|
+| `DECODE_IQ_TETRA_CALL_ADJACENT` | neighbour 25 kHz below at +30 dB (29.99 realized), on frequency | 0 | 232 | at least 139 identities, the SYSINFO and the allocation, never `MCC=460` |
+| `DECODE_IQ_TETRA_CALL_AWGN` | AWGN 3 dB SNR over 72 kHz | 3, no speech | 53, 20 TCH/FS | at least 32 identities and one accepted TCH/FS |
+| `DECODE_IQ_TETRA_CALL_NEIGHBOUR_REJECT` | receiver 10 kHz below, neighbour +20 dB (20.00 realized) at -15 kHz | 36 neighbour identities | none of either | never `MCC=460`; the replay end notice with all 468000 samples |
+| `DECODE_IQ_TETRA_CALL_OFFSET_10K` | clean, receiver 10 kHz below | 217 | 224 | at least 207 identities (95% of 217) |
+
+The rejection case accepts silence: the chain must not name the neighbour, and need not decode the call.
+
+`tetra_uplink_bursts_72k` (`TETRA_UPLINK_BURSTS`, `build_tetra_uplink()`) is a trunked mode uplink for
+`--tetra-uplink --tetra-net 460,4242,17`: 16 bursts, control uplink bursts (one SCH/HU) and normal uplink bursts (one
+SCH/F), carrying the MAC-ACCESS and MAC-DATA vectors of `tests/protocol/tetra/test_tetra_ul.c` from SSIs 2001 to 2016.
+Each is a radio of its own, 20 dB above or below the burst before it and 500 Hz away, and most follow noise-only
+slots. `DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS` and `_NORMAL_BURSTS` require each burst's PDU in order, the first after
+every gap included, except burst 2009, a weak control burst after seven slots of noise that neither receiver
+synchronizes to. The receiver before the TETRA chain decodes 13 of the 16 (not 2001, 2009 or 2016); the chain decoded
+7. So an uplink session keeps the earlier path and takes only the TETRA channel filter (decision D10,
+`dsd_demod_tetra_channel_runs()`), which decodes 15.
+
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are
 pi/4-DQPSK shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
 `tetra_pulse_shape()`), the transmit half of the matched pair the TETRA receive chain completes; they once used a full

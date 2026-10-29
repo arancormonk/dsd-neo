@@ -5,6 +5,9 @@
 - The TETRA modulator shapes its symbols with ETSI EN 300 392-2's root-raised-cosine (roll-off 0.35): its impulse
   response, read through the modulator's own pulse shaping, matches the closed form computed here independently.
 - simulcast_two_ray() rotates its second ray at the sample rate it is given, 48 kHz by default.
+- The control-block CRC-16 is computed directly, as the search over every candidate found it.
+- The uplink fixture's bursts have the control and normal uplink burst layouts and carry their SSIs in the MAC vectors.
+- The stress set's 144 kHz round trip leaves an unstressed call alone and keeps a neighbour's set ratio.
 """
 
 import math
@@ -95,6 +98,68 @@ class SimulcastTwoRay(unittest.TestCase):
     def test_default_rate_stays_48k(self):
         self.assertAlmostEqual(self.rotation_step(), 2.0 * math.pi * 3.0 / 48000.0, delta=1e-15)
         self.assertEqual(fixtures.SAMPLE_RATE_HZ, 48000)
+
+
+class TetraControlCrc(unittest.TestCase):
+    def test_protect_is_the_searched_crc(self):
+        """The CRC-16 computed directly is the one a search over all 65536 candidates finds first (the residue 0x1D0F)."""
+        info = [1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0]
+        searched = None
+        for candidate in range(0x10000):
+            trial = info + [(candidate >> (15 - bit)) & 1 for bit in range(16)]
+            if fixtures.tetra_crc16(trial) == 0x1D0F:
+                searched = trial
+                break
+        self.assertEqual(fixtures.tetra_crc16_protect(info), searched)
+
+
+class TetraUplinkBursts(unittest.TestCase):
+    """The uplink fixture's bursts: the frame layout the frame sync matches (EN 300 392-2 clause 9.4.4.2)."""
+
+    def test_control_uplink_burst_layout(self):
+        dibits = fixtures.tetra_ul_burst_dibits("cb", 2001)
+        self.assertEqual(len(dibits), 103)
+        self.assertEqual("".join(str(d) for d in dibits[44:59]), fixtures.TETRA_ETS_SYNC)
+        self.assertEqual(dibits[:2], [3, 0])
+        self.assertEqual(dibits[-2:], [3, 0])
+
+    def test_normal_uplink_burst_layout(self):
+        dibits = fixtures.tetra_ul_burst_dibits("nub", 2002)
+        self.assertEqual(len(dibits), 231)
+        self.assertEqual("".join(str(d) for d in dibits[110:121]), fixtures.TETRA_NTS_SYNC)
+
+    def test_mac_vectors(self):
+        """The MAC-ACCESS and MAC-DATA blocks are whole and carry the burst's SSI where tetra_ul_read() reads it."""
+        access = fixtures.tetra_ul_access_bits(0x123456)
+        self.assertEqual(len(access), 92)
+        self.assertEqual(int("".join(str(b) for b in access[5:29]), 2), 0x123456)
+        data = fixtures.tetra_ul_data_bits(0x00ABCD)
+        self.assertEqual(len(data), 268)
+        self.assertEqual(int("".join(str(b) for b in data[6:30]), 2), 0x00ABCD)
+
+    def test_ssis_follow_the_table(self):
+        _samples, bursts = fixtures.tetra_uplink_samples()
+        self.assertEqual(len(bursts), len(fixtures.TETRA_UPLINK_BURSTS))
+        for index, (kind, ssi) in enumerate(bursts):
+            self.assertEqual(kind, fixtures.TETRA_UPLINK_BURSTS[index][0])
+            self.assertEqual(ssi, fixtures.TETRA_UPLINK_SSI_BASE + index)
+
+
+class TetraStress(unittest.TestCase):
+    def test_unstressed_call_passes_through(self):
+        """At 0 Hz with no neighbour and no noise the 144 kHz round trip gives the call back."""
+        rng = np.random.default_rng(1)
+        wanted = rng.normal(0.0, 0.1, 7200) + 1j * rng.normal(0.0, 0.1, 7200)
+        out, realized = fixtures.tetra_stress_samples(wanted, None, None, 0.0, 0.0, None)
+        self.assertIsNone(realized)
+        np.testing.assert_allclose(out, wanted, rtol=0.0, atol=1e-12)
+
+    def test_realized_ratio_on_frequency(self):
+        """A neighbour set +20 dB 25 kHz away keeps about that ratio through the decimation (it lies inside 36 kHz)."""
+        rng = np.random.default_rng(2)
+        wanted = fixtures.modulate_tetra(rng.integers(0, 4, 4000).tolist(), sample_rate=72000)[:14400]
+        _out, realized = fixtures.tetra_stress_samples(wanted, None, 20.0, -25000.0, 0.0, None)
+        self.assertAlmostEqual(realized, 20.0, delta=0.5)
 
 
 if __name__ == "__main__":

@@ -16485,6 +16485,94 @@ if(DSD_HAS_RADIO)
         8
     )
     unset(_dsd_tetra_aach_not_traffic)
+    # The TETRA stress set (TETRA_STRESS in tools/build_iq_fixtures.py): the real-air call next to a stronger
+    # synthetic neighbour of another network (MCC 460 / MNC 4242 / colour code 0x11), in noise, or tuned off its
+    # carrier, built at 144 kHz and decimated to 72 kHz. The counts in each comment are the receiver before the TETRA
+    # chain against the chain, on these bytes.
+    #
+    # The neighbour 25 kHz below at +30 dB (29.99 dB realized after decimation), receiver on frequency: 0 identities
+    # against 232. At least 139 wanted identities (60% of 232), the call's SYSINFO and channel allocation, and never
+    # the neighbour's identity.
+    set(_dsd_tetra_wanted_bsch "\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01")
+    add_test(
+        NAME DECODE_IQ_TETRA_CALL_ADJACENT
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_adjacent_72k.iq.json"
+            "-DEXPECTED=${_dsd_tetra_wanted_bsch}" -DMIN_MATCHES=139
+            "-DEXPECTED2=\\[TETRA SYSINFO\\] CC=1  carrier=1068  band=4"
+            "-DEXPECTED3=\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=3 carrier=1068 freq=426700000"
+            -DNOT_EXPECTED=MCC=460 -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_CALL_ADJACENT
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # AWGN at 3 dB SNR over the 72 kHz band: 3 identities and no speech against 53 and 20 TCH/FS bursts whose CRC
+    # passes. At least 32 wanted identities (60% of 53) and one accepted TCH/FS.
+    add_test(
+        NAME DECODE_IQ_TETRA_CALL_AWGN
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fT -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_awgn_72k.iq.json"
+            "-DEXPECTED=${_dsd_tetra_wanted_bsch}" -DMIN_MATCHES=32
+            "-DEXPECTED2=\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_CALL_AWGN
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # A rejection test: the receiver 10 kHz below the call, which puts the +20 dB neighbour (20.00 dB realized) at
+    # -15 kHz, 5 kHz inside the band the call's carrier left. The receiver before the chain decoded the neighbour's
+    # identity 36 times; the chain decodes neither carrier, which is acceptable here. What it must not do is name the
+    # neighbour, and the replay's end-of-capture notice, with all 468000 samples of the 936000-byte capture, shows it
+    # ran to the end rather than stopping early.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_CALL_NEIGHBOUR_REJECT
+        tetra_call_neighbour_reject_72k
+        -fT
+        "IQ replay: end of capture after 468000 samples"
+        MCC=460
+    )
+    # The control for the rejection test: the clean call with the receiver 10 kHz below it. The receiver before the
+    # chain decoded 217 identities, the chain 224; at least 207 (95% of 217).
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CALL_OFFSET_10K
+        tetra_call_offset_10k_72k
+        -fT
+        "${_dsd_tetra_wanted_bsch}"
+        ""
+        207
+    )
+    unset(_dsd_tetra_wanted_bsch)
+    # A trunked mode uplink (TETRA_UPLINK_BURSTS in tools/build_iq_fixtures.py, --tetra-uplink): 16 bursts, each from a
+    # radio of its own SSI (2001 to 2016), control uplink bursts (one SCH/HU) and normal uplink bursts (one SCH/F),
+    # with noise-only slots before most of them, each 20 dB above or below the one before it and 500 Hz away. Every
+    # burst's MAC PDU must decode, in order, the first burst after each gap included (2001 after the lead-in's noise,
+    # 2003, 2006, 2008, 2011, 2013, 2015 and 2016). Burst 2009, a weak control burst after seven slots of noise, never
+    # synchronizes, on the receiver before the chain or on this one, and is not required. The receiver before the
+    # chain decoded 13 bursts (not 2001, 2009 and 2016); the TETRA chain, before uplink kept the earlier path with only
+    # the TETRA channel filter (D10), decoded 7; with it, 15.
+    set(_dsd_tetra_ul_mode "-fT --tetra-uplink --tetra-net 460,4242,17")
+    set(_dsd_tetra_cb "\\[TETRA SCH/HU\\] CC=17 MAC-ACCESS enc=0 ssi=")
+    set(_dsd_tetra_nub "\\[TETRA SCH/F\\] CC=17 MAC-DATA enc=0 ssi=")
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS
+        tetra_uplink_bursts_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_cb}2001.*${_dsd_tetra_cb}2003.*${_dsd_tetra_cb}2006.*${_dsd_tetra_cb}2007.*${_dsd_tetra_cb}2012.*${_dsd_tetra_cb}2014.*${_dsd_tetra_cb}2016"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_NORMAL_BURSTS
+        tetra_uplink_bursts_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_nub}2002.*${_dsd_tetra_nub}2004.*${_dsd_tetra_nub}2005.*${_dsd_tetra_nub}2008.*${_dsd_tetra_nub}2010.*${_dsd_tetra_nub}2011.*${_dsd_tetra_nub}2013.*${_dsd_tetra_nub}2015"
+    )
+    unset(_dsd_tetra_ul_mode)
+    unset(_dsd_tetra_cb)
+    unset(_dsd_tetra_nub)
     # Complex-conjugated IQ reverses every differential phase step. Require
     # protected payloads after negative-polarity synchronization and dibit-MSB
     # normalization in both the BSCH and NDB paths.
