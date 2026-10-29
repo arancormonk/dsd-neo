@@ -15,12 +15,13 @@ Item {
             last = [a, b, c, g, changes];
             return true;
         }
-        function addTalkgroup(a, b, c, g, n, l, p, e) {
+        function addTalkgroup(a, b, c, g, n, l, p, e, r) {
             return setTalkgroupPolicy(a, b, c, g, {
                 name: n,
                 listening: l,
                 priority: p,
-                preempt: e
+                preempt: e,
+                record: r
             });
         }
         function removeTalkgroup(a, b, c, g) {
@@ -124,6 +125,7 @@ Item {
             compare(sheet.priorityValue, 50);
             mouseClick(findChild(sheet, "priorityPreset0"));
             verify(!findChild(sheet, "preemptToggle").enabled);
+            verify(findChild(sheet, "preemptToggle").opacity < 1.0, "a toggle that cannot change looks disabled");
             mouseClick(findChild(sheet, "priorityMinus"));
             compare(sheet.priorityValue, 0);
             mouseClick(findChild(sheet, "priorityPreset100"));
@@ -191,6 +193,90 @@ Item {
             card.preempt = false;
             compare(findChild(card, "talkgroupBadge").text, "42 · Priority 50");
             card.destroy();
+        }
+
+        // Issue #708, D11: Record follows Listening. Off and disabled while not tuned, on again when tuned, and
+        // editable before the save; sent only where it differs from what the decoder will hold.
+        function test_record_follows_listening() {
+            var sheet = loader.item;
+            sheet.openRow(42, 42, "Dispatch", true, true, 0, false, "7", 3, false);
+            var listen = findChild(sheet, "listeningToggle");
+            var record = findChild(sheet, "recordToggle");
+            var hint = findChild(sheet, "recordHint");
+            verify(!record.checked, "the row's own Record");
+            verify(record.enabled);
+            compare(hint.text, "Saves this talkgroup's calls when call recording is on.");
+            verify(record.mapToItem(sheet, 0, 0).y > listen.mapToItem(sheet, 0, 0).y, "under Listening");
+            compare(record.opacity, 1.0);
+            mouseClick(listen);
+            verify(!record.checked && !record.enabled, "not tuned records nothing");
+            verify(record.opacity < 1.0, "and looks it");
+            compare(hint.text, "Off while not tuned. Tuning it again turns Record back on.");
+            mouseClick(listen);
+            verify(record.checked && record.enabled, "tuned again records again");
+            mouseClick(findChild(sheet, "saveTalkgroup"));
+            compare(recorder.edits, 1);
+            compare(recorder.last[4], {record: true});
+        }
+        // D4: with Record calls and Only unknown talkgroups on, a listed
+        // talkgroup's calls are not saved, whatever its own Record says.
+        function test_record_hint_under_unknown_only() {
+            var sheet = loader.item;
+            testContext.setPrefs("recordCalls", true);
+            testContext.setPrefs("recordUnknownOnly", true);
+            sheet.openRow(42, 42, "Dispatch", true, true, 0, false, "7", 3, true);
+            var hint = findChild(sheet, "recordHint");
+            compare(hint.text, "This talkgroup's calls aren't saved while Only unknown talkgroups is on in Settings.");
+            mouseClick(findChild(sheet, "listeningToggle"));
+            compare(hint.text, "Off while not tuned. Tuning it again turns Record back on.", "not tuned says so first");
+            testContext.setPrefs("recordUnknownOnly", false);
+            mouseClick(findChild(sheet, "listeningToggle"));
+            compare(hint.text, "Saves this talkgroup's calls when call recording is on.");
+            testContext.setPrefs("recordCalls", false);
+        }
+        function test_record_edits_data() {
+            return [
+                {tag: "record-off", listening: true, record: true, clicks: ["recordToggle"], changes: {record: false}},
+                {tag: "record-on", listening: true, record: false, clicks: ["recordToggle"], changes: {record: true}},
+                {tag: "tune-without-record", listening: false, record: false, clicks: ["listeningToggle", "recordToggle"], changes: {listening: true, record: false}},
+                {tag: "tune-and-record", listening: false, record: false, clicks: ["listeningToggle"], changes: {listening: true}},
+                {tag: "untune", listening: true, record: false, clicks: ["listeningToggle"], changes: {listening: false}}
+            ];
+        }
+        function test_record_edits(data) {
+            var sheet = loader.item;
+            sheet.openRow(42, 42, "Dispatch", data.listening, true, 0, false, "7", 3, data.record);
+            for (var name of data.clicks)
+                mouseClick(findChild(sheet, name));
+            mouseClick(findChild(sheet, "saveTalkgroup"));
+            compare(recorder.edits, 1);
+            compare(recorder.last[4], data.changes);
+        }
+        function test_record_change_is_an_edit() {
+            var sheet = loader.item;
+            sheet.openRow(42, 42, "Dispatch", true, true, 0, false, "7", 3, true);
+            mouseClick(findChild(sheet, "recordToggle"));
+            findChild(sheet, "talkgroupEditClose").activate();
+            verify(sheet.visible, "Close asks before a Record change goes");
+            var question = null;
+            for (var child of sheet.children) {
+                if (child.accessibleName === "Discard changes?" && child.visible)
+                    question = child;
+            }
+            verify(question !== null);
+            findChild(question, "discardDialogDiscard").activate();
+            compare(recorder.edits, 0);
+        }
+        function test_heard_add_takes_record() {
+            var sheet = loader.item;
+            sheet.openRow(55, 55, "", false, false, 0, false, "7", 2);
+            verify(!findChild(sheet, "recordToggle").checked);
+            mouseClick(findChild(sheet, "listeningToggle"));
+            verify(findChild(sheet, "recordToggle").checked, "a heard talkgroup tuned records");
+            mouseClick(findChild(sheet, "recordToggle"));
+            mouseClick(findChild(sheet, "saveTalkgroup"));
+            compare(recorder.last[4].listening, true);
+            compare(recorder.last[4].record, false);
         }
 
         function test_heard_add_and_backend_toast() {

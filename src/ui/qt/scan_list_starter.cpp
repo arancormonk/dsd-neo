@@ -26,6 +26,7 @@
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
 #include "json_store.h"
+#include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_list_targets.h"
@@ -203,13 +204,39 @@ ScanListStarter::build(const QVariantMap& list) const {
 }
 
 QVariantMap
+ScanListStarter::prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording) const {
+    // The list's call recording folder goes into its argv (issue #708), so a start that can record checks the list
+    // first and asks for the folder only for a list that can start; the build that writes the CSV then names it. A
+    // draft never can (only that build refuses it), so it asks for none.
+    const bool canRecord = host && m_recordingSessions && !list.value("isDraft").toBool();
+    auto result = prepare(list, !canRecord);
+    *recording = false;
+    if (canRecord && result.value("ok").toBool()) {
+        *recording = true;
+        const QString folder = m_recordingSessions->beginSession(QStringLiteral("scan"), list.value("uid").toString(),
+                                                                 list.value("name").toString());
+        result = prepare(list, true, folder, folder.isEmpty());
+    }
+    return result;
+}
+
+void
+ScanListStarter::endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const {
+    if (recording && !started && !host->sessionActive()) {
+        m_recordingSessions->endSession();
+    }
+}
+
+QVariantMap
 ScanListStarter::start(const QVariantMap& list, DecoderHost* host) const {
-    auto result = prepare(list, true);
+    bool recording = false;
+    auto result = prepareForStart(list, host, &recording);
     const auto args = result.take("args").toStringList();
     if (result.value("ok").toBool() && host) {
         host->noteStartAttempt(list.value("sourceType").toString());
     }
     const bool started = result.value("ok").toBool() && host && host->start(args);
+    endUnstartedRecording(recording, started, host);
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {
         for (const auto& value : list.value("entries").toList()) {
@@ -353,7 +380,8 @@ validateAndStoreCsv(const QByteArray& csv, const QString& path, bool materialize
 }
 
 QVariantMap
-ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
+ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder,
+                         bool recordingUnavailable) const {
     const auto fail = [](const QString& error, const QStringList& warnings = QStringList()) {
         return QVariantMap{
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", warnings}, {"targetCount", 0}};
@@ -363,7 +391,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
     }
     const QString source = list.value("targetSource", "entries").toString();
     if (source == "csv") {
-        return prepareCsv(list, materialize);
+        return prepareCsv(list, materialize, recordingFolder, recordingUnavailable);
     }
     if (source != "entries" || !list.value("targetsCsvPath").toString().isEmpty()) {
         return fail(QStringLiteral("Choose either manual entries or an imported target CSV."));
@@ -391,7 +419,9 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
     if (!inputError.isEmpty()) {
         return fail(inputError, generated.warnings);
     }
-    const auto prefs = session_args_prefs(m_prefs);
+    auto prefs = session_args_prefs(m_prefs);
+    prefs.recordingFolder = recordingFolder;
+    prefs.recordingUnavailable = recordingUnavailable;
     const QString path = json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv"));
     QString error;
     const auto args = session_args_scan_build(prepared, generated.firstFreqMhz, path, prefs, &error);
@@ -411,7 +441,8 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
 }
 
 QVariantMap
-ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize) const {
+ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
+                            bool recordingUnavailable) const {
     const auto fail = [](const QString& error) {
         return QVariantMap{
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", QStringList()}, {"targetCount", 0}};
@@ -452,8 +483,10 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize) const {
         return fail(QString::fromUtf8(detail));
     }
     QString error;
-    const auto args = session_args_scan_build(prepared, QString::number(first / 1e6, 'f', 6), path,
-                                              session_args_prefs(m_prefs), &error);
+    auto prefs = session_args_prefs(m_prefs);
+    prefs.recordingFolder = recordingFolder;
+    prefs.recordingUnavailable = recordingUnavailable;
+    const auto args = session_args_scan_build(prepared, QString::number(first / 1e6, 'f', 6), path, prefs, &error);
     if (args.isEmpty()) {
         return fail(error);
     }

@@ -7,6 +7,7 @@ interface IBinder
 class CancellationSignal {
     @Volatile var cancelled = false
     fun cancel() { cancelled = true }
+    val isCanceled: Boolean get() = cancelled
     fun throwIfCanceled() { if (cancelled) throw OperationCanceledException() }
 }
 class OperationCanceledException(message: String? = null) : RuntimeException(message ?: "The operation has been canceled.")

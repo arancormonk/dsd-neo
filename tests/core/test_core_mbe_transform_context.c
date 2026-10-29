@@ -2189,6 +2189,29 @@ test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400(void) {
     return rc;
 }
 
+/* The talkgroup policies a recording test runs its call (talkgroup 123) under, in order: two that block recording, then
+ * two that record. --record-unknown-only (issue #708) blocks a talkgroup with a row and records one without. */
+enum {
+    RECORD_POLICY_MODE_B,
+    RECORD_POLICY_KNOWN_UNKNOWN_ONLY,
+    RECORD_POLICY_UNKNOWN_UNKNOWN_ONLY,
+    RECORD_POLICY_NO_ROW,
+    RECORD_POLICY_CASES
+};
+
+static int
+apply_record_policy(dsd_opts* opts, dsd_state* state, int policy) {
+    opts->record_unknown_only =
+        policy == RECORD_POLICY_KNOWN_UNKNOWN_ONLY || policy == RECORD_POLICY_UNKNOWN_UNKNOWN_ONLY;
+    if (policy == RECORD_POLICY_MODE_B) {
+        return expect_eq_int("record policy blocked row", dsd_tg_policy_set_mode(state, 123, 123, "B"), 0);
+    }
+    if (policy == RECORD_POLICY_KNOWN_UNKNOWN_ONLY) {
+        return expect_eq_int("record policy listed row", dsd_tg_policy_set_mode(state, 123, 123, "A"), 0);
+    }
+    return 0;
+}
+
 /* X2-TDMA and D-STAR write their WAV straight from the MBE post-processing;
  * like every other protocol there, it honours the call's talkgroup policy.
  * X2-TDMA writes the per-call WAV of the timeslot it decodes (issue #654). */
@@ -2222,7 +2245,8 @@ test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
     ambe_fr[2][9] = 1;
     int rc = 0;
     for (size_t p = 0; p < sizeof(cases) / sizeof(cases[0]); p++) {
-        for (int blocked = 1; blocked >= 0; --blocked) {
+        for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
+            const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
             char wav_path[1024];
             SNDFILE* wav = create_wav_temp(wav_path, sizeof(wav_path), "x2_dstar_wav_policy");
             if (!wav) {
@@ -2241,9 +2265,7 @@ test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy(void) {
             init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
             state.synctype = cases[p].protocol;
             state.currentslot = cases[p].current_slot;
-            if (blocked) {
-                rc |= expect_eq_int("wav policy blocked row", dsd_tg_policy_set_mode(&state, 123, 123, "B"), 0);
-            }
+            rc |= apply_record_policy(&opts, &state, policy);
             const dsd_call_observation call = {.protocol = cases[p].protocol,
                                                .slot = cases[p].call_slot,
                                                .kind = DSD_CALL_KIND_GROUP_VOICE,
@@ -2308,7 +2330,8 @@ test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
     ambe_fr[2][9] = 1;
     int rc = 0;
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
-        for (int blocked = 1; blocked >= 0; --blocked) {
+        for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
+            const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
             FILE* out = tmpfile();
             if (!out) {
                 return 1;
@@ -2334,9 +2357,7 @@ test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
             state.lastsynctype = cases[c].protocol;
             state.currentslot = cases[c].current_slot;
             state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-            if (blocked) {
-                rc |= expect_eq_int("capture blocked row", dsd_tg_policy_set_mode(&state, 123, 123, "B"), 0);
-            }
+            rc |= apply_record_policy(&opts, &state, policy);
             const dsd_call_observation call = {.protocol = cases[c].protocol,
                                                .slot = cases[c].call_slot,
                                                .kind = DSD_CALL_KIND_GROUP_VOICE,
@@ -2354,7 +2375,7 @@ test_process_mbe_frame_mbe_capture_honors_record_policy(void) {
             opts.mbe_out_f = NULL;
             opts.mbe_out_fR = NULL;
             if ((saved > 0) != !blocked) {
-                DSD_FPRINTF(stderr, "mbe capture %s %s: saved %ld bytes\n", cases[c].tag,
+                DSD_FPRINTF(stderr, "mbe capture %s policy %d (%s): saved %ld bytes\n", cases[c].tag, policy,
                             blocked ? "blocked" : "allowed", saved);
                 rc = 1;
             }

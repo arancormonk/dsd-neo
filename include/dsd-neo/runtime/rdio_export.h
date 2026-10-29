@@ -67,6 +67,53 @@ int dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_stru
                          time_t opened);
 
 /**
+ * As dsd_rdio_export_call(); @p api_queued (may be NULL) gets 1 when an API upload of @p wav_path was queued, whose
+ * worker may delete the file once it is uploaded.
+ */
+int dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                            time_t opened, int* api_queued);
+
+/**
+ * When a per-call recording began, the one rule the rdio-scanner sidecar's start_time and the recording journal
+ * (issue #708) share: the row's event_start_time, or @p opened (the decode time the WAV was opened, 0 when unknown)
+ * when that is later, as when per-call WAV is switched on mid-call. A row with no start falls back to its
+ * event_time, unadjusted (a --playfiles row, stamped on the file's clock), then, as does a NULL @p event, to the
+ * decode clock.
+ */
+time_t dsd_rdio_recording_start(const Event_History* event, time_t opened);
+
+/**
+ * Whether the rdio API upload queue still owns the per-call WAV at @p path: a job naming it is queued or in flight (from
+ * the moment the worker takes it until its upload, and the delete after a successful one, are over). Issue #708: the
+ * app's recording store never deletes such a file.
+ *
+ * Read under the queue's own lock, with no I/O, from any thread at any time. A job names the file when its WAV's final
+ * path component is @p path's (without case on Windows); folders are not compared, since one folder can be reached by
+ * several paths, so a file of the same name in another folder reads as held too, which only delays its deletion. A
+ * session that ended dropped its queue (dsd_rdio_upload_shutdown()), so nothing is held after it. Always 0 in builds
+ * without libcurl, and for a NULL or empty @p path or one ending in a separator.
+ */
+int dsd_rdio_upload_holds(const char* path);
+
+/**
+ * Whether a run's recording journal (`--wav-journal`, issue #708) keeps the per-call WAVs delete-after-upload would
+ * remove: 1 when @p opts names a journal and turns delete-after-upload on, 0 otherwise (NULL @p opts included).
+ *
+ * The journal's owner (the app's recording store) manages those files' retention, so a file deleted after its upload
+ * would vanish under playback or export. While a journal is set, a successful API-only upload keeps its WAV
+ * (dsd_rdio_export_call() queues the job without the delete); the option itself keeps its configured value, so a
+ * config saved from the run still has it.
+ */
+int dsd_rdio_journal_keeps_uploads(const dsd_opts* opts);
+
+/**
+ * Say once in the log that uploads are kept because a journal names them, when @p opts newly combines a journal with
+ * delete-after-upload: @p kept_before is dsd_rdio_journal_keeps_uploads() before the change (0 at bootstrap). Called
+ * after the config and the command line are applied, and after a live config apply. Returns 1 when it warned.
+ */
+int dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before);
+
+/**
  * Drain queued rdio API uploads and stop the background worker.
  *
  * Intended for process shutdown after final call files are closed/renamed.

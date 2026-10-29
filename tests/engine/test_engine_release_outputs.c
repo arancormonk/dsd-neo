@@ -9,11 +9,12 @@
  *
  * The Android host configures a session (dsd_runtime_bootstrap()), and can then give it up before nativeRun():
  * DecoderService retires a start that a newer one superseded, a configure fails part way, or the service frees the
- * options. The bootstrap has already opened the -c symbol capture, the -w static WAV, the -6 raw WAV and the -P
- * per-call WAVs by then, and only the run's dsd_engine_cleanup() closes them. This runs the same configure, then
- * dsd_engine_release_outputs() as the host's discard does, and checks every stream is closed: the pointers are
- * cleared, the symbol header reached the file, the empty per-call WAVs are gone and the directory can be removed
- * (which an open file prevents on Windows), and on Linux the process holds no more descriptors than before.
+ * options. The bootstrap has already opened the -c symbol capture, the -w static WAV and the -6 raw WAV by then, and
+ * only the run's dsd_engine_cleanup() closes them; -P opens its per-call WAVs only at the run's start (issue #708), so
+ * a configure leaves none. This runs the same configure, then dsd_engine_release_outputs() as the host's discard does,
+ * and checks every stream is closed: the pointers are cleared, the symbol header reached the file, no per-call WAV is
+ * left in the -7 folder and the directory can be removed (which an open file prevents on Windows), and on Linux the
+ * process holds no more descriptors than before.
  */
 
 #include <dsd-neo/core/init.h>
@@ -141,7 +142,7 @@ static_outputs_close(void) {
     return rc;
 }
 
-/* -P: per-call WAVs the configure opens under temporary names; with no audio the release removes them. */
+/* -P: the configure only selects per-call mode; the slot files open at the run's start, so none is left behind. */
 static int
 per_call_outputs_close(void) {
     int rc = 0;
@@ -159,7 +160,8 @@ per_call_outputs_close(void) {
     int exit_rc = 1;
     rc |= expect_true("the per-call outputs configure",
                       dsd_runtime_bootstrap(6, argv, opts, state, NULL, &exit_rc) == DSD_BOOTSTRAP_CONTINUE);
-    rc |= expect_true("the configure opened both slots", opts->wav_out_f != NULL && opts->wav_out_fR != NULL);
+    rc |= expect_true("the configure selects per-call mode", opts->dmr_stereo_wav == 1);
+    rc |= expect_true("the configure opens no slot", opts->wav_out_f == NULL && opts->wav_out_fR == NULL);
 
     dsd_engine_release_outputs(opts, state);
     rc |= expect_true("the release closes both", opts->wav_out_f == NULL && opts->wav_out_fR == NULL);
@@ -168,7 +170,7 @@ per_call_outputs_close(void) {
         rc |= expect_true("no descriptor stays open", open_descriptor_count() == before);
     }
     static const char* const kNone[] = {NULL};
-    rc |= expect_true("the empty recordings are gone", dsd_test_remove_temp_dir(dir, kNone) == 0);
+    rc |= expect_true("no recording is left behind", dsd_test_remove_temp_dir(dir, kNone) == 0);
     return rc;
 }
 

@@ -26,6 +26,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/edacs_session.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -104,13 +105,10 @@ dsd_audio_default_sample_rate_hz(int configured_sample_rate_hz) {
 
 void
 dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
-    if (file == NULL || samples == NULL || sample_count <= 0) {
+    if (sample_count <= 0) {
         return;
     }
-    sf_count_t written = sf_write_short(file, samples, sample_count);
-    if (written != sample_count) {
-        LOG_WARN("%s: wrote %lld/%lld samples to WAV output\n", context, (long long)written, (long long)sample_count);
-    }
+    dsd_wav_segment_write(file, samples, (size_t)sample_count, context);
 }
 
 static int

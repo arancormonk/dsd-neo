@@ -357,10 +357,11 @@ submit_tg_row(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
     int64_t fields = 0;
     int listen = 0;
     int preempt = 0;
-    if (param_id_range(params, &p.id_start, &p.id_end) != 0 || param_i64(params, "fields", 1, 0x1F, &fields) != 0
+    int record = 0;
+    if (param_id_range(params, &p.id_start, &p.id_end) != 0 || param_i64(params, "fields", 1, 0x3F, &fields) != 0
         || param_policy(params, &p.policy_context, &p.policy_generation) != 0
         || param_bool_opt(params, "listen", &listen) != 0 || param_bool_opt(params, "preempt", &preempt) != 0
-        || param_i32_opt(params, "priority", &p.priority) != 0
+        || param_bool_opt(params, "record", &record) != 0 || param_i32_opt(params, "priority", &p.priority) != 0
         || param_str_opt(params, "name", p.name, sizeof p.name) != 0
         || param_str_opt(params, "tags", p.tags, sizeof p.tags) != 0) {
         return API_INVALID_PARAMS;
@@ -368,6 +369,7 @@ submit_tg_row(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
     p.fields = (uint32_t)fields;
     p.listen = listen;
     p.preempt = preempt;
+    p.record = (uint8_t)(record != 0);
     return dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &p, sizeof p);
 }
 
@@ -899,6 +901,7 @@ static const api_command_desc k_commands[] = {
 
     API_STR("wav_static_open", DSD_APP_CMD_WAV_STATIC_OPEN, 1023, "{value:path, <=1023 bytes}"),
     API_STR("wav_raw_open", DSD_APP_CMD_WAV_RAW_OPEN, 1023, "{value:path, <=1023 bytes}"),
+    API_I32_RANGE("record_unknown_only_set", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0, 1, "{value:0|1}"),
     API_STR("dsp_out_set", DSD_APP_CMD_DSP_OUT_SET, 255, "{value:filename, <=255 bytes}"),
     API_STR("symcap_open", DSD_APP_CMD_SYMCAP_OPEN, 1023, "{value:path, <=1023 bytes}"),
     API_STR("symbol_in_open", DSD_APP_CMD_SYMBOL_IN_OPEN, 1023, "{value:path, <=1023 bytes}"),

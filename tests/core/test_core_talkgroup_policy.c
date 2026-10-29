@@ -1625,7 +1625,9 @@ test_set_fields_remove_bounds(void) {
     value.priority = 101;
     rc |= expect_true("invalid priority refused",
                       dsd_tg_policy_set_fields(st, 40, 49, &value, DSD_TG_POLICY_FIELD_PRIORITY) == 1);
-    rc |= expect_true("invalid mask refused", dsd_tg_policy_set_fields(st, 1, 1, &value, 32) == 1);
+    /* The first bit past the last field (DSD_TG_POLICY_FIELD_RECORD, issue #708). */
+    rc |= expect_true("invalid mask refused",
+                      dsd_tg_policy_set_fields(st, 1, 1, &value, (uint32_t)DSD_TG_POLICY_FIELD_RECORD << 1) == 1);
     rc |= expect_true("reversed bounds refused",
                       dsd_tg_policy_set_fields(st, 2, 1, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
     dsd_tg_policy_make_exact_entry(99, "D", "Alias", DSD_TG_POLICY_SOURCE_IMPORTED, &row);
@@ -2059,6 +2061,162 @@ test_ota_final_blocks(void) {
     return rc;
 }
 
+/* The record decision of a group (@p private_call 0) or private call, with --record-unknown-only off or on. */
+/* Member by member: the struct has padding, so its bytes can differ between equal decisions. */
+static int
+same_decision(const dsd_tg_policy_decision* a, const dsd_tg_policy_decision* b) {
+    return a->target_id == b->target_id && a->source_id == b->source_id && a->encrypted == b->encrypted
+           && a->data_call == b->data_call && a->private_call == b->private_call && a->tune_allowed == b->tune_allowed
+           && a->audio_allowed == b->audio_allowed && a->record_allowed == b->record_allowed
+           && a->stream_allowed == b->stream_allowed && a->priority == b->priority
+           && a->preempt_requested == b->preempt_requested && a->block_reasons == b->block_reasons
+           && a->tg_hold_active == b->tg_hold_active && a->tg_hold_match == b->tg_hold_match
+           && strncmp(a->mode, b->mode, sizeof a->mode) == 0 && strncmp(a->name, b->name, sizeof a->name) == 0
+           && a->match == b->match;
+}
+
+static dsd_tg_policy_decision
+eval_record(dsd_opts* opts, const dsd_state* state, int unknown_only, int private_call, uint32_t target, uint32_t src) {
+    dsd_tg_policy_decision decision;
+    opts->record_unknown_only = unknown_only;
+    if (private_call) {
+        (void)dsd_tg_policy_evaluate_private_call(opts, state, src, target, 0, 0, &decision);
+    } else {
+        (void)dsd_tg_policy_evaluate_group_call(opts, state, target, src, 0, 0, &decision);
+    }
+    return decision;
+}
+
+/* A call the rule blocks records as if its row said record=off: only record moves, tuning and playback stay. */
+static int
+expect_record_blocked_only(const char* tag, const dsd_tg_policy_decision* d) {
+    return expect_true(tag, !d->record_allowed && (d->block_reasons & DSD_TG_POLICY_BLOCK_RECORD) && d->tune_allowed
+                                && d->audio_allowed && d->stream_allowed);
+}
+
+static int
+expect_records(const char* tag, const dsd_tg_policy_decision* d) {
+    return expect_true(tag, d->record_allowed && !(d->block_reasons & DSD_TG_POLICY_BLOCK_RECORD));
+}
+
+/* Record only unknown talkgroups (issue #708): a non-alias row the record decision matches (exact or range) makes the
+   call known; a private call is known when either radio has an exact non-alias row, each looked up on its own. */
+static int
+test_record_unknown_only(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!state || !opts) {
+        free_test_state(state);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    dsd_tg_policy_entry entry;
+    int rc = 0;
+    init_entry(&entry, 100, "A", "Known", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("unknown-only seed exact", dsd_tg_policy_append_exact(state, &entry) == 0);
+    init_entry(&entry, 200, "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED);
+    entry.id_end = 299;
+    entry.is_range = 1;
+    rc |= expect_true("unknown-only seed range", dsd_tg_policy_add_range_entry(state, &entry) == 0);
+    init_entry(&entry, 300, "B", "Locked out", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("unknown-only seed mode B", dsd_tg_policy_append_exact(state, &entry) == 0);
+    init_entry(&entry, 400, "D", "Persisted alias", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("unknown-only seed mode D", dsd_tg_policy_append_exact(state, &entry) == 0);
+    init_entry(&entry, 500, "A", "Learned alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    rc |= expect_true("unknown-only seed learned alias", dsd_tg_policy_append_exact(state, &entry) == 0);
+    init_entry(&entry, 7001, "A", "Known radio", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    rc |= expect_true("unknown-only seed radio", dsd_tg_policy_append_exact(state, &entry) == 0);
+
+    dsd_tg_policy_decision d = eval_record(opts, state, 0, 0, 100, 1);
+    rc |= expect_records("a known talkgroup records with the rule off", &d);
+    d = eval_record(opts, state, 1, 0, 100, 1);
+    rc |= expect_record_blocked_only("an exact row makes a talkgroup known", &d);
+    d = eval_record(opts, state, 1, 0, 250, 1);
+    rc |= expect_record_blocked_only("a range row makes a talkgroup known", &d);
+    d = eval_record(opts, state, 1, 0, 999, 1);
+    rc |= expect_records("a talkgroup without a row records", &d);
+    d = eval_record(opts, state, 1, 0, 400, 1);
+    rc |= expect_records("a persisted mode-D alias does not make a talkgroup known", &d);
+    d = eval_record(opts, state, 1, 0, 500, 1);
+    rc |= expect_records("a learned alias does not make a talkgroup known", &d);
+
+    /* Mode B already blocks everything: the rule adds nothing to it. */
+    const dsd_tg_policy_decision off = eval_record(opts, state, 0, 0, 300, 1);
+    d = eval_record(opts, state, 1, 0, 300, 1);
+    rc |= expect_true("mode B decides alone",
+                      same_decision(&off, &d) && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) && !d.record_allowed);
+
+    /* A matching Hold is reported, not merged: the media gates let a held call record past a record block. */
+    state->tg_hold = 100;
+    d = eval_record(opts, state, 1, 0, 100, 1);
+    rc |= expect_true("a held known talkgroup keeps the record block for the hold to override",
+                      d.tg_hold_match && !d.record_allowed && (d.block_reasons & DSD_TG_POLICY_BLOCK_RECORD));
+    state->tg_hold = 0;
+
+    /* Private calls: either radio known, each looked up on its own; a range row is not a radio's row. */
+    d = eval_record(opts, state, 1, 1, 8888, 7001);
+    rc |= expect_record_blocked_only("a known source makes a private call known", &d);
+    d = eval_record(opts, state, 1, 1, 7001, 8888);
+    rc |= expect_record_blocked_only("a known destination makes a private call known", &d);
+    d = eval_record(opts, state, 1, 1, 500, 7001);
+    rc |= expect_record_blocked_only("a known source counts when the destination is a learned alias", &d);
+    d = eval_record(opts, state, 1, 1, 7001, 500);
+    rc |= expect_record_blocked_only("a known destination counts when the source is a learned alias", &d);
+    d = eval_record(opts, state, 1, 1, 7001, 400);
+    rc |= expect_record_blocked_only("a known destination counts when the source is a persisted alias", &d);
+    d = eval_record(opts, state, 1, 1, 500, 400);
+    rc |= expect_records("two aliases leave a private call unknown", &d);
+    d = eval_record(opts, state, 1, 1, 250, 8888);
+    rc |= expect_records("a range row does not make a radio known", &d);
+    d = eval_record(opts, state, 0, 1, 8888, 7001);
+    rc |= expect_records("a known private call records with the rule off", &d);
+    opts->record_unknown_only = 1;
+    (void)dsd_tg_policy_evaluate_private_grant(opts, state, 7001, 8888, 0, 0, &d);
+    rc |= expect_record_blocked_only("a private grant judges the same", &d);
+
+    free_test_state(state);
+    free(opts);
+    return rc;
+}
+
+/* A Record edit (issue #708) lands after a mode change in the same edit, and a row that does not listen records
+   nothing whatever was asked. */
+static int
+test_set_fields_record(void) {
+    int rc = 0;
+    dsd_state* st = calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    dsd_tg_policy_entry value = {0}, row;
+    DSD_SNPRINTF(value.mode, sizeof value.mode, "%s", "A");
+    value.record = 0;
+    rc |= expect_true(
+        "record off with listening",
+        dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_RECORD) == 0);
+    rc |= expect_true("record off kept after the mode re-derived it", dsd_tg_policy_entry_at(st, 0, &row)
+                                                                          && strcmp(row.mode, "A") == 0 && row.audio
+                                                                          && !row.record && row.stream);
+    value.record = 1;
+    rc |= expect_true("record alone", dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_RECORD) == 0);
+    rc |= expect_true("record on", dsd_tg_policy_entry_at(st, 0, &row) && row.record);
+    DSD_SNPRINTF(value.mode, sizeof value.mode, "%s", "B");
+    rc |= expect_true(
+        "record on with not tuned",
+        dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_RECORD) == 0);
+    rc |= expect_true("a row not tuned records nothing", dsd_tg_policy_entry_at(st, 0, &row) && !row.record);
+    DSD_SNPRINTF(value.mode, sizeof value.mode, "%s", "A");
+    rc |= expect_true("listening again", dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_LISTEN) == 0);
+    rc |= expect_true("listening again resets record on", dsd_tg_policy_entry_at(st, 0, &row) && row.record);
+    value.record = 2;
+    rc |= expect_true("record above 1 refused",
+                      dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_RECORD) == 1);
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2070,6 +2228,8 @@ main(void) {
     rc |= test_session_avoids();
     rc |= test_call_skips();
     rc |= test_ota_final_blocks();
+    rc |= test_record_unknown_only();
+    rc |= test_set_fields_record();
     rc |= test_lockout_replaces_alias_metadata();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();

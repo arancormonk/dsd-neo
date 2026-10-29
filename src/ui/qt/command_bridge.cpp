@@ -34,6 +34,7 @@
 #pragma GCC diagnostic pop
 #endif
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -51,6 +52,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include "decode_mode_flag.h"
 #include "decryption_profile_provider.h"
+#include "recording_status.h"
 #include "session_args.h"
 
 namespace dsd_qt {
@@ -73,7 +75,7 @@ CommandBridge::~CommandBridge() = default;
 namespace {
 bool
 submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                   const QString& name, bool listen, int priority, bool preempt, uint32_t fields) {
+                   const QString& name, bool listen, int priority, bool preempt, uint32_t fields, bool record = false) {
     bool ok = false;
     dsd_app_tg_row_payload p = {};
     p.policy_context = context.toULongLong(&ok);
@@ -89,8 +91,35 @@ submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context,
     p.listen = listen;
     p.priority = priority;
     p.preempt = preempt;
+    p.record = record ? 1U : 0U;
     DSD_MEMCPY(p.name, utf8.constData(), static_cast<size_t>(utf8.size()));
     return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &p, sizeof p));
+}
+
+/* The row field one setTalkgroupPolicy() change edits; 0 for a key it does not know or a value of the wrong kind. */
+uint32_t
+talkgroup_change_field(const QString& key, const QVariant& value) {
+    if (key == QStringLiteral("name") && value.typeId() == QMetaType::QString) {
+        return DSD_APP_TG_FIELD_NAME;
+    }
+    if (key == QStringLiteral("listening") && value.typeId() == QMetaType::Bool) {
+        return DSD_APP_TG_FIELD_LISTEN;
+    }
+    if (key == QStringLiteral("preempt") && value.typeId() == QMetaType::Bool) {
+        return DSD_APP_TG_FIELD_PREEMPT;
+    }
+    if (key == QStringLiteral("record") && value.typeId() == QMetaType::Bool) {
+        return DSD_APP_TG_FIELD_RECORD;
+    }
+    if (key == QStringLiteral("priority")) {
+        bool ok = false;
+        const double priority = value.toDouble(&ok);
+        if (!ok || !(priority >= 0 && priority <= 100) || std::fmod(priority, 1.0) != 0.0) {
+            return 0U;
+        }
+        return DSD_APP_TG_FIELD_PRIORITY;
+    }
+    return 0U;
 }
 } // namespace
 
@@ -99,30 +128,19 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
                                   unsigned int generation, const QVariantMap& changes) const {
     uint32_t fields = 0;
     for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
-        if (it.key() == QStringLiteral("name") && it.value().typeId() == QMetaType::QString) {
-            fields |= DSD_APP_TG_FIELD_NAME;
-        } else if (it.key() == QStringLiteral("listening") && it.value().typeId() == QMetaType::Bool) {
-            fields |= DSD_APP_TG_FIELD_LISTEN;
-        } else if (it.key() == QStringLiteral("preempt") && it.value().typeId() == QMetaType::Bool) {
-            fields |= DSD_APP_TG_FIELD_PREEMPT;
-        } else if (it.key() == QStringLiteral("priority")) {
-            bool ok = false;
-            const double priority = it.value().toDouble(&ok);
-            if (!ok || !(priority >= 0 && priority <= 100) || std::fmod(priority, 1.0) != 0.0) {
-                return false;
-            }
-            fields |= DSD_APP_TG_FIELD_PRIORITY;
-        } else {
+        const uint32_t field = talkgroup_change_field(it.key(), it.value());
+        if (field == 0U) {
             return false;
         }
+        fields |= field;
     }
     if (!fields) {
         return false;
     }
-    return submitTalkgroupRow(idStart, idEnd, context, generation, changes.value(QStringLiteral("name")).toString(),
-                              changes.value(QStringLiteral("listening")).toBool(),
-                              changes.value(QStringLiteral("priority")).toInt(),
-                              changes.value(QStringLiteral("preempt")).toBool(), fields);
+    return submitTalkgroupRow(
+        idStart, idEnd, context, generation, changes.value(QStringLiteral("name")).toString(),
+        changes.value(QStringLiteral("listening")).toBool(), changes.value(QStringLiteral("priority")).toInt(),
+        changes.value(QStringLiteral("preempt")).toBool(), fields, changes.value(QStringLiteral("record")).toBool());
 }
 
 bool
@@ -134,10 +152,12 @@ CommandBridge::renameTalkgroup(unsigned int idStart, unsigned int idEnd, const Q
 bool
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML submits additions through this context object.
 CommandBridge::addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context, unsigned int generation,
-                            const QString& name, bool listen, int priority, bool preempt) const {
+                            const QString& name, bool listen, int priority, bool preempt, bool record) const {
     return submitTalkgroupRow(idStart, idEnd, context, generation, name, listen, priority, preempt,
                               DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
-                                  | DSD_APP_TG_FIELD_PREEMPT);
+                                  | DSD_APP_TG_FIELD_PREEMPT
+                                  | (listen ? static_cast<uint32_t>(DSD_APP_TG_FIELD_RECORD) : 0U),
+                              record);
 }
 
 bool
@@ -220,6 +240,98 @@ bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
 CommandBridge::setRelaxedCrc(bool on) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_AGGR_SYNC_TOGGLE, on ? 1 : 0));
+}
+
+void
+CommandBridge::noteRecording(const QString& refusal) const {
+    if (m_recordingStatus != nullptr) {
+        if (refusal.isEmpty()) {
+            m_recordingStatus->noteSent();
+        } else {
+            m_recordingStatus->noteRefusal(refusal);
+        }
+    }
+}
+
+bool
+CommandBridge::recordingSessionLive(dsd_app_recording_view* view) const {
+    // A view stays readable after its run ends, so whether a session is on comes from the host (through the status).
+    if (m_recordingStatus != nullptr && !m_recordingStatus->sessionActive()) {
+        noteRecording(QStringLiteral("no-session"));
+        return false;
+    }
+    // Until the run is up the view is the last run's, whose folder and mode say nothing of this session's. A
+    // process's first run publishes none until then: that session is starting too, not missing.
+    if (m_recordingStatus != nullptr && !m_recordingStatus->runUp()) {
+        noteRecording(QStringLiteral("starting"));
+        return false;
+    }
+    if (dsd_app_recording_view_get(view) != 1) {
+        noteRecording(QStringLiteral("no-session"));
+        return false;
+    }
+    return true;
+}
+
+bool
+CommandBridge::setRecordCalls(bool on, bool unknownOnly) const {
+    dsd_app_recording_view view{};
+    if (!recordingSessionLive(&view)) {
+        return false;
+    }
+    // Never record-on into a session the app gave no folder: it would record outside the app's storage.
+    if (on && view.journal_named == 0U) {
+        noteRecording(QStringLiteral("storage-unavailable"));
+        return false;
+    }
+    // Nothing either way in a session recording to the user's own static WAV: a start would close it, and so would a
+    // stop. The preference applies at the next start.
+    if (view.mode == DSD_APP_RECORDING_MODE_STATIC) {
+        noteRecording(QStringLiteral("static-wav"));
+        return false;
+    }
+    // On: unknown-only first, so the first call recorded already follows it, and the start last. Off: the stop first,
+    // so a refused second submit never leaves the session recording more than it did (unknown-only cleared, the stop
+    // refused). The stop is the switch: once it is in, unknown-only follows best effort, as it applies only while
+    // calls record and a later start sends it first, and the status keeps describing the stop.
+    if (on) {
+        const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, unknownOnly ? 1 : 0))
+                          && accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_START, nullptr, 0));
+        if (sent) {
+            noteRecording(QString());
+        }
+        return sent;
+    }
+    if (!accepted(dsd_app_command_submit(DSD_APP_CMD_WAV_STOP, nullptr, 0))) {
+        return false;
+    }
+    noteRecording(QString());
+    if (accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0)) && m_recordingStatus != nullptr) {
+        m_recordingStatus->noteFollowUp(DSD_APP_CMD_WAV_STOP, DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET);
+    }
+    return true;
+}
+
+bool
+CommandBridge::setRecordUnknownOnly(bool on) const {
+    dsd_app_recording_view view{};
+    if (!recordingSessionLive(&view)) {
+        return false;
+    }
+    // Whether the session records each call, a start or stop still applying counted as done.
+    const bool pending = view.command_state == DSD_APP_RECORDING_COMMAND_PENDING;
+    const bool recording = pending && view.command_id == DSD_APP_CMD_WAV_START  ? true
+                           : pending && view.command_id == DSD_APP_CMD_WAV_STOP ? false
+                                                                                : view.per_call != 0U;
+    if (!recording) {
+        return true;
+    }
+    // Sent, it is the command the status shows applying, or refused (under Signal search), like Record calls.
+    const bool sent = accepted(dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, on ? 1 : 0));
+    if (sent) {
+        noteRecording(QString());
+    }
+    return sent;
 }
 
 bool

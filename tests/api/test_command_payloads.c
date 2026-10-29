@@ -340,8 +340,11 @@ test_talkgroup_edits(void) {
     refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":1,\"id_end\":2,\"fields\":1,\"listen\":1}}");
     refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":2,\"id_end\":1,\"fields\":1,\"policy_context\":1,"
             "\"policy_generation\":1}}");
-    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":1,\"id_end\":2,\"fields\":32,\"policy_context\":1,"
+    /* The first bit past the last field (32, record: issue #708). */
+    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":1,\"id_end\":2,\"fields\":64,\"policy_context\":1,"
             "\"policy_generation\":1}}");
+    refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":1,\"id_end\":2,\"fields\":32,\"record\":2,"
+            "\"policy_context\":1,\"policy_generation\":1}}");
     refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":1,\"id_end\":2,\"fields\":8,\"name\":"
             "\"01234567890123456789012345678901234567890123456789\",\"policy_context\":1,\"policy_generation\":1}}");
     assert(ok("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":100,\"id_end\":199,\"fields\":11,\"listen\":true,"
@@ -353,6 +356,12 @@ test_talkgroup_edits(void) {
     assert(row.id_start == 100U && row.id_end == 199U && row.fields == 11U && row.listen == 1 && row.priority == -3);
     assert(strcmp(row.name, "Fire") == 0 && row.tags[0] == '\0');
     assert(row.policy_context == UINT64_C(18446744073709551614) && row.policy_generation == 4294967295U);
+    assert(row.record == 0U);
+    assert(ok("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":100,\"id_end\":100,\"fields\":33,\"listen\":true,"
+              "\"record\":true,\"policy_context\":1,\"policy_generation\":2}}"));
+    assert(g_last_id == DSD_APP_CMD_TG_ROW_SET && g_last_n == sizeof row);
+    DSD_MEMCPY(&row, g_last, sizeof row);
+    assert(row.fields == 33U && row.listen == 1 && row.record == 1U);
 
     assert(ok("{\"cmd\":\"tg_list_export\",\"params\":{\"path\":\"/tmp/x.csv\",\"policy_context\":5,"
               "\"policy_generation\":6}}"));

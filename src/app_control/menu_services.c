@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -50,11 +51,13 @@
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <limits.h>
 #include <math.h>
+#include <sndfile.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -93,31 +96,324 @@ svc_toggle_all_mutes(dsd_opts* opts) {
     return 0;
 }
 
+/* Close and remove an output a transition opened and does not keep: it holds nothing yet. */
+static void
+svc_discard_new_wav(SNDFILE* wav, const char* path) {
+    if (wav != NULL) {
+        (void)close_wav_file(wav);
+        (void)remove(path);
+    }
+}
+
+void
+svc_recording_current(const dsd_opts* opts, svc_recording_target* out) {
+    if (!out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!opts) {
+        return;
+    }
+    out->mode = opts->dmr_stereo_wav == 1 ? SVC_RECORDING_PER_CALL
+                                          : (opts->static_wav_file == 1 ? SVC_RECORDING_STATIC : SVC_RECORDING_OFF);
+    DSD_SNPRINTF(out->dir, sizeof out->dir, "%s", opts->wav_out_dir);
+    if (out->mode == SVC_RECORDING_STATIC) {
+        DSD_SNPRINTF(out->static_path, sizeof out->static_path, "%s", opts->wav_out_file);
+    }
+    DSD_SNPRINTF(out->raw_path, sizeof out->raw_path, "%s", opts->wav_out_file_raw);
+}
+
+/* The new outputs a transition opens before it changes anything. */
+typedef struct {
+    SNDFILE* left;
+    SNDFILE* right;
+    SNDFILE* static_wav;
+    SNDFILE* raw;
+    int static_created; /* the static file did not exist before its open: a rollback removes it */
+    char left_name[sizeof(((dsd_opts*)0)->wav_out_file)];
+    char right_name[sizeof(((dsd_opts*)0)->wav_out_fileR)];
+} svc_recording_opened;
+
+static void
+svc_recording_discard(svc_recording_opened* o, const svc_recording_target* target) {
+    svc_discard_new_wav(o->left, o->left_name);
+    svc_discard_new_wav(o->right, o->right_name);
+    if (o->static_wav != NULL) {
+        (void)close_wav_file(o->static_wav);
+        if (o->static_created) {
+            (void)remove(target->static_path);
+        }
+    }
+    (void)close_wav_file(o->raw);
+}
+
+/* Publish the per-call files under their slots' rows in the folder they were opened in (the options' folder until a
+   transition installs another), and the NFM call's recording in its own folder. With per-call recording still on
+   (a folder change), the NFM call's next block opens a new recording in the target's folder; with it off, the call
+   goes on unrecorded. */
+static void
+svc_publish_per_call_files(dsd_opts* opts, dsd_state* state) {
+    if (opts->wav_out_f != NULL) {
+        opts->wav_out_f = close_and_publish_call_wav(opts->wav_out_f, opts, state, 0, opts->wav_out_file,
+                                                     opts->wav_out_dir, opts->wav_out_open_time);
+    }
+    if (opts->wav_out_fR != NULL) {
+        opts->wav_out_fR = close_and_publish_call_wav(opts->wav_out_fR, opts, state, 1, opts->wav_out_fileR,
+                                                      opts->wav_out_dir, opts->wav_out_open_timeR);
+    }
+    if (state) {
+        dsd_engine_analog_call_stop_recording(opts, state);
+    }
+}
+
+static void
+svc_note_failed(char* failed, size_t failed_size, const char* what) {
+    if (failed && failed_size > 0 && failed[0] == '\0') {
+        DSD_SNPRINTF(failed, failed_size, "%s", what);
+    }
+}
+
+/* What a recording transition keeps, opens and changes, decided before it touches anything. */
+typedef struct {
+    int want_per_call;
+    int want_static;
+    int keep_per_call;
+    int open_left;
+    int open_right;
+    int keep_static;
+    int raw_change;
+    int raw_restart;
+} svc_recording_plan;
+
+static void
+svc_recording_plan_per_call(const dsd_opts* opts, const svc_recording_target* target, const svc_recording_target* cur,
+                            svc_recording_plan* plan) {
+    plan->want_per_call = target->mode == SVC_RECORDING_PER_CALL;
+    const int same_dir = strcmp(target->dir, opts->wav_out_dir) == 0;
+    /* Per-call files keep running only in their own folder; a handle open with recording off is a per-call one the
+       mode no longer covers (a static WAV's is the static mode's). */
+    plan->keep_per_call = plan->want_per_call && cur->mode == SVC_RECORDING_PER_CALL && same_dir;
+    const int keep_left = plan->keep_per_call && opts->wav_out_f != NULL;
+    const int keep_right = plan->keep_per_call && opts->wav_out_fR != NULL;
+    plan->open_left = plan->want_per_call && !keep_left && (!plan->keep_per_call || target->reopen_missing);
+    plan->open_right = plan->want_per_call && !keep_right && (!plan->keep_per_call || target->reopen_missing);
+}
+
+static void
+svc_recording_plan_static_raw(const dsd_opts* opts, const svc_recording_target* target, const svc_recording_target* cur,
+                              svc_recording_plan* plan) {
+    plan->want_static = target->mode == SVC_RECORDING_STATIC;
+    /* The static WAV at the same path is unchanged, open or not; a static open asks for one that is not open. */
+    plan->keep_static = plan->want_static && cur->mode == SVC_RECORDING_STATIC
+                        && strcmp(target->static_path, cur->static_path) == 0
+                        && (opts->wav_out_f != NULL || !target->reopen_missing);
+    plan->raw_change = strcmp(target->raw_path, opts->wav_out_file_raw) != 0;
+    plan->raw_restart = !plan->raw_change && target->raw_restart && target->raw_path[0] != '\0';
+}
+
+/* The new per-call files, in the target's folder; -1, with nothing left open, when one does not open. */
+static int
+svc_recording_open_per_call(const svc_recording_target* target, const svc_recording_plan* plan, svc_recording_opened* o,
+                            char* failed, size_t failed_size) {
+    if (!plan->open_left && !plan->open_right) {
+        return 0;
+    }
+    dsd_stat_t st;
+    if (dsd_stat_path(target->dir, &st) == -1) {
+        LOG_INFO("NOTICE: %s wav file directory does not exist\n", target->dir);
+        LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", target->dir);
+        dsd_mkdir(target->dir, 0700);
+    }
+    char dir[sizeof(((dsd_opts*)0)->wav_out_dir)];
+    DSD_SNPRINTF(dir, sizeof dir, "%s", target->dir);
+    if (plan->open_left) {
+        o->left = open_wav_file(dir, o->left_name, sizeof o->left_name, 8000, 0);
+    }
+    if (plan->open_right && (!plan->open_left || o->left != NULL)) {
+        o->right = open_wav_file(dir, o->right_name, sizeof o->right_name, 8000, 0);
+    }
+    if ((plan->open_left && o->left == NULL) || (plan->open_right && o->right == NULL)) {
+        char what[sizeof target->dir + 32];
+        DSD_SNPRINTF(what, sizeof what, "per-call WAV in %s", target->dir);
+        svc_note_failed(failed, failed_size, what);
+        svc_recording_discard(o, target);
+        return -1;
+    }
+    return 0;
+}
+
+/* The new static WAV; -1, with nothing left open, when it does not open. */
+static int
+svc_recording_open_static(const svc_recording_target* target, const svc_recording_plan* plan, svc_recording_opened* o,
+                          char* failed, size_t failed_size) {
+    if (!plan->want_static || plan->keep_static) {
+        return 0;
+    }
+    dsd_stat_t st;
+    o->static_created = dsd_stat_path(target->static_path, &st) == -1;
+    o->static_wav = target->static_path[0] ? open_static_wav_file(target->static_path) : NULL;
+    if (o->static_wav == NULL) {
+        svc_note_failed(failed, failed_size, target->static_path);
+        svc_recording_discard(o, target);
+        return -1;
+    }
+    return 0;
+}
+
+/* Last: an existing raw WAV at the path is truncated by its open. A raw open of the path the raw WAV records
+   restarts it, closed first since the open truncates it: that one open cannot leave the old file running. -1, with
+   nothing new left open, when it does not open. */
+static int
+svc_recording_open_raw(dsd_opts* opts, const svc_recording_target* target, const svc_recording_plan* plan,
+                       svc_recording_opened* o, char* failed, size_t failed_size) {
+    if (!((plan->raw_change && target->raw_path[0] != '\0') || plan->raw_restart)) {
+        return 0;
+    }
+    if (plan->raw_restart) {
+        opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
+    }
+    o->raw = open_raw_wav_file(opts, target->raw_path);
+    if (o->raw == NULL) {
+        svc_note_failed(failed, failed_size, target->raw_path);
+        svc_recording_discard(o, target);
+        return -1;
+    }
+    return 0;
+}
+
+/* Everything new is open: the old outputs go as their own kind, and the new raw WAV goes in. */
+static void
+svc_recording_close_old(dsd_opts* opts, dsd_state* state, int cur_mode, const svc_recording_plan* plan,
+                        const svc_recording_opened* o, const svc_recording_target* target) {
+    if (!plan->keep_per_call && (cur_mode == SVC_RECORDING_PER_CALL || cur_mode == SVC_RECORDING_OFF)) {
+        svc_publish_per_call_files(opts, state);
+    }
+    if (cur_mode == SVC_RECORDING_STATIC && !plan->keep_static) {
+        opts->wav_out_f = close_wav_file(opts->wav_out_f);
+        opts->wav_out_fR = close_wav_file(opts->wav_out_fR);
+    }
+    if (plan->raw_change || plan->raw_restart) {
+        opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
+        opts->wav_out_raw = o->raw;
+        DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", target->raw_path);
+    }
+}
+
+static void
+svc_recording_install_per_call(dsd_opts* opts, const svc_recording_plan* plan, const svc_recording_opened* o) {
+    if (!plan->keep_per_call) {
+        opts->wav_out_file[0] = '\0';
+        opts->wav_out_fileR[0] = '\0';
+        opts->wav_out_reopen = 0;
+    }
+    // Switched on mid-call, the recordings hold only what follows: their sidecars start now, not at the call's start.
+    const time_t opened = dsd_decode_time();
+    if (o->left != NULL) {
+        opts->wav_out_f = o->left;
+        DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", o->left_name);
+        opts->wav_out_open_time = opened;
+        opts->wav_out_reopen &= ~1;
+    }
+    if (o->right != NULL) {
+        opts->wav_out_fR = o->right;
+        DSD_SNPRINTF(opts->wav_out_fileR, sizeof opts->wav_out_fileR, "%s", o->right_name);
+        opts->wav_out_open_timeR = opened;
+        opts->wav_out_reopen &= ~2;
+    }
+    if (o->left != NULL || o->right != NULL) {
+        DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
+    }
+    opts->dmr_stereo_wav = 1;
+    opts->static_wav_file = 0;
+}
+
+/* The new outputs go in, in the folder the target names. */
+static void
+svc_recording_install(dsd_opts* opts, const svc_recording_target* target, const svc_recording_plan* plan,
+                      const svc_recording_opened* o) {
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", target->dir);
+    if (plan->want_per_call) {
+        svc_recording_install_per_call(opts, plan, o);
+    } else if (plan->want_static) {
+        if (!plan->keep_static) {
+            opts->wav_out_f = o->static_wav;
+            opts->wav_out_fR = NULL;
+            DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", target->static_path);
+            opts->wav_out_fileR[0] = '\0';
+        }
+        opts->wav_out_reopen = 0;
+        opts->dmr_stereo_wav = 0;
+        opts->static_wav_file = 1;
+    } else {
+        opts->wav_out_file[0] = '\0';
+        opts->wav_out_fileR[0] = '\0';
+        opts->wav_out_reopen = 0;
+        opts->dmr_stereo_wav = 0;
+        opts->static_wav_file = 0;
+    }
+}
+
+/*
+ * The one transition of the recording outputs (issue #708): per-call WAVs (with the folder they go in), a static WAV,
+ * and the raw WAV. A component the target does not change is left alone. Every new output opens first, in the target's
+ * folder; if one does not open, those that did are closed again and nothing changes (mode, folder, paths, handles), and
+ * -1 says which in @p failed. Only once all are open do the old outputs close as their own kind: per-call files
+ * published in the folder they were opened in (a handle open with recording off is one too), a static WAV closed as a
+ * static file, the raw WAV closed. Then the new ones are installed. Decoder thread, under the P25 SM tick guard.
+ */
+int
+svc_recording_transition(dsd_opts* opts, dsd_state* state, const svc_recording_target* target, char* failed,
+                         size_t failed_size) {
+    if (failed && failed_size > 0) {
+        failed[0] = '\0';
+    }
+    if (!opts || !target) {
+        return -1;
+    }
+    svc_recording_target cur;
+    svc_recording_current(opts, &cur);
+    svc_recording_plan plan;
+    svc_recording_plan_per_call(opts, target, &cur, &plan);
+    svc_recording_plan_static_raw(opts, target, &cur, &plan);
+
+    svc_recording_opened o;
+    DSD_MEMSET(&o, 0, sizeof o);
+    if (svc_recording_open_per_call(target, &plan, &o, failed, failed_size) != 0
+        || svc_recording_open_static(target, &plan, &o, failed, failed_size) != 0
+        || svc_recording_open_raw(opts, target, &plan, &o, failed, failed_size) != 0) {
+        return -1;
+    }
+
+    svc_recording_close_old(opts, state, cur.mode, &plan, &o, target);
+    svc_recording_install(opts, target, &plan, &o);
+    return 0;
+}
+
+/* WAV_START: per-call recording in the folder the options name, a slot file that is missing opened again. */
 int
 svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
-    (void)state;
     if (!opts) {
         return -1;
     }
-    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
-        return (opts->wav_out_f != NULL && opts->wav_out_fR != NULL) ? 0 : -1;
+    svc_recording_target target;
+    svc_recording_current(opts, &target);
+    target.mode = SVC_RECORDING_PER_CALL;
+    target.static_path[0] = '\0';
+    target.reopen_missing = 1;
+    return svc_recording_transition(opts, state, &target, NULL, 0);
+}
+
+/* WAV_STOP: no static or per-call recording; the raw WAV is not this command's. */
+int
+svc_stop_wav_recording(dsd_opts* opts, dsd_state* state) {
+    if (!opts) {
+        return -1;
     }
-    char wav_file_directory[1024];
-    DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-    dsd_stat_t st;
-    if (dsd_stat_path(wav_file_directory, &st) == -1) {
-        LOG_INFO("NOTICE: %s wav file directory does not exist\n", wav_file_directory);
-        LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);
-        dsd_mkdir(wav_file_directory, 0700);
-    }
-    DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
-    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
-    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
-    // Switched on mid-call, the recordings hold only what follows: their sidecars start now, not at the call's start.
-    opts->wav_out_open_time = dsd_decode_time();
-    opts->wav_out_open_timeR = opts->wav_out_open_time;
-    opts->dmr_stereo_wav = 1;
-    return (opts->wav_out_f && opts->wav_out_fR) ? 0 : -1;
+    svc_recording_target target;
+    svc_recording_current(opts, &target);
+    target.mode = SVC_RECORDING_OFF;
+    target.static_path[0] = '\0';
+    return svc_recording_transition(opts, state, &target, NULL, 0);
 }
 
 int
@@ -294,12 +590,12 @@ svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    DSD_STRNCPY(opts->wav_out_file, path, sizeof opts->wav_out_file - 1);
-    opts->wav_out_file[sizeof opts->wav_out_file - 1] = '\0';
-    opts->dmr_stereo_wav = 0;
-    opts->static_wav_file = 1;
-    openWavOutFileLR(opts, state);
-    return (opts->wav_out_f != NULL) ? 0 : -1;
+    svc_recording_target target;
+    svc_recording_current(opts, &target);
+    target.mode = SVC_RECORDING_STATIC;
+    DSD_SNPRINTF(target.static_path, sizeof target.static_path, "%s", path);
+    target.reopen_missing = 1;
+    return svc_recording_transition(opts, state, &target, NULL, 0);
 }
 
 int
@@ -307,10 +603,11 @@ svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
-    DSD_STRNCPY(opts->wav_out_file_raw, path, sizeof opts->wav_out_file_raw - 1);
-    opts->wav_out_file_raw[sizeof opts->wav_out_file_raw - 1] = '\0';
-    openWavOutFileRaw(opts, state);
-    return (opts->wav_out_raw != NULL) ? 0 : -1;
+    svc_recording_target target;
+    svc_recording_current(opts, &target);
+    DSD_SNPRINTF(target.raw_path, sizeof target.raw_path, "%s", path);
+    target.raw_restart = 1;
+    return svc_recording_transition(opts, state, &target, NULL, 0);
 }
 
 int

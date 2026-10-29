@@ -59,8 +59,8 @@ main(int argc, char** argv) {
     int exit_rc = 1;
     int bootstrap_rc = dsd_runtime_bootstrap(argc, argv, opts, state, NULL, &exit_rc);
     if (bootstrap_rc != DSD_BOOTSTRAP_CONTINUE) {
-        /* No run, so no engine cleanup: close what the options opened before the parse stopped, so a -P recording
-           with no audio is removed rather than left behind as an empty TEMP file (#782). */
+        /* No run, so no engine cleanup: close what the options opened before the parse stopped (#782). -P opens
+           its per-call WAVs only at the run's start (issue #708), so none is left behind as an empty TEMP file. */
         dsd_engine_release_outputs(opts, state);
         freeState(state);
         free(opts);

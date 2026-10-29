@@ -95,26 +95,58 @@ void dsd_mbe_out_write_rx(dsd_opts* opts, dsd_state* state, int slot, int rx_slo
 /** Close the captures in slot_mask that belong to synctype's owner, or that a caller attached (owner 0). */
 void dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype);
 void openWavOutFileLR(dsd_opts* opts, dsd_state* state);
+/** Open the static (-w) WAV at @p path, appending to one that exists; NULL (logged) when it does not open. */
+SNDFILE* open_static_wav_file(const char* path);
+/** Open the raw (-6) WAV at @p path at the analog sink rate; NULL (logged) when it does not open. */
+SNDFILE* open_raw_wav_file(const dsd_opts* opts, const char* path);
 SNDFILE* open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext);
 void openWavOutFileRaw(dsd_opts* opts, dsd_state* state);
 void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);
 /**
- * Close a per-call WAV, name it from the slot's staged row and export it to rdio-scanner.
- * `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
- * 0 when unknown; see dsd_rdio_export_call().
+ * Write @p count samples to @p file (issue #708). On a per-call segment (one open_wav_file() opened) the first short
+ * write latches the segment failed: nothing more is written to it, the failure is counted
+ * (<dsd-neo/core/wav_recording.h>) and logged once per run, and the segment is closed and published as usual. Any other
+ * handle (static or raw WAV) logs each short write and goes on, as before.
  */
-SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                                   const char* dir, const Event_History_I* event_struct, time_t opened);
+void dsd_wav_segment_write(SNDFILE* file, const short* samples, size_t count, const char* context);
+
+/** Whose recording a per-call WAV is when it is published, for the recording journal (<dsd-neo/core/wav_journal.h>). */
+typedef enum {
+    DSD_WAV_OWNER_NONE = 0,    /**< no history row claims it (a dropped epoch, a close after its call's row) */
+    DSD_WAV_OWNER_ROW = 1,     /**< the committed row whose push stamp is @c stamp */
+    DSD_WAV_OWNER_PENDING = 2, /**< the row epoch @c epoch has yet to commit: closed before its call's row */
+} dsd_wav_owner_kind;
+
+/** dsd_wav_owner::slot when no history slot is known. */
+#define DSD_WAV_OWNER_SLOT_UNKNOWN 0xFFU
+
+typedef struct {
+    dsd_wav_owner_kind kind;
+    uint8_t slot;   /**< history slot (0 or 1), or DSD_WAV_OWNER_SLOT_UNKNOWN */
+    uint64_t stamp; /**< ROW: the row's push stamp (Event_History_I::push_seq when it was pushed) */
+    uint64_t epoch; /**< PENDING: the call epoch whose row will claim it */
+} dsd_wav_owner;
+
 /**
- * As close_and_rename_wav_file(), but with the rdio-scanner export gated by `export_call`.
- * The event layer's drop path rotates the recording of an epoch that gets no history row or log
- * line; exporting it would upload audio tagged with all-zero metadata that the operator has
- * nothing local to correlate against.
+ * Close a per-call WAV, name it from @p event_struct's staged row (Items[0]) and, when `export_call` is set, export it
+ * to rdio-scanner. `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
+ * 0 when unknown; see dsd_rdio_export_call(). The recording journal records it as @p owner's (NULL: no row's).
+ * The event layer's rotation passes the row it committed or merged into, and on its drop path, which rotates the
+ * recording of an epoch that gets no history row or log line, no export: that would upload audio tagged with all-zero
+ * metadata that the operator has nothing local to correlate against.
  */
 SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                       const char* dir, const Event_History_I* event_struct, time_t opened,
-                                      int export_call);
+                                      int export_call, const dsd_wav_owner* owner);
+/**
+ * Close and publish slot @p slot's per-call WAV before its call's row commits (the NFM call's end, a WAV stop
+ * mid-call, the EDACS analog rotation, the engine's last close), named from the slot's staged row and exported.
+ * The journal records it as pending on the slot's current call epoch, which that epoch's commit links to its row
+ * (issue #708); with no call open on the slot, or its row already committed, as no row's. @p state may be NULL.
+ */
+SNDFILE* close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const char* wav_out_filename, const char* dir, time_t opened);
 /**
  * Close a conventional NFM call's recording that no longer has its history row (a teardown that skipped the call's
  * own end) and publish it under the NFM name, without a service name or an rdio export.

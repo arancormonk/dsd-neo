@@ -37,8 +37,9 @@ The encryption wizard and live entry sheet are supplied by a later UI package.
 
 ### Editing and saving talkgroups
 
-Long-press a talkgroup card to rename it, change Listening/Not tuned, or set
-priority (0/25/50/100 presets and ±5 steps). **Apply** changes only the fields you
+Long-press a talkgroup card to rename it, change Listening/Not tuned, set
+priority (0/25/50/100 presets and ±5 steps), or turn **Record** off for call recordings (see
+[Record and Listening](#record-and-listening)). **Apply** changes only the fields you
 edited; renaming or changing priority preserves custom audio/record/stream policy.
 Priority changes also update current calls immediately, preserving their dwell and cooldown ages.
 Preempt is available above priority zero: a preempt talkgroup interrupts a lower-priority call when the system
@@ -243,6 +244,118 @@ ID lists use `id,name[,tags]` and supply labels only; they can be applied or cle
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved; SAF needs none.
 
+## Call recordings
+
+Settings → **Call recording** → **Record calls** saves each call you hear as a WAV file, so you can play it again from
+History. It is off until you turn it on. **Only unknown talkgroups** skips talkgroups that have a row in your talkgroup
+list, and private calls when either radio has a row of its own (radio names learned over the air, and talkgroup rows in
+mode D, do not count); a talkgroup you hold still records. A talkgroup's own **Record** switch, under **Listening** in its editor (long-press
+its card), keeps its calls out of the recordings.
+
+Both switches also change a running session: Settings reads **Applying…** until the decoder confirms. A change the
+session cannot take (while Signal search runs, while the session is still starting, with no storage for recordings, or
+when the session's Extra decoder arguments record to one file with `-w`) is saved and applies at the next start, and
+Settings says so. A call that could not be recorded (the phone's storage is full, or the file could not be written) is
+reported under the switches.
+
+### Where the files are
+
+Recordings go to DSD-neo's own folder on the phone's storage (reachable over USB):
+`Android/data/io.github.arancormonk.dsdneo/files/Call recordings/`. Each saved system and scan list has a folder named
+after it with a short ID, for example `County P25 (1a2b3c4d)`; Explore and Signal search sessions share `Explore`.
+Renaming a system keeps its folder, and the folder keeps its first name. A file is named like any per-call WAV (date,
+time, system, talkgroup, radio; see [`-P`](../docs/cli.md)): 8 kHz mono for digital voice, 48 kHz for analog FM.
+
+- **From a computer:** connect the phone over USB, choose **File transfer** on the phone, and open
+  `Android/data/io.github.arancormonk.dsdneo/files/Call recordings` on the computer. On Android 11 and later, file
+  manager apps on the phone cannot open that folder; use Share, Save to file or Export as zip instead.
+- No storage permission is needed. Uninstalling DSD-neo, or clearing its storage in Android's app settings, deletes
+  every recording: export the ones you want to keep first.
+- When that storage is not available, new recordings go to DSD-neo's private storage instead, which a computer cannot
+  reach (Share, Save to file and Export still can). Recordings on storage that is away stay listed and are never
+  deleted; Settings and **Call recordings** say the storage is not available.
+- DSD-neo manages only the recordings it made. A file you copy into these folders is never listed, counted or deleted,
+  unless it is named like an unfinished recording (`TEMP_…`, below). A recording you delete from a computer leaves the
+  app's list the next time DSD-neo starts or tries to play, share or export it.
+
+### Playing a recording
+
+A call row (in History, the Monitor's Recent calls or Home's Recent activity) whose call has a recording shows a small
+play mark before its time (TalkBack adds "has a recording"). Open the row: the **Call recording** block above Hold
+plays, pauses and seeks. A call heard in several parts (the signal faded and came back) lists each part, with **Play all
+parts**. **Share** opens Android's share sheet with read-only access to a copy of that one file, so the app you pick
+can still open it if the storage limit or a delete removes the recording meanwhile; DSD-neo removes the copy a day
+later, when it next shares or starts. **Save to file** copies it to a place you pick, and **Delete recording** deletes
+the file; the call stays in History. A recording whose write failed part-way says the end may be missing.
+
+Live audio keeps playing while a recording plays, and decoding and recording go on. Playback pauses when DSD-neo leaves
+the screen, and closing the call's sheet stops it. While another app holds the audio (a phone call), it reads **Can't
+play right now**.
+
+### Exporting and deleting
+
+Settings → **Manage call recordings** opens **Call recordings**: one row per system, scan list and Explore, with its
+count, size and dates. A row's menu has **Export as zip** and **Delete all for this system** (for this scan list, or
+from Explore); **Export all** and **Delete all** sit below the rows. An export first asks for the range: **Today**,
+**Yesterday**, **Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then
+Android's save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
+gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
+limit. A progress line with **Cancel export** shows while it runs, one export at a time. A recording deleted meanwhile
+is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
+rdio-scanner upload is deleted once it is free.
+
+### Storage limit
+
+**Storage limit** is 1 GB unless you choose 250 MB, 500 MB, 2 GB, 5 GB or **No limit** (1 GB holds about 17 hours of
+digital voice, or about 3 hours of analog FM). Over the limit, DSD-neo deletes the oldest recordings until they take 95%
+of it, and Settings says how many it removed. A recording that is playing, being saved or exported, or being uploaded
+is skipped, and deleted once it is let go if the recordings are still over the limit. While Record calls is on and the
+phone has less than 200 MB free, Settings warns. A full phone stops the call being recorded where it was, keeps what was
+written, and is reported; recording starts again with the next call once there is room.
+
+### Unfinished recordings
+
+A recording that was still open when DSD-neo ended without stopping (it crashed, was force-stopped, or the phone shut
+down) keeps its temporary `TEMP_…` name and may be cut short. **Call recordings** lists these under **Unfinished
+recordings**: they count towards the storage limit, which removes them oldest first, and **Delete unfinished** deletes
+them. They cannot be played or exported in the app; copy one from a computer if you need it. A recording that couldn't
+be finished while DSD-neo ran (Settings says so) keeps its `TEMP_…` name too, and shows here after DSD-neo restarts.
+
+### History in the background
+
+History keeps every call heard while DSD-neo is in the background or the screen is off, however busy the system. Once a
+second, a background thread reads the calls the decoder logged and writes new ones to a small file, which History takes
+in when you come back, or at the next start if Android closed DSD-neo meanwhile. While that file cannot be written (the
+phone is full), DSD-neo holds only the newest 508 calls it found, so History can miss older ones from that time.
+
+### Extra decoder arguments the app refuses
+
+DSD-neo decides where call recordings are saved and when they are deleted, so a start is refused, with a message that
+names the option, when Extra decoder arguments contain:
+
+- `-7` (the per-call WAV folder), `--wav-journal`, or `--rdio-api-delete-after-upload`. The storage limit does the
+  deleting, so no file can vanish while it plays or exports.
+- `-w` (record to one file) while Record calls is on: the two cannot run together.
+- `-P` when there is no storage for call recordings, since it would record outside the app's folders.
+
+A `-P` in Extra decoder arguments with Record calls off still records, into the session's own folder.
+
+### Record and Listening
+
+A talkgroup that is not tuned (**Listening** off) records nothing, and its talkgroup list file cannot keep a Record
+setting for it. So the editor shows Record off and disabled while Listening is off, and turning Listening back on turns
+Record back on. Switch Record off again before **Apply** if that talkgroup should stay unrecorded.
+
+### Limits
+
+- Only DSD-neo should record into its Call recordings folders. Another decoder writing there while DSD-neo runs would
+  have its temporary files treated as unfinished recordings.
+- Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
+  cannot decrypt records nothing; its History row shows ENC without a recording.
+- A backup carries the Record calls, Only unknown talkgroups and Storage limit settings, never the recordings. A
+  restored Storage limit lower than what the recordings on the phone take removes the oldest of them when DSD-neo next
+  opens.
+
 ## Backup and restore
 
 Settings → **Backup** saves your setup as one encrypted file, to keep a copy or to move it to another phone.
@@ -252,8 +365,9 @@ key files, band plans, source ID lists, trunk scan targets, and the companion fi
 profiles with their keys, Signal search ranges and permanent avoids, and your settings, including the app-wide Extra
 decoder arguments and the RadioReference username and application-key override.
 
-It does not carry: call history, recordings (replay files), Signal search's detection history, diagnostics, the last
-location fix and first-run state. The RadioReference password is never saved, so it is never in a backup.
+It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
+detection history, diagnostics, the last location fix and first-run state. The RadioReference password is never saved,
+so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
 file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
 leaves that reference out and lists it under **Not included** on the Settings card.
@@ -301,7 +415,9 @@ recording again (until then, starting it says its recording is missing). A resto
 its saved systems, scan lists, decryption profiles, settings, Signal search ranges and permanent avoids, and the
 imported files it used (generated scan-list CSVs and compiled decryption files are made again). It never deletes a
 recording or any other file the old setup did not use. When such a file holds a name an incoming file needs, the
-incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it.
+incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it. Call recordings stay, but
+the restored Storage limit applies to them: when it is lower than what they take, the oldest are removed once DSD-neo
+opens again.
 
 **Restore only backups you made or trust.** A backup carries every setting, and extra decoder options run exactly as
 typed: a crafted backup could, for example, send decoded audio to someone else's server. The confirmation therefore
@@ -336,8 +452,8 @@ Limits:
   folder in its contents, which a restore never rewrites, so the folder cannot take a free name. If a folder of the
   same name, left by an earlier import, is already on the phone, the restore fails, changing nothing (**A folder left
   by an earlier import is in the way of a restored channel map.**). Clearing DSD-neo's storage in Android's app
-  settings removes that folder, along with all of DSD-neo's data (call history and recordings included); then restore
-  the backup again.
+  settings removes that folder, along with all of DSD-neo's data (call history, call recordings and replay recordings
+  included); then restore the backup again.
 - A restore always fails, changing nothing, while one of DSD-neo's own list files is a symbolic link. DSD-neo never
   makes one; only something with access to its private storage (root, or `adb` on a debuggable build) can, and
   clearing DSD-neo's storage removes it.

@@ -2,11 +2,11 @@
 #ifndef DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #define DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #include <QObject>
+#include <QString>
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
 #include <utility>
-class QString;
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -14,6 +14,7 @@ class AppPrefs;
 class SavedSystemsModel;
 class DecryptionProfileProvider;
 class DecoderHost;
+class RecordingSessions;
 
 class ScanListStarter : public QObject {
     Q_OBJECT
@@ -33,15 +34,30 @@ class ScanListStarter : public QObject {
         m_profiles = profiles;
     }
 
+    /** @brief Where start() asks for the list's call recording folder (issue #708); nullptr: nowhere. */
+    void
+    setRecordingSessions(RecordingSessions* sessions) {
+        m_recordingSessions = sessions;
+    }
+
   private:
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
-    QVariantMap prepare(const QVariantMap& list, bool materialize) const;
-    QVariantMap prepareCsv(const QVariantMap& list, bool materialize) const;
+    /* @p recordingFolder / @p recordingUnavailable: SessionArgPrefs::recordingFolder / recordingUnavailable. */
+    QVariantMap prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder = QString(),
+                        bool recordingUnavailable = false) const;
+    QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
+                           bool recordingUnavailable) const;
+    /* start()'s prepare: with the list's call recording folder when @p host can record it (@p recording set, the
+       folder's session begun). */
+    QVariantMap prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording) const;
+    /* The recording session prepareForStart() began ends when the start did not happen and no session runs. */
+    void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     std::function<bool(const QString&)> m_targetFileLookup;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;
     DecryptionProfileProvider* m_profiles = nullptr;
+    RecordingSessions* m_recordingSessions = nullptr;
 };
 } // namespace dsd_qt
 #endif

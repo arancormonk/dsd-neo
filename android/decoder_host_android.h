@@ -15,11 +15,14 @@
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
 #include <QByteArray>
+#include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QThreadPool>
 #include <QVariantMap>
 #include <QVector>
 #include <QtGlobal>
+#include <memory>
 #include <stdint.h>
 
 #include "decoder_host.h"
@@ -102,6 +105,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QString statusText() const override;
     SessionState sessionState() const override;
     QString failureText() const override;
+
+    /** @brief Known after the first poll of the decoder service (a session may already be running then). */
+    bool
+    sessionStateKnown() const override {
+        return m_primed;
+    }
 
     /** @brief Native Running can precede initialization; wait for its explicit success signal. */
     bool
@@ -214,6 +223,39 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
 
     /**
+     * @brief Shared storage's "Call recordings" folder, then internal storage's (#708 D1; RecordingShare.roots()).
+     *
+     * Shared storage's root is named even while it is away, at the path Android gives the app there. The base host's
+     * root when the platform names none.
+     */
+    QStringList recordingRoots() const override;
+
+    /** @brief True: RecordingPlayback plays call recordings through MediaPlayer (#708 D6). */
+    bool
+    playbackSupported() const override {
+        return true;
+    }
+
+    /*
+     * The player's state reaches the host through refresh(): while a play is open, each poll reads RecordingPlayback's
+     * status record and publishes it. Leaving the foreground pauses it there (D10); Qt is not running then. A play that
+     * ends at the recording's end reads Stopped with its path kept and its position at its length, unlike a stop.
+     */
+    void pausePlayback() override;
+    void resumePlayback() override;
+    void seekPlayback(qint64 positionMs) override;
+    void stopPlayback() override;
+
+    /** @brief True: RecordingExport writes a ZIP into a picked document (#708 D9). */
+    bool
+    recordingExportSupported() const override {
+        return true;
+    }
+
+    /** @brief Cancel the running export or save (RecordingExport.cancel()); it finishes as TransferCancelled. */
+    void cancelRecordingTransfer() override;
+
+    /**
      * @brief Cancel the platform's document calls in flight and stop their copies, then the base host's.
      *
      * A copy into a file still leaves nothing at its destination. A save stopped partway through leaves its document
@@ -223,7 +265,67 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     void abortDocumentTransfers() override;
 
+  protected:
+    /** @brief Hand @p path to RecordingPlayback; a play the platform refuses fails as "failed". */
+    void beginPlayback(const QString& path) override;
+
+    /**
+     * @brief Export or save on the transfer worker thread, never the GUI thread (#708).
+     *
+     * The worker skips the files gone and counts the rest, then hands a content:// document to RecordingExport.
+     * Another reference (a file URL) takes the base host's single-file copy there, and no ZIP; that copy cannot be
+     * cancelled (cancelRecordingTransfer() reaches RecordingExport only), which is acceptable because the system
+     * pickers hand out content:// documents. Progress is polled by refresh(); the end comes back to the GUI thread
+     * queued.
+     */
+    bool beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
+                                bool zip) override;
+
+    /**
+     * @brief RecordingShare: only a .wav inside a recording root is offered, read-only, through the app's chooser, as a
+     * copy the transfer worker makes in the app's cache: retention or a delete may take the original while the app it
+     * went to still opens it. A share waits behind a running export.
+     */
+    bool shareRecordingFile(const QString& path, const QString& title) override;
+
   private:
+    /** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
+    static bool isContentUri(const QString& reference);
+    /** @brief Publish the open play's status record (#708); a play that ended is polled no more. */
+    void refreshPlayback();
+    /** @brief Publish the running transfer's progress (#708). */
+    void refreshRecordingTransfer();
+    /** @brief Emit recordingShareFailed() for each share RecordingShare could not hand over (#708). */
+    void refreshRecordingShares();
+    /** @brief Emit recordingShareFailed(@p path), and have the store look again if the recording is gone. */
+    void noteRecordingShareFailed(const QString& path);
+    /** @brief A share's copy step ended (@p staged: the platform took it): its store hold @p hold goes. */
+    void endRecordingShare(const QString& path, int hold, bool staged);
+    /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()). */
+    void startRecordingShareClean();
+    /** @brief How a transfer job reaches its host; defined in decoder_host_android_recordings.cpp. */
+    struct TransferLink;
+    static std::shared_ptr<TransferLink> newTransferLink(DecoderHostAndroid* host);
+    /** @brief The one-thread pool transfers run on. */
+    static std::unique_ptr<QThreadPool> newTransferWorker();
+    /**
+     * @brief The transfer worker's job: count, write, and queue the end back to the GUI thread.
+     *
+     * Static, and through @p link only: a job the destructor stopped waiting for never touches the host.
+     */
+    static void runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
+                                     const QStringList& names, const QString& reference, bool zip);
+    void noteRecordingTransferTotal(qint64 id, qint64 total);
+    void endRecordingTransfer(qint64 id, int result, const QStringList& missing);
+    /**
+     * @brief At destruction: stop the running transfer (the teardown abort, then its cancel), wait for the worker a
+     * bounded time, and stop the player.
+     *
+     * A write blocked on a provider's pipe ignores both; after the bound the worker is left to finish on its own
+     * (logged), cut off from this host.
+     */
+    void closeRecordingWork();
+
     /** @brief Records a start attempt in the persistent diagnostics, with the platform's context. */
     void noteAttempt(const QString& sourceType, dsd_qt::DiagnosticsLog::AttemptStage stage);
     // JNI supplies one coherent record; desktop tests exercise the same publication path.
@@ -260,6 +362,39 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
     void requestServiceStop();
+    /* Call recordings (#708) over JNI: RecordingShare, RecordingPlayback and RecordingExport. */
+    /** @brief RecordingShare.roots(); empty when the call failed. */
+    static QStringList platformRecordingRoots();
+    /** @brief RecordingPlayback.play(): the play's generation, 0 when the call failed. */
+    static int platformPlayRecording(const QString& path);
+    static void platformPausePlayback();
+    static void platformResumePlayback();
+    static void platformSeekPlayback(qint64 positionMs);
+    static void platformStopPlayback();
+    /** @brief RecordingPlayback.status(): "generation, state, position, duration, error", tab-separated. */
+    static QString platformPlaybackStatus();
+    /**
+     * @brief RecordingExport.transfer() on the calling (worker) thread: the result code, then the paths it found gone;
+     * empty when the call failed.
+     */
+    static QStringList platformTransferRecordings(qint64 id, const QStringList& paths, const QStringList& names,
+                                                  const QString& reference, bool zip);
+    /** @brief RecordingExport.progress(): the source bytes written, -1 when transfer @p id is not running. */
+    static qint64 platformRecordingTransferProgress(qint64 id);
+    static void platformCancelRecordingTransfer(qint64 id);
+    /** @brief RecordingShare.canShare(); false when the call failed. */
+    static bool platformCanShareRecording(const QString& path);
+    /**
+     * @brief RecordingShare.stage() on the calling (worker) thread, then RecordingShare.offer() of its copy on the
+     * Android main thread, not waited for. A share that fails in either is queued in RecordingShare
+     * (platformTakeRecordingShareFailure()).
+     * @return false when RecordingShare could not be asked, so nothing queued the failure.
+     */
+    static bool platformShareRecording(const QString& path, const QString& title);
+    /** @brief RecordingShare.clean() on the calling (worker) thread: the share copies past their day go. */
+    static void platformCleanRecordingShares();
+    /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
+    static QString platformTakeRecordingShareFailure();
     /**
      * @brief DecoderService.startDecoder() with @p argv for start attempt @p attempt; returns why it could not be
      * handed over, or empty.
@@ -360,6 +495,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QVariantMap m_receiver_health = DecoderHost::healthyReceiver();
     QString m_audio_route = QStringLiteral("System default");
     bool m_notification_permission_needed = false;
+    // #708: the open play's generation (0: nothing to poll), and the running transfer (0: none) with its total (-1
+    // until the worker counted it).
+    int m_playback_generation = 0;
+    qint64 m_transfer_id = 0;
+    qint64 m_transfer_total = -1;
+    // The store holds of the shares queued on the transfer worker, released as each copy is made or fails, and at the
+    // latest when this host goes.
+    QSet<int> m_share_holds;
+    // The transfer jobs' way back to this host; cleared before it goes.
+    std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
+    // One transfer at a time, off the GUI thread. Last, so it is destroyed first.
+    std::unique_ptr<QThreadPool> m_transfer_worker = newTransferWorker();
 };
 
 } // namespace dsd_android

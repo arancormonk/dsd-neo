@@ -4,15 +4,18 @@
 import QtQuick
 
 // One call in a list — monitor's recent panel and the history screen share it.
-// Encrypted rows carry the ENC tag while retaining readable text contrast.
+// Encrypted rows carry the ENC tag while retaining readable text contrast. A
+// call with a recording carries a small play glyph before the time or ENC tag
+// (issue #708); a row without one is unchanged.
 Item {
     id: row
     property string accessibleName: name
     property bool interactive: false
+    property bool hasRecording: false
     signal activated
     activeFocusOnTab: Navigation.allows(row) && interactive && enabled
     Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
-    Accessible.name: accessibleName
+    Accessible.name: hasRecording ? qsTr("%1, has a recording").arg(accessibleName) : accessibleName
     readonly property bool navigationAllowed: Navigation.allows(row)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
@@ -78,20 +81,30 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: 18
         anchors.verticalCenter: parent.verticalCenter
-        width: (emergencyTag.visible ? emergencyTag.implicitWidth + 6 : 0) + Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
+        width: (emergencyTag.visible ? emergencyTag.implicitWidth + 6 : 0) + (recordingGlyph.visible ? recordingGlyph.implicitWidth + 8 : 0) + Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
         height: parent.height
 
         EmergencyTag {
             id: emergencyTag
             objectName: "rowEmergencyTag"
             visible: row.emergency
+            anchors.right: recordingGlyph.visible ? recordingGlyph.left : encTag.visible ? encTag.left : timeText.left
+            anchors.rightMargin: recordingGlyph.visible ? 8 : 6
+            anchors.verticalCenter: parent.verticalCenter
+        }
+
+        PlayGlyph {
+            id: recordingGlyph
+            objectName: "rowRecordingGlyph"
+            visible: row.hasRecording
             anchors.right: encTag.visible ? encTag.left : timeText.left
-            anchors.rightMargin: 6
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
         }
 
         EncTag {
             id: encTag
+            objectName: "rowEncTag"
             visible: row.enc
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
@@ -99,6 +112,7 @@ Item {
 
         Text {
             id: timeText
+            objectName: "callRowTime"
             visible: !row.enc
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter

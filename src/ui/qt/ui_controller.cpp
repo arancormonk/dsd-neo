@@ -30,6 +30,7 @@
 #include "decoder_host.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "recording_status.h"
 #include "talkgroup_list_model.h"
 
 namespace dsd_qt {
@@ -225,6 +226,9 @@ UiController::tick() {
     if (m_diagnostics) {
         m_diagnostics->refresh();
     }
+    if (m_recordingStatus != nullptr) {
+        m_recordingStatus->refresh();
+    }
     /* Host state is not published through the redraw flag: a stopped engine raises
      * nothing, and "stopped" is exactly what the UI must notice. */
     if (m_host != nullptr) {
@@ -243,6 +247,11 @@ UiController::tick() {
          * redraw (a row the refresh above read is not read twice), then write it now. */
         flushHistory();
         m_history->saveNow();
+    }
+    /* Back from the background: the first ingest takes over from History's background tap, whether or
+     * not this tick had a redraw to ingest (a session that ended while the app was away publishes none). */
+    if (m_history != nullptr && m_history->backgroundCaptureHandoffOwed()) {
+        flushHistory();
     }
 }
 

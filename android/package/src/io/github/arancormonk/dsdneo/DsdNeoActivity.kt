@@ -43,6 +43,8 @@ import org.qtproject.qt.android.bindings.QtActivity
  * queued behind the main thread — the service's own callbacks included — times out into
  * "DSD-neo isn't responding".
  *
+ * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording (#708).
+ *
  * The Activity also forwards its lifecycle and input to [ScreenSupport] for the screen
  * modes, each as a one-line delegation: creation and destruction; the start, stop, pause,
  * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
@@ -92,6 +94,7 @@ class DsdNeoActivity : QtActivity() {
         super.onStart()
         trace.phase(this, "started")
         ScreenSupport.onStart(this)
+        RecordingPlayback.setForeground(true)
     }
 
     override fun onPause() {
@@ -100,11 +103,15 @@ class DsdNeoActivity : QtActivity() {
         ScreenSupport.onPause(this)
     }
 
-    // A stop that is part of a configuration change is followed at once by a start; it is not a loss.
+    // A stop that is part of a configuration change is followed at once by a start; it is not a loss. Leaving the
+    // foreground pauses a call recording playing (#708 D10).
     override fun onStop() {
         super.onStop()
         trace.phase(this, "stopped")
-        if (!isChangingConfigurations) ScreenSupport.onStop(this)
+        if (!isChangingConfigurations) {
+            ScreenSupport.onStop(this)
+            RecordingPlayback.setForeground(false)
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -215,6 +222,9 @@ class DsdNeoActivity : QtActivity() {
             // call rather than a queued callback, so it lands even though this thread is
             // about to block.
             timedStage("stopService") { stopService(Intent(this, DecoderService::class.java)) }
+
+            // A call recording playing ends with the app, and gives the audio focus back (#708).
+            RecordingPlayback.release()
 
             // The process may end with Qt's teardown; start writing the last diagnostics now, without waiting. main() in
             // android/main.cpp makes them and everything after durable with the teardown's one bounded flush wait,

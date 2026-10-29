@@ -496,6 +496,7 @@ Item {
                 {tag: "imports", signal: "openImports", property: "importsOpen", screen: "importsScreen"},
                 {tag: "diagnostics", signal: "openDiagnostics", property: "diagnosticsOpen", screen: "diagnosticsScreen"},
                 {tag: "licenses", signal: "openLicenses", property: "licensesOpen", screen: "licensesScreen"},
+                {tag: "call-recordings", signal: "openCallRecordings", property: "callRecordingsOpen", screen: "callRecordingsScreen"},
                 {tag: "account", signal: "openRadioReferenceAccount", property: "radioReferenceAccountOpen", screen: "radioReferenceAccountScreen"}
             ];
         }

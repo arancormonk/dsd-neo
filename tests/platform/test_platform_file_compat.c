@@ -9,6 +9,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,8 +22,108 @@
 #if DSD_PLATFORM_WIN_NATIVE
 #include <locale.h>
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #endif
+
+/* Issue #708: a private open (a log, a capture, the recording journal, held for a whole run) is closed on exec, so no
+   child process inherits it. */
+static int
+expect_private_open_closes_on_exec(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    const char* name = "dsd_neo_cloexec_test.tmp";
+    (void)remove(name);
+    int rc = 0;
+    static const char* const modes[] = {"wb", "a+b", "wx"};
+    for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+        (void)remove(name);
+        FILE* fp = dsd_fopen_private(name, modes[i]);
+        if (!fp) {
+            DSD_FPRINTF(stderr, "cloexec: open %s failed\n", modes[i]);
+            rc = 1;
+            continue;
+        }
+        const int fd_flags = fcntl(dsd_fileno(fp), F_GETFD);
+        if (fd_flags < 0 || (fd_flags & FD_CLOEXEC) == 0) {
+            DSD_FPRINTF(stderr, "cloexec: %s descriptor is inherited by exec\n", modes[i]);
+            rc = 1;
+        }
+        (void)fclose(fp);
+    }
+    (void)remove(name);
+    return rc;
+#endif
+}
+
+/* Issue #708: dsd_path_canonical() resolves an existing folder to one absolute form, and refuses a missing path or a
+   buffer too small for the answer. */
+static int
+expect_path_canonical(void) {
+    int rc = 0;
+    char cwd[DSD_TEST_PATH_MAX];
+    char dot[DSD_TEST_PATH_MAX];
+    if (dsd_path_canonical(".", cwd, sizeof cwd) != 0 || cwd[0] == '\0') {
+        DSD_FPRINTF(stderr, "canonical: . did not resolve\n");
+        return 1;
+    }
+    const char* sub = "dsd_neo_canonical_dir";
+    (void)dsd_test_rmdir(sub);
+    if (dsd_mkdir(sub, 0700) != 0) {
+        DSD_FPRINTF(stderr, "canonical: mkdir failed\n");
+        return 1;
+    }
+    char via_dots[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(via_dots, sizeof via_dots, "%s%c..%c%s", sub, dsd_test_path_sep(), dsd_test_path_sep(), sub);
+    char direct[DSD_TEST_PATH_MAX];
+    char folded[DSD_TEST_PATH_MAX];
+    rc |= dsd_path_canonical(sub, direct, sizeof direct) == 0 ? 0 : 1;
+    rc |= dsd_path_canonical(via_dots, folded, sizeof folded) == 0 ? 0 : 1;
+    if (rc == 0 && (strcmp(direct, folded) != 0 || strncmp(direct, cwd, strlen(cwd)) != 0)) {
+        DSD_FPRINTF(stderr, "canonical: %s and %s differ or lie outside %s\n", direct, folded, cwd);
+        rc = 1;
+    }
+    errno = 0;
+    rc |= dsd_path_canonical(sub, dot, 2) == -1 && errno == ENAMETOOLONG ? 0 : 1;
+    (void)dsd_test_rmdir(sub);
+    rc |= dsd_path_canonical(sub, dot, sizeof dot) == -1 ? 0 : 1;
+    errno = 0;
+    rc |= dsd_path_canonical(NULL, dot, sizeof dot) == -1 && errno == EINVAL ? 0 : 1;
+    if (rc) {
+        DSD_FPRINTF(stderr, "canonical: error cases\n");
+    }
+    return rc;
+}
+
+/* Issue #708: dsd_path_free_bytes() reads the free space of a folder's volume, and refuses a missing folder (ENOENT),
+   an empty path and NULL. Only folders are passed, which is the contract on every platform (Windows refuses a file). */
+static int
+expect_path_free_bytes(void) {
+    int rc = 0;
+    const char* folder = "dsd_neo_free_bytes_dir";
+    (void)dsd_test_rmdir(folder);
+    if (dsd_mkdir(folder, 0700) != 0) {
+        DSD_FPRINTF(stderr, "free bytes: mkdir %s failed\n", folder);
+        return 1;
+    }
+    const int64_t free_bytes = dsd_path_free_bytes(folder);
+    if (free_bytes < 0) {
+        DSD_FPRINTF(stderr, "free bytes: %s read %lld (errno %d)\n", folder, (long long)free_bytes, errno);
+        rc = 1;
+    }
+    (void)dsd_test_rmdir(folder);
+    errno = 0;
+    rc |= dsd_path_free_bytes("dsd_neo_free_bytes_missing_dir") == -1 && errno == ENOENT ? 0 : 1;
+    errno = 0;
+    rc |= dsd_path_free_bytes("") == -1 && errno == EINVAL ? 0 : 1;
+    errno = 0;
+    rc |= dsd_path_free_bytes(NULL) == -1 && errno == EINVAL ? 0 : 1;
+    if (rc) {
+        DSD_FPRINTF(stderr, "free bytes: error cases\n");
+    }
+    return rc;
+}
 
 static int
 expect_posix_compat_wrappers(void) {
@@ -874,6 +975,9 @@ int
 main(void) {
     int rc = 0;
     rc |= expect_posix_compat_wrappers();
+    rc |= expect_private_open_closes_on_exec();
+    rc |= expect_path_canonical();
+    rc |= expect_path_free_bytes();
     rc |= expect_many_unique_temp_files();
     rc |= expect_temp_name_not_reused_after_rename();
     rc |= expect_descriptor_wrappers();

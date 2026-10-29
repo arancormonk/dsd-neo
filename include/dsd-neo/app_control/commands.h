@@ -144,6 +144,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_INPUT_WAV_SET = 445,        // payload: char path[]; a file, opened as -i opens it
     DSD_APP_CMD_INPUT_SYM_STREAM_SET = 446, // payload: char path[]; a float symbol stream
     DSD_APP_CMD_INPUT_SET_PULSE = 447,      // the default Pulse input device
+    // payload: int32_t 0/1; opts->record_unknown_only: record only calls no talkgroup row knows (issue #708). Waits
+    // while a decoder holds a carrier, refused during Signal search; the recording view reports it.
+    DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET = 448,
 
     // Networking / device configs
     DSD_APP_CMD_UDP_OUT_CFG = 460,           // payload: struct { char host[256]; int32_t port; }
@@ -400,7 +403,8 @@ enum {
     DSD_APP_TG_FIELD_PRIORITY = 1U << 1,
     DSD_APP_TG_FIELD_PREEMPT = 1U << 2,
     DSD_APP_TG_FIELD_NAME = 1U << 3,
-    DSD_APP_TG_FIELD_TAGS = 1U << 4
+    DSD_APP_TG_FIELD_TAGS = 1U << 4,
+    DSD_APP_TG_FIELD_RECORD = 1U << 5 /* applied after LISTEN in the same edit; a row not listening records nothing */
 };
 
 /* Context and generation are both required: a row from a previous scan target
@@ -414,6 +418,7 @@ typedef struct {
     int32_t preempt;
     char name[50];
     char tags[50];
+    uint8_t record; /* 1 = record the talkgroup's calls, 0 = do not (the CSV's record column) */
     uint64_t policy_context;
     unsigned int policy_generation;
 } dsd_app_tg_row_payload;

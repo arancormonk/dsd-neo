@@ -118,6 +118,21 @@ Item {
             }
         }
 
+        // Issue #708 (B6): a save that cannot reach the disk is retried on its own;
+        // until one lands, the reader is told the log is not safe yet.
+        Text {
+            objectName: "historySaveFailing"
+            width: parent.width
+            visible: callHistory.saveFailing === true
+            text: qsTr("History isn't being saved right now. It keeps trying, but calls since the last save are lost if DSD-neo closes. Free up space if the phone is full.")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.alert
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: text
+        }
+
         Flow {
             width: parent.width
             spacing: 10
@@ -249,9 +264,11 @@ Item {
             rightText: model.timeText
             enc: model.enc
             emergency: model.emergency
+            hasRecording: model.hasRecording
             // The frequency is named only when it is why the row is listed.
             accessibleName: model.name + ", " + model.timeText + (callRow.freqMatched ? ", " + Util.fmtMhz(model.freqHz) : "")
             onActivated: detailSheet.open({
+                uid: model.uid,
                 name: model.name,
                 when: model.when,
                 systemName: model.systemName,

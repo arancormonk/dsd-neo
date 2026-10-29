@@ -74,15 +74,13 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 
+/* The per-call recording latches failed at its first short write (issue #708); a static WAV logs each one. */
 static void
 edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
-    if (file == NULL || samples == NULL || sample_count <= 0) {
+    if (sample_count <= 0) {
         return;
     }
-    sf_count_t written = sf_write_short(file, samples, sample_count);
-    if (written != sample_count) {
-        LOG_WARN("%s: wrote %lld/%lld samples to WAV output", context, (long long)written, (long long)sample_count);
-    }
+    dsd_wav_segment_write(file, samples, (size_t)sample_count, context);
 }
 
 static void
@@ -941,11 +939,14 @@ edacs_prepare_voice_wav_output(dsd_opts* opts, dsd_state* state, int is_digital)
         return;
     }
 
-    opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                &state->event_history_s[0], opts->wav_out_open_time);
+    opts->wav_out_f = close_and_publish_call_wav(opts->wav_out_f, opts, state, 0, opts->wav_out_file, opts->wav_out_dir,
+                                                 opts->wav_out_open_time);
     opts->wav_out_f =
         open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, EDACS_ANALOG_RATE_HZ, 0);
     opts->wav_out_open_time = dsd_decode_time();
+    /* A slot 1 file that did not open opens again at the call's end, as the event layer's rotation reopens one
+       (issue #708). */
+    opts->wav_out_reopen = opts->wav_out_f != NULL ? (opts->wav_out_reopen & ~1) : (opts->wav_out_reopen | 1);
 }
 
 static int

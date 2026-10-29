@@ -239,6 +239,33 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
 int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left);
 
 /**
+ * @brief The absolute, canonical path of an existing file or folder.
+ *
+ * POSIX resolves symbolic links and "." and ".." (realpath()); Windows makes the path absolute and folds "." and ".."
+ * (_fullpath()). Two paths that name one folder the same way compare equal, which is what a check whether a file lies
+ * inside a folder needs.
+ *
+ * @param path      Existing path.
+ * @param out       Output buffer.
+ * @param out_size  Output buffer size.
+ * @return 0 on success, -1 on error with errno set (ENAMETOOLONG when @p out is too small).
+ */
+int dsd_path_canonical(const char* path, char* out, size_t out_size);
+
+/**
+ * @brief The bytes free to this user on the volume that holds @p path.
+ *
+ * Free space only: statvfs() on POSIX and Android, GetDiskFreeSpaceExW() on Windows. Nothing else about the volume is
+ * read (no label, no mount table), so on Android it makes no request the app's SELinux policy denies, as QStorageInfo's
+ * label lookup does.
+ *
+ * @param path  A folder on the volume, in UTF-8 (Windows refuses a file's path: ENOTDIR).
+ * @return The free bytes (capped at INT64_MAX), or -1 when they cannot be read, with errno set (ENOENT for a missing
+ *         folder, EINVAL for NULL or an empty path).
+ */
+int64_t dsd_path_free_bytes(const char* path);
+
+/**
  * @brief Resolve a user-supplied local file name to an existing file in the current directory.
  *
  * The requested name must be a bare file name: no path separators, absolute

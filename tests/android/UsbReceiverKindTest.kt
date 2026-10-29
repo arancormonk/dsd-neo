@@ -87,6 +87,12 @@ private fun anotherOptionsOperandIsNoInput() {
     check(of("-i", "rtl", "--no-such-option") == "" && of("-i", "rtl", "-c") == "") {
         "a start the engine's parser refuses opens no receiver"
     }
+    // #708: a recording start's own options, as the Qt session arguments add them.
+    check(
+        of("-i", "rtl", "-7", "/data/Call recordings/s1", "--wav-journal", "/data/Call recordings/s1/journal.tsv", "-P",
+            "--record-unknown-only") == "usb"
+    ) { "a call recording start keeps its RTL-SDR" }
+    check(of("-i", "udp:0.0.0.0:7355", "--wav-journal", "-irtl") == "") { "the journal path is no input" }
 }
 
 // #782 gate r2 H1: --iq-replay replaces the input after getopt has read -i (args.c sets the replay as the input once

@@ -156,6 +156,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"recording", "per_call_wav_dir", "Per-call WAV output directory", "./WAV", NULL, DSDCFG_TYPE_PATH, 0, 0},
     {"recording", "static_wav", "Static decoded voice WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
     {"recording", "raw_wav", "Raw (48 kHz) audio WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"recording", "unknown_talkgroups_only", "Record only talkgroups not in the group list", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0},
     {"recording", "rdio_mode", "rdio-scanner export mode", "off", "off|dirwatch|api|both", DSDCFG_TYPE_ENUM, 0, 0},
     {"recording", "rdio_system_id", "rdio-scanner numeric system ID", "0", NULL, DSDCFG_TYPE_INT, 0, 65535},
     {"recording", "rdio_api_url", "rdio-scanner API base URL", "http://127.0.0.1:3000", NULL, DSDCFG_TYPE_STRING, 0, 0},

@@ -48,6 +48,10 @@
   # qt_ptr_swap and friends have no class header of their own.
   { include: ["@[\"<](.*/)?qswap\\.h[\">]", private, "<QtGlobal>", public] },
   { include: ["@[\"<](.*/)?qtypeinfo\\.h[\">]", private, "<QtGlobal>", public] },
+  # qWarning() and the message handler types: qglobal.h includes qlogging.h.
+  { include: ["@[\"<](.*/)?qlogging\\.h[\">]", private, "<QtGlobal>", public] },
+  # QT_TRANSLATE_NOOP and qtTrId(): qglobal.h includes qttranslation.h.
+  { include: ["@[\"<](.*/)?qttranslation\\.h[\">]", private, "<QtGlobal>", public] },
   # Not <QtGlobal>: qglobal.h does not include qcompare.h, so <QtCompare> is the
   # only public header that actually provides the three-way comparison helpers.
   { include: ["@[\"<](.*/)?qcompare\\.h[\">]", private, "<QtCompare>", public] },

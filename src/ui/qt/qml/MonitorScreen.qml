@@ -1126,6 +1126,7 @@ Item {
         delegate: CallRow {
             interactive: true
             onActivated: historyDetail.open({
+                uid: model.uid,
                 name: model.name,
                 when: model.when,
                 systemName: model.systemName,
@@ -1190,6 +1191,7 @@ Item {
             rightText: (screen.ageTick, Util.shortAge(model.when, metrics.decodeNowMs))
             enc: model.enc
             emergency: model.emergency
+            hasRecording: model.hasRecording
         }
     }
 

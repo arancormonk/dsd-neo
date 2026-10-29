@@ -45,13 +45,14 @@ Generated (do not edit/commit):
     as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
     frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
     repeats the step, which then finds nothing left to do
-  - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV,
-    `-P` per-call WAVs and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them.
-    `dsd_engine_release_outputs()` closes them (and any log or MBE file) with the same helpers the cleanup uses,
-    removing an empty per-call WAV as a run's end does. The Android host calls it on every path that gives up a
-    configured session (`nativeDiscardConfigured()`, a failed or exiting `nativeConfigure()` and the configure after
-    one never run, `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list`, and
-    `dsd_engine_run_with_lifecycle()` when the socket layer fails to start before the run
+  - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
+    and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
+    at the run's start (issue #708), so a configure leaves none. `dsd_engine_release_outputs()` closes them (and any
+    log or MBE file, or a per-call WAV left open, removed when empty as a run's end does) with the same helpers the
+    cleanup uses. The Android host calls it on every path that gives up a configured session
+    (`nativeDiscardConfigured()`, a failed or exiting `nativeConfigure()` and the configure after one never run,
+    `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list`, and `dsd_engine_run_with_lifecycle()`
+    when the socket layer fails to start before the run
   - Protocol/frame dispatch glue
   - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
     capture measurement, tagged asynchronous tuning, identification and listening on
@@ -629,11 +630,17 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   compatibility, run-time library loading)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
+  - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes of a folder's volume only (`statvfs()`,
+    `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
+    never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
+    store and the backup export and restore use it. Test: `PLATFORM_FILE_COMPAT`
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
     (sparse files past 2 GiB and 4 GiB, skipped where the filesystem cannot make one)
-  - Private file opens: `dsd_fopen_private()` creates a written file owner-only; `dsd_fopen_private_ex()` also says
+  - Private file opens: `dsd_fopen_private()` creates a written file owner-only, and no child process inherits its
+    descriptor (`O_CLOEXEC` on POSIX, issue #708; `_O_NOINHERIT` on Windows): logs, captures and the recording
+    journal stay open a whole run; `dsd_fopen_private_ex()` also says
     whether it opened the path, which for a write mode creates or empties it before the stream over the descriptor is
     made, so an open whose `fdopen()` fails still reports the file it emptied (issue #578: the I/Q capture writer).
     Open raw bytes with a `b` mode: on Windows a text-mode stream writes every LF as CRLF. An `x` after a write mode
@@ -1046,16 +1053,159 @@ suite runs under this compiler.
   other failure (issue #661). Every publication is serialized: the decoder and the watchdog publish under the P25 SM
   tick guard or the event layer's call-state lock, and the WAV app commands (start, stop, toggle, static and raw open)
   take the tick guard in `apply_cmd()`, so one process never publishes two recordings at once.
-  `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, which covers the `-P` open
-  while arguments are parsed, before a replay moves the clock. `event_time` is the row's last activity, the segment's
-  end by the time its WAV closes. It is only the fallback for a row with no start (a `--playfiles` row, whose stamp is
-  on the file's clock, so the open time is not compared with it), and decode time comes after that. `stop_time` adds
-  the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and
-  `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`. The control API's
-  event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests:
-  `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`. The analog (NFM) event text
-  names its frequency as the digital rows do, `FREQ: <MHz> MHz;` through `dsd_freq_hz_mhz_text()`, and leaves it out
-  at 0, as on an audio input, which tunes nothing (issue #670, `CORE_RECEIVE`).
+  `dsd_state_rebase_decode_timestamps()` pulls a stamp that is ahead of now back to now, so a recording opened before a
+  replay moves the clock is never dated after its calls. `-P` opens nothing while it is parsed (issue #708, B2: `-P -7
+  <dir>` opened its first files in the folder set before `-7`): it sets the mode, and the parser keeps which WAV mode
+  the command line chose (`cli_wav_mode`, local to `dsd_parse_short_opts()`, which `-P` and `-w` read to refuse each
+  other in either order while still replacing a config's mode). The engine creates the folder before it opens the
+  recording journal (`create_per_call_folder_if_needed()`, so a journal inside a new `-7` folder opens) and opens the
+  slot files at start (`open_recording_outputs_if_needed()`), after the replay clock is set and in the folder the whole
+  command line names (`RUNTIME_CLI_PARSE`, `ENGINE_RUN_SETUP`).
+  `event_time` is the row's last activity, the segment's end by the time its WAV closes. It is only the fallback for a
+  row with no start (a `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it),
+  and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
+  shares (below). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
+  `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
+  on `event_time`. Its service, system, target and source components are made file-safe
+  (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces
+  become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file; every
+  byte that is no part of a well-formed UTF-8 character becomes `_` too, by the journal's own test
+  (`wav_journal_utf8_seq_len()`), so the `file` a `publish` names is the file on disk, not a name with U+FFFD in it),
+  on the name's copies only: the row, the recording journal and the rdio sidecar keep the identity as received
+  (`CORE_WAV_JOURNAL`). The control API's event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into
+  the row fingerprint. Tests: `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`. The
+  analog (NFM) event text names its frequency as the digital rows do, `FREQ: <MHz> MHz;` through
+  `dsd_freq_hz_mhz_text()`, and leaves it out at 0, as on an audio input, which tunes nothing (issue #670,
+  `CORE_RECEIVE`).
+- WAV recording commands and failures (issue #708, B4 and B5). The recording outputs (per-call WAVs and their folder,
+  the static `-w` WAV, the raw `-6` WAV) change through one function, `svc_recording_transition()`
+  (`app_control/menu_services.c`, target `svc_recording_target`: mode off/per-call/static, folder, static path, raw
+  path), which WAV_START, WAV_STOP, WAV_TOGGLE, the static and raw opens and a live `DSD_APP_CMD_CONFIG_APPLY` all use.
+  A component the target does not change is left alone (a raw-only change does not touch per-call files; per-call on in
+  its own folder keeps its pair, WAV_START's `reopen_missing` opening a missing slot). Every new output opens first into
+  locals, per-call files in the target folder; if one does not open, those that did are closed (a static file the open
+  created is removed) and nothing changes: mode, folder, paths, flags and handles stay as they were, and the caller
+  reports the failure. Only then do the old outputs close as their own kind: per-call files published in the folder they
+  were opened in (with the NFM call's recording, `dsd_engine_analog_call_stop_recording()`, in `analog_call::dir`,
+  keeping the call and its epoch; a handle open with recording off counts as per-call), a static WAV closed as a static
+  file (`close_wav_file()`: never renamed or exported), the raw WAV closed; then the new ones go in. A raw open of the
+  path the raw WAV records restarts it, closed first since the open truncates it. The config apply
+  (`apply_cfg_recording()`) puts back what staging wrote and hands what it staged to the transition, failing the apply
+  with a toast when a file does not open. The config's `unknown_talkgroups_only` is not part of the transition: it is
+  a call policy flag (which calls record, not where), so it applies even when the apply's recording outputs fail to
+  change. WAV_TOGGLE follows the mode (`dmr_stereo_wav`), not the open files, and so
+  does the terminal's `Per-call WAV` label. Per-call writers (the vocoder's slot writers through
+  `dsd_audio_write_wav_short_block()`, EDACS analog, `engine/analog_call.c`) write through `dsd_wav_segment_write()`
+  (`src/core/file/wav_segment.c`): a handle `open_wav_file()` opened is a segment, and its first short write latches it,
+  so nothing more is written to it and it is published as usual at its close; static and raw handles log each short
+  write as before (so does a segment past the table's 16 slots, reported once per run). A failed `sf_close()` keeps the
+  temp name. Open, write, close and publish failures are counted per decoder run (`<dsd-neo/core/wav_recording.h>`,
+  reset by `dsd_engine_run_common_setup()`), each kind logged once per run. A slot whose reopen failed (at a call end or
+  an EDACS analog grant) is marked in `opts->wav_out_reopen` and opens again at its next call end
+  (`watchdog_event_rotate_wav_if_needed()`). `<dsd-neo/app_control/recording_view.h>` is the frontends' view
+  (`dsd_app_recording_view_get()`, any thread, readable after the session stops): mode, open slot files, the counts and
+  last error kind, and the last recording command's state. The queue counts recording commands as it admits them and as
+  they leave it (applied, failed, refused while Signal search runs, dropped), a config apply among them when it carries
+  [recording] (`recording_command_id()`; the queue reports through `src/app_control/recording_view_internal.h`:
+  `dsd_app_recording_command_submitted()`/`_resolved()`, and `dsd_app_recording_view_publish()`), whose outcome is its
+  recording transition's, whatever else in the config failed or needs a restart;
+  `dsd_app_telemetry_publish_opts_snapshot()` publishes the view with each options snapshot, so a command reads PENDING
+  until a view built after it shows its outcome with the mode it left (a dropped one shows at once). `unknown_only` is
+  `opts->record_unknown_only`; `journal_state` is the recording journal's (below); `journal_named` is whether the run
+  names one at all (the Qt app names one exactly when it has a folder to record into). Tests: `APP_CONTROL_RECORDING`
+  (every command case through the queue and through config applies, the transition table (every from-mode to every
+  to-mode, folder, static and raw changes, each open failing), each writer's short write and close failure behind the
+  seams in `src/core/file/wav_segment_test_support.h`, the reopen retry), `EDACS_GRANT_TUNE_MATRIX` (the analog grant's
+  reopen mark), `APP_CONTROL_OPTS_SNAPSHOT` (the view's command states), `UI_MENU_SERVICES` (a failed open changes
+  nothing), `UI_MENU_LABELS` (the `Per-call WAV` label follows the mode).
+- Recording journal (`--wav-journal <file>`, `opts->wav_journal_file`, issue #708). The decoder appends one JSON line
+  for each per-call WAV it publishes, discards or fails to keep, and for each recording a history row later claims;
+  the app's call recording store reads it to tie recordings to History rows and to tell the files it manages from the
+  rest. Writer: `src/core/file/wav_journal.c` (private writers in `wav_journal.h`, open, close and state in
+  `<dsd-neo/core/wav_journal.h>`). One journal per process: `dsd_engine_run_common_setup()` opens it (or turns it
+  off) before the run's first recording, `dsd_engine_cleanup()` closes it after the last close (`ENGINE_RUN_SETUP`
+  pins both ends through a real run). It is appended
+  through file_compat (`dsd_fopen_private(path, "a+b")`), each record built whole and written with one `fwrite()`
+  plus `fflush()`, under the journal's own lock (taken last; the event layer writes under the call-state lock). No
+  fsync. A journal whose last byte is not `\n` gets one at open, so a line torn by a crash never swallows the next
+  record. A failed open, write or flush turns the journal off for the rest of the run (`DSD_WAV_JOURNAL_FAILED`, one
+  LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
+  - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
+    rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
+    failure that keeps the temp file. `open_wav_file()` journals an open failure. The NFM teardown close
+    (`close_and_rename_analog_wav_file()`, no options, no row) writes nothing. Each segment's id is its temp name's
+    token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
+  - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
+    `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
+    (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
+    reacquisition merge, none on a drop. A closer that runs before its call's row commits
+    (`close_and_publish_call_wav()`: the NFM call's end and toggle-off, WAV_STOP and every other recording transition
+    that publishes slot files, the EDACS analog rotation after it synced the grant's call, the engine's last close)
+    publishes `pending` on the slot's lifecycle epoch (`dsd_call_state_pending_row_epoch()`; none when no epoch was
+    rendered or its row already committed) and joins that slot's pending list. The entry is reserved before the line
+    is written; one that cannot be kept (no id, the list out of memory) is published as no row's instead, so every
+    `"pending":true` line is resolved by a later `link` or `unlink`. `watchdog_event_commit_staged_row()`
+    writes `link` for the entries of the committed epoch (push or merge stamp); a drop
+    (`wav_journal_unlink_pending_epoch()`), the epoch moving on without that commit
+    (`watchdog_event_history_authoritative()`), a full history reset (`dsd_event_history_reset()`), a trunk-scan
+    target restore (`trunk_scan_restore_call_snapshot()`, `dsd_wav_journal_unlink_pending()`) and the journal's close
+    write `unlink`. A departure already ends the outgoing target's calls, which resolves most entries before the restore
+    runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
+  - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
+    too: the row's `event_start_time`, or the WAV's open stamp when later (recording switched on mid-call, a
+    reacquired segment whose file opened at the previous segment's commit), else `event_time`, else the decode
+    clock. Every stamp is on the decode clock, so a replay's records carry the capture's times.
+  - Format (version 1), the contract the app-side parser follows. One JSON object per line, UTF-8; strings are
+    escaped (quotes, backslashes, control characters, U+2028/U+2029; a byte that starts no UTF-8 character becomes
+    U+FFFD). A reader skips a line that does not parse (a torn tail) and a record whose `v` it does not know. Every
+    record has:
+    - `v` (number): 1.
+    - `type` (string): `publish`, `link`, `unlink`, `discard` or `error`.
+    - `t` (number): decode-clock Unix seconds when the record was written.
+    - `id` (string or null): `<16 uppercase hex token>-<decimal sequence>`, one per segment, unique per process (the
+      token is drawn once per process), null for a name `open_wav_file()` did not make. `dsd_wav_temp_token()` and
+      `dsd_wav_temp_token_text()` (`<dsd-neo/core/wav_journal.h>`) give a reader the live process's token, so it can
+      tell this process's temp files, which may still be open, from the ones an earlier process left.
+
+    `publish` (a recording was published under its final name):
+    - `file` (string): the final name relative to the journal's folder, `/`-separated on every platform, when it lies
+      in that folder or below it; else the folder plus the base name, joined with the platform's separator (a folder
+      in a root keeps the root's own: `/`, `C:\`). The path forms are `wav_journal_path_*()`, which take the
+      platform's rules as a flag so `CORE_WAV_JOURNAL` checks the Windows forms on every host.
+    - `folder` (string): the folder it was published in, canonical (`dsd_path_canonical()`; as given when it cannot
+      be resolved).
+    - `start` (number): Unix seconds the recording began (the rule above).
+    - `duration_ms` (number): frames / rate from libsndfile before the close; 0 when unknown.
+    - `rate` (number): sample rate in Hz (8000 digital, 48000 NFM, the EDACS analog rate); 0 when unknown.
+    - `instance` (string or null): the history ring (`Event_History_I::instance`), 16 uppercase hex digits.
+    - `slot` (number or null): history slot, 0 or 1.
+    - `row` (number or null): the row's push stamp (the History mirror's `seq`) when the recording belongs to a
+      committed row; null otherwise.
+    - `pending` (bool): true when it was closed before its call's row committed; a later `link` or `unlink` resolves
+      it.
+    - `epoch` (number): the call epoch a pending recording waits on; 0 when not pending.
+    - `rdio` (bool): an rdio-scanner API upload was queued for it (its worker may delete the file after the upload).
+    - `failed` (bool): a short write latched the segment; the file ends where the write failed.
+    - `system`, `target`, `source` (string): the row's system string and its target and source as shown (text,
+      else the number, else ""), as received (the file name holds the sanitized copies).
+
+    `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
+    `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
+    segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`, `close` or
+    `publish`), `temp` (string: the temp name it keeps, relative or absolute as `file` is; "" when none) and `folder`.
+
+    Measured (dev-release, NVMe ext4, 20000 appends): a `publish` append costs 7.5 us mean (p99 10 us; 6.1 us on
+    tmpfs), and the whole close and publish of a 1 s per-call WAV goes from 29 us to 39 us with the journal on. With
+    16 GB written alongside (the writeback throttling a slow disk causes) the p99.9 was 91 us and the worst append
+    11 ms. A record is written once per segment at a close, never per audio block.
+  Tests: `CORE_WAV_JOURNAL` (commit, merge chain, a pending close merged, drop, 44-byte, rename failure, B3 name,
+  pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
+  (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
+  journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
+  path forms, the process token; the write and pending-list seams in `src/core/file/wav_journal_test_support.h`),
+  `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
+  `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
+  (`--wav-journal`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -1231,6 +1381,23 @@ suite runs under this compiler.
   consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
   the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
   label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target.
+- Invariant (record only unknown talkgroups, issue #708: `opts->record_unknown_only`, `--record-unknown-only`, INI
+  `[recording] unknown_talkgroups_only`, `DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET`): the group and private evaluators turn
+  it into the explicit record block a row's `record=off` takes (`record_allowed` 0, `DSD_TG_POLICY_BLOCK_RECORD`), so
+  every record gate, MBE capture and the P25 Phase 2 verdict (its `dsd_p25p2_policy_key` carries the switch) follow it
+  with today's precedence: a matching Hold still records, avoids and skips block, tuning and playback are untouched. A
+  group call is known when a non-alias row (exact or range) matches the talkgroup the record decision judges (P25: the
+  policy target); a private call when either radio has an exact non-alias row, each looked up on its own (the private
+  evaluator's chosen row can be the other radio's learned alias). The command is a recording command: it waits while a
+  decoder holds a carrier, is refused during Signal search, retakes the P25 Phase 2 verdicts under the tick guard
+  (`command_changes_call_verdict()`), and the recording view reports it. A row's own Record is
+  `DSD_APP_TG_FIELD_RECORD` / `DSD_TG_POLICY_FIELD_RECORD`, applied after a mode change in the same edit; a row that
+  blocks or plays no audio keeps record off (D11: Listening off then on sets it on again). Tests:
+  `CORE_TALKGROUP_POLICY`, `CORE_AUDIO_GROUP_GATE`, `CORE_P25P2_PLAYOUT`, `CORE_MBE_TRANSFORM_CONTEXT`,
+  `CORE_MBE_FILE_IO`, `EDACS_GRANT_TUNE_MATRIX`, `TETRA_VOICE_PIPELINE`, `APP_CONTROL_RECORDING`, `APP_COMMAND_QUEUE`
+  (Record after the mode in one `TG_ROW_SET`), `ENGINE_P25_POLICY_STORE_GUARD` (the switch retakes a Phase 2 verdict),
+  `RUNTIME_CLI_PARSE` and `RUNTIME_CONFIG_USER` (the option and the INI round trip), `API_COMMANDS`
+  (`record_unknown_only_set`), `API_COMMAND_PAYLOADS` (`tg_row_set` `record`).
 - API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
   gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
   playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
@@ -1784,7 +1951,14 @@ suite runs under this compiler.
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
     error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
     pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an option
-    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same
+    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. A frontend reading options a user typed
+    walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
+    `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads), in the
+    parser's order: the long options out of the whole argv first, up to the first `--` that is no long option's value
+    (compaction keeps that `--` and everything after it), then getopt over what is left, where a `--` that is a short
+    option's value ends nothing and only one that is no value ends the options. The parse itself is no validator: it
+    creates folders (`-Q`, `-d`), imports CSVs and key files, reads token files, prints usage and leaves getopt's
+    globals behind
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -2146,8 +2320,23 @@ suite runs under this compiler.
     owns the join, logs once how many uploads were not sent, and clears the flag; uploads queued after the cancel (the
     final call cleanup closes) are not sent either. Files are deleted only after a successful upload, so abandoned
     calls keep theirs. An embedding host clears a cancel that landed after the last shutdown with
-    `dsd_rdio_upload_cancel_reset()` when it configures the next run. Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint,
-    cancel before and during the drain), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
+    `dsd_rdio_upload_cancel_reset()` when it configures the next run. `dsd_rdio_upload_holds()` (issue #708) tells the
+    app's recording store whether a queued job, or the one in flight until its upload and the delete after it are over,
+    names a file: by its final path component (without case on Windows; the pure rule is
+    `dsd_rdio_upload_names_same_file()` in `src/runtime/rdio_export_internal.h`, which takes the platform's rules as a
+    flag), so another spelling of the folder still matches, under the queue's mutex, which for that reason lives for
+    the process (the worker's condition variable is still created and destroyed with the worker; a failed mutex init
+    is final: no worker starts and nothing is held). Uploads are kept while a journal is set:
+    `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
+    `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
+    decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
+    autosave and the menu's Save config keep it. `dsd_rdio_warn_journal_keeps_uploads()` logs one LOG_WARN: the
+    bootstrap calls it once the config and the command line are applied, and a live config apply after staging, which
+    warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
+    `RUNTIME_RDIO_EXPORT`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
+    during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
+    rule under POSIX and Windows rules on every host),
+    `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -2417,6 +2606,17 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     reports a `result_gap` when more completed than the history held)
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
+  - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the
+    published history rings for a thread that keeps reading while the frontend's polling thread is paused (the Qt
+    app's background History capture). `dsd_app_history_tap_copy()` copies one slot's `g_pub` ring into the caller's
+    buffer when its `(instance, commit_rev)` differs from the caller's cursor (a cursor that has read nothing copies;
+    a staged-row render alone does not), and fills the options History attribution reads (`scanner_mode`,
+    `trunk_scan_enabled`, and whether options were published) from the published options. The options are read under
+    `ui_opts_snapshot.c`'s lock, then the ring under `ui_snapshot.c`'s `g_mu`, never nested: one memcpy each, no
+    allocation and no I/O under either, and neither touches the single consumer's buffers or sequences. A ring is
+    3.75 MB per slot: one copy holds `g_mu` about 60 us (the publisher's own copy of a changed slot takes as long), a
+    read that finds nothing new 0.06 us (`-O2`, x86-64). Tests: `APP_CONTROL_HISTORY_TAP` (cursor rules, options
+    fields, consumer independence, a publisher racing two taps and the consumer; run it under tsan too).
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.
@@ -7805,7 +8005,8 @@ Qt Quick frontend (`src/ui/qt`):
     than the newest 32 rows, and that row joins the running session (a notice heard again promotes a field-for-field
     twin no other notice of its ring has taken, so two identical notices promote two rows, and a new ring within the
     session logs none twice; the seen store keeps the twin each such notice took, so a relaunched UI rebuilds what its
-    ring has taken). Every in-place update (a seen row that advanced: its end extending, its source learned, its crypto
+    ring has taken, and a spill fold rebuilds them for each line's own ring, a replay the tap found begun in the
+    background included). Every in-place update (a seen row that advanced: its end extending, its source learned, its crypto
     verdict) searches the whole log too, newest first. So it reaches a replayed call's row under newer rows, whether the
     call was a first sighting or heard again, after a relaunch as well, and a live update still lands on the row the
     newest rows hold for it. So a second replay shows its calls in the new session's views, logs no new row for a call
@@ -7818,14 +8019,17 @@ Qt Quick frontend (`src/ui/qt`):
     merged call whose seen entries were evicted or lost is logged again as new rows, one per fragment. A state an
     embedding host reuses for another run keeps its ring and identity, and the rows the earlier run left there stay that
     session's.
-  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order).
+  - Persistence: `call_history.json` (rows) and `call_history_seen.json` (seen map, newest 2048 in retention order);
+    `call_history_spill.jsonl` holds what the background capture found until a save covers it (below).
     Both are rewritten whole, so the debounce follows their size (issue #745):
     - **Debounce:** after a save, the next waits the longer of 3 s and the time the last save's bytes take at
       `kSaveBudgetBytesPerSec` (16 KiB/s). A small log still saves 3 s after a change; a full one, ~860 KB, saves about
       once a minute instead of every 3 s, which was ~1 GB/hour of flash on a busy system.
     - **Worker:** the UI thread hands the single save worker (`m_savePool`, one thread) copies of `m_rows` and `m_seen`.
       The worker builds the JSON and writes both files, reading nothing live (issue #718: the build alone cost ~62 ms
-      per save at a full log). It reports the bytes written to `onSaveFinished()`.
+      per save at a full log). The copies are detached on the UI thread, each row's fragment list too, and the UI
+      thread replaces a row's fragment list rather than appending to it in place. It reports the bytes written to
+      `onSaveFinished()`.
     - **Ordinary saves:** the debounce and `clearAll()` never queue a second save while one is in flight
       (`m_savesInFlight`); a change during it marks the stores dirty and re-arms the debounce when the last one finishes.
     - **Forced saves:** `saveNow()`, when something is owed, copies the stores at once and queues the save straight onto
@@ -7834,9 +8038,336 @@ Qt Quick frontend (`src/ui/qt`):
       - when a session ends, from `UiController::tick()` after that tick's final history ingest;
       - when the application turns Suspended or Hidden;
       - at `aboutToQuit`.
-    - **Destructor:** waits for the worker, then writes any owed save synchronously (`saveSync()`).
-  - Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_TALKGROUP_LIST_MODEL`, `UI_QT_QML_CALL_LISTS`
-    (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
+    - **Destructor:** stops the background tap (below), waits for the worker, then writes any owed save
+      synchronously (`saveSync()`).
+    - **Acknowledgement (issue #708, B6):** the worker reports whether each store committed (`SaveResult`;
+      `json_store_save_array()` fails on an open, write or commit failure, a full disk). Every change is a generation
+      (`markChanged()`), a save carries the one it copied, and a generation is acknowledged only when both stores
+      committed. A failed or half-written save keeps the log owed and retries without another change, `kSaveDelayMs`
+      after the first failure and doubling up to 3 minutes; `saveFailing` (property and signal) turns true at the
+      first failure of a run, with one `qWarning`, and false at the next save that commits both. A relaunch after a
+      half-written save logs nothing twice (the rows' seeds stand in for the seen entries that did not land).
+  - Row identity and fragments (issue #708): every row has a uid (`Row::uid`, persisted `uid`, the `uid` role), handed
+    out when the row is first logged and never again (`callHistory/nextUid`, kept past a clear); a merge keeps the
+    surviving row's. `rowForUid()` finds a row wherever it moved, and `rowPositionsChanged()` fires on every insert,
+    removal, move and reset, so a view following one row (the detail sheet) looks it up again (`recordingsForUid()`
+    reads that row's `recordings` role). Each row also lists the ring fragments it absorbed (`Row::fragments`, persisted
+    `fr`): `call_history_fragment_key()` (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push
+    stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
+    add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
+    clear. Rows older builds wrote have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a
+    `CallRecordingProvider` (the call recording store; none, and so no recordings, until one is set with
+    `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings changed through
+    `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the store knows before
+    its row exists shows when the row arrives.
+  - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
+    background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
+    overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
+    starts `CallHistoryTap` (a `std::thread`; only when the app wired `setHistoryTapSource(&dsd_app_history_tap_copy)`)
+    with copies of its seen map, session, labels and clear mark. Once a second it copies each slot whose committed rows
+    changed through the History tap (`<dsd-neo/app_control/history_tap.h>`), into two 3.75 MB buffers allocated at
+    start, and walks the copy outside every lock with the model's own rules (`walkRing()`, `noteSeen()`, the clear mark
+    settled as `settleClear()` would, attribution from the tap's options fields). Rows it finds new or advanced are
+    appended as JSON lines (`spillLine()`: the row with its `fr`, its seen key and entry, the verdict) to
+    `call_history_spill.jsonl` (`CallHistorySpill`, one mutex), oldest first, at most once every five polls (at once
+    when the held rows reach twice one ring's, 508) and at stop; a torn last line gets a newline before the next append.
+    While the spill cannot be written (a full disk) the tap keeps only the newest 508 rows it holds, the ring still
+    having the newest for the model, retries the append on the same five-poll cadence, and reports the drop once per run
+    of failures. Any other application state owes the handoff (`backgroundCaptureHandoffOwed()`): the next `refresh()`,
+    which `UiController::tick()` forces with `flushHistory()` when no redraw would, stops the tap (a last poll, then its
+    last append), adopts the clear mark the tap bound if the model's was still pending, and folds the spill in before
+    its own ring walk (`foldSpill()`). Rows that last append could not write either (the spill still unwritable) come
+    back with the stop (`Result::unwritten`) and fold after the spill's lines: only the model has them then (the next
+    start clears what the tap holds), and the log's own saves keep them. A model torn down while the tap runs (the app
+    closed from the background) stops it the same way and folds those rows into the log before its last save; its
+    spill's lines stay for the next model's fold. The fold also runs at load, so a process killed in the background loses nothing
+    its batches wrote. It is idempotent by fragment: a line whose fragment a row already holds can only refine it, and
+    one whose fragment no row holds is a new row, whatever verdict the tap gave it (an update whose first sighting the
+    508-row bound dropped carries the whole row); its seen entry joins the model's as a fresh read would; lines a clear
+    covers are skipped. A spill longer than the log
+    is trimmed as it folds, whenever the log passes 1250 rows, so a long background stretch (50,000 rows: 0.26 s at
+    `-O3`, 4.2 s when the fold inserted them all and trimmed one row a scan) never holds the whole backlog;
+    `trimToCapacity()` picks every row that goes in one pass. Nor does it hold the spill: `CallHistorySpill::open()`
+    gives the length the spill has then, and `CallHistorySpillReader` reads up to it a line at a time (the tap appends
+    only past it, and only the GUI thread truncates), holding one line of at most 1 MiB and a 16 KiB chunk; a longer
+    line, which no build writes, is passed over, and a torn last line fails to parse and is skipped. The seen map is
+    pruned as the rows are trimmed, at its usual bound (`pruneSeenMap()`: past 4,096 entries, back to the newest
+    2,048), and the twins taken go with the entries that recorded them (500,000 rows, 149 MB: 520 MB peak RSS when the
+    fold read the spill whole, 29 MB streamed, at `-O3`). Limit: a row trimmed mid-fold that a later line would
+    have merged into (a call heard again) comes back as a new row. The spill is emptied only after a save of the
+    generation the fold made is acknowledged, and only if it still holds exactly what the fold read, so a tap appending
+    meanwhile loses nothing. A read that fails short of that length (an I/O error; `CallHistorySpillReader::failed()`)
+    takes none of the spill as read: the lines before the failure fold, the spill stays whole, and the next fold (the
+    next handoff or load) reads it again, the lines already folded adding nothing. `clearAll()` while the tap runs stops it, takes its read position into
+    the mark, empties the spill and starts it again; after the app returned but before the first ingest it hands the tap
+    off instead, which leaves it stopped. A session change while the tap runs (`beginSessionOn()`,
+    `setSessionSystem()` and the single setters: a deferred restart or a USB start's continuation completing while the
+    app is away) hands the tap off first, so what it found keeps the old attribution, and starts it again on the new
+    session unless the app's return already owes the handoff (`handOffBackgroundCaptureForSession()`). A change of more
+    than one field (label, uid, session number) is one call with one handoff, and the tap starts again only after every
+    field moved: Main's start (`beginSessionOn()`) and explore detach (`setSessionSystem()`) never let it run on half a
+    change. Decided limit: the tap binds a clear the model made before it had read any
+    ring per slot, at its first copy of each, and the model adopts the binding only once both slots are bound (its own
+    mark binds both slots together). A tap that read one slot only leaves the mark pending, the model binds it at its
+    own first read, and the ring rows between the two binds stay hidden in that ring (the tap's spilled rows are already
+    in the log). Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs about
+    210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy does); a
+    minimal row spills as about 440 bytes (a named row about a kilobyte).
+  - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
+    while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable
+    at the handoff and at teardown, a 50,000-row spill, a 200,000-row one and a long one of notices heard again in bounded memory, a read error mid-spill;
+    the real publisher, tap and consumer), `UI_QT_CONTROLLER` (the handoff on a tick with no redraw), `UI_QT_TALKGROUP_LIST_MODEL`,
+    `UI_QT_QML_CALL_LISTS` (`tst_history_session_identity.qml`), `CORE_INIT_STATE` (the ring identity).
+- Call recording store (issue #708; `recording_store.{h,cpp}`, `recording_journal.{h,cpp}`, `recording_sessions.h`).
+  `RecordingStore`, the QML context property `recordings`, is the app's one index of call recordings; History stores
+  none.
+  - Roots and folders: `DecoderHost::recordingRoots()` lists every root, preferred first, a root whose storage is away
+    included (the base host: "Call recordings" in the app data folder); the last is the fallback in the app's own
+    storage, whose parent `start()` creates. A root is available while it is a readable folder, or is missing from a
+    folder that exists; one whose parent is gone is away (and never created in its place): what it held stays indexed,
+    untouched and undeleted, a delete of it waits, and it is read whole again when it returns. Each session owner has
+    a folder, `<sanitized name> (<uid8>)` (`recording_folder_base_name()`; `Explore` for every Explore, signal search
+    and unsaved session), with `folder.json` {uid, kind, name}; it is looked up by the full uid, so a rename keeps it
+    (and relabels it) and two uids sharing eight characters get `<name> (<uid8>) 2`. A folder without a folder.json is
+    not the app's and is never read or taken. New folders go to the first available root, as the start checks the
+    roots then (not as the last pass found them): storage gone since is skipped, never made again under its absent
+    mount (a start makes the root itself if need be, never its parent), and the pass it asks for marks it away. An
+    owner's folder that takes no new files (read-only storage, changed permissions) is passed over for the next root.
+  - Sessions (`RecordingSessions`): `SessionArgsBuilder::start()` and `ScanListStarter::start()` call
+    `beginSession(kind, uid, name)` before `DecoderHost::start()`, which makes the folder and marks it in use (waiting
+    for a compaction of it in progress, never for the journals), and `endSession()` when the start did not happen.
+    `recording_store_follow_host()` (wired in `qt_ui.cpp`) hands the store every host report
+    (`hostSessionReport(DecoderHost::sessionStateKnown(), sessionActive(), sessionState() == Running)`, at load and on
+    `sessionStateChanged()` / `sessionStateKnownChanged()`). The store starts holding every journal: Android knows its
+    state only after its first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder that
+    kept running while the UI was recreated reads as Idle until then. A first known state with no session, or a session
+    ending after the host saw it Running, frees every folder; a session that ends without ever running keeps its folders
+    out of compaction for the rest of the process (`m_unproven`), until a later session runs and ends (one decoder at a
+    time, starts taken in order): Android's start grace can show a start Failed while its intent still waits, and the
+    engine then opens that journal. A session that turns active with no `beginSession()` before it (that one) holds
+    every folder until it ends; an Idle report between a start's mark and its Starting changes nothing.
+  - Session argv and preferences (`session_args.{h,cpp}`, `scan_list_starter.cpp`, `app_prefs.{h,cpp}`): AppPrefs
+    `recordCalls`, `recordUnknownOnly` and `recordingLimitMb` (keys `recording/*`, portable; the limit one of
+    `recordingLimitChoices`, 1000 by default) map to `SessionArgPrefs`; the starter puts the folder `beginSession()`
+    returned in `SessionArgPrefs::recordingFolder` and builds again, so the argv names, after `-t`/`-F` and before the
+    extra options, `-7 <folder> --wav-journal <folder>/recordings.jsonl` (always, so an extra `-P` records into a
+    managed folder), then `-P` when Record calls is on, with `--record-unknown-only` only beside it (unknown-only
+    travels with Record calls, so a disabled switch never filters the user's own `-w`, extra `-P` or MBE capture); no
+    folder (no root available, or a validation-only build) names no recording at all. A scan list passes it through its
+    tuner build, once; a draft list asks for no folder. The caller says what a start is
+    (`SessionArgsBuilder::start(system, host, kind)`: "saved", "explore", "search"), since an edited Explore map can
+    carry a saved system's uid. Extra options naming `-7`, `--wav-journal` or `--rdio-api-delete-after-upload` refuse
+    the start (`SessionArgsError::CallRecordingOption`), `-w` does while Record calls is on (`CallRecordingStaticWav`),
+    and an extra `-P` does when the store had no folder to give (`CallRecordingNoStorage`, `SessionArgPrefs::
+    recordingUnavailable`: it would record outside the app's storage); `CallRecordingOption` and
+    `CallRecordingNoStorage` share the start screen's "call-recording-option" category.
+    `session_args_recording_extra_error()` walks the tokens as the decoder walks its argv, by the parser's own arity
+    (`dsd_cli_long_option_arity()`, `dsd_cli_short_option_takes_value()`; Runtime, CLI), so an option's value is never
+    taken for an option and an option never for a value: the long options first, out of the whole list wherever they
+    stand (a short option's value position included), up to the first `--` that is no long option's value, as the
+    pre-scan and compaction take them, then getopt's own reading of what is left, that `--` and its tail included
+    (`-o --wav-journal x null` names the journal; `-o --strict-crc -7 x` gives `-o` the value `-7`; `-o -- -7 x` gives
+    `-o` the value `--` and applies `-7`; `-o x -- -7 y` ends the options before `-7`). Short options are read letter by
+    letter (`-F7x` is `-F`, then `-7` with `x`), an operand is stepped over (glibc's getopt permutes past it; one that
+    stops there reads fewer options, never more), and an unknown option ends the walk where the parse fails; a long
+    option the first pass does not know (`--wav-journal=x`) is still refused by name. Validation by running the parser
+    on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
+    every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
+    `recordingLimitMb` before `start()` and on every change.
+  - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly)` sends unknown-only then WAV start, or WAV
+    stop then unknown-only off, best effort once the stop is in (`RecordingStatus::noteFollowUp()`: the status keeps
+    describing the stop, whose outcome the follow-up's stands in for, as the queue applies in order); it sends nothing, and says why in `RecordingStatus::refusal`, when no session is on
+    ("no-session", from the host, since a view outlives its run), while its run is not up yet ("starting": until then
+    the view is the last run's; up when Running, after `sessionInitialized()` on a host that signals it, or at once for
+    a session the UI found running), when on would record into a session that names no recording journal
+    ("storage-unavailable": no folder to record into), or either way in a session recording to a static WAV of its extra
+    options ("static-wav": a start or a stop would close the user's file); the preference applies at the next start.
+    `RecordingStatus` is the session's (`recording_status_follow_host()`): a start and an end clear the refusal, and its
+    command readings stay "none" until this session sends a switch (the decoder's command state is process-wide).
+    `setRecordUnknownOnly()` is sent only while the session records each call (a start still applying counts) and is
+    otherwise inert: it travels with the next Record calls on. `RecordingStatus` (`recording_status.{h,cpp}`, context
+    property `recordingStatus`, refreshed every UI tick by `UiController`) reads `recording_view` for QML: per-call,
+    slot files, unknown-only, static WAV, `storageNamed`, journal, the last command and its state ("pending" is
+    Settings' "Applying..."), failures by kind and the last one, and the bridge's refusal.
+  - Host surface (`DecoderHost`): playback (`playbackSupported`, `playRecording(path)`, pause/resume/seek/stop, the
+    `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
+    and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
+    reference and ends in exactly one `recordingTransferFinished(selection, result, missing)`, a refusal included; one
+    at a time; `recordingTransfer*` progress) and share (`shareRecording()`, indexed recordings only). The base host has
+    no player and no zip, and saves one file synchronously through `copyFileToDocument()`; a platform overrides
+    `beginPlayback()`, `stopPlayback()` (calling the base), the other playback controls, `beginRecordingTransfer()` and
+    `shareRecordingFile()` and reports through `publishPlayback()`, `publishRecordingTransferProgress()` and
+    `finishRecordingTransfer()`. `playRecording()` routes through those virtuals: a missing file or a host with no
+    player stops what plays first, so the store's hold on a file ends only once nothing plays it. A transfer stats no
+    file on the GUI thread: the platform skips the files gone, publishes the total it really writes and reports the gone
+    ones at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`.
+    `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing (`setPlayingPath()` from Preparing to the
+    end), releases each transfer's selection when it finishes, rechecks the missing files (`recheckPaths()`) and gives
+    the host the share check (`setRecordingIndex()`) and a hold for work outside a selection (`setRecordingHold()`:
+    `RecordingStore::selectPath()` and `releaseSelection()`).
+  - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
+    talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
+    `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
+    them come from `recordingStatus` while a session is on (Applying..., refused, a refusal that applies at the next
+    start, judged per switch by `RecordingStatus::refusalCount()`, a submit the queue would not take or a dropped
+    command, recording failures, a failed journal); Storage limit (a ChoiceSheet of `recordingLimitChoices`), then the
+    store's lines (storage away, low space while recording, recordings the limit removed, failed deletes), then Manage
+    call recordings (usage, or "Counting recordings..." until `indexed`). The limit's removals and failed deletes count
+    until the Call recordings screen shows them: it takes them and calls `RecordingStore::acknowledgeNotices()`, which
+    starts both counts again. `CallRecordingsScreen.qml` (Main's `callRecordingsOpen` layer): one row per owner with
+    recordings, Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed
+    picker releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of
+    its own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen
+    opened, and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose
+    `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
+    `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
+    `CallRecordingPlayer.qml` above Hold: play/pause, position and seek, the parts (the one shown kept on its recording
+    by path) with a Play all parts action (the host keeps no queue: a part that stopped at its end, path kept and
+    position at its length, plays the next; a stop clears the path and ends it), Share (`recordingShareFailed()` worded
+    there), Save to file and Delete. A part the host reports "missing" leaves the block at once, until the store lists it as away
+    (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
+    storage is back, without reopening the sheet; closing the sheet stops
+    what it played; a pause the host made in the background (D10) reads as Paused. The talkgroup editor's Record switch
+    follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where
+    it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows
+    `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
+    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
+    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+  - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
+    D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
+    `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
+    there), then `filesDir/Call recordings`. Playback:
+    `RecordingPlayback.kt` runs the pure `RecordingPlayer.kt` state machine on one looper thread with a `MediaPlayer`
+    and the transient speech audio focus; the player starts only when prepared, wanted, in the foreground and with the
+    focus, and a pause, the background or a focus change while preparing only change what is wanted. Each play has a
+    generation; the host polls `status()` on its refresh tick while a play is open and ignores another play's record.
+    `DsdNeoActivity` reports `onStart`/`onStop` (leaving pauses, D10) and releases the player in `onDestroy`. A play
+    that reaches its end reads Stopped with its path kept and its position at its length (a stop clears the path).
+    Export and save run on the host's one-thread transfer worker: it skips and counts the files there, then a
+    `content://` document goes to `RecordingExport.transfer()`, which writes through `DocumentCopies.beginWrite()`'s
+    `DocumentWrite` (the backup save's open, trim, sync, `closeWithError()` and delete) with its own
+    `CancellationSignal` (`cancelRecordingTransfer()`), distinct from the teardown abort. A ZIP's entries are DEFLATED
+    at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
+    streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
+    on the refresh tick; the end comes back queued. A host going away aborts the document transfers, cancels its
+    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a file URL's
+    storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself (`TransferLink`): a job
+    never calls into the host. A single save to a file URL takes the base copy
+    (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
+    reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
+    whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder) on the GUI
+    thread; then, on the transfer worker (behind a running export, its recording held in the store from the queue until
+    the copy is made or fails, or the host goes, so the limit or a delete cannot take it first),
+    `RecordingShare.stage()` copies it, under its own
+    name, into a folder of its own in `cacheDir/recording-shares/`, so retention or a delete cannot take the file from
+    the app it went to; then `RecordingShare.offer()` starts the chooser for the copy on the Android main thread through
+    `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two folders and the share
+    copies' folder only), read grant only. A copy goes when it is a day old by its modification time (either way), at
+    the next share or host start (`RecordingShare.clean()` on the transfer worker), but never one this process made
+    less than an hour ago (a monotonic clock); a chooser that cannot start removes its copy. A share that fails in
+    either step (the source gone before the copy included) is queued by the recording's path
+    (`RecordingShare.takeFailure()`) and each refresh emits `DecoderHost::recordingShareFailed(path)`, with the store
+    told when the file is gone. A player open
+    failure is "missing" only when the file does not exist. The store compacts a journal only while the session reads
+    inactive: the engine's run opens and closes the journal inside `nativeRun()`, the service reports IDLE after it
+    returns, and a lifecycle record that cannot be read while the engine runs reads RUNNING, not IDLE. Tests:
+    `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`, `ANDROID_RECORDING_EXPORT_JVM`, `ANDROID_RECORDING_SHARE_JVM`
+    (also the provider declaration and the codes that cross JNI); they run wherever ctest runs the JVM suites, skipping
+    the FIFO and symbolic-link cases where the host cannot make them.
+  - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
+    reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
+    true and a session may start; only after that does it read each folder whole (one directory listing, the journal
+    from its start; `indexed` once all are), the History roles following as their records arrive. A tabled folder
+    whose folder.json is gone by the time it is read leaves the table; a start is never handed a folder whose
+    folder.json no longer names its owner (one not read yet leaves the table there and then); a start's relabel made
+    while the worker reads the folder stands. It checks for exit between folders and between slices. Later passes wake
+    every second while a folder is in use, else on request or once a minute (a folder turning in use, at a session start
+    in it, changed or not, or a session the host reports, wakes one at once), and tail each journal from its byte
+    cursor, complete lines only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name
+    inside the folder). A
+    journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
+    index. The index keeps {id -> path, start, duration, fragment, folder, flags, size}: a `publish` of a file that is
+    not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
+    (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. One
+    path has one owner, the newest publish in journal order: a journal not yet compacted can still name a recording
+    deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated), and the later publish
+    evicts that id, its fragment and its size (`insertEntryLocked()`). Decided limit: a delete of the old id that runs
+    after the later file is written but before its publish is read can remove the later file; the reuse already needs
+    the same second, talkgroup and source and a repeat of a 16-bit random suffix, so the store does not compare file
+    identity before an unlink. Temp
+    files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
+    unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
+    journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
+    `publish` per live recording, the cursor then at its end) once it holds more than twice as many lines as live
+    recordings, only while no session uses the folder (nor one that never ran, above), and only when nothing but a torn
+    line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage may refuse it). History
+    reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History read in before each slice
+    of 128 records of a whole-folder read, each recheck and each delete, and sums (usage, limit, compaction) are taken
+    on shared copies outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
+    `recordingFragmentsChanged()`, `limitReached()`), so a paused GUI thread never collects more than one.
+  - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
+    `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
+    (`setPlayingPath()`) or a selection (`selectForExport()`, `selectRecordings()`, until `releaseSelection()`) holds
+    the file. Right before the unlink, under the lock: inside an available root by canonical folder and component
+    (`recording_path_inside_root()`), not a symlink, a regular file; one that fails leaves the index and stays on disk.
+    A removal the filesystem refuses with the root still there (checked again after the refusal: a root gone keeps the
+    request queued, below) keeps the recording indexed and drops the request; it counts in `deleteFailures`
+    with its reason in `lastDeleteError`, and is logged once per run for each cause (asked for, the limit). History
+    rows stay. `recheckRecordings(ids)` (the player, an export or a share found a file missing) stats them on the
+    worker: a file gone or no longer regular leaves the index, its fragments announced; one still there has its size
+    read again. Decided limits: the canonical check and the unlink are not one atomic step, which a parent swapped for
+    a symlink between them could exploit; the roots are app-private storage, so only the app can make that swap. The
+    store assumes one app process per set of roots (the Qt UI ships only on Android): another live instance's temp
+    files carry another token and would read as unfinished.
+  - Limit (D2): `limitMb` (decimal MB, 0 none) applies only once the app has set it (`setLimitMb()`; a first pass
+    never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change:
+    over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
+    the total is at 95%; a file already gone is taken off the total without counting as removed. A total over the
+    limit is first checked against the disk: every file it counts is looked at as `recheckRecordings()` looks (on the
+    worker, only when over), so one deleted behind the store's back (over USB, by a file manager) leaves the index
+    (kept and away when its root went), and the total is summed again before anything goes. When the held files
+    keep it over (`m_limitPending`), the release of a selection or of the player's file wakes a pass that tries again,
+    and so does every timed pass (an rdio upload's hold has no release to wake one). The total counts every available
+    root, so each of them is checked again right before each removal (after its holds are asked), wherever the
+    recording is: one found gone is marked away, the total is summed again over the roots still there, and only then is
+    it decided whether anything needs to go, so nothing goes for usage that no longer counts. Decided limit: the
+    journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
+    first. Free space where recordings go is read (`dsd_path_free_bytes()`) at start, after each publish and every
+    minute while a session records: the root of the active session's folder, or when idle the root a session start
+    would take now (the first one available and writable); under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
+  - Storage-loss invariant: storage can go at any moment of a pass (a USB connection, an unmounted card), and a gone
+    root makes every read in it fail or come back empty. So no outcome that drops index state (a root's folder
+    listing, a folder read whole, a journal's new lines, a file found missing or no longer the store's to remove), drops
+    a request (a queued delete) or counts usage rests on a cached `m_rootAvailable` or on a failed stat, open or unlink
+    alone: the root is checked again first, through `rootStillAvailable()` (`rootAvailableNow()` for a root being read
+    back, which is not available yet). A root found gone is marked away (`markRootAwayLocked()`: its recordings'
+    fragments are announced, so History rows read them as away); nothing in it leaves the index, a request it
+    interrupted stays queued and runs once it is back, and the pass decides nothing more about it: a root marked away
+    reads as gone to `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was
+    gone (a short listing, a journal or files not found) is dropped, not applied. A root that comes back is listed,
+    then has its folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps
+    them (`Folder::rereading`) until its read completes and replaces them, so storage that leaves again during that
+    read drops nothing. Decided limit: storage that leaves and comes back between a read and the check after it is not
+    seen, and that read stands (a recording it found missing stays out of the index until its root is next read
+    whole).
+  - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
+    pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
+    start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass
+    at most 0.8-1.1 ms (20,000) and 2-2.7 ms (50,000). A pass that finds nothing new costs 0.02-0.13 ms; one publish
+    (tail, sums, delivery) 0.27 ms at 2,000, 1.8-2 ms at 20,000 and 4.3-9 ms at 50,000, on the worker; a History read
+    0.04 us.
+  - Tests: `UI_QT_RECORDING_STORE` (the tail, the decoder's own writer, History roles from the store, compaction,
+    roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
+    free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
+    the journals, rechecks, the limit not counting files deleted behind its back, delete failures, exit during the
+    first read, the player letting go of a held file, storage lost while a root is listed or its folders read back, a
+    folder read, a journal tailed, an unlink runs, the limit runs (as it looks at its files, before its first removal,
+    or as one is checked) or before a session start; a session start waking an idle worker),
+    `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
+    `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
+    bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in
+    `UI_QT_RECORDING_STORE`, the preferences in `UI_QT_PERSISTENCE`, the arity helpers in `RUNTIME_CLI_COMPACT`, the
+    options cell in `RUNTIME_SCAN_OPTIONS`.
 - Call history frequency and access code (issue #575; `call_history_model.{h,cpp}`, `call_history_merge.h`). Every row
   carries the frequency its call was heard on (`Row::freqHz`, Hz, 0 unknown) and its access code as a
   `dsd_access_code_kind` and value (`Row::codeKind`, `Row::code`), read from `Event_History::freq_hz`,
@@ -8471,6 +9002,8 @@ Key public headers:
 - Frontend commands, history, metrics, and lifecycle: `include/dsd-neo/app_control/commands.h`,
   `include/dsd-neo/app_control/history.h`, `include/dsd-neo/app_control/frontend.h`, and
   `include/dsd-neo/app_control/frontend_runtime.h`
+- Recording state and background history (issue #708): `include/dsd-neo/app_control/recording_view.h` and
+  `include/dsd-neo/app_control/history_tap.h`
 - Terminal-only headers live under `src/ui/terminal/dsd-neo/ui/` and are private to the terminal target/tests.
 
 ### Adding Menu Items
@@ -8829,11 +9362,17 @@ lookups. `tools/check_android_r8.py` validates shipped DEX definitions and bundl
 metadata in Android CI; `ANDROID_R8` tests its failure cases. Device testing of
 optimized releases and mapping retention are described in `android/README.md`.
 
-Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
-`policy_context` and `policy_generation` to reject edits from a stale list. The
-row `fields` mask selects listen/priority/preempt/name/tags. IDs 652/653 reserve a
-typed, bounded direct key and an int32 force-key mode. These five handlers currently
-report “not implemented”; force-key is registered as a configured scan-mode setting.
+Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`apply_cmd_tg_row_set()`,
+`apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless
+its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
+listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
+learned alias row, rewrite the group file (outside a scan row) and end an active group call the edit newly blocks (by
+mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`); export
+is refused for a scan row's list, writes the list to the given path and makes it the session's group file. IDs 652/653
+are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
+`dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32
+force-key mode 0/1/2 (`apply_cmd_force_key()`; a change bumps the key epoch). Force-key and the export run against the
+saved scan baseline as configured scan-mode settings (`command_updates_scan_mode()`).
 Queue storage and drain temporaries are securely erased after use and on discard,
 including eviction, coalescing and rejection. Submitters own and must erase their
 original secret payloads.
@@ -9097,7 +9636,9 @@ thread, which the rest of the interface never is.
   ints, and the `document_transfer` suite checks that both sides name the same values. A save opens the document `wt`,
   else `w`; a file (not a provider's pipe) is cut back to the copy's length and synced. A save that fails once the
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
-  than a short document, and deletes it; only a whole save closes normally.
+  than a short document, and deletes it; only a whole save closes normally. The write side is
+  `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
+  too.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
@@ -9439,8 +9980,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   row/target identity. `receive_view` shares checking/rejection text with Qt, the terminal and the API `status.receive`.
   The Qt ReceivePolicySheet uses existing modal/keyboard/discard behavior; terminal menu_receive uses one captured
   destination per prompt chain. Global defaults live in `[receive]`; `scan_mode` restores them after row overrides.
-  Recording publication sanitizes service-name filename components; Rdio uses its supported talkgroup label without
-  changing the numeric target.
+  Recording publication makes the service, system, target and source name components file-safe on the name's copies
+  only (Core, `wav_rename_sanitize_component()`); Rdio uses its supported talkgroup label without changing the numeric
+  target.
 - A service name only rejected traffic could carry (`dsd_receive_names_unreachable()`: an enabled filter of its kind, or
   the analog tone filter for a CTCSS/DCS name, rejects its identifier) is kept and reported, never refused, so a service
   can be blocked for a while. `dsd_scan_option_unreachable_names()` judges a row's options over the configured policies

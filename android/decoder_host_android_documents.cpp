@@ -17,19 +17,15 @@
 #include "decoder_host_android.h"
 
 namespace dsd_android {
-namespace {
 
-/** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
 bool
-is_content_uri(const QString& reference) {
+DecoderHostAndroid::isContentUri(const QString& reference) {
     return QUrl(reference).scheme() == QLatin1String("content");
 }
 
-} // namespace
-
 int
 DecoderHostAndroid::copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const {
-    if (!is_content_uri(reference)) {
+    if (!isContentUri(reference)) {
         return dsd_qt::DecoderHost::copyDocumentToFile(reference, destPath, maxBytes);
     }
     if (documentTransfersAborted() || destPath.isEmpty() || maxBytes < 0) {
@@ -58,7 +54,7 @@ DecoderHostAndroid::copyDocumentToFile(const QString& reference, const QString& 
 
 bool
 DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
-    if (!is_content_uri(reference)) {
+    if (!isContentUri(reference)) {
         return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
     }
     if (documentTransfersAborted() || !platformHoldsResolver()) {

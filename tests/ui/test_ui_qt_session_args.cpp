@@ -31,6 +31,7 @@
 #include <utility>
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "recording_sessions.h"
 
 #include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
@@ -162,7 +163,12 @@ test_prefs_mapping(void) {
     prefs.setRelaxedCrc(true);
     prefs.setHangtimeSec(3.5);
     prefs.setExtraArgs(QStringLiteral("-Z"));
+    prefs.setRecordCalls(true);
+    prefs.setRecordUnknownOnly(true);
     const SessionArgPrefs mapped = dsd_qt::session_args_prefs(&prefs);
+    expect("the call recording preferences map, never a folder",
+           mapped.recordCalls && mapped.recordUnknownOnly && mapped.recordingFolder.isEmpty());
+    expect("call recording is off by default", !none.recordCalls && !none.recordUnknownOnly);
     expect("every preference maps",
            mapped.gainDb == 41 && mapped.ppm == 7 && mapped.bandwidthKhz == 24 && mapped.biasTee
                && !mapped.skipEncrypted && !mapped.persistTgLockouts && mapped.autoPpm && mapped.relaxedCrc
@@ -177,6 +183,297 @@ test_prefs_mapping(void) {
     prefs.setRelaxedCrc(defaults.relaxedCrc);
     prefs.setHangtimeSec(defaults.hangtimeSec);
     prefs.setExtraArgs(defaults.extraArgs);
+    prefs.setRecordCalls(defaults.recordCalls);
+    prefs.setRecordUnknownOnly(defaults.recordUnknownOnly);
+}
+
+/* Issue #708: the call recording a session's argv names, from the store's folder and the two preferences, before the
+ * extra options so they can add to it; once in a scan list's argv. */
+void
+test_recording_args(void) {
+    auto sys = usb_system();
+    sys["extraArgs"] = QStringLiteral("-Z");
+    SessionArgPrefs prefs;
+    prefs.recordCalls = true;
+    prefs.recordUnknownOnly = true;
+    SessionArgsError error = SessionArgsError::None;
+    auto args = session_args_build(sys, prefs, &error);
+    expect("no folder: no call recording at all", error == SessionArgsError::None && !args.contains("-7")
+                                                      && !args.contains("--wav-journal") && !args.contains("-P")
+                                                      && !args.contains("--record-unknown-only"));
+
+    prefs.recordingFolder = QStringLiteral("/data/Call recordings/County (abcd1234)");
+    args = session_args_build(sys, prefs, &error);
+    const QStringList want{QStringLiteral("-7"),
+                           prefs.recordingFolder,
+                           QStringLiteral("--wav-journal"),
+                           prefs.recordingFolder + QStringLiteral("/recordings.jsonl"),
+                           QStringLiteral("-P"),
+                           QStringLiteral("--record-unknown-only"),
+                           QStringLiteral("-Z")};
+    const qsizetype at = args.indexOf(QStringLiteral("-7"));
+    expect("folder, journal, -P and unknown-only, then the extra options, after the hang time",
+           error == SessionArgsError::None && at > args.indexOf(QStringLiteral("-t"))
+               && args.mid(at, want.size()) == want && args.count(QStringLiteral("-7")) == 1);
+
+    prefs.recordCalls = false;
+    prefs.recordUnknownOnly = false;
+    args = session_args_build(sys, prefs, &error);
+    expect("Record calls off still names the folder and journal, so an extra -P records there",
+           args.contains("-7") && args.contains("--wav-journal") && !args.contains("-P")
+               && !args.contains("--record-unknown-only"));
+
+    // Unknown-only travels with -P: off while Record calls is off, whatever its own switch says.
+    for (const bool record : {false, true}) {
+        for (const bool unknown : {false, true}) {
+            prefs.recordCalls = record;
+            prefs.recordUnknownOnly = unknown;
+            args = session_args_build(sys, prefs, &error);
+            expect(qPrintable(QStringLiteral("Record calls %1, unknown-only %2").arg(record).arg(unknown)),
+                   args.contains(QStringLiteral("-P")) == record
+                       && args.contains(QStringLiteral("--record-unknown-only")) == (record && unknown));
+        }
+    }
+    prefs.recordUnknownOnly = false;
+
+    prefs.recordCalls = true;
+    prefs.extraArgs = QStringLiteral("-Z");
+    QString scanError;
+    args = dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError);
+    const qsizetype scanAt = args.indexOf(QStringLiteral("-7"));
+    expect("a scan list names the folder once, before the scan and extra options",
+           scanError.isEmpty() && args.count(QStringLiteral("-7")) == 1 && args.count(QStringLiteral("-P")) == 1
+               && args.count(QStringLiteral("--wav-journal")) == 1 && scanAt >= 0
+               && scanAt < args.indexOf(QStringLiteral("--trunk-scan")) && scanAt < args.indexOf(QStringLiteral("-Z"))
+               && args.value(scanAt + 1) == prefs.recordingFolder);
+}
+
+/* Issue #708: the app owns where call recordings go and when they are deleted, so extra options that say otherwise
+ * refuse the start, in every place they can be typed and in either option form; -w only while Record calls is on. */
+void
+test_recording_refused_extras(void) {
+    using dsd_qt::session_args_recording_extra_error;
+    for (const auto& tokens :
+         QStringList{"-7 /x", "-7/x", "-F -7 /x", "--wav-journal /x/j.jsonl", "--wav-journal=/x/j.jsonl",
+                     "--rdio-api-delete-after-upload", "--rdio-api-delete-after-upload=1",
+                     // A switch takes no value: the -7 after it is an option, as the decoder reads it.
+                     "--record-unknown-only -7 /x", "--enc-lockout -7 /x",
+                     // --config takes the next argument only when it is not an option.
+                     "--config -7 /x", "--frontend=none -7 /x"}) {
+        expect(qPrintable(QStringLiteral("refused: %1").arg(tokens)),
+               session_args_recording_extra_error(tokens, false) == SessionArgsError::CallRecordingOption);
+    }
+    for (const auto& tokens : QStringList{"-w out.wav", "-wout.wav", "-Z -w out.wav"}) {
+        expect(qPrintable(QStringLiteral("-w refused with Record calls: %1").arg(tokens)),
+               session_args_recording_extra_error(tokens, true) == SessionArgsError::CallRecordingStaticWav);
+        expect(qPrintable(QStringLiteral("-w kept without Record calls: %1").arg(tokens)),
+               session_args_recording_extra_error(tokens, false) == SessionArgsError::None);
+    }
+    for (const auto& tokens : QStringList{"", "-P", "--record-unknown-only", "--input-level-warn-db -7",
+                                          "--frame-log -7", "-c -7", "-o -w", "--api-token -7", "--config cfg.ini -P",
+                                          "--wav-journalx /x", "--rdio-api-delete-after-uploads", "-Z -- -7 /x"}) {
+        expect(qPrintable(QStringLiteral("kept: %1").arg(tokens)),
+               session_args_recording_extra_error(tokens, true) == SessionArgsError::None);
+    }
+    // getopt reads a group letter by letter, and a "--" that is a value ends nothing; one that is no value ends the
+    // options.
+    for (const auto& tokens : QStringList{"-F7/x", "-o -- -7 /x"}) {
+        expect(qPrintable(QStringLiteral("refused as getopt reads it: %1").arg(tokens)),
+               session_args_recording_extra_error(tokens, false) == SessionArgsError::CallRecordingOption);
+    }
+    for (const auto& tokens : QStringList{"-o x -- -7 /x", "-o -- -- -7 /x"}) {
+        expect(qPrintable(QStringLiteral("kept as getopt reads it: %1").arg(tokens)),
+               session_args_recording_extra_error(tokens, true) == SessionArgsError::None);
+    }
+
+    // With no storage for call recordings, an extra -P would record outside it; nothing else is refused for that.
+    expect("-P with no storage", session_args_recording_extra_error(QStringLiteral("-Z -P"), false, true)
+                                     == SessionArgsError::CallRecordingNoStorage);
+    expect("-P as a value is not",
+           session_args_recording_extra_error(QStringLiteral("-c -P"), false, true) == SessionArgsError::None);
+    expect("no -P, nothing refused",
+           session_args_recording_extra_error(QStringLiteral("-Z"), true, true) == SessionArgsError::None);
+
+    auto sys = usb_system();
+    SessionArgPrefs prefs;
+    SessionArgsError error = SessionArgsError::None;
+    sys["extraArgs"] = QStringLiteral("-P");
+    prefs.recordingUnavailable = true;
+    expect("an extra -P with no storage",
+           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::CallRecordingNoStorage);
+    QString noStorage;
+    prefs.extraArgs = QStringLiteral("-P");
+    expect("in a scan list too",
+           dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &noStorage).isEmpty()
+               && noStorage == dsd_qt::session_args_error_text(SessionArgsError::CallRecordingNoStorage));
+    prefs.extraArgs.clear();
+    prefs.recordingUnavailable = false;
+    expect("a validation build asks no storage", !session_args_build(sys, prefs, &error).isEmpty());
+    sys["extraArgs"] = QStringLiteral("-7 /x");
+    expect("a system's own extra options",
+           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::CallRecordingOption);
+    sys.remove("extraArgs");
+    prefs.extraArgs = QStringLiteral("--wav-journal=/x");
+    expect("the app-wide extra options",
+           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::CallRecordingOption);
+    prefs.extraArgs = QStringLiteral("-w out.wav");
+    prefs.recordCalls = true;
+    expect("-w beside Record calls",
+           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::CallRecordingStaticWav);
+    QString scanError;
+    expect("a scan list's extra options",
+           dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError).isEmpty()
+               && scanError == dsd_qt::session_args_error_text(SessionArgsError::CallRecordingStaticWav));
+    prefs.extraArgs = QStringLiteral("--rdio-api-delete-after-upload");
+    expect("delete after upload in a scan list",
+           dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError).isEmpty()
+               && scanError == dsd_qt::session_args_error_text(SessionArgsError::CallRecordingOption));
+
+    dsd_qt::AppPrefs appPrefs;
+    appPrefs.setExtraArgs(QStringLiteral("-w out.wav"));
+    appPrefs.setRecordCalls(true);
+    const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+    const auto result = builder.build(usb_system());
+    expect("the builder names the refusal for the start screen",
+           !result.value("ok").toBool()
+               && result.value("error").toString() == QStringLiteral("call-recording-static-wav")
+               && result.value("errorText").toString()
+                      == dsd_qt::session_args_error_text(SessionArgsError::CallRecordingStaticWav));
+    appPrefs.setRecordCalls(false);
+    expect("and lets it start once Record calls is off", builder.build(usb_system()).value("ok").toBool());
+    appPrefs.setExtraArgs(QString());
+}
+
+/* Issue #708: a start asks the call recording store for the session's folder before the host starts, names it in the
+ * argv, and frees it when the start did not happen. The caller says what the start is: a saved system has its own
+ * folder; Explore and Signal search share one, whatever uid the map carries (an edited Explore start can carry the
+ * uid of the saved system it was copied from). An invalid system asks for nothing. */
+void
+test_recording_sessions(void) {
+    class Sessions : public dsd_qt::RecordingSessions {
+      public:
+        QStringList calls;
+        QString folder = QStringLiteral("/recordings/folder");
+
+        QString
+        beginSession(const QString& kind, const QString& uid, const QString& name) override {
+            calls.append(QStringLiteral("begin %1 %2 %3").arg(kind, uid, name));
+            return folder;
+        }
+
+        void
+        endSession() override {
+            calls.append(QStringLiteral("end"));
+        }
+    } sessions;
+
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList* calls = nullptr;
+        QStringList received;
+        bool accept = true;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            received = args;
+            calls->append(QStringLiteral("start"));
+            return accept;
+        }
+
+        void
+        noteStartAttempt(const QString& sourceType) override {
+            calls->append(QStringLiteral("note ") + sourceType);
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    host.calls = &sessions.calls;
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setRecordingSessions(&sessions);
+    auto sys = usb_system();
+    sys["uid"] = QStringLiteral("sys-1");
+    sys["name"] = QStringLiteral("County");
+    expect("a saved system starts", builder.start(sys, &host, QStringLiteral("saved")).value("started").toBool());
+    expect("its folder is asked for before the host starts",
+           sessions.calls
+               == QStringList(
+                   {QStringLiteral("begin saved sys-1 County"), QStringLiteral("note usb"), QStringLiteral("start")}));
+    const qsizetype folderAt = host.received.indexOf(QStringLiteral("-7"));
+    const qsizetype journalAt = host.received.indexOf(QStringLiteral("--wav-journal"));
+    expect("the session records into that folder",
+           folderAt >= 0 && host.received.value(folderAt + 1) == QStringLiteral("/recordings/folder"));
+    expect("and journals there",
+           journalAt >= 0
+               && host.received.value(journalAt + 1) == QStringLiteral("/recordings/folder/recordings.jsonl"));
+
+    sessions.calls.clear();
+    (void)builder.start(sys, &host, QStringLiteral("search"));
+    expect("a signal search records into Explore",
+           sessions.calls.value(0) == QStringLiteral("begin explore sys-1 County"));
+    sessions.calls.clear();
+    (void)builder.start(sys, &host, QStringLiteral("explore"));
+    expect("so does an Explore start carrying a saved system's uid",
+           sessions.calls.value(0) == QStringLiteral("begin explore sys-1 County"));
+    sessions.calls.clear();
+    sys.remove("uid");
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("and a map no one saved", sessions.calls.value(0).startsWith(QStringLiteral("begin explore ")));
+
+    sessions.calls.clear();
+    sessions.folder.clear();
+    expect("with no storage to record to",
+           builder.start(sys, &host, QStringLiteral("explore")).value("started").toBool());
+    expect("the session still starts, recording nothing",
+           !host.received.contains(QStringLiteral("-7")) && !host.received.contains(QStringLiteral("--wav-journal"))
+               && !host.received.contains(QStringLiteral("-P")));
+    sessions.folder = QStringLiteral("/recordings/folder");
+
+    sessions.calls.clear();
+    host.accept = false;
+    expect("a refused start", !builder.start(sys, &host, QStringLiteral("explore")).value("started").toBool());
+    expect("frees the folder", sessions.calls.size() == 4 && sessions.calls.value(3) == QStringLiteral("end"));
+
+    sessions.calls.clear();
+    sys["freqMhz"] = QStringLiteral("not a frequency");
+    (void)builder.start(sys, &host, QStringLiteral("explore"));
+    expect("an invalid system asks for nothing", sessions.calls.isEmpty());
+
+    // No storage: an extra -P would record outside it, so the start is refused and frees what it asked for.
+    sessions.calls.clear();
+    sessions.folder.clear();
+    sys["freqMhz"] = QStringLiteral("851.375");
+    sys["extraArgs"] = QStringLiteral("-P");
+    host.accept = true;
+    const auto noStorage = builder.start(sys, &host, QStringLiteral("explore"));
+    expect("an extra -P with no storage refuses the start",
+           noStorage.value("error").toString() == QStringLiteral("call-recording-option")
+               && noStorage.value("errorText").toString()
+                      == dsd_qt::session_args_error_text(SessionArgsError::CallRecordingNoStorage)
+               && !noStorage.value("started").toBool());
+    expect("and frees the session it began",
+           sessions.calls.size() == 2 && sessions.calls.value(1) == QStringLiteral("end"));
+    expect("and notes no start attempt: the device was never asked",
+           !sessions.calls.contains(QStringLiteral("note usb")));
+    sessions.folder = QStringLiteral("/recordings/folder");
+
+    sessions.calls.clear();
+    sys["extraArgs"] = QStringLiteral("-7 /elsewhere");
+    const auto refused = builder.start(sys, &host, QStringLiteral("explore"));
+    expect("extra options naming the folder refuse the start, asking for nothing",
+           refused.value("error").toString() == QStringLiteral("call-recording-option")
+               && !refused.value("started").toBool() && sessions.calls.isEmpty());
 }
 
 /* The QML-facing builder reads the preference from the live AppPrefs, as a start does. */
@@ -210,10 +507,10 @@ test_relaxed_crc_app_preference(void) {
     expect("the preference is a property", prefs.setProperty("relaxedCrc", true));
     dsd_qt::SessionArgsBuilder builder(&prefs);
     auto sys = usb_system();
-    expect("start succeeds", builder.start(sys, &host).value("started").toBool());
+    expect("start succeeds", builder.start(sys, &host, QStringLiteral("saved")).value("started").toBool());
     expect("a started system gets -F", host.received.count("-F") == 1);
     sys["extraArgs"] = "--strict-crc";
-    expect("start with --strict-crc", builder.start(sys, &host).value("started").toBool());
+    expect("start with --strict-crc", builder.start(sys, &host, QStringLiteral("saved")).value("started").toBool());
     expect("the system's --strict-crc wins at start", !host.received.contains("-F"));
     {
         dsd_qt::AppPrefs reopened;
@@ -221,7 +518,8 @@ test_relaxed_crc_app_preference(void) {
     }
     expect("the preference turns off", prefs.setProperty("relaxedCrc", false));
     sys.remove("extraArgs");
-    expect("start without the preference", builder.start(sys, &host).value("started").toBool());
+    expect("start without the preference",
+           builder.start(sys, &host, QStringLiteral("saved")).value("started").toBool());
     expect("off starts without -F", !host.received.contains("-F"));
 }
 
@@ -897,7 +1195,7 @@ test_retained_key_validation_boundary() {
         stop() override {}
     } host;
 
-    auto started = builder.start(systems.get(systems.count() - 1), &host);
+    auto started = builder.start(systems.get(systems.count() - 1), &host, QStringLiteral("saved"));
     const int key = host.received.indexOf("-1");
     expect("C++ start resolves the retained key into host arguments",
            started.value("started").toBool() && key >= 0 && host.received.value(key + 1) == secret);
@@ -905,7 +1203,7 @@ test_retained_key_validation_boundary() {
            !started.contains("args") && !QJsonDocument::fromVariant(started).toJson().contains(secret.toUtf8()));
     host.received.clear();
     sys["freqMhz"] = "invalid";
-    started = builder.start(sys, &host);
+    started = builder.start(sys, &host, QStringLiteral("saved"));
     expect("invalid session never starts",
            !started.value("ok").toBool() && !started.value("started").toBool() && host.received.isEmpty());
 }
@@ -952,8 +1250,8 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is a file system without its recording",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::RecordingMissing);
+    expect("the last error value is an extra -P with no storage for call recordings",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::CallRecordingNoStorage);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }
@@ -1073,7 +1371,10 @@ main(int argc, char** argv) {
     test_tg_lockout_preference();
     test_relaxed_crc_preference();
     test_relaxed_crc_app_preference();
+    test_recording_sessions();
     test_prefs_mapping();
+    test_recording_args();
+    test_recording_refused_extras();
     test_defaults_and_overrides();
     test_nfm_system();
     test_am_system();

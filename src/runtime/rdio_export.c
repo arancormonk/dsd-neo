@@ -25,6 +25,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+#include "rdio_export_internal.h"
 
 #ifdef USE_CURL
 #include <curl/curl.h>
@@ -33,6 +34,44 @@
 
 #define DSD_RDIO_PATH_MAX         2048
 #define DSD_RDIO_UPLOAD_QUEUE_MAX 128U
+
+/* A path's final component under @p win's rules: the file name the publisher made. */
+static const char*
+dsd_rdio_path_file_name(const char* path, int win) {
+    const char* name = path;
+    for (const char* p = path; *p != '\0'; p++) {
+        if (*p == '/' || (win && *p == '\\')) {
+            name = p + 1;
+        }
+    }
+    return name;
+}
+
+int
+dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win) {
+    if (job_path == NULL || path == NULL) {
+        return 0;
+    }
+    const unsigned char* a = (const unsigned char*)dsd_rdio_path_file_name(job_path, win);
+    const unsigned char* b = (const unsigned char*)dsd_rdio_path_file_name(path, win);
+    if (*b == '\0') {
+        return 0;
+    }
+    for (;; a++, b++) {
+        unsigned char ca = *a;
+        unsigned char cb = *b;
+        if (win) {
+            ca = (ca >= 'A' && ca <= 'Z') ? (unsigned char)(ca - 'A' + 'a') : ca;
+            cb = (cb >= 'A' && cb <= 'Z') ? (unsigned char)(cb - 'A' + 'a') : cb;
+        }
+        if (ca != cb) {
+            return 0;
+        }
+        if (ca == '\0') {
+            return 1;
+        }
+    }
+}
 
 #ifdef USE_CURL
 typedef struct {
@@ -52,12 +91,18 @@ typedef struct dsd_rdio_upload_job {
     struct dsd_rdio_upload_job* next;
 } dsd_rdio_upload_job;
 
+/* The queue's mutex lives for the whole process, unlike the worker and its condition variable: the recording store
+ * asks dsd_rdio_upload_holds() from its own thread at any time, a shutdown included. 0 = not initialized,
+ * 1 = initializing, 2 = ready, 3 = its init failed, for good: no worker starts and nothing is held. */
 static dsd_mutex_t g_rdio_upload_mutex;
+static atomic_int g_rdio_upload_mutex_state = 0;
 static dsd_cond_t g_rdio_upload_cond;
 static dsd_thread_t g_rdio_upload_worker;
 static dsd_rdio_upload_job* g_rdio_upload_head = NULL;
 static dsd_rdio_upload_job* g_rdio_upload_tail = NULL;
 static size_t g_rdio_upload_depth = 0;
+/* The job the worker took off the queue, from then until its upload and any delete after it are over. */
+static const dsd_rdio_upload_job* g_rdio_upload_in_flight = NULL;
 static int g_rdio_upload_stop_requested = 0;
 static atomic_int g_rdio_upload_state = 0; // 0=uninitialized, 1=initializing, 2=ready, 3=failed, 4=stopping
 static atomic_int g_rdio_delete_after_upload_dirwatch_warned = 0;
@@ -80,6 +125,28 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
     if (remove(path) != 0 && errno != ENOENT) {
         LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
     }
+}
+
+/* 0 when the queue's mutex is ready, -1 when its init failed. */
+static int
+dsd_rdio_upload_mutex_ensure(void) {
+    int state = atomic_load(&g_rdio_upload_mutex_state);
+    if (state == 2) {
+        return 0;
+    }
+    if (state == 3) {
+        return -1;
+    }
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_rdio_upload_mutex_state, &expected, 1)) {
+        const int ok = dsd_mutex_init(&g_rdio_upload_mutex) == 0;
+        atomic_store(&g_rdio_upload_mutex_state, ok ? 2 : 3);
+        return ok ? 0 : -1;
+    }
+    while ((state = atomic_load(&g_rdio_upload_mutex_state)) == 1) {
+        dsd_thread_yield();
+    }
+    return state == 2 ? 0 : -1;
 }
 
 static DSD_THREAD_RETURN_TYPE
@@ -111,6 +178,7 @@ static DSD_THREAD_RETURN_TYPE
         if (g_rdio_upload_depth > 0) {
             g_rdio_upload_depth--;
         }
+        g_rdio_upload_in_flight = job;
         dsd_mutex_unlock(&g_rdio_upload_mutex);
 
         const int upload_rc = dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path);
@@ -124,6 +192,9 @@ static DSD_THREAD_RETURN_TYPE
         } else if (upload_rc == DSD_RDIO_UPLOAD_CANCELLED) {
             g_rdio_upload_aborted++;
         }
+        dsd_mutex_lock(&g_rdio_upload_mutex);
+        g_rdio_upload_in_flight = NULL;
+        dsd_mutex_unlock(&g_rdio_upload_mutex);
         free(job);
     }
 
@@ -142,25 +213,22 @@ dsd_rdio_upload_worker_init(void) {
 
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_rdio_upload_state, &expected, 1)) {
-        if (dsd_mutex_init(&g_rdio_upload_mutex) != 0) {
-            atomic_store(&g_rdio_upload_state, 3);
-            return -1;
-        }
-        if (dsd_cond_init(&g_rdio_upload_cond) != 0) {
-            (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
+        if (dsd_rdio_upload_mutex_ensure() != 0 || dsd_cond_init(&g_rdio_upload_cond) != 0) {
             atomic_store(&g_rdio_upload_state, 3);
             return -1;
         }
 
+        dsd_mutex_lock(&g_rdio_upload_mutex);
         g_rdio_upload_head = NULL;
         g_rdio_upload_tail = NULL;
         g_rdio_upload_depth = 0;
+        g_rdio_upload_in_flight = NULL;
         g_rdio_upload_stop_requested = 0;
         g_rdio_upload_aborted = 0;
+        dsd_mutex_unlock(&g_rdio_upload_mutex);
 
         if (dsd_thread_create(&g_rdio_upload_worker, dsd_rdio_upload_worker_thread, NULL) != 0) {
             (void)dsd_cond_destroy(&g_rdio_upload_cond);
-            (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
             atomic_store(&g_rdio_upload_state, 3);
             return -1;
         }
@@ -251,9 +319,24 @@ dsd_rdio_upload_shutdown(void) {
     atomic_store(&g_rdio_upload_cancel, 0);
 
     (void)dsd_cond_destroy(&g_rdio_upload_cond);
-    (void)dsd_mutex_destroy(&g_rdio_upload_mutex);
 
     atomic_store(&g_rdio_upload_state, 0);
+}
+
+int
+dsd_rdio_upload_holds(const char* path) {
+    const int win = DSD_PLATFORM_WIN_NATIVE;
+    if (path == NULL || dsd_rdio_path_file_name(path, win)[0] == '\0' || dsd_rdio_upload_mutex_ensure() != 0) {
+        return 0;
+    }
+    dsd_mutex_lock(&g_rdio_upload_mutex);
+    int held = g_rdio_upload_in_flight != NULL
+               && dsd_rdio_upload_names_same_file(g_rdio_upload_in_flight->wav_path, path, win);
+    for (const dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL && !held; job = job->next) {
+        held = dsd_rdio_upload_names_same_file(job->wav_path, path, win);
+    }
+    dsd_mutex_unlock(&g_rdio_upload_mutex);
+    return held;
 }
 
 static void
@@ -396,6 +479,12 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, const char* wav_path, const ch
 #else
 void
 dsd_rdio_upload_shutdown(void) {}
+
+int
+dsd_rdio_upload_holds(const char* path) {
+    (void)path;
+    return 0;
+}
 
 void
 dsd_rdio_upload_cancel(void) {}
@@ -603,6 +692,23 @@ typedef struct {
     const char* short_name;
 } dsd_rdio_meta_fields;
 
+time_t
+dsd_rdio_recording_start(const Event_History* event, time_t opened) {
+    // The recording is filed by when it began: when its call did, or when the WAV was opened if that came later (per-
+    // call WAV switched on mid-call). Both are decode-clock stamps. event_time is the row's last activity -- the call's
+    // end by the time its WAV closes -- so it stands in only for a row with no start of its own, such as a --playfiles
+    // row, whose event_time the file reader stamped from the recording; that stamp is on the recording's clock, so the
+    // open time is not compared with it. stop_time adds the WAV length to the start, and is never derived by moving a
+    // fallback stamp back: a played file's stamp need not be an end.
+    if (event && event->event_start_time > 0) {
+        return opened > event->event_start_time ? opened : event->event_start_time;
+    }
+    if (event && event->event_time > 0) {
+        return event->event_time;
+    }
+    return dsd_decode_time();
+}
+
 static void
 dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_rdio_meta_fields* out) {
     if (!out) {
@@ -619,17 +725,7 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, time_t opened, dsd_r
     if (!event) {
         return;
     }
-    // The recording is filed by when it began: when its call did, or when the WAV was opened if that came later (per-
-    // call WAV switched on mid-call). Both are decode-clock stamps. event_time is the row's last activity -- the call's
-    // end by the time its WAV closes -- so it stands in only for a row with no start of its own, such as a --playfiles
-    // row, whose event_time the file reader stamped from the recording; that stamp is on the recording's clock, so the
-    // open time is not compared with it. stop_time adds the WAV length to the start, and is never derived by moving a
-    // fallback stamp back: a played file's stamp need not be an end.
-    if (event->event_start_time > 0) {
-        out->start_time = opened > event->event_start_time ? opened : event->event_start_time;
-    } else if (event->event_time > 0) {
-        out->start_time = event->event_time;
-    }
+    out->start_time = dsd_rdio_recording_start(event, opened);
     out->talkgroup = event->target_id;
     out->source = event->source_id;
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
@@ -1011,7 +1107,41 @@ dsd_rdio_mode_to_string(int mode) {
 }
 
 int
+dsd_rdio_journal_keeps_uploads(const dsd_opts* opts) {
+    return opts && opts->wav_journal_file[0] != '\0' && opts->rdio_api_delete_after_upload ? 1 : 0;
+}
+
+int
+dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before) {
+    if (kept_before || !dsd_rdio_journal_keeps_uploads(opts)) {
+        return 0;
+    }
+    LOG_WARN("WARNING: Rdio API uploads keep their files despite delete-after-upload: this run keeps a call recording "
+             "journal (--wav-journal), whose owner manages the recordings' retention.\n");
+    return 1;
+}
+
+int
 dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened) {
+    return dsd_rdio_export_call_ex(opts, event_struct, wav_path, opened, NULL);
+}
+
+#ifdef USE_CURL
+/* Whether an API upload removes its WAV once uploaded: never beside DirWatch, nor when a recording journal's owner
+   manages retention. The job carries the decision, made here on the caller's thread: the worker never reads the
+   options. */
+static int
+rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
+    return opts->rdio_api_delete_after_upload && !wants_dirwatch && !dsd_rdio_journal_keeps_uploads(opts);
+}
+#endif
+
+int
+dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
+                        int* api_queued) {
+    if (api_queued) {
+        *api_queued = 0;
+    }
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
     }
@@ -1037,7 +1167,7 @@ dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, 
 #else
         int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(mode);
         int remove_meta_on_success = !wants_dirwatch;
-        int remove_wav_on_success = opts->rdio_api_delete_after_upload && !wants_dirwatch;
+        int remove_wav_on_success = rdio_api_removes_wav(opts, wants_dirwatch);
         if (opts->rdio_api_delete_after_upload && wants_dirwatch
             && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
             LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
@@ -1045,6 +1175,9 @@ dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, 
         if (dsd_rdio_enqueue_api_upload(opts, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
             != 0) {
             return -1;
+        }
+        if (api_queued) {
+            *api_queued = 1;
         }
 #endif
     }

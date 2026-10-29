@@ -17,7 +17,7 @@ import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStream
+import java.io.OutputStream
 
 /**
  * The backup's document copies (#580): the Android half that DecoderHostAndroid calls over JNI.
@@ -29,6 +29,9 @@ import java.io.InputStream
  * Each transfer registers a CancellationSignal and passes it to every provider call it makes. [abort], at teardown,
  * cancels those calls (a size lookup, or an open a cloud provider holds while it downloads), stops the byte copy at
  * its next chunk, and refuses every later transfer.
+ *
+ * A write into a document is a [DocumentWrite] ([beginWrite]): the backup's save and the call recording exports
+ * (#708, RecordingExport) settle, close, report and delete a document the same way.
  */
 object DocumentCopies {
     private const val TAG = "dsd-neo"
@@ -54,8 +57,11 @@ object DocumentCopies {
     /** How many transfers hold a signal; the tests check that none leaks. */
     internal fun transfersInFlight(): Int = synchronized(inFlight) { inFlight.size }
 
-    private fun begin(): CancellationSignal? = synchronized(inFlight) {
-        if (DocumentTransfer.isAborted) null else CancellationSignal().also { inFlight.add(it) }
+    private fun begin(): CancellationSignal? = CancellationSignal().takeIf(::register)
+
+    /** Count [signal] in flight, so [abort] cancels it; false once aborted. */
+    private fun register(signal: CancellationSignal): Boolean = synchronized(inFlight) {
+        !DocumentTransfer.isAborted && inFlight.add(signal)
     }
 
     private fun end(signal: CancellationSignal) {
@@ -116,59 +122,111 @@ object DocumentCopies {
     /**
      * Write the file at [sourcePath] into the document [uriText] names; false on any failure.
      *
-     * The document is opened in mode "wt", or in "w" where a provider refuses "wt". After every save, a file is cut
-     * back to the copy's length (some providers accept "wt" but ignore the t, and "w" never truncates) and synced
-     * before it is closed. A sync that fails fails the save. A save that fails once the document is open closes it
-     * with closeWithError(), so a provider reading the other end of a pipe or socket sees the failure instead of a
-     * short document that looks complete.
-     *
-     * A failure once the document is open deletes it, best effort, so a partial backup never looks like a good one. A
-     * failure before then leaves the document as it was: it may be an older backup the user picked to replace. After
-     * an abort nothing is deleted, because deleteDocument() is one more provider call, takes no signal, and could
-     * hold teardown.
+     * The document is replaced and settled as [DocumentWrite] describes. A missing source never opens the document.
      */
     @JvmStatic
-    fun copyFileToDocument(resolver: ContentResolver, sourcePath: String, uriText: String): Boolean {
+    fun copyFileToDocument(resolver: ContentResolver, sourcePath: String, uriText: String): Boolean = try {
+        File(sourcePath).inputStream().use { input ->
+            val write = beginWrite(resolver, uriText) ?: return false
+            write.complete { output -> DocumentTransfer.copyCapped(input, output, Long.MAX_VALUE) }
+        }
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "failed to write a document", e)
+        false
+    }
+
+    /**
+     * Open the document [uriText] names to replace its content, under [signal]: null once [abort] was called.
+     *
+     * The document is opened in mode "wt", or in "w" where a provider refuses "wt". [signal] is passed to the open and
+     * counted in flight until the write's [DocumentWrite.finish] or [DocumentWrite.fail], so [abort] cancels it too; a
+     * caller that can cancel its own write (an export) passes its own. An open that fails, a cancelled one included,
+     * throws and leaves the document as it was: it may be an older backup the user picked to replace.
+     */
+    fun beginWrite(
+        resolver: ContentResolver,
+        uriText: String,
+        signal: CancellationSignal = CancellationSignal(),
+    ): DocumentWrite? {
         val uri = Uri.parse(uriText)
-        val signal = begin() ?: return false
-        var opened = false
-        return try {
-            File(sourcePath).inputStream().use { input ->
-                val document = openForReplace(resolver, uri, signal)
-                opened = true
-                writeAndClose(document, input)
-            }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "failed to write a document", e)
-            if (opened && !DocumentTransfer.isAborted) {
-                deletePartialDocument(resolver, uri)
-            }
-            false
-        } finally {
+        if (!register(signal)) {
+            return null
+        }
+        try {
+            return DocumentWrite(resolver, uri, signal, openForReplace(resolver, uri, signal))
+        } catch (e: Throwable) {
             end(signal)
+            throw e
         }
     }
 
     /**
-     * Copy [input] into [document], settle it and close it: normally once it is whole, else with closeWithError() and
-     * the failure rethrown. The descriptor is closed exactly once, here, so no stream owns it.
+     * A document [beginWrite] opened to replace: write [output], then [finish] or [fail] it, once.
+     *
+     * After every write, a file is cut back to the written length (some providers accept "wt" but ignore the t, and
+     * "w" never truncates) and synced before it is closed. A sync that fails fails the write. A write that fails
+     * closes the document with closeWithError(), so a provider reading the other end of a pipe or socket sees the
+     * failure instead of a short document that looks complete, and deletes it, best effort, so a partial document
+     * never looks like a good one. After an abort nothing is deleted, because deleteDocument() is one more provider
+     * call, takes no signal, and could hold teardown. The descriptor is closed exactly once, here, so no stream owns
+     * it.
      */
-    private fun writeAndClose(document: ParcelFileDescriptor, input: InputStream) {
-        try {
-            val output = FileOutputStream(document.fileDescriptor)
-            val copied = DocumentTransfer.copyCapped(input, output, Long.MAX_VALUE)
-            output.flush()
-            settle(document, copied)
-        } catch (e: Exception) {
+    class DocumentWrite internal constructor(
+        private val resolver: ContentResolver,
+        private val uri: Uri,
+        private val signal: CancellationSignal,
+        private val document: ParcelFileDescriptor,
+    ) {
+        /** The document's bytes, unbuffered. Never closed: closing it would close the document's descriptor. */
+        val output: OutputStream = FileOutputStream(document.fileDescriptor)
+
+        private var ended = false
+
+        /**
+         * Run [write] on [output], which answers the bytes it wrote, then [finish]. Any failure, an Error included, is
+         * [fail]ed (so the descriptor closes and the signal leaves the transfers in flight) and rethrown.
+         */
+        fun complete(write: (OutputStream) -> Long) {
+            val length = try {
+                write(output)
+            } catch (e: Throwable) {
+                fail(e)
+                throw e
+            }
+            finish(length)
+        }
+
+        /** Settle and close the document, [length] bytes long; a failure fails it ([fail]) and is rethrown. */
+        fun finish(length: Long) {
             try {
-                document.closeWithError("the backup could not be written: ${e.javaClass.simpleName}")
+                output.flush()
+                settle(document, length)
+                document.close()
+            } catch (e: Throwable) {
+                fail(e)
+                throw e
+            }
+            ended = true
+            end(signal)
+        }
+
+        /** Close the document with an error and delete it, best effort; a no-op once it ended. */
+        fun fail(cause: Throwable) {
+            if (ended) {
+                return
+            }
+            ended = true
+            try {
+                document.closeWithError("the document could not be written: ${cause.javaClass.simpleName}")
             } catch (closing: IOException) {
                 Log.w(TAG, "could not report a failed write to the document provider", closing)
             }
-            throw e
+            if (!DocumentTransfer.isAborted) {
+                deletePartialDocument(resolver, uri)
+            }
+            end(signal)
         }
-        document.close()
     }
 
     /** The size the provider reports for [uri], or null when it reports none. A cancelled lookup propagates. */

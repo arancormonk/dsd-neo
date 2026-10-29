@@ -4,11 +4,13 @@
 import QtQuick
 
 // The per-system play control: a 52px circle, gradient-filled for the featured
-// system and outlined for the rest, with a drawn triangle glyph.
+// system and outlined for the rest, with a drawn triangle glyph. A call
+// recording's player (issue #708) shows two bars instead while it plays.
 Item {
     id: control
 
     property bool featured: false
+    property bool showPause: false
     property string accessibleName: qsTr("Listen")
     signal clicked
     activeFocusOnTab: Navigation.allows(control) && enabled
@@ -60,6 +62,11 @@ Item {
             var ctx = getContext("2d");
             ctx.reset();
             ctx.fillStyle = control.featured ? (Theme.dark ? "#0E1116" : "#FFFFFF") : String(Theme.textSubdued);
+            if (control.showPause) {
+                ctx.fillRect(3.5, 2, 4, 14);
+                ctx.fillRect(10.5, 2, 4, 14);
+                return;
+            }
             // Nudged right of center: an exactly centered triangle reads left-heavy.
             ctx.beginPath();
             ctx.moveTo(4, 1.5);
@@ -78,8 +85,10 @@ Item {
         onVisibleChanged: requestPaint()
     }
 
-    // Repaint when featured flips — the glyph color depends on it.
+    // Repaint when featured flips — the glyph color depends on it — and when
+    // the glyph itself changes.
     onFeaturedChanged: glyph.requestPaint()
+    onShowPauseChanged: glyph.requestPaint()
 
     TapHandler {
         enabled: control.enabled

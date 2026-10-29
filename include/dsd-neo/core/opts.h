@@ -95,6 +95,9 @@ struct dsd_opts {
     // on after its call began holds only what followed, so its rdio-scanner sidecar starts here, not at the call's start.
     time_t wav_out_open_time;
     time_t wav_out_open_timeR;
+    // Per-call slot files whose last open failed (a full disk): bit 0 wav_out_f, bit 1 wav_out_fR. The slot's next call
+    // end opens it again, rather than leaving the slot unrecorded for the rest of the run (issue #708).
+    int wav_out_reopen;
     SNDFILE* wav_out_raw;
     double rtl_pwr;
     dsd_audio_stream* audio_in_stream;   /* Primary audio input stream */
@@ -159,6 +162,7 @@ struct dsd_opts {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
+    int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
     int serial_baud;
     int serial_fd;
     int resume;
@@ -410,6 +414,7 @@ struct dsd_opts {
     char wav_out_file[1024];
     char wav_out_fileR[1024];
     char wav_out_file_raw[1024];
+    char wav_journal_file[1024]; /* --wav-journal: the per-call recording journal (issue #708); "" for none */
     char symbol_out_file[1024];
     char symbol_out_open_path[1024]; /* the capture file symbol_out_f writes, named when it opened */
     char symbol_capture_last[1024];  /* the last capture closed this session: what Replay last replays (issue #634) */

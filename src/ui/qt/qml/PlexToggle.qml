@@ -20,6 +20,9 @@ Switch {
     font.family: Theme.sans
     font.pixelSize: Theme.fontSize(15)
     implicitHeight: Math.max(Theme.minimumTouchSize, contentItem.implicitHeight + topPadding + bottomPadding)
+    // Dimmed while it cannot be changed, as PlexSwitch and OutlineButton are; the
+    // style's own indicator otherwise looks the same enabled or not.
+    opacity: enabled ? 1.0 : 0.5
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
     FocusFrame {}

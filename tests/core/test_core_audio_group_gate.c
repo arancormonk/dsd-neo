@@ -431,6 +431,187 @@ test_unpublished_call_gate(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The policy setups test_record_unknown_only_gates() runs, each with --record-unknown-only off and on. */
+enum {
+    UO_NO_ROW,       /* an unknown talkgroup: records */
+    UO_EXACT,        /* a known talkgroup: records only with the rule off */
+    UO_RANGE,        /* known through a range row */
+    UO_ALIAS,        /* a persisted mode-D alias names a radio, not the talkgroup: unknown */
+    UO_HELD,         /* a matching Hold records a known talkgroup past the record block */
+    UO_HELD_AVOID,   /* a session avoid still blocks a held talkgroup */
+    UO_HELD_SKIP,    /* a call skip still blocks a held talkgroup */
+    UO_PRIVATE_SRC,  /* a private call whose source radio is known */
+    UO_PRIVATE_NONE, /* a private call between radios without rows */
+    UO_CASES
+};
+
+/* Seed @p setup for a call on talkgroup 123 from radio 456 on @p slot; returns whether it records with the rule on. */
+static int
+seed_unknown_only_case(dsd_state* st, uint8_t slot, int setup, int* rc) {
+    const int private_call = setup == UO_PRIVATE_SRC || setup == UO_PRIVATE_NONE;
+    *rc |= expect_eq("unknown-only call",
+                     seed_call(st, slot, st->synctype,
+                               private_call ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456),
+                     1);
+    switch (setup) {
+        case UO_EXACT:
+        case UO_HELD:
+        case UO_HELD_AVOID:
+        case UO_HELD_SKIP:
+            *rc |= expect_eq("unknown-only exact row", seed_policy_group(st, 123, "A", "Known"), 0);
+            break;
+        case UO_RANGE: {
+            dsd_tg_policy_entry row;
+            *rc |= expect_eq("unknown-only range row",
+                             dsd_tg_policy_make_exact_entry(100, "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &row), 0);
+            row.id_end = 199;
+            row.is_range = 1;
+            *rc |= expect_eq("unknown-only range add", dsd_tg_policy_add_range_entry(st, &row), 0);
+            break;
+        }
+        case UO_ALIAS: *rc |= expect_eq("unknown-only alias row", seed_policy_group(st, 123, "D", "Alias"), 0); break;
+        case UO_PRIVATE_SRC:
+            *rc |= expect_eq("unknown-only radio row", seed_policy_group(st, 456, "A", "Known radio"), 0);
+            break;
+        default: break;
+    }
+    if (setup == UO_HELD || setup == UO_HELD_AVOID || setup == UO_HELD_SKIP) {
+        st->tg_hold = 123;
+    }
+    if (setup == UO_HELD_AVOID) {
+        *rc |= expect_eq("unknown-only avoid", dsd_tg_policy_session_avoid_add(st, 123), 0);
+    }
+    if (setup == UO_HELD_SKIP) {
+        *rc |= expect_eq("unknown-only skip", dsd_tg_policy_call_skip_arm(st, 123, 456, 0, dsd_decode_now_mono_s()), 0);
+    }
+    switch (setup) {
+        case UO_NO_ROW:
+        case UO_ALIAS:
+        case UO_HELD:
+        case UO_PRIVATE_NONE: return 1;
+        default: return 0;
+    }
+}
+
+// Record only unknown talkgroups (issue #708) through the record gates every per-call recording reads, on each
+// protocol and slot: a known call records as if its row said record=off, and nothing else moves (it still plays).
+static int
+test_record_unknown_only_gates(dsd_opts* opts, dsd_state* st) {
+    static const struct {
+        int synctype;
+        uint8_t slots;
+    } protocols[] = {
+        {DSD_SYNC_P25P1_POS, 1}, {DSD_SYNC_P25P2_POS, 2}, {DSD_SYNC_DMR_BS_VOICE_POS, 2}, {DSD_SYNC_NXDN_POS, 1}};
+
+    int rc = 0;
+    for (size_t p = 0; p < sizeof protocols / sizeof protocols[0]; ++p) {
+        for (uint8_t slot = 0; slot < protocols[p].slots; ++slot) {
+            for (int setup = 0; setup < UO_CASES; ++setup) {
+                for (int unknown_only = 0; unknown_only <= 1; ++unknown_only) {
+                    DSD_MEMSET(opts, 0, sizeof(*opts));
+                    reset_state(st);
+                    opts->trunk_tune_group_calls = opts->trunk_tune_private_calls = 1;
+                    opts->record_unknown_only = unknown_only;
+                    st->synctype = protocols[p].synctype;
+                    st->currentslot = slot;
+                    st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+                    st->p25_p2_audio_allowed[slot] = 1;
+                    const int records_with_rule = seed_unknown_only_case(st, slot, setup, &rc);
+                    const int blocked_anyway = setup == UO_HELD_AVOID || setup == UO_HELD_SKIP;
+                    const int want = blocked_anyway ? 0 : (unknown_only ? records_with_rule : 1);
+                    int record = -1;
+                    int allow = -1;
+                    int muted = -1;
+                    rc |= expect_eq("unknown-only mono record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
+                    rc |= expect_eq("unknown-only slot record gate",
+                                    dsd_audio_record_policy_gate_slot(opts, st, slot, &allow), 0);
+                    rc |=
+                        expect_eq("unknown-only playback gate", dsd_audio_group_gate_mono(opts, st, 123, 0, &muted), 0);
+                    if (record != want || allow != want || muted != blocked_anyway) {
+                        DSD_FPRINTF(stderr,
+                                    "unknown-only synctype %d slot %u setup %d rule %d: record %d slot %d muted %d, "
+                                    "want record %d muted %d\n",
+                                    protocols[p].synctype, slot, setup, unknown_only, record, allow, muted, want,
+                                    blocked_anyway);
+                        rc = 1;
+                    }
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+// A patched P25 call records on the policy target (the member WG its grant matched), not the over-the-air supergroup:
+// the rule follows the record decision, so a listed supergroup alone leaves the member call unknown.
+static int
+test_record_unknown_only_p25_policy_target(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        for (int listed = 0; listed < 2; ++listed) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            reset_state(st);
+            opts->trunk_tune_group_calls = 1;
+            opts->record_unknown_only = 1;
+            st->synctype = DSD_SYNC_P25P2_POS;
+            st->currentslot = slot;
+            st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+            st->p25_p2_audio_allowed[slot] = 1;
+            seed_active_patch_member(st, 9000, 123);
+            rc |= expect_eq("unknown-only patch row",
+                            seed_policy_group(st, listed ? 123U : 9000U, "A", listed ? "Member" : "Supergroup"), 0);
+            rc |= expect_eq("unknown-only patch call",
+                            seed_call(st, slot, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9000, 123, 456), 1);
+            int record = -1;
+            rc |= expect_eq("unknown-only patch record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
+            rc |= expect_eq(listed ? "a listed member is known" : "a listed supergroup leaves the member unknown",
+                            record, !listed);
+            int muted = -1;
+            rc |= expect_eq("unknown-only patch playback", dsd_audio_group_gate_mono(opts, st, 9000, 0, &muted), 0);
+            rc |= expect_eq("the patched call still plays", muted, 0);
+        }
+    }
+    return rc;
+}
+
+// The P25 unmute override (and reverse mute) admit undeciphered audio to playback and recording; the unknown-only rule
+// still keeps a known talkgroup's call out of the recording, and an unknown one records as the override admits it.
+static int
+test_record_unknown_only_p25_unmute(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int phase2 = 0; phase2 <= 1; ++phase2) {
+        const int synctype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+        for (int reverse = 0; reverse <= 1; ++reverse) {
+            for (int listed = 0; listed <= 1; ++listed) {
+                DSD_MEMSET(opts, 0, sizeof(*opts));
+                reset_state(st);
+                opts->trunk_tune_enc_calls = 1;
+                opts->unmute_encrypted_p25 = reverse ? 0 : 1;
+                opts->reverse_mute = reverse;
+                opts->record_unknown_only = 1;
+                st->synctype = synctype;
+                st->currentslot = 0;
+                st->p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+                st->p25_p2_audio_allowed[0] = 1;
+                if (listed) {
+                    rc |= expect_eq("unmute row", seed_policy_group(st, 123U, "A", "Known"), 0);
+                }
+                rc |=
+                    expect_eq("unmute call", seed_call(st, 0U, synctype, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
+                const int audible = dsd_voice_crypto_audible(opts, st, 0);
+                rc |= expect_eq("the override admits the undeciphered call", audible, 1);
+                st->mbe_slot_muted[0] = (uint8_t)!audible;
+                int record = -1;
+                rc |= expect_eq("unmute record gate", dsd_audio_record_gate_mono(opts, st, &record), 0);
+                rc |= expect_eq(listed ? "a known talkgroup stays unrecorded under the override"
+                                       : "an unknown talkgroup records under the override",
+                                record, !listed);
+            }
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -800,6 +981,9 @@ main(void) {
     rc |= test_p25_record_gate_honors_reverse_mute(opts, st);
     rc |= test_record_gate_protocol_boundaries(opts, st);
     rc |= test_private_audio_policy(opts, st);
+    rc |= test_record_unknown_only_gates(opts, st);
+    rc |= test_record_unknown_only_p25_policy_target(opts, st);
+    rc |= test_record_unknown_only_p25_unmute(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }

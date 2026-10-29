@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
@@ -74,6 +75,24 @@ dsd_fstat(int fd, dsd_stat_t* st) {
 int
 dsd_stat_path(const char* path, dsd_stat_t* st) {
     return stat(path, st);
+}
+
+int64_t
+dsd_path_free_bytes(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    struct statvfs vfs;
+    if (statvfs(path, &vfs) != 0) {
+        return -1;
+    }
+    const uint64_t unit = vfs.f_frsize != 0 ? (uint64_t)vfs.f_frsize : (uint64_t)vfs.f_bsize;
+    const uint64_t blocks = (uint64_t)vfs.f_bavail;
+    if (unit != 0 && blocks > (uint64_t)INT64_MAX / unit) {
+        return INT64_MAX;
+    }
+    return (int64_t)(blocks * unit);
 }
 
 int
@@ -133,6 +152,10 @@ dsd_private_open_flags(const char* mode) {
         }
         flags |= O_EXCL;
     }
+#ifdef O_CLOEXEC
+    /* Logs, captures and the recording journal stay open for a whole run; no child process may inherit them. */
+    flags |= O_CLOEXEC;
+#endif
     return flags;
 }
 
@@ -429,6 +452,26 @@ static int
 dsd_local_file_name_is_unsafe(const char* requested) {
     return requested == NULL || requested[0] == '\0' || requested[0] == '/' || strchr(requested, '/') != NULL
            || strchr(requested, '\\') != NULL || strstr(requested, "..") != NULL;
+}
+
+int
+dsd_path_canonical(const char* path, char* out, size_t out_size) {
+    if (!path || path[0] == '\0' || !out || out_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    char* resolved = realpath(path, NULL);
+    if (!resolved) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(out, out_size, "%s", resolved);
+    free(resolved);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
 }
 
 static int

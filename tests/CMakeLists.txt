@@ -1172,6 +1172,31 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/snapshot.h
   C
 )
+# Issue #708: the History tap and the recording journal's token, both read by the Qt app.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_history_tap
+  HEADERS_PUBLIC_APP_CONTROL_HISTORY_TAP
+  dsd-neo/app_control/history_tap.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_history_tap_cxx
+  HEADERS_PUBLIC_APP_CONTROL_HISTORY_TAP_CXX
+  dsd-neo/app_control/history_tap.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_wav_journal
+  HEADERS_PUBLIC_CORE_WAV_JOURNAL
+  dsd-neo/core/wav_journal.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_wav_journal_cxx
+  HEADERS_PUBLIC_CORE_WAV_JOURNAL_CXX
+  dsd-neo/core/wav_journal.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_frontend_types
   HEADERS_PUBLIC_CORE_FRONTEND_TYPES
@@ -4159,6 +4184,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
@@ -4199,6 +4225,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -4865,11 +4892,58 @@ add_test(
     COMMAND dsd-neo_test_app_control_snapshot_event_history
 )
 
+# Issue #708: the History tap, the second reader of the published history, against a racing publisher and the single
+# consumer (run it under the tsan preset too).
+add_executable(
+    dsd-neo_test_app_control_history_tap
+    ui/test_app_control_history_tap.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/history_tap.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
+        dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_HISTORY_TAP
+    COMMAND dsd-neo_test_app_control_history_tap
+)
+
 add_executable(
     dsd-neo_test_app_control_opts_snapshot
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
@@ -4884,6 +4958,7 @@ target_link_libraries(
         dsd-neo_test_call_state_support
         dsd-neo_test_audio_activity
         dsd-neo_platform
+        dsd-neo_test_support
 )
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT
@@ -5066,7 +5141,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_runtime_rdio_export
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/runtime
 )
 target_link_libraries(
     dsd-neo_test_runtime_rdio_export
@@ -7326,6 +7401,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    # A target restore unlinks the call recordings waiting for their rows (issue #708).
+    ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
@@ -7703,6 +7780,88 @@ else()
     )
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
+
+# Issue #708: the WAV recording commands through the real queue, the per-call writers' failure policy behind a
+# libsndfile seam, and the recording view.
+add_executable(
+    dsd-neo_test_app_control_recording
+    ui/test_app_control_recording.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_recording
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/core/file
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_app_control_recording
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_app_control_recording
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+# The Signal search refusal case wraps the engine's answer, so it exists only where GNU ld --wrap links, like the
+# other wrap tests.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_app_control_recording
+        PRIVATE DSD_TEST_WRAP_SIGNAL_SEARCH=1
+    )
+    target_link_options(
+        dsd-neo_test_app_control_recording
+        PRIVATE "LINKER:--wrap=dsd_engine_signal_search_active"
+    )
+endif()
+add_test(NAME APP_CONTROL_RECORDING COMMAND dsd-neo_test_app_control_recording)
+
+# Issue #708: the recording journal through the real queue, event layer, writers and trunk scan coordinator (compiled
+# here with its test clock, as the scan gate tests do).
+add_executable(
+    dsd-neo_test_core_wav_journal
+    core/test_core_wav_journal.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_core_wav_journal
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/core/file
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+)
+target_compile_definitions(
+    dsd-neo_test_core_wav_journal
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_wav_journal
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_wav_journal
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(NAME CORE_WAV_JOURNAL COMMAND dsd-neo_test_core_wav_journal)
 
 # Real watchdog flush versus policy replacement; private queue contention probe.
 add_executable(
@@ -12753,7 +12912,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=skipDibit"
             "-Wl,--wrap=watchdog_event_current"
             "-Wl,--wrap=watchdog_event_history"
-            "-Wl,--wrap=close_and_rename_wav_file"
+            "-Wl,--wrap=close_and_publish_call_wav"
             "-Wl,--wrap=close_and_rename_wav_file_ex"
             "-Wl,--wrap=open_wav_file"
             "-Wl,--wrap=dsd_audio_write"
@@ -18763,17 +18922,25 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_android_host.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        # #708: a queued share's hold in the real recording store.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_journal.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_store.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_android_host
         PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_android_host PRIVATE Qt6::Gui)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_android_host
+        PRIVATE Qt6::Gui ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_android_host
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_android_host PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_ANDROID_HOST COMMAND dsd-neo_test_ui_qt_android_host)
@@ -18787,6 +18954,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
         # WP-D1: exercise the real bridge through the retained export result.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_status.cpp
         # A saved profile applied live through the real bridge and queue.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
@@ -18796,6 +18964,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -18829,6 +18998,88 @@ if(DSD_ENABLE_QT_UI)
         UI_QT_CONTROLLER
         PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
+
+    # Issue #708, B1: History's background capture against the real publisher, History tap and GUI consumer: commits
+    # while suspended, the spill across a process death, a stop and a clear while away, and the spill's write volume.
+    add_executable(
+        dsd-neo_test_ui_qt_call_history_tap
+        ui/test_ui_qt_call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_call_history_tap
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_call_history_tap
+        PRIVATE Qt6::Core Qt6::Gui ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_call_history_tap
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_call_history_tap
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_CALL_HISTORY_TAP
+        COMMAND dsd-neo_test_ui_qt_call_history_tap
+    )
+    set_tests_properties(
+        UI_QT_CALL_HISTORY_TAP
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+endif()
+
+if(DSD_ENABLE_QT_UI)
+    # Issue #708: the call recording store against real files and journals (hand-written and from the decoder's own
+    # writer), with History's real model: the tail, compaction, roots that are away, folders by uid, deletion safety,
+    # the storage limit, unfinished temp files, free space and export selections.
+    add_executable(
+        dsd-neo_test_ui_qt_recording_store
+        ui/test_ui_qt_recording_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_journal.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_recording_store
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/core/file
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_recording_store
+        PRIVATE
+            Qt6::Core
+            Qt6::Gui
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_recording_store
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_recording_store
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_RECORDING_STORE
+        COMMAND dsd-neo_test_ui_qt_recording_store
+    )
+    set_tests_properties(
+        UI_QT_RECORDING_STORE
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()
 
@@ -18933,6 +19184,47 @@ if(DSD_ENABLE_QT_UI)
                 dsd-neo_test_support
         )
     endif()
+endif()
+
+# Issue #708: each start path's call recording argv through the real CLI parser, and Settings' live recording
+# switches through the real command bridge and queue.
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_session_args_parse
+        ui/test_ui_qt_session_args_parse.cpp
+    )
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        # GNU ld --wrap stands in for a session that closes between the bridge's two submissions.
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_session_args_parse
+            PRIVATE DSD_NEO_TEST_SUBMIT_WRAP=1
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_qt_session_args_parse
+            PRIVATE
+                dsd-neo_ui_qt
+                "-Wl,--start-group"
+                ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+                "-Wl,--end-group"
+                "-Wl,--wrap=dsd_app_command_submit"
+                "-Wl,--wrap=dsd_app_command_set_i32"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_ui_qt_session_args_parse
+            PRIVATE
+                dsd-neo_ui_qt
+                ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+                ${LIBS}
+                dsd-neo_test_support
+        )
+    endif()
+    add_test(
+        NAME UI_QT_SESSION_ARGS_PARSE
+        COMMAND dsd-neo_test_ui_qt_session_args_parse
+    )
 endif()
 
 # The FFT wrapper is usable without radio hardware or an enabled SDR backend.
@@ -19084,6 +19376,27 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             watchdog
     )
+    add_test(
+        NAME ANDROID_RECORDING_PLAYER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            recording_player
+    )
+    add_test(
+        NAME ANDROID_RECORDING_EXPORT_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            recording_export
+    )
+    add_test(
+        NAME ANDROID_RECORDING_SHARE_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            recording_share
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -19094,6 +19407,9 @@ if(Python3_Interpreter_FOUND)
         ANDROID_ENGINE_STOP_JVM
         ANDROID_EXIT_FACTS_JVM
         ANDROID_WATCHDOG_JVM
+        ANDROID_RECORDING_PLAYER_JVM
+        ANDROID_RECORDING_EXPORT_JVM
+        ANDROID_RECORDING_SHARE_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

@@ -17,6 +17,7 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <functional>
 #include <qqml.h>
@@ -37,6 +38,8 @@
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "radio_reference_model.h"
+#include "recording_status.h"
+#include "recording_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -158,6 +161,54 @@ wire_screen_policy(DecoderHost* host, const AppPrefs* prefs) {
     QObject::connect(prefs, &AppPrefs::screenPolicyChanged, host, applyScreenPolicy);
 }
 
+// Issue #708: History keeps reading the published rings while Qt is paused in the background.
+static CallHistoryModel*
+make_history(QQmlApplicationEngine& engine) {
+    auto* history = new CallHistoryModel(&engine);
+    history->setHistoryTapSource(&dsd_app_history_tap_copy);
+    return history;
+}
+
+// Issue #708: the call recording store indexes the recordings, History asks it which rows have one, and the session
+// starters ask it for each session's folder. It follows the host's session reports, holding every journal until the
+// host knows its state (a decoder that kept running while the UI was recreated is only learnt at the first poll), and
+// serves the host's playback, export and share. Created after History so it outlives it: History holds it as its
+// recording provider.
+static RecordingStore*
+wire_recordings(QQmlApplicationEngine& engine, DecoderHost* host, const AppPrefs* prefs, CallHistoryModel* history,
+                SessionArgsBuilder* sessionArgs, ScanListStarter* scanListStarter) {
+    auto* recordings = new RecordingStore(&engine);
+    recordings->setRoots(host->recordingRoots());
+    recording_store_follow_limit(recordings, prefs);
+    history->setRecordingProvider(recordings);
+    QObject::connect(recordings, &RecordingStore::recordingFragmentsChanged, history,
+                     &CallHistoryModel::recordingFragmentsChanged);
+    sessionArgs->setRecordingSessions(recordings);
+    scanListStarter->setRecordingSessions(recordings);
+    recording_store_follow_host(recordings, host);
+    recording_store_serve_host(recordings, host);
+    recordings->start();
+    return recordings;
+}
+
+// Issue #708: what call recording is doing, and why a recording switch was refused.
+static RecordingStatus*
+wire_recording_status(QQmlApplicationEngine& engine, DecoderHost* host, UiController* controller,
+                      CommandBridge* commands) {
+    auto* recordingStatus = new RecordingStatus(&engine);
+    controller->setRecordingStatus(recordingStatus);
+    commands->setRecordingStatus(recordingStatus);
+    recording_status_follow_host(recordingStatus, host);
+    return recordingStatus;
+}
+
+// Issue #708: the call recording store and status, to QML.
+static void
+publish_recording_context(QQmlContext* context, RecordingStore* recordings, RecordingStatus* recordingStatus) {
+    context->setContextProperty(QStringLiteral("recordings"), recordings);
+    context->setContextProperty(QStringLiteral("recordingStatus"), recordingStatus);
+}
+
 // The C++ types QML instantiates.
 static void
 register_qml_types() {
@@ -217,7 +268,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     wire_target_files(scanListStarter, importedFiles);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
-    auto* history = new CallHistoryModel(&engine);
+    auto* history = make_history(engine);
+    auto* recordings = wire_recordings(engine, host, prefs, history, sessionArgs, scanListStarter);
     auto* talkgroups = new TalkgroupListModel(history, &engine);
     auto* talkgroupView = new TalkgroupFilterModel(&engine);
     talkgroupView->setSourceModel(talkgroups);
@@ -234,6 +286,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
     controller->setCommandBridge(commands);
     controller->setP25Network(network); // WP-F2
+    auto* recordingStatus = wire_recording_status(engine, host, controller, commands);
     wire_attachment(host, controller, prefs, systems, scanLists);
 
     prune_missing_csv_paths(importedFiles, systems, scanLists);
@@ -268,6 +321,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
+    publish_recording_context(context, recordings, recordingStatus);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);

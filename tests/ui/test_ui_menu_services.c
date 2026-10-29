@@ -29,6 +29,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
+#include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -176,14 +177,40 @@ parse_audio_input_string(dsd_opts* opts, char* input) {
     (void)input;
 }
 
+/* A per-call slot file that opens: svc_enable_per_call_wav() keeps what it opens only when both slots open. */
+static int g_fake_wav_handle;
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
-    (void)dir;
-    (void)temp_filename;
-    (void)temp_filename_size;
     (void)sample_rate;
     (void)ext;
+    DSD_SNPRINTF(temp_filename, temp_filename_size, "%s/TEMP_stub", dir);
+    return (SNDFILE*)&g_fake_wav_handle;
+}
+
+SNDFILE*
+close_wav_file(SNDFILE* wav_file) {
+    (void)wav_file;
     return NULL;
+}
+
+SNDFILE*
+close_and_publish_call_wav(SNDFILE* wav_file, const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                           const char* wav_out_filename, const char* dir, time_t opened) {
+    (void)wav_file;
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)wav_out_filename;
+    (void)dir;
+    (void)opened;
+    return NULL;
+}
+
+void
+dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void
@@ -200,16 +227,17 @@ closeSymbolOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-void
-openWavOutFileLR(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+SNDFILE*
+open_static_wav_file(const char* path) {
+    (void)path;
+    return NULL;
 }
 
-void
-openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
+SNDFILE*
+open_raw_wav_file(const dsd_opts* opts, const char* path) {
     (void)opts;
-    (void)state;
+    (void)path;
+    return NULL;
 }
 
 /*
@@ -1995,11 +2023,12 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_str("symbol out path still stored", opts.symbol_out_file, "capture.sym");
 
     rc |= expect_int("static wav invalid path", svc_open_static_wav(&opts, &state, ""), -1);
+    /* A file that does not open changes nothing (issue #708): the path and the mode stay as they were. */
     rc |= expect_int("static wav failed open", svc_open_static_wav(&opts, &state, "static.wav"), -1);
-    rc |= expect_str("static wav path stored before open", opts.wav_out_file, "static.wav");
-    rc |= expect_int("static wav mode marked", opts.static_wav_file, 1);
+    rc |= expect_str("static wav failed open keeps the path", opts.wav_out_file, "");
+    rc |= expect_int("static wav failed open keeps the mode", opts.static_wav_file, 0);
     rc |= expect_int("raw wav failed open", svc_open_raw_wav(&opts, &state, "raw.wav"), -1);
-    rc |= expect_str("raw wav path stored before open", opts.wav_out_file_raw, "raw.wav");
+    rc |= expect_str("raw wav failed open keeps the path", opts.wav_out_file_raw, "");
 
     rc |= expect_int("dsp output empty name", svc_set_dsp_output_file(&opts, ""), -1);
     rc |= expect_int("dsp output valid name", svc_set_dsp_output_file(&opts, "symbols.dsp"), 0);

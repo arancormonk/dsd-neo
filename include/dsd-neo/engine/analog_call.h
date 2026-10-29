@@ -12,6 +12,9 @@ extern "C" {
 void dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const float* samples, size_t count, int sample_rate,
                                   int accepted);
 void dsd_engine_analog_call_end(dsd_opts* opts, dsd_state* state);
+/** Close and publish the conventional NFM call's recording now, as its end would (issue #708), keeping the call and its
+ * lifecycle epoch: per-call recording was switched off mid-call. */
+void dsd_engine_analog_call_stop_recording(const dsd_opts* opts, dsd_state* state);
 void dsd_engine_analog_call_tick(dsd_opts* opts, dsd_state* state);
 int dsd_engine_analog_call_active(const dsd_state* state);
 int dsd_engine_analog_call_due(const dsd_state* state);

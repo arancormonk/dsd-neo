@@ -40,7 +40,6 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -188,6 +187,13 @@ typedef struct {
     const char* api_token;
     const char* api_token_file;
 } cli_net_args;
+
+/* The call recording options (--wav-journal, --record-unknown-only; issue #708) the long-option pre-scan collects and
+   applies after it. */
+typedef struct {
+    const char* wav_journal;
+    int record_unknown_only;
+} cli_recording_args;
 
 /* First octet of an address cli_is_numeric_ipv4_address() accepted is 127. */
 static int
@@ -712,6 +718,17 @@ cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
 /* The bit of dsd_parse_args()' analog_cli_seen set once a tone switch was given; the bits below it are the analog width
    options, 1 << dsd_analog_demod. */
 enum { CLI_TONE_FILTER_SEEN = 1 << 8 };
+
+/**
+ * The WAV recording mode the command line chose. -P and -w refuse each other on one command line but each replaces a
+ * mode a config file chose, so the parser keeps which one the command line gave. -P opens nothing while it is parsed:
+ * the engine opens the per-call files at start, in the folder the whole command line names (issue #708).
+ */
+enum cli_wav_mode {
+    CLI_WAV_MODE_NONE = 0,     ///< neither -P nor -w: a config's mode, if any, stands
+    CLI_WAV_MODE_STATIC = 1,   ///< -w <file>
+    CLI_WAV_MODE_PER_CALL = 2, ///< -P
+};
 
 /* A tone-policy switch (issue #527): --tone-allow and --tone-block take a '/'-separated tone list, --no-tone-filter
  * turns the policy off and keeps the list. One of the three per command line, as on a scan row, where the three share
@@ -1713,6 +1730,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             frame_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--wav-journal") == 0 && i + 1 < argc) {                                                   \
+            recording_cli.wav_journal = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--p25-sm-log") == 0 && i + 1 < argc) {                                                    \
             p25_sm_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
             continue;                                                                                                  \
@@ -1743,6 +1764,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-delete-after-upload") == 0) {                                                  \
             rdio_api_delete_after_upload_cli = 1;                                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
+            recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
@@ -2259,6 +2284,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         dsd_frame_log_close(opts);                                                                                     \
         LOG_INFO("NOTICE: Frame log file: %s\n", opts->frame_log_file);                                                \
     }                                                                                                                  \
+    if (recording_cli.wav_journal) {                                                                                   \
+        DSD_SNPRINTF(opts->wav_journal_file, sizeof opts->wav_journal_file, "%s", recording_cli.wav_journal);          \
+        LOG_INFO("NOTICE: Call recording journal: %s\n", opts->wav_journal_file);                                      \
+    }                                                                                                                  \
     if (p25_sm_log_cli) {                                                                                              \
         DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", p25_sm_log_cli);                       \
         opts->p25_sm_log_file[sizeof opts->p25_sm_log_file - 1] = '\0';                                                \
@@ -2337,6 +2366,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     if (rdio_api_delete_after_upload_cli) {                                                                            \
         opts->rdio_api_delete_after_upload = 1;                                                                        \
         LOG_INFO("NOTICE: Rdio API delete-after-upload enabled\n");                                                    \
+    }                                                                                                                  \
+    if (recording_cli.record_unknown_only) {                                                                           \
+        opts->record_unknown_only = 1;                                                                                 \
+        LOG_INFO("NOTICE: Recording only talkgroups not in the talkgroup list\n");                                     \
     }                                                                                                                  \
                                                                                                                        \
     if (dmr_baofeng_pc5_cli) {                                                                                         \
@@ -2533,11 +2566,11 @@ cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analo
     return parse_rc;
 }
 
+// CLI long options: the pre-scan collects them into the *_cli locals dsd_parse_args() starts with.
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
     dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    // CLI long options (pre-scan) ------------------------------------------------
     const char* calc_csv_cli = NULL;
     const char* calc_step_cli = NULL;
     const char* calc_ccf_cli = NULL;
@@ -2555,6 +2588,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_upload_timeout_cli = NULL;
     const char* rdio_upload_retries_cli = NULL;
     int rdio_api_delete_after_upload_cli = 0;
+    cli_recording_args recording_cli = {NULL, 0};
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
@@ -2875,31 +2909,21 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             LOG_INFO("NOTICE: Frontend: terminal\n");                                                                  \
             break;                                                                                                     \
         case 'P':                                                                                                      \
+            /* Per-call WAV mode only: the engine opens the slot files at start, in the folder the whole command       \
+               line names (issue #708). Opened here, they went into the folder set when -P was read. */                \
+            if (cli_wav_mode == CLI_WAV_MODE_STATIC) {                                                       \
+                LOG_ERROR("-P cannot be used with -w (static WAV output)\n");                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             if (opts->static_wav_file == 1) {                                                                          \
-                /* Allow CLI to override config-derived static WAV settings (file not opened yet). */                  \
-                if (opts->wav_out_f != NULL) {                                                                         \
-                    LOG_ERROR("-P cannot be used with -w (static WAV output)\n");                                      \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
+                /* Override config-derived static WAV settings (file not opened yet). */                               \
                 opts->static_wav_file = 0;                                                                             \
                 opts->wav_out_file[0] = '\0';                                                                          \
             }                                                                                                          \
-            DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);                      \
-            wav_file_directory[1023] = '\0';                                                                           \
-            if (dsd_stat_path(wav_file_directory, &st) == -1) {                                                        \
-                LOG_INFO("NOTICE: -P %s WAV file directory does not exist\n", wav_file_directory);                     \
-                LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);             \
-                dsd_mkdir(wav_file_directory, 0700);                                                                   \
-            }                                                                                                          \
             LOG_INFO("NOTICE: Per Call Wav File Enabled.\n");                                                          \
-            opts->wav_out_f =                                                                                          \
-                open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);              \
-            opts->wav_out_fR =                                                                                         \
-                open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);            \
-            opts->wav_out_open_time = dsd_decode_time();                                                               \
-            opts->wav_out_open_timeR = opts->wav_out_open_time;                                                        \
             opts->dmr_stereo_wav = 1;                                                                                  \
+            cli_wav_mode = CLI_WAV_MODE_PER_CALL;                                                            \
             break;                                                                                                     \
         case '7':                                                                                                      \
             /* Set custom directory for per-call WAV saving; one that does not fit is refused, never cut short. */     \
@@ -3037,19 +3061,17 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             break;                                                                                                     \
         }                                                                                                              \
         case 'w':                                                                                                      \
-            if (opts->dmr_stereo_wav == 1) {                                                                           \
-                /* Allow CLI to override config-derived per-call WAV settings (files not opened yet). */               \
-                if (opts->wav_out_f != NULL || opts->wav_out_fR != NULL) {                                             \
-                    LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                    \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                opts->dmr_stereo_wav = 0;                                                                              \
+            if (cli_wav_mode == CLI_WAV_MODE_PER_CALL) {                                                     \
+                LOG_ERROR("-w cannot be used with -P (per-call WAV saving)\n");                                        \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            /* Overrides config-derived per-call WAV settings (files not opened yet). */                               \
             DSD_STRNCPY(opts->wav_out_file, optarg, 1023);                                                             \
             opts->wav_out_file[1023] = '\0';                                                                           \
             opts->dmr_stereo_wav = 0;                                                                                  \
             opts->static_wav_file = 1;                                                                                 \
+            cli_wav_mode = CLI_WAV_MODE_STATIC;                                                              \
             openWavOutFileLR(opts, state);                                                                             \
             LOG_INFO("NOTICE: Static WAV output: %s\n", opts->wav_out_file);                                           \
             break;                                                                                                     \
@@ -3668,10 +3690,8 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     int cli_dmr_mono_override_seen = 0;
     int cli_source_monitor_seen = 0;
-    while ((c = getopt(argc, argv,
-                       ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
-                       "89:Ek:I:J:O^Nj"))
-           != -1) {
+    enum cli_wav_mode cli_wav_mode = CLI_WAV_MODE_NONE;
+    while ((c = getopt(argc, argv, dsd_cli_short_options())) != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }
     if (cli_dmr_mono_override_seen) {

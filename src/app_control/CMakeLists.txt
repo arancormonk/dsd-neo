@@ -32,6 +32,7 @@ target_sources(
         rx_tone_view.c
         receive_note.c
         receive_view.c
+        recording_view.c
         scan_row_edit.c
         scan_row_view.c
         scan_timing_view.c
@@ -41,6 +42,7 @@ target_sources(
         tetra_view.c
         telemetry_hooks_install.c
         telemetry_observers.c
+        history_tap.c
         ui_history.c
         ui_opts_snapshot.c
         ui_snapshot.c

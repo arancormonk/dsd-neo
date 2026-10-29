@@ -1168,7 +1168,8 @@ lbl_stop_symbol_playback(const void* vctx, char* b, size_t n) {
 const char*
 lbl_per_call_wav(const void* vctx, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)vctx;
-    const int on = (c->opts->dmr_stereo_wav == 1 && c->opts->wav_out_f != NULL);
+    /* The mode, as the toggle reads it (issue #708): on while a slot whose file failed to open waits to open again. */
+    const int on = (c->opts->dmr_stereo_wav == 1);
     DSD_SNPRINTF(b, n, "Per-call WAV [%s]", onoff(on));
     return b;
 }

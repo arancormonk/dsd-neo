@@ -14,6 +14,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -22,7 +23,9 @@
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
+#include "decoder_host.h"
 #include "json_store.h"
+#include "recording_sessions.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -260,6 +263,74 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     check(csvStarter.validate(csvList).value("warnings").toStringList().isEmpty());
 }
 
+/* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, names
+ * it in the argv, and frees it when the start did not happen; a draft asks for none. */
+static void
+checkRecordingSessions(ScanListStarter& starter, const QVariantMap& list) {
+    struct Sessions : RecordingSessions {
+        QStringList calls;
+
+        QString
+        beginSession(const QString& kind, const QString& uid, const QString& name) override {
+            calls.append(QStringLiteral("begin %1 %2 %3").arg(kind, uid, name));
+            return QStringLiteral("/recordings/folder");
+        }
+
+        void
+        endSession() override {
+            calls.append(QStringLiteral("end"));
+        }
+    } sessions;
+
+    struct Host : DecoderHost {
+        QStringList* calls = nullptr;
+        QStringList received;
+        bool accept = true;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& argv) override {
+            received = argv;
+            calls->append(QStringLiteral("start"));
+            return accept;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    host.calls = &sessions.calls;
+    starter.setRecordingSessions(&sessions);
+    const QString begin =
+        QStringLiteral("begin scan %1 %2").arg(list.value("uid").toString(), list.value("name").toString());
+    check(starter.start(list, &host).value("started").toBool());
+    check(sessions.calls == QStringList({begin, QStringLiteral("start")}));
+    const qsizetype folderAt = host.received.indexOf(QStringLiteral("-7"));
+    check(folderAt >= 0 && host.received.value(folderAt + 1) == QStringLiteral("/recordings/folder")
+          && host.received.count(QStringLiteral("--wav-journal")) == 1);
+    sessions.calls.clear();
+    host.accept = false;
+    check(!starter.start(list, &host).value("started").toBool());
+    check(sessions.calls == QStringList({begin, QStringLiteral("start"), QStringLiteral("end")}));
+    // A draft cannot start: no folder is made for it.
+    sessions.calls.clear();
+    host.accept = true;
+    QVariantMap draft = list;
+    draft.insert(QStringLiteral("isDraft"), true);
+    const auto refused = starter.start(draft, &host);
+    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && sessions.calls.isEmpty());
+    starter.setRecordingSessions(nullptr);
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -301,6 +372,7 @@ main(int argc, char** argv) {
 #endif
     auto result = starter.build(list);
     check(result.value("ok").toBool() && result.value("targetCount").toInt() == 1);
+    checkRecordingSessions(starter, list);
     const QString path = json_store_path("scan_lists/" + uid + ".csv");
     int count = 0;
     char error[256] = {};

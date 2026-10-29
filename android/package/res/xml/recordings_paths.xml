@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- #708: the two call recording roots (RecordingShare.roots()), the cache folder of share copies
+     (RecordingShare.SHARE_FOLDER), and nothing else of the app's storage. -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="external" path="Call recordings/"/>
+    <files-path name="internal" path="Call recordings/"/>
+    <cache-path name="shares" path="recording-shares/"/>
+</paths>

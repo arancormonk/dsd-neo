@@ -50,9 +50,10 @@ internal object UsbReceiverKind {
     /**
      * The engine's option tables (#782 gate r1 G4), so that another option's operand is never read as an input. Kept
      * equal to the native ones, which the usb_receiver suite of tests/android/run_jvm_tests.py checks against the
-     * sources: [SHORT_OPTIONS] is the getopt string of dsd_parse_short_opts() in src/runtime/cli/args.c, and the long
-     * tables are those dsd_cli_compact_args() in src/runtime/cli/compact.c uses to take long options and their values
-     * out before getopt runs (named after them below).
+     * sources: [SHORT_OPTIONS] is the getopt string dsd_parse_short_opts() in src/runtime/cli/args.c reads through
+     * dsd_cli_short_options() (`k_short_options` in src/runtime/cli/compact.c), and the long tables are those
+     * dsd_cli_compact_args() in compact.c uses to take long options and their values out before getopt runs (named
+     * after them below).
      */
     private const val SHORT_OPTIONS =
         ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:89:Ek:I:J:O^Nj"
@@ -65,7 +66,7 @@ internal object UsbReceiverKind {
         "--strict-config", "--list-profiles", "--no-force-key", "--no-decryption-keys", "--dmr-tg-key-clear",
         "--strict-crc", "--no-scan-voice-only", "--dmr-debug-burst", "--dmr-debug-unsynced", "--show-keys",
         "--scan-voice-only", "--no-tone-filter", "--no-slot-filter", "--no-dcc-filter", "--no-ran-filter",
-        "--no-nac-filter", "--no-service-names",
+        "--no-nac-filter", "--no-service-names", "--record-unknown-only",
     )
 
     /** Long options that take the next argument as their value, whatever it is. `k_skip_exact_next_any`. */
@@ -73,7 +74,7 @@ internal object UsbReceiverKind {
         "--airspy-serial", "--airspy-sample-rate", "--airspy-gain-mode", "--airspy-sensitivity-gain",
         "--airspy-linearity-gain", "--airspy-lna-gain", "--airspy-mixer-gain", "--airspy-vga-gain", "--airspy-lna-agc",
         "--airspy-mixer-agc", "--airspy-bias-tee", "--input-volume", "--input-level-warn-db", "--frame-log",
-        "--p25-sm-log", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
+        "--p25-sm-log", "--wav-journal", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
         "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--dmr-baofeng-pc5", "--dmr-csi-ee72",
         "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--p25-bandplan", "--src-csv", "--p25-bandplan-export",
         "--dmr-force-algid", "--m17-signature-public-key", "--m17-scrambler-key", "--m17-aes-key", "--key-profile-ref",

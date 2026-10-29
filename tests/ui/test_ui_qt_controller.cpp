@@ -27,6 +27,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/access_code.h>
@@ -244,6 +245,57 @@ test_history_receives_effective_scan_options() {
         }
     }
     freeState(&state);
+}
+
+// Issue #708, B1: the first tick after the app returns takes History over from its background tap, folding in what
+// the tap found, even on a tick with no redraw (a session that ended while the app was away publishes none).
+static void
+test_history_handoff_after_resume_without_redraw() {
+    auto opts = std::make_unique<dsd_opts>();
+    auto* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+    initOpts(opts.get());
+    initState(state);
+    for (int slot = 0; slot < 2; ++slot) {
+        // Past every revision the earlier tests published, so the publisher copies this ring.
+        state->event_history_s[slot].revision = 50000000U;
+    }
+    dsd_app_telemetry_publish_opts_snapshot(opts.get());
+    dsd_app_telemetry_publish_snapshot(state);
+    {
+        dsd_qt::CallHistoryModel history;
+        history.setHistoryTapSource(&dsd_app_history_tap_copy);
+        history.setBackgroundCaptureTimingForTest(2, 5);
+        dsd_qt::UiController controller(nullptr, nullptr, &history, nullptr);
+        controller.setPollIntervalMs(50);
+        controller.flushHistory();
+        const int before = history.count();
+        Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+        auto& ring = state->event_history_s[0];
+        auto& item = ring.Event_History_Items[1];
+        item.category = DSD_EVENT_CATEGORY_VOICE;
+        item.target_id = 9100;
+        item.source_id = 8100;
+        item.event_start_time = 1754900000;
+        item.event_time = item.event_start_time + 4;
+        ++ring.push_seq;
+        ++ring.commit_rev;
+        ++ring.revision;
+        dsd_app_telemetry_publish_snapshot(state);
+        history.waitForBackgroundPollForTest();
+        (void)dsd_app_frontend_redraw_consume();
+        Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+        check(history.backgroundCaptureHandoffOwed() && history.count() == before);
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+        check(!history.backgroundCaptureHandoffOwed() && !history.backgroundCaptureRunningForTest());
+        check(history.count() == before + 1
+              && history.data(history.index(0), dsd_qt::CallHistoryModel::TgRole).toULongLong() == 9100U);
+    }
+    freeState(state);
+    free(state);
 }
 
 // Reproduce the options-publication/redraw gap during Android input startup.
@@ -846,6 +898,7 @@ main(int argc, char** argv) {
     QCoreApplication::setApplicationName("dsd-neo-controller");
     dsd_test_qt_isolate_paths();
     test_history_receives_effective_scan_options();
+    test_history_handoff_after_resume_without_redraw();
     test_session_end_saves_after_final_ingest();
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
@@ -1032,8 +1085,38 @@ main(int argc, char** argv) {
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_at(&state, 0, &entry));
     check(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Renamed");
+    // Issue #708: Record goes with Listening in one edit, applied after it; it takes a bool only.
+    refreshVersion();
+    check(!bridge.setTalkgroupPolicy(42, 42, version, generation, {{"record", 0}}));
+    check(bridge.setTalkgroupPolicy(42, 42, version, generation, {{"listening", true}, {"record", false}}));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(QString::fromUtf8(entry.mode) == "A" && entry.audio == 1 && entry.record == 0);
+    refreshVersion();
+    check(bridge.setTalkgroupPolicy(42, 42, version, generation, {{"record", true}}));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(entry.record == 1 && entry.priority == 50 && QString::fromUtf8(entry.name) == "Renamed");
     refreshVersion();
     check(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 2);
+    // Issue #708: a row added listening takes the editor's Record with it; a default add records.
+    refreshVersion();
+    check(bridge.addTalkgroup(56, 56, version, generation, "Quiet", true, 0, false, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 3 && dsd_tg_policy_entry_at(&state, 2, &entry));
+    check(entry.id_start == 56 && QString::fromUtf8(entry.mode) == "A" && entry.record == 0);
+    refreshVersion();
+    check(bridge.removeTalkgroup(56, 56, version, generation));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    refreshVersion();
+    check(bridge.addTalkgroup(57, 57, version, generation, "Kept", true, 0, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 3 && dsd_tg_policy_entry_at(&state, 2, &entry));
+    check(entry.id_start == 57 && entry.record == 1);
+    refreshVersion();
+    check(bridge.removeTalkgroup(57, 57, version, generation));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_count(&state) == 2);
     refreshVersion();

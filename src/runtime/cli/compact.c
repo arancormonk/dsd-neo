@@ -71,7 +71,7 @@ static const char* const k_skip_exact_no_arg[] = {
     "--scan-voice-only",    "--no-tone-filter",
     "--no-slot-filter",     "--no-dcc-filter",
     "--no-ran-filter",      "--no-nac-filter",
-    "--no-service-names",
+    "--no-service-names",   "--record-unknown-only",
 };
 
 static const char* const k_skip_exact_next_any[] = {
@@ -90,6 +90,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--input-level-warn-db",
     "--frame-log",
     "--p25-sm-log",
+    "--wav-journal",
     "--rdio-mode",
     "--rdio-system-id",
     "--rdio-api-url",
@@ -247,6 +248,48 @@ dsd_cli_option_takes_free_value(const char* arg) {
     return arg != NULL
            && compact_matches_exact(arg, k_free_value_options,
                                     sizeof(k_free_value_options) / sizeof(k_free_value_options[0]));
+}
+
+dsd_cli_long_arity
+dsd_cli_long_option_arity(const char* arg) {
+    if (arg == NULL) {
+        return DSD_CLI_LONG_UNKNOWN;
+    }
+    if (compact_matches_prefix(arg, k_skip_prefix, sizeof(k_skip_prefix) / sizeof(k_skip_prefix[0]))
+        || compact_matches_exact(arg, k_skip_exact_no_arg,
+                                 sizeof(k_skip_exact_no_arg) / sizeof(k_skip_exact_no_arg[0]))) {
+        return DSD_CLI_LONG_ALONE;
+    }
+    if (compact_matches_exact(arg, k_skip_exact_next_nonopt,
+                              sizeof(k_skip_exact_next_nonopt) / sizeof(k_skip_exact_next_nonopt[0]))) {
+        return DSD_CLI_LONG_NEXT_NON_OPTION;
+    }
+    if (dsd_cli_option_takes_free_value(arg)
+        || compact_matches_exact(arg, k_skip_exact_next_nonnull,
+                                 sizeof(k_skip_exact_next_nonnull) / sizeof(k_skip_exact_next_nonnull[0]))
+        || compact_matches_exact(arg, k_skip_exact_next_any,
+                                 sizeof(k_skip_exact_next_any) / sizeof(k_skip_exact_next_any[0]))) {
+        return DSD_CLI_LONG_NEXT;
+    }
+    return DSD_CLI_LONG_UNKNOWN;
+}
+
+/* getopt's option string for the parser (args.c): a letter followed by ':' takes a value. */
+static const char k_short_options[] =
+    ":~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:89:Ek:I:J:O^Nj";
+
+const char*
+dsd_cli_short_options(void) {
+    return k_short_options;
+}
+
+int
+dsd_cli_short_option_takes_value(char letter) {
+    if (letter == '\0' || letter == ':') {
+        return 0;
+    }
+    const char* at = strchr(k_short_options, letter);
+    return at != NULL && at[1] == ':';
 }
 
 int

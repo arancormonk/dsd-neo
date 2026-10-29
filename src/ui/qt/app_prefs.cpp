@@ -76,6 +76,11 @@ enum Key {
     // Whether the Monitor's "Signal & site" readings were left open (#718): how
     // this device's screen was arranged, so it is not carried by a backup.
     kMonitorDetailsExpanded,
+    // Call recording (issue #708): what to record and how much storage it may take. Portable: they are choices,
+    // never a path, and never the recordings themselves.
+    kRecordCalls,
+    kRecordUnknownOnly,
+    kRecordingLimitMb,
     kKeyCount
 };
 
@@ -115,6 +120,9 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"location/lastFixAt", false},
     {"location/lastAccuracyM", false},
     {"monitor/detailsExpanded", false},
+    {"recording/recordCalls", true},
+    {"recording/recordUnknownOnly", true},
+    {"recording/limitMb", true},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -201,6 +209,22 @@ sane_screen_delay(const QVariant& raw) {
                          && std::any_of(std::begin(kScreenDelayChoices), std::end(kScreenDelayChoices),
                                         [seconds](int choice) { return choice == seconds; });
     return offered ? seconds : kDefaultScreenDelaySec;
+}
+
+// The storage limits the settings offer, in decimal MB (0: no limit), and the 1 GB default (D2). The recording store
+// counts in the same units (RecordingStore::kBytesPerMb).
+constexpr int kRecordingLimitChoices[] = {250, 500, 1000, 2000, 5000, 0};
+constexpr int kDefaultRecordingLimitMb = 1000;
+
+/** @brief @p raw if it holds one of the offered limits, else the default; text that is not a number included. */
+int
+sane_recording_limit(const QVariant& raw) {
+    bool ok = false;
+    const int mb = raw.toInt(&ok);
+    const bool offered = ok
+                         && std::any_of(std::begin(kRecordingLimitChoices), std::end(kRecordingLimitChoices),
+                                        [mb](int choice) { return choice == mb; });
+    return offered ? mb : kDefaultRecordingLimitMb;
 }
 
 /**
@@ -826,6 +850,58 @@ AppPrefs::setLastFixAt(qint64 value) {
     m_settings.setValue(key_name(kLastFixAt), value);
     armLocationExpiry();
     Q_EMIT locationChanged();
+}
+
+bool
+AppPrefs::recordCalls() const {
+    return m_settings.value(key_name(kRecordCalls), false).toBool();
+}
+
+void
+AppPrefs::setRecordCalls(bool on) {
+    if (on == recordCalls()) {
+        return;
+    }
+    m_settings.setValue(key_name(kRecordCalls), on);
+    Q_EMIT recordCallsChanged();
+}
+
+bool
+AppPrefs::recordUnknownOnly() const {
+    return m_settings.value(key_name(kRecordUnknownOnly), false).toBool();
+}
+
+void
+AppPrefs::setRecordUnknownOnly(bool on) {
+    if (on == recordUnknownOnly()) {
+        return;
+    }
+    m_settings.setValue(key_name(kRecordUnknownOnly), on);
+    Q_EMIT recordUnknownOnlyChanged();
+}
+
+int
+AppPrefs::recordingLimitMb() const {
+    return sane_recording_limit(m_settings.value(key_name(kRecordingLimitMb), kDefaultRecordingLimitMb));
+}
+
+void
+AppPrefs::setRecordingLimitMb(int mb) {
+    const int next = sane_recording_limit(mb);
+    if (!stored_int_differs(m_settings.value(key_name(kRecordingLimitMb), kDefaultRecordingLimitMb), next)) {
+        return;
+    }
+    m_settings.setValue(key_name(kRecordingLimitMb), next);
+    Q_EMIT recordingLimitMbChanged();
+}
+
+QVariantList
+AppPrefs::recordingLimitChoices() const {
+    QVariantList choices;
+    for (const int choice : kRecordingLimitChoices) {
+        choices.append(choice);
+    }
+    return choices;
 }
 
 } // namespace dsd_qt

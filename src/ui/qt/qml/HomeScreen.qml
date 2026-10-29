@@ -794,6 +794,7 @@ Item {
         }
         ListView {
             id: recentList
+            objectName: "homeRecentList"
             anchors.top: recentTitle.bottom
             anchors.left: parent.left
             anchors.right: parent.right
@@ -808,8 +809,10 @@ Item {
                 rightText: model.timeText
                 enc: model.enc
                 emergency: model.emergency
+                hasRecording: model.hasRecording
                 interactive: true
                 onActivated: recentDetail.open({
+                    uid: model.uid,
                     name: model.name,
                     when: model.when,
                     systemName: model.systemName,

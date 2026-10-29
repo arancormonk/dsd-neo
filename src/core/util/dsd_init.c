@@ -122,6 +122,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->wav_out_file[0] = 0;
     opts->wav_out_fileR[0] = 0;
     opts->wav_out_file_raw[0] = 0;
+    opts->wav_journal_file[0] = 0;
     opts->symbol_out_file[0] = 0;
     opts->symbol_out_open_path[0] = 0;
     opts->symbol_capture_last[0] = 0;
@@ -148,6 +149,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     /* No per-call WAV is open yet; set before the rebase below, which clamps these. */
     opts->wav_out_open_time = 0;
     opts->wav_out_open_timeR = 0;
+    opts->wav_out_reopen = 0;
     /* symbol_out_file_creation_time, on the list the engine's replay rebase shares. */
     dsd_state_rebase_decode_timestamps(opts, NULL);
     opts->symbol_out_file_is_auto = 0;
@@ -223,6 +225,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_upload_timeout_ms = 5000;
     opts->rdio_upload_retries = 1;
     opts->rdio_api_delete_after_upload = 0;
+    opts->record_unknown_only = 0;
     opts->rdio_api_key[0] = 0;
     DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "http://127.0.0.1:3000");
     opts->serial_baud = 115200;
@@ -480,8 +483,8 @@ dsd_state_rebase_decode_timestamps(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->symbol_out_file_creation_time = now;
         /* A per-call WAV cannot have been opened after now. One opened on the system clock before the decode clock
-           moved back onto a replay's capture (-P opens while the arguments are parsed) has recorded nothing yet, so it
-           takes the capture's now; a stamp already behind now is a real open time and stays. */
+           moved back onto a replay's capture has recorded nothing yet, so it takes the capture's now; a stamp already
+           behind now is a real open time and stays. */
         if (opts->wav_out_open_time > now) {
             opts->wav_out_open_time = now;
         }

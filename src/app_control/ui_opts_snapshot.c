@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
@@ -11,6 +12,7 @@
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "recording_view_internal.h"
 #include "snapshot_internal.h"
 
 static dsd_opts g_pub_opts;     // latest published
@@ -57,6 +59,9 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
        publisher takes its own, and nesting the two would put a lock-order edge between
        the snapshot path and a JNI poll. */
     dsd_app_notification_publish_opts(opts);
+    /* The recording view goes out with each options snapshot, so a command reads as applied together with the mode it
+       left (issue #708). */
+    dsd_app_recording_view_publish(opts);
     dsd_app_telemetry_notify_opts(opts);
 }
 
@@ -74,4 +79,18 @@ dsd_app_get_latest_opts_snapshot(void) {
     }
     dsd_mutex_unlock(&g_opts_mu);
     return &g_consume_opts;
+}
+
+void
+dsd_app_opts_snapshot_history_meta(dsd_app_history_tap_meta* meta) {
+    if (meta == NULL) {
+        return;
+    }
+    ensure_opts_mu_init();
+    dsd_mutex_lock(&g_opts_mu);
+    /* g_pub_opts only: the consumer's copy and its sequence stay the frontend's own. */
+    meta->opts_published = g_have_opts;
+    meta->scanner_mode = g_have_opts ? g_pub_opts.scanner_mode : 0;
+    meta->trunk_scan_enabled = g_have_opts ? g_pub_opts.trunk_scan_enabled : 0;
+    dsd_mutex_unlock(&g_opts_mu);
 }

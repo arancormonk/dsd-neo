@@ -38,6 +38,7 @@ class P25NetworkModel; // WP-F2
 class DiagnosticsLogModel;
 class TalkgroupListModel;
 class CommandBridge;
+class RecordingStatus;
 
 class UiController : public QObject {
     Q_OBJECT
@@ -77,6 +78,12 @@ class UiController : public QObject {
     void
     setP25Network(P25NetworkModel* model) {
         m_network = model;
+    }
+
+    // Issue #708: what call recording is doing, read every tick (the view stays readable when no redraw comes).
+    void
+    setRecordingStatus(RecordingStatus* status) {
+        m_recordingStatus = status;
     }
 
     // WP-S2: called for a consumed host attachment, never on preference changes. @p attachedKind is the kind of
@@ -122,6 +129,7 @@ class UiController : public QObject {
     TalkgroupListModel* m_talkgroups = nullptr;
     DiagnosticsLogModel* m_diagnostics = nullptr;
     P25NetworkModel* m_network = nullptr; // WP-F2
+    RecordingStatus* m_recordingStatus = nullptr;
     QTimer m_timer;
     QVariantMap m_talkgroupExportResult;
     quint64 m_talkgroupExportSequence = 0;

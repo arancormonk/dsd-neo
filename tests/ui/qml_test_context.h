@@ -704,6 +704,56 @@ class CommandRecorder : public QObject {
         return m_relaxed_crc_requests;
     }
 
+    /* Issue #708: Record calls and unknown-only applied to a running session, each request as {kind, on} (and
+     * unknownOnly for Record calls). */
+    Q_INVOKABLE bool
+    setRecordCalls(bool on, bool unknownOnly) {
+        m_recording_requests.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordCalls")},
+                                                {QStringLiteral("on"), on},
+                                                {QStringLiteral("unknownOnly"), unknownOnly}});
+        return recordingAnswer();
+    }
+
+    Q_INVOKABLE bool
+    setRecordUnknownOnly(bool on) {
+        m_recording_requests.append(
+            QVariantMap{{QStringLiteral("kind"), QStringLiteral("recordUnknownOnly")}, {QStringLiteral("on"), on}});
+        return recordingAnswer();
+    }
+
+    Q_INVOKABLE void
+    setRecordingAccepted(bool accepted) {
+        m_recording_accepted = accepted;
+    }
+
+    /**
+     * @brief Refuse the next switches for @p reason, noting it in `recordingStatus` as CommandBridge does
+     * (RecordingStatus::noteRefusal(): the reason, and one more refusal counted); empty: a refused switch notes nothing,
+     * as a submit the queue would not take.
+     */
+    Q_INVOKABLE void
+    setRecordingRefusal(const QString& reason) {
+        m_recording_refusal = reason;
+    }
+
+    /* The `recordingStatus` readings a refusal is noted in. */
+    QQmlPropertyMap* recordingStatus = nullptr;
+
+    Q_INVOKABLE QVariantList
+    recordingRequests() const {
+        return m_recording_requests;
+    }
+
+    bool
+    recordingAnswer() {
+        if (!m_recording_accepted && !m_recording_refusal.isEmpty() && recordingStatus != nullptr) {
+            recordingStatus->insert(QStringLiteral("refusal"), m_recording_refusal);
+            recordingStatus->insert(QStringLiteral("refusalCount"),
+                                    recordingStatus->value(QStringLiteral("refusalCount")).toInt() + 1);
+        }
+        return m_recording_accepted;
+    }
+
     Q_INVOKABLE bool
     clearTemporaryTgAvoids(const QString& context) {
         m_avoid_clear_requests.append(context);
@@ -742,8 +792,8 @@ class CommandRecorder : public QObject {
 
     Q_INVOKABLE bool
     addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                 const QString& name, bool listen, int priority, bool preempt) {
-        m_talkgroupEdit = {start, end, context, generation, name, listen, priority, preempt};
+                 const QString& name, bool listen, int priority, bool preempt, bool record = true) {
+        m_talkgroupEdit = {start, end, context, generation, name, listen, priority, preempt, record};
         return true;
     }
 
@@ -1007,6 +1057,9 @@ class CommandRecorder : public QObject {
         m_lockout_requests.clear();
         m_relaxed_crc_accepted = true;
         m_relaxed_crc_requests.clear();
+        m_recording_accepted = true;
+        m_recording_refusal.clear();
+        m_recording_requests.clear();
         m_avoid_clear_requests.clear();
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
@@ -1257,6 +1310,9 @@ class CommandRecorder : public QObject {
     QVariantList m_lockout_requests;
     bool m_relaxed_crc_accepted = true;
     QVariantList m_relaxed_crc_requests;
+    bool m_recording_accepted = true;
+    QString m_recording_refusal;
+    QVariantList m_recording_requests;
     QStringList m_avoid_clear_requests;
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
@@ -1306,6 +1362,7 @@ class CallLogStore : public QAbstractListModel {
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
     Q_PROPERTY(qlonglong session READ session NOTIFY sessionChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
+    Q_PROPERTY(bool saveFailing READ saveFailing NOTIFY saveFailingChanged)
 
   public:
     /** @brief One logged row, mirroring CallHistoryModel::Row's visible fields. */
@@ -1329,6 +1386,9 @@ class CallLogStore : public QAbstractListModel {
         qint64 freqHz = 0;
         QString accessCode;
         QString accessCodeText;
+        /* Issue #708: the stable row identity and the row's call recordings (the provider's maps), oldest first. */
+        qint64 uid = 0;
+        QVariantList recordings;
     };
 
     int
@@ -1381,6 +1441,21 @@ class CallLogStore : public QAbstractListModel {
         Q_EMIT sessionChanged();
     }
 
+    /** @brief A start on a system (CallHistoryModel::beginSessionOn()). */
+    Q_INVOKABLE void
+    beginSessionOn(const QString& label, const QString& uid) {
+        setSessionLabel(label);
+        setSessionUid(uid);
+        beginSession();
+    }
+
+    /** @brief The session's system, the session kept (CallHistoryModel::setSessionSystem()). */
+    Q_INVOKABLE void
+    setSessionSystem(const QString& label, const QString& uid) {
+        setSessionLabel(label);
+        setSessionUid(uid);
+    }
+
     QStringList
     systemLabels() const {
         return m_rows.isEmpty() ? QStringList() : QStringList{m_systemName};
@@ -1412,6 +1487,9 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::FreqHzRole: return row.freqHz;
             case CallHistoryModel::AccessCodeRole: return row.accessCode;
             case CallHistoryModel::AccessCodeTextRole: return row.accessCodeText;
+            case CallHistoryModel::UidRole: return row.uid;
+            case CallHistoryModel::RecordingsRole: return row.recordings;
+            case CallHistoryModel::HasRecordingRole: return !row.recordings.isEmpty();
             default: return {};
         }
     }
@@ -1436,7 +1514,72 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::SessionRole, "session"},
                 {CallHistoryModel::FreqHzRole, "freqHz"},
                 {CallHistoryModel::AccessCodeRole, "accessCode"},
-                {CallHistoryModel::AccessCodeTextRole, "accessCodeText"}};
+                {CallHistoryModel::AccessCodeTextRole, "accessCodeText"},
+                {CallHistoryModel::UidRole, "uid"},
+                {CallHistoryModel::RecordingsRole, "recordings"},
+                {CallHistoryModel::HasRecordingRole, "hasRecording"}};
+    }
+
+    /** @brief CallHistoryModel::rowForUid(): where the row with @p uid is now, or -1. */
+    Q_INVOKABLE int
+    rowForUid(qint64 uid) const {
+        for (int i = 0; uid > 0 && i < m_rows.size(); i++) {
+            if (m_rows.at(i).uid == uid) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** @brief CallHistoryModel::recordingsForUid(). */
+    Q_INVOKABLE QVariantList
+    recordingsForUid(qint64 uid) const {
+        const int row = rowForUid(uid);
+        return row >= 0 ? m_rows.at(row).recordings : QVariantList();
+    }
+
+    bool
+    saveFailing() const {
+        return m_saveFailing;
+    }
+
+    /** @brief Report History's saves failing, or working again (CallHistoryModel::saveFailing()). */
+    Q_INVOKABLE void
+    setSaveFailing(bool failing) {
+        if (failing != m_saveFailing) {
+            m_saveFailing = failing;
+            Q_EMIT saveFailingChanged();
+        }
+    }
+
+    /** @brief The newest row's uid, 0 with no rows. */
+    Q_INVOKABLE qint64
+    newestUid() const {
+        return m_rows.isEmpty() ? 0 : m_rows.first().uid;
+    }
+
+    /**
+     * @brief Give the row with @p uid the call recordings @p recordings, as the store's news does (a recording
+     * journaled, a fragment folded into the row, a recording deleted): dataChanged on that row's two roles.
+     */
+    Q_INVOKABLE bool
+    setRowRecordings(qint64 uid, const QVariantList& recordings) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        m_rows[row].recordings = recordings;
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::RecordingsRole, CallHistoryModel::HasRecordingRole});
+        return true;
+    }
+
+    /** @brief Prepend one call with @p recordings; returns its uid. */
+    Q_INVOKABLE qint64
+    pushWithRecordings(const QVariantList& recordings) {
+        push(QStringLiteral("TODAY"));
+        setRowRecordings(m_rows.first().uid, recordings);
+        return m_rows.first().uid;
     }
 
     /**
@@ -1456,10 +1599,12 @@ class CallLogStore : public QAbstractListModel {
         row.session = m_session;
         row.dayLabel = dayLabel.isEmpty() ? QStringLiteral("TODAY") : dayLabel;
         row.timeText = QStringLiteral("12:%1").arg(m_seq % 60, 2, 10, QLatin1Char('0'));
+        row.uid = ++m_lastUid;
         beginInsertRows(QModelIndex(), 0, 0);
         m_rows.prepend(row);
         endInsertRows();
         Q_EMIT countChanged();
+        Q_EMIT rowPositionsChanged();
         return row.name;
     }
 
@@ -1612,6 +1757,7 @@ class CallLogStore : public QAbstractListModel {
             endRemoveRows();
         }
         Q_EMIT countChanged();
+        Q_EMIT rowPositionsChanged();
     }
 
   Q_SIGNALS:
@@ -1619,6 +1765,8 @@ class CallLogStore : public QAbstractListModel {
     void sessionLabelChanged();
     void sessionUidChanged();
     void sessionChanged();
+    void saveFailingChanged();
+    void rowPositionsChanged();
 
   private:
     /* Stamps the newest row with its ids, channel, frequency and access code, and announces every role it set. */
@@ -1646,6 +1794,9 @@ class CallLogStore : public QAbstractListModel {
     QString m_sessionLabel = QStringLiteral("Test Site");
     qint64 m_session = 0;
     int m_seq = 0;
+    /* Never reused, as the model's are not. */
+    qint64 m_lastUid = 0;
+    bool m_saveFailing = false;
     /* Fixed, ascending stamps: nothing here should depend on the wall clock. */
     qint64 m_clock = 1'700'000'000;
 };
@@ -1672,7 +1823,87 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     dismissFailure() {}
 
+    /* Issue #708: the call recording player, export and share, as the decoderHost map plays them. A play opens at
+     * once (Preparing), pause and resume flip the state, a seek moves the position and a stop clears the path, as a
+     * platform host publishes them; a case scripts the rest (Playing, the end, a failure) with setHostReading(). Every
+     * call is kept, oldest first, as {name, ...}. */
+    Q_INVOKABLE void
+    playRecording(const QString& path) {
+        noteCall(QStringLiteral("playRecording"), {{QStringLiteral("path"), path}});
+        publishPlayback(path, 1, 0, 0, QString());
+    }
+
+    Q_INVOKABLE void
+    pausePlayback() {
+        noteCall(QStringLiteral("pausePlayback"), {});
+        publishPlayback(value(QStringLiteral("playbackPath")).toString(), 3,
+                        value(QStringLiteral("playbackPositionMs")).toLongLong(),
+                        value(QStringLiteral("playbackDurationMs")).toLongLong(), QString());
+    }
+
+    Q_INVOKABLE void
+    resumePlayback() {
+        noteCall(QStringLiteral("resumePlayback"), {});
+        publishPlayback(value(QStringLiteral("playbackPath")).toString(), 2,
+                        value(QStringLiteral("playbackPositionMs")).toLongLong(),
+                        value(QStringLiteral("playbackDurationMs")).toLongLong(), QString());
+    }
+
+    Q_INVOKABLE void
+    seekPlayback(qint64 positionMs) {
+        noteCall(QStringLiteral("seekPlayback"), {{QStringLiteral("ms"), positionMs}});
+        insert(QStringLiteral("playbackPositionMs"), positionMs);
+        Q_EMIT playbackPositionChanged();
+    }
+
+    Q_INVOKABLE void
+    stopPlayback() {
+        noteCall(QStringLiteral("stopPlayback"), {});
+        publishPlayback(QString(), 0, 0, 0, QString());
+    }
+
+    Q_INVOKABLE bool
+    exportRecordings(const QVariantMap& selection, const QString& reference) {
+        return beginTransfer(QStringLiteral("exportRecordings"), selection, reference);
+    }
+
+    Q_INVOKABLE bool
+    saveRecording(const QVariantMap& selection, const QString& reference) {
+        return beginTransfer(QStringLiteral("saveRecording"), selection, reference);
+    }
+
+    Q_INVOKABLE void
+    cancelRecordingTransfer() {
+        noteCall(QStringLiteral("cancelRecordingTransfer"), {});
+    }
+
+    Q_INVOKABLE bool
+    shareRecording(const QString& path, const QString& title) {
+        noteCall(QStringLiteral("shareRecording"), {{QStringLiteral("path"), path}, {QStringLiteral("title"), title}});
+        return shareAccepted;
+    }
+
+    void
+    publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
+        insert(QStringLiteral("playbackPath"), path);
+        insert(QStringLiteral("playbackState"), state);
+        insert(QStringLiteral("playbackPositionMs"), positionMs);
+        insert(QStringLiteral("playbackDurationMs"), durationMs);
+        insert(QStringLiteral("playbackError"), error);
+        Q_EMIT playbackChanged();
+        Q_EMIT playbackPositionChanged();
+    }
+
+    QVariantList calls;
+    bool shareAccepted = true;
+
   Q_SIGNALS:
+    void playbackChanged();
+    void playbackPositionChanged();
+    void recordingTransferChanged();
+    void recordingTransferFinished(int selection, int result, int missing);
+    void recordingFilesMissing(const QStringList& paths);
+    void recordingShareFailed(const QString& path);
     void tunerChanged();
     void controlChanged();
     void siteChanged();
@@ -1687,6 +1918,171 @@ class ReadingMap : public QQmlPropertyMap {
     void runResultChanged();
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postal, const QString& country, const QString& error);
+
+  private:
+    void
+    noteCall(const QString& name, QVariantMap args) {
+        args.insert(QStringLiteral("name"), name);
+        calls.append(args);
+    }
+
+    bool
+    beginTransfer(const QString& name, const QVariantMap& selection, const QString& reference) {
+        noteCall(name, {{QStringLiteral("selection"), selection}, {QStringLiteral("reference"), reference}});
+        insert(QStringLiteral("recordingTransferActive"), true);
+        insert(QStringLiteral("recordingTransferBytes"), 0);
+        insert(QStringLiteral("recordingTransferTotalBytes"), selection.value(QStringLiteral("bytes")));
+        Q_EMIT recordingTransferChanged();
+        return true;
+    }
+};
+
+/**
+ * @brief Issue #708: the `recordings` store the screens read, as a map a case writes (`recordings.lowSpace = true`)
+ * plus its calls, kept oldest first as {name, ...}.
+ *
+ * The selections hand back what a case set with setSelection(): its count, size and paths, under a new selection
+ * number each time (0 when the count is 0, as the store answers a selection that matched nothing).
+ */
+class RecordingsFake : public QQmlPropertyMap {
+    Q_OBJECT
+  public:
+    explicit RecordingsFake(QObject* parent) : QQmlPropertyMap(this, parent) { reset(); }
+
+    /** @brief Every key at rest: an empty, indexed store on available storage with the default limit. */
+    static QVariantMap
+    rest() {
+        return {{QStringLiteral("ready"), true},        {QStringLiteral("indexed"), true},
+                {QStringLiteral("available"), true},    {QStringLiteral("usedBytes"), 0},
+                {QStringLiteral("recordingCount"), 0},  {QStringLiteral("unfinishedCount"), 0},
+                {QStringLiteral("unfinishedBytes"), 0}, {QStringLiteral("folders"), QVariantList()},
+                {QStringLiteral("freeBytes"), -1},      {QStringLiteral("lowSpace"), false},
+                {QStringLiteral("removedByLimit"), 0},  {QStringLiteral("deletesWaiting"), 0},
+                {QStringLiteral("deleteFailures"), 0},  {QStringLiteral("lastDeleteError"), QString()},
+                {QStringLiteral("limitMb"), 1000}};
+    }
+
+    Q_INVOKABLE void
+    reset() {
+        const QVariantMap values = rest();
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            insert(it.key(), it.value());
+        }
+        m_calls.clear();
+        m_selectionCount = 0;
+        m_selectionBytes = 0;
+        m_selectionPaths.clear();
+        Q_EMIT changed();
+    }
+
+    Q_INVOKABLE void
+    deleteRecordings(const QStringList& ids) {
+        note(QStringLiteral("deleteRecordings"), {{QStringLiteral("ids"), ids}});
+    }
+
+    Q_INVOKABLE void
+    deleteRecording(const QString& id) {
+        note(QStringLiteral("deleteRecording"), {{QStringLiteral("id"), id}});
+    }
+
+    Q_INVOKABLE void
+    deleteFolder(const QString& uid) {
+        note(QStringLiteral("deleteFolder"), {{QStringLiteral("uid"), uid}});
+    }
+
+    Q_INVOKABLE void
+    deleteUnfinished() {
+        note(QStringLiteral("deleteUnfinished"), {});
+    }
+
+    Q_INVOKABLE void
+    deleteAll() {
+        note(QStringLiteral("deleteAll"), {});
+    }
+
+    Q_INVOKABLE QVariantMap
+    selectForExport(const QString& folderUid, const QString& preset) {
+        note(QStringLiteral("selectForExport"),
+             {{QStringLiteral("folderUid"), folderUid}, {QStringLiteral("preset"), preset}});
+        return selection();
+    }
+
+    Q_INVOKABLE QVariantMap
+    selectRecordings(const QStringList& ids) {
+        note(QStringLiteral("selectRecordings"), {{QStringLiteral("ids"), ids}});
+        return selection();
+    }
+
+    Q_INVOKABLE void
+    releaseSelection(int selection) {
+        note(QStringLiteral("releaseSelection"), {{QStringLiteral("selection"), selection}});
+    }
+
+    Q_INVOKABLE void
+    recheckRecordings(const QStringList& ids) {
+        note(QStringLiteral("recheckRecordings"), {{QStringLiteral("ids"), ids}});
+    }
+
+    /** @brief RecordingStore::acknowledgeNotices(): the counts the notices show start again. */
+    Q_INVOKABLE void
+    acknowledgeNotices() {
+        note(QStringLiteral("acknowledgeNotices"), {});
+        insert(QStringLiteral("removedByLimit"), 0);
+        insert(QStringLiteral("deleteFailures"), 0);
+        insert(QStringLiteral("lastDeleteError"), QString());
+    }
+
+    /** @brief What the next selections resolve to. */
+    Q_INVOKABLE void
+    setSelection(int count, qint64 bytes, const QStringList& paths) {
+        m_selectionCount = count;
+        m_selectionBytes = bytes;
+        m_selectionPaths = paths;
+    }
+
+    Q_INVOKABLE QVariantList
+    calls() const {
+        return m_calls;
+    }
+
+    Q_INVOKABLE void
+    emitLimitReached(int count) {
+        Q_EMIT limitReached(count);
+    }
+
+  Q_SIGNALS:
+    void changed();
+    void limitMbChanged();
+    void limitReached(int count);
+
+  private:
+    void
+    note(const QString& name, QVariantMap args) {
+        args.insert(QStringLiteral("name"), name);
+        m_calls.append(args);
+    }
+
+    QVariantMap
+    selection() {
+        if (m_selectionCount <= 0) {
+            return {{QStringLiteral("selection"), 0},
+                    {QStringLiteral("paths"), QStringList()},
+                    {QStringLiteral("names"), QStringList()},
+                    {QStringLiteral("count"), 0},
+                    {QStringLiteral("bytes"), 0}};
+        }
+        return {{QStringLiteral("selection"), ++m_lastSelection},
+                {QStringLiteral("paths"), m_selectionPaths},
+                {QStringLiteral("names"), m_selectionPaths},
+                {QStringLiteral("count"), m_selectionCount},
+                {QStringLiteral("bytes"), m_selectionBytes}};
+    }
+
+    QVariantList m_calls;
+    int m_selectionCount = 0;
+    qint64 m_selectionBytes = 0;
+    QStringList m_selectionPaths;
+    int m_lastSelection = 0;
 };
 
 class RadioReferenceRecorder : public QQmlPropertyMap {
@@ -1857,6 +2253,80 @@ class Setup : public QObject {
             }
             Q_EMIT m_metric_readings->controlChanged();
         }
+    }
+
+    /** @brief Set one recordingStatus reading (issue #708), as setMetric() does for metrics. */
+    Q_INVOKABLE void
+    setRecordingStatus(const QString& key, const QVariant& value) {
+        if (m_recording_readings != nullptr) {
+            m_recording_readings->insert(key, value);
+        }
+    }
+
+    /** @brief Every recordingStatus reading back at rest (issue #708). */
+    Q_INVOKABLE void
+    resetRecordingStatus() {
+        for (auto it = m_recording_status.cbegin(); it != m_recording_status.cend(); ++it) {
+            setRecordingStatus(it.key(), it.value());
+        }
+    }
+
+    /**
+     * @brief Set one decoderHost map reading (issue #708: the player's and the transfer's), announcing it as the
+     * host's change signals do.
+     */
+    Q_INVOKABLE void
+    setHostReading(const QString& key, const QVariant& value) {
+        m_host[key] = value;
+        m_host_readings->insert(key, value);
+        if (key.startsWith(QStringLiteral("playback"))) {
+            Q_EMIT m_host_readings->playbackChanged();
+            Q_EMIT m_host_readings->playbackPositionChanged();
+        } else if (key.startsWith(QStringLiteral("recordingTransfer"))) {
+            Q_EMIT m_host_readings->recordingTransferChanged();
+        }
+    }
+
+    /** @brief The player, export and share calls the screens made on the decoderHost map, oldest first. */
+    Q_INVOKABLE QVariantList
+    hostCalls() const {
+        return m_host_readings->calls;
+    }
+
+    /** @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). */
+    Q_INVOKABLE void
+    resetHostPlayback() {
+        m_host_readings->calls.clear();
+        m_host_readings->shareAccepted = true;
+        m_host_readings->publishPlayback(QString(), 0, 0, 0, QString());
+        setHostReading(QStringLiteral("recordingTransferActive"), false);
+        setHostReading(QStringLiteral("recordingTransferBytes"), 0);
+        setHostReading(QStringLiteral("recordingTransferTotalBytes"), 0);
+    }
+
+    /** @brief Publish the player's whole state at once, as a platform host does (DecoderHost::publishPlayback()). */
+    Q_INVOKABLE void
+    publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
+        m_host_readings->publishPlayback(path, state, positionMs, durationMs, error);
+    }
+
+    /** @brief What the decoderHost map's shareRecording() answers. */
+    Q_INVOKABLE void
+    setShareAccepted(bool accepted) {
+        m_host_readings->shareAccepted = accepted;
+    }
+
+    /** @brief End the running export or save of @p selection with @p result (DecoderHost::RecordingTransferResult). */
+    Q_INVOKABLE void
+    finishRecordingTransfer(int selection, int result, int missing) {
+        setHostReading(QStringLiteral("recordingTransferActive"), false);
+        Q_EMIT m_host_readings->recordingTransferFinished(selection, result, missing);
+    }
+
+    /** @brief A share the host took could not be handed over after all (DecoderHost::recordingShareFailed()). */
+    Q_INVOKABLE void
+    failRecordingShare(const QString& path) {
+        Q_EMIT m_host_readings->recordingShareFailed(path);
     }
 
     /**
@@ -2461,10 +2931,14 @@ class Setup : public QObject {
                                                   {QStringLiteral("prefs"), m_prefs},
                                                   {QStringLiteral("decoderHost"), m_host},
                                                   {QStringLiteral("radioReference"), m_radio_reference},
-                                                  {QStringLiteral("backup"), backupKeys}};
-        /* Group 3 captures the "(" that marks a call rather than a read. */
-        static const QRegularExpression read(QStringLiteral(
-            "\\b(metrics|prefs|decoderHost|radioReference|backup)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
+                                                  {QStringLiteral("backup"), backupKeys},
+                                                  {QStringLiteral("recordings"), RecordingsFake::rest()},
+                                                  {QStringLiteral("recordingStatus"), m_recording_status}};
+        /* Group 3 captures the "(" that marks a call rather than a read. The name must not follow a "." or a word
+         * character: `model.recordings.length` is a role's length, not a read of the `recordings` store. */
+        static const QRegularExpression read(
+            QStringLiteral("(?<![.\\w])(metrics|prefs|decoderHost|radioReference|backup|recordings|recordingStatus)"
+                           "\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
         for (const QString& name : qmlFiles) {
@@ -2599,6 +3073,11 @@ class Setup : public QObject {
         prefs[QStringLiteral("lastLon")] = 0.0;
         prefs[QStringLiteral("lastFixAt")] = 0;
         prefs[QStringLiteral("lastAccuracyM")] = 0.0;
+        /* Issue #708: AppPrefs' defaults, Record calls off and the 1 GB limit, with its choices. */
+        prefs[QStringLiteral("recordCalls")] = false;
+        prefs[QStringLiteral("recordUnknownOnly")] = false;
+        prefs[QStringLiteral("recordingLimitMb")] = 1000;
+        prefs[QStringLiteral("recordingLimitChoices")] = QVariantList({250, 500, 1000, 2000, 5000, 0});
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -2917,12 +3396,50 @@ class Setup : public QObject {
         host[QStringLiteral("receiverHealth")] = dsd_qt::DecoderHost::healthyReceiver();
         host[QStringLiteral("sessionState")] = 0;
         host[QStringLiteral("keyboardTop")] = -1;
+        /* Issue #708: no player and no zip, as the base host; a case scripts the playback and transfer states. */
+        host[QStringLiteral("playbackSupported")] = false;
+        host[QStringLiteral("playbackPath")] = QString();
+        host[QStringLiteral("playbackState")] = 0;
+        host[QStringLiteral("playbackPositionMs")] = 0;
+        host[QStringLiteral("playbackDurationMs")] = 0;
+        host[QStringLiteral("playbackError")] = QString();
+        host[QStringLiteral("recordingExportSupported")] = false;
+        host[QStringLiteral("recordingTransferActive")] = false;
+        host[QStringLiteral("recordingTransferBytes")] = 0;
+        host[QStringLiteral("recordingTransferTotalBytes")] = 0;
         m_host = host;
         m_host_readings = new ReadingMap(engine);
         for (auto it = host.cbegin(); it != host.cend(); ++it) {
             m_host_readings->insert(it.key(), it.value());
         }
         ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+
+        /* Issue #708: RecordingStatus at rest, a decoder run that records nothing and has storage; a case sets the
+         * readings it needs (an applying switch, a refusal, failures). */
+        QVariantMap recording;
+        recording[QStringLiteral("published")] = true;
+        recording[QStringLiteral("perCall")] = false;
+        recording[QStringLiteral("slotFiles")] = 0;
+        recording[QStringLiteral("unknownOnly")] = false;
+        recording[QStringLiteral("staticWav")] = false;
+        recording[QStringLiteral("storageNamed")] = true;
+        recording[QStringLiteral("journal")] = QStringLiteral("on");
+        recording[QStringLiteral("command")] = QString();
+        recording[QStringLiteral("commandState")] = QStringLiteral("none");
+        recording[QStringLiteral("failures")] = 0;
+        recording[QStringLiteral("failureCounts")] = QVariantMap();
+        recording[QStringLiteral("lastError")] = QString();
+        recording[QStringLiteral("refusal")] = QString();
+        recording[QStringLiteral("refusalCount")] = 0;
+        m_recording_status = recording;
+        m_recording_readings = new ReadingMap(engine);
+        for (auto it = recording.cbegin(); it != recording.cend(); ++it) {
+            m_recording_readings->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("recordingStatus"), m_recording_readings);
+        /* Issue #708: the recording store, empty and indexed; a case writes the readings it needs. */
+        m_recordings = new RecordingsFake(engine);
+        ctx->setContextProperty(QStringLiteral("recordings"), m_recordings);
 
         /* Every property key the RadioReference screen reads, at rest. `available`
          * is false so an ungated entry point shows up as a visible row rather
@@ -2969,6 +3486,7 @@ class Setup : public QObject {
 
         m_commands = new CommandRecorder();
         m_commands->setParent(engine);
+        m_commands->recordingStatus = m_recording_readings;
         ctx->setContextProperty(QStringLiteral("commands"), m_commands);
 
         /* Production models, not stand-ins. Two of these back a ListView whose
@@ -3044,6 +3562,10 @@ class Setup : public QObject {
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
     ReadingMap* m_metric_readings = nullptr;
     ReadingMap* m_host_readings = nullptr;
+    /* Issue #708: the `recordingStatus` QML reads, its readings at rest, and the `recordings` store. */
+    ReadingMap* m_recording_readings = nullptr;
+    QVariantMap m_recording_status;
+    RecordingsFake* m_recordings = nullptr;
     QVariantMap m_metrics;
     QVariantMap m_prefs;
     QVariantMap m_host;

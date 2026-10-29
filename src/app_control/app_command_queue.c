@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/receive_view.h>
+#include <dsd-neo/app_control/recording_view.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -79,6 +80,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -103,6 +105,7 @@
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
+#include "recording_view_internal.h"
 #include "scan_row_edit.h"
 #include "services.h"
 
@@ -251,6 +254,25 @@ tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
     dsd_mutex_unlock(&g_mu);
 }
 
+/* The id the recording view accounts command @p c under (issue #708): its own, which the view ignores unless it is a
+   recording command, but a config apply's only when it carries a [recording] section, so a config that leaves
+   recording alone leaves the view's command state alone. 0 for none. */
+static int
+recording_command_id(const struct dsd_app_command* c) {
+    if (c->id != DSD_APP_CMD_CONFIG_APPLY) {
+        return c->id;
+    }
+    int has_recording = 0;
+    if (c->n >= sizeof(dsdneoUserConfig)) {
+        DSD_MEMCPY(&has_recording, c->data + offsetof(dsdneoUserConfig, has_recording), sizeof has_recording);
+    }
+    return has_recording ? c->id : 0;
+}
+
+/* Whether the config apply being applied had its [recording] take effect (ui_cmd_handle_config_apply()); apply_cmd()
+   clears it before every dispatch, so it never outlives one apply. Decoder thread only. */
+static int g_config_recording_applied;
+
 void
 dsd_app_command_session_set_open(int open) {
     ensure_mu_init();
@@ -261,6 +283,7 @@ dsd_app_command_session_set_open(int open) {
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
     }
@@ -4155,6 +4178,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
+        dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
         DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
@@ -4168,6 +4192,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     struct dsd_app_command* c = &g_q[g_tail];
     ui_cmd_store_payload(c, cmd_id, payload, payload_sz);
     g_tail = (g_tail + 1) % DSD_APP_CMD_Q_CAP;
+    dsd_app_recording_command_submitted(recording_command_id(c));
     dsd_mutex_unlock(&g_mu);
     return DSD_APP_COMMAND_SUBMIT_QUEUED;
 }
@@ -4271,6 +4296,7 @@ static const int k_ui_cmd_action_ids[] = {
 
 static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
+    DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
     /* Also an action: no payload flips Relaxed CRC, an int32_t sets it (ui_cmd_payload_is_valid()). */
     DSD_APP_CMD_AGGR_SYNC_TOGGLE,
     DSD_APP_CMD_FORCE_KEY_SET,
@@ -4516,6 +4542,7 @@ struct ui_cmd_payload_min_size_rule {
 
 static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules[] = {
     {DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, sizeof(uint64_t)},
     {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
     {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
@@ -6404,10 +6431,11 @@ tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generatio
 static int
 tg_row_fields_valid(const dsd_app_tg_row_payload* p) {
     const uint32_t all = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_PREEMPT
-                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
+                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS | DSD_APP_TG_FIELD_RECORD;
     return !(!p->fields || (p->fields & ~all)
              || ((p->fields & DSD_APP_TG_FIELD_LISTEN) && p->listen != 0 && p->listen != 1)
-             || ((p->fields & DSD_APP_TG_FIELD_PREEMPT) && p->preempt != 0 && p->preempt != 1));
+             || ((p->fields & DSD_APP_TG_FIELD_PREEMPT) && p->preempt != 0 && p->preempt != 1)
+             || ((p->fields & DSD_APP_TG_FIELD_RECORD) && p->record > 1));
 }
 
 static int
@@ -6438,9 +6466,13 @@ apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     if (p.fields & DSD_APP_TG_FIELD_TAGS) {
         mask |= DSD_TG_POLICY_FIELD_TAGS;
     }
+    if (p.fields & DSD_APP_TG_FIELD_RECORD) {
+        mask |= DSD_TG_POLICY_FIELD_RECORD; /* the policy applies it after a mode change in this edit */
+    }
     DSD_SNPRINTF(values.mode, sizeof values.mode, "%s", p.listen ? "A" : "B");
     values.priority = p.priority;
     values.preempt = (uint8_t)p.preempt;
+    values.record = p.record;
     DSD_MEMCPY(values.name, p.name, sizeof values.name);
     DSD_MEMCPY(values.tags, p.tags, sizeof values.tags);
     const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
@@ -7161,36 +7193,42 @@ ui_cmd_handle_replay_last(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* Per-call WAV start, stop and toggle (issue #708). A start with per-call recording on opens only a slot file that is
+   missing, and fails without changing anything when one does not open (svc_enable_per_call_wav()); a stop closes a
+   static WAV as one and publishes per-call files (svc_stop_wav_recording()). The toggle follows the mode, not the open
+   files: per-call recording on, even with a slot whose file failed to open, stops. */
 static int
 ui_cmd_handle_wav_start(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-
-    int rc = svc_enable_per_call_wav(opts, state);
-    return ui_cmd_apply_status_from_service_rc(rc);
+    return ui_cmd_apply_status_from_service_rc(svc_enable_per_call_wav(opts, state));
 }
 
 static int
 ui_cmd_handle_wav_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                state ? &state->event_history_s[0] : NULL, opts->wav_out_open_time);
-    opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                                 state ? &state->event_history_s[1] : NULL, opts->wav_out_open_timeR);
-    opts->wav_out_file[0] = 0;
-    opts->wav_out_fileR[0] = 0;
-    opts->dmr_stereo_wav = 0;
-    return 1;
+    return ui_cmd_apply_status_from_service_rc(svc_stop_wav_recording(opts, state));
 }
 
 static int
 ui_cmd_handle_wav_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
+    if (opts->dmr_stereo_wav == 1) {
         return ui_cmd_handle_wav_stop(opts, state, c);
     }
     return ui_cmd_handle_wav_start(opts, state, c);
+}
+
+/* Record only unknown talkgroups (issue #708): the talkgroup policy reads the switch on every record decision, so it
+   holds from the next frame; a P25 Phase 2 call's queued frames take the new verdict before the tick guard is free
+   (command_changes_call_verdict()). */
+static int
+ui_cmd_handle_record_unknown_only_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t on = 0;
+    if (!ui_cmd_parse_i32_payload(c, &on) || (on != 0 && on != 1)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    opts->record_unknown_only = on;
+    ui_set_toast(state, 3, "Applied: Record unknown talkgroups only -> %s", on ? "On" : "Off");
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 /* Stop replay: a playback (a WAV or raw file, a symbol file) ends with a switch to the configured Pulse input (issue
@@ -7219,10 +7257,14 @@ ui_cmd_handle_stop_playback(dsd_opts* opts, dsd_state* state, const struct dsd_a
 static int
 apply_cmd_capture_playback(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
-        {DSD_APP_CMD_SYMCAP_SAVE, ui_cmd_handle_symcap_save},     {DSD_APP_CMD_SYMCAP_STOP, ui_cmd_handle_symcap_stop},
-        {DSD_APP_CMD_REPLAY_LAST, ui_cmd_handle_replay_last},     {DSD_APP_CMD_WAV_START, ui_cmd_handle_wav_start},
-        {DSD_APP_CMD_WAV_STOP, ui_cmd_handle_wav_stop},           {DSD_APP_CMD_WAV_TOGGLE, ui_cmd_handle_wav_toggle},
+        {DSD_APP_CMD_SYMCAP_SAVE, ui_cmd_handle_symcap_save},
+        {DSD_APP_CMD_SYMCAP_STOP, ui_cmd_handle_symcap_stop},
+        {DSD_APP_CMD_REPLAY_LAST, ui_cmd_handle_replay_last},
+        {DSD_APP_CMD_WAV_START, ui_cmd_handle_wav_start},
+        {DSD_APP_CMD_WAV_STOP, ui_cmd_handle_wav_stop},
+        {DSD_APP_CMD_WAV_TOGGLE, ui_cmd_handle_wav_toggle},
         {DSD_APP_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback},
+        {DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, ui_cmd_handle_record_unknown_only_set},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -7927,6 +7969,49 @@ cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, i
     }
 }
 
+/* The options a config's [recording] stages (issue #708), as the session ran them. */
+typedef struct {
+    int dmr_stereo_wav;
+    int static_wav_file;
+    char dir[sizeof(((dsd_opts*)0)->wav_out_dir)];
+    char wav_out_file[sizeof(((dsd_opts*)0)->wav_out_file)];
+    char raw_path[sizeof(((dsd_opts*)0)->wav_out_file_raw)];
+} cfg_recording;
+
+static void
+cfg_recording_of(const dsd_opts* opts, cfg_recording* out) {
+    out->dmr_stereo_wav = opts->dmr_stereo_wav;
+    out->static_wav_file = opts->static_wav_file;
+    DSD_SNPRINTF(out->dir, sizeof out->dir, "%s", opts->wav_out_dir);
+    DSD_SNPRINTF(out->wav_out_file, sizeof out->wav_out_file, "%s", opts->wav_out_file);
+    DSD_SNPRINTF(out->raw_path, sizeof out->raw_path, "%s", opts->wav_out_file_raw);
+}
+
+/*
+ * A config's [recording] (issue #708): staging writes the mode, folder and paths it names and opens and closes nothing,
+ * so what it staged becomes the target of the one recording transition (svc_recording_transition()), with the
+ * session's options put back first. A component the config leaves as it was is left alone (a slot waiting to reopen
+ * waits for its call end); a file that does not open changes nothing and fails the apply with a toast, the rest of the
+ * config applied. Returns 0 or -1. The caller holds the P25 SM tick guard (a config apply writes the policy store).
+ */
+static int
+apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* before) {
+    svc_recording_target target;
+    svc_recording_current(opts, &target);
+    opts->dmr_stereo_wav = before->dmr_stereo_wav;
+    opts->static_wav_file = before->static_wav_file;
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", before->dir);
+    DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", before->wav_out_file);
+    DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", before->raw_path);
+    char failed[sizeof target.dir + 32];
+    if (svc_recording_transition(opts, state, &target, failed, sizeof failed) != 0) {
+        // The reason before the file: a long path is cut at the toast's end, never the words that say what failed.
+        ui_set_toast(state, 5, "Config applied, recording unchanged: did not open %s", failed);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -7966,7 +8051,13 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     ui_cfg_rollback rollback;
     ui_cfg_capture_rollback(opts, state, &rollback);
 #endif
+    cfg_recording recording_before;
+    cfg_recording_of(opts, &recording_before);
+    const int journal_kept_uploads = dsd_rdio_journal_keeps_uploads(opts);
     dsd_stage_user_config_to_opts(&cfg, opts, state);
+    (void)dsd_rdio_warn_journal_keeps_uploads(opts, journal_kept_uploads);
+    const int recording_rc = apply_cfg_recording(opts, state, &recording_before);
+    g_config_recording_applied = recording_rc == 0;
     /* A [mode] preset carries an audio layout too, but the session's output streams were opened with the layout in
        force then, which the backend fixes for their life: the session's layout is kept, as decode_mode_apply_value()
        keeps it for DSD_APP_CMD_DECODE_MODE_SET. Put back before anything below opens or reopens an output (a changed
@@ -8007,7 +8098,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (restart_required) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
-    return (reconfigure_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+    return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
 }
 
 static int
@@ -8527,15 +8618,16 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
 }
 
-/* A command that can change what an active call may play: the talkgroup policy store, the hold or the allow list, or
-   the configured receive policy (issue #637), whose boundary ends calls, drains the playout and rotates the per-call
-   WAVs as the watchdog's release does. */
+/* A command that can change what an active call may play or record: the talkgroup policy store, the hold, the allow
+   list, the unknown-talkgroups-only record switch (issue #708), or the configured receive policy (issue #637), whose
+   boundary ends calls, drains the playout and rotates the per-call WAVs as the watchdog's release does. */
 static int
 command_changes_call_verdict(const struct dsd_app_command* c) {
     return command_writes_policy_store(c)
            || (c
                && (c->id == DSD_APP_CMD_TG_HOLD_TOGGLE || c->id == DSD_APP_CMD_TG_HOLD_SET
-                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE || c->id == DSD_APP_CMD_RECEIVE_SET));
+                   || c->id == DSD_APP_CMD_TRUNK_WLIST_TOGGLE || c->id == DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET
+                   || c->id == DSD_APP_CMD_RECEIVE_SET));
 }
 
 /* A command that changes what the P25 Phase 2 playout reads as it plays: a call's verdict, a slot switch (with the
@@ -8579,9 +8671,23 @@ command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c)
     return 1;
 }
 
+/* How an applied command left the queue, for the recording view (issue #708). A config apply's is its recording's: the
+   rest of a config can fail or need a restart while its recording applied, or apply while its recording failed. */
+static int
+recording_command_outcome(const struct dsd_app_command* c, int result) {
+    if (result == UI_CMD_APPLY_UNSUPPORTED) {
+        return DSD_APP_RECORDING_COMMAND_REFUSED;
+    }
+    if (c->id == DSD_APP_CMD_CONFIG_APPLY) {
+        return g_config_recording_applied ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
+    }
+    return result == UI_CMD_APPLY_COMPLETED ? DSD_APP_RECORDING_COMMAND_APPLIED : DSD_APP_RECORDING_COMMAND_FAILED;
+}
+
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!command_allowed_during_search(state, c)) {
+        dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -8599,6 +8705,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
         }
     }
     g_apply_cmd_guard_held = guarded;
+    g_config_recording_applied = 0;
     const int result = apply_cmd_scoped(opts, state, c, guarded);
     g_apply_cmd_guard_held = 0;
     if (guarded) {
@@ -8607,6 +8714,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
         }
         p25_sm_tick_guard_leave();
     }
+    dsd_app_recording_command_resolved(recording_command_id(c), recording_command_outcome(c, result));
     return result;
 }
 
@@ -8797,6 +8905,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_WAV_TOGGLE,
     DSD_APP_CMD_WAV_STATIC_OPEN,
     DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET,
     DSD_APP_CMD_DSP_OUT_SET,
     DSD_APP_CMD_SYMCAP_SAVE,
     DSD_APP_CMD_SYMCAP_STOP,
@@ -8955,6 +9064,11 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
+            dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
+            if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
+                /* Its failure shows in the next view, as an applied command's outcome does. */
+                dsd_telemetry_publish_opts_snapshot(opts);
+            }
             DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;

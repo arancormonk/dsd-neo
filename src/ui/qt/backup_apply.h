@@ -120,7 +120,7 @@ enum class Fault {
 
 /**
  * What apply_pending_restore() needs from its caller. An empty function takes the default: the engine is idle,
- * free space is QStorageInfo's bytesAvailable() (a negative value means unknown and is not a shortage), no fault.
+ * free space is dsd_path_free_bytes() (a negative value means unknown and is not a shortage), no fault.
  *
  * The fault seam is consulted before each step, by name. Per-item steps are consulted once per item.
  *   journal.begin, journal.files (per file), journal.prefs, journal.manifest, journal.complete;

@@ -33,6 +33,7 @@ target_sources(
         backup_stage.cpp
         call_history_filter.cpp
         call_history_model.cpp
+        call_history_tap.cpp
         frequency_query.cpp
         command_bridge.cpp
         decoder_host.cpp
@@ -46,6 +47,9 @@ target_sources(
         metrics_model.cpp
         qt_ui.cpp
         radio_reference_model.cpp
+        recording_journal.cpp
+        recording_status.cpp
+        recording_store.cpp
         site_groups.cpp # WP-D4
         saved_systems_model.cpp
         scan_lists_model.cpp
@@ -84,6 +88,8 @@ qt_add_resources(
         qml/BackupResultCard.qml
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
+        qml/CallRecordingPlayer.qml
+        qml/CallRecordingsScreen.qml
         qml/PlexComboBox.qml
         qml/PlexCheckBox.qml
         qml/PlexInput.qml
@@ -96,6 +102,7 @@ qt_add_resources(
         qml/BandRail.qml
         qml/BottomNav.qml
         qml/CallRow.qml
+        qml/PlayGlyph.qml
         qml/Caret.qml
         qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml

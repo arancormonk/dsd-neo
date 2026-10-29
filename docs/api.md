@@ -433,6 +433,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `inv_m17_toggle` | – |
 | `wav_static_open` | `{value:path, <=1023 bytes}` |
 | `wav_raw_open` | `{value:path, <=1023 bytes}` |
+| `record_unknown_only_set` | `{value:0\|1}` |
 | `dsp_out_set` | `{value:filename, <=255 bytes}` |
 | `symcap_open` | `{value:path, <=1023 bytes}` |
 | `symbol_in_open` | `{value:path, <=1023 bytes}` |
@@ -499,7 +500,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `p25_p2_params_set` | `{wacn,sysid,cc}` |
 | `tg_listen_set` | `{id_start,id_end,listen}` |
 | `tg_listen_set_all` | `{listen,tags}` |
-| `tg_row_set` | `{id_start,id_end,fields,listen,priority,preempt,name,tags,policy_context,policy_generation}` |
+| `tg_row_set` | `{id_start,id_end,fields,listen,priority,preempt,name,tags,record,policy_context,policy_generation}` |
 | `tg_row_remove` | `{id_start,id_end,policy_context,policy_generation}` |
 | `tg_list_export` | `{path,policy_context,policy_generation}` |
 | `tg_selection_set` | `{path,count,listening,policy_context,policy_generation}` |
@@ -567,12 +568,18 @@ field, and the decoder refuses the rest when it applies the command.
   visit, but a replaced list or session is rejected. These edits do not write CSVs.
   See [`include/dsd-neo/app_control/commands.h`](../include/dsd-neo/app_control/commands.h).
 * **`tg_row_set`**: `fields` is a bitmask (`1` listen, `2` priority, `4` preempt,
-  `8` name, `16` tags); fields not in the mask keep their value.
+  `8` name, `16` tags, `32` record); fields not in the mask keep their value.
+  `record` is applied after `listen` in the same edit, and a row that is not
+  listening records nothing whatever `record` says.
   `policy_context` and `policy_generation` (from `status.tg_policy`) are
   required, as they are for `tg_row_remove`, `tg_list_export` and
   `tg_selection_set`. A captured pair stays valid while only learned
   over-the-air aliases and session avoids change the list; a reload, a clear,
   another list or any edit of a talkgroup row makes it stale (`-2`).
+* **`record_unknown_only_set`**: `1` records only talkgroups the group list
+  does not know (`--record-unknown-only`, see [docs/cli.md](cli.md)), `0` every
+  call the list lets record. Like the WAV commands it waits while the decoder
+  holds a carrier and is refused while Signal search runs.
 * **`tg_selection_set`**: `path` names a CSV of `table_index,start,end` rows the
   decoder reads, `count` the number of rows, `listening` the value to apply.
 * **`decryption_apply`**: `type` (`basic`, `hex`, `rc4`, `scrambler`,

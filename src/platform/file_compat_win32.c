@@ -106,6 +106,53 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
     return _stat64(path, st);
 }
 
+/* The POSIX errno for a GetDiskFreeSpaceExW() failure, as statvfs() would set it for the same path. */
+static int
+dsd_free_space_errno(DWORD err) {
+    switch (err) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND: return ENOENT;
+        case ERROR_ACCESS_DENIED: return EACCES;
+        case ERROR_DIRECTORY: return ENOTDIR;
+        case ERROR_INVALID_NAME: return EINVAL;
+        default: return EIO;
+    }
+}
+
+int64_t
+dsd_path_free_bytes(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (wide_len <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    wchar_t* wide = (wchar_t*)calloc((size_t)wide_len, sizeof(wchar_t));
+    if (!wide) {
+        errno = ENOMEM;
+        return -1;
+    }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) <= 0) {
+        free(wide);
+        errno = EINVAL;
+        return -1;
+    }
+    ULARGE_INTEGER available;
+    available.QuadPart = 0;
+    /* GetDiskFreeSpaceExW() takes a folder: a file's path fails with ERROR_DIRECTORY (ENOTDIR). */
+    const BOOL ok = GetDiskFreeSpaceExW(wide, &available, NULL, NULL);
+    const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+    free(wide);
+    if (!ok) {
+        errno = dsd_free_space_errno(err);
+        return -1;
+    }
+    return available.QuadPart > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)available.QuadPart;
+}
+
 int
 dsd_fseek64(FILE* fp, int64_t offset, int whence) {
     if (!fp) {
@@ -437,6 +484,30 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     const unsigned long native = (unsigned long)_doserrno;
     errno = (native == ERROR_ALREADY_EXISTS || native == ERROR_FILE_EXISTS) ? EEXIST : saved;
     return -1;
+}
+
+int
+dsd_path_canonical(const char* path, char* out, size_t out_size) {
+    if (!path || path[0] == '\0' || !out || out_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    char full[_MAX_PATH];
+    if (_fullpath(full, path, sizeof full) == NULL) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    struct _stat64 st;
+    if (_stat64(full, &st) != 0) {
+        return -1;
+    }
+    const int n = DSD_SNPRINTF(out, out_size, "%s", full);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
 }
 
 static int

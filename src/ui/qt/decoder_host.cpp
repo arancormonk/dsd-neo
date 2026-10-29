@@ -187,14 +187,19 @@ DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPat
 
 bool
 DecoderHost::copyFileToDocument(const QString& sourcePath, const QString& reference) const {
+    return copyFileToLocalDocument(sourcePath, reference, &m_documentTransfersAborted);
+}
+
+bool
+DecoderHost::copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
+                                     const std::atomic<bool>* aborted) {
     const QString path = local_document_path(reference);
     QFile source(sourcePath);
     if (path.isEmpty() || !QFileInfo(sourcePath).isFile() || !source.open(QIODevice::ReadOnly)) {
         return false;
     }
     QSaveFile out(path);
-    return open_private(out) && copy_stream_capped(source, out, -1, &m_documentTransfersAborted) == DocumentCopied
-           && out.commit();
+    return open_private(out) && copy_stream_capped(source, out, -1, aborted) == DocumentCopied && out.commit();
 }
 
 void
@@ -261,6 +266,201 @@ DecoderHost::licenseNotices() const {
         }
     }
     return notices.join(QStringLiteral("\n\n"));
+}
+
+QStringList
+DecoderHost::recordingRoots() const {
+    // json_store's root, like the imports: one app data location for everything the app keeps.
+    return {json_store_path(QStringLiteral("Call recordings"))};
+}
+
+void
+DecoderHost::playRecording(const QString& path) {
+    if (path.isEmpty()) {
+        return;
+    }
+    // A play that fails still replaces the recording playing: the player stops (stopPlayback(), which a platform
+    // overrides) before the failure is published, so the store lets go of a file only once nothing plays it.
+    if (!QFileInfo(path).isFile()) {
+        stopPlayback();
+        publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("missing"));
+        reportRecordingsMissing({path});
+        return;
+    }
+    if (!playbackSupported()) {
+        stopPlayback();
+        publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
+        return;
+    }
+    // Published before the platform is asked, so the store holds the file from the first moment it may be open.
+    publishPlayback(path, PlaybackPreparing, 0, 0, QString());
+    beginPlayback(path);
+}
+
+void
+DecoderHost::beginPlayback(const QString& path) {
+    publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
+}
+
+void
+DecoderHost::stopPlayback() {
+    publishPlayback(QString(), PlaybackStopped, 0, 0, QString());
+}
+
+void
+DecoderHost::publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs,
+                             const QString& error) {
+    const bool changed = path != m_playbackPath || state != m_playbackState || durationMs != m_playbackDurationMs
+                         || error != m_playbackError;
+    const bool moved = positionMs != m_playbackPositionMs;
+    m_playbackPath = path;
+    m_playbackState = state;
+    m_playbackPositionMs = positionMs;
+    m_playbackDurationMs = durationMs;
+    m_playbackError = error;
+    if (changed) {
+        Q_EMIT playbackChanged();
+    }
+    if (moved) {
+        Q_EMIT playbackPositionChanged();
+    }
+}
+
+bool
+DecoderHost::exportRecordings(const QVariantMap& selection, const QString& reference) {
+    return beginTransfer(selection, reference, true);
+}
+
+bool
+DecoderHost::saveRecording(const QVariantMap& selection, const QString& reference) {
+    return beginTransfer(selection, reference, false);
+}
+
+bool
+DecoderHost::beginTransfer(const QVariantMap& selection, const QString& reference, bool zip) {
+    const int id = selection.value(QStringLiteral("selection")).toInt();
+    const QStringList paths = selection.value(QStringLiteral("paths")).toStringList();
+    const QStringList names = selection.value(QStringLiteral("names")).toStringList();
+    if (recordingTransferActive()) {
+        announceTransferEnd(id, TransferBusy, 0);
+        return false;
+    }
+    if (zip && !recordingExportSupported()) {
+        announceTransferEnd(id, TransferUnsupported, 0);
+        return false;
+    }
+    // A save copies one recording; a zip names each entry, so the two lists go together.
+    if (id <= 0 || reference.isEmpty() || paths.isEmpty() || (zip ? names.size() != paths.size() : paths.size() != 1)) {
+        announceTransferEnd(id, TransferFailed, 0);
+        return false;
+    }
+    // No file is looked at here, on the GUI thread (an export may name tens of thousands): the transfer finds the ones
+    // gone on its own thread, reports them at its end and publishes the total it really has.
+    m_transferSelection = id;
+    m_transferBytes = 0;
+    m_transferTotalBytes = selection.value(QStringLiteral("bytes")).toLongLong();
+    Q_EMIT recordingTransferChanged();
+    if (!beginRecordingTransfer(paths, zip ? names : QStringList(), reference, zip)) {
+        finishRecordingTransfer(TransferFailed, {});
+        return false;
+    }
+    return true;
+}
+
+bool
+DecoderHost::beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
+                                    bool zip) {
+    (void)names;
+    if (zip || paths.size() != 1) {
+        return false;
+    }
+    const QFileInfo file(paths.first());
+    if (!file.isFile()) {
+        publishRecordingTransferProgress(0, 0);
+        finishRecordingTransfer(TransferMissing, paths);
+        return true;
+    }
+    publishRecordingTransferProgress(0, file.size());
+    const bool saved = copyFileToDocument(paths.first(), reference);
+    if (saved) {
+        publishRecordingTransferProgress(file.size(), file.size());
+    }
+    finishRecordingTransfer(saved ? TransferDone : TransferFailed, {});
+    return true;
+}
+
+void
+DecoderHost::publishRecordingTransferProgress(qint64 bytes, qint64 totalBytes) {
+    if (!recordingTransferActive() || (bytes == m_transferBytes && totalBytes == m_transferTotalBytes)) {
+        return;
+    }
+    m_transferBytes = bytes;
+    m_transferTotalBytes = totalBytes;
+    Q_EMIT recordingTransferChanged();
+}
+
+void
+DecoderHost::finishRecordingTransfer(int result, const QStringList& missing) {
+    if (!recordingTransferActive()) {
+        return;
+    }
+    reportRecordingsMissing(missing);
+    const int selection = m_transferSelection;
+    const int gone = static_cast<int>(missing.size());
+    m_transferSelection = -1;
+    m_transferBytes = 0;
+    m_transferTotalBytes = 0;
+    Q_EMIT recordingTransferChanged();
+    announceTransferEnd(selection, result, gone);
+}
+
+void
+DecoderHost::announceTransferEnd(int selection, int result, int missing) {
+    QMetaObject::invokeMethod(
+        this, [this, selection, result, missing]() { Q_EMIT recordingTransferFinished(selection, result, missing); },
+        Qt::QueuedConnection);
+}
+
+bool
+DecoderHost::shareRecording(const QString& path, const QString& title) {
+    if (path.isEmpty() || !shareSupported() || !m_recordingIndexed || !m_recordingIndexed(path)) {
+        return false;
+    }
+    if (!QFileInfo(path).isFile()) {
+        reportRecordingsMissing({path});
+        return false;
+    }
+    return shareRecordingFile(path, title);
+}
+
+void
+DecoderHost::setRecordingIndex(std::function<bool(const QString&)> indexed) {
+    m_recordingIndexed = std::move(indexed);
+}
+
+void
+DecoderHost::setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release) {
+    m_recordingHold = std::move(hold);
+    m_recordingRelease = std::move(release);
+}
+
+int
+DecoderHost::holdRecording(const QString& path) const {
+    return m_recordingHold ? m_recordingHold(path) : 0;
+}
+
+void
+DecoderHost::releaseRecordingHold(int hold) const {
+    if (hold > 0 && m_recordingRelease) {
+        m_recordingRelease(hold);
+    }
+}
+
+void
+DecoderHost::reportRecordingsMissing(const QStringList& paths) {
+    if (!paths.isEmpty()) {
+        Q_EMIT recordingFilesMissing(paths);
+    }
 }
 
 QString

@@ -141,7 +141,8 @@ CLI's output to check that neither a loaded nor a refused key is ever printed.
 a backup restore waits on (every service state but IDLE, or the engine atomic, is busy; asking never refreshes the
 host), and the backup's document dispatch: a `content://` reference goes to the platform transport (stubbed), a file URL
 or plain path to the base host's copy, a stale destination is removed before the platform copies, and a copy reported
-without its file fails. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
+without its file fails. It links the real recording store (`DSD_NEO_TEST_HOOKS` on, for its pass hooks), so a share
+queued behind an export is shown held in the store until its copy is made. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
 build or emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
 `ANDROID_DECODER_STATUS_JVM` runs `DecoderStatus.kt`, the notification status record's reader, with no stubs, and
@@ -161,6 +162,19 @@ cancelling a held size lookup, a held read open and a held write open (with no `
 refusing later transfers without a provider call. A failure on the device's side of a copy (a missing destination
 directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCAL_FAILED`, and the suite first checks
 that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
+Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (`recording_player`) runs
+`RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player: a pause or the background while
+preparing, focus denied or lost, completion, seeks before the player is ready, a replaced player's late callbacks;
+`ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs `RecordingExport.kt` with `DocumentCopies.kt` against the
+provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the export after
+it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;
+`ANDROID_RECORDING_SHARE_JVM` (`recording_share`) runs
+`RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks, the share copy that
+outlives its original, the copies' clean and the share intent.
+Each first checks what crosses JNI or the manifest (the playback states and transfer results against `DecoderHost`'s
+enums, the provider serving only the two "Call recordings" folders and the share copies' cache folder, with a read
+grant). They skip the FIFO and
+symbolic-link cases where the host cannot make them.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

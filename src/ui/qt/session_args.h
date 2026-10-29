@@ -29,6 +29,7 @@ class AppPrefs;
 class DecoderHost;
 class SavedSystemsModel;
 class DecryptionProfileProvider;
+class RecordingSessions;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
 struct SessionArgPrefs {
@@ -43,6 +44,16 @@ struct SessionArgPrefs {
     bool relaxedCrc = false;
     double hangtimeSec = 2.0;
     QString extraArgs;
+    /* Call recording (issue #708). The folder the session records into, from the recording store: with one, the argv
+       names it (-7) and its journal (--wav-journal), records per call (-P) when recordCalls is on and records only
+       unknown talkgroups (--record-unknown-only) when recordUnknownOnly is; without one (no storage to record to, or
+       a validation-only build) the argv names no recording at all. */
+    bool recordCalls = false;
+    bool recordUnknownOnly = false;
+    QString recordingFolder;
+    /* The store was asked for a folder and had none (no storage available): an extra -P is refused, since it would
+       record outside any folder the app manages. False for a validation-only build, which asks for none. */
+    bool recordingUnavailable = false;
 };
 
 /** @brief The app-wide defaults @p prefs holds, as a session starts with them; the struct's defaults for nullptr. The
@@ -79,12 +90,31 @@ enum class SessionArgsError {
     /* A TETRA system (-fT) on a source that is neither a radio nor a symbol capture file: its audio arrives demodulated. */
     TetraNeedsIq,
     /* Issue #580: a file system whose recording is not set (a restored backup clears every replay recording). */
-    RecordingMissing
+    RecordingMissing,
+    /* Issue #708: extra options that say where call recordings go or delete them (-7, --wav-journal,
+       --rdio-api-delete-after-upload): the app owns the folder, the journal and the deletion. */
+    CallRecordingOption,
+    /* Issue #708: a static WAV (-w) among the extra options while Record calls is on; the two cannot run together. */
+    CallRecordingStaticWav,
+    /* Issue #708: a per-call -P among the extra options while no storage is available for call recordings. */
+    CallRecordingNoStorage
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::RecordingMissing;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::CallRecordingNoStorage;
+
+/**
+ * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
+ *
+ * The app chooses the folder and journal (-7, --wav-journal) and deletes recordings itself (its storage limit, never
+ * --rdio-api-delete-after-upload, so no file vanishes under playback or an export), in either option form ("-7dir",
+ * "--wav-journal=file"); a static WAV (-w) is refused only while @p recordCalls is on, and a per-call -P while
+ * @p noStorage (no folder to record into: it would record outside the app's storage). Tokens are walked as the
+ * decoder walks its argv (dsd_cli_long_option_arity(), dsd_cli_short_option_takes_value()): the value of an option is
+ * never read as an option ("-c -7", "--input-level-warn-db -7"), and an option is never read as a value.
+ */
+SessionArgsError session_args_recording_extra_error(const QString& tokens, bool recordCalls, bool noStorage = false);
 
 /** Every Unicode space (QChar::isSpace(): NBSP and the rest included), '-' and ':' grouping removed, then a leading
  * 0x or 0X stripped, uppercase hex. Only for hex material (session_args_key_type_hex() types and the profile model's
@@ -150,14 +180,26 @@ class SessionArgsBuilder : public QObject {
         m_profiles = profiles;
     }
 
+    /** @brief Where start() asks for the session's call recording folder (issue #708); nullptr: nowhere. */
+    void
+    setRecordingSessions(RecordingSessions* sessions) {
+        m_recordingSessions = sessions;
+    }
+
     /**
      * @brief Validate one saved-system field map without returning key-bearing argv.
      * @return {"ok": bool, "error": category, "errorText": sentence}, and for "am-bandwidth" "bandwidthChoices":
      *         session_args_am_bandwidth_choices().
      */
     Q_INVOKABLE QVariantMap build(const QVariantMap& system) const;
-    /** Resolve retained keys and start entirely in C++; adds a non-secret "started" boolean. */
-    Q_INVOKABLE QVariantMap start(const QVariantMap& system, DecoderHost* host) const;
+    /**
+     * Resolve retained keys and start entirely in C++; adds a non-secret "started" boolean.
+     *
+     * @p kind is what the start is (issue #708): "saved" for a saved system, which records into its own folder;
+     * "explore" or "search" for Explore and Signal search, which share one. The map alone cannot tell: an edited
+     * Explore start can carry the uid of the saved system it was copied from.
+     */
+    Q_INVOKABLE QVariantMap start(const QVariantMap& system, DecoderHost* host, const QString& kind) const;
 
     /** @brief Frequency validity for the wizard's step gating; see session_args_freq_valid(). */
     Q_INVOKABLE bool freqValid(const QString& freqMhz) const;
@@ -177,10 +219,18 @@ class SessionArgsBuilder : public QObject {
                                  const QString& protocol = QString()) const;
 
   private:
-    QStringList buildArgs(const QVariantMap& system, SessionArgsError* error) const;
+    QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,
+                          const QString& recordingFolder = QString(), bool recordingUnavailable = false) const;
+    /* start()'s build: with the session's call recording folder when @p host can record it (@p recording set, the
+       folder's session begun). */
+    QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
+                              SessionArgsError* error, bool* recording) const;
+    /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
+    void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;
+    RecordingSessions* m_recordingSessions = nullptr;
 };
 
 } // namespace dsd_qt

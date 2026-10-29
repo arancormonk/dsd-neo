@@ -7,7 +7,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Help: `dsd-neo -h` | UI/logs: `--frontend terminal` (`-N` alias), `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
-- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
+- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `--wav-journal calls.jsonl`, `--record-unknown-only`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x9`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
@@ -244,20 +244,44 @@ Windows console runs:
   recording is never replaced. That holds outright where the filesystem offers a no-replace rename or hard links;
   on one with neither, the name is claimed with an empty file first, which another program can see for a moment.
   A per-call WAV holds digital voice at the level and with the high-pass it plays with: the same file with or without
-  `-y`, with `-o null`, muted, or under any preset (issue #653).
+  `-y`, with `-o null`, muted, or under any preset (issue #653). The system, target and source in a file's name have
+  the characters a file name cannot hold (`/`, as in an M17 or D-STAR callsign, `\`, `:`, `*`, `?`, `"`, `<`, `>`,
+  `|`, control characters, a byte that is not part of valid UTF-8) and dots and spaces replaced with `_`; the call
+  history and rdio-scanner metadata keep them as received. A recording whose write falls short (a full disk) ends there and is published with what it holds;
+  one that does not close cleanly keeps its `TEMP_` name. A slot file that fails to open opens again at the slot's
+  next call end. Each kind of failure (open, write, close, rename) is logged the first time in a run and counted after.
 - Recordings (`-w`, `-P`, `-d`) follow each talkgroup's `record` policy: a lockout (`B`/`DE`), avoid, skip, an
   allow-list or Hold miss, or `record=off` keeps the call out of the per-call WAV, the static WAV and MBE capture,
   live and in SDRTrunk JSON playback. A matching Hold (`-I`) overrides a row's lockout or `record=off`, as it does
   for audio; avoids and skips still apply. The static WAV holds only what is heard: on a two-slot mix a record-blocked
   slot's channel is written silent while the other slot is still written.
-- `-7 <dir>` Set folder for per‑call WAVs (use before `-P`). A path longer than 511 bytes is refused.
+- `--record-unknown-only` Record only talkgroups the group list (`-G`) does not know: a call an exact or range row
+  matches is kept out of the per-call WAV, the static WAV and MBE capture as if the row said `record=off`, and so is a
+  private call when either radio has an exact row. Learned radio-ID aliases (mode `D`) do not count. A matching Hold
+  still records; avoids and skips still block; tuning and playback are unchanged. INI:
+  `[recording] unknown_talkgroups_only`. A running session changes it through the API's `record_unknown_only_set`
+  (`docs/api.md`).
+- `-7 <dir>` Set folder for per‑call WAVs, before or after `-P`; the folder is created when decoding starts if it does
+  not exist. A path longer than 511 bytes is refused.
+- `--wav-journal <file>` Append one JSON line to `<file>` for each per-call WAV published (`publish`: its name, start,
+  length, and the call history row it belongs to), each one deleted for holding no audio (`discard`) or kept under
+  its `TEMP_` name (`error`), and `link`/`unlink` lines for a recording closed before its call's history row
+  (a WAV stop mid-call, a conventional NFM call's end) once that row commits or never will. A program that manages
+  the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
+  torn line gets a newline first. A journal that cannot be opened or written is turned off for the rest of the run
+  with one error in the log; decoding and recording go on. A run with a journal keeps every file it uploads: while
+  the journal is set, `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes
+  nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The option
+  keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
+  `docs/code_map.md` ("Recording journal").
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
 - `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
-- `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
+- `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
+  `--wav-journal` is set
 - `-r <files>` Play saved MBE files
   SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
   the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by

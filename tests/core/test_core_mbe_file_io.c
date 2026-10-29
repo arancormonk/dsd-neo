@@ -1910,6 +1910,29 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
     return rc;
 }
 
+/* The talkgroup policies a recording test replays its call (talkgroup 1234) under, in order: two that block recording,
+ * then two that record. --record-unknown-only (issue #708) blocks a talkgroup with a row and records one without. */
+enum {
+    RECORD_POLICY_MODE_B,
+    RECORD_POLICY_KNOWN_UNKNOWN_ONLY,
+    RECORD_POLICY_UNKNOWN_UNKNOWN_ONLY,
+    RECORD_POLICY_NO_ROW,
+    RECORD_POLICY_CASES
+};
+
+static int
+apply_record_policy(dsd_opts* opts, dsd_state* state, int policy) {
+    opts->record_unknown_only =
+        policy == RECORD_POLICY_KNOWN_UNKNOWN_ONLY || policy == RECORD_POLICY_UNKNOWN_UNKNOWN_ONLY;
+    if (policy == RECORD_POLICY_MODE_B) {
+        return expect_int("record policy blocked row", dsd_tg_policy_set_mode(state, 1234, 1234, "B"), 0);
+    }
+    if (policy == RECORD_POLICY_KNOWN_UNKNOWN_ONLY) {
+        return expect_int("record policy listed row", dsd_tg_policy_set_mode(state, 1234, 1234, "A"), 0);
+    }
+    return 0;
+}
+
 /* SDRTrunk JSON playback writes its static and per-call WAVs itself; both
  * honour the replayed call's talkgroup policy, as live decode does. */
 static int
@@ -1922,7 +1945,8 @@ test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
     static Event_History_I history[2];
     int rc = 0;
     for (int per_call = 0; per_call <= 1; ++per_call) {
-        for (int blocked = 1; blocked >= 0; --blocked) {
+        for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
+            const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
             DSD_MEMSET(&opts, 0, sizeof opts);
             DSD_MEMSET(&state, 0, sizeof state);
             DSD_MEMSET(history, 0, sizeof history);
@@ -1950,9 +1974,7 @@ test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
             } else {
                 opts.static_wav_file = 1;
             }
-            if (blocked) {
-                rc |= expect_int("sdrtrunk wav blocked row", dsd_tg_policy_set_mode(&state, 1234, 1234, "B"), 0);
-            }
+            rc |= apply_record_policy(&opts, &state, policy);
 
             rc |= run_sdrtrunk_json(json, &opts, &state);
             sf_close(opts.wav_out_f);
@@ -1985,7 +2007,8 @@ test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy(void) {
     static dsd_state state;
     static Event_History_I history[2];
     int rc = 0;
-    for (int blocked = 1; blocked >= 0; --blocked) {
+    for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
+        const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
         DSD_MEMSET(history, 0, sizeof history);
@@ -1997,9 +2020,7 @@ test_sdrtrunk_json_mbe_capture_honors_talkgroup_policy(void) {
             return 1;
         }
         opts.mbe_out_f = out;
-        if (blocked) {
-            rc |= expect_int("sdrtrunk capture blocked row", dsd_tg_policy_set_mode(&state, 1234, 1234, "B"), 0);
-        }
+        rc |= apply_record_policy(&opts, &state, policy);
         rc |= run_sdrtrunk_json(json, &opts, &state);
         (void)fflush(out);
         (void)fseek(out, 0, SEEK_END);
@@ -3296,9 +3317,9 @@ test_close_and_rename_wav_removes_header_only_files(void) {
     }
 
     rc |= expect_true("close rename null filename rejects",
-                      close_and_rename_wav_file(NULL, NULL, NULL, dir, NULL, 0) == NULL);
+                      close_and_rename_wav_file_ex(NULL, NULL, NULL, dir, NULL, 0, 1, NULL) == NULL);
     rc |= expect_true("close rename empty filename rejects",
-                      close_and_rename_wav_file(NULL, NULL, "", dir, NULL, 0) == NULL);
+                      close_and_rename_wav_file_ex(NULL, NULL, "", dir, NULL, 0, 1, NULL) == NULL);
 
     char path[DSD_TEST_PATH_MAX];
     DSD_MEMSET(path, 0, sizeof path);
@@ -3306,7 +3327,7 @@ test_close_and_rename_wav_removes_header_only_files(void) {
     rc |= expect_true("close rename source wav opened", wav != NULL);
     if (wav) {
         rc |= expect_true("close rename header-only returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, NULL, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, NULL, 0, 1, NULL) == NULL);
         rc |= expect_true("close rename header-only removed source", file_size_or_negative(path) < 0);
     }
 
@@ -3343,7 +3364,7 @@ test_close_and_rename_wav_preserves_nonempty_event_file(void) {
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "TGTUNIT");
 
         rc |= expect_true("close rename nonempty returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, &history, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 1, NULL) == NULL);
         rc |= expect_true("close rename nonempty removed temp source", file_size_or_negative(path) < 0);
 
         char renamed[DSD_TEST_PATH_MAX];
@@ -3391,7 +3412,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "SYS-N");
 
         rc |= expect_true("numeric rename returns null",
-                          close_and_rename_wav_file(wav, NULL, path, dir, &history, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 1, NULL) == NULL);
         rc |= expect_true("numeric rename removed temp source", file_size_or_negative(path) < 0);
 
         char renamed[DSD_TEST_PATH_MAX];
@@ -3417,7 +3438,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
         char missing_dir[DSD_TEST_PATH_MAX];
         DSD_SNPRINTF(missing_dir, sizeof missing_dir, "%s%cmissing", dir, dsd_test_path_sep());
         rc |= expect_true("rename failure returns null",
-                          close_and_rename_wav_file(wav, NULL, fail_path, missing_dir, NULL, 0) == NULL);
+                          close_and_rename_wav_file_ex(wav, NULL, fail_path, missing_dir, NULL, 0, 1, NULL) == NULL);
         rc |= expect_true("rename failure keeps original temp wav", file_size_or_negative(fail_path) > 44);
     }
 
@@ -3428,7 +3449,7 @@ test_close_and_rename_wav_numeric_and_failure_paths(void) {
 }
 
 // The sidecar files a recording at its call's start (event_start_time), or at the WAV's open time when per-call WAV
-// was switched on after the call began; close_and_rename_wav_file() hands the exporter that open time.
+// was switched on after the call began; close_and_rename_wav_file_ex() hands the exporter that open time.
 static int
 close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) {
     int rc = 0;
@@ -3469,7 +3490,7 @@ close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) 
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "FIRE DISP");
 
         rc |= expect_true("rdio rename returns null",
-                          close_and_rename_wav_file(wav, &opts, path, dir, &history, opened) == NULL);
+                          close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, opened, 1, NULL) == NULL);
         rc |= expect_true("rdio rename removed temp source", file_size_or_negative(path) < 0);
 
         // The file is still named for the row's last activity (event_time); only the sidecar files the call by
@@ -3507,6 +3528,106 @@ close_and_rename_rdio_case(const char* label, time_t opened, time_t want_start) 
 
     (void)remove(path);
     (void)remove_dir(dir);
+    return rc;
+}
+
+/*
+ * Issue #708: a radio identity can hold characters a file name cannot. M17's base-40 callsigns have '/' and '.', and a
+ * D-STAR callsign carries its suffix after a '/'. The recording is published under a name with them replaced, as a
+ * service name's are; the call's row keeps the identity as received, and so does the rdio-scanner sidecar.
+ */
+static int
+publish_unsafe_identity_case(const char* label, const char* sys, const char* tgt, const char* src, uint32_t target_id,
+                             const char* want_name_tail) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_identity")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 8000, 0);
+    rc |= expect_true(label, wav != NULL);
+    if (wav) {
+        rc |= expect_true(label, write_wav_test_samples(wav));
+
+        static dsd_opts opts;
+        static Event_History_I history;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&history, 0, sizeof history);
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_system_id = 17;
+        opts.rdio_upload_timeout_ms = 5000;
+        opts.rdio_upload_retries = 1;
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_start_time = (time_t)1700003000;
+        item->event_time = (time_t)1700003005;
+        item->gi = 0;
+        item->target_id = target_id;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", sys);
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", tgt);
+        DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", src);
+
+        rc |= expect_true(label, close_and_rename_wav_file_ex(wav, &opts, path, dir, &history, 0, 1, NULL) == NULL);
+        rc |= expect_true(label, strcmp(item->sysid_string, sys) == 0 && strcmp(item->tgt_str, tgt) == 0
+                                     && strcmp(item->src_str, src) == 0);
+
+        dir_files_ctx files;
+        DSD_MEMSET(&files, 0, sizeof files);
+        files.dir = dir;
+        (void)dsd_dir_list(dir, collect_dir_file, &files);
+        int recordings = 0;
+        int temps = 0;
+        char renamed[DSD_TEST_PATH_MAX] = {0};
+        for (int i = 0; i < files.count; i++) {
+            if (strncmp(files.names[i], "TEMP_", 5) == 0) {
+                temps++;
+            } else if (has_suffix(files.names[i], ".wav")) {
+                recordings++;
+                DSD_SNPRINTF(renamed, sizeof renamed, "%s/%s", dir, files.names[i]);
+                rc |= expect_true(label, has_suffix(files.names[i], want_name_tail));
+            }
+        }
+        if (temps != 0 || recordings != 1) {
+            DSD_FPRINTF(stderr, "%s: %d recordings published, %d left under a temp name\n", label, recordings, temps);
+            rc = 1;
+        }
+        if (renamed[0] != '\0') {
+            rc |= expect_wav_header(label, renamed);
+            char sidecar[DSD_TEST_PATH_MAX];
+            char body[4096];
+            if (target_id != 0U) {
+                char want[256];
+                DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\"", tgt);
+                if (make_rdio_sidecar_path(renamed, sidecar, sizeof sidecar) != 0
+                    || read_file_prefix(sidecar, body, sizeof body) != 0) {
+                    DSD_FPRINTF(stderr, "%s: no rdio sidecar\n", label);
+                    rc = 1;
+                } else {
+                    rc |= expect_true(label, strstr(body, want) != NULL);
+                    DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\"", sys);
+                    rc |= expect_true(label, strstr(body, want) != NULL);
+                }
+                (void)remove(sidecar);
+            }
+        }
+    }
+
+    remove_dir_tree(dir);
+    return rc;
+}
+
+static int
+test_close_and_rename_wav_replaces_unsafe_identity_characters(void) {
+    int rc = publish_unsafe_identity_case("D-STAR callsign with a suffix", "DSTAR", "CQCQCQ", "N0CALL/ID51", 0U,
+                                          "_DSTAR_GROUP_TGT_CQCQCQ_SRC_N0CALL_ID51.wav");
+    rc |= publish_unsafe_identity_case("M17 callsigns with '/' and '.'", "M17_CAN_7", "M17-M17 C", "AB1CD/P.2", 4021U,
+                                       "_M17_CAN_7_GROUP_TGT_M17-M17_C_SRC_AB1CD_P_2.wav");
+    /* The system component is sanitized the same way; the sidecar's short_name keeps the system as received. */
+    rc |= publish_unsafe_identity_case("a system name with '/', ' ' and '.'", "SYS/A B.1", "100", "7", 100U,
+                                       "_SYS_A_B_1_GROUP_TGT_100_SRC_7.wav");
     return rc;
 }
 
@@ -3733,6 +3854,7 @@ main(void) {
     rc |= test_close_and_rename_wav_preserves_nonempty_event_file();
     rc |= test_close_and_rename_wav_numeric_and_failure_paths();
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
+    rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
 
     if (rc == 0) {
         printf("CORE_MBE_FILE_IO: OK\n");

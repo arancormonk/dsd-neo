@@ -19,7 +19,13 @@
  * fold across fragments by the fragment they came from, fill in place, and fill a
  * notice heard again. Saves are bounded by bytes written, not by calls: a large store
  * waits longer between saves, and the moments the log must reach the disk (saveNow(),
- * the app leaving the screen) write it at once, even with a save already in flight. */
+ * the app leaving the screen) write it at once, even with a save already in flight.
+ * Issue #708: every row has a stable uid that rowForUid() finds wherever the row moves, and
+ * carries the ring fragments it absorbed through merges, load folding and reloads; the
+ * recording roles come from the recording provider by those fragments and follow its change
+ * news (a recording known before its row, one added later, one deleted). A save that fails,
+ * in either store, keeps the log owed, is retried on a growing delay without another change,
+ * reports once, and a restart after a half-written save logs nothing twice (B6). */
 
 #include <QByteArray>
 #include <QChar>
@@ -36,9 +42,11 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QMetaType>
 #include <QModelIndex>
 #include <QObject>
+#include <QSet>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -46,6 +54,8 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
@@ -62,11 +72,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
 
 #include "call_history_filter.h"
 #include "call_history_model.h"
+#include "call_recording_provider.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "teardown_trace_capture.h"
@@ -79,6 +91,21 @@ class QThread;
 namespace {
 
 int g_failures = 0;
+
+/* The model's once-only save-failure warning, counted and kept out of the output (the tests fail saves on purpose). */
+std::atomic<int> g_saveFailedWarnings{0};
+QtMessageHandler g_previousHandler = nullptr;
+
+void
+count_warnings(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (message.startsWith(QLatin1String("call history: saving the log failed"))) {
+        g_saveFailedWarnings++;
+        return;
+    }
+    if (g_previousHandler != nullptr) {
+        g_previousHandler(type, context, message);
+    }
+}
 
 void
 expect(const char* what, bool ok) {
@@ -2316,6 +2343,323 @@ test_leaving_the_screen_saves(void) {
     QCoreApplication::processEvents();
 }
 
+/* Issue #708: a stand-in for the call recording store, with a recording on each fragment of @c recorded. */
+class FakeRecordings : public dsd_qt::CallRecordingProvider {
+  public:
+    QSet<QString> recorded;
+
+    QVariantList
+    recordingsForFragments(const QStringList& fragments) const override {
+        QVariantList list;
+        for (const QString& fragment : fragments) {
+            if (recorded.contains(fragment)) {
+                list.append(QVariantMap{{QStringLiteral("fragment"), fragment}});
+            }
+        }
+        return list;
+    }
+
+    bool
+    hasRecordingForFragments(const QStringList& fragments) const override {
+        for (const QString& fragment : fragments) {
+            if (recorded.contains(fragment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+/* The fragment key of the newest row @p slot committed. */
+QString
+newest_fragment(const RingFixture& ring, int slot) {
+    return dsd_qt::call_history_fragment_key(ring.rings[slot].instance, slot, ring.rings[slot].push_seq);
+}
+
+qint64
+uid_at(const CallHistoryModel& model, int row) {
+    return model.data(model.index(row), CallHistoryModel::UidRole).toLongLong();
+}
+
+bool
+has_recording(const CallHistoryModel& model, int row) {
+    return model.data(model.index(row), CallHistoryModel::HasRecordingRole).toBool();
+}
+
+/* The detail sheet follows a row by its uid: unique, kept through merges and reloads, found by rowForUid() wherever
+ * the row moved, announced by rowPositionsChanged(), and never handed out again, not even after a clear. */
+void
+test_rows_have_stable_uids(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754700000;
+    qint64 uidA = 0;
+    qint64 uidB = 0;
+    {
+        CallHistoryModel model;
+        ring.commit(0, 21001, 501, when, when + 4);
+        ring.commit(0, 21002, 502, when + 60, when + 64);
+        model.refresh(ring.state);
+        uidB = uid_at(model, 0);
+        uidA = uid_at(model, 1);
+        expect("rows get distinct uids", uidA > 0 && uidB > 0 && uidA != uidB);
+        expect("rowForUid finds each row", model.rowForUid(uidA) == 1 && model.rowForUid(uidB) == 0);
+        expect("no row has uid 0 or an unknown uid", model.rowForUid(0) == -1 && model.rowForUid(uidB + 1000) == -1);
+
+        QSignalSpy moved(&model, &CallHistoryModel::rowPositionsChanged);
+        ring.commit(0, 21003, 503, when + 120, when + 124);
+        model.refresh(ring.state);
+        expect("a new row announces that rows moved", moved.count() >= 1);
+        expect("rowForUid follows a row pushed down", model.rowForUid(uidA) == 2 && model.rowForUid(uidB) == 1);
+
+        // A second fragment of call A folds into its row, which keeps its uid.
+        ring.commit(1, 21001, 501, when + 2, when + 10);
+        model.refresh(ring.state);
+        expect("the fragment merges", model.count() == 3);
+        expect("a merge keeps the row's uid",
+               uid_at(model, model.rowForUid(uidA)) == uidA
+                   && model.data(model.index(model.rowForUid(uidA)), CallHistoryModel::TgRole).toULongLong() == 21001U);
+    }
+    qint64 highest = 0;
+    {
+        CallHistoryModel restored;
+        expect("uids survive a reload",
+               restored.count() == 3 && restored.rowForUid(uidA) == 2 && restored.rowForUid(uidB) == 1);
+        for (int i = 0; i < restored.count(); i++) {
+            highest = qMax(highest, uid_at(restored, i));
+        }
+        restored.clearAll();
+        restored.waitForSaveForTest();
+    }
+    RingFixture fresh;
+    CallHistoryModel relaunched;
+    relaunched.beginSession(); // a start: the clear made before any read covers nothing new
+    fresh.commit(0, 21004, 504, when + 300, when + 304);
+    relaunched.refresh(fresh.state);
+    expect("a uid is never handed out twice, not even after a clear",
+           relaunched.count() == 1 && uid_at(relaunched, 0) > highest);
+}
+
+/* A row carries every ring fragment it absorbed (persisted as `fr`): through a merge, a reload and load folding. A
+ * fragment leaves with its row when the log is trimmed or cleared. */
+void
+test_fragments_follow_merges_reloads_and_trims(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754701000;
+    FakeRecordings recordings;
+    QString first;
+    QString second;
+    {
+        CallHistoryModel model;
+        model.setRecordingProvider(&recordings);
+        ring.commit(0, 22001, 601, when, when + 4);
+        first = newest_fragment(ring, 0);
+        model.refresh(ring.state);
+        ring.commit(1, 22001, 601, when + 3, when + 9);
+        second = newest_fragment(ring, 1);
+        model.refresh(ring.state);
+        expect("the two fragments are one row", model.count() == 1);
+        recordings.recorded.insert(second);
+        expect("the merged row holds the fragment it absorbed", has_recording(model, 0));
+        recordings.recorded = {first};
+        expect("and its own", has_recording(model, 0));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        QCoreApplication::processEvents();
+        const QJsonArray fr = stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), 22001)
+                                  .value(QLatin1String("fr"))
+                                  .toArray();
+        expect("both fragments are stored", fr.size() == 2 && fr.contains(first) && fr.contains(second));
+    }
+    {
+        CallHistoryModel restored;
+        restored.setRecordingProvider(&recordings);
+        recordings.recorded = {second};
+        expect("the fragments survive a reload", restored.count() == 1 && has_recording(restored, 0));
+    }
+
+    // Two stored rows of one call fold at load (a log written before coalescing, or by two models): the survivor
+    // holds both rows' fragments.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject a = rows.at(0).toObject();
+    QJsonObject b = a;
+    a.insert(QLatin1String("fr"), QJsonArray{QStringLiteral("00000000000000AA:0:1")});
+    a.remove(QLatin1String("uid"));
+    b.insert(QLatin1String("when"), static_cast<qint64>(when) + 5);
+    b.insert(QLatin1String("slot"), 1);
+    b.insert(QLatin1String("seq"), 9);
+    b.insert(QLatin1String("fr"), QJsonArray{QStringLiteral("00000000000000BB:1:9")});
+    b.remove(QLatin1String("uid"));
+    expect("two-row store written", dsd_qt::json_store_save_array("call_history.json", QJsonArray{a, b}));
+    {
+        CallHistoryModel folded;
+        folded.setRecordingProvider(&recordings);
+        expect("the stored rows fold into one", folded.count() == 1 && uid_at(folded, 0) > 0);
+        recordings.recorded = {QStringLiteral("00000000000000AA:0:1")};
+        const bool hasA = has_recording(folded, 0);
+        recordings.recorded = {QStringLiteral("00000000000000BB:1:9")};
+        expect("load folding keeps both rows' fragments", hasA && has_recording(folded, 0));
+    }
+
+    // Trimmed and cleared rows give their fragments up: news about them reaches no row.
+    resetStorage();
+    RingFixture busy;
+    CallHistoryModel full;
+    full.setRecordingProvider(&recordings);
+    busy.commit(0, 9999, 1, 1754600000 - 100, 1754600000 - 96);
+    const QString oldest = newest_fragment(busy, 0);
+    full.refresh(busy.state);
+    fill_live_session(full, busy, 4, 30000);
+    expect("the oldest row is trimmed", full.count() == 1000 && rows_in_tg_range(full, 9999, 9999) == 0);
+    QSignalSpy changed(&full, &QAbstractItemModel::dataChanged);
+    recordings.recorded = {oldest};
+    full.recordingFragmentsChanged({oldest});
+    expect("a trimmed row's fragment reaches no row", changed.isEmpty());
+    const QString kept = newest_fragment(busy, 0);
+    full.clearAll();
+    full.recordingFragmentsChanged({kept});
+    expect("a cleared row's fragment reaches no row", changed.isEmpty());
+}
+
+/* The recording roles come from the provider by fragment: none without one; a recording the store knew before its
+ * row arrived shows when the row does; one added or deleted later reaches its row through the change news. */
+void
+test_recording_roles_follow_the_provider(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754702000;
+    CallHistoryModel model;
+    ring.commit(0, 23001, 701, when, when + 4);
+    const QString early = newest_fragment(ring, 0);
+    model.refresh(ring.state);
+    expect("no provider, no recordings",
+           !has_recording(model, 0) && model.data(model.index(0), CallHistoryModel::RecordingsRole).toList().isEmpty());
+
+    FakeRecordings recordings;
+    recordings.recorded.insert(
+        dsd_qt::call_history_fragment_key(ring.rings[0].instance, 0, ring.rings[0].push_seq + 1U));
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    model.setRecordingProvider(&recordings);
+    expect("a new provider refreshes the recording roles",
+           data_changed_with(changed, {CallHistoryModel::RecordingsRole, CallHistoryModel::HasRecordingRole}));
+    ring.commit(0, 23002, 702, when + 60, when + 64);
+    model.refresh(ring.state);
+    expect("a recording journaled before its row shows when the row arrives",
+           has_recording(model, 0)
+               && model.data(model.index(0), CallHistoryModel::RecordingsRole).toList().size() == 1);
+    expect("the older row has none", !has_recording(model, 1));
+
+    changed.clear();
+    model.recordingFragmentsChanged({QStringLiteral("0000000000000000:0:1")});
+    expect("news about a fragment no row holds changes nothing", changed.isEmpty());
+    recordings.recorded.insert(early);
+    model.recordingFragmentsChanged({early});
+    expect("a recording added later reaches its row",
+           changed.count() == 1 && qvariant_cast<QModelIndex>(changed.at(0).at(0)) == model.index(1)
+               && data_changed_with(changed, {CallHistoryModel::RecordingsRole, CallHistoryModel::HasRecordingRole})
+               && has_recording(model, 1));
+    changed.clear();
+    recordings.recorded.remove(early);
+    model.recordingFragmentsChanged({early});
+    expect("a deleted recording leaves its row", changed.count() == 1 && !has_recording(model, 1));
+    // The detail sheet follows its row by uid, wherever the row has moved.
+    const qint64 newest = model.data(model.index(0), CallHistoryModel::UidRole).toLongLong();
+    expect("a row's recordings by its uid",
+           model.recordingsForUid(newest) == model.data(model.index(0), CallHistoryModel::RecordingsRole).toList()
+               && model.recordingsForUid(newest).size() == 1);
+    expect("a uid no row has has none",
+           model.recordingsForUid(newest + 1000).isEmpty() && model.recordingsForUid(0).isEmpty());
+    model.setRecordingProvider(nullptr);
+    expect("without the provider no row has one", !has_recording(model, 0));
+}
+
+/* Issue #708, B6: a save that does not reach the disk was treated as done. A store that cannot be written (here a
+ * directory in its place, which fails for root too) keeps the log owed: the save is retried on a growing delay with no
+ * new change, the failure is reported once, and the next save that commits both stores ends it. */
+void
+test_failed_save_is_kept_and_retried(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754703000;
+    CallHistoryModel model;
+    ring.commit(0, 24001, 801, when, when + 4);
+    model.refresh(ring.state);
+    const QString seenPath = dsd_qt::json_store_path("call_history_seen.json");
+    expect("the seen store is blocked", QDir().mkpath(seenPath));
+    QSignalSpy failing(&model, &CallHistoryModel::saveFailingChanged);
+    g_saveFailedWarnings = 0;
+    model.startSaveForTest();
+    settle_save(model);
+    expect("a half-written save is a failure", model.saveFailing() && failing.count() == 1);
+    expect("the rows store that could be written was", stored_tg(24001U));
+    expect("the failed save is retried without another change", model.savePendingForTest());
+    const int firstRetry = model.saveDelayMsForTest();
+    expect("the first retry waits the save delay", firstRetry >= 3000);
+    model.startSaveForTest(); // the retry, as its timer would
+    settle_save(model);
+    expect("a failure again keeps it owed, on a longer delay",
+           model.saveFailing() && model.savePendingForTest() && model.saveDelayMsForTest() > firstRetry);
+    expect("the failure is reported once", failing.count() == 1 && g_saveFailedWarnings == 1);
+
+    expect("the seen store is unblocked", QDir(seenPath).removeRecursively());
+    model.startSaveForTest();
+    settle_save(model);
+    expect("the next save that commits both stores ends the failure", !model.saveFailing() && failing.count() == 2);
+    expect("both stores hold the log",
+           stored_tg(24001U) && dsd_qt::json_store_load_array("call_history_seen.json").size() == 1);
+    expect("nothing is owed after it", !model.savePendingForTest());
+
+    // Both stores blocked: still one report, and saveNow() with the log owed tries at once.
+    const QString rowsPath = dsd_qt::json_store_path("call_history.json");
+    QFile::remove(rowsPath);
+    QFile::remove(seenPath);
+    expect("both stores are blocked", QDir().mkpath(rowsPath) && QDir().mkpath(seenPath));
+    ring.commit(0, 24002, 802, when + 60, when + 64);
+    model.refresh(ring.state);
+    model.saveNow();
+    settle_save(model);
+    expect("a save of neither store is a failure, owed again", model.saveFailing() && model.savePendingForTest());
+    expect("a new run of failures is reported once more", g_saveFailedWarnings == 2);
+    QDir(rowsPath).removeRecursively();
+    QDir(seenPath).removeRecursively();
+    model.saveNow();
+    settle_save(model);
+    expect("saveNow on an owed log writes it", !model.saveFailing() && stored_tg(24002U));
+}
+
+/* B6 across a restart: a save that wrote the rows store but not the seen store leaves a log whose seen entries lag.
+ * A relaunched model reading the same ring logs no row twice. */
+void
+test_restart_after_a_half_written_save(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754704000;
+    const QString seenPath = dsd_qt::json_store_path("call_history_seen.json");
+    {
+        CallHistoryModel model;
+        ring.commit(0, 25001, 901, when, when + 4);
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        settle_save(model);
+        expect("the first save lands", stored_tg(25001U) && !model.saveFailing());
+        expect("the seen store is blocked", QDir().mkpath(seenPath + QStringLiteral(".blocked"))
+                                                && QFile::remove(seenPath)
+                                                && QDir().rename(seenPath + QStringLiteral(".blocked"), seenPath));
+        ring.commit(0, 25002, 902, when + 60, when + 64);
+        ring.commit(1, 25003, 903, when + 120, when + 124);
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        settle_save(model);
+        expect("the rows land, the seen entries do not", stored_tg(25002U) && stored_tg(25003U) && model.saveFailing());
+    } // the destructor's save fails the same way
+    QDir(seenPath).removeRecursively();
+    CallHistoryModel relaunched;
+    expect("the relaunch has every row", relaunched.count() == 3);
+    relaunched.refresh(ring.state);
+    expect("and logs none twice from the ring", relaunched.count() == 3);
+}
+
 /* The view's rows, by talkgroup, in view order. */
 QList<qulonglong>
 view_tgs(const CallHistoryFilterModel& view) {
@@ -2484,6 +2828,7 @@ main(int argc, char** argv) {
     }
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
+    g_previousHandler = qInstallMessageHandler(count_warnings);
 
     test_system_identity_persistence();
     test_scanning_rows_never_gain_hold_identity();
@@ -2546,6 +2891,11 @@ main(int argc, char** argv) {
     test_save_now_mid_write_queues_the_next_save();
     test_leaving_the_screen_saves();
     test_destructor_marks_its_teardown_stage();
+    test_rows_have_stable_uids();
+    test_fragments_follow_merges_reloads_and_trims();
+    test_recording_roles_follow_the_provider();
+    test_failed_save_is_kept_and_retried();
+    test_restart_after_a_half_written_save();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

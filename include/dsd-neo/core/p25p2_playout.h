@@ -65,8 +65,9 @@ enum {
 /**
  * What a call's talkgroup verdict reads that can move within its epoch (dsd_p25p2_playout_policy_key()): the call's
  * identity and the talkgroup its policy is judged on (a group call's policy target, its patch's member while that is
- * current; a private call's own target), the policy table's version, the hold, the allow-list switch, and the decode
- * clock's second (a cheap bound for anything that runs out with time).
+ * current; a private call's own target), the policy table's version, the hold, the allow-list switch, the
+ * unknown-talkgroups-only record switch, and the decode clock's second (a cheap bound for anything that runs out with
+ * time).
  */
 typedef struct dsd_p25p2_policy_key {
     uint64_t table_context;
@@ -78,6 +79,7 @@ typedef struct dsd_p25p2_policy_key {
     uint32_t tg_hold;
     uint8_t kind; /**< dsd_call_kind. */
     uint8_t allow_list;
+    uint8_t record_unknown_only; /**< opts->record_unknown_only: it moves the verdict's recordable (issue #708). */
 } dsd_p25p2_policy_key;
 
 /** The decode gate's decision for a burst: its verdict, and what it judged the call on (the call's epoch and key). */

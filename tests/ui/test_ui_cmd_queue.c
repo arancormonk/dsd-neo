@@ -7565,6 +7565,67 @@ test_stale_notice_post_stays_in_its_session(void) {
     return rc;
 }
 
+/* Issue #708: a TG_ROW_SET that turns Listening on and Record off applies Record after the mode, whose change
+   re-derives the media flags; Record asked on a row that does not listen stays off; Record alone edits only it. */
+static int
+test_talkgroup_row_record_after_mode(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    int rc = 0;
+    rc |= expect_int("not tuned row", dsd_tg_policy_set_mode(state, 1200, 1200, "B"), 0);
+    dsd_app_tg_row_payload edit = {.id_start = 1200,
+                                   .id_end = 1200,
+                                   .fields = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_RECORD,
+                                   .listen = 1,
+                                   .record = 0};
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    rc |=
+        expect_true("listen and record queued", dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit) > 0);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_lookup_id(state, 1200, &lookup);
+    rc |= expect_str("listening on", lookup.entry.mode, "A");
+    rc |= expect_int("plays", lookup.entry.audio, 1);
+    rc |= expect_int("record applied after the mode", lookup.entry.record, 0);
+
+    edit.fields = DSD_APP_TG_FIELD_RECORD;
+    edit.record = 1;
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_lookup_id(state, 1200, &lookup);
+    rc |= expect_int("record alone", lookup.entry.record, 1);
+    rc |= expect_str("record alone keeps the mode", lookup.entry.mode, "A");
+
+    edit.fields = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_RECORD;
+    edit.listen = 0;
+    edit.record = 1;
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_lookup_id(state, 1200, &lookup);
+    rc |= expect_str("not tuned", lookup.entry.mode, "B");
+    rc |= expect_int("a row not tuned records nothing", lookup.entry.record, 0);
+
+    edit.fields = DSD_APP_TG_FIELD_RECORD;
+    edit.record = 2;
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("record above 1 refused", state->ui_msg, "Invalid talkgroup fields");
+
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* Issue #637: a decoder holding one carrier in a loop of its own (dmrBS()) returns to the frame loop for any queued
    command but the deferrable ones (display, audio, keys, recording, front-end slider tweaks); a command that mixes both
    is judged by its payload. Asked through the hook the session installs, over the real queue. */
@@ -7611,6 +7672,8 @@ test_commands_that_need_the_frame_loop(void) {
         {&value, sizeof value, "RF gain", DSD_APP_CMD_RTL_SET_GAIN, 0},
         {&value, sizeof value, "squelch level", DSD_APP_CMD_RTL_SET_SQL_DB, 0},
         {&value, sizeof value, "eye diagram", DSD_APP_CMD_EYE_TOGGLE, 0},
+        {&value, sizeof value, "per-call WAV start", DSD_APP_CMD_WAV_START, 0},
+        {&value, sizeof value, "record unknown talkgroups only", DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -20529,6 +20592,7 @@ main(void) {
     rc |= test_temporary_lockout_commands(0);
     rc |= test_temporary_lockout_commands(1);
     rc |= test_talkgroup_row_commands();
+    rc |= test_talkgroup_row_record_after_mode();
     rc |= test_talkgroup_export_result();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();

@@ -664,3 +664,72 @@ function fitTokens(tokens, avail, fm, sep, more) {
         return text
     return text + more
 }
+
+// Issue #708: a call recording size, decimal as the phone's own storage screens
+// count it (RecordingStore::kBytesPerMb): "820 kB", "4.2 MB", "312 MB", "1.4 GB".
+// One decimal below ten of a unit, where a whole number would hide most of it.
+function sizeText(bytes) {
+    var b = Math.max(0, Number(bytes) || 0)
+    var unit = function (value, name) {
+        var digits = value < 10 && Math.round(value * 10) % 10 !== 0 ? 1 : 0
+        return fixed(value, digits) + " " + name
+    }
+    if (b < 1e6)
+        return Math.max(b > 0 ? 1 : 0, Math.round(b / 1e3)) + " kB"
+    if (b < 1e9)
+        return unit(b / 1e6, "MB")
+    return unit(b / 1e9, "GB")
+}
+
+// The storage limit in its choices' words: 0 is no limit.
+function limitText(mb) {
+    return mb > 0 ? sizeText(mb * 1e6) : qsTr("No limit")
+}
+
+// A count with the locale's digit grouping: "1,204".
+function countText(n) {
+    return Number(n || 0).toLocaleString(Qt.locale(), "f", 0)
+}
+
+// "312 MB of 1 GB · 1,204 recordings", or without "of …" under no limit.
+function recordingUsageText(usedBytes, limitMb, count) {
+    var used = limitMb > 0 ? qsTr("%1 of %2").arg(sizeText(usedBytes)).arg(limitText(limitMb)) : sizeText(usedBytes)
+    var counted = count === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(countText(count))
+    return used + " · " + counted
+}
+
+// A name made safe inside a file name, by the rule the recording store names
+// folders with (recording_sanitize_name()): path separators, the characters
+// Windows refuses and control characters become "_", and the ends lose dots and
+// spaces.
+function fileNameText(name) {
+    return String(name || "").replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "")
+}
+
+// A player position in milliseconds as "m:ss", whole seconds played.
+function playbackTimeText(ms) {
+    return fmtDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)))
+}
+
+// A recording's length in milliseconds as "m:ss", to the nearest second; a
+// length under half a second reads 0:01, so a real recording never reads empty.
+function playbackLengthText(ms) {
+    var value = Number(ms) || 0
+    return fmtDuration(value > 0 ? Math.max(1, Math.round(value / 1000)) : 0)
+}
+
+// Issue #708: the store notices Settings and the Call recordings screen share.
+function recordingStorageAwayText() {
+    return qsTr("Storage for call recordings isn't available right now. Saved recordings are kept.")
+}
+
+function removedByLimitText(count) {
+    return count === 1 ? qsTr("The storage limit removed the oldest recording.")
+                       : qsTr("The storage limit removed the %1 oldest recordings.").arg(countText(count))
+}
+
+function deleteFailuresText(count, reason) {
+    var text = count === 1 ? qsTr("1 recording couldn't be deleted.")
+                           : qsTr("%1 recordings couldn't be deleted.").arg(countText(count))
+    return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
+}

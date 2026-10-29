@@ -16,6 +16,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
@@ -37,10 +38,40 @@ extern "C" {
  * @brief Toggle all encrypted-audio mute flags (P25 + DMR left/right).
  */
 int svc_toggle_all_mutes(dsd_opts* opts);
+
+/** What the recording outputs are set to (issue #708). */
+typedef enum { SVC_RECORDING_OFF = 0, SVC_RECORDING_PER_CALL = 1, SVC_RECORDING_STATIC = 2 } svc_recording_mode;
+
+typedef struct {
+    int mode;                                                /* svc_recording_mode */
+    char dir[sizeof(((dsd_opts*)0)->wav_out_dir)];           /* the per-call folder */
+    char static_path[sizeof(((dsd_opts*)0)->wav_out_file)];  /* the static WAV; "" unless mode is STATIC */
+    char raw_path[sizeof(((dsd_opts*)0)->wav_out_file_raw)]; /* the raw WAV; "" for none */
+    int reopen_missing; /* the mode unchanged: open a file it is missing (WAV_START's slot, a static open's file) */
+    int raw_restart;    /* the raw path unchanged: reopen it anyway (a raw open of the path it records) */
+} svc_recording_target;
+
+/** The recording outputs @p opts runs now, as a target that changes nothing. */
+void svc_recording_current(const dsd_opts* opts, svc_recording_target* out);
 /**
- * @brief Enable per-call WAV capture, creating the output directory if needed.
+ * @brief The one transition of the recording outputs: per-call WAVs and their folder, the static WAV, the raw WAV. A
+ * component @p target does not change is left alone. New outputs open first, in the target's folder; one that does not
+ * open changes nothing and returns -1, naming it in @p failed (may be NULL). Then the old outputs close as their own
+ * kind (per-call files published in the folder they were opened in, a static WAV as a static file) and the new ones are
+ * installed; 0. Decoder thread, under the P25 SM tick guard.
+ */
+int svc_recording_transition(dsd_opts* opts, dsd_state* state, const svc_recording_target* target, char* failed,
+                             size_t failed_size);
+/**
+ * @brief Enable per-call WAV capture (WAV_START) in the options' folder, creating it if needed: slot files that are open
+ * stay, missing ones open; -1 (nothing changed) when one does not open. A static WAV closes as one.
  */
 int svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Stop WAV recording (WAV_STOP): close a static WAV as one, or publish the per-call slot files and the NFM
+ * call's recording. Returns 0 (also with nothing open), -1 without @p opts.
+ */
+int svc_stop_wav_recording(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Set the symbol capture output filename and open it for writing.
@@ -189,9 +220,11 @@ void svc_set_p2_params(dsd_state* state, unsigned long long wacn, unsigned long 
 int svc_set_event_log(dsd_opts* opts, const char* path);
 /** @brief Disable event logging and clear the path. */
 void svc_disable_event_log(dsd_opts* opts);
-/** @brief Configure static WAV output (single file, no stereo split) and open it. */
+/** @brief Configure static WAV output (single file, no stereo split) through svc_recording_transition(): -1 leaves
+ * what records as it was; 0 has closed what recorded before (per-call files published). */
 int svc_open_static_wav(dsd_opts* opts, dsd_state* state, const char* path);
-/** @brief Configure RAW WAV output and open it. */
+/** @brief Configure RAW WAV output through svc_recording_transition(): a new path that does not open leaves the raw
+ * WAV that runs; the path it records restarts it. */
 int svc_open_raw_wav(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Enable DSP debug output to the given filename under ./DSP/. */
 int svc_set_dsp_output_file(dsd_opts* opts, const char* filename);

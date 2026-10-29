@@ -1120,6 +1120,19 @@ dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
     DSD_MEMSET(&lifecycle->committed_env, 0, sizeof(lifecycle->committed_env));
 }
 
+uint64_t
+dsd_call_state_pending_row_epoch(const dsd_state* state, uint8_t slot) {
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (!ext || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return 0U;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    const uint64_t epoch = lifecycle->ended_committed ? 0U : lifecycle->epoch;
+    dsd_call_state_ext_unlock(ext);
+    return epoch;
+}
+
 int
 dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot) {
     if (!state || !snapshot) {

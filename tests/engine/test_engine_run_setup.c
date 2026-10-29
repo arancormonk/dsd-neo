@@ -4,19 +4,29 @@
  */
 
 #include <dsd-neo/core/analog_tone.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/wav_journal.h>
+#include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
@@ -1130,6 +1140,124 @@ test_missing_source_labels_do_not_stop_decode(void) {
     return rc;
 }
 
+#if DSD_PLATFORM_WIN_NATIVE
+/* The Windows CRT's narrow file calls read a path in the ANSI code page, so a UTF-8 folder name is not tried there. */
+#define PER_CALL_TEST_FOLDER "Call recordings"
+#else
+#define PER_CALL_TEST_FOLDER "Call recordings \xC3\xA9t\xC3\xA9"
+#endif
+
+/* What the per-call WAV outputs were when the run started. */
+typedef struct {
+    const char* dir;
+    int starts;
+    int opened_in_dir;
+} per_call_start_probe;
+
+static int
+path_has_dir(const char* path, const char* dir) {
+    const size_t n = strlen(dir);
+    return strncmp(path, dir, n) == 0 && path[n] == '/';
+}
+
+static int
+probe_per_call_outputs_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)state;
+    per_call_start_probe* probe = (per_call_start_probe*)context;
+    probe->starts++;
+    probe->opened_in_dir = opts->wav_out_f != NULL && opts->wav_out_fR != NULL
+                           && path_has_dir(opts->wav_out_file, probe->dir)
+                           && path_has_dir(opts->wav_out_fileR, probe->dir);
+    return 0;
+}
+
+static int
+remove_listed_file(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/*
+ * Issue #708: with -P on the command line, the engine opens both slots' recordings when it starts, in the folder -7
+ * names, creating it, whichever order the two options come in. -P used to open them while it was parsed, in the folder
+ * set by then, so `-P -7 <folder>` recorded into ./WAV and left the folder empty. The folder's name has a space, and
+ * non-ASCII letters where the platform's file calls take UTF-8.
+ */
+static int
+test_per_call_wav_opens_in_the_cli_folder_at_start(void) {
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_engine_per_call") != 0) {
+        DSD_FPRINTF(stderr, "per-call start: temp working directory failed\n");
+        return 1;
+    }
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        const char* tag = order == 0 ? "-P -7" : "-7 -P";
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            rc = 1;
+            break;
+        }
+        char dir[DSD_TEST_PATH_MAX];
+        if (dsd_test_path_join(dir, sizeof dir, cwd.dir, PER_CALL_TEST_FOLDER) != 0) {
+            free_test_runtime(opts, state);
+            rc = 1;
+            break;
+        }
+        char arg0[] = "dsd-neo";
+        char opt_p[] = "-P";
+        char opt_7[] = "-7";
+        char* argv_p_first[] = {arg0, opt_p, opt_7, dir, NULL};
+        char* argv_dir_first[] = {arg0, opt_7, dir, opt_p, NULL};
+        int argc_effective = 0;
+        int exit_rc = 0;
+        const int parsed =
+            dsd_parse_args(4, order == 0 ? argv_p_first : argv_dir_first, opts, state, &argc_effective, &exit_rc);
+        if (parsed != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "%s: parse rc=%d\n", tag, parsed);
+            rc = 1;
+        }
+
+        per_call_start_probe probe = {dir, 0, 0};
+        const dsd_engine_lifecycle_hooks hooks = {.start = probe_per_call_outputs_at_start, .context = &probe};
+        if (dsd_engine_run_with_lifecycle(opts, state, &hooks) != 0 || probe.starts != 1) {
+            DSD_FPRINTF(stderr, "%s: the run failed (starts %d)\n", tag, probe.starts);
+            rc = 1;
+        }
+        if (!probe.opened_in_dir) {
+            DSD_FPRINTF(stderr, "%s: the slot recordings were not open in the -7 folder at start (%s, %s)\n", tag,
+                        opts->wav_out_file, opts->wav_out_fileR);
+            rc = 1;
+        }
+        dsd_stat_t st;
+        if (dsd_stat_path(dir, &st) != 0) {
+            DSD_FPRINTF(stderr, "%s: the engine did not create the -7 folder\n", tag);
+            rc = 1;
+        }
+        if (dsd_stat_path("WAV", &st) == 0) {
+            DSD_FPRINTF(stderr, "%s: ./WAV was created\n", tag);
+            rc = 1;
+        }
+
+        /* The run's end discards recordings that hold no audio; whatever is left goes. */
+        (void)dsd_dir_list(dir, remove_listed_file, dir);
+        (void)dsd_test_rmdir(dir);
+        char default_dir[] = "WAV";
+        (void)dsd_dir_list(default_dir, remove_listed_file, default_dir);
+        (void)dsd_test_rmdir(default_dir);
+        free_test_runtime(opts, state);
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "per-call start: the temp working directory was left non-empty\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 /* Occurrences of @p needle in @p text. */
 static int
 count_text(const char* text, const char* needle) {
@@ -1138,6 +1266,203 @@ count_text(const char* text, const char* needle) {
         count++;
     }
     return count;
+}
+
+/* What the recording journal was when the run started, and the slot recordings open when live processing ended. */
+typedef struct {
+    int starts;
+    int stops;
+    int journal_at_start;
+    uint32_t failures_at_start;
+    char pending_id[64];
+    char open_ids[2][64];
+} journal_run_probe;
+
+/* The journal id a per-call temp name stands for: TEMP_<date>_<time>_<token>_<seq>[.wav] gives "<token>-<seq>". */
+static void
+journal_id_of_temp(const char* temp, char* out, size_t cap) {
+    out[0] = '\0';
+    const char* seq = temp ? strrchr(temp, '_') : NULL;
+    if (seq && seq - temp >= 17) {
+        const char* dot = strchr(seq, '.');
+        const int seq_len = dot ? (int)(dot - seq - 1) : (int)strlen(seq + 1);
+        DSD_SNPRINTF(out, cap, "%.16s-%.*s", seq - 16, seq_len, seq + 1);
+    }
+}
+
+static void
+write_slot_voice(dsd_opts* opts, dsd_state* state, int frames) {
+    for (int f = 0; f < frames; f++) {
+        for (int i = 0; i < 160; i++) {
+            state->audio_out_temp_buf[i] = (float)((i % 32) * 512 - 8192);
+        }
+        dsd_write_mono_voice_to_slot_wav(opts, state, 0);
+    }
+}
+
+/* At start: the journal's state and the run's failure counts. Then slot 1 records a call and closes its recording
+   before the call's row commits (as the EDACS rotation does), so that recording waits for the row, and goes on
+   recording the call in a new file, which is still open when the run ends. */
+static int
+probe_journal_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    journal_run_probe* probe = (journal_run_probe*)context;
+    probe->starts++;
+    probe->journal_at_start = (int)dsd_wav_journal_state_get();
+    dsd_wav_recording_status status;
+    dsd_wav_recording_status_get(&status);
+    probe->failures_at_start = 0U;
+    for (int kind = 0; kind < DSD_WAV_RECORDING_ERROR_KINDS; kind++) {
+        probe->failures_at_start += status.failures[kind];
+    }
+    if (opts->wav_out_f == NULL) {
+        return 0;
+    }
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 708U,
+        .policy_target_id = 708U,
+        .ota_source_id = 7U,
+    };
+    (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, 0);
+    write_slot_voice(opts, state, 2);
+    journal_id_of_temp(opts->wav_out_file, probe->pending_id, sizeof probe->pending_id);
+    opts->wav_out_f = close_and_publish_call_wav(opts->wav_out_f, opts, state, 0, opts->wav_out_file, opts->wav_out_dir,
+                                                 opts->wav_out_open_time);
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+    opts->wav_out_open_time = dsd_decode_time();
+    write_slot_voice(opts, state, 2);
+    return 0;
+}
+
+static void
+probe_journal_at_stop(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)state;
+    journal_run_probe* probe = (journal_run_probe*)context;
+    probe->stops++;
+    journal_id_of_temp(opts->wav_out_f ? opts->wav_out_file : NULL, probe->open_ids[0], sizeof probe->open_ids[0]);
+    journal_id_of_temp(opts->wav_out_fR ? opts->wav_out_fileR : NULL, probe->open_ids[1], sizeof probe->open_ids[1]);
+}
+
+/* The journal line of @p type naming @p id, or NULL. */
+static const char*
+journal_record_for(const char* text, const char* type, const char* id) {
+    char want[160];
+    DSD_SNPRINTF(want, sizeof want, "\"type\":\"%s\",", type);
+    char want_id[96];
+    DSD_SNPRINTF(want_id, sizeof want_id, "\"id\":\"%s\"", id);
+    for (const char* line = text; line && *line;) {
+        const char* nl = strchr(line, '\n');
+        const size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        char one[4096];
+        DSD_SNPRINTF(one, sizeof one, "%.*s", (int)len, line);
+        if (strstr(one, want) != NULL && strstr(one, want_id) != NULL) {
+            return line;
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+    return NULL;
+}
+
+/*
+ * Issue #708: the engine's half of the recording journal. With -P and --wav-journal, the run opens the journal before
+ * its first recording, in the -7 folder it creates when that is new (the journal used to open first and fail there),
+ * and a failure count left by an earlier run reads 0 at start. The journal closes only after the run's last
+ * recordings: each slot recording open at the end gets its record (a publish, or a discard for one with no audio),
+ * every recording that waited for its row is resolved by a link or an unlink, and the journal is off afterwards.
+ */
+static int
+test_run_journals_its_recordings_from_start_to_end(void) {
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_engine_journal") != 0) {
+        DSD_FPRINTF(stderr, "run journal: temp working directory failed\n");
+        return 1;
+    }
+    int rc = 0;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)dsd_test_temp_cwd_leave(&cwd);
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    char journal_path[DSD_TEST_PATH_MAX * 2];
+    rc |= expect_true("run journal: folder path", dsd_test_path_join(dir, sizeof dir, cwd.dir, "calls") == 0);
+    rc |= expect_true("run journal: journal path",
+                      dsd_test_path_join(journal_path, sizeof journal_path, dir, "recordings.jsonl") == 0);
+    char arg0[] = "dsd-neo";
+    char opt_p[] = "-P";
+    char opt_7[] = "-7";
+    char opt_journal[] = "--wav-journal";
+    char* argv[] = {arg0, opt_p, opt_7, dir, opt_journal, journal_path, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    rc |= expect_true("run journal: parse",
+                      dsd_parse_args(6, argv, opts, state, &argc_effective, &exit_rc) == DSD_PARSE_CONTINUE);
+
+    (void)dsd_wav_recording_note_failure(DSD_WAV_RECORDING_ERROR_OPEN);
+    journal_run_probe probe;
+    DSD_MEMSET(&probe, 0, sizeof probe);
+    const dsd_engine_lifecycle_hooks hooks = {
+        .start = probe_journal_at_start,
+        .stop = probe_journal_at_stop,
+        .context = &probe,
+    };
+    rc |= expect_true("run journal: the run", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
+    rc |= expect_true("run journal: started and stopped once", probe.starts == 1 && probe.stops == 1);
+    rc |= expect_true("run journal: on at start, in the new -7 folder", probe.journal_at_start == DSD_WAV_JOURNAL_ON);
+    rc |= expect_true("run journal: an earlier run's failures read 0 at start", probe.failures_at_start == 0U);
+    rc |= expect_true("run journal: off after the run", dsd_wav_journal_state_get() == DSD_WAV_JOURNAL_OFF);
+
+    static char text[64 * 4096];
+    text[0] = '\0';
+    FILE* f = dsd_fopen_existing_regular_file(journal_path, "rb");
+    if (f) {
+        const size_t n = fread(text, 1, sizeof text - 1, f);
+        text[n] = '\0';
+        (void)fclose(f);
+    }
+    const char* pending = probe.pending_id[0] ? journal_record_for(text, "publish", probe.pending_id) : NULL;
+    rc |= expect_true("run journal: the recording closed before its row is published waiting for it",
+                      pending != NULL && strncmp(strstr(pending, "\"pending\":"), "\"pending\":true", 14) == 0);
+    for (const char* at = strstr(text, "\"pending\":true"); at; at = strstr(at + 1, "\"pending\":true")) {
+        const char* line = at;
+        while (line > text && line[-1] != '\n') {
+            line--;
+        }
+        const char* id_at = strstr(line, "\"id\":\"");
+        char id[64] = {0};
+        if (id_at) {
+            id_at += 6;
+            const char* id_end = strchr(id_at, '"');
+            DSD_SNPRINTF(id, sizeof id, "%.*s", id_end ? (int)(id_end - id_at) : 0, id_at);
+        }
+        if (!journal_record_for(text, "link", id) && !journal_record_for(text, "unlink", id)) {
+            DSD_FPRINTF(stderr, "run journal: pending recording %s was never linked or unlinked\n", id);
+            rc = 1;
+        }
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        const char* id = probe.open_ids[slot];
+        if (id[0] == '\0' || (!journal_record_for(text, "publish", id) && !journal_record_for(text, "discard", id))) {
+            DSD_FPRINTF(stderr, "run journal: slot %d's recording open at the end (%s) has no record\n", slot + 1, id);
+            rc = 1;
+        }
+    }
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "run journal:\n%s\n", text);
+    }
+
+    (void)dsd_dir_list(dir, remove_listed_file, dir);
+    (void)dsd_test_rmdir(dir);
+    free_test_runtime(opts, state);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        DSD_FPRINTF(stderr, "run journal: the temp working directory was left non-empty\n");
+        rc = 1;
+    }
+    return rc;
 }
 
 /*
@@ -1634,6 +1959,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_missing_source_labels_do_not_stop_decode();
+    rc |= test_per_call_wav_opens_in_the_cli_folder_at_start();
+    rc |= test_run_journals_its_recordings_from_start_to_end();
     rc |= test_conflicting_scan_modes_fail_before_live_setup();
     rc |= test_m17_udp_input_and_output_specs();
     rc |= test_m17_userdata_is_normalized_during_common_setup();

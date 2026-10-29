@@ -31,14 +31,21 @@
  * Each row also carries the frequency and access code its call was heard with (issue
  * #575). A merged row takes each from the newest fragment that knew it, field by field
  * (call_history_merge.h), and the access code's text is app-control's, spelled when read.
+ *
+ * Issue #708: each row has a stable uid, and the ring fragments it absorbed, which is how its
+ * call recordings find it (call_recording_provider.h). While the app is in the background, where
+ * Qt pauses this model's thread, CallHistoryTap keeps reading the ring and spills what it finds;
+ * the model folds that in when it reads again. A save counts only when both stores committed.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
 
 #include <QAbstractListModel> // IWYU pragma: keep -- public header for the base class.
+#include <QByteArray>
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QSet>
@@ -47,10 +54,14 @@
 #include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
+#include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
+#include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <memory>
 #include <stdint.h>
 
 #include "heard_talkgroup_source.h"
@@ -61,6 +72,15 @@ class QThread;
 
 namespace dsd_qt {
 
+class CallHistorySpill;
+class CallHistorySpillReader;
+class CallHistoryTap;
+class CallRecordingProvider;
+
+/** @brief Where the background tap reads the published rings: dsd_app_history_tap_copy() in the app. */
+using CallHistoryTapSource = int (*)(int slot, Event_History_I* out, dsd_app_history_tap_cursor* cursor,
+                                     dsd_app_history_tap_meta* meta);
+
 class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource {
     Q_OBJECT
     Q_INTERFACES(dsd_qt::HeardTalkgroupSource)
@@ -69,6 +89,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
     Q_PROPERTY(qlonglong session READ session NOTIFY sessionChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
+    /* True from the first save of the log that fails to reach the disk until one succeeds (issue #708, B6). */
+    Q_PROPERTY(bool saveFailing READ saveFailing NOTIFY saveFailingChanged)
 
   public:
     enum Roles {
@@ -92,7 +114,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         AccessCodeRole, // "CC 1", "NAC 293", "RAN 5", "CAN 0" (app_control/access_code_view.h), else empty
         ServiceNameRole,
         ReceivedToneRole,
-        AccessCodeTextRole // "Color code 1", "Network access code 293", ..., else empty
+        AccessCodeTextRole, // "Color code 1", "Network access code 293", ..., else empty
+        UidRole,            // the row's stable identity (qint64), for rowForUid()
+        RecordingsRole,     // the row's call recordings (CallRecordingProvider), oldest first
+        HasRecordingRole    // whether the row has any
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -159,8 +184,65 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     Q_INVOKABLE void beginSession();
 
+    /**
+     * @brief Begin a new decode session (beginSession()) on the system @p label, @p uid (sessionLabel, sessionUid).
+     *
+     * One change, not three setter calls: while the app is away the background tap is handed off once and started
+     * again only after every field moved, so a call it finds is never attributed to half of the change.
+     */
+    Q_INVOKABLE void beginSessionOn(const QString& label, const QString& uid);
+
+    /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
+    Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
+
+    /**
+     * @brief The row that has @p uid now, or -1.
+     *
+     * A row's position moves as calls arrive, merge and age out; its uid does not. A view that follows one row (the
+     * detail sheet) keeps the uid and looks its row up again on rowPositionsChanged().
+     */
+    Q_INVOKABLE int rowForUid(qint64 uid) const;
+
+    /**
+     * @brief The call recordings of the row that has @p uid now (RecordingsRole), or none.
+     *
+     * For the detail sheet, which follows one row by its uid: it reads them again on dataChanged() and
+     * rowPositionsChanged(), so a fragment folded into the row, or a recording deleted, shows while it is open.
+     */
+    Q_INVOKABLE QVariantList recordingsForUid(qint64 uid) const;
+
+    bool
+    saveFailing() const {
+        return m_saveFailing;
+    }
+
+    /**
+     * @brief Read the recording roles from @p provider; nullptr reports no recordings. Not owned.
+     *
+     * The provider tells the model which fragments changed through recordingFragmentsChanged().
+     */
+    void setRecordingProvider(const CallRecordingProvider* provider);
+
+    /**
+     * @brief Let the background tap read the published rings through @p source (dsd_app_history_tap_copy()).
+     *
+     * Without a source (tests that drive the ring by hand) nothing reads the ring while the app is in the background.
+     */
+    void setHistoryTapSource(CallHistoryTapSource source);
+
+    /**
+     * @brief Whether the app came back from the background with the tap still running.
+     *
+     * The tap stops at the first ingest after that (refresh()), which also folds in what it spilled. UiController
+     * calls flushHistory() for it when no redraw would.
+     */
+    bool
+    backgroundCaptureHandoffOwed() const {
+        return m_handoffOwed;
+    }
 
     /** @brief HeardTalkgroupSource: read straight from the rows, no QVariant per row (issue #718). */
     QList<uint32_t> heardTalkgroups(qint64 forSession) const override;
@@ -205,9 +287,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     void saveNow();
 
+  public Q_SLOTS:
+    /** @brief The recording store's news: the recordings of @p fragments changed; their rows re-read their roles. */
+    void recordingFragmentsChanged(const QStringList& fragments);
+
+  public:
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Call @p observer with the thread each store's JSON is built on (nullptr stops). */
     static void setStoreBuildObserverForTest(void (*observer)(const QThread* thread));
+
+    /** @brief Make the next fold's read of the spill fail after @p lines lines, as a device error there would. */
+    static void failNextSpillReadAfterLinesForTest(int lines);
 
     /** @brief Start the debounced save now, as its timer would. */
     void
@@ -233,6 +323,50 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     savePendingForTest() const {
         return m_saveTimer.isActive();
     }
+
+    /** @brief Poll the published rings every @p ms while in the background, and spill after @p batchPolls polls. */
+    void setBackgroundCaptureTimingForTest(int ms, int batchPolls);
+
+    /** @brief Whether the background tap is running. */
+    bool backgroundCaptureRunningForTest() const;
+
+    /** @brief Wait until the tap has finished a poll that started after this call (at once when it is not running). */
+    void waitForBackgroundPollForTest();
+
+    /** @brief How many times the tap has appended to the spill since this model was built. */
+    int spillAppendsForTest() const;
+
+    /** @brief How many times the tap has tried to, written or not. */
+    int spillAppendAttemptsForTest() const;
+
+    /** @brief The most rows the log has held since this model was built. */
+    int
+    peakRowsForTest() const {
+        return m_peakRowsForTest;
+    }
+
+    /** @brief How many rows the trims have looked at since this model was built. */
+    qint64
+    trimRowsScannedForTest() const {
+        return m_trimRowsScannedForTest;
+    }
+
+    /** @brief The most entries the seen map and the notice twins taken have held while a spill folded. */
+    qsizetype
+    peakFoldSeenForTest() const {
+        return m_peakFoldSeenForTest;
+    }
+
+    qsizetype
+    peakFoldTwinsForTest() const {
+        return m_peakFoldTwinsForTest;
+    }
+
+    /** @brief The most bytes a spill fold's reader has held at once. */
+    qsizetype
+    peakSpillReadBytesForTest() const {
+        return m_peakSpillReadBytesForTest;
+    }
 #endif
 
   Q_SIGNALS:
@@ -240,6 +374,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void sessionLabelChanged();
     void sessionUidChanged();
     void sessionChanged();
+    void saveFailingChanged();
+    /** @brief Rows were inserted, removed or moved: a view following a uid looks its row up again. */
+    void rowPositionsChanged();
 
   public:
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -301,9 +438,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 acWhen = 0;
         qulonglong acSeq = 0;
         int acSlot = 0;
+        /* Issue #708. The row's identity for views that follow it, persisted (`uid`); assigned when the row is first
+         * logged, never reused, and kept by the row a merge folds another into. 0 until assigned. */
+        qint64 uid = 0;
+        /* Every ring fragment the row absorbed, as call_history_fragment_key()s: its own, and each one a merge folded
+         * in (load folding too). Persisted (`fr`); rows older builds wrote have none, and no recordings either. */
+        QStringList fragments;
     };
 
   private:
+    friend class CallHistoryTap;
+
     /**
      * @brief What was last read from a ring row, keyed by its content key.
      *
@@ -364,11 +509,29 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint64 ring = 0U;
     };
 
-    /** @brief A ring row worth ingesting: brand new, heard again in a new ring, or a seen row that advanced. */
+    /**
+     * @brief A ring row worth ingesting: brand new, heard again in a new ring, or a seen row that advanced.
+     *
+     * The seen key and entry as the walk left them travel with it, so the background tap can spill both.
+     */
     struct FreshRow {
         Row row;
         bool isUpdate = false;
         bool again = false;
+        QString key;
+        SeenState seen;
+    };
+
+    using SeenMap = QHash<QString, SeenState>;
+
+    /** @brief What a ring walk reads besides the ring: the model's, or the background tap's copy of it. */
+    struct RingWalk {
+        SeenMap* seen = nullptr;
+        qint64 session = 0;
+        QString sessionLabel;
+        QString systemUid;              // the attribution uid, empty unless the session is single-system
+        bool cleared = false;           // the clear mark covers this ring...
+        qulonglong clearedThrough = 0U; // ...up to this push stamp of the walked slot
     };
 
     /** @brief noteSeen() verdicts. */
@@ -377,15 +540,24 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static QString keyFor(const Row& row);
 
     /**
-     * @brief Record what was just read from a ring row of ring @p ring and say what to do with it.
+     * @brief Record what was just read from a ring row of ring @p ring in @p seenMap and say what to do with it.
+     * @param session The session reading it.
      * @param read The row's content as just read (when, end, src, emergency, enc, sourceName, freqHz,
      *             acKind, ac); its session, ring and twin are ignored.
      * @return SeenNew for a first sighting, SeenAgain when the key was read from another ring (a
      *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
      *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, quint64 ring, const SeenState& read, bool voice);
+    static int noteSeen(SeenMap& seenMap, qint64 session, const QString& key, quint64 ring, const SeenState& read,
+                        bool voice);
     static bool absorbSeenReceive(SeenState& seen, const SeenState& read);
+
+    /**
+     * @brief Walk one slot's ring for rows not seen before, or seen but advanced, appending them to @p fresh.
+     *
+     * Reads nothing but its arguments, so the background tap runs the same rules on its own copies.
+     */
+    static void walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);
@@ -422,9 +594,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     bool ingestRow(const Row& row, bool isUpdate, bool again);
 
     void load();
+    /** @brief The log changed: a new generation is owed to the disk. */
+    void markChanged();
     void scheduleSave();
-    /** @brief Serialize and write both stores on the calling thread. */
-    void saveSync() const;
+    /** @brief Serialize and write both stores on the calling thread; returns whether both committed. */
+    bool saveSync();
     /**
      * @brief Hand the current stores to the save worker.
      *
@@ -438,23 +612,92 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void startAsyncSave();
     /** @brief Snapshot the stores and queue their save on m_savePool, behind any save in flight. */
     void queueSave();
-    /** @brief A save of @p bytes (both stores) finished: set the next delay, then start or arm what is owed. */
-    void onSaveFinished(qint64 bytes);
+
+    /** @brief What one save did: the bytes both stores took, the generation it held, and whether each committed. */
+    struct SaveResult {
+        qint64 bytes = 0;
+        quint64 generation = 0;
+        bool rowsCommitted = false;
+        bool seenCommitted = false;
+    };
+
+    /** @brief A save finished: acknowledge or retry it, set the next delay, then start or arm what is owed. */
+    void onSaveFinished(const SaveResult& result);
+    /** @brief Generation @p generation reached the disk whole: drop the spill lines it covers. */
+    void acknowledgeSave(quint64 generation);
+    void setSaveFailing(bool failing);
     /** @brief The rows store; reads only its argument, so the save worker may call it. */
     static QJsonArray rowsToJson(const QList<Row>& rows);
     /** @brief The seen store, newest first and capped; reads only its argument, so the save worker may call it. */
     static QJsonArray seenToJson(const QHash<QString, SeenState>& seen);
+    static QJsonObject seenEntryToJson(const SeenState& state);
+    static SeenState seenEntryFromJson(const QJsonObject& obj);
+    /** @brief One spill line (a JSON object and its newline) for a row the background tap found. */
+    static QByteArray spillLine(const FreshRow& fresh);
+    /** @brief Bound @p seen once it is well past what the ring could resurrect. */
+    static void pruneSeenMap(SeenMap& seen);
+
+    /** @brief Give a row about to be logged its uid, and index its fragments. */
+    void adoptNewRow(Row& row);
+    /** @brief Add @p fragments to @p existing, and index them to it. */
+    void unionFragments(Row& existing, const QStringList& fragments);
+    void rebuildFragmentIndex();
+    /** @brief Emit the recording roles' change for the rows that hold @p fragments. */
+    void notifyRecordingRows(const QStringList& fragments);
+
+    void onApplicationStateChanged(Qt::ApplicationState state);
+    /** @brief Start the background tap on what the model knows now (the app is leaving the screen). */
+    void startBackgroundCapture();
+    /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill. */
+    void handOffBackgroundCapture();
+    /** @brief Hand off the running tap before the session it attributes rows to changes; @return whether it should
+     * start again on the new one (the app still away), for resumeBackgroundCapture(). */
+    bool handOffBackgroundCaptureForSession();
+    /** @brief Start the tap again on the changed session when handOffBackgroundCaptureForSession() said so. */
+    void resumeBackgroundCapture(bool resume);
+    /** @brief Stop the running background tap and take the clear it settled and the ring position it read; @return the
+     * lines it could not write to the spill. */
+    QByteArray stopBackgroundCapture();
+    /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
+    void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
+    /** @brief Fold the spill into the log, then @p unwritten (the lines the tap could not write to it), idempotently by
+     * fragment; @return whether the row count changed. */
+    bool foldSpill(const QByteArray& unwritten = QByteArray());
+    /** @brief Fold @p unwritten, the lines the tap could not write to the spill, into the log; @p folded is set when any
+     * line folded. @return whether rows changed. */
+    bool foldUnwritten(const QByteArray& unwritten, bool* folded);
+    /** @brief Fold the spill lines @p reader reads into the log; @p folded is set when any line folded. @return whether
+     * rows changed. */
+    bool foldSpillLines(CallHistorySpillReader& reader, bool* folded);
+    /** @brief Fold one spill @p line, unless the clear mark covers it (@p cleared: the mark applies); @p twinsRing is
+     * the ring whose twins taken are restored, and @p folded is set when the line folded. @return whether rows
+     * changed. */
+    bool foldSpillLine(const QByteArray& line, bool cleared, quint64* twinsRing, bool* folded);
+    /** @brief Whether the clear mark (@p cleared: it applies) covers the spilled @p row its tap found as @p seen. */
+    bool spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const;
+    /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
+    void pruneSeenWhileFolding();
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.
         Returns whether either slot moved. */
     bool noteCommitRevs(const dsd_state* snapshot, bool scan[2]);
-    /** @brief Rebuild m_noticeTwinsTaken for the rings now read, from the twins their seen entries record. */
-    void restoreNoticeTwinsTaken();
-    /** @brief Trim m_rows to kMaxRows, oldest session's oldest row first; returns whether any row went. */
+    /** @brief Rebuild m_noticeTwinsTaken for rings @p a and @p b, from the twins their seen entries record. */
+    void restoreNoticeTwinsTaken(quint64 a, quint64 b);
+    /** @brief Trim m_rows to kMaxRows in one pass, oldest session's oldest row first; returns whether any row went. */
     bool trimToCapacity();
+
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
-    void pruneSeen();
+    void
+    pruneSeen() {
+        pruneSeenMap(m_seen);
+    }
+
     /** @brief Arm m_dayTimer for the next local midnight. */
     void scheduleDayRollover();
+    /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, under one
+     * handoff of the background tap. */
+    void changeSession(const QString& label, const QString& uid, bool begin);
+    /** @brief beginSession()'s step: the next session number, and the clear and read position a start keeps. */
+    void advanceSession();
     /** @brief Whether the clear mark covers rows of the ring being read (settleClear() has bound or dropped it). */
     bool clearApplies() const;
     /** @brief Settle the clear mark against ring @p ring read at @p pushSeq: bind a pending one, drop one made on
@@ -499,10 +742,42 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * second behind the one in flight, and the pool's one thread runs them in order. */
     int m_savesInFlight = 0;
     bool m_saveDirty = false;
+    /* Issue #708, B6. Every change to the log is a generation (markChanged()); a save holds the one it copied, and a
+     * generation counts as on the disk (m_ackedGeneration) only when both stores committed. A failed save keeps the
+     * log owed and retries on a growing delay without waiting for another change; the failure is reported once per
+     * run of failures (saveFailing). */
+    quint64 m_generation = 0;
+    quint64 m_ackedGeneration = 0;
+    int m_saveFailures = 0;
+    bool m_saveFailing = false;
+    /* The next row uid; persisted (callHistory/nextUid) so a uid is never handed out twice. */
+    qint64 m_nextUid = 1;
+    /* fragment key -> the uid of the row holding it. Rebuilt at load, kept by every ingest, fold, trim and clear. */
+    QHash<QString, qint64> m_fragmentIndex;
+    const CallRecordingProvider* m_recordings = nullptr;
+    /* Issue #708, B1: the background capture. The spill is the tap's output and the model's input; the model folds it
+     * at load and on the first ingest after the app returns, and drops the lines a save covers only once that save is
+     * acknowledged: m_spillFoldedBytes is how much of it the last fold read (-1: nothing waits), m_spillFoldGeneration
+     * the generation that fold made. */
+    std::unique_ptr<CallHistorySpill> m_spill;
+    std::unique_ptr<CallHistoryTap> m_tap;
+    qint64 m_spillFoldedBytes = -1;
+    quint64 m_spillFoldGeneration = 0;
+    bool m_handoffOwed = false;
+    /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */
+    quint64 m_clearRev = 0;
+    quint64 m_tapClearRev = 0;
     /* Fires at local midnight: "TODAY"/"YESTERDAY" section labels are derived
      * from the current date, and nothing else re-reads them when it rolls over. */
     QTimer m_dayTimer;
     QSettings m_settings;
+#ifdef DSD_NEO_TEST_HOOKS
+    int m_peakRowsForTest = 0;
+    qint64 m_trimRowsScannedForTest = 0;
+    qsizetype m_peakFoldSeenForTest = 0;
+    qsizetype m_peakFoldTwinsForTest = 0;
+    qsizetype m_peakSpillReadBytesForTest = 0;
+#endif
 };
 
 } // namespace dsd_qt

@@ -32,7 +32,9 @@ ModalSheet {
     property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested
 
-    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation) {
+    // @p record is the row's record flag (issue #708); a heard talkgroup without a
+    // row records whenever it is tuned, so it reads as listening.
+    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record) {
         observedCrypto = typeof talkgroups !== "undefined" && typeof talkgroups.observedDecryption === "function" ? talkgroups.observedDecryption(Number(start)) : ({});
         idStart = start;
         idEnd = end;
@@ -42,10 +44,12 @@ ModalSheet {
             name: name,
             listening: listening,
             priority: priority,
-            preempt: preempt
+            preempt: preempt,
+            record: listening && (record === undefined ? true : record)
         };
         nameField.text = name;
         listenToggle.checked = listening;
+        recordToggle.checked = original.record;
         listed = isListed;
         priorityValue = priority;
         preemptToggle.checked = preempt;
@@ -55,7 +59,7 @@ ModalSheet {
         visible = true;
     }
     function requestClose() {
-        if (!submitted && (nameField.text !== original.name || listenToggle.checked !== original.listening || priorityValue !== original.priority || preemptToggle.checked !== original.preempt)) {
+        if (!submitted && (nameField.text !== original.name || listenToggle.checked !== original.listening || priorityValue !== original.priority || preemptToggle.checked !== original.preempt || recordToggle.checked !== original.record)) {
             discard.ask(function () {
                 sheet.visible = false;
             });
@@ -79,11 +83,16 @@ ModalSheet {
             changes.priority = priorityValue;
         if (preemptToggle.checked !== original.preempt)
             changes.preempt = preemptToggle.checked;
+        // D11: a row tuned again records again, so Record is sent only where it
+        // differs from what the decoder will hold; a row not tuned records nothing.
+        var heldRecord = listenToggle.checked !== original.listening || original.record;
+        if (listenToggle.checked && recordToggle.checked !== heldRecord)
+            changes.record = recordToggle.checked;
         if (listed && Object.keys(changes).length === 0) {
             localMessage = qsTr("No changes to apply");
             return;
         }
-        var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, changes) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked);
+        var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, changes) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked, recordToggle.checked);
         localMessage = ok ? qsTr("Update requested") : qsTr("Update refused. Use a name shorter than 50 UTF-8 bytes.");
         if (ok) {
             // A submitted edit can advance generation; reopen from fresh model state.
@@ -133,6 +142,23 @@ ModalSheet {
         id: listenToggle
         objectName: "listeningToggle"
         text: checked ? qsTr("Listening") : qsTr("Not tuned")
+        // D11: Record follows Listening, off while not tuned and on again when tuned.
+        onToggled: recordToggle.checked = checked
+    }
+    PlexToggle {
+        id: recordToggle
+        objectName: "recordToggle"
+        text: qsTr("Record")
+        enabled: listenToggle.checked
+    }
+    Text {
+        objectName: "recordHint"
+        width: parent.width
+        wrapMode: Text.Wrap
+        // D4: Only unknown talkgroups skips every listed talkgroup, this one included.
+        readonly property bool unknownOnly: typeof prefs !== "undefined" && !!prefs && prefs.recordCalls === true && prefs.recordUnknownOnly === true
+        text: !listenToggle.checked ? qsTr("Off while not tuned. Tuning it again turns Record back on.") : unknownOnly ? qsTr("This talkgroup's calls aren't saved while Only unknown talkgroups is on in Settings.") : qsTr("Saves this talkgroup's calls when call recording is on.")
+        color: Theme.textSecondary
     }
     Text {
         text: qsTr("Priority · %1").arg(sheet.priorityValue)
