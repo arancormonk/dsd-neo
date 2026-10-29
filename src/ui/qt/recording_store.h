@@ -86,7 +86,8 @@ void recording_store_follow_host(RecordingStore* store, DecoderHost* host);
 /**
  * @brief Let @p host play, export and share the recordings @p store manages: the file playing is held
  * (RecordingStore::setPlayingPath()), an export's or save's selection is released when it ends, files the host found
- * gone are looked at again (RecordingStore::recheckPaths()), and only indexed recordings are shared.
+ * gone are looked at again (RecordingStore::recheckPaths()), only indexed recordings are shared, and a share is held
+ * until its copy is made (DecoderHost::setRecordingHold()).
  */
 void recording_store_serve_host(RecordingStore* store, DecoderHost* host);
 
@@ -219,6 +220,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     Q_INVOKABLE QVariantMap selectForExport(const QString& folderUid, const QString& preset);
     /** @brief As selectForExport(), for the recordings @p ids (save or share one, a row's parts). */
     Q_INVOKABLE QVariantMap selectRecordings(const QStringList& ids);
+    /** @brief As selectRecordings(), for the recording at @p path (a share the host queued); its selection, 0 when
+     * there is none to hold. */
+    int selectPath(const QString& path);
     /** @brief The export or transfer of @p selection is over: its files may be deleted again. */
     Q_INVOKABLE void releaseSelection(int selection);
     /** @brief The file the player has open, held while it plays; empty when none. */

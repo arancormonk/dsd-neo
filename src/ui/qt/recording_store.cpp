@@ -349,6 +349,12 @@ void
 recording_store_serve_host(RecordingStore* store, DecoderHost* host) {
     const QPointer<RecordingStore> guarded(store);
     host->setRecordingIndex([guarded](const QString& path) { return guarded && guarded->isIndexedPath(path); });
+    host->setRecordingHold([guarded](const QString& path) { return guarded ? guarded->selectPath(path) : 0; },
+                           [guarded](int selection) {
+                               if (guarded) {
+                                   guarded->releaseSelection(selection);
+                               }
+                           });
     QObject::connect(host, &DecoderHost::recordingFilesMissing, store, &RecordingStore::recheckPaths);
     QObject::connect(host, &DecoderHost::recordingTransferFinished, store,
                      [store](int selection, int result, int missing) {
@@ -1991,6 +1997,16 @@ RecordingStore::selectRecordings(const QStringList& ids) {
         }
     }
     return selectLocked(entries);
+}
+
+int
+RecordingStore::selectPath(const QString& path) {
+    QString id;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        id = path.isEmpty() ? QString() : m_byPath.value(clean_absolute(path));
+    }
+    return id.isEmpty() ? 0 : selectRecordings({id}).value(QStringLiteral("selection")).toInt();
 }
 
 void

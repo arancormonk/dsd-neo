@@ -383,6 +383,12 @@ class DecoderHost : public QObject {
 
     /** @brief Which paths are call recordings the store manages (shareRecording() shares nothing else). */
     void setRecordingIndex(std::function<bool(const QString&)> indexed);
+    /**
+     * @brief How the host holds a recording the store manages while it works on it outside a selection (a share's
+     * copy, queued behind an export): @p hold returns the store's selection for a path (0: not held), @p release lets
+     * it go (RecordingStore::selectPath(), releaseSelection()).
+     */
+    void setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release);
 
     virtual QString
     audioRoute() const {
@@ -797,6 +803,10 @@ class DecoderHost : public QObject {
     void finishRecordingTransfer(int result, const QStringList& missing);
     /** @brief Tell the recording store these call recordings were found gone. */
     void reportRecordingsMissing(const QStringList& paths);
+    /** @brief Hold the recording at @p path in the store (setRecordingHold()); 0 when it is not held. */
+    int holdRecording(const QString& path) const;
+    /** @brief Let go of what holdRecording() returned; 0 is nothing. */
+    void releaseRecordingHold(int hold) const;
 
     /**
      * @brief The base host's copyFileToDocument(), stopped before any chunk once @p aborted is set; it touches no host
@@ -827,6 +837,8 @@ class DecoderHost : public QObject {
     qint64 m_transferBytes = 0;
     qint64 m_transferTotalBytes = 0;
     std::function<bool(const QString&)> m_recordingIndexed;
+    std::function<int(const QString&)> m_recordingHold;
+    std::function<void(int)> m_recordingRelease;
 };
 
 } // namespace dsd_qt

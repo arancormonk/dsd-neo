@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <stdint.h>
 #include <utility>
@@ -32,6 +33,8 @@
 #include "../../android/session_state_map.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
+#include "recording_journal.h"
+#include "recording_store.h"
 
 static QJsonObject&
 retained_record() {
@@ -1126,6 +1129,115 @@ check_recording_share() {
           "a share the worker could not hand to the platform is a failure");
 }
 
+/* A recording of @p bytes published into @p folder's journal, as the decoder writes it; returns its path. */
+static QString
+published_recording(const QString& folder, const QString& id, const QString& name, qint64 start, qint64 bytes) {
+    const QString path = folder + QLatin1Char('/') + name;
+    write_file(path, QByteArray(bytes, 'w'));
+    dsd_qt::RecordingJournalRecord record;
+    record.t = start + 5;
+    record.id = id;
+    record.file = name;
+    record.start = start;
+    record.durationMs = 4000;
+    record.rate = 8000;
+    QFile journal(folder + QStringLiteral("/recordings.jsonl"));
+    const QByteArray line = dsd_qt::recording_journal_publish_line(record);
+    check(journal.open(QIODevice::WriteOnly | QIODevice::Append) && journal.write(line) == line.size(),
+          "a recording is journaled");
+    return path;
+}
+
+/* #708: a share queued behind a running export holds its recording in the store until its copy is made, so the storage
+ * limit cannot take the file before the copy; the hold goes when the copy is made, when it fails, and when the host goes
+ * with the share still queued. Each recording is over the 1 MB limit, which applies once the share is queued. */
+static void
+check_queued_share_holds_its_recording() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::RecordingStore;
+    const QTemporaryDir dir;
+    const QString folder = dir.filePath(QStringLiteral("Call recordings/County (1a2b3c4d)"));
+    check(QDir().mkpath(folder), "a recording folder is made");
+    write_file(folder + QStringLiteral("/folder.json"),
+               R"({"uid":"1a2b3c4d-0000-4000-8000-00000000000a","kind":"saved","name":"County"})"
+               "\n");
+    const QString other = temp_recording(dir, "other.wav", "RIFF");
+    const QString document = QStringLiteral("content://com.example.documents/document/calls.zip");
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    (void)r.entered.tryAcquire(r.entered.available());
+    (void)r.returned.tryAcquire(r.returned.available());
+    (void)r.released.tryAcquire(r.released.available());
+
+    RecordingStore store;
+    store.setRoots({dir.filePath(QStringLiteral("Call recordings"))});
+    store.setTimingForTest(3600000, 3600000);
+    store.hostSessionReport(true, false, false);
+    store.setLimitMb(0);
+    store.start();
+    // Each case: a recording under no limit, an export holding the worker, the share queued behind it, then the limit.
+    int next = 1;
+    const auto queue_share = [&](DecoderHostAndroid& host) {
+        const QString path =
+            published_recording(folder, QStringLiteral("00000000000000AA-%1").arg(next),
+                                QStringLiteral("c%1.wav").arg(next), 1754705000 + next, qint64{1200000});
+        ++next;
+        store.setLimitMb(0);
+        store.waitForPassForTest();
+        check(store.isIndexedPath(path), "the recording is indexed");
+        check(wait_for([&host]() { return !host.recordingTransferActive(); }), "no transfer runs yet");
+        r.hold = true;
+        (void)r.released.tryAcquire(r.released.available());
+        check(
+            host.exportRecordings(
+                {{"selection", 1000 + next}, {"paths", QStringList({other})}, {"names", QStringList({"S/other.wav"})}},
+                document),
+            "an export holds the transfer worker");
+        check(r.entered.tryAcquire(1, 5000), "the export reaches the platform");
+        const int shares = r.shares.load();
+        check(host.shareRecording(path, QStringLiteral("Call recording")), "the share is queued behind it");
+        store.setLimitMb(1);
+        store.waitForPassForTest();
+        check(QFileInfo::exists(path) && r.shares.load() == shares,
+              "over the limit, the queued share's recording stays");
+        return path;
+    };
+    const auto end_export = [&r]() { r.released.release(); };
+
+    {
+        DecoderHostAndroid host;
+        recording_store_serve_host(&store, &host);
+        QStringList failed;
+        QObject::connect(&host, &dsd_qt::DecoderHost::recordingShareFailed,
+                         [&failed](const QString& path) { failed.append(path); });
+
+        const QString staged = queue_share(host);
+        end_export();
+        check(wait_for([&r]() { return r.shares.load() == 1; })
+                  && with_transfer([&staged](const PlatformRecordings& seen) { return seen.sharedPath == staged; }),
+              "the share's copy is made once the export ends");
+        check(wait_for([&staged]() { return !QFileInfo::exists(staged); }),
+              "and the hold goes with it: the limit takes the recording");
+
+        r.shareAnswer = false;
+        const QString refused = queue_share(host);
+        end_export();
+        check(wait_for([&failed, &refused]() { return failed.contains(refused); }), "a copy that fails is reported");
+        check(wait_for([&refused]() { return !QFileInfo::exists(refused); }), "and its hold goes too");
+        r.shareAnswer = true;
+        r.hold = false;
+    }
+    {
+        // The host goes with the share still queued: its hold goes with the host, whatever the job does after.
+        auto leaving = std::make_unique<DecoderHostAndroid>();
+        recording_store_serve_host(&store, leaving.get());
+        const QString queued = queue_share(*leaving);
+        leaving.reset(); // its cancel ends the export, then the queued share runs
+        r.hold = false;
+        check(wait_for([&queued]() { return !QFileInfo::exists(queued); }), "a host that goes lets its shares go");
+    }
+}
+
 static QString
 health_state(const dsd_android::DecoderHostAndroid& host) {
     return host.receiverHealth().value(QStringLiteral("state")).toString();
@@ -2208,6 +2320,7 @@ main(int argc, char** argv) {
     check_recording_playback();
     check_recording_transfers();
     check_recording_share();
+    check_queued_share_holds_its_recording();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

@@ -15,6 +15,7 @@
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
 #include <QByteArray>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
@@ -298,6 +299,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void refreshRecordingShares();
     /** @brief Emit recordingShareFailed(@p path), and have the store look again if the recording is gone. */
     void noteRecordingShareFailed(const QString& path);
+    /** @brief A share's copy step ended (@p staged: the platform took it): its store hold @p hold goes. */
+    void endRecordingShare(const QString& path, int hold, bool staged);
     /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()). */
     void startRecordingShareClean();
     /** @brief How a transfer job reaches its host; defined in decoder_host_android_recordings.cpp. */
@@ -497,6 +500,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int m_playback_generation = 0;
     qint64 m_transfer_id = 0;
     qint64 m_transfer_total = -1;
+    // The store holds of the shares queued on the transfer worker, released as each copy is made or fails, and at the
+    // latest when this host goes.
+    QSet<int> m_share_holds;
     // The transfer jobs' way back to this host; cleared before it goes.
     std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
     // One transfer at a time, off the GUI thread. Last, so it is destroyed first.

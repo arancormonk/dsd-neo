@@ -11,6 +11,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
@@ -19,6 +20,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include "decoder_host.h"
 #include "decoder_host_android.h"
 
@@ -276,6 +278,11 @@ DecoderHostAndroid::closeRecordingWork() {
         const std::lock_guard<std::mutex> lock(m_transfer_link->mutex);
         m_transfer_link->host = nullptr;
     }
+    // What a share job reports from here on never arrives: its hold goes now.
+    for (const int hold : std::as_const(m_share_holds)) {
+        releaseRecordingHold(hold);
+    }
+    m_share_holds.clear();
     if (m_playback_generation != 0) {
         platformStopPlayback();
         m_playback_generation = 0;
@@ -287,19 +294,34 @@ DecoderHostAndroid::shareRecordingFile(const QString& path, const QString& title
     if (documentTransfersAborted() || !platformCanShareRecording(path)) {
         return false;
     }
+    // Held in the store until its copy is made: behind a running export, the limit or a delete would otherwise take
+    // the recording before the copy, and the share the user was told began would fail.
+    const int hold = holdRecording(path);
+    if (hold > 0) {
+        m_share_holds.insert(hold);
+    }
     // The copy is a file's worth of I/O, so it runs on the transfer worker, never the GUI or Android main thread.
-    m_transfer_worker->start([link = m_transfer_link, path, title]() {
-        if (platformShareRecording(path, title)) {
-            return;
-        }
+    m_transfer_worker->start([link = m_transfer_link, path, title, hold]() {
+        const bool staged = platformShareRecording(path, title);
         const std::lock_guard<std::mutex> lock(link->mutex);
         DecoderHostAndroid* host = link->host;
         if (host != nullptr) {
             QMetaObject::invokeMethod(
-                host, [host, path]() { host->noteRecordingShareFailed(path); }, Qt::QueuedConnection);
+                host, [host, path, hold, staged]() { host->endRecordingShare(path, hold, staged); },
+                Qt::QueuedConnection);
         }
     });
     return true;
+}
+
+void
+DecoderHostAndroid::endRecordingShare(const QString& path, int hold, bool staged) {
+    if (m_share_holds.remove(hold)) {
+        releaseRecordingHold(hold);
+    }
+    if (!staged) {
+        noteRecordingShareFailed(path);
+    }
 }
 
 void

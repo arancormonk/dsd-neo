@@ -141,7 +141,8 @@ CLI's output to check that neither a loaded nor a refused key is ever printed.
 a backup restore waits on (every service state but IDLE, or the engine atomic, is busy; asking never refreshes the
 host), and the backup's document dispatch: a `content://` reference goes to the platform transport (stubbed), a file URL
 or plain path to the base host's copy, a stale destination is removed before the platform copies, and a copy reported
-without its file fails. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
+without its file fails. It links the real recording store (`DSD_NEO_TEST_HOOKS` on, for its pass hooks), so a share
+queued behind an export is shown held in the store until its copy is made. The `ANDROID_*_JVM` tests run production Android Kotlin on the plain JVM, without an Android
 build or emulator, one suite of `tests/android/run_jvm_tests.py` each (`--suite <name>`, repeatable; all suites by
 default): `ANDROID_LOCATION_JVM` runs the location broker and geocoder queue with deterministic platform stubs,
 `ANDROID_DECODER_STATUS_JVM` runs `DecoderStatus.kt`, the notification status record's reader, with no stubs, and

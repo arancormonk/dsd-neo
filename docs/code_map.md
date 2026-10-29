@@ -8091,7 +8091,8 @@ Qt Quick frontend (`src/ui/qt`):
     ones at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`.
     `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing (`setPlayingPath()` from Preparing to the
     end), releases each transfer's selection when it finishes, rechecks the missing files (`recheckPaths()`) and gives
-    the host the share check (`setRecordingIndex()`).
+    the host the share check (`setRecordingIndex()`) and a hold for work outside a selection (`setRecordingHold()`:
+    `RecordingStore::selectPath()` and `releaseSelection()`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); the lines under
@@ -8141,7 +8142,9 @@ Qt Quick frontend (`src/ui/qt`):
     (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
     reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
     whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder) on the GUI
-    thread; then, on the transfer worker (behind a running export), `RecordingShare.stage()` copies it, under its own
+    thread; then, on the transfer worker (behind a running export, its recording held in the store from the queue until
+    the copy is made or fails, or the host goes, so the limit or a delete cannot take it first),
+    `RecordingShare.stage()` copies it, under its own
     name, into a folder of its own in `cacheDir/recording-shares/`, so retention or a delete cannot take the file from
     the app it went to; then `RecordingShare.offer()` starts the chooser for the copy on the Android main thread through
     `RecordingsProvider` (`${applicationId}.recordings`, `res/xml/recordings_paths.xml`: the two folders and the share

@@ -439,6 +439,24 @@ DecoderHost::setRecordingIndex(std::function<bool(const QString&)> indexed) {
 }
 
 void
+DecoderHost::setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release) {
+    m_recordingHold = std::move(hold);
+    m_recordingRelease = std::move(release);
+}
+
+int
+DecoderHost::holdRecording(const QString& path) const {
+    return m_recordingHold ? m_recordingHold(path) : 0;
+}
+
+void
+DecoderHost::releaseRecordingHold(int hold) const {
+    if (hold > 0 && m_recordingRelease) {
+        m_recordingRelease(hold);
+    }
+}
+
+void
 DecoderHost::reportRecordingsMissing(const QStringList& paths) {
     if (!paths.isEmpty()) {
         Q_EMIT recordingFilesMissing(paths);

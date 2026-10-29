@@ -18880,15 +18880,22 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        # #708: a queued share's hold in the real recording store.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_journal.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_store.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_android_host
         PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_android_host PRIVATE Qt6::Gui)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_android_host
+        PRIVATE Qt6::Gui ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_android_host
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_android_host PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_ANDROID_HOST COMMAND dsd-neo_test_ui_qt_android_host)
