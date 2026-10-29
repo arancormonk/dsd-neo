@@ -76,7 +76,8 @@ set -euo pipefail
 #                  (TETRA_TCH_MAX_MISMATCH in src/protocol/tetra/tetra.c)
 #   tch_bad        every other TCH/FS line: a bad CRC, more mismatches, another bit count or an unparsable line
 #   aach_fec       bursts whose AACH decoded ("AACH a/b/c]", not "AACH ?]")
-#   first_wanted_s the first wanted BSCH's time from the capture's start, in whole seconds, or NA
+#   first_wanted_s the first wanted BSCH's time from the capture's start, in whole seconds, or NA when no wanted BSCH
+#                  follows the log's first time stamp
 #   completed      1 when the replay printed "IQ replay: end of capture after <N> samples", else 0; a run without it
 #                  stopped early or lost its reader, which is not a run that decoded nothing
 #   samples        N from that notice, or NA
@@ -592,8 +593,9 @@ line_value() {
 # Quoted flags are several arguments, not one.
 read -r -a mode_args <<< "$mode"
 tetra_origin=0
-if [ "$metric" = tetra ]; then
-  tetra_origin=$(tetra_origin_sod)
+if [ "$metric" = tetra ] && ! tetra_origin=$(tetra_origin_sod); then
+  echo "error: could not read the capture's start time for the TETRA metric" >&2
+  exit 1
 fi
 nbuilds=${#builds[@]}
 
@@ -646,8 +648,9 @@ for r in $(seq 1 "$reps"); do
       off_path=1
     fi
     tetra_fields=""
-    if [ "$metric" = tetra ]; then
-      tetra_fields=$(tetra_log_metrics "$log" "$tetra_wanted" "$tetra_origin")
+    if [ "$metric" = tetra ] && ! tetra_fields=$(tetra_log_metrics "$log" "$tetra_wanted" "$tetra_origin"); then
+      echo "error: could not score the TETRA metric of $log" >&2
+      exit 1
     fi
     {
       printf '%s\t%s\t%s\t%s\t%s\t%s' \
