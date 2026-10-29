@@ -1240,6 +1240,11 @@ qpsk_differential_demod(struct demod_state* fm) {
     fm->result_len = pairs;
 }
 
+extern "C" float
+dsd_cqpsk_agc_alpha(int tetra_chain) {
+    return tetra_chain ? 0.1f : 0.45f;
+}
+
 /*
  * OP25-style RMS AGC for CQPSK path.
  *
@@ -1278,9 +1283,9 @@ cqpsk_rms_agc(struct demod_state* d) {
 
     /* OP25 parameters from p25_demodulator.py line 409:
      *   self.agc = rms_agc.rms_agc(0.45, 0.85)
-     * where alpha=0.45, reference=0.85 */
-    const float alpha = 0.45f;
-    const float beta = 1.0f - alpha; /* 0.55 */
+     * where alpha=0.45, reference=0.85. The TETRA chain averages longer (alpha 0.1). */
+    const float alpha = dsd_cqpsk_agc_alpha(d->tetra_chain);
+    const float beta = 1.0f - alpha; /* 0.55 off the TETRA chain */
     const float gain = 0.85f;        /* reference/k parameter */
 
     float* iq = d->lowpassed;

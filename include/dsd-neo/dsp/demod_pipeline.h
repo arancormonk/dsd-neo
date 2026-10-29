@@ -170,6 +170,14 @@ float mean_power(const float* samples, int len, int step);
 void full_demod(struct demod_state* d);
 
 /**
+ * @brief Averaging weight of the CQPSK RMS AGC (OP25 rms_agc alpha; the decay is 1 - alpha).
+ *
+ * @param tetra_chain demod_state::tetra_chain: nonzero for the TETRA receive chain.
+ * @return 0.1 for the TETRA chain, OP25's 0.45 for every other chain.
+ */
+float dsd_cqpsk_agc_alpha(int tetra_chain);
+
+/**
  * Return the filter state to a fresh stream's: each half-band stage's history and pending count (its look-ahead and
  * decimation phase), the channel FIR's history and pending outputs, and a replay's post-demod audio decimator on either
  * path (the polyphase history and phase; the fallback's one-pole and part-filled group). Every filter's next output is

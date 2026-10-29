@@ -2375,7 +2375,7 @@ demod_refresh_fll_band_edge_state(struct demod_state* s, int reset_retained_fll,
     } else {
         s->fll_band_edge_state.freq *= retained_fll_scale;
     }
-    dsd_fll_band_edge_init(&s->fll_band_edge_state, sps);
+    dsd_fll_band_edge_init_params(&s->fll_band_edge_state, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
     if (reset_retained_fll) {
         return;
     }
@@ -14161,7 +14161,8 @@ cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk
     test_demod->ted_state.mu = 4.5f;
     test_demod->ted_state.dl[0] = 3.0f;
     test_demod->ted_state.dl_index = 7;
-    dsd_fll_band_edge_init(&test_demod->fll_band_edge_state, test_demod->ted_sps);
+    dsd_fll_band_edge_init_params(&test_demod->fll_band_edge_state, test_demod->ted_sps,
+                                  dsd_fll_band_edge_params_for(test_demod->tetra_chain));
     test_demod->fll_band_edge_state.freq = 0.125f;
     test_demod->fll_band_edge_state.phase = 0.75f;
     test_demod->costas_state.freq = 0.25f;

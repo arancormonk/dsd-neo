@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -1500,6 +1501,20 @@ test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
     return 0;
 }
 
+/*
+ * Test: the CQPSK RMS AGC averages with OP25's alpha 0.45 on every chain but TETRA, which uses 0.1.
+ */
+static int
+test_cqpsk_agc_alpha_by_chain(void) {
+    const float p25 = dsd_cqpsk_agc_alpha(0);
+    const float tetra = dsd_cqpsk_agc_alpha(1);
+    if (std::fabs(p25 - 0.45f) > 1e-9f || std::fabs(tetra - 0.1f) > 1e-9f) {
+        DSD_FPRINTF(stderr, "CQPSK AGC alpha: P25 %.9f (want 0.45) TETRA %.9f (want 0.1)\n", p25, tetra);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     if (test_basic_passthrough() != 0) {
@@ -1569,6 +1584,9 @@ main(void) {
         return 1;
     }
     if (test_gardner_out_of_range_samples_enter_as_zero() != 0) {
+        return 1;
+    }
+    if (test_cqpsk_agc_alpha_by_chain() != 0) {
         return 1;
     }
     return 0;

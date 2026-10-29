@@ -80,9 +80,21 @@ typedef struct {
     float delay_i[FLL_BAND_EDGE_MAX_TAPS * 2];
     int delay_idx;
 
-    int sps; /* Samples per symbol (for reinit detection) */
+    int sps;             /* Samples per symbol (for reinit detection) */
+    float rolloff;       /* Band-edge rolloff the taps were designed for (for reinit detection) */
+    float loop_bw_scale; /* Loop-bandwidth scale the gains were set for (for reinit detection) */
     int initialized;
 } dsd_fll_band_edge_state_t;
+
+/**
+ * @brief Per-chain band-edge FLL design parameters.
+ *
+ * The filter size is 2*sps+1 and the loop bandwidth loop_bw_scale * 2*pi/sps/350 on every chain.
+ */
+typedef struct {
+    float rolloff;       /* Band-edge excess bandwidth of the transmitted pulse */
+    float loop_bw_scale; /* Multiplier on OP25's loop bandwidth 2*pi/sps/350 */
+} dsd_fll_band_edge_params;
 
 /* OP25-compatible defaults for CQPSK carrier recovery.
  *
@@ -227,6 +239,29 @@ void op25_costas_loop_cc(struct demod_state* d);
  * @param sps Samples per symbol (e.g., 5 for P25p1, 4 for P25p2).
  */
 void dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps);
+
+/**
+ * @brief Band-edge FLL parameters for a receive chain.
+ *
+ * @param tetra_chain demod_state::tetra_chain: nonzero for the TETRA receive chain.
+ * @return {0.35, 4} for the TETRA chain (its pulse's rolloff; a 4x loop bandwidth, since the band edges carry less
+ *         energy behind the TETRA matched filter), {0.2, 1} (OP25's P25 values) for every other chain.
+ */
+dsd_fll_band_edge_params dsd_fll_band_edge_params_for(int tetra_chain);
+
+/**
+ * @brief Initialize the band-edge FLL for a samples-per-symbol and design parameters.
+ *
+ * Designs the filters and loop gains on first init, or when sps, rolloff or loop-bandwidth scale differs from the
+ * design the state holds; otherwise keeps them. Either way the phase and delay line are reset and the frequency
+ * estimate is kept as the caller seeded it. dsd_fll_band_edge_init() is this with dsd_fll_band_edge_params_for(0).
+ * Parameters outside rolloff (0, 1] and scale > 0 leave the state untouched.
+ *
+ * @param f   FLL state to initialize.
+ * @param sps Samples per symbol.
+ * @param p   Design parameters, normally dsd_fll_band_edge_params_for(demod_state::tetra_chain).
+ */
+void dsd_fll_band_edge_init_params(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p);
 
 /**
  * @brief OP25-compatible FLL band-edge frequency lock loop.

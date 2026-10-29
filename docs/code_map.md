@@ -4464,6 +4464,14 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   taps at 36 / 72 / 144 kHz, no clamp and no fallback, protected edge 11250 Hz), only while `demod_state::tetra_chain`
   is set; with the flag clear it runs the legacy WIDE plan exactly. `DSP_CHANNEL_FILTERS` pins every other profile's
   plan at 24-144 kHz.
+  The same flag picks the CQPSK chain's carrier parameters. The band-edge FLL has one design path
+  (`fll_design()` in `costas.cpp`), which the lazy design in `op25_fll_band_edge_cc()` and
+  `dsd_fll_band_edge_init_params()` both run with `dsd_fll_band_edge_params_for(tetra_chain)`: rolloff 0.35 and 4x
+  OP25's loop bandwidth 2*pi/sps/350 for the TETRA chain, 0.2 and 1x otherwise (filter size 2*sps+1 either way).
+  A redesign is keyed on (sps, rolloff, loop-bandwidth scale) and keeps the frequency estimate;
+  `dsd_fll_band_edge_init()` is the P25-parameter wrapper for callers without a demod. The CQPSK RMS AGC averages
+  with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA, OP25's 0.45 otherwise. `DSP_FLL_BAND_EDGE` pins the P25
+  design (taps, loop bandwidth, gains) to its values before the parameters existed.
   The plan cache key is (rate_out, profile, width, TETRA chain). The SIMD complex FIR kernels size their scratch per
   call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless
   (issue #572):
