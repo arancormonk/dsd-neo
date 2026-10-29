@@ -1428,6 +1428,46 @@ test_root_gone_as_it_is_read_again(void) {
                                               && s.store.recordingCount() == 0 && s.store.deletesWaiting() == 0);
 }
 
+/* Issue #708: storage that comes back is listed whole and then has its journals read; storage that leaves again
+ * during that read (after the listing, as a folder is read) is not storage emptied either. What the index held for
+ * it stays until a read of its folders completes: the recording stays indexed and away, its delete stays queued, and
+ * the delete runs once the storage is back for good. */
+void
+test_root_gone_as_its_folders_are_read_again(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000F8-1"), QStringLiteral("a.wav"), 1754705000, 60);
+    s.store.endSession();
+    s.pass();
+    expect("folders again: the recording is indexed", s.store.recordingCount() == 1);
+    expect("folders again: the storage goes away", QDir().rename(ext, away));
+    s.pass();
+    s.store.deleteRecording(QStringLiteral("00000000000000F8-1"));
+    s.pass();
+    expect("folders again: its delete waits", s.store.deletesWaiting() == 1 && folder_away(s.store, kUidA));
+
+    std::atomic<bool> moved{false};
+    s.store.setFolderLoadHookForTest([&](const QString&) {
+        if (!moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+    });
+    expect("folders again: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("folders again: and leaves as its folder is read", moved.load() && !QFileInfo::exists(folder));
+    expect("folders again: the recording stays indexed, its delete waiting",
+           s.store.recordingCount() == 1 && s.store.deletesWaiting() == 1);
+    expect("folders again: its folder reads as away", folder_away(s.store, kUidA));
+    s.store.setFolderLoadHookForTest({});
+    expect("folders again: the storage is back for good", QDir().rename(away, ext));
+    s.pass();
+    expect("folders again: the delete runs", !QFileInfo::exists(folder + QStringLiteral("/a.wav"))
+                                                 && s.store.recordingCount() == 0 && s.store.deletesWaiting() == 0);
+}
+
 /* Issue #708: a journal shorter than its cursor is read again from its start; storage that leaves during that read
  * (after the folder.json, before the journal) drops none of the folder's recordings, which read as away. */
 void
@@ -2167,6 +2207,7 @@ main(int argc, char** argv) {
     test_root_gone_before_a_recheck();
     test_root_gone_before_a_delete();
     test_root_gone_as_it_is_read_again();
+    test_root_gone_as_its_folders_are_read_again();
     test_root_gone_as_a_journal_is_read_again();
     test_root_gone_as_a_journal_is_tailed();
     test_root_gone_during_the_limit();

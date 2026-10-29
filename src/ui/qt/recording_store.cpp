@@ -585,12 +585,22 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
     }
     const std::lock_guard<std::mutex> lock(m_mutex);
     // Whatever the index held for this root is read again from the disk. One hold of the lock, so a start never sees
-    // the root available without its folders.
+    // the root available without its folders. A folder the listing no longer has leaves with its recordings; one it
+    // still has keeps them until its read (loadFolder()) replaces them, so storage that leaves again during that read
+    // has dropped nothing.
     QSet<QString> stale;
+    QSet<QString> held;
     for (auto it = m_folders.cbegin(); it != m_folders.cend(); ++it) {
         if (it->root == root) {
             stale.insert(it.key());
+            if (it->loaded || it->rereading) {
+                held.insert(it.key());
+            }
         }
+    }
+    for (Folder& folder : table) {
+        stale.remove(folder.path);
+        folder.rereading = held.contains(folder.path);
     }
     QStringList ids;
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
@@ -614,20 +624,26 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
 
 void
 RecordingStore::loadPendingFolders(Pass* pass) {
-    QList<QPair<QString, int>> pending;
+    struct Pending {
+        QString path;
+        int root;
+        bool rereading;
+    };
+
+    QList<Pending> pending;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         for (auto it = m_folders.cbegin(); it != m_folders.cend(); ++it) {
             if (!it->loaded && m_rootAvailable.value(it->root)) {
-                pending.append({it.key(), it->root});
+                pending.append({it.key(), it->root, it->rereading});
             }
         }
     }
-    for (const auto& [path, root] : pending) {
+    for (const Pending& folder : std::as_const(pending)) {
         if (stopping()) {
             return;
         }
-        loadFolder(path, root, false, pass);
+        loadFolder(folder.path, folder.root, folder.rereading, pass);
     }
 }
 
@@ -1599,13 +1615,14 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
             continue;
         }
         // A folder whose folder.json no longer names this owner (removed from a computer) is not handed out. One the
-        // worker has not read yet holds no recordings, so it leaves the table here; a read one is the worker's.
+        // worker has not read yet holds no recordings, so it leaves the table here; a read one, or one whose
+        // recordings from before its storage went wait for their read, is the worker's.
         Folder onDisk;
         if (!read_folder_json(folder.path, &onDisk.uid, &onDisk.kind, &onDisk.name) || onDisk.uid != uid) {
             if (!rootAvailableNow(m_roots.at(folder.root))) {
                 usable[folder.root] = false; // gone since the check above: its folders stay, as storage away
                 m_passRequested = true;
-            } else if (!folder.loaded) {
+            } else if (!folder.loaded && !folder.rereading) {
                 gone.append(folder.path);
             }
             continue;
@@ -1641,9 +1658,12 @@ RecordingStore::folderLocked(const QString& kind, const QString& uid, const QStr
                 Folder found;
                 if (!info.isSymLink() && info.isDir() && read_folder_json(path, &found.uid, &found.kind, &found.name)
                     && found.uid == uid) {
-                    // Made for this owner, not read yet: the worker reads its journal from the start.
+                    // Made for this owner, not read yet: the worker reads its journal from the start, in place of
+                    // what the index held for it under another owner.
                     found.path = path;
                     found.root = i;
+                    const auto held = m_folders.constFind(path);
+                    found.rereading = held != m_folders.cend() && (held->loaded || held->rereading);
                     m_folders.insert(path, found); // not read yet: the worker reads its journal next
                     m_passRequested = true;
                     m_foldersChanged = true;

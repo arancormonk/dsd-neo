@@ -8220,9 +8220,12 @@ Qt Quick frontend (`src/ui/qt`):
     fragments are announced, so History rows read them as away); nothing in it leaves the index, a request it
     interrupted stays queued and runs once it is back, and the pass decides nothing more about it: a root marked away
     reads as gone to `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was
-    gone (a short listing, a journal or files not found) is dropped, not applied. Decided limit: storage that leaves and
-    comes back between a read and the check after it is not seen, and that read stands (a recording it found missing
-    stays out of the index until its root is next read whole).
+    gone (a short listing, a journal or files not found) is dropped, not applied. A root that comes back is listed,
+    then has its folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps
+    them (`Folder::rereading`) until its read completes and replaces them, so storage that leaves again during that
+    read drops nothing. Decided limit: storage that leaves and comes back between a read and the check after it is not
+    seen, and that read stands (a recording it found missing stays out of the index until its root is next read
+    whole).
   - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
     pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
     start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass
@@ -8233,8 +8236,9 @@ Qt Quick frontend (`src/ui/qt`):
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
     the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
-    lost while a root is listed, a folder read, a journal tailed, an unlink runs, the limit runs (before its first
-    removal, or as one is checked) or before a session start; a session start waking an idle worker),
+    lost while a root is listed or its folders read back, a folder read, a journal tailed, an unlink runs, the limit
+    runs (before its first removal, or as one is checked) or before a session start; a session start waking an idle
+    worker),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in

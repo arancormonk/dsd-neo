@@ -309,6 +309,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         int root = -1;
         /* Its journal and files were read; until then only folder.json is known (the folder table). */
         bool loaded = false;
+        /* Not loaded, and read again (its storage came back): what the index held for it stays until that read
+         * completes and replaces it. */
+        bool rereading = false;
         qint64 offset = 0;
         qint64 lines = 0;
         qint64 compactFailedAt = -1;
