@@ -1107,13 +1107,17 @@ dsd_rdio_mode_to_string(int mode) {
 }
 
 int
-dsd_rdio_keep_journaled_uploads(dsd_opts* opts) {
-    if (!opts || opts->wav_journal_file[0] == '\0' || !opts->rdio_api_delete_after_upload) {
+dsd_rdio_journal_keeps_uploads(const dsd_opts* opts) {
+    return opts && opts->wav_journal_file[0] != '\0' && opts->rdio_api_delete_after_upload ? 1 : 0;
+}
+
+int
+dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before) {
+    if (kept_before || !dsd_rdio_journal_keeps_uploads(opts)) {
         return 0;
     }
-    opts->rdio_api_delete_after_upload = 0;
-    LOG_WARN("WARNING: Rdio API delete-after-upload is off: this run keeps a call recording journal (--wav-journal), "
-             "whose owner manages the recordings' retention.\n");
+    LOG_WARN("WARNING: Rdio API uploads keep their files despite delete-after-upload: this run keeps a call recording "
+             "journal (--wav-journal), whose owner manages the recordings' retention.\n");
     return 1;
 }
 
@@ -1153,7 +1157,9 @@ dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struc
 #else
         int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(mode);
         int remove_meta_on_success = !wants_dirwatch;
-        int remove_wav_on_success = opts->rdio_api_delete_after_upload && !wants_dirwatch;
+        /* The job carries the decision, made here on the caller's thread: the worker never reads the options. */
+        int remove_wav_on_success =
+            opts->rdio_api_delete_after_upload && !wants_dirwatch && !dsd_rdio_journal_keeps_uploads(opts);
         if (opts->rdio_api_delete_after_upload && wants_dirwatch
             && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
             LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");

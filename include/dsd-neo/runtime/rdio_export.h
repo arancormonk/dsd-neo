@@ -96,14 +96,22 @@ time_t dsd_rdio_recording_start(const Event_History* event, time_t opened);
 int dsd_rdio_upload_holds(const char* path);
 
 /**
- * Keep the per-call WAVs a run that names a recording journal (`--wav-journal`) uploads (issue #708).
+ * Whether a run's recording journal (`--wav-journal`, issue #708) keeps the per-call WAVs delete-after-upload would
+ * remove: 1 when @p opts names a journal and turns delete-after-upload on, 0 otherwise (NULL @p opts included).
  *
  * The journal's owner (the app's recording store) manages those files' retention, so a file deleted after its upload
- * would vanish under playback or export. When a config, profile or the command line turned delete-after-upload on
- * for such a run, this turns it off and says why once. Called after the config and the command line are applied, and
- * after a live config apply. Returns 1 when it turned the option off, 0 otherwise (NULL @p opts included).
+ * would vanish under playback or export. While a journal is set, a successful API-only upload keeps its WAV
+ * (dsd_rdio_export_call() queues the job without the delete); the option itself keeps its configured value, so a
+ * config saved from the run still has it.
  */
-int dsd_rdio_keep_journaled_uploads(dsd_opts* opts);
+int dsd_rdio_journal_keeps_uploads(const dsd_opts* opts);
+
+/**
+ * Say once in the log that uploads are kept because a journal names them, when @p opts newly combines a journal with
+ * delete-after-upload: @p kept_before is dsd_rdio_journal_keeps_uploads() before the change (0 at bootstrap). Called
+ * after the config and the command line are applied, and after a live config apply. Returns 1 when it warned.
+ */
+int dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before);
 
 /**
  * Drain queued rdio API uploads and stop the background worker.

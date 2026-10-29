@@ -269,18 +269,19 @@ Windows console runs:
   (a WAV stop mid-call, a conventional NFM call's end) once that row commits or never will. A program that manages
   the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
   torn line gets a newline first. A journal that cannot be opened or written is turned off for the rest of the run
-  with one error in the log; decoding and recording go on. A run with a journal keeps every file it uploads:
-  `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) is turned off, with one warning in
-  the log, because the journal's owner manages the recordings' retention. The record format is in `docs/code_map.md`
-  ("Recording journal").
+  with one error in the log; decoding and recording go on. A run with a journal keeps every file it uploads: while
+  the journal is set, `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes
+  nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The option
+  keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format is in
+  `docs/code_map.md` ("Recording journal").
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
 - `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
-- `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; off in a run with
-  `--wav-journal`
+- `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
+  `--wav-journal` is set
 - `-r <files>` Play saved MBE files
   SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
   the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by

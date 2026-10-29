@@ -1690,9 +1690,12 @@ test_api_shutdown_drains_queue(void) {
 #endif
 }
 
+/* One successful API-only upload with delete-after-upload on, in a run that names a recording journal when
+   @p journaled; the WAV is gone after it unless @p journaled (issue #708: the journal's owner keeps it). */
 static int
-test_api_delete_after_successful_upload(void) {
+api_upload_with_delete_after(int journaled) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    (void)journaled;
     return 0;
 #else
     char dir_template[DSD_TEST_PATH_MAX] = {0};
@@ -1741,6 +1744,10 @@ test_api_delete_after_successful_upload(void) {
     opts->rdio_upload_timeout_ms = 5000;
     opts->rdio_upload_retries = 1;
     opts->rdio_api_delete_after_upload = 1;
+    if (journaled) {
+        (void)dsd_test_path_join(opts->wav_journal_file, sizeof(opts->wav_journal_file), dir_template,
+                                 "recordings.jsonl");
+    }
     DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", api_url);
     opts->rdio_api_url[sizeof(opts->rdio_api_url) - 1] = '\0';
     DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
@@ -1768,11 +1775,14 @@ test_api_delete_after_successful_upload(void) {
     }
     // API-only mode leaves no sidecar on disk; the uploaded meta part is the call's record.
     rc |= expect_sidecar_times("API upload meta part", server.meta, 1699999985LL, 1699999986LL);
-    if (file_exists(wav_path)) {
+    if (journaled && !file_exists(wav_path)) {
+        DSD_FPRINTF(stderr, "a journaled run's WAV should be kept after its API upload\n");
+        rc = 1;
+    } else if (!journaled && file_exists(wav_path)) {
         DSD_FPRINTF(stderr, "WAV should be deleted after successful API upload\n");
-        (void)remove(wav_path);
         rc = 1;
     }
+    (void)remove(wav_path);
     if (file_exists(json_path)) {
         DSD_FPRINTF(stderr, "metadata should be deleted after API-only upload\n");
         (void)remove(json_path);
@@ -1785,6 +1795,16 @@ test_api_delete_after_successful_upload(void) {
     free(opts);
     return rc;
 #endif
+}
+
+static int
+test_api_delete_after_successful_upload(void) {
+    return api_upload_with_delete_after(0);
+}
+
+static int
+test_api_journaled_upload_keeps_the_wav(void) {
+    return api_upload_with_delete_after(1);
 }
 
 // With DirWatch and API both on, the upload's meta part is the sidecar DirWatch leaves on disk, byte for byte, so
@@ -2514,6 +2534,7 @@ main(void) {
     rc |= test_sidecar_start_time_sources();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
+    rc |= test_api_journaled_upload_keeps_the_wav();
     rc |= test_api_meta_part_matches_dirwatch_sidecar();
     rc |= test_api_upload_does_not_follow_redirect();
     rc |= test_api_cancel_before_shutdown_skips_backlog();

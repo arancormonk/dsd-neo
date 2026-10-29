@@ -346,8 +346,8 @@ bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** 
     if (user_cfg_loaded && !cli_file_rate_override && user_cfg) {
         dsd_finalize_user_config_file_input_after_cli(user_cfg, opts, state);
     }
-    /* The config and the command line are both in: a journaled run keeps its uploads (issue #708). */
-    (void)dsd_rdio_keep_journaled_uploads(opts);
+    /* The config and the command line are both in: say once that a journaled run keeps its uploads (issue #708). */
+    (void)dsd_rdio_warn_journal_keeps_uploads(opts, 0);
     return DSD_BOOTSTRAP_CONTINUE;
 }
 

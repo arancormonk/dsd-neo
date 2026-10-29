@@ -1117,10 +1117,11 @@ run_transition_case(const transition_case* tc) {
     return rc;
 }
 
-/* A live config that turns delete-after-upload on leaves it off in a run that names a recording journal, whose owner
-   manages the recordings' retention; without a journal the config's choice stands. */
+/* A live config that turns delete-after-upload on keeps the option as configured, so a config saved from the run still
+   has it; in a run that names a recording journal, whose owner manages the recordings' retention, the uploads are
+   kept instead. */
 static int
-test_config_delete_after_upload_yields_to_the_journal(void) {
+test_config_delete_after_upload_keeps_its_value_under_a_journal(void) {
     int rc = 0;
     for (int journaled = 0; journaled < 2; journaled++) {
         rig r;
@@ -1136,8 +1137,10 @@ test_config_delete_after_upload_yields_to_the_journal(void) {
         cfg.rdio_api_delete_after_upload = 1;
         rc |= expect_int("config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int("config drained", drain(&r), 1);
-        rc |= expect_int(journaled ? "journaled: delete-after-upload off" : "no journal: delete-after-upload on",
-                         r.opts->rdio_api_delete_after_upload, journaled ? 0 : 1);
+        rc |= expect_int(journaled ? "journaled: delete-after-upload stays on" : "no journal: delete-after-upload on",
+                         r.opts->rdio_api_delete_after_upload, 1);
+        rc |= expect_int(journaled ? "journaled: uploads kept" : "no journal: uploads deleted",
+                         dsd_rdio_journal_keeps_uploads(r.opts), journaled);
         rig_close(&r);
     }
     return rc;
@@ -1573,7 +1576,7 @@ main(void) {
     rc |= test_config_moving_the_folder_and_stopping_publishes_in_the_old_one();
     rc |= test_config_that_changes_no_recording_leaves_it();
     rc |= test_config_changing_only_the_raw_wav_leaves_a_waiting_slot();
-    rc |= test_config_delete_after_upload_yields_to_the_journal();
+    rc |= test_config_delete_after_upload_keeps_its_value_under_a_journal();
     rc |= test_stop_publishes_the_nfm_recording_in_its_folder();
     rc |= test_full_segment_table_is_reported_once_per_run();
     rc |= test_recording_transition_table();

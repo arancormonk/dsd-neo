@@ -2291,10 +2291,14 @@ suite runs under this compiler.
     `dsd_rdio_upload_names_same_file()` in `src/runtime/rdio_export_internal.h`, which takes the platform's rules as a
     flag), so another spelling of the folder still matches, under the queue's mutex, which for that reason lives for
     the process (the worker's condition variable is still created and destroyed with the worker; a failed mutex init
-    is final: no worker starts and nothing is held). `dsd_rdio_keep_journaled_uploads()` turns
-    `rdio_api_delete_after_upload` off (one LOG_WARN) in a run that names a recording journal, whose owner manages
-    retention; the bootstrap calls it once the config and the command line are applied, and a live config apply
-    after staging (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
+    is final: no worker starts and nothing is held). Uploads are kept while a journal is set:
+    `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
+    `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
+    decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
+    autosave and the menu's Save config keep it. `dsd_rdio_warn_journal_keeps_uploads()` logs one LOG_WARN: the
+    bootstrap calls it once the config and the command line are applied, and a live config apply after staging, which
+    warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
+    `RUNTIME_RDIO_EXPORT`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
     during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
     rule under POSIX and Windows rules on every host),
     `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).

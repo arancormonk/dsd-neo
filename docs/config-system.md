@@ -421,7 +421,7 @@ is lost, since the call may still resume; a terminator alerts immediately.
 | `rdio_api_key` | STRING | rdio API key | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
-| `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; off in a run with `--wav-journal`, whose owner manages retention | `false` |
+| `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact or range row; a private call when
