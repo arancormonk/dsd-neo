@@ -3095,8 +3095,8 @@ frame_sync_history_drop(dsd_state* state) {
     state->frame_sync_carry.valid = 0;
 }
 
-/* A call's start: take up the history the last call kept when the stream went on from there unbroken, and drop it either
- * way, so it is taken up once. An off-thread tune noted after this call applied the pending ones
+/* A call's start: take up the history the last call kept when the stream went on from there unbroken, and drop it
+ * either way, so it is taken up once. An off-thread tune noted after this call applied the pending ones
  * (dsd_frame_sync_apply_off_thread_tunes()) and not applied yet counts as a retune too. */
 static void
 frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {

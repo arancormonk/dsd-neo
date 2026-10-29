@@ -189,20 +189,20 @@ typedef struct {
 #define DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS 128
 
 /* The dibit history the frame sync's windows are built from, as a getFrameSync() call left it on a no-sync exit (the
- * timeout after a matchless pass, or the hunt budget's), with where the stream was then. The next call starts from it
- * when nothing came between: the symbol clock has not moved; neither the clock's epoch, the input, the carrier count,
- * the trunk tuning generation, the SPS hunt profile nor the modulation changed; no tune off the decoder thread awaits
- * reconciling; and no retune forgot the sync histories (dsd_state_forget_sync_join_histories(), which the decoder
- * thread's trunk retunes run: a tune through the trunk tuning hooks, dsd_engine_rxid_trunk_tune(), and noCarrier's
- * direct control-channel return; and so do every off-thread tune applied, every carrier boundary, a scanner step
- * whose rigctl leg moved before its RTL leg failed included, and every acquisition reset) since the call began. The
- * first symbol the next call reads is checked again, for a stream flush its read found. A sync matcher that reads only its window, or reads forward from its sync (TETRA, P25,
- * NXDN, YSF, dPMR, D-STAR, M17), then matches a frame that began before the exit as one that did not; before, the new
- * call started with no history, and a TETRA uplink burst whose training ended fewer than its window's symbols into the
- * call was never matched. DMR and X2-TDMA read the part before their sync from the rolling dibit buffers, which the
- * no-carrier reset clears, so for them it buys nothing. Every other exit, a sync above all, drops it. Written and read
- * by the frame sync alone (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories();
- * decoder-thread private. */
+ * timeout after a matchless pass, or the hunt budget's), with where the stream was then. The next call starts from
+ * it when nothing came between: the symbol clock has not moved; neither the clock's epoch, the input, the carrier
+ * count, the trunk tuning generation, the SPS hunt profile nor the modulation changed; no tune off the decoder
+ * thread awaits reconciling; and no retune forgot the sync histories (dsd_state_forget_sync_join_histories(), which
+ * the decoder thread's trunk retunes run: a tune through the trunk tuning hooks, dsd_engine_rxid_trunk_tune(), and
+ * noCarrier's direct control-channel return; and so do every off-thread tune applied, every carrier boundary, a
+ * typed scanner row that moved the receiver yet ends unlanded included, and every acquisition reset) since the call
+ * began. The first symbol the next call reads is checked again, for a stream flush its read found. A sync matcher
+ * that reads only its window, or reads forward from its sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17), then
+ * matches a frame that began before the exit as one that did not; before, the new call started with no history, and
+ * a TETRA uplink burst whose training ended fewer than its window's symbols into the call was never matched. DMR and
+ * X2-TDMA read the part before their sync from the rolling dibit buffers, which the no-carrier reset clears, so for
+ * them it buys nothing. Every other exit, a sync above all, drops it. Written and read by the frame sync alone
+ * (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories(); decoder-thread private. */
 typedef struct {
     char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
     int head;                                         /* the next slot to write */

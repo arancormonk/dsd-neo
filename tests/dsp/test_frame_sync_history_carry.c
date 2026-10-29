@@ -15,10 +15,10 @@
  * that way: the exit came 7 symbols before it began (tetra_uplink_bursts_72k, DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS).
  *
  * These cases drive getFrameSync() as the engine does across such an exit, with a symbol source that holds a control
- * uplink burst straddling it: the next call goes on from the history the last one kept when the stream went on unbroken,
- * and starts blind when it did not: a carrier change, a trunk retune (in the exit's own no-sync hooks, as a P25 release
- * makes one, or between the calls, on the decoder thread or off it), a completed tune, a stream flush the next read
- * finds, a symbol read between the calls, another modulation, or another hunt profile.
+ * uplink burst straddling it: the next call goes on from the history the last one kept when the stream went on
+ * unbroken, and starts blind when it did not: a carrier change, a trunk retune (in the exit's own no-sync hooks, as a
+ * P25 release makes one, or between the calls, on the decoder thread or off it), a completed tune, a stream flush the
+ * next read finds, a symbol read between the calls, another modulation, or another hunt profile.
  */
 
 #include <assert.h>
@@ -55,7 +55,8 @@ enum {
 
 static char g_stream[STREAM_LEN];
 static int g_pos = 0;
-/* 1: the next read finds a stream flush, as an RTL reader does after a retune (dsd_symbol.c bumps the clock's epoch). */
+/* 1: the next read finds a stream flush, as an RTL reader does after a retune (dsd_symbol.c bumps the clock's
+   epoch). */
 static int g_flush_on_next_read = 0;
 /* 1: a tune off the decoder thread (the watchdog's) is noted while the next read runs, after the call reconciled the
    ones pending at its start (dsd_frame_sync_apply_off_thread_tunes()). */

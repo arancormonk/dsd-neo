@@ -84,6 +84,11 @@ typedef struct {
     int tuned;
     int tuned_row;
     uint64_t tuned_map;
+    /* The receiver left the carrier, but no row has committed since and so no boundary was noted: a staged tune's
+     * rigctl leg moved the radio before its RTL leg went on asynchronously (PENDING), or a completed tune landed a row
+     * that was then restaged (channel_scan_commit()). A commit notes its own boundary; a row that ends unlanded notes
+     * the one this owes (channel_scan_note_unlanded_move()). */
+    int left_carrier;
     /* The row whose scope is installed, its options in force (the last row committed), or -1 before the first. */
     int committed_row;
     /* The operator's session edits of rows' own settings ("this channel", issue #518), one per edited row, laid over the
@@ -208,6 +213,17 @@ channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* A row that ends unlanded after the receiver moved (@p moved, or an earlier move still owed, scan->left_carrier): the
+   receiver is on another carrier all the same, so this is a carrier boundary (issue #575) as a committed row's is, and
+   what the carrier left sent is forgotten. Runs before the calls end, as a commit's boundary does. */
+static void
+channel_scan_note_unlanded_move(dsd_opts* opts, dsd_state* state, channel_scan* scan, int moved) {
+    if (moved || scan->left_carrier) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    }
+    scan->left_carrier = 0;
+}
+
 /* Whether the tune staged for the row carries a configured channel width (issue #526): an untyped row's does on the
  * analog family the configured options select, and an analog row's unless it sets a width of its own, whatever the
  * configured family. A typed digital row filters with its own channel profile. */
@@ -282,15 +298,18 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->tuned_map = scan->map_sequence;
     if (channel_scan_staged_stale(opts, state, scan)) {
         /* Stage the new effective profile in a fresh request before any frame
-         * can use it. */
+         * can use it. The receiver has left the carrier already: the row's commit
+         * or its end unlanded notes the boundary. */
         scan->request = 0;
         scan->retry = 1;
+        scan->left_carrier = 1;
         return 0;
     }
     const int outgoing_force = state->M;
     /* The next row is another carrier: the carrier boundary (issue #575) ends the calls with the outgoing row's keys and
        label still installed, and forgets what that carrier left. */
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    scan->left_carrier = 0;
     channel_scan_end_calls(opts, state);
     dsd_engine_reset_no_carrier_state(opts, state);
     if (dsd_scan_mode_enter(opts, state, scan->mode) != 0) {
@@ -334,6 +353,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
             (void)channel_scan_start_row(opts, state, scan->row);
         } else {
             scan->retry = 0;
+            channel_scan_note_unlanded_move(opts, state, scan, 0);
         }
         return dsd_engine_channel_scan_waiting(state);
     }
@@ -349,6 +369,9 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         (void)channel_scan_commit(opts, state, scan);
         return dsd_engine_channel_scan_waiting(state);
     }
+    /* The row will not land. A tune that completed moved the receiver all the same (its row went out of date while it
+       was outstanding), and so did a rigctl leg ahead of an RTL leg that went on asynchronously and failed. */
+    channel_scan_note_unlanded_move(opts, state, scan, result == DSD_TRUNK_TUNE_RESULT_OK);
     channel_scan_end_calls(opts, state);
     if (result == DSD_TRUNK_TUNE_RESULT_FAILED && scan->map_sequence == state->trunk_chan_map_seq) {
         state->lcn_freq_roll = scan->row + 1;
@@ -955,15 +978,16 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         return channel_scan_commit(opts, state, scan);
     }
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        /* A rigctl leg that moved ahead of the RTL leg left the carrier whatever the RTL leg's completion says. */
+        if (dsd_engine_scan_tune_moved()) {
+            scan->left_carrier = 1;
+        }
         return 0;
     }
     /* A failed second backend may already have moved the first one. Keep the tune
-     * ledger's frame gate closed until a subsequent successful request recovers. */
-    if (dsd_engine_scan_tune_moved()) {
-        /* The rigctl leg did move the radio before the RTL leg failed: the receiver left the carrier, so this is a
-           carrier boundary (issue #575) as a committed row's is, and what the carrier left sent is forgotten. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
-    }
+     * ledger's frame gate closed until a subsequent successful request recovers.
+     * When the rigctl leg did move the radio, the row ends unlanded on another carrier. */
+    channel_scan_note_unlanded_move(opts, state, scan, dsd_engine_scan_tune_moved());
     channel_scan_end_calls(opts, state);
     if (result == DSD_TRUNK_TUNE_RESULT_FAILED) {
         /* A bad row must not prevent a later successful row from recovering

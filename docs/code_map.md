@@ -454,7 +454,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
   Configuration edits retry pending tunes on a later service pass; live output-rate changes do not trigger another tune.
   Failed rows advance to the next candidate; a later successful tune recovers any gate held by a partial backend
-  failure. `dsd_engine_channel_scan_waiting()` only inspects ownership; `dsd_engine_channel_scan_service_sync()`
+  failure. A row that moved the receiver but never commits still notes the carrier boundary (see
+  `dsd_engine_carrier_boundary()` in Protocols). `dsd_engine_channel_scan_waiting()` only inspects ownership;
+  `dsd_engine_channel_scan_service_sync()`
   services pending work and invalidates sync gathered before the transaction. Pending rows defer no-carrier call
   finalization until commit. `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping
   or changing tuner ownership. `trunk_scan.c` selects the same classes from target types while retaining target
@@ -619,14 +621,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   reconciling, and no `dsd_state_forget_sync_join_histories()` since the history began. The decoder thread's trunk
   retunes run it (a tune through the trunk tuning hooks, `dsd_engine_rxid_trunk_tune()`, and noCarrier's direct
   control-channel return, `no_carrier_accept_direct_cc_return()`), and so do every off-thread tune applied, every
-  carrier boundary (a typed scanner step whose rigctl leg moved before its RTL leg failed is one,
-  `dsd_engine_scan_tune_moved()`) and every acquisition reset; so a P25 release's retune, or a direct return, in the
-  exit's own no-sync hooks keeps nothing. Its first read checks the clock, epoch, carrier count, generation, drops and
-  pending off-thread tunes again, for a flush an RTL reader finds only when it reads. A matcher that reads only its window or reads its frame forward from the sync (TETRA,
-  P25, NXDN, YSF, dPMR, D-STAR, M17) then matches a frame that straddles the exit; before, a TETRA control uplink burst
-  that began fewer than 20 symbols before it was lost. DMR and X2-TDMA read their pre-sync half from the rolling dibit
-  buffers, which the no-carrier reset clears, so for them nothing changes. A sync, an input interruption, a
-  signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY`.
+  carrier boundary (a typed scanner row that moved the receiver yet ends unlanded is one,
+  `channel_scan_note_unlanded_move()`) and every acquisition reset; so a P25 release's retune, or a direct return, in
+  the exit's own no-sync hooks keeps nothing. Its first read checks the clock, epoch, carrier count, generation, drops
+  and pending off-thread tunes again, for a flush an RTL reader finds only when it reads. A matcher that reads only its
+  window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17) then matches a frame that
+  straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before it was lost. DMR and
+  X2-TDMA read their pre-sync half from the rolling dibit buffers, which the no-carrier reset clears, so for them
+  nothing changes. A sync, an input interruption, a signal-search yield and shutdown drop it too. Test:
+  `FRAME_SYNC_HISTORY_CARRY`.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
@@ -6534,6 +6537,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `dsd_engine_end_input_boundary()`.
   - A `-Y` row commit (`channel_scan_commit()`, then `channel_scan_end_calls()` and the shared reset) and the untyped
     `-Y` step (in `no_carrier_run()`, before the finalize and the shared reset).
+  - A typed `-Y` row that moved the receiver yet ends unlanded (`channel_scan_note_unlanded_move()`, before
+    `channel_scan_end_calls()`): its rigctl leg moved before its RTL leg failed, at once or when the request it went on
+    as completes (`dsd_engine_scan_tune_moved()`, carried as `left_carrier`), or its tune completed for a row that went
+    out of date, or for one restaged whose retry is abandoned.
   - An I/Q replay's retune the capture recorded, with trunking off, where the read path adopts the new centre
     (`dsd_engine_leave_replay_carrier()`; see IO, "I/Q replay tuned frequency"); with trunking on it is exempt.
 
