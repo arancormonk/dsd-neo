@@ -96,13 +96,18 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSubdued
     }
+    // Closed, the rows stay unbuilt (issue #782): the fields follow readings
+    // that move with every scan hop, and each rebuild creates and destroys
+    // rows an accessibility client is told about. Opening fills them as they
+    // are.
     component FieldGrid: Grid {
         property var fields: []
+        property bool live: true
         width: parent.width
         columns: 1
         spacing: 10
         Repeater {
-            model: fields
+            model: live ? fields : []
             delegate: Grid {
                 required property var modelData
                 width: parent.width
@@ -133,6 +138,7 @@ ModalSheet {
     }
 
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "P25"
         fields: [
             {
@@ -186,6 +192,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "DMR"
         fields: [
             {
@@ -233,6 +240,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "NXDN" || metrics.siteProtocol === "IDAS"
         fields: [
             {
@@ -262,6 +270,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "EDACS"
         fields: [
             {
@@ -291,6 +300,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "dPMR" || metrics.siteProtocol === "M17"
         fields: [
             {
@@ -302,6 +312,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "TETRA"
         fields: [
             {
@@ -331,6 +342,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: true
         fields: [
             {

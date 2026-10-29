@@ -204,8 +204,12 @@ ModalSheet {
                 sheet.visible = false;
         }
     }
+    // Closed, the slots stay unbuilt (issue #782): they change with every call
+    // and scan hop, and each row created under the hidden sheet raises an
+    // accessibility event. Opening fills them from the readings as they are.
     Repeater {
-        model: metrics.decryptionSlots || []
+        objectName: "keySheetSlots"
+        model: sheet.visible ? (metrics.decryptionSlots || []) : []
         Column {
             required property var modelData
             width: parent.width
