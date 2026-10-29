@@ -456,13 +456,19 @@ MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict, bo
 }
 
 void
-MetricsModel::clear() {
+MetricsModel::resetTargetLatches() {
     m_messageTimer.stop();
     /* The latch is per-session state, not part of the published frame: a stopped
      * session that starts again on the same frequency must not inherit the old
-     * session's answer to "is there anything here". */
+     * session's answer to "is there anything here", nor a new scan target the old
+     * target's. */
     m_sync_type_here = DSD_SYNC_NONE;
     m_sync_seen_m = 0.0;
+}
+
+void
+MetricsModel::clear() {
+    resetTargetLatches();
     View cleared;
     /* The configured tone policy is not session state: stopping leaves it as configured, for the text and the
        editor. */
@@ -481,33 +487,6 @@ MetricsModel::setChannelNames(const QVariantMap& names) {
             m_channelNames.insert(it.key(), name);
         }
     }
-}
-
-void
-MetricsModel::clearForTarget() {
-    m_messageTimer.stop();
-    m_sync_type_here = DSD_SYNC_NONE;
-    m_sync_seen_m = 0.0;
-    View cleared;
-    cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
-    cleared.tone_filter_configured_mode = m_view.tone_filter_configured_mode;
-    cleared.tone_filter_configured_list = m_view.tone_filter_configured_list;
-    // Who owns the tuner and what the session is set to: the next snapshot republishes them unchanged.
-    cleared.options_known = m_view.options_known;
-    cleared.tuner_controlled = m_view.tuner_controlled;
-    cleared.replay_input = m_view.replay_input;
-    cleared.trunking_enabled = m_view.trunking_enabled;
-    cleared.scanner_mode = m_view.scanner_mode;
-    cleared.scan_kind = m_view.scan_kind;
-    cleared.scan_rotation_active = m_view.scan_rotation_active;
-    cleared.scan_paused = m_view.scan_paused;
-    cleared.scan_resumable = m_view.scan_resumable;
-    cleared.operator_tuned = m_view.operator_tuned;
-    cleared.scan_target_count = m_view.scan_target_count;
-    cleared.scan_hold = m_view.scan_hold;
-    cleared.audio_muted = m_view.audio_muted;
-    cleared.configured_squelch_off = m_view.configured_squelch_off;
-    publish(cleared);
 }
 
 /**
@@ -1216,7 +1195,10 @@ MetricsModel::fillUiMessage(View& next, const dsd_state* snapshot) {
 }
 
 void
-MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool new_target) {
+    if (new_target) {
+        resetTargetLatches();
+    }
     dsd_frontend_metrics metrics;
     /* A missing snapshot is the real "nothing to show" case, and it has to be tested
      * for here: the fetch fills defaults for a NULL snapshot rather than failing, so

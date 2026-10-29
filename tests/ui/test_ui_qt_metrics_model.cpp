@@ -924,6 +924,49 @@ test_decode_clock_readings() {
     freeState(&state);
 }
 
+/* Issue #782: a new scan target drops the old target's sync hold inside the same refresh, so the frame that names the
+   new target never carries the old lock and never passes through the cleared view first. The same refresh without a
+   new target keeps the hold. */
+static void
+test_new_target_drops_sync_hold_in_one_publication() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.trunk_scan_enabled = 1;
+    dsd_qt::MetricsModel model;
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.trunk_scan_active_ordinal = 1U;
+    model.refresh(&opts, &state, false);
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state, false);
+    expect("an old target's sync is held across an unsynced poll", model.syncedHere());
+
+    int tuner = 0;
+    int control = 0;
+    bool lockedAtPublication = false;
+    bool defaultAtPublication = false;
+    QObject::connect(&model, &dsd_qt::MetricsModel::tunerChanged, [&]() {
+        ++tuner;
+        lockedAtPublication = lockedAtPublication || model.syncedHere();
+        defaultAtPublication = defaultAtPublication || !model.radioInput();
+    });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() {
+        ++control;
+        defaultAtPublication = defaultAtPublication || !model.optionsKnown();
+    });
+    state.trunk_scan_active_ordinal = 2U;
+    model.refresh(&opts, &state, true);
+    expect("a new target drops the held sync", !model.syncedHere() && model.syncLabel().isEmpty());
+    expect("a new target publishes the tuner rows once, unlocked", tuner == 1 && !lockedAtPublication);
+    expect("a new target publishes the controls once", control == 1);
+    expect("a new target never publishes the cleared view", !defaultAtPublication);
+    expect("a new target keeps the readings", model.radioInput() && model.optionsKnown());
+    freeState(&state);
+}
+
 static void
 test_options_readiness() {
     static dsd_opts opts;
@@ -2069,6 +2112,7 @@ test_block_label_radio_blocked() {
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_new_target_drops_sync_hold_in_one_publication();
     test_tetra_rows();
     test_slot_kind_and_labels();
     test_scan_row();

@@ -9,6 +9,9 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
+#include <QMetaMethod>
+#include <QMetaObject>
+#include <QMetaProperty>
 #include <QMetaType>
 #include <QObject>
 #include <QQmlComponent>
@@ -52,6 +55,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <utility>
+#include <vector>
 #include "../../android/local_device_state.h"
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
@@ -393,6 +397,174 @@ test_metrics_age_without_decoder_redraw() {
     host.setPhase(Host::Idle);
     poll(65);
     check(!metrics.scanTimingVisible() && !metrics.optionsKnown());
+    freeState(&state);
+}
+
+/* Every NOTIFY signal MetricsModel has, so a test can watch each publication. The list is checked against the meta
+   object, so a signal added later cannot go unwatched. */
+static void
+connectEveryMetricsSignal(dsd_qt::MetricsModel& metrics, const std::function<void()>& onEmit) {
+    using Signal = void (dsd_qt::MetricsModel::*)();
+    static const Signal kSignals[] = {
+        &dsd_qt::MetricsModel::siteChanged,
+        &dsd_qt::MetricsModel::qualityChanged,
+        &dsd_qt::MetricsModel::tunerChanged,
+        &dsd_qt::MetricsModel::slot1Changed,
+        &dsd_qt::MetricsModel::slot2Changed,
+        &dsd_qt::MetricsModel::leadSlotChanged,
+        &dsd_qt::MetricsModel::twoSlotCarrierChanged,
+        &dsd_qt::MetricsModel::controlChanged,
+        &dsd_qt::MetricsModel::scanTimingChanged,
+        &dsd_qt::MetricsModel::rxToneChanged,
+        &dsd_qt::MetricsModel::rxToneConfiguredTextChanged,
+        &dsd_qt::MetricsModel::toneFilterChanged,
+        &dsd_qt::MetricsModel::toneFilterSettingChanged,
+        &dsd_qt::MetricsModel::tetraChanged,
+        &dsd_qt::MetricsModel::uiMessageChanged,
+        &dsd_qt::MetricsModel::decodeNowMsChanged,
+    };
+    std::vector<QMetaMethod> watched;
+    for (const Signal signal : kSignals) {
+        watched.push_back(QMetaMethod::fromSignal(signal));
+        QObject::connect(&metrics, signal, [onEmit]() { onEmit(); });
+    }
+    const QMetaObject* meta = metrics.metaObject();
+    for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
+        const QMetaProperty property = meta->property(i);
+        if (!property.hasNotifySignal()) {
+            continue;
+        }
+        bool found = false;
+        for (const QMetaMethod& method : watched) {
+            found = found || method == property.notifySignal();
+        }
+        check(found);
+    }
+}
+
+/* What the Monitor screen's gates read, at one publication. */
+struct MetricsGates {
+    bool radio_input;
+    bool options_known;
+    bool scan_rotation_active;
+    bool squelch_noise_offered;
+    bool two_slot_carrier;
+};
+
+static MetricsGates
+readGates(const dsd_qt::MetricsModel& metrics) {
+    return MetricsGates{metrics.radioInput(), metrics.optionsKnown(), metrics.scanRotationActive(),
+                        metrics.squelchNoiseOffered(), metrics.twoSlotCarrier()};
+}
+
+static void
+seedScanTarget(dsd_opts* opts, dsd_state* state, unsigned int ordinal) {
+    initOpts(opts);
+    initState(state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->tdma_carrier = 1U;
+    state->trunk_scan_active_ordinal = ordinal;
+}
+
+static void
+pollController(dsd_qt::UiController& controller, const dsd_opts* opts, const dsd_state* state) {
+    dsd_app_telemetry_publish_opts_snapshot(opts);
+    dsd_app_telemetry_publish_snapshot(state);
+    dsd_app_request_redraw();
+    QEventLoop loop;
+    QTimer::singleShot(65, &loop, &QEventLoop::quit);
+    controller.start();
+    loop.exec();
+    controller.stop();
+}
+
+// Issue #782: a scan-target change publishes the new target once; no reading passes through its default on the way.
+static void
+test_target_change_publishes_once() {
+    static dsd_opts opts;
+    static dsd_state state;
+    seedScanTarget(&opts, &state, 1U);
+    Host host;
+    dsd_qt::MetricsModel metrics;
+    dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    controller.setPollIntervalMs(50);
+    pollController(controller, &opts, &state);
+    const MetricsGates before = readGates(metrics);
+    check(before.radio_input && before.options_known && before.scan_rotation_active && before.squelch_noise_offered
+          && before.two_slot_carrier);
+    check(!metrics.syncLabel().isEmpty());
+
+    std::vector<MetricsGates> seen;
+    int controlChanges = 0;
+    connectEveryMetricsSignal(metrics, [&]() { seen.push_back(readGates(metrics)); });
+    QObject::connect(&metrics, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controlChanges; });
+    state.trunk_scan_active_ordinal = 2U;
+    pollController(controller, &opts, &state);
+    check(!seen.empty()); // The new ordinal is itself a published change.
+    for (const MetricsGates& gates : seen) {
+        check(gates.radio_input);
+        check(gates.options_known);
+        check(gates.scan_rotation_active);
+        check(gates.squelch_noise_offered);
+        check(gates.two_slot_carrier);
+    }
+    check(controlChanges <= 1);
+    check(metrics.scanTargetOrdinal() == 2);
+    freeState(&state);
+}
+
+// Issue #782: the old target's sync hold does not caption the new one, not even for one publication.
+static void
+test_target_change_drops_sync_hold() {
+    static dsd_opts opts;
+    static dsd_state state;
+    seedScanTarget(&opts, &state, 1U);
+    Host host;
+    dsd_qt::MetricsModel metrics;
+    dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    controller.setPollIntervalMs(50);
+    pollController(controller, &opts, &state);
+    check(metrics.syncedHere() && !metrics.syncLabel().isEmpty());
+
+    bool labelled = false;
+    connectEveryMetricsSignal(metrics, [&]() { labelled = labelled || !metrics.syncLabel().isEmpty(); });
+    state.synctype = DSD_SYNC_NONE;
+    state.lastsynctype = DSD_SYNC_NONE;
+    state.trunk_scan_active_ordinal = 2U;
+    pollController(controller, &opts, &state);
+    check(metrics.syncLabel().isEmpty() && !metrics.syncedHere());
+    check(!labelled);
+    check(metrics.radioInput() && metrics.optionsKnown()); // Only the sync hold went, not the readings.
+    freeState(&state);
+}
+
+// Issue #782: with the session stopped, a target change still takes the readings down, in one publication.
+static void
+test_target_change_while_stopped_clears() {
+    static dsd_opts opts;
+    static dsd_state state;
+    seedScanTarget(&opts, &state, 1U);
+    Host host;
+    dsd_qt::MetricsModel metrics;
+    dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    controller.setPollIntervalMs(50);
+    pollController(controller, &opts, &state);
+    check(metrics.radioInput() && metrics.optionsKnown());
+    host.setPhase(Host::Idle);
+    pollController(controller, &opts, &state); // The stopped session's target is the one on record now.
+    metrics.refresh(&opts, &state);            // A frame read after the stop: nothing upstream clears it.
+    check(metrics.radioInput() && metrics.optionsKnown() && !metrics.syncLabel().isEmpty());
+
+    int controlChanges = 0;
+    QObject::connect(&metrics, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controlChanges; });
+    state.trunk_scan_active_ordinal = 2U;
+    pollController(controller, &opts, &state);
+    check(controlChanges == 1);
+    check(!metrics.radioInput() && !metrics.optionsKnown() && !metrics.scanRotationActive());
+    check(!metrics.twoSlotCarrier() && metrics.syncLabel().isEmpty());
     freeState(&state);
 }
 
@@ -996,6 +1168,9 @@ main(int argc, char** argv) {
     test_session_end_saves_after_final_ingest();
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
+    test_target_change_publishes_once();
+    test_target_change_drops_sync_hold();
+    test_target_change_while_stopped_clears();
     test_sheet_policy_edits();
     test_nfm_bandwidth_bridge();
     test_am_bandwidth_bridge();

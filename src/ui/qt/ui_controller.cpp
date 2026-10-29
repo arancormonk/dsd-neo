@@ -195,22 +195,23 @@ UiController::setCommandBridge(CommandBridge* commands) {
     m_commands = commands;
 }
 
-void
+bool
 UiController::invalidateForTarget(const dsd_state* snapshot) {
-    if (snapshot && snapshot->trunk_scan_active_ordinal != m_active_ordinal) {
-        m_active_ordinal = snapshot->trunk_scan_active_ordinal;
-        // The new target can be quiet; waiting for a new call would let the old
-        // target's held sync/identity continue to caption this frequency.
-        if (m_network) {
-            m_network->clear();
-        }
-        if (m_metrics) {
-            m_metrics->clearForTarget();
-        }
-        if (m_talkgroups) {
-            m_talkgroups->invalidateForTarget();
-        }
+    if (!snapshot || snapshot->trunk_scan_active_ordinal == m_active_ordinal) {
+        return false;
     }
+    m_active_ordinal = snapshot->trunk_scan_active_ordinal;
+    // The new target can be quiet; waiting for a new call would let the old
+    // target's held sync/identity continue to caption this frequency. The metrics
+    // are not cleared here: refreshModels() drops their latches inside the same
+    // publication, so no reading passes through its default on a hop (#782).
+    if (m_network) {
+        m_network->clear();
+    }
+    if (m_talkgroups) {
+        m_talkgroups->invalidateForTarget();
+    }
+    return true;
 }
 
 bool
@@ -275,9 +276,13 @@ UiController::refreshModels() {
     const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
 
-    invalidateForTarget(snapshot);
-    if (live && m_metrics != nullptr) {
-        m_metrics->refresh(opts_snapshot, snapshot);
+    const bool new_target = invalidateForTarget(snapshot);
+    if (m_metrics != nullptr) {
+        if (live) {
+            m_metrics->refresh(opts_snapshot, snapshot, new_target);
+        } else if (new_target) {
+            m_metrics->clear();
+        }
     }
     if (!redraw) {
         return;

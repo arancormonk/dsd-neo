@@ -2002,6 +2002,11 @@ class MetricsModel : public QObject {
         return m_view.radio_source;
     }
 
+    QVariantMap
+    airspy() const {
+        return m_view.airspy;
+    }
+
     /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
@@ -2009,15 +2014,16 @@ class MetricsModel : public QObject {
      * one generation: fetching here as well would consume a second time, and a
      * publish in between would leave the readings and the call lines disagreeing.
      *
+     * On a new scan target the old target's latches go first, and the frame is still
+     * published once: clearing and then refreshing would swing every reading to its
+     * default and back on each hop, and each swing reaches accessibility as events
+     * (issue #782).
+     *
      * @param opts_snapshot Options snapshot, or nullptr before the first publish.
      * @param snapshot      State snapshot, or nullptr before the first publish.
+     * @param new_target    The scan rotation moved to another target since the last frame.
      */
-    QVariantMap
-    airspy() const {
-        return m_view.airspy;
-    }
-
-    void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool new_target = false);
 
     int
     configuredForce() const {
@@ -2063,14 +2069,6 @@ class MetricsModel : public QObject {
      * Showing nothing is honest; showing the readings from a minute ago is not.
      */
     void clear();
-    /**
-     * @brief What a trunk-scan target change clears: the readings that belong to the target left (sync, identity,
-     * quality), as clear() does, while who owns the tuner and the session's settings stay as they are. A target change
-     * does not change them, and clearing them for one frame would read as the scan stopping (issue #671: an open Go to
-     * closed, and the spectrum's ownership badge moved, on every hop).
-     */
-    void clearForTarget();
-
     /**
      * @brief Names for the scan channels a call can be heard on: a trunk-scan target's id (the app writes each entry's
      * uid) to the name the operator gave it. A call with no name of its own is named by its channel, and an id is not
@@ -2539,6 +2537,8 @@ class MetricsModel : public QObject {
 
     /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
+    /** @brief Drop what clear() resets apart from the published frame: the sync hold and the message expiry timer. */
+    void resetTargetLatches();
     static void fillPhase2Seed(SiteView& site, const dsd_state* snapshot);
     static void fillP25Site(SiteView& site, const dsd_received_identity& id);
     static void fillDmrSite(SiteView& site, const dsd_received_identity& id);
