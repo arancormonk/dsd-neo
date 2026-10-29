@@ -1149,11 +1149,12 @@ RecordingStore::enforceLimit(Pass* pass) {
     QList<Candidate> candidates;
     qint64 total = 0;
     qint64 limit = 0;
+    // The roots the total counts.
+    QList<bool> rootAvailable;
     {
         // Summed outside the lock on shared copies, as publish() does; they are gone before the first delete.
         QHash<QString, Entry> entries;
         QHash<QString, Folder> folders;
-        QList<bool> rootAvailable;
         {
             const std::lock_guard<std::mutex> lock(m_mutex);
             m_limitPending = false;
@@ -1188,12 +1189,22 @@ RecordingStore::enforceLimit(Pass* pass) {
     const qint64 target = limit / 100 * 95;
     int removed = 0;
     bool held = false;
+    bool rootLost = false;
     for (const Candidate& candidate : candidates) {
         if (total <= target) {
             break;
         }
         const DeleteResult result = deleteEntry(candidate.id, DeleteCause::Limit, pass);
         held = held || result == DeleteResult::Held;
+        if (result == DeleteResult::Held) {
+            // A root that went away during the delete took its recordings out of the usage: the total no longer counts
+            // what is there, so no recording elsewhere goes for it. A pass asked for now sums what is left.
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_rootAvailable != rootAvailable) {
+                rootLost = true;
+                break;
+            }
+        }
         if (result == DeleteResult::Removed) {
             total -= candidate.bytes;
             removed++;
@@ -1210,7 +1221,11 @@ RecordingStore::enforceLimit(Pass* pass) {
         m_removedByLimit += removed;
         pass->dirty = true;
     }
-    if (held && total > target) {
+    if (rootLost) {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_limitPending = true;
+        m_passRequested = true;
+    } else if (held && total > target) {
         // What is left over the target is held: a hold's release, or the next timed pass, tries again.
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_limitPending = true;

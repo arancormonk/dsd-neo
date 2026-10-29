@@ -1499,6 +1499,43 @@ test_root_gone_as_a_journal_is_tailed(void) {
            s.store.recordingCount() == 2 && s.store.isIndexedPath(folder + QStringLiteral("/b.wav")));
 }
 
+/* Issue #708: storage that leaves while the limit removes recordings takes its usage with it. A 1 MB limit, an older
+ * 900 kB recording on the external storage and a newer 200 kB one inside: the external one is the first to go, and
+ * its storage leaves as it is checked. What is left counts 200 kB, so the internal one stays; the limit tries again
+ * once the storage is back, and the oldest goes then. */
+void
+test_root_gone_during_the_limit(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString outer = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    const QString inner = roots.internal + QStringLiteral("/Metro (5e6f7a8b)");
+    write_folder_json(outer, QString(kUidA), QStringLiteral("County"));
+    write_folder_json(inner, QString(kUidC), QStringLiteral("Metro"));
+    record(outer, QStringLiteral("00000000000000F3-1"), QStringLiteral("old.wav"), 1754705000, 60, 900000);
+    record(inner, QStringLiteral("00000000000000F3-2"), QStringLiteral("new.wav"), 1754705100, 61, 200000);
+    Store s(roots.list(), false);
+    std::atomic<bool> moved{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/old.wav")) && !moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+        return false;
+    });
+    s.store.setLimitMb(1);
+    s.start();
+    s.pass();
+    expect("limit: the storage went as its recording was checked", moved.load() && !QFileInfo::exists(outer));
+    expect("limit: the recording inside stays, what is left being under the limit",
+           QFileInfo::exists(inner + QStringLiteral("/new.wav")) && s.store.removedByLimit() == 0);
+    expect("limit: the one away stays indexed", s.store.recordingCount() == 2 && folder_away(s.store, kUidA));
+    expect("limit: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("limit: back over the limit, the oldest goes", !QFileInfo::exists(outer + QStringLiteral("/old.wav"))
+                                                              && QFileInfo::exists(inner + QStringLiteral("/new.wav"))
+                                                              && s.store.removedByLimit() == 1);
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -1991,6 +2028,7 @@ main(int argc, char** argv) {
     test_root_gone_as_it_is_read_again();
     test_root_gone_as_a_journal_is_read_again();
     test_root_gone_as_a_journal_is_tailed();
+    test_root_gone_during_the_limit();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
