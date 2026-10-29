@@ -256,9 +256,12 @@ If the default file does not exist, it will be created when settings are saved
 
 A config loaded into a running session (terminal Config > Load, Qt, the API `config_apply`) cannot change what only
 startup sets: the frontend, `[trunk_scan] enabled`, `[trunking] chan_csv`, an Airspy input chosen over audio input,
-and under a running trunk scan its `targets_csv`, `idle_dwell_ms`, `activity_hold_ms` and `p25_bandplan_csv`. The
+and under a running trunk scan its `targets_csv`, `idle_dwell_ms` and `activity_hold_ms`. The
 session keeps running the values it started with, the status line says a restart is needed, and every save (the exit
-autosave included) writes the loaded values, so the next start runs them.
+autosave included) writes the loaded values, so the next start runs them. A config whose next start the trunk-scan
+rules above would refuse (a global `chan_csv` or `p25_bandplan_csv` beside an enabled trunk scan, or a trunk scan
+without `targets_csv`) is not applied at all, and the status line gives the rule. A config whose new input does not
+start is rolled back to the input that ran, but keeps these values for the next start, as the rest of it stays applied.
 
 Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
 flatten the profile overlay back into the base file and remove profile sections.

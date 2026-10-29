@@ -645,13 +645,19 @@ field, and the decoder refuses the rest when it applies the command.
   Settings that only a restart puts in place (the frontend, `[trunk_scan]
   enabled`, `[trunking] chan_csv` (the channel map is imported at startup
   only), an Airspy input chosen over a non-radio input, and while a trunk scan
-  runs its target list, dwell and hold defaults and the global band plan) keep
+  runs its target list and its dwell and hold defaults) keep
   their running values, and `status.message` names them (`Config applied;
   restart to use the new channel map`), after any other message the apply left.
   The applied values wait for the next start: every save, the exit autosave
   included, writes them, so the restart runs them. A later config that names the
   running value again takes one back, and a channel-map import or clear sets the
-  map at once.
+  map at once. A config whose next start startup would refuse (a global
+  `chan_csv` or `p25_bandplan_csv` beside an enabled trunk scan, or a trunk scan
+  without `targets_csv`) is refused whole before anything changes, with the
+  rule in `status.message` (`Config not applied: trunking.chan_csv cannot be
+  combined with trunk_scan.enabled`). A config whose input does not start is
+  rolled back, but keeps its restart-only values for the next start, as the rest
+  of it stays applied.
   Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
   back at shutdown and a save writes, not the parked target's. Over a paused
   `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or

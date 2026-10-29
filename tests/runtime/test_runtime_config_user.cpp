@@ -1708,6 +1708,47 @@ test_snapshot_writes_the_next_start(void) {
     return rc;
 }
 
+/* Issue #671 (B1): the trunk-scan rules startup refuses to start without, on a composed config, with the reason. */
+static int
+test_check_trunk_scan_startable(void) {
+    static dsdneoUserConfig cfg;
+    char why[256];
+    int rc = 0;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) != 0 || why[0] != '\0') {
+        DSD_FPRINTF(stderr, "startable: no trunk scan refused (%s)\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_scan_enabled = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) == 0
+        || strcmp(why, "targets_csv is required when trunk_scan.enabled is true") != 0) {
+        DSD_FPRINTF(stderr, "startable: no list: %s\n", why);
+        rc |= 1;
+    }
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "startable: a trunk scan with its list refused (%s)\n", why);
+        rc |= 1;
+    }
+    DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) == 0
+        || strncmp(why, "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled", 68) != 0) {
+        DSD_FPRINTF(stderr, "startable: a band plan: %s\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_p25_bandplan_csv[0] = '\0';
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "chan.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) == 0
+        || strncmp(why, "trunking.chan_csv cannot be combined with trunk_scan.enabled", 60) != 0) {
+        DSD_FPRINTF(stderr, "startable: a channel map: %s\n", why);
+        rc |= 1;
+    }
+    if (dsd_user_config_check_trunk_scan_startable(nullptr, why, sizeof why) == 0) {
+        rc |= 1;
+    }
+    return rc;
+}
+
 static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
@@ -5302,6 +5343,7 @@ main(void) {
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_scanner_saves_a_paused_scan();
     rc |= test_snapshot_writes_the_next_start();
+    rc |= test_check_trunk_scan_startable();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_roundtrip_agc_rtl_gain();

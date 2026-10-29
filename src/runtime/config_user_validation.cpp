@@ -865,3 +865,24 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
     }
     return diags->error_count > 0 ? -1 : rc;
 }
+
+int
+dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, char* why, size_t why_size) {
+    if (why != nullptr && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (cfg == nullptr) {
+        return -1;
+    }
+    dsdcfg_diagnostics_t diags;
+    dsdcfg_diags_init(&diags);
+    validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", &diags);
+    validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", &diags);
+    validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", &diags);
+    const int rc = diags.error_count > 0 ? -1 : 0;
+    if (rc != 0 && why != nullptr && why_size > 0U && diags.count > 0) {
+        DSD_SNPRINTF(why, why_size, "%s", diags.items[0].message);
+    }
+    dsdcfg_diags_free(&diags);
+    return rc;
+}

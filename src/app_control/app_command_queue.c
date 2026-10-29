@@ -7974,6 +7974,61 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     return UI_CMD_APPLY_FAILED;
 }
 
+/* What a save would write once @p cfg is applied, in @p next (the save as it stands, from dsd_snapshot_opts_to_user_config()):
+   the trunk-scan fields a config names replace those the session would save, as staging and the next-start hold
+   (cfg_restore_lifecycle_owned()) leave them. A path is named only when the config sets one. */
+static void
+cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const dsdneoUserConfig* cfg) {
+    if (cfg->has_trunk_scan) {
+        next->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
+        if (cfg->trunk_scan_targets_csv[0]) {
+            DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s",
+                         cfg->trunk_scan_targets_csv);
+        }
+    }
+    if (cfg->has_trunking && cfg->trunk_chan_csv[0]) {
+        DSD_SNPRINTF(next->trunk_chan_csv, sizeof next->trunk_chan_csv, "%s", cfg->trunk_chan_csv);
+    }
+    if (cfg->has_trunking && cfg->trunk_p25_bandplan_csv[0]) {
+        DSD_SNPRINTF(next->trunk_p25_bandplan_csv, sizeof next->trunk_p25_bandplan_csv, "%s",
+                     cfg->trunk_p25_bandplan_csv);
+    }
+}
+
+/*
+ * What a config apply leaves for the next start is saved (dsd_opts::next_start), so it must be a config the next start
+ * runs (issue #671): one whose trunk scan startup would refuse (a global channel map or P25 band plan beside it, or no
+ * target list; dsd_user_config_check_trunk_scan_startable(), the rules --validate-config applies) is refused whole,
+ * before anything changes, with the rule's reason. A session whose own save already breaks a rule is left to it: the
+ * config did not break it.
+ */
+static int
+cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg->has_trunk_scan && !cfg->has_trunking) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    dsdneoUserConfig* next = (dsdneoUserConfig*)calloc(1, sizeof *next);
+    if (!next) {
+        ui_set_toast(state, 5, "Config not applied: out of memory");
+        return UI_CMD_APPLY_FAILED;
+    }
+    dsd_snapshot_opts_to_user_config(opts, state, next);
+    char why[256];
+    int rc = UI_CMD_APPLY_COMPLETED;
+    if (dsd_user_config_check_trunk_scan_startable(next, why, sizeof why) == 0) {
+        cfg_overlay_trunk_scan_fields(next, cfg);
+        if (dsd_user_config_check_trunk_scan_startable(next, why, sizeof why) != 0) {
+            LOG_WARN("Config not applied: %s.\n", why);
+            /* The rule, without its advice, fits the status line; the log has both. */
+            why[strcspn(why, ";")] = '\0';
+            ui_set_toast(state, 5, "Config not applied: %s", why);
+            rc = UI_CMD_APPLY_FAILED;
+        }
+    }
+    free(next);
+    return rc;
+}
+
 static int
 cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     if (!cfg_airspy_settings_valid(cfg)) {
@@ -7988,6 +8043,10 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     if (cfg->has_trunking && cfg->trunk_scanner && !cfg->trunk_enabled && opts->trunk_scan_enabled == 1) {
         ui_set_toast(state, 3, "Trunk scan active: conventional scanner unavailable");
         return UI_CMD_APPLY_FAILED;
+    }
+    const int next_start_rc = cfg_check_next_start(opts, state, cfg);
+    if (next_start_rc != UI_CMD_APPLY_COMPLETED) {
+        return next_start_rc;
     }
     if (!cfg->has_trunking || !cfg->trunk_group_csv[0]) {
         return UI_CMD_APPLY_COMPLETED;
@@ -8536,6 +8595,11 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     ui_cfg_note_refused_row(opts, state, radio_rc);
     cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, radio_rc == 0);
     if (radio_rc != 0) {
+        /* With no input running before it there was none to put back: the config stays applied, and what it left for
+           the next start with it (ui_cfg_settle_reopen()), so the toast and the log still say so. */
+        if (!rollback.input.running && restart_causes != 0) {
+            cfg_keep_restart_note(state, restart_names);
+        }
         return UI_CMD_APPLY_FAILED;
     }
 #else

@@ -65,6 +65,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -8416,6 +8417,10 @@ test_config_keeps_trunk_scan_lifecycle(void) {
         cfg.has_trunk_scan = 1;
         cfg.trunk_scan_enabled = !installed;
         cfg.trunk_scan_idle_dwell_ms = 4321;
+        if (!installed) {
+            /* A trunk scan the next start can run names its list. */
+            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        }
         rc |= expect_true("trunk-scan lifecycle config queued", dsd_app_command_apply_config(&cfg) > 0);
         rc |= expect_int("trunk-scan lifecycle config drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("live config keeps the coordinator flag", opts.trunk_scan_enabled, installed);
@@ -8434,9 +8439,9 @@ test_config_keeps_trunk_scan_lifecycle(void) {
 }
 
 /* Issue #671 (B8): a running coordinator loaded its target list and resolved the list's dwell and hold defaults at
-   startup, and refused the global channel map and band plan then. A config that changes any of them leaves the session
-   on what it runs, so the next save does not write a list the session never ran, and reports that a restart is
-   needed; one that names the same values applies as before. */
+   startup. A config that changes any of them leaves the session on what it runs, keeps the new ones for the next start,
+   and reports that a restart is needed; one that names the same values applies as before. A global channel map or band
+   plan, which no trunk scan starts with, is refused (test_config_refuses_what_the_next_start_refuses()). */
 static int
 test_config_keeps_the_running_trunk_scan_list(void) {
     static dsd_opts opts;
@@ -8456,9 +8461,7 @@ test_config_keeps_the_running_trunk_scan_list(void) {
         {"another list", "other-targets.csv", 3000, 1200, "", "", 1, "trunk scan list"},
         {"another idle dwell", "targets.csv", 4321, 1200, "", "", 1, "trunk scan list"},
         {"another activity hold", "targets.csv", 3000, 2500, "", "", 1, "trunk scan list"},
-        {"a global channel map", "targets.csv", 3000, 1200, "chan.csv", "", 1, "channel map"},
-        {"a global band plan", "targets.csv", 3000, 1200, "", "plan.csv", 1, "band plan"},
-        {"list, band plan", "other-targets.csv", 3000, 1200, "", "plan.csv", 1, "trunk scan list, band plan"},
+        {"list, dwell", "other-targets.csv", 4321, 1200, "", "", 1, "trunk scan list"},
         {"the running list", "targets.csv", 3000, 1200, "", "", 0, NULL},
     };
 
@@ -14718,6 +14721,21 @@ test_config_reopen_with_no_stream_reports_the_failed_start(void) {
                      "Config applied; no input running: the rtl_tcp input did not start (see log)");
     rc |= expect_int("no stream rtl_tcp fails: tried once", g_config_rtl_creates, 1);
     rc |= expect_str("no stream rtl_tcp fails: config's host kept", opts.rtltcp_hostname, "192.0.2.7");
+    /* Issue #671 (B2): applied with no input running, it still says, and logs, what waits for a restart. */
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.8");
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = opts.frontend_kind == DSD_FRONTEND_NONE ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE;
+    const int restart_lines = g_restart_log_lines;
+    rc |= submit_config(&opts, &state, &cfg, "no stream rtl_tcp fails, frontend changed");
+    rc |= expect_str("no stream rtl_tcp fails, frontend changed: toast", state.ui_msg,
+                     "Config applied; no input running: the rtl_tcp input did not start (see log); restart to use the "
+                     "new frontend");
+    rc |= expect_int("no stream rtl_tcp fails, frontend changed: logged", g_restart_log_lines, restart_lines + 1);
+    opts.next_start.pending = 0U;
+    cfg.frontend_kind_is_set = 0;
 
     /* An Airspy with no stream, and a config with a new sample rate, whose start fails. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
@@ -21555,7 +21573,7 @@ apply_then_save(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, d
  * apply naming the running value again takes it back, and so does a channel-map import or clear, which set the map
  * now. An Airspy chosen over audio input is kept in the input device a save writes. On main (after the restart
  * notices) every save wrote the running value back, the file a Config > Load had just pointed the autosave at
- * included, so the restart ran the old settings.
+ * included, so the restart ran the old settings. The trunk-scan band plan is refused (B1, below).
  */
 static int
 test_config_restart_settings_wait_for_the_next_start(void) {
@@ -21606,8 +21624,6 @@ test_config_restart_settings_wait_for_the_next_start(void) {
     DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "other-targets.csv");
     cfg.trunk_scan_idle_dwell_ms = 4321;
     cfg.trunk_scan_activity_hold_ms = 2500;
-    cfg.has_trunking = 1;
-    DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
     rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list");
     rc |= expect_int("trunk scan list: the running one stays",
                      strcmp(opts.trunk_scan_targets_csv, "targets.csv") == 0 && opts.trunk_scan_idle_dwell_ms == 3000
@@ -21616,20 +21632,15 @@ test_config_restart_settings_wait_for_the_next_start(void) {
     rc |= expect_str("trunk scan list: a save writes the list", saved.trunk_scan_targets_csv, "other-targets.csv");
     rc |= expect_int("trunk scan list: and its defaults",
                      saved.trunk_scan_idle_dwell_ms == 4321 && saved.trunk_scan_activity_hold_ms == 2500, 1);
-    rc |= expect_str("trunk scan list: and the band plan", saved.trunk_p25_bandplan_csv, "plan.csv");
     /* The running values named again take every one back. */
     DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
     cfg.trunk_scan_idle_dwell_ms = 3000;
     cfg.trunk_scan_activity_hold_ms = 1200;
-    cfg.trunk_p25_bandplan_csv[0] = '\0';
-    cfg.has_trunking = 0;
     rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list back");
     rc |=
         expect_str("trunk scan list back: a save writes the running list", saved.trunk_scan_targets_csv, "targets.csv");
     rc |= expect_int("trunk scan list back: and its defaults",
                      saved.trunk_scan_idle_dwell_ms == 3000 && saved.trunk_scan_activity_hold_ms == 1200, 1);
-    rc |= expect_str("trunk scan list back: a config without the band plan keeps it waiting",
-                     saved.trunk_p25_bandplan_csv, "plan.csv");
     freeState(&state);
 
     /* The channel map, with no scan: an apply without [trunking] keeps it waiting, the running map named again takes
@@ -21670,6 +21681,138 @@ test_config_restart_settings_wait_for_the_next_start(void) {
     rc |= expect_int("airspy: the running input stays", opts.audio_in_type, input_type);
     rc |=
         expect_int("airspy: a save writes the Airspy", saved.has_input && saved.input_source == DSDCFG_INPUT_AIRSPY, 1);
+    freeState(&state);
+    return rc;
+}
+
+/* Apply @p cfg, which must be refused before anything changes, with @p why in the toast; the save afterwards writes
+   what it wrote before (@p before). */
+static int
+expect_refused_for_the_next_start(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                                  const dsdneoUserConfig* before, const char* why, const char* label) {
+    static dsdneoUserConfig saved;
+    int rc = apply_then_save(opts, state, cfg, &saved, label);
+    char toast[128];
+    DSD_SNPRINTF(toast, sizeof toast, "Config not applied: %s", why);
+    int bad = expect_str("refused for the next start: toast", state->ui_msg, toast);
+    bad |= expect_int("refused for the next start: failed", dsd_app_command_test_last_failed(), 1);
+    bad |= expect_int("refused for the next start: nothing waits", (int)opts->next_start.pending, 0);
+    bad |= expect_int("refused for the next start: the save is as it was",
+                      saved.trunk_scan_enabled == before->trunk_scan_enabled
+                          && strcmp(saved.trunk_chan_csv, before->trunk_chan_csv) == 0
+                          && strcmp(saved.trunk_p25_bandplan_csv, before->trunk_p25_bandplan_csv) == 0
+                          && strcmp(saved.trunk_scan_targets_csv, before->trunk_scan_targets_csv) == 0
+                          && saved.trunk_scan_idle_dwell_ms == before->trunk_scan_idle_dwell_ms,
+                      1);
+    if (bad) {
+        DSD_FPRINTF(stderr, "  %s\n", label);
+    }
+    return rc | bad;
+}
+
+/*
+ * Issue #671 (B1): what a config leaves for the next start is held to startup's own rules (the composed-config check
+ * --validate-config runs: no global channel map or P25 band plan beside a trunk scan, and a list for it). A config
+ * whose next start those rules would refuse is refused whole, with their reason, before anything changes: a band plan
+ * or a channel map under a running trunk scan, and a trunk scan turned on over the global map or band plan a session
+ * runs, a file valid on its own loaded as terminal Config > Load loads it included. Before this, each was kept for the
+ * next start, so the save wrote a config the next start refused.
+ */
+static int
+test_config_refuses_what_the_next_start_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig before;
+    static const char k_map_why[] = "trunking.chan_csv cannot be combined with trunk_scan.enabled";
+    static const char k_plan_why[] = "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled";
+    int rc = 0;
+
+    /* Under a running trunk scan: a band plan, then a channel map. */
+    for (int map = 0; map <= 1; map++) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+        opts.trunk_scan_idle_dwell_ms = 3000;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        cfg.trunk_scan_idle_dwell_ms = 4321; /* would wait for the next start, but the whole config is refused */
+        cfg.has_trunking = 1;
+        if (map) {
+            DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "chan.csv");
+        } else {
+            DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+        }
+        rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, map ? k_map_why : k_plan_why,
+                                                map ? "trunk scan: a channel map" : "trunk scan: a band plan");
+        rc |= expect_int("trunk scan refusal: the running dwell stays", opts.trunk_scan_idle_dwell_ms, 3000);
+        freeState(&state);
+    }
+
+    /* A trunk scan turned on over a session's global map, then over its band plan. */
+    for (int map = 0; map <= 1; map++) {
+        init_test_context(&opts, &state);
+        if (map) {
+            DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        } else {
+            DSD_SNPRINTF(opts.p25_bandplan_in_file, sizeof opts.p25_bandplan_in_file, "%s", "plan.csv");
+        }
+        dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, map ? k_map_why : k_plan_why,
+                                                map ? "trunk scan on over a global map" : "trunk scan on over a plan");
+        freeState(&state);
+    }
+
+    /* A trunk scan without its list. */
+    init_test_context(&opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before,
+                                            "targets_csv is required when trunk_scan.enabled is true",
+                                            "trunk scan on without a list");
+    freeState(&state);
+
+    /* Terminal Config > Load of a trunk-scan file valid on its own, over a session running a global map. */
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    rc |= expect_true("refused load dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_refused_load") != NULL);
+    rc |= expect_int("refused load path", dsd_test_path_join(path, sizeof path, dir, "trunkscan.ini"), 0);
+    static const char k_ini[] = "[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n";
+    rc |= write_file_bytes(path, k_ini, sizeof k_ini - 1U);
+    dsdcfg_diagnostics_t diags;
+    dsdcfg_diags_init(&diags);
+    rc |= expect_int("refused load: the file is valid on its own",
+                     dsd_user_config_validate(path, &diags) == 0 && diags.error_count == 0, 1);
+    dsdcfg_diags_free(&diags);
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    rc |= expect_int("refused load: file loads", dsd_user_config_load(path, &cfg), 0);
+    rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, k_map_why, "Config > Load of a trunk scan");
+    freeState(&state);
+    (void)remove(path);
+    (void)dsd_test_rmdir(dir);
+
+    /* A trunk scan turned on over a session with no global map or plan is kept for the next start. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    static dsdneoUserConfig saved;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan on, nothing global");
+    rc |= expect_int("trunk scan on, nothing global: waits", saved.trunk_scan_enabled, 1);
+    rc |= expect_int("trunk scan on, nothing global: restart", dsd_app_command_test_last_restart_required(), 1);
     freeState(&state);
     return rc;
 }
@@ -22286,6 +22429,7 @@ main(void) {
     rc |= test_config_channel_map_waits_for_a_restart();
     rc |= test_config_restart_settings_wait_for_the_next_start();
     rc |= test_config_load_then_exit_keeps_the_file();
+    rc |= test_config_refuses_what_the_next_start_refuses();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_config_resumes_a_paused_list();
 #endif
