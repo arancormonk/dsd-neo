@@ -2770,10 +2770,15 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     `io_control_set_freq()` left it, the frequency the controller applied when requests coalesced; pending, deferred
     (`RTL_STREAM_TUNE_DEFERRED`: `Deferred; retry: ...`, a failed command) and failed tunes name the one asked for.
     `ui_cmd_freq_payload_refused()` is the payload check `RTL_SET_FREQ` and `MANUAL_TUNE` share, after their own
-    replay and owner refusals: 0 is `Invalid frequency`, and where `long` is 32 bits (Windows) a value above
-    `LONG_MAX` is `Above 2147.483647 MHz, this build's limit`, both `UI_CMD_APPLY_INVALID_PAYLOAD`.
-    `p25_sm_select_control_channel()` refuses a frequency above `DSD_TRUNK_FREQ_MAX_HZ` on every platform, as
-    `state.h` promises, rather than storing it. The entry toasts that refusal as `Above 2147.483647 MHz, the trunking limit` (`UI_CMD_APPLY_FAILED`). Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
+    replay and owner refusals: 0 is `Invalid frequency` (`UI_CMD_APPLY_INVALID_PAYLOAD`); every other `uint32_t`
+    reaches the tuner on every build (issue #671). The `RTL_SET_FREQ` toasts say `frequency`, not `RTL frequency`,
+    since the entry tunes a rigctl peer too (`Applied: frequency -> 851.012500 MHz`). Every accepted entry drops the
+    frame-sync modulation votes (`dsd_frame_sync_reset_mod_state()`) and the received tone (`dsd_analog_rx_reset()`):
+    the old channel's votes would otherwise steer the new one's modulation. The P25 control-channel branch gets the
+    vote drop from `p25_sm_select_control_channel()`. `p25_sm_select_control_channel()` refuses a frequency above
+    `DSD_TRUNK_FREQ_MAX_HZ` on every platform, as `state.h` promises, rather than storing it; the entry refuses it
+    before converting the payload to that `long`, toasting `Above 2147.483647 MHz, the trunking limit`
+    (`UI_CMD_APPLY_FAILED`). Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -4984,7 +4989,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     `dsd_channel_modes_rigctl_request_is_session()` as every leg) asks the same way before the frequency: the session's
     passband, or `-B` on a digital mode of audio input, each captured, a refusal failing the tune before the frequency
     moves; `-B` as before, strictly, on an input the peer does not demodulate; and FM at 0, best-effort, where the
-    session runs the peer's own. Tests:
+    session runs the peer's own. The manual tune carries its frequency as a `uint32_t` end to end (issue #671): the
+    app-control services, `io_control_set_freq()` and the rigctl request (`F %u`), so a frequency past 2147.483647 MHz
+    reaches the peer or the RTL controller where `long` is 32 bits (Windows). `SetFreq()` keeps the `long` the trunk
+    and legacy legs carry and refuses a value that is not above 0 or is past 4294967295 Hz, with no I/O. Tests:
     `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_NO_CARRIER_RESET`, `ENGINE_RUN_SETUP` (the start
     ask), `ENGINE_TRUNK_SCAN_SCAN_LIST` (a mixed scan's wire sequence: a scan's reading lasts the scan).
 

@@ -2284,7 +2284,7 @@ svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
     if (!opts) {
         return -1;
     }
-    const int rc = io_control_set_freq(opts, state, (long int)hz);
+    const int rc = io_control_set_freq(opts, state, hz);
     if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
     }

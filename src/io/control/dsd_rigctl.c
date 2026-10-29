@@ -323,14 +323,36 @@ rigctl_response_ok(const char* response) {
     return end != response + 5 && code == 0;
 }
 
-/* The frequency SetFreq() last had accepted, and the socket it went out on (RigctlRebindPeer() forgets it). */
+/* The frequency the peer last accepted, and the socket it went out on (RigctlRebindPeer() forgets it); 0 is none, as
+   no request sends it. */
 static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
-static long int s_last_freq = LONG_MIN;
+static uint32_t s_last_freq = 0U;
+
+/* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last accepted on this socket. The request is
+ * formatted from the uint32_t the tuner path carries, so a frequency past 2147.483647 MHz goes out as it is where long
+ * is 32-bit (issue #671). */
+static bool
+rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
+    if (sockfd == s_last_sockfd && freq_hz == s_last_freq) {
+        return true; // no change; skip I/O
+    }
+    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
+
+    DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
+    if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
+        return false;
+    }
+
+    s_last_sockfd = sockfd;
+    s_last_freq = freq_hz;
+    return true;
+}
 
 /**
  * @brief Set center frequency on the connected RIGCTL peer.
  *
- * Caches the last request per socket to avoid redundant I/O.
+ * Caches the last request per socket to avoid redundant I/O. A frequency the tuner path cannot carry (not above 0, or
+ * past 4294967295 Hz where long is 64-bit, which would wrap to an unrelated channel) is refused without any I/O.
  *
  * @param sockfd Connected RIGCTL socket.
  * @param freq Desired frequency in Hz.
@@ -338,19 +360,10 @@ static long int s_last_freq = LONG_MIN;
  */
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
-    if (sockfd == s_last_sockfd && freq == s_last_freq) {
-        return true; // no change; skip I/O
-    }
-    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
-
-    DSD_SNPRINTF(buf, sizeof buf, "F %ld\n", freq);
-    if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
+    if (freq <= 0 || (long long)freq > (long long)UINT32_MAX) {
         return false;
     }
-
-    s_last_sockfd = sockfd;
-    s_last_freq = freq;
-    return true;
+    return rigctl_set_freq_hz(sockfd, (uint32_t)freq);
 }
 
 /* Who a reading of the peer's own passband serves (rigctl_demod::reading, see rigctl_peer). */
@@ -493,7 +506,7 @@ RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
     /* The frequency last sent went out on the connection being replaced, whose socket is closed next: a later
      * connection that gets its number back would otherwise be taken for one on that frequency. */
     s_last_sockfd = DSD_INVALID_SOCKET;
-    s_last_freq = LONG_MIN;
+    s_last_freq = 0U;
     /* A reset record's socket is DSD_INVALID_SOCKET, which a missing old socket must not match. Only a record of a
      * request that may have changed the old socket's peer is worth handing over. */
     if (old_fd != DSD_INVALID_SOCKET && s_peer.sockfd == old_fd && s_peer.touched) {
@@ -959,7 +972,7 @@ RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, bool session
  * switch to a digital mode, or one a refused live return left in force) with the passband read before it, and is a
  * no-op for a peer back on its own or never asked. */
 static int
-set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, long int freq) {
+set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
     if (opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
         return -1;
     }
@@ -981,7 +994,7 @@ set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, long int freq
     } else {
         (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
     }
-    return SetFreq(opts->rigctl_sockfd, freq) ? 0 : -1;
+    return rigctl_set_freq_hz(opts->rigctl_sockfd, freq_hz) ? 0 : -1;
 }
 
 #ifdef USE_RADIO
@@ -1022,28 +1035,23 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
  * @param opts Decoder options with tuning configuration.
  * @param state Decoder state (required for RTL tuning, may be NULL for rigctl-only, where it tells a scan's passband
  *              request from the session's, dsd_channel_modes_rigctl_request_is_session()).
- * @param freq Target frequency in Hz.
+ * @param freq_hz Target frequency in Hz, as the tuner path carries it end to end (issue #671): a 32-bit long (Windows)
+ *                cannot hold one past 2147.483647 MHz.
  * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code. An RTL timeout leaves an
  *         accepted request active and retains its target in opts->rtlsdr_center_freq.
  */
 int
-io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
-    if (!opts || freq <= 0) {
+io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+    if (!opts || freq_hz == 0U) {
         return -1;
     }
-    /* The tuner path carries a uint32_t: a frequency past it (possible where long is 64-bit) would wrap to an unrelated
-       channel, so it is refused instead. */
-    if ((long long)freq > (long long)UINT32_MAX) {
-        LOG_ERROR("io_control: %ld Hz is past the tuner limit of 4294967295 Hz; not tuning\n", freq);
-        return -1;
-    }
-    uint32_t applied_freq = (uint32_t)freq;
+    uint32_t applied_freq = freq_hz;
 
-    LOG_INFO("io_control: tune to %ld Hz\n", freq);
+    LOG_INFO("io_control: tune to %u Hz\n", freq_hz);
 
     int rc = -1;
     if (opts->use_rigctl == 1) {
-        rc = set_rigctl_frequency(opts, state, freq);
+        rc = set_rigctl_frequency(opts, state, freq_hz);
 #ifdef USE_RADIO
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
         rc = set_rtl_frequency(opts, state, applied_freq, &applied_freq);

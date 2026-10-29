@@ -26,7 +26,6 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -243,6 +242,21 @@ expect_carrier_codes_kept(const dsd_state* state) {
     assert(state->p2_cc_verified == (state->p2_cc != 0U ? 1U : 0U));
 }
 
+/* A CTCSS tone the analog tap published before the selection. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+received_tone_kept(const dsd_state* state, uint32_t seeded_generation) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 1000
+           && state->analog_rx.generation == seeded_generation;
+}
+
 static void
 test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     setup(opts, state);
@@ -260,9 +274,18 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
     const uint32_t releases = p25_sm_get_ctx()->release_count;
     const uint64_t generation = dsd_trunk_tuning_generation();
     seed_carrier_codes(state);
+    seed_received_tone(state);
+    const uint32_t tone_generation = state->analog_rx.generation;
     select_cc(opts, state, CC_B);
     expect_cc_toast(state, "Applied: P25 control channel -> 852.000000 MHz");
     expect_carrier_codes_kept(state);
+#ifdef USE_RADIO
+    /* An accepted entry is a new channel whichever branch took it (issue #671): the tone heard on the old one goes. */
+    assert(!received_tone_kept(state, tone_generation));
+    assert(state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0);
+#else
+    (void)tone_generation;
+#endif
     assert(cc_calls == 1 && last_freq == CC_B && return_calls == 0);
     assert(last_sps
            == dsd_opts_compute_sps_rate(opts, cc_type == 1 ? 6000 : 4800, dsd_opts_current_input_timing_rate(opts)));
@@ -463,11 +486,14 @@ test_rejected(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result) {
     tune_result = result;
     const p25_sm_ctx_t before = *p25_sm_get_ctx();
     seed_carrier_codes(state);
+    seed_received_tone(state);
+    const uint32_t tone_generation = state->analog_rx.generation;
     select_cc(opts, state, CC_B);
     expect_cc_toast(state, result == DSD_TRUNK_TUNE_RESULT_DEFERRED
                                ? "Deferred; retry: P25 control channel -> 852.000000 MHz"
                                : "Failed: P25 control channel -> 852.000000 MHz");
     expect_carrier_codes_kept(state);
+    assert(received_tone_kept(state, tone_generation)); // a refused entry leaves the receiver, and its tone, as it was
     const p25_sm_ctx_t* after = p25_sm_get_ctx();
     assert(after->state == before.state && after->vc_freq_hz == before.vc_freq_hz);
     assert(after->cc_tune_request_id == before.cc_tune_request_id && after->cc_sync_pending == before.cc_sync_pending);
@@ -777,11 +803,9 @@ test_command_scope(dsd_opts* opts, dsd_state* state) {
     assert(cc_calls == 0);
     select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ + 1U); // one past the trunk ceiling, on every platform
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
-#if LONG_MAX > DSD_TRUNK_FREQ_MAX_HZ
-    expect_cc_toast(state, "Above 2147.483647 MHz, the trunking limit"); // names the cause, the status stays failed
-#else
-    expect_cc_toast(state, "Above 2147.483647 MHz, this build's limit"); // the payload check refuses it first
-#endif
+    /* The entry carries a uint32_t to the selection on every build (issue #671), whose ceiling names the cause; the
+       status stays failed. */
+    expect_cc_toast(state, "Above 2147.483647 MHz, the trunking limit");
     select_cc(opts, state, UINT32_MAX);
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
     select_cc(opts, state, (uint32_t)DSD_TRUNK_FREQ_MAX_HZ); // the ceiling itself is a control channel

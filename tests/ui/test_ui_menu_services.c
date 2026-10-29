@@ -519,10 +519,10 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
 static int g_io_control_set_freq_result = -1;
 
 int
-io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
+io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
     (void)opts;
     (void)state;
-    (void)freq;
+    (void)freq_hz;
     return g_io_control_set_freq_result;
 }
 

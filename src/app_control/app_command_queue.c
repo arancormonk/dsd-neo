@@ -94,7 +94,6 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
-#include <limits.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -1918,19 +1917,24 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
 
 static int
 ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    /* The selection stores a long trunk frequency and refuses one past the trunk ceiling; refused here first, a
+       frequency past what a 32-bit long holds never reaches that conversion (issue #671). */
+    if (hz > (uint32_t)DSD_TRUNK_FREQ_MAX_HZ) {
+        ui_set_toast(state, 4, "Above 2147.483647 MHz, the trunking limit");
+        return UI_CMD_APPLY_FAILED;
+    }
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
     /* The selection stores and tunes this frequency as it is, so it names the one selected whatever the result. */
     char mhz[16];
     (void)ui_toast_mhz(hz, mhz, sizeof mhz);
     if (dsd_trunk_tune_result_is_ok(result)) {
+        /* A new channel (issue #671): the selection dropped the modulation votes; the tone heard on the old one goes
+           as the frequency entry's other branch drops it. */
+        dsd_analog_rx_reset(state);
         ui_user_move_forgets_identity(state, g_apply_cmd_guard_held); /* the selection ended the calls left */
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
-    }
-    if (hz > (uint32_t)DSD_TRUNK_FREQ_MAX_HZ) { /* the selection refuses a control channel past the trunk ceiling */
-        ui_set_toast(state, 4, "Above 2147.483647 MHz, the trunking limit");
-        return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 4, "%s: P25 control channel -> %s MHz",
                  result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "Deferred; retry" : "Failed", mhz);
@@ -1952,8 +1956,8 @@ ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result)
     return 1;
 }
 
-/* A frequency payload the tuner cannot take, toasted: 0, and on a build whose long is 32 bits one past what it holds.
-   Returns 1 with the command status in *status when the payload is refused. */
+/* A frequency payload the tuner cannot take, toasted: 0. Every other uint32_t reaches the tuner as it is, on every
+   build (issue #671). Returns 1 with the command status in *status when the payload is refused. */
 static int
 ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
     if (v == 0) {
@@ -1961,13 +1965,6 @@ ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
         *status = UI_CMD_APPLY_INVALID_PAYLOAD;
         return 1;
     }
-#if LONG_MAX < UINT32_MAX
-    if (v > (uint32_t)LONG_MAX) {
-        ui_set_toast(state, 3, "Above 2147.483647 MHz, this build's limit");
-        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
-        return 1;
-    }
-#endif
     return 0;
 }
 
@@ -2004,17 +2001,17 @@ static void
 ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int stop_scanner) {
     char mhz[16];
     if (rc == 0) {
-        ui_set_toast(state, 3, "Applied: RTL frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
+        ui_set_toast(state, 3, "Applied: frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
                      stop_scanner ? " (scanner stopped)" : "");
     } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-        ui_set_toast(state, 3, "Accepted: RTL frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
+        ui_set_toast(state, 3, "Accepted: frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
                      stop_scanner ? " (scanner stopped)" : "");
     } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
-        ui_set_toast(state, 4, "Deferred; retry: RTL frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
+        ui_set_toast(state, 4, "Deferred; retry: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
     } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
-        ui_set_toast(state, 4, "Failed: RTL frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
+        ui_set_toast(state, 4, "Failed: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     }
 }
 
@@ -2034,9 +2031,11 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
         result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
-            /* A new channel: the tone heard on the old one goes now, not when the analog tap
-               next notices the stream moved (issue #522). The tune itself ran the carrier boundary
+            /* A new channel: the modulation votes the old one cast go with it (issue #671; a typed scan's leave
+               below drops them again with its acquisition reset), and the tone heard on it goes now, not when the
+               analog tap next notices the stream moved (issue #522). The tune itself ran the carrier boundary
                (svc_rtl_set_freq(), issue #575). */
+            dsd_frame_sync_reset_mod_state();
             dsd_analog_rx_reset(state);
         }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
@@ -3175,8 +3174,11 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         result = (int)tune_result;
         accepted = dsd_trunk_tune_result_is_ok(tune_result);
     } else {
-        /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. */
-        result = io_control_set_freq(opts, state, freq);
+        /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. The trunk frequency is a long;
+           one the tuner path cannot carry is refused as io_control_set_freq() refuses 0. */
+        result = (freq > 0 && (long long)freq <= (long long)UINT32_MAX)
+                     ? io_control_set_freq(opts, state, (uint32_t)freq)
+                     : -1;
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
         if (accepted) {
             /* This leg has no correlated tune request to await, so an accepted
@@ -6115,26 +6117,11 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
    returning -1 when neither owns the tuner. 0 is applied and
    RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
    cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
-   about and which must not fail the whole apply. */
+   about and which must not fail the whole apply. It takes the payload's
+   uint32_t as it is on every build (issue #671), so only 0 is no frequency. */
 static int
 rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
-    if (p->tune_hz == 0U) {
-        return 0;
-    }
-    /* io_control_set_freq() takes a long, which is 32-bit signed under the
-       win-msvc-* presets while the payload carries a full uint32_t (and
-       rr_generate.c accepts sites up to 6 GHz). Casting a value above LONG_MAX
-       there would hand the tuner a NEGATIVE frequency, so the retune is skipped
-       instead - the same outcome as a session that cannot retune at all, which
-       the import preview already warns about. Guarded by the preprocessor because
-       where long is 64-bit the test is provably false and -Werror=type-limits
-       rejects it. */
-#if LONG_MAX < UINT32_MAX
-    if (p->tune_hz > (uint32_t)LONG_MAX) {
-        return 0;
-    }
-#endif
-    return 1;
+    return p->tune_hz != 0U;
 }
 
 /* Whether the import moves the receiver to its system's channel: it carries a frequency the tuner takes, and the
@@ -6147,7 +6134,7 @@ rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload
 static void
 rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
     if (rr_apply_tune_frequency_fits(p)) {
-        (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
+        (void)io_control_set_freq(opts, state, p->tune_hz);
     }
 }
 

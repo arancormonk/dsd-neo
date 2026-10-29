@@ -35,18 +35,18 @@
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
-static long int g_io_control_tune_freq = 0;
+static uint32_t g_io_control_tune_freq = 0U;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz);
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
+__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
     (void)opts;
     (void)state;
     g_io_control_tune_calls++;
-    g_io_control_tune_freq = freq;
+    g_io_control_tune_freq = freq_hz;
     return g_io_control_tune_result;
 }
 
@@ -56,7 +56,7 @@ static void
 reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
-    g_io_control_tune_freq = 0;
+    g_io_control_tune_freq = 0U;
 }
 #endif
 

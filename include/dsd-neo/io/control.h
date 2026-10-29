@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,10 +23,12 @@ extern "C" {
 
 /**
  * @brief Tune the configured control backend without trunking bookkeeping.
- * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code. An RTL timeout leaves an
- *         accepted request active and retains its target in opts->rtlsdr_center_freq.
+ * @param freq_hz Target in Hz, carried as the tuner path holds it (a 32-bit long cannot hold one past 2147.483647 MHz).
+ * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code (-1 refused: no backend,
+ *         no context or 0 Hz). An RTL timeout leaves an accepted request active and retains its target in
+ *         opts->rtlsdr_center_freq.
  */
-int io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+int io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz);
 void resumeScan(dsd_opts* opts, dsd_state* state);
 void openSerial(dsd_opts* opts, dsd_state* state);
 

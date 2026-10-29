@@ -1314,9 +1314,9 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    assert(io_control_set_freq(NULL, &state, 851000000L) == -1);
-    assert(io_control_set_freq(&opts, &state, 0L) == -1);
-    assert(io_control_set_freq(&opts, &state, 851000000L) == -1);
+    assert(io_control_set_freq(NULL, &state, 851000000U) == -1);
+    assert(io_control_set_freq(&opts, &state, 0U) == -1);
+    assert(io_control_set_freq(&opts, &state, 851000000U) == -1);
     assert(g_command_count == 0);
 
     opts.use_rigctl = 1;
@@ -1329,7 +1329,7 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
 
-    assert(io_control_set_freq(&opts, &state, 851050000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 851050000U) == 0);
     assert(opts.rtlsdr_center_freq == 851050000U);
     assert(g_command_count == 3);
     assert(strcmp(g_commands[0], "m\n") == 0);
@@ -1340,13 +1340,13 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     reset_stubs();
     opts.rtlsdr_center_freq = 851050000U;
     push_response("RPRT 1\n");
-    assert(io_control_set_freq(&opts, &state, 851062500L) == -1);
+    assert(io_control_set_freq(&opts, &state, 851062500U) == -1);
     assert(g_command_count == 1 && strcmp(g_commands[0], "F 851062500\n") == 0);
     assert(opts.rtlsdr_center_freq == 851050000U);
 
     reset_stubs();
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;
-    assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
+    assert(io_control_set_freq(&opts, &state, 851075000U) == -1);
     assert(g_command_count == 0);
     return 0;
 }
@@ -1384,7 +1384,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     push_response("FM\n16000\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     static const char* const configured[] = {"m\n", "M NFM 12500\n", "F 155475000\n", NULL};
     assert(sent_since(0, configured));
     /* Cleared with no -B: the peer's own 16 kHz, never 0 ("unchanged" to SDR++ and GQRX). */
@@ -1400,7 +1400,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     push_response("FM\n16000\n");
     push_response("RPRT -1\n");
     push_response("RPRT -1\n");
-    assert(io_control_set_freq(&opts, &state, 155500000L) == -1);
+    assert(io_control_set_freq(&opts, &state, 155500000U) == -1);
     static const char* const refused[] = {"m\n", "M NFM 12500\n", "M FM 12500\n", NULL};
     assert(sent_since(0, refused));
     assert(opts.rtlsdr_center_freq == 155000000U);
@@ -1412,7 +1412,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155525000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155525000U) == 0);
     static const char* const setmod[] = {"m\n", "M NFM 20000\n", "F 155525000\n", NULL};
     assert(sent_since(0, setmod));
     push_response("RPRT 0\n");
@@ -1423,7 +1423,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     opts.setmod_bw = 25000;
     push_response("RPRT 1\n");
     push_response("RPRT 1\n");
-    assert(io_control_set_freq(&opts, &state, 155550000L) == -1);
+    assert(io_control_set_freq(&opts, &state, 155550000U) == -1);
     static const char* const setmod_refused[] = {"M NFM 25000\n", "M FM 25000\n", NULL};
     assert(sent_since(0, setmod_refused));
 
@@ -1434,7 +1434,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     push_response("RPRT -11\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155575000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155575000U) == 0);
     push_response("RPRT 0\n");
     assert(SetModulationKind(223, DSD_ANALOG_DEMOD_FM, 0));
     static const char* const unknown[] = {"m\n", "M NFM 20000\n", "F 155575000\n", "M NFM 0\n", NULL};
@@ -1444,7 +1444,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     reset_stubs();
     fm_monitor_session(&opts, 224);
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155600000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155600000U) == 0);
     static const char* const own[] = {"F 155600000\n", NULL};
     assert(sent_since(0, own));
 
@@ -1456,7 +1456,7 @@ test_io_control_set_freq_asks_the_fm_monitor_passband(void) {
     push_response("AM\n10000\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 118300000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 118300000U) == 0);
     static const char* const am[] = {"m\n", "M AM 6000\n", "F 118300000\n", NULL};
     assert(sent_since(0, am));
     return 0;
@@ -1757,7 +1757,7 @@ test_session_passband_off_a_scan_reads_the_own_passband_again(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     assert(g_session_request_state == &state);
     push_response("RPRT 0\n");
     assert(SetModulationKind(252, DSD_ANALOG_DEMOD_FM, 0));
@@ -1765,7 +1765,7 @@ test_session_passband_off_a_scan_reads_the_own_passband_again(void) {
     push_response("FM\n9000\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155500000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155500000U) == 0);
     push_response("RPRT 0\n");
     assert(SetModulationKind(252, DSD_ANALOG_DEMOD_FM, 0));
     static const char* const manual[] = {"m\n",           "M NFM 20000\n", "F 155475000\n",
@@ -1781,13 +1781,13 @@ test_session_passband_off_a_scan_reads_the_own_passband_again(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     push_response("RPRT 0\n");
     assert(SetModulationKind(253, DSD_ANALOG_DEMOD_FM, 0));
     opts.analog_nfm_bandwidth_hz = 16000;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155500000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155500000U) == 0);
     push_response("RPRT 0\n");
     assert(SetModulationKind(253, DSD_ANALOG_DEMOD_FM, 0));
     static const char* const scan[] = {"m\n",           "M NFM 20000\n", "F 155475000\n", "M NFM 12500\n",
@@ -1817,16 +1817,16 @@ test_io_control_set_freq_returns_to_the_own_passband(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     opts.analog_only = 0;
     opts.monitor_input_audio = 0;
     opts.frame_dmr = 1;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461000000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461000000U) == 0);
     /* Already back on its own: only the frequency. */
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461012500L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461012500U) == 0);
     static const char* const digital[] = {
         "m\n", "M NFM 20000\n", "F 155475000\n", "M NFM 12500\n", "F 461000000\n", "F 461012500\n", NULL};
     assert(sent_since(0, digital));
@@ -1838,7 +1838,7 @@ test_io_control_set_freq_returns_to_the_own_passband(void) {
     opts.monitor_input_audio = 0;
     opts.frame_dmr = 1;
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461025000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461025000U) == 0);
     static const char* const untouched[] = {"F 461025000\n", NULL};
     assert(sent_since(0, untouched));
 
@@ -1851,7 +1851,7 @@ test_io_control_set_freq_returns_to_the_own_passband(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     opts.analog_nfm_bandwidth_hz = 0;
     push_response("RPRT 1\n");
     push_response("RPRT 1\n");
@@ -1860,11 +1860,11 @@ test_io_control_set_freq_returns_to_the_own_passband(void) {
     push_response("RPRT 1\n");
     push_response("RPRT 0\n");
     opts.rtlsdr_center_freq = 0U;
-    assert(io_control_set_freq(&opts, &state, 155500000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155500000U) == 0);
     assert(opts.rtlsdr_center_freq == 155500000U);
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155525000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155525000U) == 0);
     static const char* const peer_own[] = {"m\n",
                                            "M NFM 20000\n",
                                            "F 155475000\n",
@@ -2121,11 +2121,11 @@ test_a_retired_reading_is_never_sent_again(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     opts.analog_nfm_bandwidth_hz = 0;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155500000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155500000U) == 0);
     /* The operator sets 9 kHz on the peer, and rigctl reconnects to the same endpoint. The next manual tune asks for
        FM at the peer's own: nothing of this client's stands, so only the frequency goes out. */
     g_create_result = 311;
@@ -2133,17 +2133,17 @@ test_a_retired_reading_is_never_sent_again(void) {
     RigctlRebindPeer(310, 311, 1);
     opts.rigctl_sockfd = 311;
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155525000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155525000U) == 0);
     /* A new width reads the operator's 9 kHz, which its clear sends back. */
     opts.analog_nfm_bandwidth_hz = 16000;
     push_response("FM\n9000\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155550000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155550000U) == 0);
     opts.analog_nfm_bandwidth_hz = 0;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155575000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155575000U) == 0);
     static const char* const reconnect[] = {"m\n",           "M NFM 20000\n", "F 155475000\n", "M NFM 12500\n",
                                             "F 155500000\n", "F 155525000\n", "m\n",           "M NFM 16000\n",
                                             "F 155550000\n", "M NFM 9000\n",  "F 155575000\n", NULL};
@@ -2196,18 +2196,18 @@ test_follow_at_b_on_audio_input_reads_the_own_passband_first(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461000000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461000000U) == 0);
     opts.frame_dmr = 0;
     opts.analog_only = 1;
     opts.monitor_input_audio = 1;
     opts.analog_nfm_bandwidth_hz = 20000;
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
     opts.setmod_bw = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 155500000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 155500000U) == 0);
     static const char* const monitor[] = {
         "m\n", "M NFM 20000\n", "F 461000000\n", "F 155475000\n", "M NFM 12500\n", "F 155500000\n", NULL};
     assert(sent_since(0, monitor));
@@ -2224,20 +2224,20 @@ test_follow_at_b_on_audio_input_reads_the_own_passband_first(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461000000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461000000U) == 0);
     opts.setmod_bw = 0;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461012500L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461012500U) == 0);
     opts.setmod_bw = 20000;
     push_response("FM\n9000\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461025000L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461025000U) == 0);
     opts.setmod_bw = 0;
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    assert(io_control_set_freq(&opts, &state, 461037500L) == 0);
+    assert(io_control_set_freq(&opts, &state, 461037500U) == 0);
     static const char* const digital[] = {"m\n", "M NFM 20000\n", "F 461000000\n", "M NFM 12500\n", "F 461012500\n",
                                           "m\n", "M NFM 20000\n", "F 461025000\n", "M NFM 9000\n",  "F 461037500\n",
                                           NULL};
@@ -2255,7 +2255,7 @@ test_follow_at_b_on_audio_input_reads_the_own_passband_first(void) {
     push_response("FM\n12500\n");
     push_response("RPRT 1\n");
     push_response("RPRT 1\n");
-    assert(io_control_set_freq(&opts, &state, 461050000L) == -1);
+    assert(io_control_set_freq(&opts, &state, 461050000U) == -1);
     static const char* const refused[] = {"m\n", "M NFM 25000\n", "M FM 25000\n", NULL};
     assert(sent_since(0, refused));
     assert(opts.rtlsdr_center_freq == 461000000U);
@@ -2272,7 +2272,7 @@ test_follow_at_b_on_audio_input_reads_the_own_passband_first(void) {
         opts.setmod_bw = 20000;
         push_response("RPRT 0\n");
         push_response("RPRT 0\n");
-        assert(io_control_set_freq(&opts, &state, 461000000L) == 0);
+        assert(io_control_set_freq(&opts, &state, 461000000U) == 0);
         static const char* const follow[] = {"M NFM 20000\n", "F 461000000\n", NULL};
         assert(sent_since(0, follow));
     }
@@ -2721,7 +2721,7 @@ test_a_manual_tune_weighs_a_typed_list_before_its_first_scope(void) {
         push_response("FM\n12500\n");
         push_response("RPRT 0\n");
         push_response("RPRT 0\n");
-        assert(io_control_set_freq(&opts, &state, 155475000L) == 0);
+        assert(io_control_set_freq(&opts, &state, 155475000U) == 0);
         assert(g_session_request_state == &state);
         push_response("RPRT 0\n");
         assert(SetModulationKind(sockfd, DSD_ANALOG_DEMOD_FM, 0));
@@ -2732,7 +2732,7 @@ test_a_manual_tune_weighs_a_typed_list_before_its_first_scope(void) {
         }
         push_response("RPRT 0\n");
         push_response("RPRT 0\n");
-        assert(io_control_set_freq(&opts, &state, 155500000L) == 0);
+        assert(io_control_set_freq(&opts, &state, 155500000U) == 0);
         push_response("RPRT 0\n");
         assert(SetModulationKind(sockfd, DSD_ANALOG_DEMOD_FM, 0));
         static const char* const scan[] = {"m\n",           "M NFM 20000\n", "F 155475000\n", "M NFM 12500\n",
@@ -2745,12 +2745,13 @@ test_a_manual_tune_weighs_a_typed_list_before_its_first_scope(void) {
     return 0;
 }
 
-/* The tuner path carries a uint32_t, so where long is 64-bit a frequency past 4294967295 Hz would wrap to an unrelated
- * channel: it is refused before either backend is asked, and the cached centre stays where it was. 4294967295 Hz
- * itself still reaches the backend. */
+/* The frequency entry carries a uint32_t end to end (issue #671): a frequency past 2147.483647 MHz, which a 32-bit long
+ * (Windows) cannot hold, reaches the rigctl peer and the RTL controller as it was asked for, and 4294967295 Hz, the top
+ * of the type, still reaches the backend. The signature itself is pinned: a long parameter would refuse such a
+ * frequency on Windows as a negative one. */
 static int
-test_io_control_set_freq_refuses_past_the_tuner_limit(void) {
-#if LONG_MAX > 4294967295L
+test_io_control_set_freq_carries_a_uint32_past_long(void) {
+    int (*const set_freq)(dsd_opts*, const dsd_state*, uint32_t) = io_control_set_freq;
     static dsd_opts opts;
     static dsd_state state;
 
@@ -2761,28 +2762,47 @@ test_io_control_set_freq_refuses_past_the_tuner_limit(void) {
     opts.rigctl_sockfd = 104;
     opts.setmod_bw = 12500;
     opts.rtlsdr_center_freq = 851000000U;
+    push_response("FM\n16000\n");
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
-    /* 4294967296 + 851000000 wraps to 851000000 as a uint32_t. */
-    assert(io_control_set_freq(&opts, &state, 5145967296L) == -1);
-    assert(g_command_count == 0);
-    assert(opts.rtlsdr_center_freq == 851000000U);
+    assert(set_freq(&opts, &state, 2400000000U) == 0);
+    assert(g_command_count == 3);
+    assert(strcmp(g_commands[2], "F 2400000000\n") == 0);
+    assert(opts.rtlsdr_center_freq == 2400000000U);
 
     reset_stubs();
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtlsdr_center_freq = 851000000U;
     state.rtl_ctx = (RtlSdrContext*)&state;
-    assert(io_control_set_freq(&opts, &state, 4294967296L) == -1);
-    assert(io_control_set_freq(&opts, &state, 5145967296L) == -1);
-    assert(g_rtl_tune_calls == 0);
-    assert(opts.rtlsdr_center_freq == 851000000U);
-
-    assert(io_control_set_freq(&opts, &state, 4294967295L) == RTL_STREAM_TUNE_OK);
+    assert(set_freq(&opts, &state, 2400000000U) == RTL_STREAM_TUNE_OK);
     assert(g_rtl_tune_calls == 1);
+    assert(g_rtl_tune_freq == 2400000000U);
+    assert(opts.rtlsdr_center_freq == 2400000000U);
+
+    assert(set_freq(&opts, &state, 4294967295U) == RTL_STREAM_TUNE_OK);
+    assert(g_rtl_tune_calls == 2);
     assert(g_rtl_tune_freq == 4294967295U);
     assert(opts.rtlsdr_center_freq == 4294967295U);
+    return 0;
+}
+
+/* SetFreq() takes the long the trunk and legacy legs carry and sends it as the uint32_t the tuner path holds: a value
+ * the peer could not be tuned to (not above 0, or past 4294967295 Hz where long is 64-bit, which would wrap to an
+ * unrelated channel) is refused without any I/O. */
+static int
+test_setfreq_refuses_what_the_tuner_cannot_hold(void) {
+    reset_stubs();
+    assert(!SetFreq(113, 0L));
+    assert(!SetFreq(113, -851012500L));
+#if LONG_MAX > 4294967295L
+    assert(!SetFreq(113, 4294967296L));
+    assert(!SetFreq(113, 5145967296L)); /* 4294967296 + 851000000 wraps to 851000000 as a uint32_t */
 #endif
+    assert(g_command_count == 0);
+    push_response("RPRT 0\n");
+    assert(SetFreq(113, 2147483647L));
+    assert(g_command_count == 1 && strcmp(g_commands[0], "F 2147483647\n") == 0);
     return 0;
 }
 
@@ -2796,7 +2816,7 @@ test_io_control_set_freq_rejects_missing_rtl_context(void) {
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtlsdr_center_freq = 851000000U;
 
-    assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
+    assert(io_control_set_freq(&opts, &state, 851075000U) == -1);
     assert(g_rtl_tune_calls == 0);
     assert(opts.rtlsdr_center_freq == 851000000U);
     return 0;
@@ -2814,14 +2834,14 @@ test_io_control_set_freq_propagates_rtl_deferred(void) {
     state.rtl_ctx = (RtlSdrContext*)&state;
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
 
-    assert(io_control_set_freq(&opts, &state, 851075000L) == RTL_STREAM_TUNE_DEFERRED);
+    assert(io_control_set_freq(&opts, &state, 851075000U) == RTL_STREAM_TUNE_DEFERRED);
     assert(g_rtl_tune_calls == 1);
     assert(g_rtl_tune_freq == 851075000U);
     assert(opts.rtlsdr_center_freq == 851000000U);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_last_applied_freq = 851075000U;
-    assert(io_control_set_freq(&opts, &state, 851075000L) == RTL_STREAM_TUNE_OK);
+    assert(io_control_set_freq(&opts, &state, 851075000U) == RTL_STREAM_TUNE_OK);
     assert(g_rtl_tune_calls == 2);
     assert(opts.rtlsdr_center_freq == 851075000U);
     return 0;
@@ -2839,7 +2859,7 @@ test_io_control_set_freq_caches_applied_rtl_frequency(void) {
     state.rtl_ctx = (RtlSdrContext*)&state;
     g_rtl_last_applied_freq = 851100000U;
 
-    assert(io_control_set_freq(&opts, &state, 851075000L) == RTL_STREAM_TUNE_OK);
+    assert(io_control_set_freq(&opts, &state, 851075000U) == RTL_STREAM_TUNE_OK);
     assert(g_rtl_tune_calls == 1);
     assert(g_rtl_tune_freq == 851075000U);
     assert(opts.rtlsdr_center_freq == 851100000U);
@@ -2859,7 +2879,7 @@ test_io_control_set_freq_retains_accepted_rtl_timeout_target(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     g_rtl_last_applied_freq = 851000000U;
 
-    assert(io_control_set_freq(&opts, &state, 851125000L) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq(&opts, &state, 851125000U) == RTL_STREAM_TUNE_TIMEOUT);
     assert(g_rtl_tune_calls == 1);
     assert(g_rtl_tune_freq == 851125000U);
     assert(opts.rtlsdr_center_freq == 851125000U);
@@ -2878,6 +2898,7 @@ main(void) {
     rc |= test_connect_bounded_cancel_and_failures_close_the_socket();
     rc |= test_startup_connect_is_kept_for_the_reconnect();
     rc |= test_setfreq_success_failure_and_cache();
+    rc |= test_setfreq_refuses_what_the_tuner_cannot_hold();
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_setmodulation_kind_am_and_passband_restore();
     rc |= test_scan_row_modulation_reads_and_restores_the_own_passband();
@@ -2913,7 +2934,7 @@ main(void) {
     rc |= test_a_hold_of_the_other_demodulator_ends_at_the_next_request();
     rc |= test_a_mark_retires_without_a_hold();
     rc |= test_a_manual_tune_weighs_a_typed_list_before_its_first_scope();
-    rc |= test_io_control_set_freq_refuses_past_the_tuner_limit();
+    rc |= test_io_control_set_freq_carries_a_uint32_past_long();
     rc |= test_io_control_set_freq_rejects_missing_rtl_context();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
