@@ -1617,6 +1617,58 @@ test_snapshot_trunking_reads_the_trunk_scan_configured_value(void) {
     return rc;
 }
 
+/* Issue #671 (D7): a -Y scan the operator paused is still the session's scan, so a save writes scanner = true and the
+   next launch runs it; a resume still waiting on its row is paused too. A running scan saves true, a stopped one
+   false. A paused trunk scan saves as configured: trunk scan on, the configured trunking. */
+static int
+test_snapshot_scanner_saves_a_paused_scan(void) {
+    static const struct {
+        const char* what;
+        int scanner_mode;
+        uint8_t paused;
+        uint8_t resume_pending;
+        int want;
+    } cases[] = {
+        {"running", 1, 0U, 0U, 1},
+        {"paused", 0, 1U, 0U, 1},
+        {"resume pending", 0, 1U, 1U, 1},
+        {"stopped", 0, 0U, 0U, 0},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        opts.scanner_mode = cases[i].scanner_mode;
+        state.lcn_scan_paused = cases[i].paused;
+        state.lcn_scan_resume_pending = cases[i].resume_pending;
+        state.lcn_freq_count = 3;
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (snap.trunk_scanner != cases[i].want) {
+            DSD_FPRINTF(stderr, "scanner save, %s -Y: wrote %d, want %d\n", cases[i].what, snap.trunk_scanner,
+                        cases[i].want);
+            rc |= 1;
+        }
+    }
+
+    reset_opts_and_state(opts, state);
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_enable = 0;
+    state.trunk_scan_paused = 1U;
+    state.trunk_scan_target_count = 2U;
+    state.trunk_scan_configured_trunk_enable = 1U;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.trunk_scan_enabled == 0 || snap.trunk_enabled != 1 || snap.trunk_scanner != 0) {
+        DSD_FPRINTF(stderr, "paused trunk scan save: scan=%d trunking=%d scanner=%d, want 1/1/0\n",
+                    snap.trunk_scan_enabled, snap.trunk_enabled, snap.trunk_scanner);
+        rc |= 1;
+    }
+    return rc;
+}
+
 static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
@@ -5209,6 +5261,7 @@ main(void) {
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_names_switched_inputs();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
+    rc |= test_snapshot_scanner_saves_a_paused_scan();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_roundtrip_agc_rtl_gain();

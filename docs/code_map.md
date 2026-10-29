@@ -278,7 +278,10 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   puts back the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running
   coordinator's target-list path, idle dwell and activity hold, and the global channel map and band plan (which the
   scan refuses at startup), as they were and reports restart-required (`cfg_restore_lifecycle_owned()` in
-  app_control).
+  app_control; every restart-required apply, the frontend, the trunk-scan flag and an Airspy input over a non-radio
+  one included, toasts what waits: `Config applied; restart to use the new trunk scan list`,
+  `cfg_note_restart_required()`), and its `[trunking] enabled = true` goes to the configured setting through that setter, never to the
+  live flag, running or paused (`cfg_store_configured_trunking()`).
 - Pause and resume (issue #671): `dsd_engine_trunk_scan_pause_locked()` / `_resume_locked()` (and their `_ex_` forms,
   whose `dsd_trunk_scan_leave_report` carries the scope leave's monitor request and whether the target left ran its
   own tuner gain, for app-control's #578 record and stream reopen), with the caller holding the P25 SM tick guard,
@@ -2789,7 +2792,12 @@ running, changes nothing; one of a scan neither paused nor running, or under a t
 Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run inside the guarded scanner commands. The
 pause service records its return to the monitor as `svc_leave_channel_scan()` records a leave's. That stop also ends a
 pause and a pending resume, and leaves `operator_tuned` set; the engine's shutdown leave clears neither flag, so the
-exit autosave sees the pause. Tests: `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a
+exit autosave sees the pause and writes `scanner = true` (`snapshot_trunking_config()`: `scanner_mode ||
+lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last
+(`cfg_settle_scan_owner()` in app_control): without `[trunking]` the pause stays, trunking on, the scanner off or
+another `chan_csv` stop it, the scanner on resumes it, and a config whose input did not start keeps it (covered by
+`APP_COMMAND_QUEUE` `test_config_settles_a_paused_list` and `test_config_failed_reopen_keeps_a_paused_list`,
+`RUNTIME_CONFIG_USER`, and `ENGINE_CLEANUP_AUDIO` for the exit autosave right after a pause). Tests: `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a
 row every visit skips, a refused, deferred, unprepared and pending typed resume, the pause hook at once and late, a
 pause while one is pending), `ENGINE_NO_CARRIER_RESET` (the untyped resume through the real step: a step's landing after
 a pause, a pending resume's reception, landing and late failure, which keeps the call heard), `APP_COMMAND_QUEUE` (the
@@ -3480,6 +3488,15 @@ services, the monitor reconciliation at once and late, the caller's guard), `APP
   target's own `rtl_gain` while it overrides it, the terminal's `Gain... [20] (target: 10)` and Tuner autogain rows,
   the edit toasts, and Qt's `configuredTunerGainDb`/`tunerGainRowOverride` (a `target` badge and `default X` on the
   radio panel). Test: `APP_CONTROL_RTL_GAIN_VIEW`.
+  `include/dsd-neo/app_control/scan_state_view.h` and `src/app_control/scan_state_view.c` (issue #671) say which scan
+  the session has and whether it runs or the operator paused it: `dsd_app_scan_state_view_get()` gives `kind`
+  (`NONE`, `CHANNEL` for `-Y`, `TRUNK` for `--trunk-scan`, which wins), `running` (`dsd_trunk_scan_owns_tuner()`, or
+  `scanner_mode`), `paused` (a trunk scan with `trunk_scan_paused`, or `-Y` with `lcn_scan_paused`, a resume still
+  pending included), `resume_pending`, `target_count` (targets, or `-Y` rows) and `operator_tuned`, from a snapshot
+  pair or the decoder's structs, at the cost of a few loads. It is the one predicate the terminal's scan labels and
+  gates, the Qt metrics and the API feed's `status.scan` (`dsd_app_scan_kind_name()`, `dsd_app_scan_state_name()`:
+  `off|running|paused`) read; the scan timing, scan row and gain views read the same running predicate directly.
+  Test: `APP_SCAN_STATE_VIEW`.
   `include/dsd-neo/app_control/crc_policy_view.h` and `src/app_control/crc_policy_view.c` report Relaxed CRC (`-F`) as
   one setting: `dsd_app_crc_policy_view()` gives the configured value (`dsd_scan_mode_configured_relaxed_crc()`: the
   scope's configured baseline while a scan scope is live, else `dsd_opts`), the value in force, and `row_override`

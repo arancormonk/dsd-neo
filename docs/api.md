@@ -306,6 +306,13 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.
+* `scan`: `{kind, state, targets}`, the scan the session has, as every frontend
+  shows it. `kind` is `none`, `channel` (the `-Y` conventional scan) or `trunk`
+  (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
+  operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
+  scan's target count or the `-Y` list's row count (`0` with no scan). A `-Y`
+  resume still waiting for its row's tune reads `paused`. `null` until the
+  decoder has published its options.
 * `tg_policy`: `{context, generation}` of the talkgroup list. The list-editing
   commands must quote both; an edit naming an older list is refused.
 * `decryption`: `{target_id, tune_generation, key_epoch}`, the context a
@@ -635,6 +642,17 @@ field, and the decoder refuses the rest when it applies the command.
   are accepted; unknown keys are ignored, as in a file. See
   [docs/config-system.md](config-system.md) for the keys.
 
+  Settings that only a restart puts in place (the frontend, `[trunk_scan]
+  enabled`, an Airspy input chosen over a non-radio input, and while a trunk
+  scan runs its target list, dwell and hold defaults and the global channel map
+  and band plan) keep their running values, and `status.message` names them
+  (`Config applied; restart to use the new trunk scan list`). Under a trunk scan
+  `[trunking] enabled = true` is the setting the scan puts back at shutdown and
+  a save writes, not the parked target's. Over a paused `-Y` scan, a config
+  without `[trunking]` keeps the pause; trunking on, `scanner = false` or another
+  `chan_csv` stop it; `scanner = true` resumes it. A config whose input does not
+  start is rolled back and keeps the pause.
+
   ```json
   {"cmd":"config_apply","params":{"sections":{
      "mode":{"decode":"p25p1"},
@@ -660,6 +678,30 @@ field, and the decoder refuses the rest when it applies the command.
   I/Q radio nor a symbol capture, are refused, and `status.message` says why;
   TETRA at a DSP rate that is not a multiple of 18 kHz from 36 to 144 kHz is
   kept, with a message naming the fix (`rtl_set_bw` 72 on an RTL-SDR).
+* **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
+  terminal's frequency entry does. It is refused during an I/Q replay and for
+  `0`. With single-system P25 trunking on and no scan it selects that control
+  channel. Otherwise, once the tune is accepted (applied, or still pending on
+  the tuner), a running `-Y` scan or trunk scan pauses: the scan keeps its list,
+  cursor, avoids and session edits, the receiver stays on `value` with the
+  configured decoder, and `status.message` ends in `; scan paused`. A refused
+  tune changes nothing and says why. An entry while a scan is paused only tunes;
+  the scan stays paused.
+* **`tuner_release`**: hands the tuner to the operator. Trunking (`-T`) stops; a
+  running `-Y` scan or trunk scan pauses where it is (`Automatic tuning
+  paused`). A scan already paused stays paused.
+* **`scanner_toggle`**: the terminal's `y`. A paused scan resumes; a running
+  trunk scan pauses where it is (it cannot be stopped at runtime); a running
+  `-Y` scan stops, and with none running `-Y` starts. A `-Y` resume still
+  waiting for its row's tune is left alone.
+* **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
+  scan from the next row after its cursor, a trunk scan on the target it left,
+  with fresh timers. A running scan is left as it is (`Not paused: the scan is
+  running`), and with nothing paused nothing starts. A resume that finds no row
+  to tune, or whose tune is refused, leaves the scan paused and says why.
+* **`manual_tune`**: a spectrum tap. It is refused while trunking, a `-Y` scan
+  or a trunk scan owns the tuner (`status.message` says which); a paused scan
+  does not refuse it, and it leaves the scan paused.
 * Key words (`key_rc4des_set`, `key_hytera_set`, `key_aes_set`) are 64-bit:
   send them as `"0x..."` strings.
 

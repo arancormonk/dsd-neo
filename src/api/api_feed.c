@@ -25,6 +25,7 @@
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -536,6 +537,23 @@ encode_control_context(dsd_json_writer* w, const dsd_state* state) {
     }
 }
 
+/* Which scan the session has and whether it runs or the operator paused it (issue #671), as every frontend shows it:
+   "scan_resume" resumes a paused one. Null until the decoder has published its options. */
+static void
+encode_scan(dsd_json_writer* w, const dsd_state* state) {
+    dsd_app_scan_state_view scan;
+    if (g_live_opts == NULL || dsd_app_scan_state_view_get(g_live_opts, state, &scan) != 0) {
+        (void)dsd_json_kv_null(w, "scan");
+        return;
+    }
+    (void)dsd_json_key(w, "scan");
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_str(w, "kind", dsd_app_scan_kind_name(scan.kind));
+    (void)dsd_json_kv_str(w, "state", dsd_app_scan_state_name(&scan));
+    (void)dsd_json_kv_u64(w, "targets", scan.target_count);
+    (void)dsd_json_obj_end(w);
+}
+
 static int
 build_status(const dsd_state* state, dsd_json_buf* b) {
     dsd_app_notification_status st;
@@ -580,6 +598,7 @@ build_status(const dsd_state* state, dsd_json_buf* b) {
     } else {
         (void)dsd_json_kv_null(&w, "message");
     }
+    encode_scan(&w, state);
     encode_control_context(&w, state);
     return end_line(b, &w);
 }

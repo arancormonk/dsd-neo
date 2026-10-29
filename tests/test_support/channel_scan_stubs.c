@@ -59,6 +59,17 @@ dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_tru
     return -1;
 }
 
+/* The configured trunking a config apply stores under a trunk scan (issue #671), modelled as the coordinator publishes
+   it while a target list is loaded. */
+int
+dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled) {
+    if (!state || state->trunk_scan_target_count == 0U) {
+        return -1;
+    }
+    state->trunk_scan_configured_trunk_enable = enabled ? 1U : 0U;
+    return 0;
+}
+
 /* Nor a -Y tune or retry staged: a rigctl follow (issue #621) is not left to one. */
 int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {

@@ -271,6 +271,23 @@ main(void) {
     dsd_json_free(resp);
 
     dsd_app_frontend_runtime_start(NULL, NULL);
+    /* Issue #671: scan_resume resumes a paused scan; it takes no parameters and is admitted as SCAN_RESUME. */
+    int scan_resume_seen = 0;
+    for (size_t j = 0; j < root->count; j++) {
+        const char* name = dsd_json_as_str(dsd_json_obj_get(root->items[j], "name"));
+        if (strcmp(name, "scan_resume") != 0) {
+            continue;
+        }
+        int64_t entry_id = 0;
+        assert(dsd_json_as_i64(dsd_json_obj_get(root->items[j], "id"), &entry_id) == 0);
+        const char* doc = dsd_json_as_str(dsd_json_obj_get(root->items[j], "params"));
+        assert(entry_id == DSD_APP_CMD_SCAN_RESUME && (doc == NULL || doc[0] == '\0'));
+        scan_resume_seen = 1;
+    }
+    assert(scan_resume_seen);
+    resp = execute("scan_resume", NULL);
+    assert(is_ok(resp));
+    dsd_json_free(resp);
     for (size_t i = 0; i < 2; ++i) {
         resp = execute(i ? "signal_search_control" : "signal_search_start", "{}");
         assert(!is_ok(resp) && strcmp(error_code(resp), "unknown_command") == 0);

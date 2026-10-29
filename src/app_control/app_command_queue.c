@@ -1382,9 +1382,13 @@ ui_restore_settings_keeping_row_policy(dsd_opts* opts, dsd_state* state, dsd_sca
    command that paused the scan (a frequency entry, a tuner release) already left the row, and a leave now would end
    the pause the scan waits in for a resume (issue #671). */
 static int
+ui_cmd_leaves_scanner_scope_with(const dsd_opts* opts, const dsd_state* state, int was_scanner, int scanner_mode) {
+    return was_scanner && scanner_mode != 1 && opts->trunk_scan_enabled != 1 && !(state && state->lcn_scan_paused);
+}
+
+static int
 ui_cmd_leaves_scanner_scope(const dsd_opts* opts, const dsd_state* state, int was_scanner) {
-    return was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1
-           && !(state && state->lcn_scan_paused);
+    return ui_cmd_leaves_scanner_scope_with(opts, state, was_scanner, opts->scanner_mode);
 }
 
 /* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
@@ -1609,12 +1613,15 @@ ui_cfg_restore_mode_extras(dsd_opts* opts, dsd_state* state, const ui_cfg_mode_e
    the input a start reads, the configured receive settings, and the rest of what [mode] sets that the decoder reads.
    Taken once the config has passed its checks, before it is applied: under a scan row, while the scope is suspended,
    so the receive settings are the configured ones. @c was_scanner says whether the conventional scanner ran then,
-   which, with what the config leaves, decides whether the scope resumes (ui_cmd_leaves_scanner_scope()). */
+   which, with @c scanner_after, the scanner setting the config leaves (decided at the end of the apply, so the live
+   flag still says what runs while the input is reopened: cfg_take_scan_owner()), decides whether the scope resumes
+   (ui_cmd_leaves_scanner_scope()). */
 typedef struct {
     ui_radio_input input;
     dsd_scan_settings receive;
     ui_cfg_mode_extras mode;
     int was_scanner;
+    int scanner_after;
 } ui_cfg_rollback;
 
 static void
@@ -1624,18 +1631,21 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
     dsd_scan_settings_capture(opts, state, &out->receive);
     ui_cfg_capture_mode_extras(opts, state, &out->mode);
     out->was_scanner = opts->scanner_mode == 1;
+    out->scanner_after = opts->scanner_mode;
 }
 
 /* The analog monitor the scan row on air runs once its suspended scope resumes (issue #578): the kind an nfm or am row
    runs, or the configured one a row that declares no mode inherits on an analog session, with the width of that kind
    in force then, the row's own (--nfm-bandwidth-hz, --am-bandwidth-hz) or else the configured one, which @p opts holds
    while the scope is suspended. Returns 0, with no kind or width, when no row's scope is suspended, when the command
-   leaves that scope rather than resume it (a config that turns off the conventional scanner @p was_scanner says ran:
+   leaves that scope rather than resume it (a config that turns off the conventional scanner @p before says ran:
    ui_cmd_leaves_scanner_scope()), or when the row runs no monitor (a digital row, or one on a digital session: the
    resume asks the front end for a symbol profile, which takes no width). */
 static int
-ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int was_scanner, int* kind, int* width_hz) {
-    if (!dsd_scan_mode_updating(state) || ui_cmd_leaves_scanner_scope(opts, state, was_scanner)) {
+ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, const ui_cfg_rollback* before, int* kind,
+                            int* width_hz) {
+    if (!dsd_scan_mode_updating(state)
+        || ui_cmd_leaves_scanner_scope_with(opts, state, before->was_scanner, before->scanner_after)) {
         return 0;
     }
     const dsd_scan_mode mode = dsd_scan_mode_row(state);
@@ -1685,7 +1695,7 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     if (rc == 0) {
         int kind = DSD_ANALOG_DEMOD_FM;
         int width_hz = 0;
-        if (!ui_scan_row_resumed_monitor(opts, state, before->was_scanner, &kind, &width_hz)
+        if (!ui_scan_row_resumed_monitor(opts, state, before, &kind, &width_hz)
             || svc_check_started_stream_analog(opts, kind, width_hz, why, sizeof why) == 0) {
             return 0;
         }
@@ -8019,6 +8029,17 @@ cfg_capture_lifecycle_owned(const dsd_opts* opts, cfg_lifecycle_owned* out) {
     DSD_SNPRINTF(out->p25_bandplan_in_file, sizeof out->p25_bandplan_in_file, "%s", opts->p25_bandplan_in_file);
 }
 
+/* What a config apply asked to change that only a restart puts in place (cfg_restore_lifecycle_owned(),
+   cfg_note_restart_required()). */
+enum {
+    CFG_RESTART_FRONTEND = 1 << 0,
+    CFG_RESTART_TRUNK_SCAN = 1 << 1,
+    CFG_RESTART_TRUNK_SCAN_LIST = 1 << 2,
+    CFG_RESTART_CHANNEL_MAP = 1 << 3,
+    CFG_RESTART_BAND_PLAN = 1 << 4,
+    CFG_RESTART_AIRSPY_INPUT = 1 << 5,
+};
+
 /* Put the path @p before back into @p live (@p size bytes); nonzero when the config had changed it. */
 static int
 cfg_restore_owned_path(char* live, size_t size, const char* before) {
@@ -8046,30 +8067,131 @@ cfg_restore_owned_int(int* live, int before) {
  * dwell and hold defaults at startup, and refused the global channel map and band plan
  * then (each target names its own), so under it those are the coordinator's too: a
  * config that changed them would have the next save write a list the session never
- * ran (issue #671). All of them are put back after the config is applied; nonzero
- * means the config asked to change one of them, which the caller reports as
- * restart-required.
+ * ran (issue #671). All of them are put back after the config is applied; the
+ * CFG_RESTART_* mask returned names those the config asked to change, which the
+ * caller reports as restart-required.
  */
 static int
 cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
     opts->frontend_kind = before->frontend_kind;
     opts->trunk_scan_enabled = before->trunk_scan_enabled;
-    const int frontend_changed = cfg->frontend_kind_is_set && cfg->frontend_kind != before->frontend_kind;
-    const int trunk_scan_changed =
-        cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != before->trunk_scan_enabled;
-    int coordinator_changed = 0;
-    if (before->trunk_scan_enabled == 1) {
-        coordinator_changed |= cfg_restore_owned_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
-                                                      before->trunk_scan_targets_csv);
-        coordinator_changed |= cfg_restore_owned_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms);
-        coordinator_changed |=
-            cfg_restore_owned_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms);
-        coordinator_changed |=
-            cfg_restore_owned_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file);
-        coordinator_changed |= cfg_restore_owned_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file,
-                                                      before->p25_bandplan_in_file);
+    int changed = 0;
+    if (cfg->frontend_kind_is_set && cfg->frontend_kind != before->frontend_kind) {
+        changed |= CFG_RESTART_FRONTEND;
     }
-    return frontend_changed || trunk_scan_changed || coordinator_changed;
+    if (cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != before->trunk_scan_enabled) {
+        changed |= CFG_RESTART_TRUNK_SCAN;
+    }
+    if (before->trunk_scan_enabled == 1) {
+        int list_changed = cfg_restore_owned_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
+                                                  before->trunk_scan_targets_csv);
+        list_changed |= cfg_restore_owned_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms);
+        list_changed |= cfg_restore_owned_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms);
+        changed |= list_changed ? CFG_RESTART_TRUNK_SCAN_LIST : 0;
+        if (cfg_restore_owned_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file)) {
+            changed |= CFG_RESTART_CHANNEL_MAP;
+        }
+        if (cfg_restore_owned_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file,
+                                   before->p25_bandplan_in_file)) {
+            changed |= CFG_RESTART_BAND_PLAN;
+        }
+    }
+    return changed;
+}
+
+/*
+ * Say which settings of an applied config wait for a restart (@p causes, a CFG_RESTART_* mask), on the status line
+ * every frontend shows: "Config applied; restart to use the new trunk scan list". Set before the rest of the apply
+ * runs, so a toast that matters more (a refusal, a rollback, a resume that cannot run) replaces it.
+ */
+static void
+cfg_note_restart_required(dsd_state* state, int causes) {
+    static const struct {
+        int cause;
+        const char* name;
+    } k_names[] = {
+        {CFG_RESTART_FRONTEND, "frontend"},
+        {CFG_RESTART_TRUNK_SCAN, "trunk scan setting"},
+        {CFG_RESTART_TRUNK_SCAN_LIST, "trunk scan list"},
+        {CFG_RESTART_CHANNEL_MAP, "channel map"},
+        {CFG_RESTART_BAND_PLAN, "band plan"},
+        {CFG_RESTART_AIRSPY_INPUT, "Airspy input"},
+    };
+
+    char names[96] = "";
+    size_t used = 0U;
+    for (size_t i = 0; i < sizeof k_names / sizeof k_names[0]; i++) {
+        if ((causes & k_names[i].cause) == 0 || used >= sizeof names) {
+            continue;
+        }
+        const int n = DSD_SNPRINTF(names + used, sizeof names - used, "%s%s", used ? ", " : "", k_names[i].name);
+        used += n > 0 ? (size_t)n : 0U;
+    }
+    if (used > 0U) {
+        ui_set_toast(state, 5, "Config applied; restart to use the new %s", names);
+    }
+}
+
+/* Who owns the tuner, as dsd_opts::trunk_enable and scanner_mode say (issue #671, F11). */
+typedef struct {
+    int trunk_enable;
+    int scanner_mode;
+} cfg_scan_owner;
+
+/* Staging a [trunking] section writes the tuner owner it names into the live options. That owner is decided last
+   (cfg_settle_scan_owner()), once the input and receive profile are reconciled, so nothing in between reads an owner
+   half applied: a paused -Y scan flagged running with no row installed, or trunking on over a paused trunk scan's
+   manual frequency. Returns the staged owner and puts @p before back. */
+static cfg_scan_owner
+cfg_take_scan_owner(dsd_opts* opts, const cfg_scan_owner* before) {
+    const cfg_scan_owner staged = {opts->trunk_enable, opts->scanner_mode};
+    opts->trunk_enable = before->trunk_enable;
+    opts->scanner_mode = before->scanner_mode;
+    return staged;
+}
+
+/* Under a trunk scan each target's type sets the live trunking flag while it is parked, so [trunking] enabled = true
+   is the setting the coordinator puts back at shutdown and a save writes (B6), never the live flag: a paused scan
+   stays untrunked on the operator's frequency. A false one leaves it, as staging leaves the live flag outside a scan.
+   A coordinator is installed at startup only, so the flag says whether one runs. */
+static void
+cfg_store_configured_trunking(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (opts->trunk_scan_enabled == 1 && cfg->has_trunking && cfg->trunk_enabled) {
+        (void)dsd_engine_trunk_scan_set_configured_trunk_enable(state, 1);
+    }
+}
+
+/*
+ * The last step of a config apply (F11): the tuner owner the config names (@p owner, cfg_take_scan_owner()) takes the
+ * tuner. A trunk scan keeps it whatever the config says: the live flags stay as the coordinator set them. A -Y scan the
+ * operator paused (issue #671) follows the rules a frontend's controls follow: a config without [trunking] keeps the
+ * pause, and so does one whose input did not come up (@p applied 0: the session is back on the input it paused on);
+ * trunking on, the scanner off, or another channel map (the paused list's cursor, avoids and edits belong to the map
+ * it was loaded from) stop it, and the owner the config names takes over; the scanner on resumes it, which stays
+ * paused, with the reason on the status line, when no row can be tuned. Otherwise the config's owner is the
+ * session's: a running -Y scan the config turned off leaves its scope once the command has run
+ * (ui_cmd_leaves_scanner_scope()). The caller holds the P25 SM tick guard (a guarded command).
+ */
+static void
+cfg_settle_scan_owner(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const cfg_scan_owner* owner,
+                      const cfg_lifecycle_owned* before, int applied) {
+    if (before->trunk_scan_enabled == 1) {
+        return;
+    }
+    if (state->lcn_scan_paused) {
+        if (!cfg->has_trunking || !applied) {
+            return;
+        }
+        const int map_changed = strcmp(opts->chan_in_file, before->chan_in_file) != 0;
+        if (owner->scanner_mode == 1 && !map_changed) {
+            (void)svc_resume_channel_scan(opts, state);
+            return;
+        }
+        (void)svc_leave_channel_scan(opts, state);
+        dsd_scan_keys_leave(state);
+    }
+    opts->trunk_enable = owner->trunk_enable;
+    opts->scanner_mode = owner->scanner_mode;
 }
 
 /*
@@ -8302,6 +8424,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     }
     cfg_lifecycle_owned lifecycle_before;
     cfg_capture_lifecycle_owned(opts, &lifecycle_before);
+    const cfg_scan_owner owner_before = {opts->trunk_enable, opts->scanner_mode};
     ui_stage_analog_entry(opts, state);
 #ifdef USE_RADIO
     ui_cfg_rollback rollback;
@@ -8321,8 +8444,18 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
        the layout the decoder writes. */
     opts->pulse_digi_out_channels = old_audio_channels;
     opts->pulse_digi_rate_out = old_audio_rate;
-    const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, &lifecycle_before);
+    /* One ordered transaction (issue #671, F11): the owner the config names is taken out, the lifecycle-owned settings
+       go back, trunking under a trunk scan becomes its configured setting, the input and receive profile are
+       reconciled, and the owner takes the tuner last. */
+    const cfg_scan_owner owner = cfg_take_scan_owner(opts, &owner_before);
+    int restart_causes = cfg_restore_lifecycle_owned(opts, &cfg, &lifecycle_before);
+    if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
+        restart_causes |= CFG_RESTART_AIRSPY_INPUT;
+    }
+    cfg_note_restart_required(state, restart_causes);
+    cfg_store_configured_trunking(opts, state, &cfg);
 #ifdef USE_RADIO
+    rollback.scanner_after = owner.scanner_mode;
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
        running before it there is nothing to put back, and no stream to publish to. */
@@ -8344,14 +8477,14 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     cfg_commit_mode(opts, state, &cfg, old_edacs_session);
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
+    cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, radio_rc == 0);
     if (radio_rc != 0) {
         return UI_CMD_APPLY_FAILED;
     }
+#else
+    cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, 1);
 #endif
-    if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
-        return UI_CMD_APPLY_RESTART_REQUIRED;
-    }
-    if (restart_required) {
+    if (restart_causes != 0) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
     return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;

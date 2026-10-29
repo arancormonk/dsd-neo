@@ -35,6 +35,7 @@ target_sources(
         recording_view.c
         scan_row_edit.c
         scan_row_view.c
+        scan_state_view.c
         scan_timing_view.c
         squelch_view.c
         symbol_profile.c
