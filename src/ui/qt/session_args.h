@@ -221,6 +221,12 @@ class SessionArgsBuilder : public QObject {
   private:
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,
                           const QString& recordingFolder = QString(), bool recordingUnavailable = false) const;
+    /* start()'s build: with the session's call recording folder when @p host can record it (@p recording set, the
+       folder's session begun). */
+    QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
+                              SessionArgsError* error, bool* recording) const;
+    /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
+    void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;

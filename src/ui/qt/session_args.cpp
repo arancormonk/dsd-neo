@@ -61,6 +61,65 @@ short_known(QChar letter) {
     return letter != QLatin1Char(':') && QLatin1String(dsd_cli_short_options()).contains(letter);
 }
 
+/* option_tokens()' first pass: the long options in @p split go to @p options, each with the value it takes stepped
+ * over; @return what is left, from the first "--" on, for getopt. */
+QStringList
+long_option_tokens(const QStringList& split, QStringList* options) {
+    QStringList rest;
+    for (qsizetype i = 0; i < split.size(); ++i) {
+        const QString& token = split.at(i);
+        if (token == QLatin1String("--")) {
+            rest.append(split.mid(i));
+            break;
+        }
+        const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
+        if (arity == DSD_CLI_LONG_UNKNOWN) {
+            rest.append(token);
+            continue;
+        }
+        options->append(token);
+        const bool hasNext = i + 1 < split.size();
+        const bool takesNext =
+            arity == DSD_CLI_LONG_NEXT
+            || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
+        if (takesNext && hasNext) {
+            ++i;
+        }
+    }
+    return rest;
+}
+
+/* option_tokens()' second pass: getopt's reading of @p rest, its options appended to @p options. */
+void
+short_option_tokens(const QStringList& rest, QStringList* options) {
+    for (qsizetype i = 0; i < rest.size(); ++i) {
+        const QString& token = rest.at(i);
+        if (token == QLatin1String("--")) {
+            break;
+        }
+        if (token.size() < 2 || !token.startsWith(QLatin1Char('-'))) {
+            continue;
+        }
+        if (token.startsWith(QLatin1String("--"))) {
+            options->append(token);
+            break;
+        }
+        for (qsizetype at = 1; at < token.size(); ++at) {
+            const QChar letter = token.at(at);
+            if (!short_known(letter)) {
+                return;
+            }
+            options->append(QLatin1Char('-') + letter);
+            if (short_takes_value(letter)) {
+                if (at + 1 == token.size()) {
+                    ++i;
+                }
+                break;
+            }
+        }
+    }
+}
+
 /**
  * @brief The options the parser reads in @p tokens, found as the decoder finds them, in its two passes.
  *
@@ -80,53 +139,8 @@ QStringList
 option_tokens(const QString& tokens) {
     const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     QStringList options;
-    QStringList rest;
-    for (qsizetype i = 0; i < split.size(); ++i) {
-        const QString& token = split.at(i);
-        if (token == QLatin1String("--")) {
-            rest.append(split.mid(i));
-            break;
-        }
-        const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
-        if (arity == DSD_CLI_LONG_UNKNOWN) {
-            rest.append(token);
-            continue;
-        }
-        options.append(token);
-        const bool hasNext = i + 1 < split.size();
-        const bool takesNext =
-            arity == DSD_CLI_LONG_NEXT
-            || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
-        if (takesNext && hasNext) {
-            ++i;
-        }
-    }
-    for (qsizetype i = 0; i < rest.size(); ++i) {
-        const QString& token = rest.at(i);
-        if (token == QLatin1String("--")) {
-            break;
-        }
-        if (token.size() < 2 || !token.startsWith(QLatin1Char('-'))) {
-            continue;
-        }
-        if (token.startsWith(QLatin1String("--"))) {
-            options.append(token);
-            break;
-        }
-        for (qsizetype at = 1; at < token.size(); ++at) {
-            const QChar letter = token.at(at);
-            if (!short_known(letter)) {
-                return options;
-            }
-            options.append(QLatin1Char('-') + letter);
-            if (short_takes_value(letter)) {
-                if (at + 1 == token.size()) {
-                    ++i;
-                }
-                break;
-            }
-        }
-    }
+    const QStringList rest = long_option_tokens(split, &options);
+    short_option_tokens(rest, &options);
     return options;
 }
 
@@ -846,6 +860,15 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
                                                                            : SessionArgsError::None;
 }
 
+/* What the extra options refuse: one that could reveal keys (WP-F5), then a call recording option (issue #708). */
+static SessionArgsError
+session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
+    if (!session_args_extra_safe(tokens)) {
+        return SessionArgsError::UnsafeOption;
+    }
+    return session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
+}
+
 QStringList
 session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error) {
     if (error != nullptr) {
@@ -861,13 +884,9 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     // WP-F5: never permit a saved/pasted option to reveal keys in any sink.
     const QString tokens = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs
                            + QLatin1Char(' ') + system.value(QStringLiteral("decodeFlag")).toString();
-    if (!session_args_extra_safe(tokens)) {
-        return fail(SessionArgsError::UnsafeOption);
-    }
-    const SessionArgsError recordingError =
-        session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
-    if (recordingError != SessionArgsError::None) {
-        return fail(recordingError);
+    const SessionArgsError extraError = session_args_extra_error(tokens, prefs);
+    if (extraError != SessionArgsError::None) {
+        return fail(extraError);
     }
     if (!radio_settings_valid(system.value(QStringLiteral("radioSettings")))) {
         return fail(SessionArgsError::UnsafeOption);
@@ -1031,12 +1050,12 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
     return validationResult(error);
 }
 
-QVariantMap
-SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind) const {
-    SessionArgsError error = SessionArgsError::None;
-    QStringList args = buildArgs(system, &error);
-    const bool recording = error == SessionArgsError::None && host && m_recordingSessions;
-    if (recording) {
+QStringList
+SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
+                                  SessionArgsError* error, bool* recording) const {
+    QStringList args = buildArgs(system, error);
+    *recording = *error == SessionArgsError::None && host && m_recordingSessions;
+    if (*recording) {
         // A saved system records into its own folder; Explore and Signal search share one, whatever uid the map
         // carries. The folder goes into the argv, so the system is built again with it once it is known valid.
         const QString uid = system.value(QStringLiteral("uid")).toString();
@@ -1045,17 +1064,30 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QS
             m_recordingSessions->beginSession(saved ? QStringLiteral("saved") : QStringLiteral("explore"), uid,
                                               system.value(QStringLiteral("name")).toString());
         // Built again either way: with no folder, an extra -P would record outside the app's storage and is refused.
-        args = buildArgs(system, &error, folder, folder.isEmpty());
+        args = buildArgs(system, error, folder, folder.isEmpty());
     }
+    return args;
+}
+
+void
+SessionArgsBuilder::endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const {
+    if (recording && !started && !host->sessionActive()) {
+        m_recordingSessions->endSession();
+    }
+}
+
+QVariantMap
+SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host, const QString& kind) const {
+    SessionArgsError error = SessionArgsError::None;
+    bool recording = false;
+    const QStringList args = buildForStart(system, host, kind, &error, &recording);
     auto result = validationResult(error);
     // Noted only for a start that goes to the host: the build with the folder can still refuse it, as a scan list's can.
     if (error == SessionArgsError::None && host) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
     }
     const bool started = error == SessionArgsError::None && host && host->start(args);
-    if (recording && !started && !host->sessionActive()) {
-        m_recordingSessions->endSession();
-    }
+    endUnstartedRecording(recording, started, host);
     result.insert(QStringLiteral("started"), started);
     if (started && host->sessionActive() && m_profiles) {
         m_profiles->retainForSession(system.value("decryptionProfileUid").toString());
