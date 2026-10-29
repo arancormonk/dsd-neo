@@ -10123,6 +10123,12 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
     if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_TETRA) {
         next_channel_profile = channel_profile;
     }
+    if (next_channel_profile == DSD_CH_LPF_PROFILE_TETRA && demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+        /* The TETRA profile describes the CQPSK chain; off CQPSK TETRA filters with WIDE
+           (rtl_demod_open_channel_profile()), so the profile a restore puts back never names a chain the stream does
+           not run. */
+        next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
+    }
     if (rtl_stream_runs_m17_encoder()) {
         /* The M17 encoder's monitor keeps its WIDE channel whatever profile is published (issue #625). */
         next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
@@ -10178,6 +10184,18 @@ rtl_stream_request_cqpsk_reacquire(void) {
     return 1;
 }
 
+/* A TED change on CQPSK installs the CQPSK channel profile for the symbol rate @p sps gives at the demod rate (the
+   stream's own symbol rate before a rate is known): TETRA's at 18000 sym/s, the P25 CQPSK one otherwise
+   (rtl_demod_cqpsk_channel_profile()). Off CQPSK the profile is left alone. */
+static void
+rtl_stream_install_cqpsk_profile_for_sps(int sps) {
+    if (!demod.cqpsk_enable) {
+        return;
+    }
+    const int sym_rate = (demod.rate_out > 0 && sps > 0) ? (demod.rate_out + (sps / 2)) / sps : demod.symbol_rate_hz;
+    demod.channel_lpf_profile = rtl_demod_cqpsk_channel_profile(sym_rate);
+}
+
 extern "C" void
 rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
@@ -10216,9 +10234,7 @@ rtl_stream_set_ted_sps(int sps) {
         demod.costas_reset_pending = 1;
     }
     demod.ted_sps_override = sps;
-    if (demod.cqpsk_enable) {
-        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
-    }
+    rtl_stream_install_cqpsk_profile_for_sps(sps);
     if (demod.rate_out > 0) {
         int sym_rate = (demod.rate_out + (sps / 2)) / sps;
         if (sym_rate > 0) {
@@ -10268,9 +10284,7 @@ rtl_stream_set_ted_sps_no_override(int sps) {
         demod.costas_zero_conf_pct = 0;
     }
     demod.ted_sps = sps;
-    if (demod.cqpsk_enable) {
-        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
-    }
+    rtl_stream_install_cqpsk_profile_for_sps(sps);
     if (demod.rate_out > 0) {
         int sym_rate = (demod.rate_out + (sps / 2)) / sps;
         if (sym_rate > 0) {
@@ -10514,7 +10528,7 @@ rtl_stream_enable_cqpsk_mode(void) {
     demod.mode_demod = &qpsk_differential_demod;
     demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
-    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    demod.channel_lpf_profile = rtl_demod_cqpsk_channel_profile(demod.symbol_rate_hz);
 }
 
 /* Whether a symbol profile without CQPSK runs the FSK discriminator for a digital decoder rather than monitor audio.
@@ -10544,6 +10558,10 @@ rtl_stream_disable_cqpsk_mode(void) {
         (demod.analog_family && demod.analog_demod == DSD_ANALOG_DEMOD_AM) ? &dsd_am_demod : &dsd_fm_demod;
     if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
         demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
+    } else if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_TETRA) {
+        /* The TETRA profile describes the CQPSK chain; on the discriminator TETRA filters with WIDE, as an open there
+           does (rtl_demod_open_channel_profile()). */
+        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     }
     if (rtl_stream_runs_digital_family()) {
         demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;

@@ -281,7 +281,10 @@ test_predicate_truth_table(void) {
         {"4800 sym/s", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 4800, 4, 0, 1, 0},
         {"sps 5 at 72 kHz", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 5, 0, 1, 0},
         {"override 8 at 72 kHz (in range, inconsistent)", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 4, 8, 1, 0},
-        {"override 4 at 72 kHz over ted_sps 10", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 10, 4, 1, 1},
+        /* The Gardner TED and the FLL run at ted_sps (an override reaches it only at the next rate refresh), so an
+           override the rate agrees with does not run the chain until ted_sps agrees too. */
+        {"override 4 at 72 kHz over ted_sps 10", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 10, 4, 1, 0},
+        {"override 4 at 72 kHz over ted_sps 4", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 4, 4, 1, 1},
         {"override 16 at 72 kHz", 72000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 4, 16, 1, 0},
         {"override 16 at 288 kHz", 288000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 16, 16, 1, 0},
         {"18 kHz (sps 1)", 18000, DSD_CH_LPF_PROFILE_TETRA, 1, 18000, 1, 0, 1, 0},
@@ -308,6 +311,56 @@ test_predicate_truth_table(void) {
     s->channel_lpf_plan_profile = DSD_CH_LPF_PROFILE_WIDE;
     s->channel_lpf_plan_taps_len = 0;
     rc |= expect_int("stale plan for another rate", dsd_demod_tetra_chain_wanted(s), 1);
+    free_demod(s);
+    return rc;
+}
+
+/* The TETRA channel design's realizability is memoized by rate in the demod state: the block boundary checks it once
+ * per rate and the predicate reads the memo, so no block designs the filter again. A memo for another rate is never
+ * read, and a rate change refreshes it at the next boundary. */
+int
+test_design_memo(void) {
+    int rc = 0;
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_tetra(s, 72000);
+    std::vector<float> block = make_tetra_stream(72000, 0.0, 1440, 0.3f, 0x2468u);
+    (void)run_block(s, block.data(), 1440);
+    rc |= expect_int("memo: rate", s->tetra_design_rate_out, 72000);
+    rc |= expect_int("memo: realizable", s->tetra_design_ok, 1);
+    s->tetra_design_ok = 0;
+    rc |= expect_int("memo: the predicate reads it", dsd_demod_tetra_chain_wanted(s), 0);
+    s->tetra_design_rate_out = 36000;
+    rc |= expect_int("memo: one for another rate is not read", dsd_demod_tetra_chain_wanted(s), 1);
+    s->tetra_design_rate_out = 72000;
+    s->tetra_design_ok = 1;
+    configure_tetra(s, 144000);
+    block = make_tetra_stream(144000, 0.0, 2880, 0.3f, 0x2469u);
+    (void)run_block(s, block.data(), 2880);
+    rc |= expect_int("memo: refreshed for a new rate", s->tetra_design_rate_out, 144000);
+    rc |= expect_int("memo: realizable at 144 kHz", s->tetra_design_ok, 1);
+    rc |= expect_int("memo: chain active at 144 kHz", s->tetra_chain, 1);
+    free_demod(s);
+    return rc;
+}
+
+/* The CQPSK timing sps the Gardner TED, the FLL and the TETRA transition all run at: ted_sps, or 5 before one is
+ * set. */
+int
+test_cqpsk_timing_sps(void) {
+    int rc = 0;
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    rc |= expect_int("timing sps: unset", dsd_cqpsk_timing_sps(s), 5);
+    s->ted_sps = 4;
+    rc |= expect_int("timing sps: ted_sps", dsd_cqpsk_timing_sps(s), 4);
+    s->ted_sps_override = 8;
+    rc |= expect_int("timing sps: an override not yet applied", dsd_cqpsk_timing_sps(s), 4);
+    rc |= expect_int("timing sps: NULL", dsd_cqpsk_timing_sps(NULL), 5);
     free_demod(s);
     return rc;
 }
@@ -956,6 +1009,8 @@ main(void) {
     dsd_neo_log_set_tap(count_tetra_warnings, NULL);
     int rc = 0;
     rc |= test_predicate_truth_table();
+    rc |= test_design_memo();
+    rc |= test_cqpsk_timing_sps();
     rc |= test_cold_start_activates();
     rc |= test_agc_alpha_wiring();
     rc |= test_entering_splits();

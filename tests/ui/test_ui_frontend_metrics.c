@@ -66,7 +66,9 @@ double dsd_channel_lpf_protected_edge_hz(int profile); // NOLINT(misc-use-intern
  * that frontend.c publishes the full width rather than the half-width. */
 double
 dsd_channel_lpf_protected_edge_hz(int profile) {
-    (void)profile;
+    if (profile == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA) {
+        return 11250.0; /* TETRA's protected edge, as DSP_CHANNEL_FILTERS pins it */
+    }
     return 6250.0; /* the 12.5 kHz channel half-width */
 }
 
@@ -100,6 +102,22 @@ hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_p
     }
     if (out_channel_profile) {
         *out_channel_profile = 5;
+    }
+    return 0;
+}
+
+/* A TETRA stream whose receive chain runs: the front end publishes the TETRA profile (it publishes WIDE while the
+ * chain cannot run, rtl_stream_get_running_symbol_profile()). */
+static int
+hook_symbol_profile_tetra(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = 18000;
+    }
+    if (out_levels) {
+        *out_levels = 4;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA;
     }
     return 0;
 }
@@ -239,6 +257,13 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(dsd_app_frontend_get_metrics(&metrics) == 0);
     assert(metrics.symbol_rate_hz == 0);
     assert(metrics.channel_bandwidth_hz == 0);
+    /* A TETRA stream draws its 22.5 kHz channel; it drew WIDE's 16 kHz while TETRA ran on WIDE. */
+    hooks.symbol_profile = hook_symbol_profile_tetra;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.symbol_rate_hz == 18000);
+    assert(metrics.channel_profile == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    assert(metrics.channel_bandwidth_hz == 22500);
     hooks.symbol_profile = hook_symbol_profile;
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     assert(dsd_app_frontend_get_metrics(&metrics) == 0);

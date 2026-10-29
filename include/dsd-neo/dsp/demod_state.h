@@ -393,6 +393,11 @@ struct demod_state {
     /* The causes (DSD_TETRA_CHAIN_WARN_* bits, demod_pipeline.cpp) this stream has warned about once already: a TETRA
        profile whose chain cannot run. The stream open clears them. */
     int tetra_chain_warned;
+    /* Whether the TETRA channel design (dsd_tetra_channel_design()) is realizable at tetra_design_rate_out, the rate
+       it was last checked for (0: never). full_demod() refreshes it at a block boundary whose rate_out differs, and
+       dsd_demod_tetra_chain_wanted() reads it for that rate, so no block designs the filter just to ask. */
+    int tetra_design_rate_out;
+    int tetra_design_ok;
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;

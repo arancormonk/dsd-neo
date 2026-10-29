@@ -1369,19 +1369,44 @@ tetra_chain_requested(const struct demod_state* d) {
                : 0;
 }
 
+/* Whether the TETRA channel design is realizable at @p rate (at least 3 taps), whatever plan is installed now: the plan
+   follows the chain, not the other way. */
+static int
+tetra_channel_design_realizable(int rate) {
+    float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    return dsd_tetra_channel_design(rate, taps, DSD_CHANNEL_LPF_MAX_TAPS) >= 3 ? 1 : 0;
+}
+
+/* Check the design once per rate (demod_state::tetra_design_rate_out); the block boundary calls this before it asks
+   the predicate, so the predicate reads the memo rather than designing. */
+static void
+tetra_design_memo_refresh(struct demod_state* d) {
+    if (!tetra_chain_requested(d) || !dsd_tetra_dsp_rate_runs(d->rate_out) || d->tetra_design_rate_out == d->rate_out) {
+        return;
+    }
+    d->tetra_design_ok = tetra_channel_design_realizable(d->rate_out);
+    d->tetra_design_rate_out = d->rate_out;
+}
+
 extern "C" int
 dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
     if (!d || !tetra_chain_requested(d)) {
         return 0;
     }
     const int rate = d->rate_out;
-    if (!dsd_tetra_dsp_rate_runs(rate) || tetra_effective_sps(d) != rate / DSD_TETRA_SYMBOL_RATE_HZ
-        || !d->channel_lpf_enable) {
+    if (!dsd_tetra_dsp_rate_runs(rate) || !d->channel_lpf_enable) {
         return 0;
     }
-    /* The design for this rate, whatever plan is installed now: the plan follows the chain, not the other way. */
-    float taps[DSD_CHANNEL_LPF_MAX_TAPS];
-    return dsd_tetra_channel_design(rate, taps, DSD_CHANNEL_LPF_MAX_TAPS) >= 3 ? 1 : 0;
+    /* The Gardner TED and the FLL time the chain at ted_sps (dsd_cqpsk_timing_sps()); an override reaches ted_sps only
+       at the next rate refresh. Both must give the rate's samples per symbol. */
+    const int sps = rate / DSD_TETRA_SYMBOL_RATE_HZ;
+    if (tetra_effective_sps(d) != sps || d->ted_sps != sps) {
+        return 0;
+    }
+    if (d->tetra_design_rate_out == rate) {
+        return d->tetra_design_ok ? 1 : 0;
+    }
+    return tetra_channel_design_realizable(rate);
 }
 
 /* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
@@ -1435,6 +1460,7 @@ tetra_chain_reset_histories(struct demod_state* d) {
  */
 static void
 full_demod_update_tetra_chain(struct demod_state* d) {
+    tetra_design_memo_refresh(d);
     const int want = dsd_demod_tetra_chain_wanted(d);
     if (!want) {
         tetra_chain_warn_inactive(d);
@@ -1443,7 +1469,7 @@ full_demod_update_tetra_chain(struct demod_state* d) {
         return;
     }
     dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
-    const int fll_sps = d->ted_sps > 0 ? d->ted_sps : 5;
+    const int fll_sps = dsd_cqpsk_timing_sps(d);
     if (want) {
         const float total = dsd_fll_band_edge_total_freq(f);
         dsd_fll_band_edge_init_params(f, fll_sps, dsd_fll_band_edge_params_for(1));
@@ -2003,7 +2029,7 @@ full_demod_emit_zero_cqpsk_symbols(struct demod_state* d) {
         return 0;
     }
     int in_pairs = d->lp_len >> 1;
-    int sps = (d->ted_sps > 0) ? d->ted_sps : 5;
+    int sps = dsd_cqpsk_timing_sps(d);
     int out_syms = (in_pairs + sps - 1) / sps;
     if (out_syms < 1) {
         out_syms = 1;

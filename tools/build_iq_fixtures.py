@@ -336,11 +336,12 @@ DERIVED_NOISE = [
 # speech at all. The noise breaks the SCH/F CRC often enough that such a block, tried as speech, would pass the speech
 # CRC (all zero bits are a codeword of every linear code); the AACH keeps it out (docs/testing.md). Deterministic from
 # the seed; complex Gaussian noise added at the source's own level, sigma in LSB of the cu8 range. The sidecar keeps the
-# source's centre frequency.
+# source's centre frequency. Sigma is set for the TETRA receive chain: at 24 LSB it decodes nearly every SCH/F block
+# (51 CRC ok), leaving none to gate; 38 LSB, from a sweep of 24-56, leaves it 12 CRC ok and 16 gated lines.
 #
 # name, source, start_s, stop_s, seed, sigma (LSB of the cu8 range)
 DERIVED_TETRA_GAP = [
-    ("tetra_call_gap_noisy_72k", "tetra_call_real_air_72k", 1.6, 4.9, 24004, 24.0),
+    ("tetra_call_gap_noisy_72k", "tetra_call_real_air_72k", 1.6, 4.9, 24004, 38.0),
 ]
 
 # A capture whose input level reaches the cu8 rails only in its last replay chunk (issues #572, #626).
@@ -992,14 +993,14 @@ def load_cu8_fixture(path):
     return centered[0::2] + 1j * centered[1::2]
 
 
-def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2):
-    """Sum the signal with a delayed, attenuated, frequency-offset copy."""
+def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2, sample_rate=SAMPLE_RATE_HZ):
+    """Sum the signal with a delayed, attenuated copy cfo_hz off in frequency at sample_rate (48 kHz by default)."""
     if delay_samples > 0:
         delayed = np.concatenate([np.zeros(delay_samples, dtype=samples.dtype), samples[:-delay_samples]])
     else:
         delayed = samples
     n = np.arange(len(samples))
-    rotation = np.exp(1j * (2.0 * math.pi * cfo_hz * n / SAMPLE_RATE_HZ + phase2))
+    rotation = np.exp(1j * (2.0 * math.pi * cfo_hz * n / sample_rate + phase2))
     return samples + amp2 * delayed * rotation
 
 
@@ -1481,16 +1482,28 @@ def modulate_tetra(dibits, sample_rate=54000):
     for symbol, dibit in enumerate(dibits):
         phase += TETRA_PHASE_STEP[dibit]
         impulses[symbol * sps] = complex(math.cos(phase), math.sin(phase))
+    return tetra_pulse_shape(impulses, sps)
 
-    alpha = 0.2
+
+def tetra_pulse_shape(impulses, sps):
+    """Shape a TETRA symbol impulse train at sps samples per symbol, 8 symbols of pulse each side.
+
+    EN 300 392-2 clause 5.5: the root-raised-cosine of roll-off 0.35, in closed form, with the limits at t = 0 and at
+    |4 alpha t| = 1. Unnormalized: write_fixture() scales the result.
+    """
+    alpha = 0.35
     half_span = 8 * sps
     taps = []
     for t in range(-half_span, half_span + 1):
         x = t / sps
-        sinc = 1.0 if abs(x) < 1e-9 else math.sin(math.pi * x) / (math.pi * x)
-        den = 1.0 - (2.0 * alpha * x) ** 2
-        taps.append(sinc * math.pi / 4.0 if abs(den) < 1e-7
-                    else sinc * math.cos(math.pi * alpha * x) / den)
+        if abs(x) < 1e-9:
+            taps.append(1.0 - alpha + 4.0 * alpha / math.pi)
+        elif abs(abs(4.0 * alpha * x) - 1.0) < 1e-9:
+            taps.append(alpha / math.sqrt(2.0) * ((1.0 + 2.0 / math.pi) * math.sin(math.pi / (4.0 * alpha))
+                                                  + (1.0 - 2.0 / math.pi) * math.cos(math.pi / (4.0 * alpha))))
+        else:
+            numerator = math.sin(math.pi * x * (1.0 - alpha)) + 4.0 * alpha * x * math.cos(math.pi * x * (1.0 + alpha))
+            taps.append(numerator / (math.pi * x * (1.0 - (4.0 * alpha * x) ** 2)))
     return np.convolve(impulses, np.asarray(taps), mode="same")
 
 
@@ -1566,7 +1579,7 @@ def build_tetra_synth(out_dir):
     print(f"{TETRA_THRESHOLD_PASS_NAME:28s} synth   {threshold_pass_written // 1024:6d} KiB")
     two_ray = simulcast_two_ray(samples, TETRA_TWO_RAY_DELAY_SAMPLES,
                                 TETRA_TWO_RAY_AMPLITUDE, TETRA_TWO_RAY_CFO_HZ,
-                                TETRA_TWO_RAY_PHASE_RAD)
+                                TETRA_TWO_RAY_PHASE_RAD, sample_rate=54000)
     two_ray_written = write_fixture(out_dir, TETRA_MULTIPATH_NAME, two_ray,
                                     sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_MULTIPATH_NAME:28s} synth   {two_ray_written // 1024:6d} KiB")

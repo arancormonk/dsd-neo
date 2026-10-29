@@ -94,7 +94,9 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
 int
 dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels, int rf_mod) {
     if (symbol_rate_hz == 18000) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
+        /* TETRA's own profile describes its CQPSK receive chain; a request for the FSK discriminator gets WIDE, the
+           filter TETRA runs there, so the TETRA profile never lands on the discriminator. */
+        return rf_mod == 1 ? DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA : DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
     }
     if (symbol_rate_hz == 2400 || (symbol_rate_hz == 4800 && levels == 2)) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;

@@ -2906,7 +2906,13 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
     assert(tetra.symbol_rate_hz == 18000);
     assert(tetra.levels == 4);
     assert(tetra.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    /* TETRA's filter is its own on the CQPSK family, which runs its receive chain; the TETRA profile describes that
+     * chain, so a request for the FSK discriminator (C4FM or GFSK) asks for WIDE, the filter TETRA runs there. */
     assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 1)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 0)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
+    assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 2)
            == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
     /* AUTO's whole promise is that the hunt may visit every profile, and a config file selects

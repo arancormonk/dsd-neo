@@ -83,8 +83,9 @@ opts_digital_mode_count(const dsd_opts* opts) {
            + opts_flag_is_set(opts->frame_m17) + opts_flag_is_set(opts->frame_tetra);
 }
 
-/* TETRA's 25 kHz pi/4-DQPSK channel runs CQPSK symbols at 18 ksym/s on the wide channel filter; every P25-specific
-   CQPSK rule (the 4800 sym/s control-channel default and the P25 CQPSK channel filter) leaves it alone. */
+/* TETRA's 25 kHz pi/4-DQPSK channel runs CQPSK symbols at 18 ksym/s on its own channel profile
+   (DSD_CH_LPF_PROFILE_TETRA, rtl_demod_cqpsk_channel_profile()); every P25-specific CQPSK rule (the 4800 sym/s
+   control-channel default and the P25 CQPSK channel filter) leaves it alone. */
 static int
 opts_tetra_only(const dsd_opts* opts) {
     return opts && opts->frame_tetra == 1 && opts_digital_mode_count(opts) == 1;
@@ -540,8 +541,11 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = profile;
-    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !opts_tetra_only(opts)) {
-        demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+        /* TETRA (the only mode that runs 18000 sym/s, opts_symbol_rate_hz()) opens on its own profile, the P25 CQPSK
+           one otherwise. With the channel filter off, the TETRA profile stays, so the chain it cannot run is warned
+           about; on the FSK discriminator TETRA filters with WIDE (opts_channel_profile_for_rate()). */
+        demod->channel_lpf_profile = rtl_demod_cqpsk_channel_profile(demod->symbol_rate_hz);
     }
     demod->analog_family = 0;
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
@@ -1009,9 +1013,10 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     } else {
         demod->ted_sps = sps;
     }
-    /* CQPSK runs the P25 CQPSK channel filter except on TETRA's 18 ksym/s profile, which runs WIDE
-       (dsd_rtl_channel_profile_for()). The profile settled on above decides, not the options: a retune keeps the active
-       profile, and the options a stream opened with still describe the mode it opened in after a live switch to TETRA. */
+    /* CQPSK runs the P25 CQPSK channel filter except on TETRA's 18 ksym/s profile, which keeps the filter it runs: its
+       own (rtl_demod_cqpsk_channel_profile(), installed by the open, the mode's profile requests and every CQPSK
+       install). The profile settled on above decides, not the options: a retune keeps the active profile, and the
+       options a stream opened with still describe the mode it opened in after a live switch to TETRA. */
     if (demod->cqpsk_enable && sym_rate != DSD_TETRA_SYMBOL_RATE_HZ) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
@@ -1501,6 +1506,11 @@ rtl_demod_landing_cqpsk(int requested_cqpsk, int requested_is_explicit) {
         return requested_cqpsk ? 1 : 0;
     }
     return rtl_demod_open_cqpsk_request(requested_cqpsk);
+}
+
+int
+rtl_demod_cqpsk_channel_profile(int symbol_rate_hz) {
+    return symbol_rate_hz == DSD_TETRA_SYMBOL_RATE_HZ ? DSD_CH_LPF_PROFILE_TETRA : DSD_CH_LPF_PROFILE_P25_CQPSK;
 }
 
 int

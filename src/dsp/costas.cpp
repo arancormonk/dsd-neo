@@ -951,7 +951,7 @@ op25_gardner_cc(struct demod_state* d) {
     }
 
     ted_state_t* ted = &d->ted_state;
-    const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
+    const int sps = dsd_cqpsk_timing_sps(d);
     float omega = ted->omega;
     int is_first_init = 0;
     if (gardner_need_reinit(ted, sps, &is_first_init) && !gardner_reinit_state(d, ted, sps, is_first_init, &omega)) {
@@ -1292,6 +1292,11 @@ dsd_fll_band_edge_init_params(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_ban
     fll_band_edge_clear_delay(f);
 }
 
+extern "C" int
+dsd_cqpsk_timing_sps(const struct demod_state* d) {
+    return (d && d->ted_sps > 0) ? d->ted_sps : 5;
+}
+
 /* The P25 parameters, for callers without a demod to read the chain from. */
 extern "C" void
 dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
@@ -1428,7 +1433,7 @@ op25_fll_band_edge_cc(struct demod_state* d) {
     }
 
     dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
-    const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
+    const int sps = dsd_cqpsk_timing_sps(d);
 
     const dsd_fll_band_edge_params params = dsd_fll_band_edge_params_for(d->tetra_chain);
     int is_first_init = 0;

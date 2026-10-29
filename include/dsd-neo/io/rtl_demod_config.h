@@ -260,6 +260,13 @@ int rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int c
                                    int channel_lpf_enabled);
 
 /**
+ * The channel profile CQPSK installs for @p symbol_rate_hz when it takes over the filter (an open on CQPSK, the CQPSK
+ * toggle, a TED change): DSD_CH_LPF_PROFILE_TETRA at TETRA's 18000 sym/s, whose receive chain the TETRA profile
+ * describes, and DSD_CH_LPF_PROFILE_P25_CQPSK at every other rate.
+ */
+int rtl_demod_cqpsk_channel_profile(int symbol_rate_hz);
+
+/**
  * Move a running front end to the digital family with fresh-open digital defaults (FSK discriminator output, no
  * de-emphasis, profile channel filter, digital resampler policy) and fresh filter state. The symbol profile and
  * CQPSK family follow in a demod-profile request; @p cqpsk_enable (> 0 for CQPSK, after

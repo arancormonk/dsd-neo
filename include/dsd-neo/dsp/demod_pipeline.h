@@ -173,9 +173,12 @@ void full_demod(struct demod_state* d);
  * @brief Whether the TETRA receive chain can run on a demodulator as it is configured now.
  *
  * True only when all of these hold: the channel profile is DSD_CH_LPF_PROFILE_TETRA; CQPSK is enabled; the symbol
- * rate is 18000; the effective TED samples per symbol (ted_sps_override when above 0, else ted_sps) equals
- * rate_out / 18000 exactly; rate_out is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the
- * channel LPF is enabled; and dsd_tetra_channel_design() succeeds at rate_out, whatever plan is installed now.
+ * rate is 18000; the effective TED samples per symbol (ted_sps_override when above 0, else ted_sps) and ted_sps
+ * itself, which the Gardner TED and the FLL run at (dsd_cqpsk_timing_sps()), both equal rate_out / 18000 exactly;
+ * rate_out is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the channel LPF is enabled; and
+ * dsd_tetra_channel_design() succeeds at rate_out, whatever plan is installed now. That last answer is memoized by rate
+ * (demod_state::tetra_design_rate_out): full_demod() checks the design once per rate, and the predicate reads the memo
+ * for its rate, designing only when the memo is for another one.
  *
  * full_demod() evaluates it once per block, after the half-band decimation, and keeps the result in
  * demod_state::tetra_chain, running the state transition when it changes: entering splits the carrier estimate into

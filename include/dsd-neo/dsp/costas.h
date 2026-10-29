@@ -239,6 +239,17 @@ void op25_diff_phasor_cc(struct demod_state* d);
 void op25_costas_loop_cc(struct demod_state* d);
 
 /**
+ * @brief The samples per symbol the CQPSK timing chain runs at.
+ *
+ * The one rule the Gardner TED, the band-edge FLL and the TETRA chain's transitions share: demod_state::ted_sps, or 5
+ * (P25 Phase 1 at 24 kHz) before one is set. A TED override reaches it only when a rate refresh applies it.
+ *
+ * @param d Demodulator state; NULL reads as unset.
+ * @return ted_sps when above 0, else 5.
+ */
+int dsd_cqpsk_timing_sps(const struct demod_state* d);
+
+/**
  * @brief Initialize FLL band-edge filter for a given samples-per-symbol.
  *
  * Designs the band-edge filters and sets loop parameters. Call this during

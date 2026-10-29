@@ -492,14 +492,25 @@ noise rather than ±45: the excerpt carries each call-control PDU twice, and at 
 `AACH 3/51/51` (all 48), the traffic usage marker 51 the call's MAC-RESOURCE assigned. Between the talkers the
 timeslot sends SCH/F blocks of nearly all zero bits under an assigned control AACH (`2/1/9`); once noise breaks their
 CRC, all zero bits pass the speech CRC too. `tetra_call_gap_noisy_72k` (`DERIVED_TETRA_GAP`, `--derived-only`) is that
-stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 24 LSB: before the AACH was read, 3
-of its blocks played as speech. `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at least 8 bursts read as assigned
-control that decode nothing (21 now; 10 to 22 over nine other noise seeds), and both cases refuse a burst tried as
-speech behind an AACH saying control or unallocated. An AACH that cannot be read (four or more bit errors) says
+stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 38 LSB: before the AACH was read, 3
+of its blocks played as speech at sigma 24. The sigma is set for the TETRA receive chain, whose matched filter reads
+these blocks through more noise: at 24 LSB it decoded 53 of the stretch's SCH/F blocks, so none failed the CRC and the
+gate had nothing to read; swept from 24 to 56 LSB, 38 leaves it 13 that decode. `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE`
+requires at least 8 bursts read as assigned control that decode nothing (16 lines now; 8 to 18 over nine other noise
+seeds; the receiver before the TETRA chain reads only 4 here, against 21 at sigma 24), and both cases refuse a burst
+tried as speech behind an AACH saying control or unallocated. An AACH that cannot be read (four or more bit errors) says
 nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this stretch got
 through that way, so the gate case asserts the AACH's decisions rather than the absence of every false frame.
 
-The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) repeat one
+The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are
+pi/4-DQPSK shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
+`tetra_pulse_shape()`), the transmit half of the matched pair the TETRA receive chain completes; they once used a full
+raised cosine at roll-off 0.2, which put inter-symbol interference behind the receiver's matched filter. Their
+`_TWO_RAY` variant offsets the second path by 3 Hz at the fixtures' own 54 kHz (`simulcast_two_ray(...,
+sample_rate=54000)`; the helper defaults to the 48 kHz of every other caller). `TOOLS_BUILD_IQ_FIXTURES_TETRA`
+(`tests/tools/test_build_iq_fixtures_tetra.py`) checks the pulse against the closed form within 1e-9 and the helper's
+phase step. Regenerating them with `--derived-only` into a copy of `tests/fixtures/iq` changes the ten `tetra_bsch_*`
+captures and `tetra_call_gap_noisy_72k` and leaves every other derived fixture byte for byte. They repeat one
 sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
 normal downlink burst whose two SCH/HD half slots carry SYSINFO and a MAC-RESOURCE channel allocation, and a full-slot
 TCH/S burst whose class-2 CRC passes. `DECODE_IQ_TETRA_BSCH`, `_SYSINFO`, `_CHANNEL_ALLOCATION` and `_TCH_FS` assert
