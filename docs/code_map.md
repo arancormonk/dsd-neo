@@ -294,9 +294,10 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (`cfg_adopt_loaded_autosave()`), so a refused or rolled-back load leaves the exit autosave where it was. The apply
   toasts what waits (`Config applied; restart to use the new trunk scan list`, `cfg_note_restart_required()`), kept
   beside any other message the apply leaves, and logs it once it has applied (`cfg_keep_restart_note()`), an apply that
-  kept the config with no input to put back included; a rolled-back apply keeps its waiting values, as the rest of it
-  stays applied. Its `[trunking] enabled = true` goes to the configured setting through that setter, never to the live
-  flag, running or paused (`cfg_store_configured_trunking()`).
+  kept the config with no input to put back included; a "Config not applied" apply (refused, or rolled back) leaves
+  nothing waiting: the handler puts `next_start` back. A rule the saved config cannot decide (a tuning backend, the
+  build's frontends) stays startup's. Its `[trunking] enabled = true` goes to the configured setting through that
+  setter, never to the live flag, running or paused (`cfg_store_configured_trunking()`).
 - Pause and resume (issue #671): `dsd_engine_trunk_scan_pause_locked()` / `_resume_locked()` (and their `_ex_` forms,
   whose `dsd_trunk_scan_leave_report` carries the scope leave's monitor request and whether the target left ran its
   own tuner gain, for app-control's #578 record and stream reopen), with the caller holding the P25 SM tick guard,

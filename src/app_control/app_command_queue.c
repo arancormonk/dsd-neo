@@ -8678,11 +8678,22 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     char msg_before[sizeof state->ui_msg];
     DSD_SNPRINTF(msg_before, sizeof msg_before, "%s", state->ui_msg);
     const time_t msg_expire_before = state->ui_msg_expire;
+    /* "Config not applied" leaves nothing for the next start either: a refusal has staged nothing, and a rollback puts
+       back what it had left waiting (issue #671), so no save writes a config the session did not take. */
+    dsd_opts_next_start* next_before = (dsd_opts_next_start*)malloc(sizeof *next_before);
+    if (!next_before) {
+        ui_set_toast(state, 5, "Config not applied: out of memory");
+        return UI_CMD_APPLY_FAILED;
+    }
+    DSD_MEMCPY(next_before, &opts->next_start, sizeof *next_before);
     int kept = 0;
     const int rc = cfg_apply(opts, state, c, &kept);
-    if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
+    if (!kept) {
+        DSD_MEMCPY(&opts->next_start, next_before, sizeof opts->next_start);
+    } else if (c->n >= sizeof(dsd_app_config_load_payload)) {
         cfg_adopt_loaded_autosave(state, c, msg_before, msg_expire_before);
     }
+    free(next_before);
     return rc;
 }
 

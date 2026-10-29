@@ -660,8 +660,8 @@ field, and the decoder refuses the rest when it applies the command.
   config that breaks another. While a trunk scan waits for the next start,
   `scanner_toggle` will not start the scanner (`Scanner not started: ...`), and
   channel-map and band-plan imports are refused the same way. A config whose
-  input does not start is rolled back, but keeps its restart-only values for the
-  next start, as the rest of it stays applied.
+  input does not start is rolled back and, like a refused one, leaves nothing
+  waiting for the next start.
   Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
   back at shutdown and a save writes, not the parked target's. Over a paused
   `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or

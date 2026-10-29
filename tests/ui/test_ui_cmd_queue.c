@@ -22655,6 +22655,8 @@ test_config_failed_reopen_keeps_a_paused_list(void) {
     const int restart_lines = g_restart_log_lines;
     rc |= submit_config(&opts, &state, &cfg, "paused list: config whose input fails");
     rc |= expect_int("paused list: a rolled-back config logs no restart", g_restart_log_lines, restart_lines);
+    /* Round 4 (ruling): "Config not applied" leaves nothing for the next start either; the frontend change is gone. */
+    rc |= expect_int("paused list: a rolled-back config leaves nothing waiting", (int)opts.next_start.pending, 0);
     rc |= expect_int("paused list: config failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_str("paused list: rollback toast", state.ui_msg,
                      "Config not applied: the rtl_tcp input did not start (see log)");
@@ -22670,9 +22672,23 @@ test_config_failed_reopen_keeps_a_paused_list(void) {
     g_config_rtl_open_ok = 1;
     g_config_rtl_fail_starts = 1;
     cfg.trunk_scanner = 0;
+    /* And a trunk scan turned on with it: the check passes it (the config's scanner is off), but the rollback keeps the
+       pause, which a save writes as the scanner on. Nothing waits, so the save still starts. */
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
     rc |= submit_config(&opts, &state, &cfg, "paused list: scanner off, input fails");
     rc |= expect_int("paused list: scanner off, input fails: still paused",
                      state.lcn_scan_paused == 1 && opts.scanner_mode == 0, 1);
+    rc |= expect_int("paused list: trunk scan, input fails: nothing waits", (int)opts.next_start.pending, 0);
+    static dsdneoUserConfig saved;
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    char why[256];
+    rc |= expect_int("paused list: trunk scan, input fails: the save starts",
+                     dsd_user_config_check_trunk_scan_startable(&saved, NULL, why, sizeof why), 0);
+    rc |= expect_int("paused list: trunk scan, input fails: the save keeps the paused scan, no trunk scan",
+                     saved.trunk_scanner == 1 && saved.trunk_scan_enabled == 0, 1);
 
     reset_config_rtl_wrap();
     reset_rx_family_wrap();

@@ -263,10 +263,12 @@ rules below would refuse (a global `chan_csv` or `p25_bandplan_csv`, or the `-Y`
 enabled trunk scan, or a trunk scan without `targets_csv`) is not applied at all, and the status line gives the rule;
 a rule the session's own save already breaks does not refuse a config that keeps it or fixes it. The same rules refuse
 a channel-map or P25 band-plan import, the `-Y` scanner toggle and a RadioReference import while a trunk scan waits for
-the next start. A config whose new input does not start is rolled back to the input that ran, but keeps these values
-for the next start, as the rest of it stays applied. Terminal Config > Load points the autosave at the file it loads,
-and a profile load turns the autosave off, only once the config is applied; a load that is not applied leaves the
-autosave as it was, so exit never writes the session into that file.
+the next start. A config whose new input does not start is rolled back to the input that ran, and like a refused one
+("Config not applied") it leaves nothing waiting for the next start. Terminal Config > Load points the autosave at the
+file it loads, and a profile load turns the autosave off, only once the config is applied; a load that is not applied
+leaves the autosave as it was, so exit never writes the session into that file. Two startup refusals are not checked
+here, because the saved config alone cannot tell: a trunk scan needs an RTL-family input or rigctl tuning (`-U`, which
+no config key holds), and `frontend = terminal` needs a build with the terminal UI.
 
 Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
 flatten the profile overlay back into the base file and remove profile sections.
