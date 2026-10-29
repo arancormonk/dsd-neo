@@ -1879,6 +1879,29 @@ test_free_space_follows_the_session(void) {
            !s.store.lowSpace() && s.store.freeBytes() == 900 * RecordingStore::kBytesPerMb);
 }
 
+/* Issue #708: the session ending is enough to read the free space again, with nothing published after it: idle, the
+ * reading moves to the volume the next session takes, and a warning that came from the fallback goes. */
+void
+test_free_space_after_the_session_ends(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    expect("space, end: the external storage starts away", QDir().rename(ext, away));
+    QStringList asked;
+    Store s(roots.list(), false);
+    probe_by_volume(s, roots, 150, &asked);
+    s.start();
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("space, end: the external storage comes back", QDir().rename(away, ext));
+    record(folder, QStringLiteral("00000000000000F9-1"), QStringLiteral("a.wav"), 1754705000, 83);
+    s.pass();
+    expect("space, end: the session's fallback is read", s.store.lowSpace());
+    s.store.endSession();
+    s.pass();
+    expect("space, end: once the session ends, the external storage is read without a publish",
+           !s.store.lowSpace() && s.store.freeBytes() == 900 * RecordingStore::kBytesPerMb);
+}
+
 /* Wait (at most five seconds) for the store to deliver @p count recordings from a pass the test did not ask for. */
 bool
 counted_soon(const RecordingStore& store, int count) {
@@ -2511,6 +2534,7 @@ main(int argc, char** argv) {
     test_free_space_warning();
     test_free_space_where_a_session_goes();
     test_free_space_follows_the_session();
+    test_free_space_after_the_session_ends();
     test_export_selection();
     test_session_running_at_ui_load();
     test_start_does_not_wait_for_journals();

@@ -578,6 +578,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* One warning per run for each cause; later failures are counted. */
     bool m_deleteFailureLogged[2] = {false, false};
     quint64 m_lastFreeCheckMs = 0U;
+    /* What spaceRoot() followed at the last free-space reading: a session in use, and each root there. */
+    bool m_lastFreeActive = false;
+    QList<bool> m_lastFreeRoots;
 };
 
 } // namespace dsd_qt

@@ -467,18 +467,26 @@ void
 RecordingStore::checkLimitAndSpace(bool first, Pass* pass) {
     bool limitDue = false;
     bool active = false;
+    QList<bool> rootsThere;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         limitDue = m_limitChanged || m_limitPending;
         m_limitChanged = false;
         active = m_allActive || !m_active.isEmpty();
+        rootsThere = m_rootAvailable;
     }
     if (first || pass->published || pass->rebuilt || limitDue) {
         enforceLimit(pass);
     }
+    // spaceRoot() follows the session's folder and the roots there: a session ending or a root coming or going can move
+    // the reading to another volume, so either reads it again at once.
+    const bool spaceMoved = active != m_lastFreeActive || rootsThere != m_lastFreeRoots;
     const quint64 now = dsd_realtime_mono_ms();
-    if (first || pass->published || pass->rebuilt || (active && now - m_lastFreeCheckMs >= kFreeSpaceCheckMs)) {
+    if (first || pass->published || pass->rebuilt || spaceMoved
+        || (active && now - m_lastFreeCheckMs >= kFreeSpaceCheckMs)) {
         m_lastFreeCheckMs = now;
+        m_lastFreeActive = active;
+        m_lastFreeRoots = std::move(rootsThere);
         if (checkFreeSpace()) {
             pass->dirty = true;
         }
