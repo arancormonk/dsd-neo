@@ -1053,7 +1053,9 @@ suite runs under this compiler.
   the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and
   `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`. The control API's
   event rows carry `freq_hz`, `access_code_kind` and `access_code`, folded into the row fingerprint. Tests:
-  `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`.
+  `CORE_ACCESS_CODE`, `CORE_CALL_ALERT_HISTORY`, `RUNTIME_RDIO_EXPORT`, `API_SERVER`. The analog (NFM) event text
+  names its frequency as the digital rows do, `FREQ: <MHz> MHz;` through `dsd_freq_hz_mhz_text()`, and leaves it out
+  at 0, as on an audio input, which tunes nothing (issue #670, `CORE_RECEIVE`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -1537,13 +1539,14 @@ suite runs under this compiler.
   with a socket, socket 0 included) and `dsd_opts_rigctl_peer_demodulates()` both together, a peer whose demodulator
   DSD-neo hears (issue #621): the squelch's input kind, the rigctl passband rule, the engine's rigctl legs and
   app-control's analog width view and follow all key on these. `dsd_opts_tuned_freq_hz()` is the frequency the
-  receiver is tuned to, as every frontend reads it (the terminal `FRQ:` field, the Qt `centerFreqHz`, the Android
-  notification; issue #575): 0 off a radio input, rigctl on an audio input included (`rtlsdr_center_freq` holds a
-  made-up 850 MHz until DSD-neo tunes the peer, the legacy rigctl `-Y` scan never writes it, and a change made on the
-  peer is invisible), else the I/Q replay centre the decoder last read (`iq_replay_center_freq`) when there is one,
-  else `rtlsdr_center_freq`; the replay read paths store that centre through `dsd_opts_note_iq_replay_center()`. The
-  decoded readings (SiteSheet CC/VC, `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on
-  their decoded values. `dsd_opts_input_is_iq_replay()` says whether the input in force is an I/Q replay (an RTL input
+  receiver is tuned to, as every frontend reads it (the terminal `FRQ:` field and `Frequency...` label, the Qt
+  `centerFreqHz`, the Android notification; issue #575): 0 off a radio input, rigctl on an audio input included
+  (`rtlsdr_center_freq` holds a made-up 850 MHz until DSD-neo tunes the peer, the legacy rigctl `-Y` scan never writes
+  it, and a change made on the peer is invisible), else the I/Q replay centre the decoder last read
+  (`iq_replay_center_freq`) when there is one, else `rtlsdr_center_freq`; the replay read paths store that centre
+  through `dsd_opts_note_iq_replay_center()`. The decoded readings (SiteSheet CC/VC,
+  `dsd_app_vc_freq()`/`dsd_app_cc_freq()`, the trunk `Frequency:` lines) stay on their decoded values.
+  `dsd_opts_input_is_iq_replay()` says whether the input in force is an I/Q replay (an RTL input
   with an `iqreplay` spec), from the input type and device string rather than `iq_replay_active`, which an input switch
   does not clear. `dsd_opts_trunk_vc_followed()` says whether the receiver sits on a voice channel a trunking grant sent
   it to (`trunk_enable` and `trunk_is_tuned` both 1): only then does `trunk_vc_freq[]` name the carrier being decoded,
@@ -1756,6 +1759,19 @@ suite runs under this compiler.
     reading at its width (`>999`, `<-99`). `dsd_count_text()` is a count in six places (`999999`, then `1.0M`...).
     Runtime, core, app-control, the terminal and Qt's C paths print signed readings through it; QML has the same rule
     as `Util.fixed()`. Test: `RUNTIME_NUMBER_TEXT`.
+  - Frequency text (`include/dsd-neo/runtime/freq_parse.h`, issue #670). `dsd_parse_freq_hz()` is the K/M/G grammar
+    of `-i soapy:`/`airspy:` and of an INI `rtl_freq` for those sources and a live config apply (a number without a
+    suffix is Hz). It rounds to the nearest Hz and returns 0 for non-finite text, text of 64 bytes or more (never a
+    cut copy) and a value that rounds above UINT32_MAX (no clamp); `freq_parse.c` is in the runtime and test IEEE
+    source lists (`-fno-fast-math`, `/fp:precise`) so the NaN guard holds on fast-math builds.
+    `dsd_parse_freq_entry_hz()` is the typed-entry grammar of the terminal frequency prompt (#671 reuses it): exact
+    integer arithmetic, no FP or locale, at most `DSD_FREQ_ENTRY_MAX_LEN` (32) bytes, a unit always wins, a bare number
+    below `DSD_FREQ_ENTRY_BARE_HZ_MIN` (1000000) is MHz and one at or above it Hz, and a bare 4295..999999 is
+    `DSD_FREQ_ENTRY_AMBIGUOUS` (too large for MHz). It writes `*out_hz` only on OK; each refusal is a
+    `dsd_freq_entry_result` with a message of at most 56 bytes (`dsd_freq_entry_result_text()`), and the precedence
+    between refusals is pinned by the test. `dsd_freq_hz_mhz_text()` is the one MHz spelling (`%u.%06u`, exact and
+    locale-free; the caller picks the placeholder for 0): the terminal `FRQ:` field and `Frequency...` label, every tune
+    toast, the `-Y` avoid toast and the analog event row. Tests: `RUNTIME_FREQ_PARSE`, fuzz `runtime_freq_parse`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
@@ -1920,10 +1936,15 @@ suite runs under this compiler.
     `airspy`) an `[input]` builds without applying it, so a live config apply can tell whether it reopens the device and
     what then sets the rate. `dsd_rtl_input_spec_apply()` (`runtime/input_spec.h`) reads an `rtl:`/`rtltcp:` spec's
     device or endpoint, tuning and `bias` tokens into the options: the engine reads the spec with it when the input
-    opens, and `--print-config` before that, so the export carries the spec's tuning rather than the option defaults. Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`, `RUNTIME_CONFIG_USER`,
-    and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list, one without rows
-    included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan included) and
-    `ENGINE_TRUNK_SCAN`.
+    opens, and `--print-config` before that, so the export carries the spec's tuning rather than the option defaults.
+    The INI loader refuses an `rtl_freq` of 64 bytes or more (warned; the key keeps what it had) instead of cutting it
+    into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number in the frequency place as
+    a frequency, never device args: out of range (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs
+    the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
+    fallback (`RUNTIME_INPUT_SPEC`). Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
+    `RUNTIME_CONFIG_USER`, and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list,
+    one without rows included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan
+    included) and `ENGINE_TRUNK_SCAN`.
   - The RTL metrics hook table (`include/dsd-neo/runtime/rtl_stream_metrics_hooks.h`) also carries the receive-family
     request (`apply_analog_profile`), the digital family request that lands the digital family's landing whichever
     family the front end runs (`request_digital_family_landing`, issue #583; a table without it falls back to the plain
@@ -2373,6 +2394,17 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
     tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
     `UI_MENU_SERVICES`.
+  - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
+    `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
+    the `-Y` avoid (`Avoiding <MHz> (<n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads stay Hz (the
+    Qt diagnostics redaction matches the log templates). A success names `rtlsdr_center_freq` as
+    `io_control_set_freq()` left it, the frequency the controller applied when requests coalesced; pending, deferred
+    (`RTL_STREAM_TUNE_DEFERRED`: `Deferred; retry: ...`, a failed command) and failed tunes name the one asked for.
+    `ui_cmd_freq_payload_refused()` is the payload check `RTL_SET_FREQ` and `MANUAL_TUNE` share, after their own
+    replay and owner refusals: 0 is `Invalid frequency`, and where `long` is 32 bits (Windows) a value above
+    `LONG_MAX` is `Above 2147.483647 MHz, this build's limit`, both `UI_CMD_APPLY_INVALID_PAYLOAD`.
+    `p25_sm_select_control_channel()` refuses a frequency above `DSD_TRUNK_FREQ_MAX_HZ` on every platform, as
+    `state.h` promises, rather than storing it. Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -7457,9 +7489,21 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     its reading first, then `Analog:`/`Passband:`), the Airspy identity row, Auto PPM, input level, outputs, M17
     encoder, Scan Mode, Trunk Scan, Scan Timing, and every DSP panel line — with readings through `dsd_number_text()`
     at fixed widths and status words in rooms that stay; configuration-only rows (toggles, keys, paths, External RTL
-    Tuning, M17 UDP, Reverse Mute) keep wrapping. Tests: `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS`
-    (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
+    Tuning, M17 UDP, Reverse Mute) keep wrapping. `FRQ:` is the tuned frequency through `dsd_freq_hz_mhz_text()` in
+    eleven places (` FRQ: %11s MHz;`, `-` in the same room at 0), so a SoapySDR row's `Args:` after it holds its column
+    across retunes; that row leads with `| Soapy;` so `FRQ:` fits ahead of the 80-column cut (issue #670). Tests:
+    `UI_ROW` (real `newterm`), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`), `UI_DSP_DISPLAY_RENDER`.
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
+  - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
+    too) is the one opener, for Input > RTL-SDR > `Frequency...` (`rtl_set_freq()`, empty field) and for #671's entry:
+    a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
+    `DSD_FREQ_ENTRY_MAX_LEN + 2`, so a paste cut at the capacity is still too long and refused, never read as a shorter
+    valid value. Its callback `cb_rtl_freq_text()` (`menu_callbacks.c`) parses with `dsd_parse_freq_entry_hz()`: empty
+    cancels silently, a refusal puts the parser's message in the status (which the prompt shows inside its box) and
+    reopens the opener with the text typed, and OK posts `DSD_APP_CMD_RTL_SET_FREQ` with the Hz. `lbl_rtl_freq()`
+    reads `dsd_opts_tuned_freq_hz()` in MHz (`[-]` at 0), and `rtl_freq_offered()` hides the row under `--trunk-scan`
+    and during an I/Q replay, both of which refuse the command. Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`,
+    `UI_MENU_LABELS`, `UI_MENU_LABELS_RADIO`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
     `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
@@ -7847,6 +7891,10 @@ Qt Quick frontend (`src/ui/qt`):
     spelling): the remembered Explore frequency, Save as a system, Spectrum "Go to" and the band buttons. `mhzText`
     rounds to 10 Hz for reading only. The rtl and rtltcp input specs round the MHz field to the nearest Hz
     (`input_spec.c`), since a decimal like `128.155625M` multiplies out just under its integer.
+    `session_args_freq_valid()` (the `FrequencyField.qml` hint and `session_args_build()`) takes a start frequency only
+    when it rounds the same way to 1..4294967295 Hz, the range the rtl spec reads, since a saved system carries its
+    text past the field's validator; otherwise both say `Enter a frequency from 0.000001 to 4294.967295 MHz` (issue
+    #670, `UI_QT_SESSION_ARGS`).
     The record every details sheet opens with (monitor, History, Home's recent activity) carries `freqHz`, `accessCode`
     and `accessCodeText`, and the sheet adds the long code text and "Frequency …" after the radio ID, which keeps the
     indexes of the lines before it.

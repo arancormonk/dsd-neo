@@ -33,6 +33,14 @@ For the same reason `End` stops on `Advanced` rather than on `Quit DSD-neo`: the
 on the quit row, so `End` followed by `Enter` cannot end a running decode. Reaching it takes a deliberate `Down`,
 `PageDown`, or the `q` hotkey.
 
+The keypad Enter key is `Enter` on the main screen, in the menu, prompts, help, pickers and the RadioReference panel,
+on Windows too. Under tmux with `TERM=tmux-256color`, whose terminal database has no keypad Enter (`kent`), that key
+arrives as `Esc O M`, and its `Esc` cancels a prompt or backs out of the menu; use the main Enter key there. In a
+prompt, a character the field cannot hold (a non-ASCII character in a UTF-8 terminal, a character beyond Latin-1 on
+Windows) is typed as one `?` rather than dropped, so a pasted `145．5` reads `145?5` and is refused instead of tuning
+1455 MHz. The Windows keypad `+ - * /` keys type their characters. A number prompt refuses a value outside the integer
+range with `Invalid integer input` instead of wrapping it.
+
 Rows come in three kinds:
 
 - **Action rows** are the selectable ones: they run something, open a prompt (a trailing `...`), or open a
@@ -95,7 +103,7 @@ Main Menu
 │   │   ├── Mixer AGC (0 off, 1 on)...
 │   │   └── Bias tee (0 off, 1 on)...
 │   └── RTL-SDR                                  (radio input only)
-│       ├── Frequency... [769.768750 MHz]        (hidden under --trunk-scan, which owns the tuner)
+│       ├── Frequency... [769.768750 MHz]        (MHz; [-] with no frequency; hidden under --trunk-scan and during an I/Q replay)
 │       ├── Gain... [AGC]                        (not on an Airspy; [20] (target: 10) when a trunk-scan target has its own gain)
 │       ├── PPM correction... [0]                { }  (not on an Airspy)
 │       ├── DSP bandwidth... [48 kHz]
@@ -351,6 +359,42 @@ that went away is noticed when a read times out (the socket's receive timeout, 1
 session's reconnect then gives way to a menu command between its attempts. A sender that stops in the middle of a
 frame is waited for, as before.
 
+### Frequency entry
+
+Input > RTL-SDR > `Frequency...` tunes the radio that runs. The row reads the tuned frequency in MHz
+(`Frequency... [851.012500 MHz]`, `[-]` while none is known). Its prompt,
+`Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)`, opens empty and reads a number the way a radio keypad does
+(issue #670; it used to read every number as Hz):
+
+- A number without a unit below 1000000 is MHz: `146.52`, `446`, `1296`, and `0000146` is 146 MHz.
+- A number without a unit of 1000000 or more is Hz, so a pasted `851012500` still tunes 851.0125 MHz.
+- A number without a unit from 4295 to 999999 is refused with
+  `Too large as MHz. Add a unit, e.g. 146520k or 146.52M`: it is too large for MHz and too small for Hz. This
+  catches a dropped `.` (`14652`), a kHz habit (`146520`) and the radio keypad habit that types 146.560 MHz as
+  `146560`.
+- A unit always wins: `Hz`, `k` or `kHz`, `M` or `MHz`, `G` or `GHz`, in any case and with or without a space
+  (`146520k`, `146.52 MHz`, `0.85G`). `m` is mega, as in `-i`.
+- A value finer than 1 Hz is refused (`162550000.5`, `146.5200005`): `Finer than 1 Hz. Use at most 6 decimals in MHz`.
+  Trailing zeros are fine (`146.5200000`).
+- A `,` is refused with `Use '.' for decimals, e.g. 146.52`, as a decimal comma or a thousands separator. The keypad
+  decimal key types what the keyboard layout gives it: `,` on a German layout, which is refused rather than read as
+  another number.
+- Nothing above 4294.967295 MHz can be entered, in any unit (`Above the 4294.967295 MHz input limit`). On Windows the
+  tune is refused above 2147.483647 MHz with `Above 2147.483647 MHz, this build's limit`.
+- A sign, an exponent (`1e6`), hex, a second `.` or a character the prompt shows as `?` is refused with
+  `Not a frequency. Type MHz, e.g. 146.52`; another unit with `Unknown unit. Use Hz, k, M or G`; 0 with
+  `Frequency must be above 0`; more than 32 characters with `Too long: at most 32 characters`.
+
+A refused entry reopens the prompt with the text typed and the reason inside it, so a typo is fixed in place. `Esc`, or
+`Enter` on an empty field, cancels. The toast names the frequency in MHz: `Applied: RTL frequency -> 851.012500 MHz`
+names the frequency the receiver took, `Accepted: RTL frequency -> 851.012500 MHz (pending)` one still being applied,
+`Deferred; retry: RTL frequency -> ...` one the receiver could not take yet (retry it), and `Failed: ...` one that did
+not tune; ` (scanner stopped)` follows a tune that ended a `-Y` scan. A manual tune from Qt/Android or the control API
+(`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding 769.768750 MHz (1 avoided)`) name their frequency
+the same way. During single-system P25 trunking the entry selects a new control channel
+(`Applied: P25 control channel -> 851.012500 MHz`; see "Trunking & Scanning" in `docs/cli.md`). The row is hidden
+during `--trunk-scan`, which owns the tuner, and during an I/Q replay, which plays the tuning its capture recorded.
+
 ### Decoder mode
 
 **Decoder -> Mode** opens a picker of the decode presets — Auto, P25 (Phase 1 + 2), P25 Phase 1, P25 Phase 2, DMR,
@@ -462,7 +506,7 @@ where it came from. Each row puts its live readings ahead of configuration text,
 configuration first:
 
 ```text
-| RTL: 0; G:  40dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  146520000;
+| RTL: 0; G:  40dB; PPM:    0; Mon: 2X; DSP-BW: 48 kHz; FRQ:  146.520000 MHz;
 | SQL: noise +10 dB (quieting   23 dB);              Analog: NFM 12.5 kHz (row; default 16 kHz);
 | UDP Signal Input: 127.0.0.1:7355; Pkts:    123; Drops:      0; 48 kHz; 1 Ch; IV:  1X; RIG: rig.local:4532;
 | SQL: off; Passband: NFM 12.5 kHz (-B);
@@ -470,11 +514,13 @@ configuration first:
 
 The squelch readout keeps the room of the longest status its setting can show, so the width after it holds its column
 from `(learning)` to `(quieting   23 dB)`. The UDP counters take six places each: up to 999999 as digits, then tenths
-of a unit (`1.2M`, `4.2G`). An Airspy names itself on a row of its own (`| Airspy: <serial>; <rate> samples/s;`) above
-its receiver row (`| G: ...`). A SoapySDR device's arguments go last on its source row (`Args: driver=...;`). Auto PPM
-and `External RTL Tuning on UDP` are rows of their own. Rows whose text changes only with configuration or with a scan
-target wrap as before, so a key or a file path is never hidden: the trunking and EDACS toggles, TG HOLD, key rows,
-file outputs, External RTL Tuning, M17 UDP and Reverse Mute.
+of a unit (`1.2M`, `4.2G`). `FRQ:` is the tuned frequency in MHz to the Hz, in the eleven places the highest
+frequency takes (`FRQ: 4294.967295 MHz;`), and `FRQ:           - MHz;` while none is known. An Airspy names itself on a
+row of its own (`| Airspy: <serial>; <rate> samples/s;`) above its receiver row (`| G: ...`). A SoapySDR device's source
+row starts `| Soapy;` and ends with its arguments (`Args: driver=...;`), so at 80 columns `FRQ:` still fits ahead of
+the cut. Auto PPM and `External RTL Tuning on UDP` are rows of their own. Rows whose text changes only with
+configuration or with a scan target wrap as before, so a key or a file path is never hidden: the trunking and EDACS
+toggles, TG HOLD, key rows, file outputs, External RTL Tuning, M17 UDP and Reverse Mute.
 
 ## DSP Status
 
