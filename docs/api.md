@@ -648,6 +648,10 @@ field, and the decoder refuses the rest when it applies the command.
   runs its target list, dwell and hold defaults and the global band plan) keep
   their running values, and `status.message` names them (`Config applied;
   restart to use the new channel map`), after any other message the apply left.
+  The applied values wait for the next start: every save, the exit autosave
+  included, writes them, so the restart runs them. A later config that names the
+  running value again takes one back, and a channel-map import or clear sets the
+  map at once.
   Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
   back at shutdown and a save writes, not the parked target's. Over a paused
   `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or

@@ -254,6 +254,12 @@ config location is used:
 If the default file does not exist, it will be created when settings are saved
 (DSD-neo autosaves on exit whenever config loading is enabled).
 
+A config loaded into a running session (terminal Config > Load, Qt, the API `config_apply`) cannot change what only
+startup sets: the frontend, `[trunk_scan] enabled`, `[trunking] chan_csv`, an Airspy input chosen over audio input,
+and under a running trunk scan its `targets_csv`, `idle_dwell_ms`, `activity_hold_ms` and `p25_bandplan_csv`. The
+session keeps running the values it started with, the status line says a restart is needed, and every save (the exit
+autosave included) writes the loaded values, so the next start runs them.
+
 Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
 flatten the profile overlay back into the base file and remove profile sections.
 
@@ -342,7 +348,7 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable trunking | `false` |
-| `chan_csv` | PATH | Channel map CSV, imported at startup; a config applied to a running session keeps the map it loaded and says a restart is needed | (empty) |
+| `chan_csv` | PATH | Channel map CSV, imported at startup; a config applied to a running session keeps the map it loaded, says a restart is needed, and saves the new path for the next start | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
 | `src_csv` | PATH | Source ID list CSV (`--src-csv`; names, optional radio policy columns; loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |

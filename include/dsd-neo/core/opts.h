@@ -60,6 +60,36 @@ typedef enum DSD_ATTR_PACKED {
     AUDIO_IN_SYMBOL_FLT = 44 ///< Float symbol .raw/.sym file
 } dsd_audio_in_type;
 
+/* Which settings of dsd_opts_next_start wait for the next start. */
+enum {
+    DSD_NEXT_START_FRONTEND = 1U << 0,
+    DSD_NEXT_START_TRUNK_SCAN = 1U << 1,
+    DSD_NEXT_START_TRUNK_SCAN_TARGETS = 1U << 2,
+    DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL = 1U << 3,
+    DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD = 1U << 4,
+    DSD_NEXT_START_CHANNEL_MAP = 1U << 5,
+    DSD_NEXT_START_BAND_PLAN = 1U << 6,
+};
+
+/**
+ * @brief Settings a runtime config apply asked for that only a restart puts in place (issue #671).
+ *
+ * The session keeps running the values in dsd_opts; every save writes these instead
+ * (dsd_snapshot_opts_to_user_config()), so the restart the apply asks for runs them. A field is held while its
+ * DSD_NEXT_START_* bit is set in @c pending: an apply that names the running value again, or a command that sets the
+ * running one (a channel-map import or clear), drops it. Runtime only; never loaded.
+ */
+typedef struct {
+    uint32_t pending; /**< DSD_NEXT_START_* bits. */
+    dsd_frontend_kind frontend_kind;
+    int trunk_scan_enabled;
+    int trunk_scan_idle_dwell_ms;
+    int trunk_scan_activity_hold_ms;
+    char trunk_scan_targets_csv[1024];
+    char chan_in_file[1024];
+    char p25_bandplan_in_file[1024];
+} dsd_opts_next_start;
+
 struct dsd_opts {
 #ifdef __cplusplus
     dsd_opts() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -446,6 +476,7 @@ struct dsd_opts {
     char src_in_file[1024];              // Source ID alias CSV
     char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
     char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown
+    dsd_opts_next_start next_start;      // what a config apply left for the next start (issue #671)
     char key_in_file[1024];
     dsd_airspy_config airspy;
     dsd_airspy_info airspy_info; /* Decoder-owned value snapshot. */

@@ -271,18 +271,22 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `trunk_scan_configured_autogain` beside the parked target for the frontends and the config save.
 - Configured trunking and modulation (issue #671): each target's type sets `trunk_enable` while it is parked, so the
   setting the session runs outside the scan lives in the coordinator (captured at scan start, put back at shutdown) and
-  is published as `trunk_scan_configured_trunk_enable`, which the config save writes while `trunk_scan_target_count`
-  is nonzero. `dsd_engine_trunk_scan_set_configured_trunk_enable()` edits it without touching the live flag (0 stored,
-  -1 no scan). Shutdown puts back only the configured gain and the trunking flags: the scope leave restores the
-  configured modulation, which a modulation change made during the scan recaptured; an init that fails after attaching
-  puts back the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running
-  coordinator's target-list path, idle dwell and activity hold, and the global band plan (which the scan refuses at
-  startup), as they were and reports restart-required (`cfg_restore_lifecycle_owned()` in app_control), as it does
-  in every session for the frontend, the trunk-scan flag, the channel map (imported at startup only) and an Airspy
-  input over a non-radio one. The apply toasts and logs what waits (`Config applied; restart to use the new trunk
-  scan list`, `cfg_note_restart_required()`), kept beside any other message the apply leaves
-  (`cfg_keep_restart_note()`). Its `[trunking] enabled = true` goes to the configured setting through that setter,
-  never to the live flag, running or paused (`cfg_store_configured_trunking()`).
+  is published as `trunk_scan_configured_trunk_enable`, which the config save writes while `trunk_scan_target_count` is
+  nonzero. `dsd_engine_trunk_scan_set_configured_trunk_enable()` edits it without touching the live flag (0 stored, -1
+  no scan). Shutdown puts back only the configured gain and the trunking flags: the scope leave restores the configured
+  modulation, which a modulation change made during the scan recaptured; an init that fails after attaching puts back
+  the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running coordinator's
+  target-list path, idle dwell and activity hold, and the global band plan (which the scan refuses at startup), as they
+  were and reports restart-required (`cfg_restore_lifecycle_owned()` in app_control), as it does in every session for
+  the frontend, the trunk-scan flag, the channel map (imported at startup only) and an Airspy input over a non-radio
+  one. The applied values wait for the next start in `dsd_opts::next_start` (`dsd_opts_next_start`,
+  `cfg_defer_path()`/`cfg_defer_int()`): the session runs the old ones, every save writes the new ones
+  (`snapshot_next_start_config()`), a config naming the running value again drops one, and a channel-map import or clear
+  drops the map's; an Airspy chosen over audio input waits in `audio_in_dev`, which a save writes. The apply toasts what
+  waits (`Config applied; restart to use the new trunk scan list`, `cfg_note_restart_required()`), kept beside any other
+  message the apply leaves, and logs it once it has applied (`cfg_keep_restart_note()`). Its `[trunking] enabled = true`
+  goes to the configured setting through that setter, never to the live flag, running or paused
+  (`cfg_store_configured_trunking()`).
 - Pause and resume (issue #671): `dsd_engine_trunk_scan_pause_locked()` / `_resume_locked()` (and their `_ex_` forms,
   whose `dsd_trunk_scan_leave_report` carries the scope leave's monitor request and whether the target left ran its
   own tuner gain, for app-control's #578 record and stream reopen), with the caller holding the P25 SM tick guard,

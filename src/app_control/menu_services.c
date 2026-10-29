@@ -817,6 +817,8 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     dsd_state_trunk_lcn_free(imported);
     free(imported);
     if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+        /* The map runs now, and a save writes it, not one a config left for the next start (issue #671). */
+        opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
         return 0;
     }
     DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
@@ -871,6 +873,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->chan_in_file[0] = '\0';
+    opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof state->trunk_chan_map);
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
     state->trunk_chan_map_used_count = 0;

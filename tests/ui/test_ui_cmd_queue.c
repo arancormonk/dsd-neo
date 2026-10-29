@@ -8397,6 +8397,10 @@ test_skip_commands(uint8_t slot) {
     return rc;
 }
 
+/* Issue #671 (N2): the restart lines logged (record_restart_log()), and the last. */
+static int g_restart_log_lines;
+static char g_restart_log[256];
+
 static int
 test_config_keeps_trunk_scan_lifecycle(void) {
     /* The coordinator is installed at startup only, so a live config may not flip the flag
@@ -8515,6 +8519,8 @@ test_config_restart_required_says_what_waits(void) {
     rc |= expect_int("frontend kept", opts.frontend_kind, DSD_FRONTEND_NONE);
     rc |= expect_int("frontend needs a restart", dsd_app_command_test_last_restart_required(), 1);
     rc |= expect_str("frontend toast", state.ui_msg, "Config applied; restart to use the new frontend");
+    rc |= expect_str("frontend: the log says what waits", g_restart_log,
+                     "Config applied; restart to use the new frontend.\n");
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -10675,6 +10681,14 @@ record_rigctl_log(dsd_neo_log_level_t level, const char* text) {
     }
 }
 
+static void
+record_restart_log(const char* text) {
+    if (text && strstr(text, "restart to use the new")) {
+        g_restart_log_lines++;
+        DSD_SNPRINTF(g_restart_log, sizeof g_restart_log, "%s", text);
+    }
+}
+
 /* The run's one log tap, installed first thing in main(): a tap is never replaced. It keeps the I/Q capture lines the
    RTL cases read and the rigctl peer warnings. */
 static void
@@ -10685,6 +10699,7 @@ record_test_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
 #endif
     record_rigctl_log(level, text);
+    record_restart_log(text);
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -21524,6 +21539,181 @@ test_config_channel_map_waits_for_a_restart(void) {
     return rc;
 }
 
+/* Apply @p cfg and save what the session would write now (dsd_snapshot_opts_to_user_config()) into @p saved. */
+static int
+apply_then_save(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, dsdneoUserConfig* saved,
+                const char* label) {
+    int rc = drain_config(opts, state, cfg, label);
+    DSD_MEMSET(saved, 0, sizeof *saved);
+    dsd_snapshot_opts_to_user_config(opts, state, saved);
+    return rc;
+}
+
+/*
+ * Issue #671 (N1): a config apply that names a setting only a restart puts in place keeps the running one in force and
+ * keeps the applied one for the next start: every save writes it, so the restart the toast asks for runs it. A later
+ * apply naming the running value again takes it back, and so does a channel-map import or clear, which set the map
+ * now. An Airspy chosen over audio input is kept in the input device a save writes. On main (after the restart
+ * notices) every save wrote the running value back, the file a Config > Load had just pointed the autosave at
+ * included, so the restart ran the old settings.
+ */
+static int
+test_config_restart_settings_wait_for_the_next_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+
+    /* The frontend. */
+    init_test_context(&opts, &state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: frontend");
+    rc |= expect_int("frontend: the running one stays", opts.frontend_kind, DSD_FRONTEND_NONE);
+    rc |= expect_int("frontend: a save writes the applied one", saved.frontend_kind == DSD_FRONTEND_TERMINAL, 1);
+    cfg.frontend_kind = DSD_FRONTEND_NONE;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: frontend back");
+    rc |= expect_int("frontend back: no restart", dsd_app_command_test_last_restart_required(), 0);
+    rc |= expect_int("frontend back: a save writes the running one", saved.frontend_kind == DSD_FRONTEND_NONE, 1);
+    freeState(&state);
+
+    /* Trunk scan turned on with none running. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    cfg.trunk_scan_idle_dwell_ms = 3000;
+    cfg.trunk_scan_activity_hold_ms = 1200;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan on");
+    rc |= expect_int("trunk scan on: none runs", opts.trunk_scan_enabled, 0);
+    rc |= expect_int("trunk scan on: a save writes it", saved.trunk_scan_enabled, 1);
+    rc |= expect_str("trunk scan on: with its list", saved.trunk_scan_targets_csv, "targets.csv");
+    freeState(&state);
+
+    /* Under a coordinator: the list, its dwell and hold defaults, and the band plan. */
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "other-targets.csv");
+    cfg.trunk_scan_idle_dwell_ms = 4321;
+    cfg.trunk_scan_activity_hold_ms = 2500;
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list");
+    rc |= expect_int("trunk scan list: the running one stays",
+                     strcmp(opts.trunk_scan_targets_csv, "targets.csv") == 0 && opts.trunk_scan_idle_dwell_ms == 3000
+                         && opts.trunk_scan_activity_hold_ms == 1200 && opts.p25_bandplan_in_file[0] == '\0',
+                     1);
+    rc |= expect_str("trunk scan list: a save writes the list", saved.trunk_scan_targets_csv, "other-targets.csv");
+    rc |= expect_int("trunk scan list: and its defaults",
+                     saved.trunk_scan_idle_dwell_ms == 4321 && saved.trunk_scan_activity_hold_ms == 2500, 1);
+    rc |= expect_str("trunk scan list: and the band plan", saved.trunk_p25_bandplan_csv, "plan.csv");
+    /* The running values named again take every one back. */
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    cfg.trunk_scan_idle_dwell_ms = 3000;
+    cfg.trunk_scan_activity_hold_ms = 1200;
+    cfg.trunk_p25_bandplan_csv[0] = '\0';
+    cfg.has_trunking = 0;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list back");
+    rc |=
+        expect_str("trunk scan list back: a save writes the running list", saved.trunk_scan_targets_csv, "targets.csv");
+    rc |= expect_int("trunk scan list back: and its defaults",
+                     saved.trunk_scan_idle_dwell_ms == 3000 && saved.trunk_scan_activity_hold_ms == 1200, 1);
+    rc |= expect_str("trunk scan list back: a config without the band plan keeps it waiting",
+                     saved.trunk_p25_bandplan_csv, "plan.csv");
+    freeState(&state);
+
+    /* The channel map, with no scan: an apply without [trunking] keeps it waiting, the running map named again takes
+       it back, and a clear sets the map now. */
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: map");
+    rc |= expect_str("map: the running one stays", opts.chan_in_file, "loaded_map.csv");
+    rc |= expect_str("map: a save writes the applied one", saved.trunk_chan_csv, "another_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_logging = 1;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: no [trunking]");
+    rc |= expect_str("no [trunking]: the map still waits", saved.trunk_chan_csv, "another_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "loaded_map.csv");
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: map back");
+    rc |= expect_str("map back: a save writes the running one", saved.trunk_chan_csv, "loaded_map.csv");
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+    rc |= drain_config(&opts, &state, &cfg, "next start: map again");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "next start: map cleared");
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_str("map cleared: a save writes no map", saved.trunk_chan_csv, "");
+    freeState(&state);
+
+    /* An Airspy chosen over audio input: the input runs on, and a save writes the Airspy. */
+    init_test_context(&opts, &state);
+    const int input_type = opts.audio_in_type;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    dsd_airspy_config_defaults(&cfg.airspy);
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: airspy");
+    rc |= expect_int("airspy: the running input stays", opts.audio_in_type, input_type);
+    rc |=
+        expect_int("airspy: a save writes the Airspy", saved.has_input && saved.input_source == DSDCFG_INPUT_AIRSPY, 1);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671 (N1): terminal Config > Load points the autosave at the file it loads, then applies it. A map in that file
+ * waits for the next start, and the exit autosave writes it back into the file, so the restart runs it. On main the
+ * exit autosave wrote the running map into the file just loaded.
+ */
+static int
+test_config_load_then_exit_keeps_the_file(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    int rc = expect_true("load then exit dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_load_exit") != NULL);
+    rc |= expect_int("load then exit path", dsd_test_path_join(path, sizeof path, dir, "loaded.ini"), 0);
+    static const char k_ini[] = "[trunking]\nchan_csv = \"file_map.csv\"\n";
+    rc |= write_file_bytes(path, k_ini, sizeof k_ini - 1U);
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_NULL;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    rc |= expect_int("load then exit: file loads", dsd_user_config_load(path, &cfg), 0);
+    dsd_app_config_metadata_payload meta;
+    DSD_MEMSET(&meta, 0, sizeof meta);
+    meta.autosave_enabled = 1;
+    DSD_SNPRINTF(meta.path, sizeof meta.path, "%s", path);
+    rc |= expect_true("load then exit: metadata queued", dsd_app_command_set_config_metadata(&meta) > 0);
+    rc |= expect_true("load then exit: config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("load then exit: drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_str("load then exit: the running map stays", opts.chan_in_file, "loaded_map.csv");
+    dsd_engine_cleanup(&opts, &state);
+    dsd_exitflag_store(0);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    rc |= expect_int("load then exit: autosave reloads", dsd_user_config_load(path, &cfg), 0);
+    rc |= expect_str("load then exit: the file keeps its map", cfg.trunk_chan_csv, "file_map.csv");
+    (void)remove(path);
+    (void)dsd_test_rmdir(dir);
+    freeState(&state);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #671: the scanner on resumes a paused -Y scan whose row's tune lands (a rigctl peer that takes it): the scan
@@ -22042,7 +22232,12 @@ test_config_failed_reopen_keeps_a_paused_list(void) {
     cfg.rtltcp_port = 1234;
     cfg.has_trunking = 1;
     cfg.trunk_scanner = 1;
+    /* A frontend change that would need a restart, in a config that is rolled back: nothing is logged as applied. */
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = opts.frontend_kind == DSD_FRONTEND_NONE ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE;
+    const int restart_lines = g_restart_log_lines;
     rc |= submit_config(&opts, &state, &cfg, "paused list: config whose input fails");
+    rc |= expect_int("paused list: a rolled-back config logs no restart", g_restart_log_lines, restart_lines);
     rc |= expect_int("paused list: config failed", dsd_app_command_test_last_failed(), 1);
     rc |= expect_str("paused list: rollback toast", state.ui_msg,
                      "Config not applied: the rtl_tcp input did not start (see log)");
@@ -22089,6 +22284,8 @@ main(void) {
 #endif
     rc |= test_config_settles_a_paused_list();
     rc |= test_config_channel_map_waits_for_a_restart();
+    rc |= test_config_restart_settings_wait_for_the_next_start();
+    rc |= test_config_load_then_exit_keeps_the_file();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_config_resumes_a_paused_list();
 #endif

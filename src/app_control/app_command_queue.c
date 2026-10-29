@@ -8040,18 +8040,32 @@ enum {
     CFG_RESTART_AIRSPY_INPUT = 1 << 5,
 };
 
-/* Put the path @p before back into @p live (@p size bytes); nonzero when the config had changed it. */
+/* Put the path @p before back into @p live (@p size bytes), the running one, and keep the one the config set as @p next
+   for the next start (bit @p bit of @p pending): every save writes it (dsd_opts_next_start). A config that names the
+   running path again (@p named) drops what was waiting. Nonzero when the config had changed it. */
 static int
-cfg_restore_owned_path(char* live, size_t size, const char* before) {
+cfg_defer_path(char* live, size_t size, const char* before, int named, uint32_t* pending, uint32_t bit, char* next) {
     const int changed = strcmp(live, before) != 0;
+    if (changed) {
+        DSD_SNPRINTF(next, size, "%s", live);
+        *pending |= bit;
+    } else if (named) {
+        *pending &= ~bit;
+    }
     DSD_SNPRINTF(live, size, "%s", before);
     return changed;
 }
 
 /* The same for a number. */
 static int
-cfg_restore_owned_int(int* live, int before) {
+cfg_defer_int(int* live, int before, int named, uint32_t* pending, uint32_t bit, int* next) {
     const int changed = *live != before;
+    if (changed) {
+        *next = *live;
+        *pending |= bit;
+    } else if (named) {
+        *pending &= ~bit;
+    }
     *live = before;
     return changed;
 }
@@ -8069,31 +8083,48 @@ cfg_restore_owned_int(int* live, int before) {
  * coordinator also loaded its target list and resolved the list's dwell and hold
  * defaults at startup, and refused the global band plan then (each target names its
  * own), so under it those are the coordinator's too. All of them are put back after
- * the config is applied; the CFG_RESTART_* mask returned names those the config asked
- * to change, which the caller reports as restart-required.
+ * the config is applied, and what the config set instead waits for the next start
+ * (dsd_opts::next_start): every save writes it, so the restart the toast asks for runs
+ * it. The CFG_RESTART_* mask returned names those the config asked to change, which
+ * the caller reports as restart-required.
  */
 static int
 cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
-    opts->frontend_kind = before->frontend_kind;
-    opts->trunk_scan_enabled = before->trunk_scan_enabled;
+    dsd_opts_next_start* next = &opts->next_start;
     int changed = 0;
-    if (cfg->frontend_kind_is_set && cfg->frontend_kind != before->frontend_kind) {
+    /* Staging sets the frontend only with the section that carries it; the config names it either way. */
+    int frontend = cfg->frontend_kind_is_set ? (int)cfg->frontend_kind : (int)before->frontend_kind;
+    int next_frontend = (int)next->frontend_kind;
+    if (cfg_defer_int(&frontend, (int)before->frontend_kind, cfg->frontend_kind_is_set, &next->pending,
+                      DSD_NEXT_START_FRONTEND, &next_frontend)) {
         changed |= CFG_RESTART_FRONTEND;
     }
-    if (cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != before->trunk_scan_enabled) {
+    opts->frontend_kind = (dsd_frontend_kind)frontend;
+    next->frontend_kind = (dsd_frontend_kind)next_frontend;
+    if (cfg_defer_int(&opts->trunk_scan_enabled, before->trunk_scan_enabled, cfg->has_trunk_scan, &next->pending,
+                      DSD_NEXT_START_TRUNK_SCAN, &next->trunk_scan_enabled)) {
         changed |= CFG_RESTART_TRUNK_SCAN;
     }
-    if (cfg_restore_owned_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file)) {
+    if (cfg_defer_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file,
+                       cfg->has_trunking && cfg->trunk_chan_csv[0], &next->pending, DSD_NEXT_START_CHANNEL_MAP,
+                       next->chan_in_file)) {
         changed |= CFG_RESTART_CHANNEL_MAP;
     }
     if (before->trunk_scan_enabled == 1) {
-        int list_changed = cfg_restore_owned_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
-                                                  before->trunk_scan_targets_csv);
-        list_changed |= cfg_restore_owned_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms);
-        list_changed |= cfg_restore_owned_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms);
+        int list_changed =
+            cfg_defer_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
+                           before->trunk_scan_targets_csv, cfg->has_trunk_scan && cfg->trunk_scan_targets_csv[0],
+                           &next->pending, DSD_NEXT_START_TRUNK_SCAN_TARGETS, next->trunk_scan_targets_csv);
+        list_changed |=
+            cfg_defer_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms, cfg->has_trunk_scan,
+                          &next->pending, DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL, &next->trunk_scan_idle_dwell_ms);
+        list_changed |=
+            cfg_defer_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms, cfg->has_trunk_scan,
+                          &next->pending, DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD, &next->trunk_scan_activity_hold_ms);
         changed |= list_changed ? CFG_RESTART_TRUNK_SCAN_LIST : 0;
-        if (cfg_restore_owned_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file,
-                                   before->p25_bandplan_in_file)) {
+        if (cfg_defer_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, before->p25_bandplan_in_file,
+                           cfg->has_trunking && cfg->trunk_p25_bandplan_csv[0], &next->pending,
+                           DSD_NEXT_START_BAND_PLAN, next->p25_bandplan_in_file)) {
             changed |= CFG_RESTART_BAND_PLAN;
         }
     }
@@ -8102,7 +8133,7 @@ cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const c
 
 /*
  * Say which settings of an applied config wait for a restart (@p causes, a CFG_RESTART_* mask), on the status line
- * every frontend shows and in the log: "Config applied; restart to use the new trunk scan list". Set before the rest
+ * every frontend shows: "Config applied; restart to use the new trunk scan list". Set before the rest
  * of the apply runs, so a rollback's toast replaces it (that apply fails); one that applies after all keeps it beside
  * whatever else it said (cfg_keep_restart_note()). The names go to @p names (@p size bytes), "" with no cause.
  */
@@ -8130,18 +8161,20 @@ cfg_note_restart_required(dsd_state* state, int causes, char* names, size_t size
         used += n > 0 ? (size_t)n : 0U;
     }
     if (used > 0U) {
-        LOG_INFO("Config applied; restart to use the new %s.\n", names);
         ui_set_toast(state, 5, "Config applied; restart to use the new %s", names);
     }
 }
 
 /*
- * A config apply that needs a restart and applied: when something it ran said something else on the status line
- * after the restart note (a resume that stays paused, a refused width), both are kept, the restart cause last; when
- * both do not fit, the other message stays and points at the log, which has the restart cause.
+ * A config apply that needs a restart and applied: the log says what waits. When something it ran said something else
+ * on the status line after the restart note (a resume that stays paused, a refused width), both are kept, the restart
+ * cause last; when both do not fit, the other message stays and points at the log, which has the restart cause.
  */
 static void
 cfg_keep_restart_note(dsd_state* state, const char* names) {
+    /* Logged here, where the apply is known to have applied (a rollback returns before), and before any toast that
+       points at the log. */
+    LOG_INFO("Config applied; restart to use the new %s.\n", names);
     char note[sizeof state->ui_msg];
     DSD_SNPRINTF(note, sizeof note, "Config applied; restart to use the new %s", names);
     if (strcmp(state->ui_msg, note) == 0) {

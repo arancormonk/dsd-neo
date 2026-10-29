@@ -1669,6 +1669,45 @@ test_snapshot_scanner_saves_a_paused_scan(void) {
     return rc;
 }
 
+/* Issue #671 (N1): what a config apply left for the next start is what a save writes, field by field; with nothing
+   waiting the running values are. */
+static int
+test_snapshot_writes_the_next_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "running.csv");
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    int rc = 0;
+    if (snap.frontend_kind != DSD_FRONTEND_NONE || strcmp(snap.trunk_chan_csv, "running.csv") != 0) {
+        DSD_FPRINTF(stderr, "next start: nothing waiting, but the save wrote frontend %d map %s\n",
+                    (int)snap.frontend_kind, snap.trunk_chan_csv);
+        rc |= 1;
+    }
+    dsd_opts_next_start* next = &opts.next_start;
+    next->pending = DSD_NEXT_START_FRONTEND | DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS
+                    | DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL | DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD
+                    | DSD_NEXT_START_CHANNEL_MAP | DSD_NEXT_START_BAND_PLAN;
+    next->frontend_kind = DSD_FRONTEND_TERMINAL;
+    next->trunk_scan_enabled = 1;
+    next->trunk_scan_idle_dwell_ms = 4321;
+    next->trunk_scan_activity_hold_ms = 2500;
+    DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s", "next-targets.csv");
+    DSD_SNPRINTF(next->chan_in_file, sizeof next->chan_in_file, "%s", "next.csv");
+    DSD_SNPRINTF(next->p25_bandplan_in_file, sizeof next->p25_bandplan_in_file, "%s", "next-plan.csv");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.frontend_kind != DSD_FRONTEND_TERMINAL || snap.frontend_kind_is_set == 0 || snap.trunk_scan_enabled == 0
+        || snap.trunk_scan_idle_dwell_ms != 4321 || snap.trunk_scan_activity_hold_ms != 2500
+        || strcmp(snap.trunk_scan_targets_csv, "next-targets.csv") != 0 || strcmp(snap.trunk_chan_csv, "next.csv") != 0
+        || strcmp(snap.trunk_p25_bandplan_csv, "next-plan.csv") != 0) {
+        DSD_FPRINTF(stderr, "next start: the save did not write every waiting setting\n");
+        rc |= 1;
+    }
+    return rc;
+}
+
 static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
@@ -5262,6 +5301,7 @@ main(void) {
     rc |= test_snapshot_names_switched_inputs();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_scanner_saves_a_paused_scan();
+    rc |= test_snapshot_writes_the_next_start();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_roundtrip_agc_rtl_gain();

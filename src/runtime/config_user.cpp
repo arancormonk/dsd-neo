@@ -2214,6 +2214,36 @@ snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserC
     dsd_scan_mode_configured_receive(opts, state, &cfg->receive);
 }
 
+/* What a config apply left for the next start (dsd_opts_next_start, issue #671): the session runs the values above,
+   but a save writes these, so the restart the apply asked for runs them. */
+static void
+snapshot_next_start_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    const dsd_opts_next_start* next = &opts->next_start;
+    if ((next->pending & DSD_NEXT_START_FRONTEND) != 0U) {
+        cfg->frontend_kind = next->frontend_kind;
+        cfg->frontend_kind_is_set = 1;
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN) != 0U) {
+        cfg->trunk_scan_enabled = (next->trunk_scan_enabled != 0) ? 1 : 0;
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) != 0U) {
+        DSD_SNPRINTF(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, "%s",
+                     next->trunk_scan_targets_csv);
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL) != 0U) {
+        cfg->trunk_scan_idle_dwell_ms = next->trunk_scan_idle_dwell_ms;
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD) != 0U) {
+        cfg->trunk_scan_activity_hold_ms = next->trunk_scan_activity_hold_ms;
+    }
+    if ((next->pending & DSD_NEXT_START_CHANNEL_MAP) != 0U) {
+        DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", next->chan_in_file);
+    }
+    if ((next->pending & DSD_NEXT_START_BAND_PLAN) != 0U) {
+        DSD_SNPRINTF(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, "%s", next->p25_bandplan_in_file);
+    }
+}
+
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (!opts || !state || !cfg) {
@@ -2233,6 +2263,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_recording_config(opts, cfg);
     snapshot_dsp_config(cfg);
     snapshot_analog_config(opts, state, cfg);
+    snapshot_next_start_config(opts, cfg);
 }
 
 // Template generation ---------------------------------------------------------
