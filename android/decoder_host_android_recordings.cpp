@@ -51,6 +51,9 @@ DecoderHostAndroid::beginPlayback(const QString& path) {
     const int generation = platformPlayRecording(path);
     m_playback_generation = generation > 0 ? generation : 0;
     if (m_playback_generation == 0) {
+        // As the base host's failures do: the play replaces what plays, so the player stops before the store is told
+        // nothing plays it.
+        platformStopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("failed"));
     }
 }
@@ -293,6 +296,11 @@ DecoderHostAndroid::refreshRecordingShares() {
             return;
         }
         Q_EMIT recordingShareFailed(path);
+        // Gone by the time the share started (deleted from a computer, say): the store looks again, as a play or an
+        // export that finds a file missing has it do.
+        if (!QFileInfo(path).isFile()) {
+            reportRecordingsMissing({path});
+        }
     }
 }
 

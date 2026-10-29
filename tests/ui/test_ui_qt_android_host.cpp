@@ -857,9 +857,12 @@ check_recording_playback() {
     check(host.playbackState() == DecoderHost::PlaybackStopped, "a stopped play's late record is not published");
 
     r.nextGeneration = 0;
+    r.commands.clear();
     host.playRecording(a);
     check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("failed"),
           "a play the platform cannot take fails");
+    check(r.commands == QStringList({QStringLiteral("stop")}),
+          "and stops what plays first, as the base host's failures do");
 
     r.commands.clear();
     host.playRecording(dir.filePath(QStringLiteral("gone.wav")));
@@ -1059,15 +1062,20 @@ check_recording_share() {
               && recordings().shares == 2,
           "a path the store does not manage never reaches the platform");
 
-    // A share the platform took can still fail on its way; the next refresh reports it.
+    // A share the platform took can still fail on its way; the next refresh reports it. One whose file is gone (here
+    // b.wav, never made) is reported missing as well, so the store looks again; one whose file is there is not.
     QStringList failed;
+    QStringList gone;
     QObject::connect(&host, &dsd_qt::DecoderHost::recordingShareFailed,
                      [&failed](const QString& path) { failed.append(path); });
+    QObject::connect(&host, &dsd_qt::DecoderHost::recordingFilesMissing,
+                     [&gone](const QStringList& paths) { gone += paths; });
     recordings().shareFailures = {a, dir.filePath(QStringLiteral("b.wav"))};
     host.refresh();
     check(failed == QStringList({a, dir.filePath(QStringLiteral("b.wav"))}), "each late share failure is reported");
+    check(gone == QStringList({dir.filePath(QStringLiteral("b.wav"))}), "and the one whose file is gone is missing");
     host.refresh();
-    check(failed.size() == 2, "once");
+    check(failed.size() == 2 && gone.size() == 1, "once");
 }
 
 static QString
