@@ -2113,8 +2113,9 @@ Advanced (env)
 - `soapy[:args]` sets backend/device selection only.
 - Optional shorthand supports RTL-style startup tuning in the same `-i` string:
   `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
-- A number with a `K`, `M` or `G` suffix in the `freq` place is always a frequency, never device args. One outside
-  1 MHz to 4294.967295 MHz (`soapy:driver=hackrf:5.8G`, `soapy:500k`) is an error at startup and in `--print-config`:
+- A number with a `K`, `M` or `G` suffix in the `freq` place is always a frequency, never device args, signed or with
+  an exponent too (`+5.8G`, `5.8e0G`). One outside 1 MHz to 4294.967295 MHz (`soapy:driver=hackrf:5.8G`,
+  `soapy:500k`) is an error at startup and in `--print-config`:
   `Soapy frequency '5.8G' is out of range (1 to 4294.967295 MHz)`. A bare number out of range there still makes the
   whole string device args.
 - Those trailing fields map to existing shared controls and keys:

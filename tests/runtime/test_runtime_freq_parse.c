@@ -270,6 +270,13 @@ main(void) {
     assert(dsd_parse_freq_hz("4294967295.5") == 0u);
     assert(dsd_parse_freq_hz("4294967295.75") == 0u);
     assert(dsd_parse_freq_hz("4294.9672956M") == 0u);
+    /* Plain decimal text rounds half up in decimal, not in binary64: 4294.9672955M is 4294967295.5 Hz (binary64
+       scales it to 4294967295.4999995), and 4294967295.4999999 rounds down to UINT32_MAX (strtod reads it as .5). */
+    assert(dsd_parse_freq_hz("4294.9672955M") == 0u);
+    assert(dsd_parse_freq_hz("4294967295.4999999") == UINT32_MAX);
+    assert(dsd_parse_freq_hz("146.5200005M") == 146520001u);
+    assert(dsd_parse_freq_hz("0.4999999") == 0u);
+    assert(dsd_parse_freq_hz("0.5") == 1u);
 
     assert(dsd_parse_freq_hz("nan") == 0u);
     assert(dsd_parse_freq_hz("-nan") == 0u);

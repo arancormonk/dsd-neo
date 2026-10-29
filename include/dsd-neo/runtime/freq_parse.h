@@ -21,9 +21,10 @@ extern "C" {
 /**
  * @brief Parse a frequency string into Hz.
  *
- * Accepts an optional K/M/G suffix (case-insensitive) and rounds to the nearest Hz. Returns 0 for
- * invalid or empty input, non-finite values (nan, inf), text of 64 bytes or more, and any value
- * that rounds above UINT32_MAX.
+ * Accepts an optional K/M/G suffix (case-insensitive) and rounds to the nearest Hz, half up; plain
+ * decimal text (digits and one optional '.') rounds exactly, other strtod() text in binary64.
+ * Returns 0 for invalid or empty input, non-finite values (nan, inf), text of 64 bytes or more, and
+ * any value that rounds above UINT32_MAX.
  */
 uint32_t dsd_parse_freq_hz(const char* s);
 

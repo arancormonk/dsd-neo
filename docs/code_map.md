@@ -1761,9 +1761,12 @@ suite runs under this compiler.
     as `Util.fixed()`. Test: `RUNTIME_NUMBER_TEXT`.
   - Frequency text (`include/dsd-neo/runtime/freq_parse.h`, issue #670). `dsd_parse_freq_hz()` is the K/M/G grammar
     of `-i soapy:`/`airspy:` and of an INI `rtl_freq` for those sources and a live config apply (a number without a
-    suffix is Hz). It rounds to the nearest Hz and returns 0 for non-finite text, text of 64 bytes or more (never a
-    cut copy) and a value that rounds above UINT32_MAX (no clamp); `freq_parse.c` is in the runtime and test IEEE
-    source lists (`-fno-fast-math`, `/fp:precise`) so the NaN guard holds on fast-math builds.
+    suffix is Hz). It rounds to the nearest Hz, half up, and returns 0 for non-finite text, text of 64 bytes or more
+    (never a cut copy) and a value that rounds above UINT32_MAX (no clamp); `freq_parse.c` is in the runtime and test
+    IEEE source lists (`-fno-fast-math`, `/fp:precise`) so the NaN guard holds on fast-math builds. Plain decimal text
+    (`[0-9]*(.[0-9]*)?`) rounds in exact integer arithmetic (`dsd_freq_decimal_round_hz()` in the runtime-private
+    `src/runtime/freq_parse_internal.h`, which the `rtl:`/`rtltcp:` frequency field shares), so the half-Hz ceiling
+    is decided in decimal; a sign, exponent, hex or inf/nan keeps the strtod() path.
     `dsd_parse_freq_entry_hz()` is the typed-entry grammar of the terminal frequency prompt (#671 reuses it): exact
     integer arithmetic, no FP or locale, at most `DSD_FREQ_ENTRY_MAX_LEN` (32) bytes, a unit always wins, a bare number
     below `DSD_FREQ_ENTRY_BARE_HZ_MIN` (1000000) is MHz and one at or above it Hz, and a bare 4295..999999 is
@@ -1938,9 +1941,9 @@ suite runs under this compiler.
     device or endpoint, tuning and `bias` tokens into the options: the engine reads the spec with it when the input
     opens, and `--print-config` before that, so the export carries the spec's tuning rather than the option defaults.
     The INI loader refuses an `rtl_freq` of 64 bytes or more (warned; the key keeps what it had) instead of cutting it
-    into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number in the frequency place as
-    a frequency, never device args: out of range (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs
-    the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
+    into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number (any strtod() number
+    before the suffix: `+5.8G`, `5.8e0G`) in the frequency place as a frequency, never device args: out of range
+    (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
     fallback (`RUNTIME_INPUT_SPEC`). Tests: `RUNTIME_CLI_PARSE`, `CONFIG_VALIDATION`, `CONFIG_TEMPLATE`,
     `RUNTIME_CONFIG_USER`, and for the tone filter's "no effect" line `ENGINE_RUN_SETUP` (a config file's `-Y` list,
     one without rows included), `APP_COMMAND_QUEUE` (a running session, a channel map imported into a `-Y` scan

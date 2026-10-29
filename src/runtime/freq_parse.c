@@ -7,29 +7,42 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
+#include "freq_parse_internal.h"
 
-static double
-freq_suffix_factor(char* buf) {
+/* Strips a K, M or G suffix from buf and returns the decimal places it shifts the number by (9, 6, 3, or 0 without
+   one); -1 for an empty buf. */
+static int
+freq_suffix_places(char* buf) {
     size_t len = strlen(buf);
     if (len == 0) {
-        return 0.0;
+        return -1;
     }
 
     char last = buf[len - 1];
     if (last == 'g' || last == 'G') {
         buf[len - 1] = '\0';
-        return 1e9;
+        return 9;
     }
     if (last == 'm' || last == 'M') {
         buf[len - 1] = '\0';
-        return 1e6;
+        return 6;
     }
     if (last == 'k' || last == 'K') {
         buf[len - 1] = '\0';
-        return 1e3;
+        return 3;
     }
 
-    return 1.0;
+    return 0;
+}
+
+static double
+freq_places_factor(int places) {
+    switch (places) {
+        case 9: return 1e9;
+        case 6: return 1e6;
+        case 3: return 1e3;
+        default: return 1.0;
+    }
 }
 
 static int
@@ -55,9 +68,15 @@ dsd_parse_freq_hz(const char* s) {
     }
     DSD_SNPRINTF(buf, sizeof buf, "%s", s);
     buf[sizeof buf - 1] = '\0';
-    double factor = freq_suffix_factor(buf);
-    if (factor <= 0.0) {
+    const int places = freq_suffix_places(buf);
+    if (places < 0) {
         return 0;
+    }
+    /* Plain decimal text rounds exactly: binary64 cannot hold the half-Hz ceiling's neighbours ("4294.9672955M" scales
+       to 4294967295.4999995). Signs, exponents, hex and inf/nan keep the strtod() path below. */
+    uint32_t exact = 0;
+    if (dsd_freq_decimal_round_hz(buf, strlen(buf), (unsigned)places, &exact)) {
+        return exact;
     }
 
     double val = 0.0;
@@ -65,7 +84,7 @@ dsd_parse_freq_hz(const char* s) {
         return 0;
     }
 
-    double hz = val * factor;
+    double hz = val * freq_places_factor(places);
     /* Written so NaN fails the test; the upper bound is the largest value that rounds to UINT32_MAX. */
     if (!(hz >= 0.5 && hz < 4294967295.5)) {
         return 0;
@@ -263,6 +282,45 @@ freq_entry_accumulate(const char* text, const freq_entry_number* num, size_t pla
     }
     *value = v;
     return DSD_FREQ_ENTRY_OK;
+}
+
+/* The number in whole Hz, scaled by 10^places and rounded half up on the first fraction digit past them (later digits
+   cannot change a half-up decision); 0 when that is above UINT32_MAX. */
+static uint32_t
+freq_decimal_round(const char* text, const freq_entry_number* num, size_t places) {
+    uint32_t v = 0;
+    for (size_t i = num->int_begin; i < num->int_end; i++) {
+        if (!freq_entry_push_digit(&v, (uint32_t)(text[i] - '0'))) {
+            return 0;
+        }
+    }
+    for (size_t k = 0; k < places; k++) {
+        const size_t i = num->frac_begin + k;
+        if (!freq_entry_push_digit(&v, i < num->frac_end ? (uint32_t)(text[i] - '0') : 0u)) {
+            return 0;
+        }
+    }
+    const size_t next = num->frac_begin + places;
+    if (next < num->frac_end && text[next] >= '5') {
+        if (v == UINT32_MAX) {
+            return 0;
+        }
+        v++;
+    }
+    return v;
+}
+
+int
+dsd_freq_decimal_round_hz(const char* text, size_t len, unsigned places, uint32_t* out_hz) {
+    if (text == NULL || out_hz == NULL || places > 9u) {
+        return 0;
+    }
+    freq_entry_number num = {0, 0, 0, 0, 0};
+    if (!freq_entry_scan_number(text, 0, len, &num) || num.next != len) {
+        return 0;
+    }
+    *out_hz = freq_decimal_round(text, &num, places);
+    return 1;
 }
 
 int

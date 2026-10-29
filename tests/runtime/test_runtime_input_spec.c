@@ -526,6 +526,8 @@ test_spec_frequency_rounds_to_the_hz(void) {
             {"0.128155625G", 128155625U},
             {"4294967295", 4294967295U},
             {"4294967296", 0U},
+            {"4294967295.4999999", 4294967295U},
+            {"4294967295.5", 0U},
             {"-5M", 0U},
             {"nanM", 0U},
             {"junk", 0U},
@@ -604,16 +606,19 @@ test_spec_monitor_volume_range(void) {
 
 /* Issue #670 B2: a number with a K, M or G suffix in the frequency place is a frequency, never device args. One out of
    range (refused, as 5.8G is above 4294967295 Hz, or under the 1 MHz floor, as 500k is) fails normalization with a
-   message naming it, where it once fell back to opaque args and opened the device with "5.8G" as its arguments. */
+   message naming it, where it once fell back to opaque args and opened the device with "5.8G" as its arguments. The
+   number is anything strtod() reads, as the frequency parser does: a sign or an exponent is still a frequency. */
 static int
 test_soapy_suffixed_frequency_out_of_range(void) {
     static const struct {
         const char* spec;
         const char* tok;
     } cases[] = {
-        {"soapy:5.8G", "5.8G"}, {"soapy:driver=x:5.8G", "5.8G"},
-        {"soapy:500k", "500k"}, {"soapy:driver=x:500k:30", "500k"},
-        {"soapy:0.9M", "0.9M"}, {"soapy:4294.9672956M", "4294.9672956M"},
+        {"soapy:5.8G", "5.8G"},   {"soapy:driver=x:5.8G", "5.8G"},
+        {"soapy:500k", "500k"},   {"soapy:driver=x:500k:30", "500k"},
+        {"soapy:0.9M", "0.9M"},   {"soapy:4294.9672956M", "4294.9672956M"},
+        {"soapy:+5.8G", "+5.8G"}, {"soapy:driver=hackrf:5.8e0G", "5.8e0G"},
+        {"soapy:-5M", "-5M"},
     };
 
     int rc = 0;
@@ -652,6 +657,7 @@ test_soapy_suffixed_frequency_out_of_range(void) {
     } ok[] = {
         {"soapy:1M", 1000000U},
         {"soapy:driver=x:4294.967295M", 4294967295U},
+        {"soapy:driver=x:+851.375M", 851375000U},
     };
 
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) {
