@@ -53,6 +53,17 @@ RecordingStatus::apply(const dsd_app_recording_view& view) {
     if (same_view(view, m_view)) {
         return;
     }
+    if (m_followUpOf != 0) {
+        // Once its outcome was read, the follow-up is over: another command, or the same one pending again (sent by
+        // something else, such as the TCP API), reads as itself.
+        if (view.command_id != m_followUpId
+            || (m_followUpSettled && view.command_state == DSD_APP_RECORDING_COMMAND_PENDING)) {
+            m_followUpId = 0;
+            m_followUpOf = 0;
+        } else if (view.command_state != DSD_APP_RECORDING_COMMAND_PENDING) {
+            m_followUpSettled = true;
+        }
+    }
     m_view = view;
     Q_EMIT changed();
 }
@@ -85,6 +96,7 @@ void
 RecordingStatus::noteFollowUp(int noted, int followUp) {
     m_followUpId = followUp;
     m_followUpOf = noted;
+    m_followUpSettled = false;
 }
 
 void

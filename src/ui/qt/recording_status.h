@@ -66,7 +66,8 @@ class RecordingStatus : public QObject {
     void noteSent();
     /** @brief After the switch @p noted it sent and noted, CommandBridge sent @p followUp best effort: the readings keep
      * describing the switch. The queue applies in order, so while the view names the follow-up the switch is applying or
-     * done, and the follow-up's outcome reads as the switch's. The next noteSent() or session edge ends it. */
+     * done, and the follow-up's outcome reads as the switch's. The next noteSent() or session edge ends it, and so does
+     * the view naming another command, or the follow-up's command pending again after its outcome was read. */
     void noteFollowUp(int noted, int followUp);
 
     /** @brief Whether a session is on (Starting, Running or Stopping). A start or an end clears the refusal and the
@@ -125,6 +126,8 @@ class RecordingStatus : public QObject {
     /* noteFollowUp(): the command id the view names for the follow-up, and the switch's id it reads as (0: none). */
     int m_followUpId = 0;
     int m_followUpOf = 0;
+    /* The follow-up's outcome was read: the same command pending again was sent by something else. */
+    bool m_followUpSettled = false;
 };
 
 } // namespace dsd_qt

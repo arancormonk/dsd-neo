@@ -331,6 +331,15 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
                                               && opts->wav_out_f == nullptr && opts->wav_out_fR == nullptr
                                               && !status.perCall() && !status.unknownOnly());
     expect("and shows the stop applied", status.commandState() == "applied" && status.command() == "stop");
+
+    // Unknown-only sent later by something else (the TCP API, say) reads as itself, not as the stop.
+    expect("a later unknown-only is queued",
+           dsd_app_command_set_i32(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET, 1) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    status.refresh();
+    expect("and shows as itself", status.commandState() == "pending" && status.command() == "unknownOnly");
+    expect("it applies", live.drain() == 1);
+    status.refresh();
+    expect("and reads as itself once applied", status.command() == "unknownOnly");
 }
 
 /* A session started with Record calls on, whose first live switch is unknown-only (D8): the status shows it applying,
