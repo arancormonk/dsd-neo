@@ -124,8 +124,8 @@ dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     }
     // Under trunk scan the coordinator knows the parked target's protocol, and that beats sync
     // history: a target that has not synced yet reads as P25 by synctype alone, because
-    // DSD_SYNC_P25P1_POS is 0.
-    if (dsd_engine_trunk_scan_target_count(state) > 0) {
+    // DSD_SYNC_P25P1_POS is 0. A paused scan parks no target: the session's own evidence decides.
+    if (dsd_trunk_scan_owns_tuner(opts, state) && dsd_engine_trunk_scan_target_count(state) > 0) {
         return 0;
     }
     if (DSD_SYNC_IS_TETRA(state->synctype) || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
@@ -323,7 +323,8 @@ static rtl_stream_retune_gain_profile
 dsd_engine_trunk_scan_gain_profile(const dsd_opts* opts, const dsd_state* state) {
     rtl_stream_retune_gain_profile profile;
     DSD_MEMSET(&profile, 0, sizeof(profile));
-    if (!opts || !state || opts->trunk_scan_enabled != 1 || dsd_engine_trunk_scan_target_count(state) == 0) {
+    /* A paused scan sets no gain per retune: the configured gain is in force, as outside a scan (issue #671). */
+    if (!dsd_trunk_scan_owns_tuner(opts, state) || dsd_engine_trunk_scan_target_count(state) == 0) {
         return profile;
     }
 

@@ -2091,7 +2091,7 @@ no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
    state machine, under the tick guard the decode loop runs it under (dsd_engine_tetra_trunk_tick_locked()). */
 static int
 no_carrier_tick_tetra_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
-    if (opts->frame_tetra != 1 || opts->trunk_scan_enabled == 1 || opts->trunk_enable != 1
+    if (opts->frame_tetra != 1 || dsd_trunk_scan_owns_tuner(opts, state) || opts->trunk_enable != 1
         || !tetra_sm_owns_return(state)) {
         return 0;
     }
@@ -2616,11 +2616,13 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
 }
 
 /* A typed -Y row's tune that a resume still waits on is the scan's, though the scan is not published as running until
-   it lands (issue #671): its failure is the resume's to settle. */
+   it lands (issue #671): its failure is the resume's to settle. A paused trunk scan owns no tune: a park it let go of
+   that then fails is retired here, so it cannot withhold the manual session's frames. */
 static int
 engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
     return opts
-           && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1 || dsd_engine_signal_search_active(state)
+           && (opts->trunk_enable == 1 || dsd_trunk_scan_owns_tuner(opts, state)
+               || dsd_engine_signal_search_active(state)
                || ((opts->scanner_mode == 1 || state->lcn_scan_resume_pending) && dsd_channel_modes_present(state)));
 }
 
@@ -2870,8 +2872,9 @@ carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
    its hangtime would then return to the old control channel. */
 static void
 carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
-    /* Trunk scan hands its carriers back itself. */
-    const int release_machines = carrier_boundary_takes_guard(kind) && opts->trunk_scan_enabled != 1;
+    /* Trunk scan hands its carriers back itself; a paused one has handed its target's back, and the session's own
+       machines are the ones in force (issue #671). */
+    const int release_machines = carrier_boundary_takes_guard(kind) && !dsd_trunk_scan_owns_tuner(opts, state);
     int p25_tuned = 0;
     int dmr_tuned = 0;
     int tetra_owned = 0;
@@ -3262,7 +3265,7 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
-    const int preserve_scan_state = opts && opts->trunk_scan_enabled == 1;
+    const int preserve_scan_state = dsd_trunk_scan_owns_tuner(opts, state);
     no_carrier_reset_decode_state(state, preserve_scan_state);
     no_carrier_reset_non_trunk_fields_if_needed(opts, state);
     no_carrier_reset_last_call_display(state);
@@ -3433,7 +3436,7 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
    startup hunt it may no longer run. */
 static void
 dsd_engine_cold_start_tick_locked(dsd_opts* opts, dsd_state* state) {
-    if (opts->trunk_scan_enabled == 1) {
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
         return;
     }
     p25_sm_cold_start_tick_locked(p25_sm_get_ctx(), opts, state);
@@ -3662,10 +3665,10 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
     }
     state->input_boundary = 0;
     no_carrier_finalize_canonical_calls(opts, state, 1);
-    dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+    dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
-    if (opts->trunk_scan_enabled != 1) {
+    if (!dsd_trunk_scan_owns_tuner(opts, state)) {
         /* This pass's startup tick ran with the switch pending and unarmed both windows: arm them on the new input now,
            before a silent one's read waits for a timer nothing started (issue #703). */
         p25_sm_tick_guard_enter();
@@ -3676,7 +3679,7 @@ dsd_engine_end_input_boundary(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state) {
-    if (opts && state && opts->frame_tetra == 1 && opts->trunk_scan_enabled != 1) {
+    if (opts && state && opts->frame_tetra == 1 && !dsd_trunk_scan_owns_tuner(opts, state)) {
         tetra_sm_tick(opts, state);
     }
 }
@@ -3716,7 +3719,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         p25_sm_try_tick(opts, state);
-        if (opts->trunk_scan_enabled != 1 && p25_sm_tick_guard_try_enter()) {
+        if (!dsd_trunk_scan_owns_tuner(opts, state) && p25_sm_tick_guard_try_enter()) {
             dsd_engine_cold_start_tick_locked(opts, state);
             dsd_engine_tetra_trunk_tick_locked(opts, state);
             p25_sm_tick_guard_leave();
@@ -3959,8 +3962,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_exitflag_store(1);
 
     // Under trunk scan each target owns a channel map and a ledger, so the coordinator logs one
-    // summary per target from its snapshots as it shuts down.
-    if (opts->trunk_scan_enabled != 1) {
+    // summary per target from its snapshots as it shuts down. A paused scan's targets are in their
+    // snapshots too, and the live ledger is the manual session's own (issue #671).
+    if (!dsd_trunk_scan_owns_tuner(opts, state)) {
         nxdn_trunk_diag_log_summary(opts, state);
     }
     dsd_engine_cleanup_codec2(state);

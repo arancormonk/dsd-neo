@@ -84,8 +84,8 @@ nxdn_cc_hunt_get(dsd_state* state) {
 
 /* Trunking that may own the control channel here: on, outside -Y and trunk scan, and off any voice channel. */
 static int
-nxdn_cc_hunt_on_control_side(const dsd_opts* opts) {
-    return opts->trunk_enable == 1 && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1
+nxdn_cc_hunt_on_control_side(const dsd_opts* opts, const dsd_state* state) {
+    return opts->trunk_enable == 1 && opts->scanner_mode != 1 && !dsd_trunk_scan_owns_tuner(opts, state)
            && opts->trunk_is_tuned == 0;
 }
 
@@ -430,7 +430,7 @@ nxdn_cc_hunt_tick_locked(dsd_opts* opts, dsd_state* state) {
 
 void
 nxdn_cc_hunt_note_control(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || !nxdn_cc_hunt_on_control_side(opts)) {
+    if (!opts || !state || !nxdn_cc_hunt_on_control_side(opts, state)) {
         return;
     }
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_get(state);
@@ -468,7 +468,7 @@ nxdn_cc_hunt_note_type_d(const dsd_opts* opts, dsd_state* state) {
     /* On a voice channel a busy-repeater message sent the receiver to as well: a Type-D site needs no control channel.
        The SCCH's own run of short CRCs must confirm it: a confirmation left from a CAC or another carrier must not
        turn a Type-C session's recovery off on one noise frame. */
-    if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1
+    if (!opts || !state || opts->trunk_enable != 1 || opts->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(opts, state)
         || !nxdn_confirm_scch_confirmed(state)) {
         return;
     }

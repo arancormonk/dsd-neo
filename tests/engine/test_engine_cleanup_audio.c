@@ -10,15 +10,18 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../../src/platform/audio_stream_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -96,6 +99,52 @@ test_cleanup_forgets_received_tone(dsd_opts* opts, dsd_state* state) {
     rc |= expect_true("rx-tone-generation-moves-on-cleanup", state->analog_rx.generation != generation);
     rc |= expect_true("rx-tone-session-freed-by-cleanup",
                       dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) == NULL);
+    return rc;
+}
+
+/*
+ * Issue #671 (B25): the exit summary of NXDN channels missing from the channel map. A running trunk scan logs one per
+ * target from the targets' own ledgers as it shuts down, so the engine skips the live one; a paused scan's live ledger
+ * is the manual session's own, which no target holds, so the engine logs it.
+ */
+static int
+cleanup_logs_session_nxdn_summary(int paused, int* out_logged) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->trunk_scan_enabled = 1;
+    state->trunk_scan_paused = paused ? 1U : 0U;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "manual-session.csv");
+    (void)nxdn_trunk_diag_note_missing_channel(state, 9);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "cleanupnxdn") != 0) {
+        freeState(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    dsd_engine_cleanup(opts, state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    const int read_rc = dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    *out_logged = read_rc == 0 && strstr(log, "missing frequency mapping in chan_csv (manual-session.csv)") != NULL;
+    freeState(state);
+    free(state);
+    free(opts);
+    return read_rc != 0;
+}
+
+static int
+test_cleanup_nxdn_summary_under_trunk_scan(void) {
+    int rc = 0;
+    int logged = -1;
+    rc |= cleanup_logs_session_nxdn_summary(0, &logged);
+    rc |= expect_true("running-trunk-scan-leaves-the-summary-to-its-targets", logged == 0);
+    logged = -1;
+    rc |= cleanup_logs_session_nxdn_summary(1, &logged);
+    rc |= expect_true("paused-trunk-scan-logs-the-manual-session-summary", logged == 1);
     return rc;
 }
 
@@ -178,6 +227,9 @@ main(void) {
     }
     rc |= test_cleanup_forgets_received_tone(opts, state);
     free_test_runtime(opts, state);
+
+    // Test 5: the NXDN exit summary of a paused trunk scan's manual session (issue #671, B25).
+    rc |= test_cleanup_nxdn_summary_under_trunk_scan();
 
     if (rc == 0) {
         printf("ENGINE_CLEANUP_AUDIO: OK\n");

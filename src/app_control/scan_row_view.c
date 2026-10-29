@@ -16,6 +16,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -56,9 +57,10 @@ dsd_app_scan_row_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_
         return -1;
     }
     const int scanner = (int)state->scan_row_scanner;
-    /* The row belongs to the scanner running now: the trunk-scan coordinator, or the -Y scan. */
+    /* The row belongs to the scanner running now: the trunk-scan coordinator, or the -Y scan. A paused trunk scan has
+       no row on air (issue #671). */
     const int running =
-        (scanner == DSD_SCAN_ROW_SCANNER_TRUNK_SCAN && opts->trunk_scan_enabled == 1)
+        (scanner == DSD_SCAN_ROW_SCANNER_TRUNK_SCAN && dsd_trunk_scan_owns_tuner(opts, state))
         || (scanner == DSD_SCAN_ROW_SCANNER_CHANNEL_SCAN && opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1);
     if (!running || state->scan_row_session == 0U || state->scan_row_index < 0) {
         return 0;

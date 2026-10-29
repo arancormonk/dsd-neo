@@ -7,7 +7,8 @@
  * Engine-private pieces of the untyped -Y step (a list without modes; issue #671), which the timed step and a resume
  * share: finding the next row, entering it, and settling a row whose RTL tune timed out. A row commits (the cursor past
  * it, its keys, the analog reset, fresh scan clocks) only once its tune has landed, after the carrier boundary ends the
- * calls of the row left.
+ * calls of the row left. Also the pieces the -Y scan shares with the trunk-scan coordinator: the carrier forget and
+ * a resume's failure notice.
  */
 
 #ifndef DSD_NEO_SRC_ENGINE_SCAN_STEP_UNTYPED_H
@@ -66,5 +67,16 @@ enum {
    began nothing to undo: only the flags go back, so a transmission heard on the manual frequency while the row was
    outstanding goes on as one call. Decoder thread. */
 void dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long freq, int why);
+
+/* What a scan's move or release forgets of the carrier left where no carrier boundary runs (a trunk-scan target switch,
+   a pause in place; issue #575, #671): the decoders' evidence and assemblies (dsd_engine_forget_carrier_decoding()),
+   the received identity, the DMR RAS evidence, and the bursts buffered from it (dsd_state_note_carrier_change()).
+   Shared by both scanners. Decoder thread. */
+void dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state);
+
+/* A resume that never landed, on the status line every frontend shows, for as long as a tune's failure stays there:
+   @p freq names the row or target, @p why (DSD_SCAN_RESUME_FAILED_*) says whether its tune failed, was deferred, or its
+   settings could not be set up around a tune that may have landed. Shared by both scanners (issue #671). */
+void dsd_engine_scan_toast_resume_failed(dsd_state* state, long freq, int why);
 
 #endif /* DSD_NEO_SRC_ENGINE_SCAN_STEP_UNTYPED_H */

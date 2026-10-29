@@ -57,6 +57,16 @@ main(void) {
                  "Tuner autogain [On] (suspended: gain 10)",
                  "Default tuner autogain -> On; manual gain 10 suspends it");
 
+    /* A paused scan (issue #671): no target on air, so nothing overrides the configured gain, which the controls still
+       edit on the retained coordinator. */
+    state->trunk_scan_paused = 1U;
+    opts->rtl_gain_value = 30;
+    assert(dsd_app_rtl_gain_view_get(opts, state, &view) == 0);
+    assert(view.configured_gain == 30 && view.effective_gain == 30 && !view.row_override && view.scan_configured);
+    expect_texts(&view, 0, "Gain... [30]", "Applied: RTL gain -> 30", "Tuner autogain [On] (suspended: gain 30)",
+                 "Default tuner autogain -> On; manual gain 30 suspends it");
+    state->trunk_scan_paused = 0U;
+
     /* An inheriting target under AGC: plain text, and the configured autogain is the one in force. */
     state->trunk_scan_configured_gain = 0;
     state->trunk_scan_gain_override = 0U;

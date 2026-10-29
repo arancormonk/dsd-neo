@@ -1078,6 +1078,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->operator_tuned = 0;
     state->lcn_avoid_count = 0;
     state->trunk_scan_hold = 0;
+    state->trunk_scan_paused = 0;
     state->trunk_scan_active_avoided = 0;
     state->trunk_scan_avoided_count = 0;
     state->trunk_scan_configured_gain = 0;

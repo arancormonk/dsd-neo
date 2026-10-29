@@ -159,7 +159,7 @@ nxdn_trunk_diag_chan_map_path(const dsd_opts* opts, const dsd_state* state) {
     if (opts->chan_in_file[0] != '\0') {
         return opts->chan_in_file;
     }
-    if (opts->trunk_scan_enabled != 1) {
+    if (!dsd_trunk_scan_owns_tuner(opts, state)) {
         return NULL;
     }
 

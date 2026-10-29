@@ -16,7 +16,9 @@
 
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -49,6 +51,7 @@ enum {
 };
 
 enum {
+    DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,      /**< The scan is paused (issue #671): nothing to hold, avoid or advance */
     DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
     DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
     DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, or nothing to do */
@@ -73,6 +76,21 @@ typedef struct {
     int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
+
+/**
+ * @brief Whether the --trunk-scan coordinator owns the tuner now: trunk scan is configured
+ * (dsd_opts::trunk_scan_enabled) and not paused (dsd_state::trunk_scan_paused, issue #671).
+ *
+ * The running predicate. A paused scan keeps its coordinator (its targets, snapshots, avoids, session edits and hold),
+ * so what a retained scan forbids (a global channel map or band plan, an input switch, a Signal search, -Y) still reads
+ * the configured flag; whatever acts for the scan's ownership of the receiver now (its ticks and yields, its tuning
+ * ledger, its state machines, its rigctl and receive classing) reads this. The coordinator writes the flag under the
+ * P25 SM tick guard, on the decoder thread. A NULL @p state reads as not paused.
+ */
+static inline int
+dsd_trunk_scan_owns_tuner(const dsd_opts* opts, const dsd_state* state) {
+    return opts && opts->trunk_scan_enabled == 1 && !(state && state->trunk_scan_paused);
+}
 
 /** Install a copy of @p hooks; NULL clears every slot. */
 void dsd_trunk_scan_hooks_set(const dsd_trunk_scan_hooks* hooks);

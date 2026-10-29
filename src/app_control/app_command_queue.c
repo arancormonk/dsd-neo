@@ -2090,8 +2090,9 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     /* The third owner, and the one a release cannot clear (see apply_tuner_release):
      * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
      * its own, so a tap accepted under it is undone within a dwell -- and it is the
-     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. */
-    if (opts->trunk_scan_enabled) {
+     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. A paused scan
+     * owns nothing: the operator holds the tuner (issue #671). */
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
         ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
         return UI_CMD_APPLY_FAILED;
     }
@@ -2451,7 +2452,7 @@ ui_cmd_handle_hangtime_set(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     double s = 0.0;
     if (state && ui_cmd_parse_double_payload(c, &s)) {
         svc_set_hangtime(opts, s);
-        if (opts->trunk_scan_enabled != 1) {
+        if (!dsd_trunk_scan_owns_tuner(opts, state)) {
             // A followed DMR call's hangtime is the machine's (trunk-scan targets keep their own).
             dmr_sm_note_hangtime(dmr_sm_get_ctx(), opts);
         }
@@ -3271,7 +3272,7 @@ hand_dmr_sm_over(dsd_opts* opts, dsd_state* state, int only_followed, long cc_fr
     if (only_followed && dmr_sm_get_state(dmr) != DMR_SM_TUNED) {
         return;
     }
-    if (opts->trunk_scan_enabled == 1) {
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
         /* The parked target's own context, which the coordinator restarts at each visit: an accepted return to its
            control channel restarts acquisition there, as the target's own release would. */
         // A park the coordinator still tracks keeps its request and deadline: the acquisition it starts follows.
@@ -5445,7 +5446,7 @@ ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, 
     int configured_before_hz = -1;
     if (*out_changed) {
         reset_call_tracking(opts, state, 1);
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         const int width_before = ui_analog_width_before(before, opts->analog_demod);
         if (width_before >= 0 && dsd_opts_analog_width_hz(opts) != width_before) {
             configured_before_hz = width_before;
@@ -5602,7 +5603,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
         } else {
             (void)svc_publish_symbol_profile(opts, state, profile);
         }
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
     if (reverted) {
@@ -5977,7 +5978,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */
     if (!dsd_scan_mode_updating(state)) {
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
     /* After the outgoing calls ended and froze their identity. */
@@ -6168,7 +6169,7 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;
     if (!dsd_scan_mode_updating(state)) {
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
 }

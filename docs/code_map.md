@@ -279,6 +279,33 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   coordinator's target-list path, idle dwell and activity hold, and the global channel map and band plan (which the
   scan refuses at startup), as they were and reports restart-required (`cfg_restore_lifecycle_owned()` in
   app_control).
+- Pause and resume (issue #671): `dsd_engine_trunk_scan_pause_locked()` / `_resume_locked()` (and their `_ex_` forms,
+  whose `dsd_trunk_scan_leave_report` carries the scope leave's monitor request and whether the target left ran its
+  own tuner gain, for app-control's #578 record and stream reopen), with the caller holding the P25 SM tick guard,
+  which nothing inside takes. A pause keeps the coordinator (targets, snapshots, avoids, session edits, the operator
+  hold) and `coord->active` as the resume target. Its order is the contract: requests in flight captured (the DMR
+  release forgets its own), the forced advance's release (`trunk_scan_release_active_carrier()`: a Phase 2 superframe
+  delivered, calls ended under the target's name, keys and policy), the requests disowned (never completed), the
+  target saved idle, the paused publication (`trunk_scan_publish_paused()`: `dsd_state::trunk_scan_paused`, no target
+  or row named, the configured gain, autogain and trunking, counts and hold kept), an empty state over the target's
+  (`coord->empty_snapshot`, never the rollback's `scratch_snapshot`) before the scope leave puts the configured timing
+  back, then the scope leave, the configured gain, trunking off and the configured keys, policy and maps
+  (`trunk_scan_leave_target_opts()`, never the scan-start modulation, B7). An in-place pause then forgets the
+  carrier's decoding (`dsd_engine_scan_forget_carrier()`, the helper the -Y pause and a target switch share); a pause
+  for a tune leaves that to the caller's TUNE boundary. While paused every coordinator entry point is dark: no tick,
+  yield, timing, conventional hold or class answer; the P25/DMR context and channel-map hooks NULL; controls answer
+  `DSD_TRUNK_SCAN_CONTROL_PAUSED`; live decryption STALE; target edits stored for the next visit; the configured gain
+  in force; shutdown saves no live state into the target; the band-plan export reads the paused target's snapshot; and
+  `dsd_engine_scan_hears_tones()` answers for the session in force (B26). A resume ends the manual session's calls
+  under no name, saves it as the rollback, recaptures the configured modulation, and re-parks the target as a revisit
+  (`trunk_scan_switch_to(..., save_current 0)`: fresh clocks, the hold kept); a park in flight is the resume pending (a
+  second resume answers 1 and does nothing). A resume that cannot park (`trunk_scan_resume_rollback()`) is paused
+  again first, internally and as published, then drops what it began: a preparation failure its scopes; a refused
+  retune the target's state (the manual session's and its received identity back first), options, keys, policy and
+  maps, with the scope leave's front-end request last; the status line says why. Everything outside the coordinator
+  that acts for the scan's ownership of the receiver reads the running predicate `dsd_trunk_scan_owns_tuner()`
+  (runtime hooks below); what a retained scan forbids (global maps, input switch, Signal search, -Y) keeps reading
+  `trunk_scan_enabled`.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
@@ -2597,7 +2624,7 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 **Available hooks:**
 
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
-  context, or NULL when trunk scan is not installed (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
+  context, or NULL when trunk scan is not installed or is paused (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
@@ -2613,8 +2640,13 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
   target snapshot, so a user purge is not undone by the next rotation (`src/app_control/actions/actions_trunk.c`)
 - `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
-  active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed
-  (`src/app_control/app_command_queue.c`)
+  active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed and "paused" while
+  it is paused (`src/app_control/app_command_queue.c`)
+- `dsd_trunk_scan_owns_tuner()` (static inline, issue #671) — the running predicate: `trunk_scan_enabled` and not
+  `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary decisions, the frame-sync yields and
+  decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl request classing, the P25p1 trial,
+  per-target map presence, the channel label and the app-control row, timing and gain views read it; a configured
+  setting a retained scan forbids reads `trunk_scan_enabled`.
 
 Recovery ownership lives beside these hooks. `dsd_trunk_p25_recovery_allowed()` / `dsd_trunk_dmr_recovery_allowed()`
 admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none yet, a frame set that decodes only that

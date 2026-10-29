@@ -124,7 +124,90 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
 int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);
 
 int dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz);
+/**
+ * @brief Detach the coordinator and put back the session's configured trunking and gain.
+ *
+ * A paused scan (issue #671) saves no live state into its target: the target was saved as it paused, and the live
+ * state is the manual session's. The detach then runs on a session already detached from every target scope.
+ */
 void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);
+
+/** What starts a trunk-scan pause (issue #671). */
+typedef enum {
+    /** An accepted manual tune: the caller runs the TUNE carrier boundary after the pause, which forgets the carrier
+     *  left (codes, decoding, received identity). */
+    DSD_TRUNK_SCAN_PAUSE_TUNE = 0,
+    /** No tune follows (`y`, a tuner release): the pause forgets the carrier's decoding itself, as a target switch
+     *  does, so nothing decoded under the target's policy goes on into the manual session. */
+    DSD_TRUNK_SCAN_PAUSE_IN_PLACE = 1,
+} dsd_trunk_scan_pause_kind;
+
+/**
+ * @brief What a pause, or a resume that left the scan paused, asked of the receiver, for the caller to settle.
+ *
+ * The scope leave inside them asks the RTL front end back onto the configured receive profile, as a -Y stop does:
+ * @p monitor_request is that request's result (1 queued, -1 refused at once, 0 none made), which app-control records
+ * and reconciles for the decoder as it does for a -Y leave (issue #578). @p restart_gain: the target left ran a tuner
+ * gain of its own other than the configured one, which the device keeps until the stream reopens with the configured
+ * gain (now dsd_opts::rtl_gain_value) and autogain: a retune carries no gain profile outside a running scan.
+ */
+typedef struct {
+    int monitor_request;
+    int restart_gain;
+} dsd_trunk_scan_leave_report;
+
+/**
+ * @brief Pause the running trunk scan (issue #671): the coordinator stays, with its targets, snapshots, avoids, session
+ * edits and operator hold, and the receiver goes to the operator.
+ *
+ * In order: the target's carrier is released (its calls end and commit under its own name, keys and policy; a P25
+ * Phase 2 superframe in progress is delivered first); every tune request in flight for it is let go of
+ * (dsd_trunk_tuning_request_disown(), never completed), captured before the release; the target is saved, idle; the
+ * paused publication goes up (dsd_state::trunk_scan_paused, no target named, the configured gain, autogain and
+ * trunking and the hold kept); an empty decoder state replaces the target's; the scopes are left (configured decoder,
+ * receive profile and rigctl passband); the configured gain, trunking off, the configured keys, policy and maps. With
+ * DSD_TRUNK_SCAN_PAUSE_IN_PLACE the carrier's decoding is then forgotten. While paused nothing the coordinator owns
+ * acts (dsd_trunk_scan_owns_tuner() is 0): no tick, yield, hold, state machine, live decryption or control; target
+ * edits are stored for the next visit.
+ *
+ * The caller holds the P25 SM tick guard, and nothing here takes it. A pending manual-tune record names no scan
+ * (dsd_engine_manual_tune_supersede() is the tune's business, not the pause's). The app-control wrapper brackets this
+ * call with its monitor-request record (svc_leave_channel_scan()'s): it reads whether a request ran before, calls
+ * this, then records @p out->monitor_request, and reopens the stream for the configured gain when @p
+ * out->restart_gain.
+ *
+ * @return 0 when the scan is paused (already paused included, nothing done, @p out zeroed), -1 when no trunk scan runs.
+ */
+int dsd_engine_trunk_scan_pause_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                          dsd_trunk_scan_leave_report* out);
+/** @brief dsd_engine_trunk_scan_pause_ex_locked() without the report. */
+int dsd_engine_trunk_scan_pause_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind);
+
+/**
+ * @brief Resume a paused trunk scan (issue #671) on the target it left.
+ *
+ * The manual session's calls end first, under no target's name; then the target is parked again as a revisit: scopes
+ * begun around the session as it is now, its snapshot from the pause restored, its keys, policy, maps, options and
+ * trunking installed, fresh visit and acquisition clocks. The operator hold stays.
+ *
+ * A resume that cannot park leaves a coherent pause, the paused flags put back before anything is torn down: a
+ * preparation failure (no memory for the scopes or keys) drops the scopes it began; a refused retune puts the manual
+ * session's state and received identity back, then leaves the target's options, keys, policy and maps, then the
+ * scopes, whose front-end request (@p out->monitor_request, recorded as for a pause) comes last. The status line says
+ * why. A later resume tries again at once.
+ *
+ * The caller holds the P25 SM tick guard, and nothing here takes it.
+ *
+ * @return 0 when the scan runs again (or was running), 1 when it runs with the park still in flight (a second resume
+ * then changes nothing), -1 when no trunk scan runs, -2 when the preparation failed, -3 when the retune was refused.
+ */
+int dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out);
+/** @brief dsd_engine_trunk_scan_resume_ex_locked() without the report. */
+int dsd_engine_trunk_scan_resume_locked(dsd_opts* opts, dsd_state* state);
+
+/** @brief Whether a trunk-scan coordinator exists and is paused (issue #671). */
+int dsd_engine_trunk_scan_paused(const dsd_state* state);
+
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
 /** Maintain the visit clock and report expiry without tuning or releasing the call.
  * Decoder thread only; the caller must hold the SM guard. Used by long protocol loops
@@ -138,9 +221,10 @@ int dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state*
  * @brief Apply an operator scan control (a dsd_trunk_scan_control_op from
  * runtime/trunk_scan_hooks.h) to the parked target list.
  *
- * Hold pauses the idle dwell on the active target without stopping its state machine;
+ * Hold keeps the idle dwell on the active target from expiring without stopping its state machine;
  * avoid flags the active target for the session and moves on; clear puts every avoided
- * target back; advance moves now. Returns the codes documented beside the op enum.
+ * target back; advance moves now. Returns the codes documented beside the op enum;
+ * DSD_TRUNK_SCAN_CONTROL_PAUSED for every op while the scan is paused (issue #671).
  * Decoder thread only: avoid and advance retune.
  */
 int dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op);
@@ -209,7 +293,7 @@ int dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_sta
  * @brief Whether anything in the session runs received-tone detection, so the configured tone policy can act (#527).
  *
  * Under the trunk-scan coordinator, an nfm-conventional target: every target runs its own type's mode, never the
- * configured one. Otherwise dsd_channel_modes_conventional_hear_tones(): on the conventional -Y scanner with a channel
+ * configured one. A paused coordinator answers for the configured session in force, as below (issue #671). Otherwise dsd_channel_modes_conventional_hear_tones(): on the conventional -Y scanner with a channel
  * map, a row that runs the FM monitor (dsd_channel_modes_hear_tones()); without rows, the configured decode mode is the
  * analog FM monitor (dsd_scan_mode_configured_fm_monitor()). A --trunk-scan session whose coordinator has not started
  * counts as hearing them: its targets are judged when the scan starts. Read-only; 0 when @p opts or @p state is NULL.
@@ -281,7 +365,7 @@ int dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state);
  * @brief Append the parked targets' learned IDEN entries as band-plan rows.
  *
  * Walks every target except the active one (whose tables are live in @p state and are the
- * caller's to collect) and appends each parked snapshot's ready FDMA/TDMA entries through
+ * caller's to collect; a paused scan's active target is walked too, its tables saved at the pause) and appends each parked snapshot's ready FDMA/TDMA entries through
  * dsd_p25_bandplan_append_tables(), which de-duplicates by identifier, table and WACN/SYS.
  * Serves the band-plan export; a session without a coordinator returns @p count unchanged.
  *
@@ -303,7 +387,8 @@ int dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_ba
  * dsd_scan_row_edit_action, with @p value for SET. A width the published DSP rate cannot filter is refused, as it would
  * skip the target at every visit.
  *
- * A parked target runs the edit at once: its scope takes the merged options again (the squelch reaches the demod), and
+ * A parked target runs the edit at once (a paused scan's stores it for the target's next visit, issue #671): its scope
+ * takes the merged options again (the squelch reaches the demod), and
  * @p out says whether the caller must hand the front end the new width (publish_width) or reopen the stream for the
  * new gain (restart_gain), and holds the edit before this one for dsd_engine_trunk_scan_restore_target_edit() should
  * that fail. Any other target runs it from its next visit. Nothing is written to the list or saved.

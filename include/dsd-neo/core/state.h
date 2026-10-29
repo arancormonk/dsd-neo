@@ -2466,8 +2466,13 @@ struct dsd_state {
     uint8_t lcn_scan_paused;
     uint8_t lcn_scan_resume_pending;
     uint8_t operator_tuned;
-    uint16_t lcn_avoid_count;          /**< Avoided -Y rows within lcn_freq_count */
-    uint8_t trunk_scan_hold;           /**< 1 = --trunk-scan dwell paused on the active target */
+    uint16_t lcn_avoid_count; /**< Avoided -Y rows within lcn_freq_count */
+    uint8_t trunk_scan_hold;  /**< 1 = --trunk-scan dwell paused on the active target */
+    /* A --trunk-scan the operator paused (issue #671): the coordinator keeps its targets, snapshots, avoids, session
+     * edits and hold, but no target is on air and nothing it owns tunes or decodes, until a resume re-parks the target
+     * it left (dsd_engine_trunk_scan_pause_locked(), _resume_locked()). dsd_opts::trunk_scan_enabled stays 1 (the
+     * configured setting); dsd_trunk_scan_owns_tuner() is the running predicate. */
+    uint8_t trunk_scan_paused;
     uint8_t trunk_scan_active_avoided; /**< 1 = the parked target is itself avoided (fallback) */
     uint16_t trunk_scan_avoided_count; /**< Avoided --trunk-scan targets */
     /* The tuner gain a --trunk-scan target without its own rtl_gain runs, which the gain controls edit and a save

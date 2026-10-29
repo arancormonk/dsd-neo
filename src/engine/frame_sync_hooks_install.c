@@ -34,7 +34,7 @@ scan_visit_should_yield_from_frame(const dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_signal_search_active(state)) {
         return dsd_engine_signal_search_should_yield(opts, state);
     }
-    if (opts->trunk_scan_enabled == 1) {
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
         return dsd_engine_trunk_scan_visit_expired(opts, state) || dsd_engine_trunk_scan_receive_expired(opts, state);
     }
     if (dsd_engine_trunk_receive_release_due(opts, state)) {
@@ -92,7 +92,7 @@ engine_decoder_ticks_due(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_engine_analog_call_due(state)) {
         return 1;
     }
-    if (!opts || !state || opts->trunk_scan_enabled == 1) {
+    if (!opts || !state || dsd_trunk_scan_owns_tuner(opts, state)) {
         return 0;
     }
     if (!p25_sm_tick_guard_try_enter()) {

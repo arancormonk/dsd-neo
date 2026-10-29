@@ -40,6 +40,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1225,10 +1226,8 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->family_attached = 0;
 }
 
-/* The carrier's decoding a tuner release leaves behind (issue #671): no tune follows a pause in place, so no carrier
-   boundary runs to forget it, as a trunk-scan target switch forgets it. */
-static void
-channel_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
+void
+dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
     dsd_engine_forget_carrier_decoding(opts, state);
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
@@ -1247,7 +1246,7 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
         channel_scan_end_calls(opts, state);
     }
     if (keep && in_place) {
-        channel_scan_forget_carrier(opts, state);
+        dsd_engine_scan_forget_carrier(opts, state);
     }
     if (keep && scan) {
         channel_scan_drop_row(scan);
@@ -1262,7 +1261,9 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     dsd_scan_mode_leave(opts, state);
     int monitor_request = 0;
     if (active) {
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause
+           leaves for the manual session, which no target names (issue #671). */
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
         /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
          * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
@@ -1315,10 +1316,8 @@ channel_scan_toast_resume(dsd_state* state, const char* text) {
     state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
 }
 
-/* A resume's row that never landed: @p freq names it, @p why (DSD_SCAN_RESUME_FAILED_*) says whether its tune failed,
-   was deferred, or its settings could not be set up around a tune that may have landed. */
-static void
-channel_scan_toast_resume_failed(dsd_state* state, long freq, int why) {
+void
+dsd_engine_scan_toast_resume_failed(dsd_state* state, long freq, int why) {
     char mhz[16];
     (void)dsd_freq_hz_mhz_text(freq > 0 && (unsigned long)freq <= UINT32_MAX ? (uint32_t)freq : 0U, mhz, sizeof mhz);
     char text[sizeof state->ui_msg];
@@ -1350,7 +1349,7 @@ dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long fre
         state->lcn_scan_resume_pending = 0U;
         state->operator_tuned = 1U;
     }
-    channel_scan_toast_resume_failed(state, freq, why);
+    dsd_engine_scan_toast_resume_failed(state, freq, why);
 }
 
 /* The row a resume lands on (N2): the first from the kept cursor, wrapping, that a step can land on. A typed list skips

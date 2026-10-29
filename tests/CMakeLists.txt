@@ -5418,6 +5418,32 @@ add_test(
     COMMAND dsd-neo_test_runtime_stream_notice_init_failure
 )
 
+# The -Y pause hook table's lock failing to initialise (issue #671): nothing locked, nothing installed or read.
+add_executable(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    runtime/test_runtime_channel_scan_hooks_init_failure.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/channel_scan_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    PRIVATE
+        dsd_mutex_init=dsd_test_channel_scan_mutex_init
+        dsd_mutex_lock=dsd_test_channel_scan_mutex_lock
+        dsd_mutex_unlock=dsd_test_channel_scan_mutex_unlock
+)
+target_link_libraries(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_CHANNEL_SCAN_HOOKS_INIT_FAILURE
+    COMMAND dsd-neo_test_runtime_channel_scan_hooks_init_failure
+)
+
 add_executable(
     dsd-neo_test_runtime_rtl_stream_io_hooks
     runtime/test_runtime_rtl_stream_io_hooks.c
