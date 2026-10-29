@@ -1377,6 +1377,128 @@ test_root_gone_before_a_delete(void) {
            !QFileInfo::exists(temp) && s.store.unfinishedCount() == 0 && s.store.deletesWaiting() == 0);
 }
 
+/* Whether the owner @p uid's folders read as away in the store's folder list. */
+bool
+folder_away(const RecordingStore& store, const QString& uid) {
+    for (const QVariant& f : store.folders()) {
+        const QVariantMap m = f.toMap();
+        if (m.value("uid").toString() == uid) {
+            return !m.value("available").toBool();
+        }
+    }
+    return false;
+}
+
+/* Issue #708: storage that leaves again as the store reads it back (a USB connection dropping while the root is
+ * listed) is not storage emptied: its empty listing drops nothing, so its recording stays indexed and away, and the
+ * delete that waits for it stays queued and runs once the storage is back for good. */
+void
+test_root_gone_as_it_is_read_again(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000F0-1"), QStringLiteral("a.wav"), 1754705000, 60);
+    s.store.endSession();
+    s.pass();
+    expect("read again: the recording is indexed", s.store.recordingCount() == 1);
+    expect("read again: the storage goes away", QDir().rename(ext, away));
+    s.pass();
+    s.store.deleteRecording(QStringLiteral("00000000000000F0-1"));
+    s.pass();
+    expect("read again: its delete waits", s.store.deletesWaiting() == 1 && folder_away(s.store, kUidA));
+
+    std::atomic<bool> moved{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.endsWith(QLatin1String("/ext/Call recordings")) && !moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+    });
+    expect("read again: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("read again: and leaves as it is listed", moved.load() && !QFileInfo::exists(folder));
+    expect("read again: the recording stays indexed, its delete waiting",
+           s.store.recordingCount() == 1 && s.store.deletesWaiting() == 1);
+    expect("read again: its folder reads as away", folder_away(s.store, kUidA));
+    s.store.setRootReadHookForTest({});
+    expect("read again: the storage is back for good", QDir().rename(away, ext));
+    s.pass();
+    expect("read again: the delete runs", !QFileInfo::exists(folder + QStringLiteral("/a.wav"))
+                                              && s.store.recordingCount() == 0 && s.store.deletesWaiting() == 0);
+}
+
+/* Issue #708: a journal shorter than its cursor is read again from its start; storage that leaves during that read
+ * (after the folder.json, before the journal) drops none of the folder's recordings, which read as away. */
+void
+test_root_gone_as_a_journal_is_read_again(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000F1-1"), QStringLiteral("a.wav"), 1754705000, 60);
+    record(folder, QStringLiteral("00000000000000F1-2"), QStringLiteral("b.wav"), 1754705010, 61);
+    s.store.endSession();
+    s.pass();
+    expect("reread: both recordings are indexed", s.store.recordingCount() == 2);
+    {
+        // Replaced behind the store's back by a shorter journal naming only the first.
+        QFile journal(journal_of(folder));
+        const QByteArray line =
+            publish_line(QStringLiteral("00000000000000F1-1"), QStringLiteral("a.wav"), 1754705000, 60);
+        expect("reread: the journal is replaced",
+               journal.open(QIODevice::WriteOnly | QIODevice::Truncate) && journal.write(line) == line.size());
+    }
+    std::atomic<bool> moved{false};
+    s.store.setFolderLoadHookForTest([&](const QString&) {
+        if (!moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+    });
+    s.pass();
+    expect("reread: the storage went as the folder was read", moved.load() && !QFileInfo::exists(folder));
+    expect("reread: both recordings stay indexed, away", s.store.recordingCount() == 2 && folder_away(s.store, kUidA));
+    s.store.setFolderLoadHookForTest({});
+    expect("reread: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("reread: read again, as the new journal says",
+           s.store.recordingCount() == 1 && !folder_away(s.store, kUidA)
+               && s.store.isIndexedPath(folder + QStringLiteral("/a.wav")));
+}
+
+/* Issue #708: storage that leaves between a journal's new lines and the look at their files is not those files
+ * deleted. The root is marked away and the lines stay unread, so a recording published then is indexed once the
+ * storage is back, even when it is back before the next pass begins. */
+void
+test_root_gone_as_a_journal_is_tailed(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000F2-1"), QStringLiteral("a.wav"), 1754705000, 60);
+    s.store.endSession();
+    s.pass();
+    expect("tailed: the recording is indexed", s.store.recordingCount() == 1);
+    record(folder, QStringLiteral("00000000000000F2-2"), QStringLiteral("b.wav"), 1754705010, 61);
+    std::atomic<bool> moved{false};
+    s.store.setTailHookForTest([&](const QString&) {
+        if (!moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+    });
+    s.pass();
+    expect("tailed: the storage went as the lines were read", moved.load() && !QFileInfo::exists(folder));
+    expect("tailed: the folder reads as away, its recording kept",
+           folder_away(s.store, kUidA) && s.store.recordingCount() == 1);
+    s.store.setTailHookForTest({});
+    expect("tailed: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("tailed: the new recording is indexed",
+           s.store.recordingCount() == 2 && s.store.isIndexedPath(folder + QStringLiteral("/b.wav")));
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -1866,6 +1988,9 @@ main(int argc, char** argv) {
     test_root_gone_mid_pass();
     test_root_gone_before_a_recheck();
     test_root_gone_before_a_delete();
+    test_root_gone_as_it_is_read_again();
+    test_root_gone_as_a_journal_is_read_again();
+    test_root_gone_as_a_journal_is_tailed();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();

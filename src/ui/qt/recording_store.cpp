@@ -516,6 +516,9 @@ RecordingStore::rootStillAvailable(int root, Pass* pass) {
         if (root < 0 || root >= m_roots.size()) {
             return true;
         }
+        if (!m_rootAvailable.at(root)) {
+            return false; // away since earlier in this pass: nothing more is decided about it until it is read again
+        }
         rootPath = m_roots.at(root);
     }
     if (rootAvailableNow(rootPath)) {
@@ -537,6 +540,9 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
     }
     // The folder table first, folder.json only: what a session start needs. The journals are read after
     // (loadPendingFolders()), so a start never waits for them.
+    if (m_rootReadHook) {
+        m_rootReadHook(rootPath);
+    }
     QList<Folder> table;
     const QStringList subdirs = QDir(rootPath).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden, QDir::Name);
     for (const QString& subdir : subdirs) {
@@ -547,6 +553,11 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
             && read_folder_json(folder.path, &folder.uid, &folder.kind, &folder.name)) {
             table.append(folder);
         }
+    }
+    // Gone again while it was listed: an empty or short listing is not a root emptied. It stays away, what it held
+    // stays indexed, and the next pass reads it again.
+    if (!rootAvailableNow(rootPath)) {
+        return;
     }
     const std::lock_guard<std::mutex> lock(m_mutex);
     // Whatever the index held for this root is read again from the disk. One hold of the lock, so a start never sees
@@ -657,6 +668,11 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
     QList<RecordingJournalRecord> records;
     const qint64 lines = parseLines(data.left(consumed), &records);
     statPublished(path, records, &files);
+    // What was read stands only with the root still there: one that went away while the folder was read took its
+    // files and journal with it, and the folder stays as the index held it.
+    if (!rootStillAvailable(root, pass)) {
+        return;
+    }
 
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -771,10 +787,22 @@ RecordingStore::tailFolder(const QString& path, qint64 offset, Pass* pass) {
     if (consumed == 0) {
         return;
     }
+    if (m_tailHook) {
+        m_tailHook(path);
+    }
     QList<RecordingJournalRecord> records;
     const qint64 lines = parseLines(data.left(consumed), &records);
     QHash<QString, FileStat> files;
     statPublished(path, records, &files);
+    // A file that reads as missing is deleted only with its root still there; lines read as the root went stay unread.
+    int root = -1;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        root = m_folders.value(path).root;
+    }
+    if (!rootStillAvailable(root, pass)) {
+        return;
+    }
 
     const std::lock_guard<std::mutex> lock(m_mutex);
     const auto folder = m_folders.find(path);
@@ -1031,7 +1059,7 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
     const bool uploading = m_uploadHolds(path);
 
     QString error;
-    bool missing = false;
+    OnDisk found = OnDisk::Removable;
     int root = -1;
     {
         yieldToReaders();
@@ -1046,27 +1074,18 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
         if (liveTemp(path)) {
             return DeleteResult::Kept; // this process may still be writing it
         }
-        bool inside = false;
-        for (int i = 0; i < m_roots.size() && !inside; i++) {
-            inside = m_rootAvailable.at(i) && recording_path_inside_root(path, m_roots.at(i));
-        }
+        root = m_folders.value(it->folder).root;
         // Right before the unlink, without following a link: what is there now is what gets removed.
-        const QFileInfo now(path);
-        if (!now.isSymLink() && !now.exists()) {
-            missing = true;
-            root = m_folders.value(it->folder).root;
-        } else if (!inside || now.isSymLink() || !now.isFile()) {
-            // Not a recording the store may remove any more: it leaves the index, and the disk is left alone.
-            removeEntryLocked(id, pass);
-            return DeleteResult::Kept;
-        } else if (m_remove(path, &error)) {
+        found = onDiskLocked(path);
+        if (found == OnDisk::Removable && m_remove(path, &error)) {
             removeEntryLocked(id, pass);
             return DeleteResult::Removed;
         }
     }
-    if (missing) {
-        // Missing: gone with a root that went away since the pass began, which marks the root away and keeps the entry
-        // and the request for when it is back, or deleted behind the store's back.
+    if (found != OnDisk::Removable) {
+        // Missing, or not a recording the store may remove any more: either drops the entry, which waits for its root
+        // to be checked again. One that went away since the pass began explains both; it is marked away, and the entry
+        // and the request wait for it to come back.
         if (!rootStillAvailable(root, pass)) {
             return DeleteResult::Held;
         }
@@ -1075,16 +1094,34 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass) {
         if (it == m_entries.cend()) {
             return DeleteResult::Gone;
         }
-        const QFileInfo again(it->path);
-        if (again.isSymLink() || again.exists()) {
-            return DeleteResult::Held; // there again: the next pass looks at it afresh
+        const OnDisk again = onDiskLocked(it->path);
+        if (again != found) {
+            return DeleteResult::Held; // changed meanwhile: the next pass looks at it afresh
         }
-        removeEntryLocked(id, pass); // already gone
-        return DeleteResult::Gone;
+        removeEntryLocked(id, pass);
+        // Already gone; or left on disk, out of the index.
+        return found == OnDisk::Missing ? DeleteResult::Gone : DeleteResult::Kept;
     }
     noteDeleteFailure(cause, error);
     pass->dirty = true;
     return DeleteResult::Failed;
+}
+
+RecordingStore::OnDisk
+RecordingStore::onDiskLocked(const QString& path) const {
+    const QFileInfo now(path);
+    if (!now.isSymLink() && !now.exists()) {
+        return OnDisk::Missing;
+    }
+    if (now.isSymLink() || !now.isFile()) {
+        return OnDisk::Foreign;
+    }
+    for (int i = 0; i < m_roots.size(); i++) {
+        if (m_rootAvailable.at(i) && recording_path_inside_root(path, m_roots.at(i))) {
+            return OnDisk::Removable;
+        }
+    }
+    return OnDisk::Foreign;
 }
 
 void
@@ -2061,6 +2098,18 @@ void
 RecordingStore::setFolderLoadHookForTest(std::function<void(const QString& folder)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_folderLoadHook = std::move(hook);
+}
+
+void
+RecordingStore::setRootReadHookForTest(std::function<void(const QString& root)> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_rootReadHook = std::move(hook);
+}
+
+void
+RecordingStore::setTailHookForTest(std::function<void(const QString& folder)> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_tailHook = std::move(hook);
 }
 #endif
 

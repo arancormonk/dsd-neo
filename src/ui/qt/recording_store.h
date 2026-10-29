@@ -253,6 +253,12 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after each folder.json read, before the folder's files and journal; before
      * start(). Test hook. */
     void setFolderLoadHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook on the worker as a root is read whole (at the first pass, or back from away), before its
+     * folders are listed; before start(). Test hook. */
+    void setRootReadHookForTest(std::function<void(const QString& root)> hook);
+    /** @brief Call @p hook on the worker after a folder's new journal lines are read, before their files are looked
+     * at; before start(). Test hook. */
+    void setTailHookForTest(std::function<void(const QString& folder)> hook);
 #endif
 
   Q_SIGNALS:
@@ -339,6 +345,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * remove (left on disk, out of the index) or this process's temp file. Failed: the unlink failed; still indexed. */
     enum class DeleteResult { Removed, Gone, Held, Kept, Failed };
     enum class DeleteCause { Asked, Limit };
+    /* What is at a recording's path, without following a link there: nothing; a regular file inside an available root,
+     * which the store may remove; or anything else, which it leaves alone. */
+    enum class OnDisk { Missing, Removable, Foreign };
 
     /* What the store needs of one file, read without following a symlink in its place. */
     static FileStat statOf(const QFileInfo& info, bool withTime);
@@ -353,8 +362,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* @p root turned unavailable: what it held stays indexed, untouched, and the rows its recordings belong to are told
      * (their recordings now read as away). Under the store's lock. */
     void markRootAwayLocked(int root, Pass* pass);
-    /* Whether @p root is still there, for a pass that finds one of its folders' files gone: one that went away since
-     * the pass began is marked away, and nothing in it is treated as deleted. */
+    /* The storage-loss rule (docs/code_map.md, RecordingStore): asked before any outcome that drops index state or a
+     * request, or counts usage, on the strength of a read in @p root (a file or journal missing, a short listing, a
+     * failed unlink). Whether @p root is there now: one that went away since the pass began is marked away, and one
+     * marked away earlier in the pass stays so; for either, nothing in it is treated as deleted, and the caller keeps
+     * what the index and the queues hold. */
     bool rootStillAvailable(int root, Pass* pass);
     void rebuildRoot(int root, Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
@@ -378,6 +390,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void processRechecks(Pass* pass);
     void processDeletes(Pass* pass);
     DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass);
+    OnDisk onDiskLocked(const QString& path) const;
     void noteDeleteFailure(DeleteCause cause, const QString& error);
     void enforceLimit(Pass* pass);
     bool checkFreeSpace();
@@ -471,6 +484,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool m_lowSpace = false;
     std::function<bool(const QString&, QString*)> m_remove;
     std::function<void(const QString&)> m_folderLoadHook;
+    std::function<void(const QString&)> m_rootReadHook;
+    std::function<void(const QString&)> m_tailHook;
     int m_removedByLimit = 0;
     int m_deleteFailures = 0;
     QString m_lastDeleteError;

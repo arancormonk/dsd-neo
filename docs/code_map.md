@@ -8200,10 +8200,19 @@ Qt Quick frontend (`src/ui/qt`):
     and so does every timed pass (an rdio upload's hold has no release to wake one). Decided limit: the
     journaled start is on the decode clock, so the recordings of an I/Q replay of an old capture are the oldest and go
     first. Free space where new folders go is read (`dsd_path_free_bytes()`) at start, after each publish and every
-    minute while a session records; under 200 MB is `lowSpace`. A root that goes away, at a pass's start or within it
-    (a tailed journal, a folder.json, or a rechecked or deleted recording found gone, the root checked again), is marked
-    away and its recordings' fragments are announced, so History rows read them as away; nothing in it leaves the index,
-    and a delete it interrupted stays queued and runs once the root is back. `isIndexedPath()` is the share check.
+    minute while a session records; under 200 MB is `lowSpace`. `isIndexedPath()` is the share check.
+  - Storage-loss invariant: storage can go at any moment of a pass (a USB connection, an unmounted card), and a gone
+    root makes every read in it fail or come back empty. So no outcome that drops index state (a root's folder
+    listing, a folder read whole, a journal's new lines, a file found missing or no longer the store's to remove), drops
+    a request (a queued delete) or counts usage rests on a cached `m_rootAvailable` or on a failed stat, open or unlink
+    alone: the root is checked again first, through `rootStillAvailable()` (`rootAvailableNow()` for a root being read
+    back, which is not available yet). A root found gone is marked away (`markRootAwayLocked()`: its recordings'
+    fragments are announced, so History rows read them as away); nothing in it leaves the index, a request it
+    interrupted stays queued and runs once it is back, and the pass decides nothing more about it: a root marked away
+    reads as gone to `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was
+    gone (a short listing, a journal or files not found) is dropped, not applied. Decided limit: storage that leaves and
+    comes back between a read and the check after it is not seen, and that read stands (a recording it found missing
+    stays out of the index until its root is next read whole).
   - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
     pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
     start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass
@@ -8213,7 +8222,8 @@ Qt Quick frontend (`src/ui/qt`):
   - Tests: `UI_QT_RECORDING_STORE` (the tail, the decoder's own writer, History roles from the store, compaction,
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
-    the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file),
+    the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
+    lost while a root is listed, a folder read or a journal tailed),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in
