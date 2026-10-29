@@ -37,6 +37,53 @@ listIndexValid(const QModelIndex& index, int rows) {
            && index.column() == 0;
 }
 
+/* Coverage of heard talkgroups by the listed rows, which may overlap: ranges sorted by start, each carrying the largest
+ * end of every row up to it, so a talkgroup is covered when the last row starting at or below it reaches it (a binary
+ * search per heard talkgroup instead of a pass over every listed row), or when a pattern row matches it. */
+class HeardCoverage {
+  public:
+    void
+    addRange(uint32_t start, uint32_t end) {
+        m_spans.push_back({start, end});
+    }
+
+    void
+    addPattern(const QString& text) {
+        dsd_id_pattern parsed;
+        if (dsd_id_pattern_parse(text.toLatin1().constData(), &parsed) == 0) {
+            m_patterns.push_back(parsed);
+        }
+    }
+
+    void
+    finish() {
+        std::sort(m_spans.begin(), m_spans.end(), [](const Span& a, const Span& b) { return a.start < b.start; });
+        for (qsizetype i = 1; i < m_spans.size(); ++i) {
+            m_spans[i].reach = std::max(m_spans[i].reach, m_spans[i - 1].reach);
+        }
+    }
+
+    bool
+    covers(uint32_t tg) const {
+        const auto after = std::upper_bound(m_spans.cbegin(), m_spans.cend(), tg,
+                                            [](uint32_t id, const Span& span) { return id < span.start; });
+        if (after != m_spans.cbegin() && std::prev(after)->reach >= tg) {
+            return true;
+        }
+        return std::any_of(m_patterns.cbegin(), m_patterns.cend(),
+                           [tg](const dsd_id_pattern& pattern) { return dsd_id_pattern_match(&pattern, tg) != 0; });
+    }
+
+  private:
+    struct Span {
+        uint32_t start;
+        uint32_t reach;
+    };
+
+    QVector<Span> m_spans;
+    QVector<dsd_id_pattern> m_patterns;
+};
+
 /* The kind role's text for a dsd_tg_policy_row_kind. */
 QString
 rowKindText(uint8_t kind) {
@@ -309,51 +356,28 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
         return;
     }
 
-    /* Coverage by the listed rows, which may overlap: sorted by start, each carrying the largest end
-     * of every row up to it. A talkgroup is covered when the last row starting at or below it reaches
-     * it, a binary search per heard talkgroup instead of a pass over every listed row. */
-    struct Span {
-        uint32_t start;
-        uint32_t reach;
-    };
-
-    QVector<Span> spans;
     /* A pattern row covers the heard talkgroups it matches, never by its 0/0 bounds. The `*` catch-all is the list's
      * "every other talkgroup" and covers none: a heard talkgroup keeps its card, so it can still be named, tuned or
-     * prioritised on its own (issue #773). */
-    QVector<dsd_id_pattern> patterns;
-    /* The `*` row that decides the talkgroups no other row matches (the last one, as equal patterns go), whose
-     * listening and record a heard talkgroup's card shows, so its first tap changes what the decoder does. */
+     * prioritised on its own (issue #773). The last `*` row (as equal patterns go) decides those talkgroups, so their
+     * cards show its listening and record and a first tap changes what the decoder does. */
+    HeardCoverage coverage;
     const Row* catchAll = nullptr;
-    spans.reserve(rows.size());
     for (const Row& row : rows) {
-        dsd_id_pattern parsed;
-        if (row.isPattern() && row.pattern == QStringLiteral("*")) {
-            catchAll = &row;
-        }
         if (!row.isPattern()) {
-            spans.push_back({row.idStart, row.idEnd});
-        } else if (row.pattern != QStringLiteral("*")
-                   && dsd_id_pattern_parse(row.pattern.toLatin1().constData(), &parsed) == 0) {
-            patterns.push_back(parsed);
+            coverage.addRange(row.idStart, row.idEnd);
+        } else if (row.pattern == QStringLiteral("*")) {
+            catchAll = &row;
+        } else {
+            coverage.addPattern(row.pattern);
         }
     }
-    std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) { return a.start < b.start; });
-    for (qsizetype i = 1; i < spans.size(); ++i) {
-        spans[i].reach = std::max(spans[i].reach, spans[i - 1].reach);
-    }
+    coverage.finish();
     const bool heardListening = catchAll != nullptr ? catchAll->listening : !allowListedOnly;
     /* A heard talkgroup without a row records whenever it would be tuned, as a row added for it would. */
     const bool heardRecord = catchAll != nullptr ? catchAll->listening && catchAll->record : heardListening;
     QVector<Row> heardRows;
     for (const uint32_t tg : heard) {
-        const auto after = std::upper_bound(spans.cbegin(), spans.cend(), tg,
-                                            [](uint32_t id, const Span& span) { return id < span.start; });
-        const bool covered = (after != spans.cbegin() && std::prev(after)->reach >= tg)
-                             || std::any_of(patterns.cbegin(), patterns.cend(), [tg](const dsd_id_pattern& pattern) {
-                                    return dsd_id_pattern_match(&pattern, tg) != 0;
-                                });
-        if (!covered) {
+        if (!coverage.covers(tg)) {
             Row row;
             row.idStart = tg;
             row.idEnd = tg;
