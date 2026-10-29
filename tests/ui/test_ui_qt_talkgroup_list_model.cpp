@@ -546,6 +546,30 @@ test_pattern_rows() {
     expect("the selection names the pattern row", patternSelected);
 }
 
+/* The `*` catch-all covers no heard talkgroup: each keeps its own card beside the catch-all row, as it does with no
+ * pattern at all, while a narrower pattern still covers the talkgroups it matches. */
+void
+test_catch_all_keeps_heard_talkgroups() {
+    Fixture fixture;
+    fixture.appendPattern("12*", "A", "Twelves", "");
+    fixture.appendPattern("*", "A", "Other", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    fixture.commit(1234, now);
+    fixture.commit(5000, now + 120);
+    fixture.commit(7311, now + 240);
+    history.refresh(fixture.state);
+    model.refresh(fixture.opts, fixture.state);
+    expect("the catch-all row is listed", findText(model, QStringLiteral("*")).isValid());
+    expect("heard talkgroups only the catch-all matches keep their cards",
+           find(model, 5000).isValid() && find(model, 7311).isValid());
+    expect("a narrower pattern still covers its talkgroups", !find(model, 1234).isValid());
+    expect("two pattern rows and two heard talkgroups", model.count() == 4);
+}
+
 /* Row equality includes kind and pattern: another pattern in the same place is a different row, never a field edit of
  * the old one (both have 0/0 bounds). */
 void
@@ -596,6 +620,7 @@ main(int argc, char** argv) {
     test_heard_rows_read_history_storage_directly();
     test_overlapping_ranges_cover_heard_talkgroups();
     test_pattern_rows();
+    test_catch_all_keeps_heard_talkgroups();
     test_pattern_row_equality();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {

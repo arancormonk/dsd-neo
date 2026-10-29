@@ -48,7 +48,8 @@ announces it on the channel being received (P25, TETRA, DMR trunking, NXDN; see
 row's priority does nothing. The card shows `P<n>` and a lightning badge when preempt is set. Heard-only rows offer
 **Add to list**; listed rows require two taps on **Remove**. A digit-pattern row (such as `12xx` or `*`, see
 [Digit patterns](../docs/csv-formats.md#digit-patterns)) shows its pattern as its ID and is edited like a range;
-patterns come only from the imported file. An accepted submit closes the sheet; a decoder refusal
+patterns come only from the imported file. Heard talkgroups a pattern matches have no card of their own, except
+beside the `*` catch-all, which leaves each its card. An accepted submit closes the sheet; a decoder refusal
 appears in the screen's message line. Over-the-air radio aliases learned while the sheet is open do not make an edit
 stale; a list reload, an edit from another frontend or a scan rotation does, and then the sheet must be reopened.
 

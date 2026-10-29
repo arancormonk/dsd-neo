@@ -746,8 +746,8 @@ Important behavior:
 - A talkgroup Hold overrides this list's restrictions for the held talkgroup, not the source ID list's.
 - Android: **Talkgroups** in the live monitor's session menu (⋯) lists configured talkgroups/ranges/patterns plus voice
   talkgroups heard this session that no listed row covers. A pattern row shows its pattern as its ID, after the
-  numeric rows in list order; a heard talkgroup it matches is covered, and searching for a number also finds the
-  patterns that match it. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
+  numeric rows in list order; a heard talkgroup it matches is covered, except by the `*` catch-all, beside which every
+  heard talkgroup keeps its own card. Searching for a number also finds the patterns that match it. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
   waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
   retained tags (RadioReference imports supply their category names).
 - **Listen all** and **Do not tune all** edit listed rows in the selected category, or every listed row under
@@ -851,7 +851,11 @@ ID written in decimal without leading zeros:
 - Precedence, the same for decisions and names in both lists: an exact row (the first row wins duplicates), else
   the narrowest range (the last row wins equal widths), else the most specific pattern: the one with more literal
   digits, then one without `*` over one with it, then the last row. `*` therefore decides only the IDs no other
-  row matches.
+  row matches, and a named `*` row names every call no other row decides (an `Other` name becomes the headline of
+  every unlisted call; leave the name empty to keep the ID).
+- `x`, `*` and every pattern that matches `0` also match a group call whose talkgroup has not decoded yet, which
+  carries ID 0 (TETRA speech before its set-up, DMR or P25 voice before its link control): a `*,B` row blocks those
+  as `-W` does. A private call's unknown party (0) never matches a row.
 - A list with no pattern rows costs nothing extra to look up.
 
 ### Priority and preemption

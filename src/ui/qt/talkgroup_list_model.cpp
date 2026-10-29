@@ -318,14 +318,17 @@ TalkgroupListModel::appendHeardRows(QVector<Row>& rows, bool allowListedOnly) co
     };
 
     QVector<Span> spans;
-    /* A pattern row covers the heard talkgroups it matches, never by its 0/0 bounds. */
+    /* A pattern row covers the heard talkgroups it matches, never by its 0/0 bounds. The `*` catch-all is the list's
+     * "every other talkgroup" and covers none: a heard talkgroup keeps its card, so it can still be named, tuned or
+     * prioritised on its own (issue #773). */
     QVector<dsd_id_pattern> patterns;
     spans.reserve(rows.size());
     for (const Row& row : rows) {
         dsd_id_pattern parsed;
         if (!row.isPattern()) {
             spans.push_back({row.idStart, row.idEnd});
-        } else if (dsd_id_pattern_parse(row.pattern.toLatin1().constData(), &parsed) == 0) {
+        } else if (row.pattern != QStringLiteral("*")
+                   && dsd_id_pattern_parse(row.pattern.toLatin1().constData(), &parsed) == 0) {
             patterns.push_back(parsed);
         }
     }
