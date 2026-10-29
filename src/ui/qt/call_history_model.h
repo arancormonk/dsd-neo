@@ -529,7 +529,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static QString keyFor(const Row& row);
 
     /**
-     * @brief Record what was just read from a ring row of ring @p ring in @p seen and say what to do with it.
+     * @brief Record what was just read from a ring row of ring @p ring in @p seenMap and say what to do with it.
      * @param session The session reading it.
      * @param read The row's content as just read (when, end, src, emergency, enc, sourceName, freqHz,
      *             acKind, ac); its session, ring and twin are ignored.
@@ -537,7 +537,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      *         call heard again: the same capture decoded in a new ring), SeenAdvanced when a voice
      *         row already ingested has since learned something, SeenUnchanged otherwise.
      */
-    static int noteSeen(SeenMap& seen, qint64 session, const QString& key, quint64 ring, const SeenState& read,
+    static int noteSeen(SeenMap& seenMap, qint64 session, const QString& key, quint64 ring, const SeenState& read,
                         bool voice);
     static bool absorbSeenReceive(SeenState& seen, const SeenState& read);
 
@@ -658,6 +658,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief Fold the spill lines @p reader reads into the log; @p folded is set when any line folded. @return whether
      * rows changed. */
     bool foldSpillLines(CallHistorySpillReader& reader, bool* folded);
+    /** @brief Fold one spill @p line, unless the clear mark covers it (@p cleared: the mark applies); @p twinsRing is
+     * the ring whose twins taken are restored, and @p folded is set when the line folded. @return whether rows
+     * changed. */
+    bool foldSpillLine(const QByteArray& line, bool cleared, quint64* twinsRing, bool* folded);
+    /** @brief Whether the clear mark (@p cleared: it applies) covers the spilled @p row its tap found as @p seen. */
+    bool spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const;
     /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
     void pruneSeenWhileFolding();
     /** @brief Record each slot's commit_rev and ring; @p scan marks the slots a ring walk could find something new in.

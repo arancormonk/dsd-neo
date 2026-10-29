@@ -2236,58 +2236,7 @@ CallHistoryModel::foldSpillLines(CallHistorySpillReader& reader, bool* folded) {
     // the fold has marked the line's notice seen by then.
     quint64 twinsRing = m_ringInstance[0];
     while (reader.next()) {
-        // A line a kill tore, or one a newer build wrote, is skipped; the rest still fold.
-        const QJsonObject obj = QJsonDocument::fromJson(reader.line()).object();
-        if (obj.value(QLatin1String("v")).toInt() != 1) {
-            continue;
-        }
-        const QString key = obj.value(QLatin1String("key")).toString();
-        const QJsonObject rowObj = obj.value(QLatin1String("row")).toObject();
-        if (key.isEmpty() || rowObj.isEmpty()) {
-            continue;
-        }
-        const Row row = row_from_json(rowObj);
-        const SeenState seen = seenEntryFromJson(obj.value(QLatin1String("seen")).toObject());
-        if (cleared && seen.ring == m_clear.ring && row.slot >= 0 && row.slot < 2
-            && row.seq <= m_clear.pushSeq[row.slot]) {
-            // Cleared after the tap found it.
-            continue;
-        }
-        if (seen.ring != 0U && seen.ring != twinsRing) {
-            restoreNoticeTwinsTaken(seen.ring, seen.ring);
-            twinsRing = seen.ring;
-        }
-        // The seen entry as the tap left it, folded in as a fresh read would be, so the next ring walk finds the
-        // row seen and still notices what the core adds to it later.
-        (void)noteSeen(m_seen, seen.session, key, seen.ring, seen, row.kind == KindVoice);
-        if (!seen.twin.isEmpty()) {
-            m_seen[key].twin = seen.twin;
-        }
-#ifdef DSD_NEO_TEST_HOOKS
-        m_peakFoldSeenForTest = qMax(m_peakFoldSeenForTest, m_seen.size());
-#endif
-        // Idempotent by fragment: a row whose fragment the log already holds was folded before (a fold the
-        // last save has not acknowledged, read again at load) or ingested by a GUI that kept running, and can
-        // only refine that row. One it does not hold is a new row, whatever the tap judged it: an update whose
-        // first sighting a bounded backlog dropped (the spill unwritable) carries the whole row, and the ring
-        // walk after it finds the call seen.
-        bool known = false;
-        for (const QString& fragment : row.fragments) {
-            known = known || m_fragmentIndex.contains(fragment);
-        }
-        const bool isUpdate = known;
-        const bool again = obj.value(QLatin1String("again")).toBool() && !known;
-        rowsChanged = ingestRow(row, isUpdate, again) || rowsChanged;
-        *folded = true;
-        if (m_rows.size() > kMaxRows + kSpillFoldTrimSlack) {
-            rowsChanged = trimToCapacity() || rowsChanged;
-        }
-#ifdef DSD_NEO_TEST_HOOKS
-        m_peakFoldTwinsForTest = qMax(m_peakFoldTwinsForTest, m_noticeTwinsTaken.size());
-#endif
-        // Each line can add a seen entry, and a notice heard again a twin taken: pruned as the rows are trimmed,
-        // as they go, so neither holds the whole backlog either.
-        pruneSeenWhileFolding();
+        rowsChanged = foldSpillLine(reader.line(), cleared, &twinsRing, folded) || rowsChanged;
     }
 #ifdef DSD_NEO_TEST_HOOKS
     m_peakSpillReadBytesForTest = qMax(m_peakSpillReadBytesForTest, reader.peakBytes());
@@ -2295,6 +2244,68 @@ CallHistoryModel::foldSpillLines(CallHistorySpillReader& reader, bool* folded) {
     if (twinsRing != m_ringInstance[0]) {
         restoreNoticeTwinsTaken(m_ringInstance[0], m_ringInstance[1]); // the rings read, as before the fold
     }
+    return rowsChanged;
+}
+
+bool
+CallHistoryModel::spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const {
+    return cleared && seen.ring == m_clear.ring && row.slot >= 0 && row.slot < 2
+           && row.seq <= m_clear.pushSeq[row.slot];
+}
+
+bool
+CallHistoryModel::foldSpillLine(const QByteArray& line, bool cleared, quint64* twinsRing, bool* folded) {
+    // A line a kill tore, or one a newer build wrote, is skipped; the rest still fold.
+    const QJsonObject obj = QJsonDocument::fromJson(line).object();
+    if (obj.value(QLatin1String("v")).toInt() != 1) {
+        return false;
+    }
+    const QString key = obj.value(QLatin1String("key")).toString();
+    const QJsonObject rowObj = obj.value(QLatin1String("row")).toObject();
+    if (key.isEmpty() || rowObj.isEmpty()) {
+        return false;
+    }
+    const Row row = row_from_json(rowObj);
+    const SeenState seen = seenEntryFromJson(obj.value(QLatin1String("seen")).toObject());
+    if (spilledRowCleared(cleared, row, seen)) {
+        // Cleared after the tap found it.
+        return false;
+    }
+    if (seen.ring != 0U && seen.ring != *twinsRing) {
+        restoreNoticeTwinsTaken(seen.ring, seen.ring);
+        *twinsRing = seen.ring;
+    }
+    // The seen entry as the tap left it, folded in as a fresh read would be, so the next ring walk finds the
+    // row seen and still notices what the core adds to it later.
+    (void)noteSeen(m_seen, seen.session, key, seen.ring, seen, row.kind == KindVoice);
+    if (!seen.twin.isEmpty()) {
+        m_seen[key].twin = seen.twin;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    m_peakFoldSeenForTest = qMax(m_peakFoldSeenForTest, m_seen.size());
+#endif
+    // Idempotent by fragment: a row whose fragment the log already holds was folded before (a fold the
+    // last save has not acknowledged, read again at load) or ingested by a GUI that kept running, and can
+    // only refine that row. One it does not hold is a new row, whatever the tap judged it: an update whose
+    // first sighting a bounded backlog dropped (the spill unwritable) carries the whole row, and the ring
+    // walk after it finds the call seen.
+    bool known = false;
+    for (const QString& fragment : row.fragments) {
+        known = known || m_fragmentIndex.contains(fragment);
+    }
+    const bool isUpdate = known;
+    const bool again = obj.value(QLatin1String("again")).toBool() && !known;
+    bool rowsChanged = ingestRow(row, isUpdate, again);
+    *folded = true;
+    if (m_rows.size() > kMaxRows + kSpillFoldTrimSlack) {
+        rowsChanged = trimToCapacity() || rowsChanged;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    m_peakFoldTwinsForTest = qMax(m_peakFoldTwinsForTest, m_noticeTwinsTaken.size());
+#endif
+    // Each line can add a seen entry, and a notice heard again a twin taken: pruned as the rows are trimmed,
+    // as they go, so neither holds the whole backlog either.
+    pruneSeenWhileFolding();
     return rowsChanged;
 }
 
