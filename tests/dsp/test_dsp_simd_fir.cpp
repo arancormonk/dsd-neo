@@ -155,8 +155,8 @@ reference_complex_fir(const float* in, int n_in, float* out, float* hist_i, floa
         all_q[(size_t)k] = hist_q[k];
     }
     for (int k = 0; k < n_in; k++) {
-        all_i[(size_t)hist_len + (size_t)k] = in[2 * k];
-        all_q[(size_t)hist_len + (size_t)k] = in[2 * k + 1];
+        all_i[(size_t)hist_len + (size_t)k] = in[(size_t)k * 2U];
+        all_q[(size_t)hist_len + (size_t)k] = in[((size_t)k * 2U) + 1U];
     }
     for (int k = 0; k < hist_len; k++) {
         hist_i[k] = all_i[(size_t)n_in + (size_t)k];

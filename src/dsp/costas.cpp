@@ -1520,19 +1520,14 @@ fll_tetra_set_gear(dsd_fll_band_edge_state_t* f, int step) {
     f->tetra_lock_run = 0;
 }
 
-extern "C" void
-dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f) {
-    if (!f || !f->initialized || f->sps < 1 || !(f->beta > 0.0f)) {
-        return;
-    }
-    const float total = f->pre_freq + f->freq;
-    if (!stored_float_is_finite(&total)) {
-        return;
-    }
+/* Takes the boundary's step into the error window. Returns 1 with the window's summed magnitude in *size once the window
+   is full; the first boundary after a reset only takes its reference. */
+static int
+fll_tetra_window_take(dsd_fll_band_edge_state_t* f, float total, float* size) {
     if (!f->tetra_have_ref || !stored_float_is_finite(&f->tetra_ref_total)) {
         f->tetra_ref_total = total;
         f->tetra_have_ref = 1;
-        return;
+        return 0;
     }
     const float err = (total - f->tetra_ref_total) / (f->beta * (float)f->sps);
     f->tetra_ref_total = total;
@@ -1543,25 +1538,34 @@ dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f) {
     f->tetra_err_idx = (f->tetra_err_idx + 1) % DSD_TETRA_FLL_LOCK_WINDOW;
     if (f->tetra_err_count < DSD_TETRA_FLL_LOCK_WINDOW) {
         f->tetra_err_count++;
-        return;
+        return 0;
     }
     float sum = 0.0f;
     for (int k = 0; k < DSD_TETRA_FLL_LOCK_WINDOW; k++) {
         sum += f->tetra_err[k];
     }
-    const float size = fabsf(sum);
+    *size = fabsf(sum);
+    return 1;
+}
+
+extern "C" void
+dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f) {
+    if (!f || !f->initialized || f->sps < 1 || !(f->beta > 0.0f)) {
+        return;
+    }
+    const float total = f->pre_freq + f->freq;
+    float size = 0.0f;
+    if (!stored_float_is_finite(&total) || !fll_tetra_window_take(f, total, &size)) {
+        return;
+    }
     if (f->tetra_track <= 0) {
         f->tetra_lock_run = size < kTetraFllLockBelow ? f->tetra_lock_run + 1 : 0;
         if (f->tetra_lock_run >= kTetraFllLockRun) {
             fll_tetra_set_gear(f, 1);
         }
-        return;
-    }
-    if (size > kTetraFllUnlockAbove) {
+    } else if (size > kTetraFllUnlockAbove) {
         fll_tetra_set_gear(f, 0);
-        return;
-    }
-    if (f->tetra_track < kTetraFllTrackSteps && ++f->tetra_lock_run >= kTetraFllStepEvery) {
+    } else if (f->tetra_track < kTetraFllTrackSteps && ++f->tetra_lock_run >= kTetraFllStepEvery) {
         fll_tetra_set_gear(f, f->tetra_track + 1);
     }
 }

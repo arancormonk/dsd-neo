@@ -2239,6 +2239,8 @@ full_demod_debug_op25_state(const struct demod_state* d, int pre_len) {
 
 /* What a streamed TETRA block (full_demod_tetra_stream_block()) leaves: the channel filter's output (after the AGC) and
    the FLL's, and the carrier loops' state from before the block, which a closed squelch gate puts back. */
+namespace {
+
 struct tetra_stream_block {
     float* channel;
     int channel_pairs;
@@ -2249,13 +2251,106 @@ struct tetra_stream_block {
     float agc_before;
 };
 
+/* Where a streamed block stands: its input (x), the channel filter's output (y) and the matched filter's (z), how far
+   each has come, and the channel samples kept before the AGC for the block's channel power. */
+struct tetra_stream_cursor {
+    float* x;
+    float* y;
+    float* z;
+    int in_pos;
+    int y_len;
+    int z_len;
+    float probe[512];
+    int probe_len;
+};
+
+} // namespace
+
+/* Whether a block runs streamed (full_demod_tetra_stream_block()): the chain active on CQPSK with the FLL, a block with
+   samples, and the channel and matched filter designed (which the predicate checked). Leaves the transfer sub-block's
+   length in *sub. */
+static int
+tetra_stream_block_runs(struct demod_state* d, int* sub) {
+    if (!d->tetra_chain || !d->cqpsk_enable || d->mode_demod == &raw_demod || !d->lowpassed || d->lp_len < 2) {
+        return 0;
+    }
+    channel_lpf_ensure_plan(d);
+    *sub = tetra_subblock_len(d);
+    if (d->channel_lpf_plan_taps_len < 3 || *sub <= 0 || !tetra_rrc_ensure(d, tetra_effective_sps(d))) {
+        return 0; /* not reachable: the predicate checked the design and the sps */
+    }
+    if (d->tetra_sub_pos < 0 || d->tetra_sub_pos >= *sub) {
+        d->tetra_sub_pos = 0; /* not reachable: the position stays within its sub-block */
+    }
+    return 1;
+}
+
+/* The channel filter over one piece: the outputs it made at @p ys. */
+static int
+tetra_stream_channel(struct demod_state* d, const float* xs, int seg, float* ys, int out_cap) {
+    const int made = simd_fir_complex_apply(xs, seg, ys, out_cap, d->channel_lpf_hist_i, d->channel_lpf_hist_q,
+                                            DSD_CHANNEL_LPF_HIST_LEN, &d->channel_lpf_pending, d->channel_lpf_plan_taps,
+                                            d->channel_lpf_plan_taps_len);
+    if (made >= 0) {
+        return made;
+    }
+    /* Not reachable (channel_lpf_apply()): the filter starts over and the piece passes unfiltered. Its sub-block
+       position stays (channel_lpf_reset_state() would clear it). */
+    DSD_MEMSET(d->channel_lpf_hist_i, 0, sizeof(d->channel_lpf_hist_i));
+    DSD_MEMSET(d->channel_lpf_hist_q, 0, sizeof(d->channel_lpf_hist_q));
+    d->channel_lpf_pending = 0;
+    DSD_MEMCPY(ys, xs, (size_t)seg * 2U * sizeof(float));
+    return seg;
+}
+
+/* The matched filter over one piece's channel output: the outputs it made at @p zs. */
+static int
+tetra_stream_matched(struct demod_state* d, const float* ys, int made, float* zs, int out_cap) {
+    const int out =
+        simd_fir_complex_apply(ys, made, zs, out_cap, d->tetra_rrc_hist_i, d->tetra_rrc_hist_q, DSD_TETRA_RRC_HIST_LEN,
+                               &d->tetra_rrc_pending, d->tetra_rrc_taps, d->tetra_rrc_taps_len);
+    if (out >= 0) {
+        return out;
+    }
+    /* Not reachable (tetra_rrc_apply()): the matched filter starts over and the piece makes no samples. */
+    tetra_rrc_reset_state(d);
+    return 0;
+}
+
+/* One piece of @p seg samples: mixer, channel LPF, AGC, matched filter and FLL, each on what the stage before made. */
+static void
+tetra_stream_piece(struct demod_state* d, tetra_stream_cursor* c, int seg) {
+    const int cap = DSD_DEMOD_WORKBUF_LENGTH / 2;
+    float* xs = c->x + (size_t)c->in_pos * 2U;
+    dsd_tetra_premix_block(&d->fll_band_edge_state, xs, seg);
+    float* ys = c->y + (size_t)c->y_len * 2U;
+    const int made = tetra_stream_channel(d, xs, seg, ys, cap - c->y_len);
+    for (int k = 0; k < made * 2 && c->probe_len < 512; k++) {
+        c->probe[c->probe_len++] = ys[k];
+    }
+    d->lowpassed = ys;
+    d->lp_len = made * 2;
+    cqpsk_rms_agc(d);
+    /* The matched filter writing the input's own buffer stays behind what the block still has to read. */
+    float* zs = c->z + (size_t)c->z_len * 2U;
+    const int z_cap = (c->z == c->x) ? (c->in_pos + seg - c->z_len) : (cap - c->z_len);
+    const int made2 = tetra_stream_matched(d, ys, made, zs, z_cap);
+    d->lowpassed = zs;
+    d->lp_len = made2 * 2;
+    op25_fll_band_edge_cc(d);
+    c->y_len += made;
+    c->z_len += made2;
+    c->in_pos += seg;
+}
+
 /*
  * The TETRA chain's block in pieces cut at its transfer sub-block boundaries (DSD_TETRA_SUBBLOCK_SYMBOLS, counted by
- * demod_state::tetra_sub_pos): each piece runs the mixer, the channel LPF, the AGC, the matched filter and the FLL, and
- * a piece that ends on a boundary moves the FLL's residual into the mixer (dsd_fll_band_edge_transfer()), which the
- * next piece mixes with. Every stage streams with a fixed lag, so the FLL has taken the same samples at every boundary
- * however the input was cut into blocks, and the chain's output does not depend on the cut. The rest of a block after
- * its last boundary runs too; its transfer waits for the next boundary, in a later block.
+ * demod_state::tetra_sub_pos): each piece runs the mixer, the channel LPF, the AGC, the matched filter and the FLL
+ * (tetra_stream_piece()), and a piece that ends on a boundary decides the FLL's gear (dsd_fll_band_edge_tetra_boundary())
+ * and moves its residual into the mixer (dsd_fll_band_edge_transfer()), which the next piece mixes with. Every stage
+ * streams with a fixed lag, so the FLL has taken the same samples at every boundary however the input was cut into
+ * blocks, and the chain's output does not depend on the cut. The rest of a block after its last boundary runs too; its
+ * transfer waits for the next boundary, in a later block.
  *
  * The squelch gate is still the block's: full_demod_update_channel_state() decides it on channel_pwr, which this
  * measures as on a whole block, over the first 256 channel samples before the AGC. The pieces run first, as for an
@@ -2266,76 +2361,29 @@ struct tetra_stream_block {
  */
 static int
 full_demod_tetra_stream_block(struct demod_state* d, tetra_stream_block* r) {
-    if (!d->tetra_chain || !d->cqpsk_enable || d->mode_demod == &raw_demod || !d->lowpassed || d->lp_len < 2) {
+    int sub = 0;
+    if (!tetra_stream_block_runs(d, &sub)) {
         return 0;
-    }
-    channel_lpf_ensure_plan(d);
-    const int sps = tetra_effective_sps(d);
-    const int sub = tetra_subblock_len(d);
-    if (d->channel_lpf_plan_taps_len < 3 || sub <= 0 || !tetra_rrc_ensure(d, sps)) {
-        return 0; /* not reachable: the predicate checked the design and the sps */
-    }
-    if (d->tetra_sub_pos < 0 || d->tetra_sub_pos >= sub) {
-        d->tetra_sub_pos = 0; /* not reachable: the position stays within its sub-block */
     }
     dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
     r->fll_before = *f;
     r->agc_before = d->cqpsk_agc_avg;
     const float pre_limit = dsd_tetra_pre_limit_rad(d->rate_out);
     const int n = d->lp_len >> 1;
-    float* x = d->lowpassed;
     /* The channel filter writes the work buffer the input is not in, the matched filter the other one, as on a whole
        block. When that is the input's own buffer it writes behind what the block still has to read (a filter makes no
        more outputs than it took samples since the block began), and its output capacity holds it there. */
-    float* y = (x == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
-    float* z = (y == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
-    const int cap = DSD_DEMOD_WORKBUF_LENGTH / 2;
-    float probe[512];
-    int probe_len = 0;
-    int in_pos = 0;
-    int y_len = 0;
-    int z_len = 0;
-    while (in_pos < n) {
-        int seg = sub - d->tetra_sub_pos;
-        if (seg > n - in_pos) {
-            seg = n - in_pos;
-        }
-        float* xs = x + (size_t)in_pos * 2U;
-        dsd_tetra_premix_block(f, xs, seg);
-        float* ys = y + (size_t)y_len * 2U;
-        int made = simd_fir_complex_apply(xs, seg, ys, cap - y_len, d->channel_lpf_hist_i, d->channel_lpf_hist_q,
-                                          DSD_CHANNEL_LPF_HIST_LEN, &d->channel_lpf_pending, d->channel_lpf_plan_taps,
-                                          d->channel_lpf_plan_taps_len);
-        if (made < 0) {
-            /* Not reachable (channel_lpf_apply()): the filter starts over and the piece passes unfiltered. */
-            DSD_MEMSET(d->channel_lpf_hist_i, 0, sizeof(d->channel_lpf_hist_i));
-            DSD_MEMSET(d->channel_lpf_hist_q, 0, sizeof(d->channel_lpf_hist_q));
-            d->channel_lpf_pending = 0;
-            DSD_MEMCPY(ys, xs, (size_t)seg * 2U * sizeof(float));
-            made = seg;
-        }
-        for (int k = 0; k < made * 2 && probe_len < 512; k++) {
-            probe[probe_len++] = ys[k];
-        }
-        d->lowpassed = ys;
-        d->lp_len = made * 2;
-        cqpsk_rms_agc(d);
-        float* zs = z + (size_t)z_len * 2U;
-        const int z_cap = (z == x) ? (in_pos + seg - z_len) : (cap - z_len);
-        int made2 = simd_fir_complex_apply(ys, made, zs, z_cap, d->tetra_rrc_hist_i, d->tetra_rrc_hist_q,
-                                           DSD_TETRA_RRC_HIST_LEN, &d->tetra_rrc_pending, d->tetra_rrc_taps,
-                                           d->tetra_rrc_taps_len);
-        if (made2 < 0) {
-            /* Not reachable (tetra_rrc_apply()): the matched filter starts over and the piece makes no samples. */
-            tetra_rrc_reset_state(d);
-            made2 = 0;
-        }
-        d->lowpassed = zs;
-        d->lp_len = made2 * 2;
-        op25_fll_band_edge_cc(d);
-        y_len += made;
-        z_len += made2;
-        in_pos += seg;
+    tetra_stream_cursor c;
+    c.x = d->lowpassed;
+    c.y = (c.x == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    c.z = (c.y == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    c.in_pos = 0;
+    c.y_len = 0;
+    c.z_len = 0;
+    c.probe_len = 0;
+    while (c.in_pos < n) {
+        const int seg = (sub - d->tetra_sub_pos < n - c.in_pos) ? sub - d->tetra_sub_pos : n - c.in_pos;
+        tetra_stream_piece(d, &c, seg);
         d->tetra_sub_pos += seg;
         if (d->tetra_sub_pos >= sub) {
             dsd_fll_band_edge_tetra_boundary(f);
@@ -2343,17 +2391,17 @@ full_demod_tetra_stream_block(struct demod_state* d, tetra_stream_block* r) {
             d->tetra_sub_pos = 0;
         }
     }
-    if (probe_len >= 2) {
-        d->channel_pwr = mean_power(probe, probe_len, 1);
+    if (c.probe_len >= 2) {
+        d->channel_pwr = mean_power(c.probe, c.probe_len, 1);
     }
-    r->channel = y;
-    r->channel_pairs = y_len;
-    r->out = z;
-    r->out_pairs = z_len;
+    r->channel = c.y;
+    r->channel_pairs = c.y_len;
+    r->out = c.z;
+    r->out_pairs = c.z_len;
     r->in_pairs = n;
     /* The block is the channel filter's output until the gate is decided. */
-    d->lowpassed = y;
-    d->lp_len = y_len * 2;
+    d->lowpassed = c.y;
+    d->lp_len = c.y_len * 2;
     return 1;
 }
 

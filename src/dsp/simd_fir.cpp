@@ -15,6 +15,7 @@
 #include <dsd-neo/dsp/simd_fir.h>
 #include <stddef.h>
 #include <vector>
+#include "dsd-neo/core/safe_api.h"
 #include "simd_fir_internal.h"
 #include "simd_x86_cpu.h"
 
