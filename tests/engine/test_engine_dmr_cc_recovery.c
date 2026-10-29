@@ -650,6 +650,7 @@ static struct {
     atomic_int skip_finished;
     int skip_waited;
     int skip_stalled;
+    int skip_wait_baseline; /* the drain's guard waits before the Skip was queued */
     int flushes;
     int blocked;
     int allowed;
@@ -709,7 +710,16 @@ resume_skip_flush(void* opaque) {
         }
     }
     dsd_mutex_unlock(&g_skip_flush.mutex);
-    dsd_sleep_ms(30);
+    /* Until the drain counts the Skip's wait for the guard the tick holds: from then on the drain is blocked on it. */
+    const double deadline = dsd_realtime_mono_s() + 10.0;
+    while (!g_skip_flush.skip_stalled && dsd_app_command_test_policy_guard_waits() <= g_skip_flush.skip_wait_baseline
+           && !atomic_load(&g_skip_flush.skip_finished)) {
+        if (dsd_realtime_mono_s() >= deadline) {
+            g_skip_flush.skip_stalled = 1;
+            break;
+        }
+        dsd_thread_yield();
+    }
     g_skip_flush.skip_waited = !atomic_load(&g_skip_flush.skip_finished);
     release_barrier();
     DSD_THREAD_RETURN;
@@ -812,6 +822,7 @@ watchdog_call_skip_phases(void) {
                          "in-flight trunk off publication put off while the tick holds the guard");
         }
         if (phase == 2 && entered) {
+            g_skip_flush.skip_wait_baseline = dsd_app_command_test_policy_guard_waits();
             dsd_thread_t releaser;
             const int started = dsd_thread_create(&releaser, resume_skip_flush, NULL) == 0;
             rc |= expect(started, "flush barrier releaser started");
@@ -827,7 +838,8 @@ watchdog_call_skip_phases(void) {
             atomic_store(&g_skip_flush.skip_finished, 1);
             if (started) {
                 dsd_thread_join(releaser);
-                rc |= expect(g_skip_flush.skip_waited && !g_skip_flush.skip_stalled,
+                rc |= expect(g_skip_flush.skip_waited && !g_skip_flush.skip_stalled
+                                 && dsd_app_command_test_policy_guard_waits() == g_skip_flush.skip_wait_baseline + 1,
                              "Skip waits for admitted tick even after trunking is disabled");
             }
         }

@@ -2607,15 +2607,27 @@ re-entrant (`p25_sm_tick_guard_held_by_caller()`); any other tries it once (`dsd
 `src/app_control/snapshot_internal.h`), and a busy guard puts the publication off with a pending flag
 (`dsd_app_telemetry_snapshot_pending()`, `dsd_app_telemetry_opts_snapshot_pending()`). A put-off publication is never
 dropped: the next publish of the same snapshot carries the state as it is then, and `dsd_app_drain_cmds()`, which the
-decode loop runs every pass, retries it at its start (a flag read when nothing waits); the frame-sync hunt publishes
-every 50 ms. A read waiting on a silent input runs no pass, so there the retry waits for the next sample or command. The hold is one copy long, and a watchdog tick that meets it waits for its next period.
+decode loop pumps every pass, retries it at its start (a flag read when nothing waits); the frame-sync hunt publishes
+every 50 ms. On a silent input the decode loop runs no pass, so the inputs that wait in slices leave their wait for
+it as for a queued command: app-control registers the query `dsd_runtime_publish_pending()` asks (runtime
+`control_pump.h`), true while a publication is put off and the tick has left the guard (`p25_sm_tick_guard_busy()`),
+and the UDP hunt wait (`dsd_symbol.c`), the M17 encoder's UDP wait and the RTL read with no stream ask it beside
+`dsd_runtime_controls_pending()`. A put-off publication on a silent UDP input reaches the frontends within a stream
+pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`) of the silence or one wait slice (100 ms) after the tick ends, whichever is
+later; on an RTL device with no stream, at the read's next empty poll after the tick.
+It is not folded into the controls-pending query, whose signal-search and TCP-reconnect callers it would cut. A
+connected TCP or stdin input blocks in its read with no slices, so there the retry waits for the next sample or
+command, as a queued command already does. The hold is one copy long, and a watchdog tick that meets it waits for its
+next period.
 
 ### Control Pump (DSP/Protocol → Runtime ← App-Control)
 
 `include/dsd-neo/runtime/control_pump.h` lets decode loops pump queued commands (`dsd_runtime_pump_controls()`) and ask
 whether one waits (`dsd_runtime_controls_pending()`, issue #634), without depending on app-control. App-control
 registers both at frontend start (`dsd_app_frontend_runtime_start()`); the pending query is asked only while an input
-waits on a silent source.
+waits on a silent source. A third query, `dsd_runtime_publish_pending()`, says whether a frontend publication a
+watchdog tick put off waits for the next pass; only the sliced silent-input waits ask it ("Publishing under the tick
+guard" above).
 
 ### Frame Sync Hooks (DSP → Runtime ← Engine/Protocols)
 

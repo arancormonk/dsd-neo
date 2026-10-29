@@ -9695,7 +9695,8 @@ rtl_live_read_device_has_no_stream(void) {
 
 /* One empty poll of a live read on a device with no stream (issue #518 D4). Returns 1 when the read ends, with its
    result in @p *result: DSD_RTL_READ_NO_STREAM to a reader that asks for it, once a wait slice passed with no stream;
-   else DSD_RTL_READ_YIELD while a command is queued, which the decoder applies before it reads again. A stream that is
+   else DSD_RTL_READ_YIELD while a command is queued, which the decoder applies before it reads again, or while a
+   frontend publication a P25 watchdog tick put off waits for the decoder's next pass. A stream that is
    only delayed is still a stream, so its read waits for samples whatever is queued: a yield there would cut the frame
    being decoded for nothing. */
 static thread_local uint64_t g_read_no_stream_since_ms = 0U;
@@ -9720,7 +9721,7 @@ rtl_live_read_no_stream(rtl_live_read_idle* idle, int* result) {
         *result = DSD_RTL_READ_NO_STREAM;
         return 1;
     }
-    if (dsd_runtime_controls_pending()) {
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
         *result = DSD_RTL_READ_YIELD;
         return 1;
     }

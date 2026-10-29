@@ -1352,12 +1352,23 @@ test_stop_during_recovery_is_silent(void) {
 
 /* ---- Commands during the outage (D4) ---- */
 
-/* A queued command, as the decoder's read asks after it (dsd_runtime_controls_pending()). */
+/* A queued command, as the decoder's read asks after it (dsd_runtime_controls_pending()), or a frontend publication a
+ * P25 watchdog tick put off (dsd_runtime_publish_pending()): the read gives way to either alike. */
 std::atomic<int> g_command_queued{0};
 
 int
 command_queued(void) {
     return g_command_queued.load();
+}
+
+/* Ask after the waiting work as a queued command (0) or as a put-off publication (1); nullptr hook unregisters. */
+void
+set_waiting_work(int publication, dsd_controls_pending_fn fn) {
+    if (publication) {
+        dsd_runtime_set_publish_pending(fn);
+    } else {
+        dsd_runtime_set_controls_pending(fn);
+    }
 }
 
 /* A thread reading the stream as the decoder does, keeping every sample: a yield is the decoder's cue to apply the
@@ -1482,10 +1493,10 @@ decode_paced(unsigned int gap_ms, int queue_command, int* out_yields) {
  * so no recovery starts) with a command queued over each pause. The read waits for the samples, yielding never, and the
  * decoder gets exactly what the same samples fed without a queued command give. */
 void
-test_delayed_stream_never_yields(void) {
+test_delayed_stream_never_yields(int publication) {
     usb_world_reset(0);
     rtl_device_test_set_progress_limit_ms(60000U);
-    dsd_runtime_set_controls_pending(command_queued);
+    set_waiting_work(publication, command_queued);
     int reference_yields = 0;
     const std::vector<float> reference = decode_paced(0U, 0, &reference_yields);
     int gapped_yields = 0;
@@ -1495,7 +1506,7 @@ test_delayed_stream_never_yields(void) {
     assert(!reference.empty());
     assert(gapped.size() == reference.size());
     assert(memcmp(gapped.data(), reference.data(), reference.size() * sizeof(float)) == 0);
-    dsd_runtime_set_controls_pending(nullptr);
+    set_waiting_work(publication, nullptr);
     rtl_device_test_set_progress_limit_ms(kLimitMs);
 }
 
@@ -1524,12 +1535,12 @@ probe_yield(int step, void* ctx) {
  * waits; while the recovery runs the decoder's read gives way to one at once (B3: commands apply during the outage),
  * no failure is reported, and samples after the recovery reach the decoder. */
 void
-test_yield_reaches_decoder_during_recovery(void) {
+test_yield_reaches_decoder_during_recovery(int publication) {
     usb_world_reset(0);
     (void)log_take();
     g_notices.store(0);
     (void)boundary_take();
-    dsd_runtime_set_controls_pending(command_queued);
+    set_waiting_work(publication, command_queued);
     stream_rig r;
     stream_open(r, 0, 0);
     /* Heap-held: the probe reaches it through a global. */
@@ -1559,7 +1570,7 @@ test_yield_reaches_decoder_during_recovery(void) {
     stream_close(r);
     expect_running();
     (void)boundary_take();
-    dsd_runtime_set_controls_pending(nullptr);
+    set_waiting_work(publication, nullptr);
     rtl_device_test_set_progress_limit_ms(kLimitMs);
 }
 
@@ -1602,8 +1613,10 @@ main(void) {
         test_replacement_reader_failure_ends_session();
         test_replacement_reader_failure_in_finish_ends_session();
         test_stop_during_recovery_is_silent();
-        test_yield_reaches_decoder_during_recovery();
-        test_delayed_stream_never_yields();
+        test_yield_reaches_decoder_during_recovery(0);
+        test_yield_reaches_decoder_during_recovery(1);
+        test_delayed_stream_never_yields(0);
+        test_delayed_stream_never_yields(1);
         rtl_stream_test_set_stream_boundary_probe(nullptr, nullptr);
     }
 

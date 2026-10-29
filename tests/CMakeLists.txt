@@ -7527,11 +7527,13 @@ target_link_libraries(
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
+# The command queue is built in with its test hooks, for the drain's count of its waits for the guard.
 add_executable(
     dsd-neo_test_engine_dmr_cc_recovery
     engine/test_engine_dmr_cc_recovery.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_include_directories(
     dsd-neo_test_engine_dmr_cc_recovery
@@ -7575,6 +7577,21 @@ target_link_libraries(
 add_test(
     NAME ENGINE_TRUNK_SCAN_PAUSE
     COMMAND dsd-neo_test_engine_trunk_scan_pause
+)
+
+# A snapshot publication a P25 watchdog tick put off reaches the frontends while the input is silent: the hunt's sliced
+# UDP wait leaves for it once the tick has left the guard, and the control pump publishes it (issue #671).
+add_executable(
+    dsd-neo_test_engine_silent_input_publish
+    engine/test_engine_silent_input_publish.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_silent_input_publish
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_SILENT_INPUT_PUBLISH
+    COMMAND dsd-neo_test_engine_silent_input_publish
 )
 
 # Per-target squelch overrides (issue #521) observed through the production frame-sync power

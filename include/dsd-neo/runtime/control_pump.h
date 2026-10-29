@@ -56,6 +56,21 @@ void dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn);
 int dsd_runtime_controls_pending(void);
 
 /**
+ * @brief Register (or, with NULL, unregister) the query dsd_runtime_publish_pending() asks.
+ */
+void dsd_runtime_set_publish_pending(dsd_controls_pending_fn fn);
+
+/**
+ * @brief Whether a frontend publication was put off and waits for the decode loop's next pass: 1 when the registered
+ * query says so, 0 without one.
+ *
+ * A snapshot publication that meets a P25 watchdog tick holding the tick guard is put off, and the next control pump
+ * retries it. Asked only where an input waits on a silent source in slices, beside dsd_runtime_controls_pending(), so
+ * the decoder leaves the wait and the pump publishes it; never by a decoder that is reading samples.
+ */
+int dsd_runtime_publish_pending(void);
+
+/**
  * @brief Register (or, with NULL, unregister) the query dsd_runtime_controls_need_frame_loop() asks.
  */
 void dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn);

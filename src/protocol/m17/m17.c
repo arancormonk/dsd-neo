@@ -1825,9 +1825,10 @@ enum m17_str_read_result {
 
 enum { M17_STR_INPUT_WAIT_SLICE_MS = 100 };
 
-/* Wait for the next UDP sample, leaving the wait for a queued command once the input has been silent for a stream
-   pause (DSD_ANALOG_STREAM_PAUSE_MIN_MS), counted from the first wait that came back empty, as the decoder's frame-sync
-   hunt does (issue #634). Returns 1 with a sample, 0 when the input stopped, -1 when a command waits. */
+/* Wait for the next UDP sample, leaving the wait for a queued command, or for a frontend publication a P25 watchdog
+   tick put off (dsd_runtime_publish_pending()), once the input has been silent for a stream pause
+   (DSD_ANALOG_STREAM_PAUSE_MIN_MS), counted from the first wait that came back empty, as the decoder's frame-sync hunt
+   does (issue #634). Returns 1 with a sample, 0 when the input stopped, -1 when a command or a publication waits. */
 static int
 m17_str_wait_udp_sample(dsd_opts* opts, int16_t* out) {
     uint64_t silent_since_ms = 0U;
@@ -1843,7 +1844,8 @@ m17_str_wait_udp_sample(dsd_opts* opts, int16_t* out) {
             silent_since_ms = now_ms;
             continue;
         }
-        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS && dsd_runtime_controls_pending()) {
+        if (now_ms - silent_since_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS
+            && (dsd_runtime_controls_pending() || dsd_runtime_publish_pending())) {
             return -1;
         }
     }

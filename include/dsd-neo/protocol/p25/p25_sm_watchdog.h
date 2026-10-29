@@ -56,6 +56,10 @@ void p25_sm_tick_guard_leave(void);
 /** @brief Return 1 when the calling thread holds the tick guard (entered and not yet left). */
 int p25_sm_tick_guard_held_by_caller(void);
 
+/** @brief Return 1 while any thread holds the tick guard. A look only: it takes nothing, and the answer can change at
+ * once. */
+int p25_sm_tick_guard_busy(void);
+
 /**
  * @brief Start the background 1 Hz watchdog thread.
  *
