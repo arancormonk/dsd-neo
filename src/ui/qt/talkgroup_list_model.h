@@ -165,6 +165,11 @@ class TalkgroupListModel : public QAbstractListModel {
         idText() const {
             return idStart == idEnd ? QString::number(idStart) : QStringLiteral("%1–%2").arg(idStart).arg(idEnd);
         }
+
+        /** @brief This row's value for @p role (a Roles value); none for any other role. */
+        QVariant value(int role) const;
+        /** @brief Whether anything but the bounds differs from @p other. */
+        bool fieldsDiffer(const Row& other) const;
     };
 
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);

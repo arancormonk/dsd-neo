@@ -56,22 +56,33 @@ TalkgroupListModel::data(const QModelIndex& index, int role) const {
         || index.column() != 0) {
         return {};
     }
-    const Row& row = m_rows.at(index.row());
+    return m_rows.at(index.row()).value(role);
+}
+
+QVariant
+TalkgroupListModel::Row::value(int role) const {
     switch (role) {
-        case IdStartRole: return QVariant::fromValue(static_cast<qulonglong>(row.idStart));
-        case IdEndRole: return QVariant::fromValue(static_cast<qulonglong>(row.idEnd));
-        case IdTextRole: return row.idText();
-        case NameRole: return row.name;
-        case TagsRole: return row.tags;
-        case ListeningRole: return row.listening;
-        case ListedRole: return row.listed;
-        case PriorityRole: return row.priority;
-        case PreemptRole: return row.preempt;
-        case PolicyIndexRole: return row.policyIndex;
-        case TemporaryAvoidCountRole: return QVariant::fromValue(row.temporaryAvoidCount);
-        case RecordRole: return row.record;
+        case IdStartRole: return QVariant::fromValue(static_cast<qulonglong>(idStart));
+        case IdEndRole: return QVariant::fromValue(static_cast<qulonglong>(idEnd));
+        case IdTextRole: return idText();
+        case NameRole: return name;
+        case TagsRole: return tags;
+        case ListeningRole: return listening;
+        case ListedRole: return listed;
+        case PriorityRole: return priority;
+        case PreemptRole: return preempt;
+        case PolicyIndexRole: return policyIndex;
+        case TemporaryAvoidCountRole: return QVariant::fromValue(temporaryAvoidCount);
+        case RecordRole: return record;
         default: return {};
     }
+}
+
+bool
+TalkgroupListModel::Row::fieldsDiffer(const Row& other) const {
+    return name != other.name || tags != other.tags || listening != other.listening || listed != other.listed
+           || priority != other.priority || preempt != other.preempt || record != other.record
+           || policyIndex != other.policyIndex || temporaryAvoidCount != other.temporaryAvoidCount;
 }
 
 QHash<int, QByteArray>
@@ -280,10 +291,7 @@ TalkgroupListModel::replaceRows(QVector<Row> rows) {
         for (int i = 0; i < count(); ++i) {
             const Row& row = rows.at(i);
             Row& old = m_rows[i];
-            if (old.name != row.name || old.tags != row.tags || old.listening != row.listening
-                || old.listed != row.listed || old.priority != row.priority || old.preempt != row.preempt
-                || old.record != row.record || old.policyIndex != row.policyIndex
-                || old.temporaryAvoidCount != row.temporaryAvoidCount) {
+            if (old.fieldsDiffer(row)) {
                 old = std::move(rows[i]);
                 Q_EMIT dataChanged(index(i, 0), index(i, 0));
             }
