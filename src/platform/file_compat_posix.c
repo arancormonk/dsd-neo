@@ -234,7 +234,8 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
         return NULL;
     }
 
-    int flags = O_RDONLY;
+    /* O_NONBLOCK keeps open(2) from waiting on a FIFO with no writer; it is cleared once the target is known regular. */
+    int flags = O_RDONLY | O_NONBLOCK;
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
 #endif
@@ -256,6 +257,14 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     if (!dsd_stat_is_regular(&st)) {
         close(fd);
         errno = EINVAL;
+        return NULL;
+    }
+
+    int fl = fcntl(fd, F_GETFL);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        errno = saved_errno;
         return NULL;
     }
 

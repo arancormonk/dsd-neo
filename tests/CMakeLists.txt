@@ -13945,6 +13945,26 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 
+# A writerless FIFO is refused at once, never waited on (POSIX only: needs mkfifo and fork).
+if(UNIX)
+    add_executable(
+        dsd-neo_test_platform_file_compat_fifo
+        platform/test_platform_file_compat_fifo.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_file_compat_fifo
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_file_compat_fifo
+        PRIVATE dsd-neo_platform dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(
+        NAME PLATFORM_FILE_COMPAT_FIFO
+        COMMAND dsd-neo_test_platform_file_compat_fifo
+    )
+endif()
+
 # Test temp files never default to the working directory.
 add_executable(
     dsd-neo_test_platform_test_tmpdir
