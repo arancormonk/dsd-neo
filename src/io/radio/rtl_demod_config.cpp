@@ -517,7 +517,8 @@ demod_apply_iq_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cf
     demod->iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod->iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
     demod->iq_dc_avg_r = demod->iq_dc_avg_i = 0;
-    const char* iqb = dsd_env_get("DSD_NEO_IQ_BALANCE");
+    const dsd_env_value iqb_value("DSD_NEO_IQ_BALANCE");
+    const char* iqb = iqb_value.c_str();
     if (iqb && *iqb) {
         int parsed = 0;
         demod->iqbal_enable = (dsd_parse_int_strict(iqb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;

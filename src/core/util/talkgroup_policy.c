@@ -2630,7 +2630,8 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
 
 static double
 tg_policy_get_env_ms_default(const char* name, double fallback_ms) {
-    const char* s = dsd_env_get(name);
+    char text[64];
+    const char* s = dsd_env_read(name, text, sizeof text);
     char* end = NULL;
     double v = 0.0;
     if (!s || s[0] == '\0') {

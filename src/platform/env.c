@@ -7,10 +7,11 @@
  * @file
  * @brief Thread-safe environment overrides over the process environment (see env.h).
  *
- * The only reader of the process environment in the program: every other source reads through dsd_env_get(), and
- * nothing writes the process environment. The table is small and every read site is cold (config initialisation, a
- * stream start, a menu redraw, a grant's preempt check), so a mutex-guarded scan costs about what getenv()'s walk of
- * the whole environment did.
+ * The only reader of the process environment in the program: every other source copies values out through
+ * dsd_env_copy(), and nothing writes the process environment. Readers never hold a pointer into the store, so a
+ * replaced or cleared value is zeroed and freed at once, and a name with no override left frees its slot. The table
+ * is small and every read site is cold (config initialisation, a stream start, a menu redraw, a preempt that would
+ * displace a call); the one per-line reader, the Unicode check, caches by dsd_env_generation().
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -22,17 +23,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One interned value of a name. Never freed: a reader may still hold its text. */
-typedef struct env_value {
-    struct env_value* next;
-    char* text;
-} env_value;
-
-/* A name that has held an override. Slots are never removed, so a name's pointer stays put too. */
+/* A name with at least one override. value[layer] is NULL with present[layer] set when the layer hides the name. */
 typedef struct {
     char* name;
-    env_value* interned;
-    const char* value[DSD_ENV_LAYER_COUNT]; /* NULL with present set: hidden. */
+    char* value[DSD_ENV_LAYER_COUNT];
     unsigned char present[DSD_ENV_LAYER_COUNT];
 } env_slot;
 
@@ -40,6 +34,7 @@ static env_slot g_slots[DSD_ENV_MAX_NAMES];
 static size_t g_slot_count;
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_state = 0; /* 0 = uninitialised, 1 = initialising, 2 = ready */
+static atomic_int g_generation = 0;
 
 static void
 env_lock(void) {
@@ -82,6 +77,15 @@ env_copy_text(const char* text) {
     return copy;
 }
 
+/* Zero a value before freeing it: an editor entry may be a key or token. */
+static void
+env_free_text(char* text) {
+    if (text != NULL) {
+        DSD_SECURE_ZERO(text, strlen(text));
+        free(text);
+    }
+}
+
 /* Caller holds the lock. */
 static env_slot*
 env_find_locked(const char* name) {
@@ -93,7 +97,7 @@ env_find_locked(const char* name) {
     return NULL;
 }
 
-/* Caller holds the lock. NULL when the table is full or out of memory. */
+/* Caller holds the lock. NULL with errno ENOMEM when the table is full or out of memory. */
 static env_slot*
 env_find_or_add_locked(const char* name) {
     env_slot* slot = env_find_locked(name);
@@ -116,26 +120,21 @@ env_find_or_add_locked(const char* name) {
     return slot;
 }
 
-/* The slot's stored copy of `text`, made once. Caller holds the lock. NULL when out of memory. */
-static const char*
-env_intern_locked(env_slot* slot, const char* text) {
-    for (const env_value* v = slot->interned; v != NULL; v = v->next) {
-        if (strcmp(v->text, text) == 0) {
-            return v->text;
+/* Drop the slot when no layer holds an override any more, so the table counts live names. Caller holds the lock. */
+static void
+env_release_if_empty_locked(env_slot* slot) {
+    for (int layer = 0; layer < DSD_ENV_LAYER_COUNT; layer++) {
+        if (slot->present[layer]) {
+            return;
         }
     }
-    env_value* node = (env_value*)malloc(sizeof *node);
-    char* copy = env_copy_text(text);
-    if (node == NULL || copy == NULL) {
-        free(node);
-        free(copy);
-        errno = ENOMEM;
-        return NULL;
+    free(slot->name);
+    env_slot* last = &g_slots[g_slot_count - 1U];
+    if (slot != last) {
+        *slot = *last;
     }
-    node->text = copy;
-    node->next = slot->interned;
-    slot->interned = node;
-    return copy;
+    DSD_MEMSET(last, 0, sizeof *last);
+    g_slot_count--;
 }
 
 /* The highest layer that has an override for the slot, or -1. Caller holds the lock. */
@@ -155,37 +154,78 @@ env_top_layer_locked(const env_slot* slot) {
 /* Caller holds the lock and has validated the arguments. */
 static int
 env_store_locked(dsd_env_layer layer, const char* name, const char* value) {
-    env_slot* slot = env_find_or_add_locked(name);
-    if (slot == NULL) {
-        return -1;
-    }
-    const char* stored = NULL;
+    char* copy = NULL;
     if (value != NULL) {
-        stored = env_intern_locked(slot, value);
-        if (stored == NULL) {
+        copy = env_copy_text(value);
+        if (copy == NULL) {
+            errno = ENOMEM;
             return -1;
         }
     }
-    slot->value[layer] = stored;
+    env_slot* slot = env_find_or_add_locked(name);
+    if (slot == NULL) {
+        env_free_text(copy);
+        return -1;
+    }
+    env_free_text(slot->value[layer]);
+    slot->value[layer] = copy;
     slot->present[layer] = 1;
+    (void)atomic_fetch_add(&g_generation, 1);
     return 0;
 }
 
-const char*
-dsd_env_get(const char* name) {
+/* Copy `text` (NULL: unset) into buf as dsd_env_copy() documents. */
+static size_t
+env_copy_out(const char* text, char* buf, size_t cap) {
+    if (buf != NULL && cap > 0) {
+        buf[0] = '\0';
+    }
+    if (text == NULL) {
+        return 0;
+    }
+    const size_t len = strlen(text);
+    if (buf != NULL && cap > 0) {
+        const size_t n = len < cap ? len : cap - 1U;
+        DSD_MEMCPY(buf, text, n);
+        buf[n] = '\0';
+    }
+    return len + 1U;
+}
+
+size_t
+dsd_env_copy(const char* name, char* buf, size_t cap) {
     if (!env_name_valid(name)) {
-        return NULL;
+        return env_copy_out(NULL, buf, cap);
     }
     env_lock();
     const env_slot* slot = env_find_locked(name);
     const int top = env_top_layer_locked(slot);
-    const int overridden = slot != NULL && top >= 0;
-    const char* value = overridden ? slot->value[top] : NULL;
-    env_unlock();
-    if (overridden) {
-        return value;
+    if (slot != NULL && top >= 0) {
+        const size_t rc = env_copy_out(slot->value[top], buf, cap);
+        env_unlock();
+        return rc;
     }
-    return getenv(name);
+    env_unlock();
+    /* No override: the process environment, which nothing in the program writes. */
+    return env_copy_out(getenv(name), buf, cap);
+}
+
+const char*
+dsd_env_read(const char* name, char* buf, size_t cap) {
+    if (buf == NULL || cap == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    const size_t need = dsd_env_copy(name, buf, cap);
+    if (need == 0) {
+        return NULL;
+    }
+    if (need > cap) {
+        buf[0] = '\0';
+        errno = ERANGE;
+        return NULL;
+    }
+    return buf;
 }
 
 int
@@ -227,9 +267,24 @@ dsd_env_clear_layer(dsd_env_layer layer) {
         return;
     }
     env_lock();
-    for (size_t i = 0; i < g_slot_count; i++) {
-        g_slots[i].value[layer] = NULL;
-        g_slots[i].present[layer] = 0;
+    /* Backwards: releasing a slot moves the last one into its place. */
+    for (size_t i = g_slot_count; i > 0; i--) {
+        env_slot* slot = &g_slots[i - 1U];
+        env_free_text(slot->value[layer]);
+        slot->value[layer] = NULL;
+        slot->present[layer] = 0;
+        env_release_if_empty_locked(slot);
     }
+    (void)atomic_fetch_add(&g_generation, 1);
     env_unlock();
+}
+
+unsigned int
+dsd_env_generation(void) {
+    return (unsigned int)atomic_load(&g_generation);
+}
+
+void
+dsd_env_note_process_change(void) {
+    (void)atomic_fetch_add(&g_generation, 1);
 }

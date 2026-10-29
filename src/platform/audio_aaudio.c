@@ -1314,8 +1314,8 @@ aaudio_fill_device(dsd_audio_device* dev, int is_input) {
  */
 static void
 aaudio_report_stats(const dsd_audio_stream* stream) {
-    const char* stats_env = dsd_env_get("DSD_NEO_AUDIO_STATS");
-    if (!stats_env || stats_env[0] == '\0') {
+    /* Set and non-empty: the length plus one exceeds 1. */
+    if (dsd_env_copy("DSD_NEO_AUDIO_STATS", NULL, 0) <= 1U) {
         return;
     }
 

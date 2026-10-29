@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,6 +80,14 @@ mutable_ui_ctx_from_callback(void* user) {
 }
 
 // ---- Simple path callbacks ----
+
+/* A session override (#782). A refused one is reported: the row would otherwise flip back with no word. */
+static void
+ui_env_override(const char* name, const char* value) {
+    if (dsd_env_set(DSD_ENV_LAYER_SESSION, name, value) != 0) {
+        ui_statusf("Could not set %s: too many variables changed", name);
+    }
+}
 
 void
 cb_event_log_set(void* v, const char* path) {
@@ -1196,7 +1205,7 @@ cb_audio_lpf(void* v, int ok, int hz) {
         return;
     }
     if (hz <= 0) {
-        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUDIO_LPF", "off");
+        ui_env_override("DSD_NEO_AUDIO_LPF", "off");
     } else {
         env_set_int("DSD_NEO_AUDIO_LPF", hz);
     }
@@ -1255,7 +1264,7 @@ cb_tcp_rcvbuf(void* v, int ok, int sz) {
         return;
     }
     if (sz <= 0) {
-        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TCP_RCVBUF", "");
+        ui_env_override("DSD_NEO_TCP_RCVBUF", "");
     } else {
         env_set_int("DSD_NEO_TCP_RCVBUF", sz);
     }
@@ -1271,7 +1280,7 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
         return;
     }
     if (ms <= 0) {
-        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TCP_RCVTIMEO", "");
+        ui_env_override("DSD_NEO_TCP_RCVTIMEO", "");
     } else {
         env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
     }
@@ -1308,7 +1317,9 @@ cb_env_edit_value(void* u, const char* val) {
     }
     /* A session override (#782): the process environment is never written while the decoder reads it. */
     if (dsd_env_set(DSD_ENV_LAYER_SESSION, ec->name, *val ? val : NULL) != 0) {
-        ui_statusf("Could not set %s: too many variables changed", ec->name);
+        /* EINVAL: a name the store refuses; ENOMEM: a full table or no memory. */
+        ui_statusf("Could not set %s: %s", ec->name,
+                   errno == EINVAL ? "invalid variable name" : "too many variables changed");
     } else if (*val) {
         ui_statusf("Set %s", ec->name);
     } else {
@@ -1335,9 +1346,17 @@ cb_env_edit_name(void* u, const char* name) {
         free(ec);
         return;
     }
+    if (strchr(name, '=') != NULL) {
+        ui_statusf("Variable name cannot contain =");
+        free(ec);
+        return;
+    }
     DSD_SNPRINTF(ec->name, sizeof ec->name, "%s", name);
-    const char* cur = dsd_neo_env_get(ec->name);
-    ui_prompt_open_string_async("Enter value (empty to clear)", cur ? cur : "", 256, cb_env_edit_value, ec);
+    /* The prompt copies the prefill; the copy here is zeroed, since a value may be a key or token. */
+    char cur[256];
+    (void)dsd_env_copy(ec->name, cur, sizeof cur);
+    ui_prompt_open_string_async("Enter value (empty to clear)", cur, sizeof cur, cb_env_edit_value, ec);
+    DSD_SECURE_ZERO(cur, sizeof cur);
 }
 
 // ---- M17 callback ----

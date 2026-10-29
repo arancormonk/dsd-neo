@@ -33,6 +33,18 @@
 /* Room for a home directory path, terminator included. */
 enum { DSD_HOME_DIR_CAP = 1024 };
 
+/* A variable's non-empty value into out: 1, 0 when unset or empty, -1 when it does not fit (a cut path would name
+   another directory). */
+static int
+home_dir_from_env(const char* name, char* out, size_t cap) {
+    const size_t need = dsd_env_copy(name, out, cap);
+    if (need <= 1U) {
+        return 0;
+    }
+    return need <= cap ? 1 : -1;
+}
+
+#if !defined(_WIN32)
 /* Copy @p dir into @p out: 1 when it fits, -1 when it does not (a cut path would name another directory). */
 static int
 home_dir_copy(const char* dir, char* out, size_t cap) {
@@ -44,7 +56,6 @@ home_dir_copy(const char* dir, char* out, size_t cap) {
     return 1;
 }
 
-#if !defined(_WIN32)
 /* The passwd entry's home directory, through the reentrant lookup: expansion runs on any thread (the control API
    applies configuration from its session threads), and getpwuid() returns a shared static record. */
 static int
@@ -84,13 +95,15 @@ static int
 get_home_dir(char* out, size_t cap) {
 #if defined(_WIN32)
     /* Try USERPROFILE first, then HOMEDRIVE+HOMEPATH */
-    const char* userprofile = dsd_env_get("USERPROFILE");
-    if (userprofile && *userprofile) {
-        return home_dir_copy(userprofile, out, cap);
+    const int profile = home_dir_from_env("USERPROFILE", out, cap);
+    if (profile != 0) {
+        return profile;
     }
 
-    const char* homedrive = dsd_env_get("HOMEDRIVE");
-    const char* homepath = dsd_env_get("HOMEPATH");
+    char drive_text[DSD_ENV_PATH_MAX];
+    char path_text[DSD_ENV_PATH_MAX];
+    const char* homedrive = dsd_env_read("HOMEDRIVE", drive_text, sizeof drive_text);
+    const char* homepath = dsd_env_read("HOMEPATH", path_text, sizeof path_text);
     if (homedrive && homepath) {
         const int n = DSD_SNPRINTF(out, cap, "%s%s", homedrive, homepath);
         return (n >= 0 && (size_t)n < cap) ? 1 : -1;
@@ -98,9 +111,9 @@ get_home_dir(char* out, size_t cap) {
     return 0;
 #else
     /* Try $HOME first */
-    const char* home = dsd_env_get("HOME");
-    if (home && *home) {
-        return home_dir_copy(home, out, cap);
+    const int home = home_dir_from_env("HOME", out, cap);
+    if (home != 0) {
+        return home;
     }
 
     /* Fall back to passwd entry */
@@ -193,12 +206,24 @@ copy_env_value(char** dst, const char* dst_end, const char* var_start, size_t va
     DSD_MEMCPY(var_name, var_start, var_len);
     var_name[var_len] = '\0';
 
-    const char* var_val = dsd_env_get(var_name);
-    if (!var_val) {
+    /* Copied straight into the output: a value longer than the room left fails the expansion, as before. */
+    const size_t room = (size_t)(dst_end - *dst);
+    const size_t need = dsd_env_copy(var_name, NULL, 0);
+    if (need == 0) {
         return 0;
     }
-
-    return copy_span_checked(dst, dst_end, var_val, strlen(var_val));
+    if (need - 1U > room) {
+        return -1;
+    }
+    char* value = (char*)malloc(need);
+    if (value == NULL) {
+        return -1;
+    }
+    const size_t got = dsd_env_copy(var_name, value, need);
+    const int rc = got == 0 ? 0 : (got > need ? -1 : copy_span_checked(dst, dst_end, value, got - 1U));
+    DSD_SECURE_ZERO(value, need);
+    free(value);
+    return rc;
 }
 
 static int

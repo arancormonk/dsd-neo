@@ -10,9 +10,11 @@
  *
  * Production code never writes the process environment: a running program overrides a variable through
  * <dsd-neo/platform/env.h>, and Semgrep bans the writers outside tests. A test still seeds the real environment,
- * the input a user exports, before it starts any thread that reads it.
+ * the input a user exports, before it starts any thread that reads it. Each write moves the store's generation
+ * (dsd_env_note_process_change()), so a reader that caches by it reads again.
  */
 
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
 
 #include <errno.h>
@@ -37,10 +39,12 @@ dsd_test_setenv(const char* name, const char* value, int overwrite) {
             return 0;
         }
     }
-    return _putenv_s(name, value) == 0 ? 0 : -1;
+    const int rc = _putenv_s(name, value) == 0 ? 0 : -1;
 #else
-    return setenv(name, value, overwrite);
+    const int rc = setenv(name, value, overwrite);
 #endif
+    dsd_env_note_process_change();
+    return rc;
 }
 
 /** @brief unsetenv(): 0 on success, -1 on error. */
@@ -52,10 +56,12 @@ dsd_test_unsetenv(const char* name) {
     }
 #if DSD_PLATFORM_WIN_NATIVE
     /* An empty value removes the variable. */
-    return _putenv_s(name, "") == 0 ? 0 : -1;
+    const int rc = _putenv_s(name, "") == 0 ? 0 : -1;
 #else
-    return unsetenv(name);
+    const int rc = unsetenv(name);
 #endif
+    dsd_env_note_process_change();
+    return rc;
 }
 
 #ifdef __cplusplus

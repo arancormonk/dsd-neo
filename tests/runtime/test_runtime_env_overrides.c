@@ -10,9 +10,9 @@
  * `no-process-writes` (RUNTIME_ENV_NO_PROCESS_WRITES): every path that used to setenv() runs -- a config apply's
  * [dsp], a bootstrap with every option that sets a variable plus an INI with [dsp] and an RTL [input], the
  * --calc-lcn one-shot, and, with the radio pipeline, the Auto PPM and rtl_tcp autotune services and the two I/Q DSP
- * toggles. The process environment must stay exactly as it was: the same `environ` array, the same entries and the same
- * bytes. On Android adding an entry can free the array another thread's getenv() or localtime_r() is walking. Each value
- * must still reach the runtime config.
+ * toggles. The process environment must stay exactly as it was: the same `environ` array, the same entries and the
+ * same bytes. On Android adding an entry can free the array another thread's getenv() or localtime_r() is walking.
+ * Each value must still reach the runtime config.
  *
  * `session-reset` (RUNTIME_SESSION_OVERRIDES_RESET): an embedding host bootstraps one session after another in the
  * same process (the Android service). A later session without an option must not inherit the earlier session's value
@@ -26,6 +26,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -74,7 +75,8 @@ expect_near(const char* tag, double got, double want) {
 
 static int
 expect_value(const char* tag, const char* name, const char* want) {
-    const char* got = dsd_neo_env_get(name);
+    char buf[256];
+    const char* got = dsd_env_read(name, buf, sizeof buf);
     if (got == NULL || strcmp(got, want) != 0) {
         DSD_FPRINTF(stderr, "FAIL: %s: %s reads %s, want %s\n", tag, name, got ? got : "(unset)", want);
         return 1;
@@ -446,7 +448,7 @@ run_session_reset(void) {
                           c->input_volume_is_set && c->input_volume_multiplier == 2);
         rc |= expect_true("second session: no vc grace", c->p25_vc_grace_is_set == 0);
     }
-    rc |= expect_true("second session: auto ppm reads unset", dsd_neo_env_get("DSD_NEO_AUTO_PPM") == NULL);
+    rc |= expect_true("second session: auto ppm reads unset", dsd_env_copy("DSD_NEO_AUTO_PPM", NULL, 0) == 0);
     rc |= expect_value("second session: exported input volume", "DSD_NEO_INPUT_VOLUME", "2");
     (void)dsd_test_unsetenv("DSD_NEO_INPUT_VOLUME");
     return rc;

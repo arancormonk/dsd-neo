@@ -56,7 +56,8 @@ exchange_counter(std::atomic<uint64_t>& counter) {
 
 uint64_t
 parse_interval_ns(void) {
-    const char* env = dsd_env_get("DSD_NEO_RTL_PERF_INTERVAL_MS");
+    const dsd_env_value env_value("DSD_NEO_RTL_PERF_INTERVAL_MS");
+    const char* env = env_value.c_str();
     if (!env || !env[0]) {
         return 1000000000ULL;
     }
@@ -88,8 +89,8 @@ init_locked(void) {
     if (g_perf_state.load(std::memory_order_acquire) != 0) {
         return;
     }
-    const char* path = dsd_env_get("DSD_NEO_RTL_PERF_CSV");
-    if (!path || !path[0]) {
+    /* Set and non-empty: the length plus one exceeds 1. */
+    if (dsd_env_copy("DSD_NEO_RTL_PERF_CSV", nullptr, 0) <= 1U) {
         g_perf_state.store(1, std::memory_order_release);
         return;
     }

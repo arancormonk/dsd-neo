@@ -226,7 +226,7 @@ jstring_to_utf8(JNIEnv* env, jstring value, bool* ok) {
  *
  * Qt's thread reads the environment while this runs on the Android main thread, and on bionic adding a variable can
  * free the environ array under that read (#782). The override lasts the life of the process; every in-process reader
- * sees it through dsd_env_get(). An empty or failed conversion leaves the name as it was.
+ * reads it through the store. An empty or failed conversion leaves the name as it was; a refused set is logged.
  */
 void
 set_host_override_from_jstring(JNIEnv* env, const char* name, jstring value) {
@@ -235,7 +235,9 @@ set_host_override_from_jstring(JNIEnv* env, const char* name, jstring value) {
     if (!ok || text.empty()) {
         return;
     }
-    (void)dsd_env_set(DSD_ENV_LAYER_HOST, name, text.c_str());
+    if (dsd_env_set(DSD_ENV_LAYER_HOST, name, text.c_str()) != 0) {
+        LOG_WARN("nativeInit: could not set %s for the engine\n", name);
+    }
 }
 
 /**
@@ -394,7 +396,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
      * environment, which Qt's thread is reading (#782). */
     set_host_override_from_jstring(env, "HOME", config_dir);
     set_host_override_from_jstring(env, "XDG_CONFIG_HOME", config_dir);
-    (void)dsd_env_set(DSD_ENV_LAYER_HOST, "DSD_NEO_NO_SIGNAL_HANDLERS", "1");
+    if (dsd_env_set(DSD_ENV_LAYER_HOST, "DSD_NEO_NO_SIGNAL_HANDLERS", "1") != 0) {
+        LOG_WARN("nativeInit: could not set DSD_NEO_NO_SIGNAL_HANDLERS; the engine may install signal handlers\n");
+    }
     /* #647: before any session can be configured. Without the unplug-owner grace the reader's own -1 ends a session
      * at once, racing the detach broadcast that names the unplug. */
     dsd_android::install_receiver_policy();

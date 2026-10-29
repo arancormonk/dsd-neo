@@ -678,18 +678,21 @@ dsd_user_config_default_path(void) {
     buf[0] = '\0';
 
 #if defined(_WIN32)
-    const char* appdata = dsd_env_get("APPDATA");
+    const dsd_env_value appdata_value("APPDATA");
+    const char* appdata = appdata_value.c_str();
     if (appdata && *appdata) {
         DSD_SNPRINTF(buf, sizeof buf, "%s\\dsd-neo\\config.ini", appdata);
         buf[sizeof buf - 1] = '\0';
     }
 #else
-    const char* xdg = dsd_env_get("XDG_CONFIG_HOME");
+    const dsd_env_value xdg_value("XDG_CONFIG_HOME");
+    const char* xdg = xdg_value.c_str();
     if (xdg && *xdg) {
         DSD_SNPRINTF(buf, sizeof buf, "%s/dsd-neo/config.ini", xdg);
         buf[sizeof buf - 1] = '\0';
     } else {
-        const char* home = dsd_env_get("HOME");
+        const dsd_env_value home_value("HOME");
+        const char* home = home_value.c_str();
         if (home && *home) {
             DSD_SNPRINTF(buf, sizeof buf, "%s/.config/dsd-neo/config.ini", home);
             buf[sizeof buf - 1] = '\0';
@@ -1492,6 +1495,15 @@ apply_input_source_udp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* An INI key's session override, set only when the variable reads as unset (#782). A refused one is logged: the key
+   would otherwise not reach the config that reads the variable. */
+static void
+ini_override_if_unset(const char* name, const char* value) {
+    if (dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, name, value) != 0) {
+        LOG_WARN("Config: could not set %s for this session; the key may not take effect\n", name);
+    }
+}
+
 static void
 apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts) {
@@ -1502,7 +1514,7 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
     opts->rtl_auto_ppm = cfg->rtl_auto_ppm ? 1 : 0;
     /* An exported DSD_NEO_AUTO_PPM, or one this session already set, wins over the INI key. */
-    (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUTO_PPM", opts->rtl_auto_ppm ? "1" : "0");
+    ini_override_if_unset("DSD_NEO_AUTO_PPM", opts->rtl_auto_ppm ? "1" : "0");
 }
 
 /* A PCM source's squelch keys (issue #628), when the config names them: the noise squelch runs on audio input, and a
@@ -1832,8 +1844,8 @@ apply_dsp_config(const dsdneoUserConfig* cfg) {
         return;
     }
     /* An exported variable, or one this session already set, wins over the INI key. */
-    (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_BALANCE", cfg->iq_balance ? "1" : "0");
-    (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0");
+    ini_override_if_unset("DSD_NEO_IQ_BALANCE", cfg->iq_balance ? "1" : "0");
+    ini_override_if_unset("DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0");
 }
 
 /* A section that is present sets every key it owns: a width left out is the default (0). The loader only stores
@@ -2195,10 +2207,12 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 static void
 snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->has_dsp = 1;
-    const char* iqb = dsd_env_get("DSD_NEO_IQ_BALANCE");
+    const dsd_env_value iqb_value("DSD_NEO_IQ_BALANCE");
+    const char* iqb = iqb_value.c_str();
     int parsed = 0;
     cfg->iq_balance = (dsd_parse_int_strict(iqb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
-    const char* dcb = dsd_env_get("DSD_NEO_IQ_DC_BLOCK");
+    const dsd_env_value dcb_value("DSD_NEO_IQ_DC_BLOCK");
+    const char* dcb = dcb_value.c_str();
     parsed = 0;
     cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }

@@ -600,7 +600,7 @@ test_p25_afc_status_gate_apply(void) {
 
 static int
 test_cache_dir_default(void) {
-    const char* prev_home = dsd_neo_env_get("HOME");
+    const char* prev_home = getenv("HOME"); /* the process value, to put back */
     char saved_home[1024];
     saved_home[0] = '\0';
     if (prev_home && *prev_home) {
