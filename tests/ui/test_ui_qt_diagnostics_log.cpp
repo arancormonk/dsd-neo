@@ -2074,7 +2074,21 @@ androidHostRecordsSurvive() {
             << QStringLiteral("teardown: Qt event loop returned at uptime 1234.890 s")
             << QStringLiteral("teardown: ~RadioReferenceModel took 1012 ms")
             << QStringLiteral("teardown: main() returning at uptime 1236.010 s; flushing, at most 500 ms");
-    check(records.size() == 16, "golden watchdog incident is not three records");
+    // AccessibilityGate and AccessibilityBridge (#782): flags and counts only.
+    records << QStringLiteral(
+        "accessibility: bridge off at launch (touch exploration off; accessibility on, 2 services bound)")
+            << QStringLiteral(
+                   "accessibility: bridge on at launch (touch exploration on; accessibility on, 1 service bound)")
+            << QStringLiteral("accessibility: bridge off at launch (touch exploration on; accessibility off, 0 "
+                              "services bound); restart notice pending")
+            << QStringLiteral("accessibility: touch exploration turned on; the bridge stays off until the app restarts")
+            << QStringLiteral("accessibility: touch exploration turned off; the bridge stays on until the app restarts")
+            << QStringLiteral("accessibility: notice shown") << QStringLiteral("accessibility: notice acknowledged")
+            << QStringLiteral("accessibility: notice dropped")
+            << QStringLiteral("accessibility: notice could not be shown; it waits for the next resume")
+            << QStringLiteral("accessibility: setting QT_ANDROID_DISABLE_ACCESSIBILITY failed (errno 22); the bridge "
+                              "is not frozen, so Qt follows later changes");
+    check(records.size() == 26, "golden watchdog incident is not three records");
     for (const auto& text : records) {
         const QString record = QStringLiteral("[host] [info] ") + text;
         checkLabelled(DiagnosticsLog::redact(record) == record, "Android host record changed: " + text.toUtf8());

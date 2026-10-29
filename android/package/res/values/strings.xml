@@ -35,4 +35,8 @@
     <string name="error_usb_permission">The USB receiver needs permission again</string>
     <string name="error_usb_open_failed">The USB receiver could not be reopened</string>
     <string name="decoder_emergency_prefix">EMERGENCY ·&#32;</string>
+    <!-- #782: TalkBack turned on while the app runs. The app's screens can be read only when TalkBack was on as the
+         app opened, and the app never closes itself, so this says how to reopen it and what closing costs. -->
+    <string name="a11y_restart_title">Reopen DSD-neo to use TalkBack</string>
+    <string name="a11y_restart_message">TalkBack can read DSD-neo only if TalkBack was on when the app opened. Close DSD-neo (swipe it away in Recent apps), then open it again. Closing stops decoding.</string>
 </resources>

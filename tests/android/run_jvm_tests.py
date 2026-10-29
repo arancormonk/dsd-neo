@@ -503,6 +503,57 @@ def usb_broker_contract():
     return None
 
 
+def method_body(text, signature):
+    """The body of the Kotlin method whose declaration line starts with `signature`, up to its closing brace at the same
+    indent; None when it is missing."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip().startswith(signature)), None)
+    if start is None:
+        return None
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].strip() == "}" and len(lines[i]) - len(lines[i].lstrip()) == indent),
+        None,
+    )
+    return None if end is None else "\n".join(lines[start + 1 : end])
+
+
+def a11y_bridge_order():
+    """#782: Qt reads QT_ANDROID_DISABLE_ACCESSIBILITY synchronously inside super.onCreate(), so the bridge's launch
+    decision comes immediately before it and the freeze immediately after; the notice follows the activity's resume,
+    pause, stop and destroy."""
+    path = REPO / APP_SOURCES / "DsdNeoActivity.kt"
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity: {error}"
+    body = method_body(text, "override fun onCreate(")
+    if body is None:
+        return f"{where}: no onCreate"
+    statements = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith("//")]
+    expected = [
+        "AccessibilityBridge.effects = AccessibilityRestartNotice",
+        "AccessibilityBridge.beforeQt(this)",
+        "super.onCreate(savedInstanceState)",
+        "AccessibilityBridge.afterQt(this)",
+    ]
+    found = [line for line in statements if line in expected or line.startswith(("AccessibilityBridge.", "super.onCreate("))]
+    if found != expected:
+        return f"{where}: onCreate must run exactly {expected}, in that order, with nothing of these elsewhere; found {found}"
+    start = statements.index(expected[0])
+    if statements[start : start + len(expected)] != expected:
+        return f"{where}: in onCreate, {expected} must be consecutive statements: the variable is read inside super.onCreate()"
+    for callback in ("onResume", "onPause", "onStop", "onDestroy"):
+        lifecycle = method_body(text, f"override fun {callback}(")
+        if lifecycle is None or f"AccessibilityBridge.{callback}(this)" not in lifecycle:
+            return f"{where}: {callback} must call AccessibilityBridge.{callback}(this)"
+    destroy = method_body(text, "override fun onDestroy(")
+    if destroy.find("AccessibilityBridge.onDestroy(this)") > destroy.find("super.onDestroy()"):
+        return f"{where}: AccessibilityBridge.onDestroy(this) must come before super.onDestroy(), which may not return"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -684,6 +735,20 @@ SUITES = {
             ),
         ),
         checks=(screen_golden_matches,),
+    ),
+    # Qt's accessibility bridge (#782): the gate's decisions in plain Kotlin with no stubs, then AccessibilityBridge
+    # against stubs of the accessibility manager (listeners fired in AOSP's order) and of the process environment, with
+    # Qt's own listener modelled in the test. The bridge is process state, so each of its test files runs in its own JVM.
+    "a11y_bridge": Suite(
+        builds=(
+            Build(sources=("AccessibilityGate.kt", "ActivitySlot.kt"), tests=("AccessibilityGateTest.kt",)),
+            Build(
+                sources=("AccessibilityGate.kt", "ActivitySlot.kt", "AccessibilityBridge.kt"),
+                tests=("AccessibilityBridgeTest.kt", "AccessibilityBridgeLaunchTest.kt", "AccessibilityBridgeErrnoTest.kt"),
+                stubs=("AccessibilityManager.kt", "AccessibilityServiceInfo.kt", "SystemOsEnv.kt", "A11yContext.kt", "A11yActivity.kt"),
+            ),
+        ),
+        checks=(a11y_bridge_order,),
     ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and
