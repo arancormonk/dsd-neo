@@ -1126,6 +1126,16 @@ dsd_rdio_export_call(const dsd_opts* opts, const Event_History_I* event_struct, 
     return dsd_rdio_export_call_ex(opts, event_struct, wav_path, opened, NULL);
 }
 
+#ifdef USE_CURL
+/* Whether an API upload removes its WAV once uploaded: never beside DirWatch, nor when a recording journal's owner
+   manages retention. The job carries the decision, made here on the caller's thread: the worker never reads the
+   options. */
+static int
+rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
+    return opts->rdio_api_delete_after_upload && !wants_dirwatch && !dsd_rdio_journal_keeps_uploads(opts);
+}
+#endif
+
 int
 dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
                         int* api_queued) {
@@ -1157,9 +1167,7 @@ dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struc
 #else
         int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(mode);
         int remove_meta_on_success = !wants_dirwatch;
-        /* The job carries the decision, made here on the caller's thread: the worker never reads the options. */
-        int remove_wav_on_success =
-            opts->rdio_api_delete_after_upload && !wants_dirwatch && !dsd_rdio_journal_keeps_uploads(opts);
+        int remove_wav_on_success = rdio_api_removes_wav(opts, wants_dirwatch);
         if (opts->rdio_api_delete_after_upload && wants_dirwatch
             && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
             LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
