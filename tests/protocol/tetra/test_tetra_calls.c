@@ -1230,16 +1230,22 @@ send_connect_ack(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant) {
     send_block(s, ssi, &cmce, 0, 0);
 }
 
-/* D-CALL RESTORE (table 14.6) of call @p call_id to @p ssi (the restoring MS) with transmission grant @p grant. */
+/* D-CALL RESTORE (table 14.6) of call @p call_id with transmission grant @p grant. */
+static void
+put_restore(ttb_block* cmce, uint16_t call_id, uint32_t grant) {
+    ttb_put(cmce, TETRA_MLE_PD_CMCE, 3);
+    ttb_put(cmce, TETRA_CMCE_D_CALL_RESTORE, 5);
+    ttb_put(cmce, call_id, 14);
+    ttb_put(cmce, grant, 2);
+    ttb_put(cmce, 0, 2); /* transmission request permission, reset call time-out */
+    ttb_put(cmce, 0, 1); /* O-bit */
+}
+
+/* put_restore() to @p ssi, the restoring MS. */
 static void
 send_restore(session* s, uint32_t ssi, uint16_t call_id, uint32_t grant) {
     ttb_block cmce = {0};
-    ttb_put(&cmce, TETRA_MLE_PD_CMCE, 3);
-    ttb_put(&cmce, TETRA_CMCE_D_CALL_RESTORE, 5);
-    ttb_put(&cmce, call_id, 14);
-    ttb_put(&cmce, grant, 2);
-    ttb_put(&cmce, 0, 2); /* transmission request permission, reset call time-out */
-    ttb_put(&cmce, 0, 1); /* O-bit */
+    put_restore(&cmce, call_id, grant);
     send_block(s, ssi, &cmce, 0, 0);
 }
 
@@ -1485,8 +1491,8 @@ test_connect_first_setup(void) {
 }
 
 /* What forgets a connect-first D-CONNECT: a release or disconnect of its call identifier, a D-SETUP naming another
- * calling party, the window passing, a floor PDU of the call, the least recent of TETRA_PENDING_CONNECTS + 1 giving way, and the call
- * identifiers naming nothing any more (tetra_calls_forget_calls()). An entry is taken once. */
+ * calling party, the window passing, a floor PDU of the call, the least recent of TETRA_PENDING_CONNECTS + 1 giving
+ * way, and the call identifiers naming nothing any more (tetra_calls_forget_calls()). An entry is taken once. */
 static void
 test_connect_cache_dropped_by_release_and_conflict(void) {
     static const uint32_t k_ends[] = {TETRA_CMCE_D_RELEASE, TETRA_CMCE_D_DISCONNECT};
@@ -1565,7 +1571,8 @@ test_setup_facility_blocks_talker_inference(void) {
 /* A management identity (SMI) serves mobility management only, and may equal an SSI while being another identity (EN
  * 300 392-1 clauses 7.3.2, 7.3.3): a call PDU addressed by an SMI names no party of its call. A D-SETUP so addressed
  * has no called party, a D-CONNECT "transmission granted" names no caller or talker (and leaves no connect-first caller
- * to remember), and an individually addressed "transmission granted" names no talker. */
+ * to remember), an individually addressed "transmission granted" names no talker, and a D-CALL RESTORE names no
+ * restoring MS: "transmission granted" makes no talker, and another grant leaves the SSI of the same number talking. */
 static void
 test_smi_address_is_never_a_party(void) {
     session s = session_group_call();
@@ -1585,6 +1592,16 @@ test_smi_address_is_never_a_party(void) {
     assert(c && c->called_ssi == 0x100u && c->calling_ssi == 0u && c->talker_ssi == 0u);
     const dsd_call_snapshot call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x100u && call.ota_source_id == 0u);
+    ttb_block restore = {0};
+    put_restore(&restore, 0x0A, 0);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &restore);
+    assert(record_talker(&s, 0x0A) == 0u && canonical(s.state).ota_source_id == 0u);
+    send_grant(&s, TALKER_A, 0x0A, 0, 0);
+    assert(record_talker(&s, 0x0A) == TALKER_A);
+    restore = (ttb_block){0};
+    put_restore(&restore, 0x0A, 1);
+    send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &restore);
+    assert(record_talker(&s, 0x0A) == TALKER_A && canonical(s.state).ota_source_id == TALKER_A);
     ttb_block setup = {0};
     ttb_d_setup(&setup, 0x0B, TTB_SPEECH_GROUP);
     send_block_to(&s, TETRA_MAC_ADDR_SMI, TALKER_A, &setup);
@@ -2589,8 +2606,6 @@ test_smi_label_does_not_bind_ssi_party(void) {
     assert(has_label(c, 5u));
     send_smi_event_label(&s, TALKER_A, 5u);
     assert(!has_label(c, 5u));
-    send_event_label(&s, TALKER_A, 5u, 0, 0);
-    assert(has_label(c, 5u));
     send_event_label(&s, TALKER_A, 5u, 0, 0);
     assert(has_label(c, 5u));
     session_close(&s);
