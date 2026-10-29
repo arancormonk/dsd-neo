@@ -31,6 +31,7 @@
 #ifndef DSD_NEO_DSP_TETRA_UPLINK_TIMING_H
 #define DSD_NEO_DSP_TETRA_UPLINK_TIMING_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -109,6 +110,8 @@ typedef struct {
     int carrier_pending;   /**< 1 while a burst's carrier phase waits for its symbol */
     uint64_t carrier_at;   /**< the symbol (symbols_out count) the carrier loop takes it from */
     float carrier_phase;   /**< that phase */
+    uint64_t
+        held_until; /**< pushed count once every non-zero sample pushed so far has come out (dsd_tetra_ul_timing_held()) */
 } dsd_tetra_ul_timing;
 
 /** Start over at @p sps (DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS): an empty look-ahead, no burst. */
@@ -141,6 +144,15 @@ int dsd_tetra_ul_timing_align(dsd_tetra_ul_timing* t, double next_strobe, float 
  * (dsd_tetra_ul_timing_align()); else 0.
  */
 int dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase);
+
+/**
+ * @brief Zero samples to push before every non-zero sample pushed so far has come out of the look-ahead.
+ *
+ * 0 when the look-ahead holds only zeros (or is not set up). Whenever the Gardner's input stops (a squelched block, the
+ * end of a capture) the stage pushes this many zeros through, so a burst's last symbols reach the decoder then, not
+ * after whatever comes next (dsd_demod_tetra_uplink_drain()).
+ */
+size_t dsd_tetra_ul_timing_held(const dsd_tetra_ul_timing* t);
 
 #ifdef __cplusplus
 }

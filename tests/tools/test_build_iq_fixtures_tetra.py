@@ -155,6 +155,22 @@ class TetraUplinkPhaseOffsets(unittest.TestCase):
         for offset in fixtures.TETRA_UPLINK_PHASE_OFFSETS:
             self.assertIn(f"tetra_uplink_bursts_o{offset}_72k", names)
 
+    def test_burst_starts(self):
+        """Each burst starts its guard into its slot, offset samples later on a variant; the short-tail cut ends its tail
+        after the last one."""
+        sps = fixtures.TETRA_UPLINK_RATE_HZ // fixtures.TETRA_SYMBOL_RATE
+        starts = fixtures.tetra_uplink_burst_starts()
+        lead = int(round(fixtures.TETRA_UPLINK_LEAD_S * fixtures.TETRA_UPLINK_RATE_HZ))
+        self.assertEqual(starts[0], lead + fixtures.TETRA_UPLINK_GUARD_SYMBOLS * sps)
+        self.assertEqual(len(starts), len(fixtures.TETRA_UPLINK_BURSTS))
+        self.assertEqual(fixtures.tetra_uplink_burst_starts(3), [start + 3 for start in starts])
+        self.assertIn(fixtures.TETRA_UPLINK_SHORT_TAIL_NAME, fixtures.derived_fixture_names())
+        # The first burst's energy begins where its start says (its pulse reaches 8 symbols ahead of it).
+        samples, _bursts = fixtures.tetra_uplink_samples()
+        noise = float(np.mean(np.abs(samples[: lead // 2]) ** 2))
+        burst = float(np.mean(np.abs(samples[starts[0] : starts[0] + 100 * sps]) ** 2))
+        self.assertGreater(burst, 10.0 * noise)
+
     def test_offset_moves_only_the_bursts(self):
         base, base_bursts = fixtures.tetra_uplink_samples()
         power = np.abs(base) ** 2

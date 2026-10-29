@@ -16644,14 +16644,14 @@ if(DSD_HAS_RADIO)
         "${_dsd_tetra_ul_mode}"
         "${_dsd_tetra_nub}2002.*${_dsd_tetra_nub}2004.*${_dsd_tetra_nub}2005.*${_dsd_tetra_nub}2008.*${_dsd_tetra_nub}2010.*${_dsd_tetra_nub}2011.*${_dsd_tetra_nub}2013.*${_dsd_tetra_nub}2015"
     )
-    # The same uplink with every burst 1 to 7 samples later and the noise unchanged
+    # The same uplink with every burst 1 to 7 samples later and the noise unchanged, its lead-in and tail cut shorter
     # (TETRA_UPLINK_PHASE_OFFSETS): with the fixture above as offset 0 each burst meets the receiver at every sampling
     # phase, twice over. The symbol timing and the carrier loop free-run on noise between bursts and pull in too slowly
     # for a burst; from half a symbol off the timing loop hangs for most of a normal burst. So an uplink session takes
     # each burst's timing and carrier phase from its training sequence (tetra_uplink_timing.h), and every burst must
-    # decode, in order, at every offset. Before, each of offsets 1 to 7 lost one or two of them (2009; 2003; 2001; 2015;
-    # 2003 and 2009; 2003 and 2016; 2001): 119 of the 128.
-    set(_dsd_tetra_ul_all "")
+    # decode, in order, at every offset. Before, each of offsets 1 to 7 lost one or two of them (2006 and 2009; 2016;
+    # 2001; 2015; 2009; 2016; 2001 and 2006): 119 of the 128.
+    set(_dsd_tetra_ul_each "")
     set(_dsd_tetra_ul_ssi 2001)
     foreach(
         _kind
@@ -16672,15 +16672,13 @@ if(DSD_HAS_RADIO)
         nub
         cb
     )
-        if(_dsd_tetra_ul_all)
-            string(APPEND _dsd_tetra_ul_all ".*")
-        endif()
-        string(
-            APPEND _dsd_tetra_ul_all
+        list(
+            APPEND _dsd_tetra_ul_each
             "${_dsd_tetra_${_kind}}${_dsd_tetra_ul_ssi}"
         )
         math(EXPR _dsd_tetra_ul_ssi "${_dsd_tetra_ul_ssi} + 1")
     endforeach()
+    list(JOIN _dsd_tetra_ul_each ".*" _dsd_tetra_ul_all)
     foreach(
         _offset
         1
@@ -16698,6 +16696,34 @@ if(DSD_HAS_RADIO)
             "${_dsd_tetra_ul_all}"
         )
     endforeach()
+    # The uplink under a level squelch at -47 dB, which closes between bursts and on the weak burst 2007. The burst
+    # timing holds 128 symbols back; a squelched block pushes them out (as zeros through the uplink's Gardner) before
+    # the squelch's silence, or a burst's end would come only after it. The receiver before decoded 14 (not 2002 and
+    # 2007), the timing without that drain 4; every burst but 2007 must decode, in order.
+    set(_dsd_tetra_ul_squelched "${_dsd_tetra_ul_each}")
+    list(REMOVE_AT _dsd_tetra_ul_squelched 6)
+    list(JOIN _dsd_tetra_ul_squelched ".*" _dsd_tetra_ul_squelched)
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_SQUELCH
+        tetra_uplink_bursts_72k
+        "${_dsd_tetra_ul_mode} --squelch -47"
+        "${_dsd_tetra_ul_squelched}"
+    )
+    # The uplink's last two bursts with the capture ending 20 symbols after the last one
+    # (TETRA_UPLINK_SHORT_TAIL_NAME): at the end of the capture the uplink pushes the symbols its burst timing holds
+    # back out, so the last burst decodes and the end-of-capture notice still comes after it.
+    list(GET _dsd_tetra_ul_each 14 _dsd_tetra_ul_2015)
+    list(GET _dsd_tetra_ul_each 15 _dsd_tetra_ul_2016)
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_SHORT_TAIL
+        tetra_uplink_bursts_short_tail_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
+    )
+    unset(_dsd_tetra_ul_each)
+    unset(_dsd_tetra_ul_squelched)
+    unset(_dsd_tetra_ul_2015)
+    unset(_dsd_tetra_ul_2016)
     unset(_dsd_tetra_ul_all)
     unset(_dsd_tetra_ul_ssi)
     unset(_dsd_tetra_ul_mode)

@@ -56,6 +56,9 @@ struct rtl_replay_eof_state {
        end-of-capture notice from it when the decoder read all the output (dsd_rtl_stream_soft_stop()), so the notice
        follows every line the capture decoded to. */
     std::atomic<uint64_t>* replay_end_notice;
+    /* 1 while the demod owes the decoder the symbols a TETRA uplink look-ahead holds back
+       (dsd_demod_tetra_uplink_held()); the demod counts as drained only once it pushed them out. */
+    std::atomic<int>* replay_demod_flush_owed;
     dsd_mutex_t* eof_m;
     dsd_cond_t* eof_cond;
     rtl_replay_input_drained_cb on_input_drained;

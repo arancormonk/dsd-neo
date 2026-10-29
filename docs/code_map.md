@@ -4535,10 +4535,19 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   once the two symbols after it showed no extended sequence, a control burst only when the extended sequence's four
   outer symbols agree; overlapping bursts keep the higher score). When the strobe comes within two symbols of a burst's
   first symbol it moves onto the grid by less than half a symbol, and the Costas loop takes the burst's rotation within
-  a quarter turn, frequency and smoothing reset, from the symbol after. `op25_gardner_cc()` runs a separate template
-  instantiation for it, so every other stream runs the loop unchanged; `ted_state_t::ul_lookahead_live`, cleared by
-  every TED reset and every block off the stage, starts the look-ahead over with the TED. Tests:
-  `DSP_TETRA_UPLINK_TIMING`, `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`. The stream publishes TETRA as the running channel
+  a quarter turn, frequency and smoothing reset, from the symbol after. `op25_gardner_cc()` and `op25_costas_loop_cc()`
+  run separate template instantiations for it, so every other stream runs the loops unchanged;
+  `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the stage and every block a signal
+  search drops (what it held would reach the decoder after the gap), starts the look-ahead over with the TED. The
+  look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the Gardner's input stops it is pushed
+  out as zeros through Gardner, differential, Costas and the phase demodulator: a level-squelched block runs that way
+  while signal is held (`full_demod()`), so a burst's end reaches the decoder before the squelch's silence, and at the
+  end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()` as a block of its own once the input
+  ended and the decoder took every block (`demod_replay_flush_uplink()`); `replay_demod_flush_owed`, set after every
+  replay block, keeps both drain decisions (`replay_demod_drain_decide()`, `replay_mark_input_drained()`) from counting
+  the demod drained before that, so the end-of-capture notice still follows the last burst. A live stream's stop drops
+  it with the rest of the pipeline's in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`,
+  `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`. The stream publishes TETRA as the running channel
   profile (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag
   and so the UI channel width) only while the TETRA channel filter runs, WIDE otherwise; `rtl_stream_get_symbol_profile_full()`
   keeps the configured profile the trunk-tuning restore puts back, and an open on the FSK discriminator turns a TETRA

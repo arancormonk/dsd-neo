@@ -148,19 +148,21 @@ ul_spans_overlap(const dsd_tetra_ul_burst* a, const dsd_tetra_ul_burst* b) {
     return a->start < b->end && b->start < a->end;
 }
 
-/* Keep @p b unless a burst found before it overlaps it with a training that scored as high; it replaces those it
-   overlaps. With every slot taken it replaces the burst that starts first. */
+/* Keep @p b unless a burst still ahead of the strobe overlaps it with a training that scored as high; it replaces those
+   ahead of the strobe it overlaps. A burst the strobe passed blocks nothing: it was a peak on noise, or the burst before
+   this one, and a training that did not move the strobe yet is all that can still decide. With every slot taken it
+   replaces the burst that starts first. */
 static void
 ul_burst_found(dsd_tetra_ul_timing* t, const dsd_tetra_ul_burst* b) {
     for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
         const dsd_tetra_ul_burst* o = &t->bursts[i];
-        if (o->end != 0 && ul_spans_overlap(o, b) && o->score >= b->score) {
+        if (o->end != 0 && o->pending && ul_spans_overlap(o, b) && o->score >= b->score) {
             return;
         }
     }
     for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
         dsd_tetra_ul_burst* o = &t->bursts[i];
-        if (o->end != 0 && ul_spans_overlap(o, b)) {
+        if (o->end != 0 && o->pending && ul_spans_overlap(o, b)) {
             DSD_MEMSET(o, 0, sizeof(*o));
         }
     }
@@ -311,6 +313,10 @@ dsd_tetra_ul_timing_push(dsd_tetra_ul_timing* t, float in_r, float in_j, float* 
     *out_j = t->ring[back * 2 + 1];
     t->ring[at * 2] = in_r;
     t->ring[at * 2 + 1] = in_j;
+    /* A squelched block pushes exact zeros; anything else holds signal until the look-ahead returns it. */
+    if (fabsf(in_r) + fabsf(in_j) > 1e-30f) {
+        t->held_until = n + 1U + (uint64_t)t->delay;
+    }
 
     const int sps = t->sps;
     const size_t dat = (size_t)(n & (DSD_TETRA_UL_DIFF_RING - 1));
@@ -372,4 +378,12 @@ dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase) {
     t->carrier_pending = 0;
     *phase = t->carrier_phase;
     return 1;
+}
+
+size_t
+dsd_tetra_ul_timing_held(const dsd_tetra_ul_timing* t) {
+    if (!t || t->sps < DSD_TETRA_UL_MIN_SPS || t->held_until <= t->pushed) {
+        return 0U;
+    }
+    return (size_t)(t->held_until - t->pushed);
 }

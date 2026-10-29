@@ -541,12 +541,16 @@ a no-sync exit when the stream went on unbroken from there (`dsd_frame_sync_hist
 `FRAME_SYNC_HISTORY_CARRY` drives `getFrameSync()` across such an exit), and all 16 decode.
 
 `tetra_uplink_bursts_o1_72k` to `_o7_72k` (`TETRA_UPLINK_PHASE_OFFSETS`) are the same uplink with every burst 1 to 7
-samples later over the same noise, so with the fixture above as offset 0 each burst meets the receiver at every
-sampling phase twice over. `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7` require all 16 bursts in order at each offset.
-The symbol timing and carrier loops free-run between bursts and could not pull a burst in from a bad phase (from half
-a symbol off the timing loop hangs for most of a normal burst; the carrier loop can sit 45 degrees off): offsets 1 to 7
-lost 9 of 112 bursts before the uplink took each burst's timing and phase from its training sequence
-(`tetra_uplink_timing.h`). With the weak bursts 3, 6 and 9 dB lower (not committed) the sweep decoded 121, 114 and 105
+samples later over the same noise (its lead-in and tail 0.15 s shorter), so with the fixture above as offset 0 each
+burst meets the receiver at every sampling phase twice over. `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7` require all 16
+bursts in order at each offset. The symbol timing and carrier loops free-run between bursts and could not pull a burst
+in from a bad phase (from half a symbol off the timing loop hangs for most of a normal burst; the carrier loop can sit
+45 degrees off): offsets 1 to 7 lost 9 of 112 bursts before the uplink took each burst's timing and phase from its
+training sequence (`tetra_uplink_timing.h`). That burst timing holds 128 symbols back, so two cases check they come
+out where the Gardner's input stops: `DECODE_IQ_TETRA_UPLINK_SQUELCH` runs the uplink fixture under `--squelch -47`
+(every burst but the weak 2007, which the squelch closes on; before the drain on squelched blocks 4 decoded), and
+`DECODE_IQ_TETRA_UPLINK_SHORT_TAIL` (`tetra_uplink_bursts_short_tail_72k`, the last two bursts with the capture ending
+20 symbols after the last) requires the last burst and then the end-of-capture notice. With the weak bursts 3, 6 and 9 dB lower (not committed) the sweep decoded 121, 114 and 105
 of 128 before and 128, 128 and 117 after.
 
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are

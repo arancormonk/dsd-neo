@@ -1081,6 +1081,32 @@ op25_diff_phasor_cc(struct demod_state* d) {
     d->cqpsk_diff_prev_j = prev_j;
 }
 
+/* The Costas loop over a block's symbols. With kUplinkCarrier (a TETRA uplink session's burst timing,
+   tetra_uplink_timing.h) the loop takes a burst's rotation, measured on its training, at the burst's first symbol,
+   with its frequency and error smoothing started over. */
+template <bool kUplinkCarrier>
+static void
+costas_run_loop(costas_loop_context_t* ctx, float* iq, int pairs, dsd_tetra_ul_timing* ul) {
+    for (int n = 0; n < pairs; n++) {
+        const size_t nn = (size_t)n;
+        float out_r = 0.0f;
+        float out_j = 0.0f;
+        if (kUplinkCarrier) {
+            float phase = 0.0f;
+            if (dsd_tetra_ul_timing_carrier(ul, &phase)) {
+                ctx->phase = phase;
+                ctx->freq = 0.0f;
+                ctx->error_smooth = 0.0f;
+            }
+        } else {
+            (void)ul;
+        }
+        costas_process_symbol(ctx, iq + nn * 2, &out_r, &out_j);
+        iq[nn * 2] = out_r;
+        iq[nn * 2 + 1] = out_j;
+    }
+}
+
 /*
  * OP25-compatible Costas loop at symbol rate.
  *
@@ -1126,23 +1152,10 @@ op25_costas_loop_cc(struct demod_state* d) {
 
     costas_loop_context_t ctx;
     costas_prepare_loop_context(c, &ctx);
-    const bool uplink = d->ted_state.ul_lookahead_live != 0;
-
-    for (int n = 0; n < pairs; n++) {
-        const size_t nn = (size_t)n;
-        float out_r = 0.0f;
-        float out_j = 0.0f;
-        if (uplink) {
-            float ph = 0.0f;
-            if (dsd_tetra_ul_timing_carrier(&d->tetra_ul_timing, &ph)) {
-                ctx.phase = ph;
-                ctx.freq = 0.0f;
-                ctx.error_smooth = 0.0f;
-            }
-        }
-        costas_process_symbol(&ctx, iq + nn * 2, &out_r, &out_j);
-        iq[nn * 2] = out_r;
-        iq[nn * 2 + 1] = out_j;
+    if (d->ted_state.ul_lookahead_live) {
+        costas_run_loop<true>(&ctx, iq, pairs, &d->tetra_ul_timing);
+    } else {
+        costas_run_loop<false>(&ctx, iq, pairs, nullptr);
     }
 
     costas_commit_loop(c, &ctx);

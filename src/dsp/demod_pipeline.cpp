@@ -1449,6 +1449,60 @@ dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps) {
     return dsd_demod_tetra_channel_runs(d);
 }
 
+extern "C" size_t
+dsd_demod_tetra_uplink_held(const struct demod_state* d) {
+    if (!d || !d->cqpsk_enable || !d->ted_state.ul_lookahead_live
+        || !dsd_demod_tetra_uplink_timing_runs(d, dsd_cqpsk_timing_sps(d))) {
+        return 0U;
+    }
+    return dsd_tetra_ul_timing_held(&d->tetra_ul_timing);
+}
+
+/* @p pairs zero samples at @p buf through the uplink's Gardner (and its look-ahead), differential and Costas stages and
+   the phase demodulator: the symbols the look-ahead held come out into result, then the zeros' symbols, 0. The AGC
+   and the FLL do not run: zeros carry no level or frequency, and their state waits for the signal's return. */
+static void
+tetra_uplink_drain_zeros(struct demod_state* d, float* buf, int pairs) {
+    DSD_MEMSET(buf, 0, (size_t)pairs * 2U * sizeof(float));
+    d->lowpassed = buf;
+    d->lp_len = pairs * 2;
+    op25_gardner_cc(d);
+    op25_diff_phasor_cc(d);
+    op25_costas_loop_cc(d);
+    qpsk_differential_demod(d);
+}
+
+extern "C" int
+dsd_demod_tetra_uplink_flush(struct demod_state* d) {
+    if (!d) {
+        return 0;
+    }
+    d->result_len = 0;
+    const size_t held = dsd_demod_tetra_uplink_held(d);
+    if (held == 0U) {
+        return 0;
+    }
+    /* A few symbols more than it holds: the Gardner reads its last symbol a little past the sample it centres on. */
+    const size_t pairs = held + (size_t)(4 * dsd_cqpsk_timing_sps(d));
+    static_assert(sizeof(demod_state::timing_buf) / sizeof(float)
+                      >= 2U * ((size_t)DSD_TETRA_UL_LOOKAHEAD_SYMBOLS + 4U) * DSD_TETRA_UL_MAX_SPS,
+                  "the timing buffer holds a whole look-ahead of zeros");
+    tetra_uplink_drain_zeros(d, d->timing_buf, (int)pairs);
+    return d->result_len > 0 ? 1 : 0;
+}
+
+/* A squelched block on the uplink burst timing while the look-ahead holds signal: the block runs as zeros through the
+   Gardner, so the burst the squelch closed on comes out now, whole, before the squelch's silence, and not after it
+   once the squelch opens again. The block makes about as many symbols as the zero symbols it stands for. */
+static int
+full_demod_drain_uplink_on_squelch(struct demod_state* d) {
+    if (!d->cqpsk_enable || !d->channel_squelched || d->lp_len < 2 || dsd_demod_tetra_uplink_held(d) == 0U) {
+        return 0;
+    }
+    tetra_uplink_drain_zeros(d, d->lowpassed, d->lp_len >> 1);
+    return 1;
+}
+
 /* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
    chain of its own; say why, once per cause and stream. Nothing is said for a chain the mode does not ask for. */
 static void
@@ -2495,7 +2549,7 @@ full_demod(struct demod_state* d) {
         return;
     }
     full_demod_update_channel_state(d);
-    if (full_demod_emit_zero_cqpsk_symbols(d)) {
+    if (full_demod_drain_uplink_on_squelch(d) || full_demod_emit_zero_cqpsk_symbols(d)) {
         return;
     }
     full_demod_run_cqpsk_chain(d);

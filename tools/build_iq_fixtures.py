@@ -422,13 +422,16 @@ TETRA_UPLINK_SSI_BASE = 2001
 TETRA_UPLINK_NET = (460, 4242, 17)
 # The same uplink with every burst a whole number of samples later, the noise unchanged: offsets 1 to 7 at 72 kHz, with
 # the committed fixture as offset 0, put each burst at every sampling phase twice over (4 samples a symbol), whatever
-# phase the receiver's symbol timing free-runs to between bursts.
+# phase the receiver's symbol timing free-runs to between bursts. Each keeps TETRA_UPLINK_PHASE_TRIM_S less of the
+# lead-in and the tail: the samples are the same draw, cut shorter.
 TETRA_UPLINK_PHASE_OFFSETS = tuple(range(1, 8))
-
-
-def tetra_uplink_phase_name(offset):
-    """The name of the uplink fixture with every burst offset samples later (TETRA_UPLINK_PHASE_OFFSETS)."""
-    return f"tetra_uplink_bursts_o{offset}_72k"
+TETRA_UPLINK_PHASE_TRIM_S = 0.15
+# The uplink's last two bursts with the capture ending TETRA_UPLINK_SHORT_TAIL_SYMBOLS after the last one: a receiver
+# that holds symbols back must still hand the last burst over at the end of the capture. It starts
+# TETRA_UPLINK_SHORT_LEAD_SLOTS slots before the burst before the last gap.
+TETRA_UPLINK_SHORT_TAIL_NAME = "tetra_uplink_bursts_short_tail_72k"
+TETRA_UPLINK_SHORT_TAIL_SYMBOLS = 20
+TETRA_UPLINK_SHORT_LEAD_SLOTS = 4
 # EN 300 392-2 clause 9.4.4.3: the tail bits 1100, and the control uplink burst's extended training sequence
 # (include/dsd-neo/core/sync_patterns.h TETRA_CB_SYNC).
 TETRA_TAIL_DIBITS = (3, 0)
@@ -1932,6 +1935,24 @@ def tetra_ul_burst_dibits(kind, ssi):
     return tail + coded[:half] + training + coded[half:] + tail
 
 
+def tetra_uplink_phase_name(offset):
+    """The name of the uplink fixture with every burst offset samples later (TETRA_UPLINK_PHASE_OFFSETS)."""
+    return f"tetra_uplink_bursts_o{offset}_72k"
+
+
+def tetra_uplink_burst_starts(offset=0):
+    """The sample each uplink burst's first symbol starts at (TETRA_UPLINK_BURSTS), as tetra_uplink_samples() puts it."""
+    sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
+    slot = TETRA_SLOT_SYMBOLS * sps
+    position = int(round(TETRA_UPLINK_LEAD_S * TETRA_UPLINK_RATE_HZ))
+    starts = []
+    for _kind, gap, _level, _freq in TETRA_UPLINK_BURSTS:
+        position += gap * slot
+        starts.append(position + TETRA_UPLINK_GUARD_SYMBOLS * sps + offset)
+        position += slot
+    return starts
+
+
 def tetra_uplink_samples(offset=0):
     """The uplink fixture's samples (TETRA_UPLINK_BURSTS) in cu8 units over 127.5, and each burst's (kind, ssi).
 
@@ -1971,12 +1992,22 @@ def tetra_uplink_samples(offset=0):
 
 
 def build_tetra_uplink(out_dir):
-    """Write the trunked mode uplink fixture (TETRA_UPLINK_BURSTS) and its sampling-phase offsets
-    (TETRA_UPLINK_PHASE_OFFSETS)."""
+    """Write the trunked mode uplink fixture (TETRA_UPLINK_BURSTS), its sampling-phase offsets
+    (TETRA_UPLINK_PHASE_OFFSETS) and its short-tail cut (TETRA_UPLINK_SHORT_TAIL_NAME)."""
+    sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
+    full, _bursts = tetra_uplink_samples()
+    starts = tetra_uplink_burst_starts()
+    last_kind = TETRA_UPLINK_BURSTS[-1][0]
+    last_symbols = len(tetra_ul_burst_dibits(last_kind, TETRA_UPLINK_SSI_BASE + len(TETRA_UPLINK_BURSTS) - 1))
+    short_begin = starts[-2] - TETRA_UPLINK_SHORT_LEAD_SLOTS * TETRA_SLOT_SYMBOLS * sps
+    short_end = starts[-1] + (last_symbols + TETRA_UPLINK_SHORT_TAIL_SYMBOLS) * sps
+    trim = int(round(TETRA_UPLINK_PHASE_TRIM_S * TETRA_UPLINK_RATE_HZ))
+    variants = [(TETRA_UPLINK_NAME, full)]
+    variants += [(tetra_uplink_phase_name(offset), tetra_uplink_samples(offset)[0][trim:-trim])
+                 for offset in TETRA_UPLINK_PHASE_OFFSETS]
+    variants.append((TETRA_UPLINK_SHORT_TAIL_NAME, full[short_begin:short_end]))
     total = 0
-    for offset in (0,) + TETRA_UPLINK_PHASE_OFFSETS:
-        name = tetra_uplink_phase_name(offset) if offset else TETRA_UPLINK_NAME
-        samples, _bursts = tetra_uplink_samples(offset)
+    for name, samples in variants:
         peak = max(np.max(np.abs(samples.real)), np.max(np.abs(samples.imag)))
         if peak >= 1.0:
             raise ValueError(f"{name}: the strongest burst reaches the cu8 rails")
@@ -2267,6 +2298,7 @@ def derived_fixture_names():
         + [entry[0] for entry in TETRA_STRESS]
         + [TETRA_UPLINK_NAME]
         + [tetra_uplink_phase_name(offset) for offset in TETRA_UPLINK_PHASE_OFFSETS]
+        + [TETRA_UPLINK_SHORT_TAIL_NAME]
     )
 
 

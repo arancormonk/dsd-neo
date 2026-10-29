@@ -229,6 +229,29 @@ int dsd_demod_tetra_stage(const struct demod_state* d);
 int dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps);
 
 /**
+ * @brief Samples of signal the uplink look-ahead still holds back (dsd_tetra_ul_timing_held()).
+ *
+ * 0 off the uplink burst timing (dsd_demod_tetra_uplink_timing_runs()) or before the Gardner fed the look-ahead.
+ *
+ * @param d Demodulator state (NULL reads 0).
+ * @return Zero samples to push before the look-ahead holds only zeros.
+ */
+size_t dsd_demod_tetra_uplink_held(const struct demod_state* d);
+
+/**
+ * @brief The end of an uplink stream: push the look-ahead's held signal out.
+ *
+ * Runs enough zero samples through the uplink's Gardner, differential and Costas stages and the phase demodulator
+ * that every symbol the look-ahead held back is in demod_state::result (result_len, 0 when it held nothing). The demod
+ * thread publishes it as a block of its own once a replay's input ended (a squelched block drains the same way in
+ * full_demod()).
+ *
+ * @param d Demodulator state.
+ * @return 1 when it produced output, else 0.
+ */
+int dsd_demod_tetra_uplink_flush(struct demod_state* d);
+
+/**
  * @brief Evaluate the TETRA chain's activation predicate and run the state transition when the answer changed.
  *
  * full_demod() calls this at every block boundary, after the half-band decimation. A stream open calls it once its

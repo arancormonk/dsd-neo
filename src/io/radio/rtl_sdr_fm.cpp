@@ -999,6 +999,10 @@ struct RtlSdrInternals {
     std::atomic<uint64_t> replay_last_submit_gen_at_eof{0U};
     std::atomic<uint64_t> replay_last_consume_gen{0U};
     std::atomic<uint64_t> replay_end_notice{0U}; /* see rtl_replay_eof_state::replay_end_notice */
+    /* See rtl_replay_eof_state::replay_demod_flush_owed; demod thread writes, both drain decisions read. */
+    std::atomic<int> replay_demod_flush_owed{0};
+    /* The last chunk the demod took, which tags the output of its end-of-capture flush. Demod thread only. */
+    struct rtl_replay_chunk_meta replay_flush_chunk{};
     /* The capture chunk in the input ring: the replay reader writes it before the commit, the demod copies it at reserve
        (struct rtl_replay_chunk_meta). */
     struct rtl_replay_chunk_meta replay_chunk{};
@@ -1213,6 +1217,8 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_last_submit_gen_at_eof.store(0, std::memory_order_release);
     s->replay_last_consume_gen.store(0, std::memory_order_release);
     s->replay_end_notice.store(0U, std::memory_order_release);
+    s->replay_demod_flush_owed.store(0, std::memory_order_release);
+    s->replay_flush_chunk = rtl_replay_chunk_meta{};
     s->replay_chunk = rtl_replay_chunk_meta{};
     /* The internals are calloc'ed, so the virtual block 0 is set here. */
     s->replay_out_written.store(1U, std::memory_order_release);
@@ -1328,7 +1334,8 @@ replay_demod_drain_decide(uint64_t consumed_gen) {
             s->replay_input_drained.store(1, std::memory_order_release);
             input_drained = 1;
         }
-        if (input_drained && consumed_at >= s->replay_last_submit_gen_at_eof.load(std::memory_order_acquire)) {
+        if (input_drained && consumed_at >= s->replay_last_submit_gen_at_eof.load(std::memory_order_acquire)
+            && !s->replay_demod_flush_owed.load(std::memory_order_acquire)) {
             s->replay_demod_drained.store(1, std::memory_order_release);
             demod_drained_now = 1;
         }
@@ -4840,6 +4847,42 @@ demod_feed_signal_search(const demod_state* d) {
     rtl_signal_measure_feed(d->lowpassed, (size_t)d->lp_len / 2, &search_capture);
 }
 
+/* Whether the demod still owes a replay's decoder the symbols an uplink look-ahead holds back
+   (dsd_demod_tetra_uplink_held()): set after every replay block, before its drain decision, which then waits for the
+   flush (replay_demod_drain_decide(), replay_mark_input_drained()). */
+static void
+demod_note_replay_flush_owed(const struct demod_state* d, int replay_active) {
+    if (!replay_active || !g_stream) {
+        return;
+    }
+    g_stream->replay_demod_flush_owed.store(dsd_demod_tetra_uplink_held(d) > 0U ? 1 : 0, std::memory_order_release);
+}
+
+/* The end of a replay on an uplink session: once the input ended and the decoder took every block, push the symbols the
+   look-ahead holds out as a block of their own (dsd_demod_tetra_uplink_flush()), tagged as the last chunk, then let the
+   demod count as drained. Returns 1 when it ran. */
+static int
+demod_replay_flush_uplink(struct demod_state* d, struct output_state* o) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_demod_flush_owed.load(std::memory_order_acquire)
+        || !s->replay_input_eof.load(std::memory_order_acquire) || input_ring_used(&input_ring) != 0U) {
+        return 0;
+    }
+    if (!demod_enter_processing_block(&controller)) {
+        return 0;
+    }
+    DemodInputSpan span = {};
+    span.replay = 1;
+    span.chunk = s->replay_flush_chunk;
+    if (dsd_demod_tetra_uplink_flush(d)) {
+        (void)demod_emit_output_block(d, o, &span, 1);
+    }
+    s->replay_demod_flush_owed.store(0, std::memory_order_release);
+    replay_demod_drain_decide(s->replay_flush_chunk.submit_gen);
+    demod_leave_processing_block(&controller);
+    return 1;
+}
+
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
@@ -4851,6 +4894,9 @@ demod_thread_fn(void* arg) {
     while (!demod_should_exit_requested()) {
         if (replay_pull && !demod_wait_for_replay_demand(o)) {
             break;
+        }
+        if (replay_pull && demod_replay_flush_uplink(d, o)) {
+            continue;
         }
         DemodInputSpan span = {};
         DemodRetuneDiagBlock retune_diag = {};
@@ -4875,6 +4921,10 @@ demod_thread_fn(void* arg) {
         }
         demod_feed_signal_search(d);
         if (rtl_signal_search_bypassed()) {
+            /* The search drops these blocks: what an uplink look-ahead held from before them would reach the decoder
+               after the gap, spliced to whatever follows. It goes, as the frame sync's history does. */
+            d->ted_state.ul_lookahead_live = 0;
+            demod_note_replay_flush_owed(d, replay_active);
             demod_input_span_release_direct(d, &span);
             demod_leave_processing_block(&controller);
             continue;
@@ -4900,6 +4950,10 @@ demod_thread_fn(void* arg) {
         demod_maybe_signal_squelch_hop(d);
         uint64_t perf_output_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         size_t perf_output_samples = demod_emit_output_block(d, o, &span, replay_pull);
+        if (replay_active && g_stream) {
+            g_stream->replay_flush_chunk = span.chunk;
+        }
+        demod_note_replay_flush_owed(d, replay_active);
         /* A replay chunk's generation is consumed only after its demodulated
          * output is committed. RESET/rewind boundaries use this generation to
          * avoid entering the reconfigure gate between DSP processing and the
@@ -8142,6 +8196,7 @@ stream_open_fill_replay_eof_state(struct rtl_replay_eof_state* eof_state) {
     eof_state->replay_last_consume_gen = &g_stream->replay_last_consume_gen;
     eof_state->chunk = &g_stream->replay_chunk;
     eof_state->replay_end_notice = &g_stream->replay_end_notice;
+    eof_state->replay_demod_flush_owed = &g_stream->replay_demod_flush_owed;
     eof_state->eof_m = &g_stream->replay_eof_m;
     eof_state->eof_cond = &g_stream->replay_eof_cond;
     eof_state->on_input_drained = rtl_replay_on_input_drained;

@@ -10,7 +10,9 @@
  * sample (an eighth of a symbol), tell a control burst from the normal training sequence inside its extended one and a
  * normal burst from payload that resembles the rest of the extended one, give the carrier rotation, and move the
  * Gardner's strobe onto the burst's grid once, two symbols before its first symbol. Noise alone and a burst without its
- * training find no burst scoring like a training.
+ * training find no burst scoring like a training. A later peak never takes a burst's slot, a burst the strobe passed
+ * blocks none after it, a normal burst whose neighbouring payload matches three of the extended sequence's four outer
+ * symbols stays a normal burst, and the look-ahead counts the signal it holds back.
  */
 
 #include <assert.h>
@@ -71,6 +73,29 @@ dibit_step(int dibit) {
     return steps[dibit & 3];
 }
 
+/* @p count dibits shaped onto the buffer from symbol @p first on, @p offset samples later, turned by @p rot_per_symbol
+   radians a symbol. */
+static void
+add_symbols(int first, int offset, const int* dibits, int count, double rot_per_symbol) {
+    double phase = 0.3;
+    for (int k = 0; k < count; k++) {
+        phase += dibit_step(dibits[k]) + rot_per_symbol;
+        const int at = (first + k) * SPS + offset;
+        for (int t = -RRC_HALF; t <= RRC_HALF; t++) {
+            const double tap = rrc_tap(t) * 0.5;
+            g_re[at + t] += (float)(tap * cos(phase));
+            g_im[at + t] += (float)(tap * sin(phase));
+        }
+    }
+}
+
+/* What a normal burst's payload next to its training holds (make_burst()). */
+enum outer_payload {
+    OUTER_RANDOM,     /* random payload */
+    OUTER_THREE_OF_4, /* the extended training sequence's first two and last two symbols, one of them a quarter turn off */
+};
+static enum outer_payload g_outer = OUTER_RANDOM;
+
 /* A burst of @p kind ('c' control, 'n' normal; 'x' a normal burst whose training is payload) whose first symbol is at
    sample LEAD * SPS + @p offset, turned by @p rot_per_symbol radians a symbol, under noise of @p noise rms a component.
    Returns the sample count; *last_training is the sample of the training's last symbol. */
@@ -95,22 +120,22 @@ make_burst(char kind, int offset, double rot_per_symbol, double noise, int* last
     dibits[n++] = 3;
     dibits[n++] = 0;
     *symbols = n;
+    if (kind == 'n' && g_outer == OUTER_THREE_OF_4) {
+        /* Payload around the normal training that matches the extended one's outer symbols but the last, which is a
+           quarter turn off (+pi/2: 0 -> 1 -> 3 -> 2 -> 0). */
+        static const int quarter_turn[4] = {1, 3, 0, 2};
+        dibits[2 + half - 2] = TETRA_CB_SYNC[0] - '0';
+        dibits[2 + half - 1] = TETRA_CB_SYNC[1] - '0';
+        dibits[2 + half + 11] = TETRA_CB_SYNC[13] - '0';
+        dibits[2 + half + 12] = quarter_turn[TETRA_CB_SYNC[14] - '0'];
+    }
 
     const int count = MAX_SYMS * SPS;
     for (int i = 0; i < count; i++) {
         g_re[i] = 0.0f;
         g_im[i] = 0.0f;
     }
-    double phase = 0.3;
-    for (int k = 0; k < n; k++) {
-        phase += dibit_step(dibits[k]) + rot_per_symbol;
-        const int at = (LEAD + k) * SPS + offset;
-        for (int t = -RRC_HALF; t <= RRC_HALF; t++) {
-            const double tap = rrc_tap(t) * 0.5;
-            g_re[at + t] += (float)(tap * cos(phase));
-            g_im[at + t] += (float)(tap * sin(phase));
-        }
-    }
+    add_symbols(LEAD, offset, dibits, n, rot_per_symbol);
     for (int i = 0; i < count; i++) {
         /* Box-Muller from the generator. */
         const double u1 = lcg_uniform();
@@ -217,7 +242,6 @@ test_no_training(void) {
     int last = 0;
     int symbols = 0;
     /* Noise alone. */
-    make_burst('n', 0, 0.0, 0.5, &last, &symbols);
     for (int i = 0; i < MAX_SYMS * SPS; i++) {
         g_re[i] = (float)(sqrt(-2.0 * log(lcg_uniform())) * cos(2.0 * TEST_PI * lcg_uniform()) * 0.5);
         g_im[i] = (float)(sqrt(-2.0 * log(lcg_uniform())) * sin(2.0 * TEST_PI * lcg_uniform()) * 0.5);
@@ -238,6 +262,138 @@ test_no_training(void) {
         dsd_tetra_ul_timing_push(&g_t, g_re[i], g_im[i], &out_r, &out_j);
     }
     assert(found_bursts(&g_t, 0.95f, &b) == 0);
+}
+
+/* A peak found after a burst, apart from it (a lone normal training sequence 300 symbols on, its claimed span clear of
+   the burst's), takes a slot of its own: the burst stays in its slot. */
+static void
+test_later_peak_keeps_the_burst(void) {
+    int last = 0;
+    int symbols = 0;
+    const int count = make_burst('c', 0, 0.0, 0.02, &last, &symbols);
+    int nts[11];
+    for (int i = 0; i < 11; i++) {
+        nts[i] = TETRA_NDB_NTS_SYNC[i] - '0';
+    }
+    const int lone_first = LEAD + symbols + 300 - 11;
+    add_symbols(lone_first, 0, nts, 11, 0.0);
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+    float out_r = 0.0f;
+    float out_j = 0.0f;
+    for (int i = 0; i < count; i++) {
+        dsd_tetra_ul_timing_push(&g_t, g_re[i], g_im[i], &out_r, &out_j);
+    }
+    const int delay = DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * SPS;
+    int found_cb = 0;
+    int found_lone = 0;
+    for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
+        const dsd_tetra_ul_burst* b = &g_t.bursts[i];
+        if (b->end == 0) {
+            continue;
+        }
+        const double anchor = (double)b->anchor + (double)b->frac - (double)delay;
+        if (fabs(anchor - (double)last) < 0.5 && b->end - b->start == (uint64_t)(103 * SPS)) {
+            found_cb++;
+        }
+        if (fabs(anchor - (double)((lone_first + 10) * SPS)) < 0.5 && b->end - b->start == (uint64_t)(231 * SPS)) {
+            found_lone++;
+        }
+    }
+    assert(found_cb == 1);
+    assert(found_lone == 1);
+}
+
+/* A normal burst whose payload around its training matches three of the extended training sequence's four outer
+   symbols is a normal burst, not a control burst. */
+static void
+test_outer_three_of_four_is_normal(void) {
+    g_outer = OUTER_THREE_OF_4;
+    for (int offset = 0; offset < SPS; offset++) {
+        int last = 0;
+        int symbols = 0;
+        const int count = make_burst('n', offset, 0.0, 0.02, &last, &symbols);
+        dsd_tetra_ul_timing_reset(&g_t, SPS);
+        float out_r = 0.0f;
+        float out_j = 0.0f;
+        for (int i = 0; i < count; i++) {
+            dsd_tetra_ul_timing_push(&g_t, g_re[i], g_im[i], &out_r, &out_j);
+        }
+        dsd_tetra_ul_burst* b = NULL;
+        assert(found_bursts(&g_t, 0.95f, &b) == 1);
+        assert(b->end - b->start == (uint64_t)(231 * SPS));
+        assert(fabs((double)b->anchor + (double)b->frac - (double)(DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * SPS) - last) < 0.5);
+        /* The extended sequence itself scores high there: only its outer symbols tell. */
+        assert(g_t.ets.best > 0.85f);
+    }
+    g_outer = OUTER_RANDOM;
+}
+
+/* A burst the strobe already passed blocks no later burst, however high it scored: a strong peak on noise just before
+   a burst, already passed, leaves the burst to be found. */
+static void
+test_passed_burst_blocks_nothing(void) {
+    int last = 0;
+    int symbols = 0;
+    const int count = make_burst('c', 0, 0.0, 0.02, &last, &symbols);
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+    const uint64_t delay = (uint64_t)(DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * SPS);
+    dsd_tetra_ul_burst* passed = &g_t.bursts[0];
+    passed->start = (uint64_t)(LEAD * SPS) + delay - 100U * SPS;
+    passed->end = passed->start + 231U * SPS;
+    passed->anchor = passed->start + 120U * SPS;
+    passed->score = 0.999f;
+    passed->pending = 0;
+    float out_r = 0.0f;
+    float out_j = 0.0f;
+    for (int i = 0; i < count; i++) {
+        dsd_tetra_ul_timing_push(&g_t, g_re[i], g_im[i], &out_r, &out_j);
+    }
+    int found = 0;
+    for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {
+        const dsd_tetra_ul_burst* b = &g_t.bursts[i];
+        if (b->end != 0 && b->pending && fabs((double)b->anchor + (double)b->frac - (double)delay - last) < 0.5) {
+            found++;
+        }
+    }
+    assert(found == 1);
+    /* A burst still ahead of the strobe that scored higher does block it. */
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+    passed = &g_t.bursts[0];
+    passed->start = (uint64_t)(LEAD * SPS) + delay - 100U * SPS;
+    passed->end = passed->start + 231U * SPS;
+    passed->anchor = passed->start + 120U * SPS;
+    passed->score = 0.999f;
+    passed->pending = 1;
+    for (int i = 0; i < count; i++) {
+        dsd_tetra_ul_timing_push(&g_t, g_re[i], g_im[i], &out_r, &out_j);
+    }
+    for (int i = 1; i < DSD_TETRA_UL_BURSTS; i++) {
+        assert(g_t.bursts[i].end == 0);
+    }
+}
+
+/* The samples of signal the look-ahead holds: none before any, a whole look-ahead after one, counting down as zeros
+   push it out. */
+static void
+test_held(void) {
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+    const size_t delay = (size_t)(DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * SPS);
+    float out_r = 0.0f;
+    float out_j = 0.0f;
+    for (int i = 0; i < 10; i++) {
+        dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
+    }
+    assert(dsd_tetra_ul_timing_held(&g_t) == 0U);
+    dsd_tetra_ul_timing_push(&g_t, 0.5f, -0.25f, &out_r, &out_j);
+    assert(dsd_tetra_ul_timing_held(&g_t) == delay);
+    for (size_t i = 0; i + 1 < delay; i++) {
+        dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
+    }
+    assert(dsd_tetra_ul_timing_held(&g_t) == 1U);
+    dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
+    assert(fabsf(out_r - 0.5f) < 1e-9f && fabsf(out_j + 0.25f) < 1e-9f);
+    assert(dsd_tetra_ul_timing_held(&g_t) == 0U);
+    assert(dsd_tetra_ul_timing_held(NULL) == 0U);
 }
 
 static void
@@ -273,6 +429,10 @@ main(void) {
     }
     g_frac = 0.0;
     test_no_training();
+    test_later_peak_keeps_the_burst();
+    test_outer_three_of_four_is_normal();
+    test_passed_burst_blocks_nothing();
+    test_held();
     test_reset_and_bounds();
     printf("DSP_TETRA_UPLINK_TIMING: OK\n");
     return 0;

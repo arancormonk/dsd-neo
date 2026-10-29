@@ -2746,7 +2746,9 @@ replay_mark_input_drained(struct rtl_device* s) {
         && !s->replay_eof.replay_demod_drained->load(std::memory_order_acquire)) {
         uint64_t consumed_gen = s->replay_eof.replay_last_consume_gen->load(std::memory_order_acquire);
         uint64_t eof_gen = s->replay_eof.replay_last_submit_gen_at_eof->load(std::memory_order_acquire);
-        if (consumed_gen >= eof_gen) {
+        const int flush_owed = s->replay_eof.replay_demod_flush_owed
+                               && s->replay_eof.replay_demod_flush_owed->load(std::memory_order_acquire);
+        if (consumed_gen >= eof_gen && !flush_owed) {
             s->replay_eof.replay_demod_drained->store(1, std::memory_order_release);
             demod_drained_now = 1;
         }
