@@ -553,16 +553,10 @@ ui_prompt_insert_char(int ch) {
     }
 }
 
-/**
- * @brief The byte a typed key adds to a prompt, or -1 for a key that is not a character.
- *
- * Nothing typed is lost silently: a character the field cannot hold adds one '?'. ncurses delivers UTF-8 one byte
- * at a time, so a lead byte stands for the whole character and its continuation bytes add nothing; PDCurses
- * delivers each byte 0x80-0xFF as a whole character and anything wider as UI_KEY_WIDE_CHAR. Function keys,
- * ncurses extended keys above KEY_MAX and KEY_MOUSE are not characters. isprint() only ever sees 0..0xFF.
- */
+/* The character a keypad operator key (PDCurses PADPLUS, PADMINUS, PADSTAR, PADSLASH) types, or -1 for any other
+ * key. */
 static int
-ui_prompt_byte_for_key(int ch) {
+ui_prompt_keypad_operator_byte(int ch) {
 #ifdef PADPLUS
     if (ch == PADPLUS) {
         return '+';
@@ -583,15 +577,14 @@ ui_prompt_byte_for_key(int ch) {
         return '/';
     }
 #endif
-    if (ch == UI_KEY_WIDE_CHAR) {
-        return '?';
-    }
-    if (ch >= 0x20 && ch <= 0x7E) {
-        return ch;
-    }
-    if (ch < 0x80 || ch > 0xFF) {
-        return -1;
-    }
+    (void)ch;
+    return -1;
+}
+
+/* The byte a key 0x80-0xFF adds: itself when printable, else one '?' for a character the field cannot hold (any byte
+ * on PDCurses, a UTF-8 lead byte on ncurses), or -1 for any other byte on ncurses (a continuation byte adds nothing). */
+static int
+ui_prompt_high_byte_for_key(int ch) {
     if (isprint(ch)) {
         return ch; // a printable byte of a single-byte locale
     }
@@ -600,6 +593,28 @@ ui_prompt_byte_for_key(int ch) {
 #else
     return (ch >= 0xC2 && ch <= 0xF4) ? '?' : -1;
 #endif
+}
+
+/**
+ * @brief The byte a typed key adds to a prompt, or -1 for a key that is not a character.
+ *
+ * Nothing typed is lost silently: a character the field cannot hold adds one '?'. ncurses delivers UTF-8 one byte
+ * at a time, so a lead byte stands for the whole character and its continuation bytes add nothing; PDCurses
+ * delivers each byte 0x80-0xFF as a whole character and anything wider as UI_KEY_WIDE_CHAR. Function keys,
+ * ncurses extended keys above KEY_MAX and KEY_MOUSE are not characters. isprint() only ever sees 0..0xFF.
+ */
+static int
+ui_prompt_byte_for_key(int ch) {
+    if (ch == UI_KEY_WIDE_CHAR) {
+        return '?';
+    }
+    if (ch >= 0x20 && ch <= 0x7E) {
+        return ch;
+    }
+    if (ch < 0x80 || ch > 0xFF) {
+        return ui_prompt_keypad_operator_byte(ch); // PDCurses keypad key codes sit above 0xFF
+    }
+    return ui_prompt_high_byte_for_key(ch);
 }
 
 int

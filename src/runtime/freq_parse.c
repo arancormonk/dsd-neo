@@ -132,13 +132,10 @@ freq_entry_push_digit(uint32_t* value, uint32_t digit) {
     return 1;
 }
 
-int
-dsd_parse_freq_entry_hz(const char* text, uint32_t* out_hz) {
-    if (text == NULL || out_hz == NULL) {
-        return DSD_FREQ_ENTRY_EMPTY;
-    }
-
-    /* Bounded: never reads more than one byte past the limit. */
+/* Bounds the entry to its first DSD_FREQ_ENTRY_MAX_LEN bytes, reading never more than one byte past the limit, and
+ * trims ASCII spaces: [*begin, *end) is the rest. Returns DSD_FREQ_ENTRY_OK, TOO_LONG or EMPTY. */
+static int
+freq_entry_trim(const char* text, size_t* begin, size_t* end) {
     size_t len = 0;
     while (len <= (size_t)DSD_FREQ_ENTRY_MAX_LEN && text[len] != '\0') {
         len++;
@@ -147,99 +144,162 @@ dsd_parse_freq_entry_hz(const char* text, uint32_t* out_hz) {
         return DSD_FREQ_ENTRY_TOO_LONG;
     }
 
-    size_t begin = 0;
-    size_t end = len;
-    while (begin < end && text[begin] == ' ') {
-        begin++;
+    size_t b = 0;
+    size_t e = len;
+    while (b < e && text[b] == ' ') {
+        b++;
     }
-    while (end > begin && text[end - 1] == ' ') {
-        end--;
+    while (e > b && text[e - 1] == ' ') {
+        e--;
     }
-    if (begin == end) {
+    if (b == e) {
         return DSD_FREQ_ENTRY_EMPTY;
+    }
+    *begin = b;
+    *end = e;
+    return DSD_FREQ_ENTRY_OK;
+}
+
+/* Where the number's digits sit in the entry text: [int_begin, int_end) before the '.', [frac_begin, frac_end) after
+ * it (empty without one), and next, the first byte after the number. */
+typedef struct {
+    size_t int_begin;
+    size_t int_end;
+    size_t frac_begin;
+    size_t frac_end;
+    size_t next;
+} freq_entry_number;
+
+/* Scans the number [0-9]*('.'[0-9]*)? at text[begin..end). Returns 1 when it has at least one digit, else 0. */
+static int
+freq_entry_scan_number(const char* text, size_t begin, size_t end, freq_entry_number* num) {
+    size_t pos = begin;
+    num->int_begin = pos;
+    while (pos < end && freq_entry_is_digit(text[pos])) {
+        pos++;
+    }
+    num->int_end = pos;
+    num->frac_begin = pos;
+    num->frac_end = pos;
+    if (pos < end && text[pos] == '.') {
+        pos++;
+        num->frac_begin = pos;
+        while (pos < end && freq_entry_is_digit(text[pos])) {
+            pos++;
+        }
+        num->frac_end = pos;
+    }
+    num->next = pos;
+    return num->int_end != num->int_begin || num->frac_end != num->frac_begin;
+}
+
+/* The places of a number with no unit: 6 (MHz) when its integer part has at most FREQ_ENTRY_BARE_MHZ_DIGITS digits
+ * (leading zeros aside), else 0 (Hz). Returns DSD_FREQ_ENTRY_OK, or AMBIGUOUS for an integer part too large for MHz. */
+static int
+freq_entry_bare_places(const char* text, const freq_entry_number* num, size_t* places) {
+    size_t lead = num->int_begin;
+    while (lead < num->int_end && text[lead] == '0') {
+        lead++;
+    }
+    if (num->int_end - lead > FREQ_ENTRY_BARE_MHZ_DIGITS) {
+        *places = 0;
+        return DSD_FREQ_ENTRY_OK;
+    }
+    /* MHz. Refuse an integer part that cannot be MHz before any arithmetic, so a sub-Hz or fractional tail never
+     * changes the answer. */
+    uint32_t whole = 0;
+    for (size_t i = lead; i < num->int_end; i++) {
+        whole = whole * 10u + (uint32_t)(text[i] - '0');
+    }
+    if (whole > UINT32_MAX / 1000000u) {
+        return DSD_FREQ_ENTRY_AMBIGUOUS;
+    }
+    *places = 6;
+    return DSD_FREQ_ENTRY_OK;
+}
+
+/* The places of the unit text[unit..end), which is not empty. Returns DSD_FREQ_ENTRY_OK, SYNTAX for anything but
+ * letters, or UNIT for letters that are not a unit. */
+static int
+freq_entry_unit_text_places(const char* text, size_t unit, size_t end, size_t* places) {
+    for (size_t i = unit; i < end; i++) {
+        if (!freq_entry_is_letter(text[i])) {
+            return DSD_FREQ_ENTRY_SYNTAX;
+        }
+    }
+    const int unit_places = freq_entry_unit_places(text + unit, end - unit);
+    if (unit_places < 0) {
+        return DSD_FREQ_ENTRY_UNIT;
+    }
+    *places = (size_t)unit_places;
+    return DSD_FREQ_ENTRY_OK;
+}
+
+/* *value = the number in units of 10^-places: the integer digits, then exactly `places` fraction digits (zero-padded).
+ * Returns DSD_FREQ_ENTRY_OK, TOO_HIGH above UINT32_MAX, or SUB_HZ for a non-zero fraction digit past `places`. */
+static int
+freq_entry_accumulate(const char* text, const freq_entry_number* num, size_t places, uint32_t* value) {
+    uint32_t v = 0;
+    for (size_t i = num->int_begin; i < num->int_end; i++) {
+        if (!freq_entry_push_digit(&v, (uint32_t)(text[i] - '0'))) {
+            return DSD_FREQ_ENTRY_TOO_HIGH;
+        }
+    }
+    for (size_t k = 0; k < places; k++) {
+        const size_t i = num->frac_begin + k;
+        const uint32_t digit = i < num->frac_end ? (uint32_t)(text[i] - '0') : 0u;
+        if (!freq_entry_push_digit(&v, digit)) {
+            return DSD_FREQ_ENTRY_TOO_HIGH;
+        }
+    }
+    /* Fraction digits past the unit's places must be zeros. The range wins over the sub-Hz
+     * refusal: at UINT32_MAX any non-zero tail is above the limit. */
+    for (size_t i = num->frac_begin + places; i < num->frac_end; i++) {
+        if (text[i] != '0') {
+            return v == UINT32_MAX ? DSD_FREQ_ENTRY_TOO_HIGH : DSD_FREQ_ENTRY_SUB_HZ;
+        }
+    }
+    *value = v;
+    return DSD_FREQ_ENTRY_OK;
+}
+
+int
+dsd_parse_freq_entry_hz(const char* text, uint32_t* out_hz) {
+    if (text == NULL || out_hz == NULL) {
+        return DSD_FREQ_ENTRY_EMPTY;
+    }
+
+    size_t begin = 0;
+    size_t end = 0;
+    int result = freq_entry_trim(text, &begin, &end);
+    if (result != DSD_FREQ_ENTRY_OK) {
+        return result;
     }
     /* Before the grammar, so "146,52 MHz" gets the decimal-comma message. */
     if (memchr(text + begin, ',', end - begin) != NULL) {
         return DSD_FREQ_ENTRY_DECIMAL_COMMA;
     }
 
-    /* The number: [0-9]*('.'[0-9]*)? with at least one digit. */
-    size_t pos = begin;
-    const size_t int_begin = pos;
-    while (pos < end && freq_entry_is_digit(text[pos])) {
-        pos++;
-    }
-    const size_t int_end = pos;
-    size_t frac_begin = pos;
-    size_t frac_end = pos;
-    if (pos < end && text[pos] == '.') {
-        pos++;
-        frac_begin = pos;
-        while (pos < end && freq_entry_is_digit(text[pos])) {
-            pos++;
-        }
-        frac_end = pos;
-    }
-    if (int_end == int_begin && frac_end == frac_begin) {
+    freq_entry_number num = {0, 0, 0, 0, 0};
+    if (!freq_entry_scan_number(text, begin, end, &num)) {
         return DSD_FREQ_ENTRY_SYNTAX;
     }
-
-    size_t unit = pos;
+    size_t unit = num.next;
     while (unit < end && text[unit] == ' ') {
         unit++;
     }
     size_t places = 0;
-    if (unit == end) {
-        /* No unit (trailing spaces are trimmed, so nothing follows the number). */
-        size_t lead = int_begin;
-        while (lead < int_end && text[lead] == '0') {
-            lead++;
-        }
-        if (int_end - lead <= FREQ_ENTRY_BARE_MHZ_DIGITS) {
-            /* MHz. Refuse an integer part that cannot be MHz before any arithmetic, so a sub-Hz
-             * or fractional tail never changes the answer. */
-            uint32_t whole = 0;
-            for (size_t i = lead; i < int_end; i++) {
-                whole = whole * 10u + (uint32_t)(text[i] - '0');
-            }
-            if (whole > UINT32_MAX / 1000000u) {
-                return DSD_FREQ_ENTRY_AMBIGUOUS;
-            }
-            places = 6;
-        }
-    } else {
-        for (size_t i = unit; i < end; i++) {
-            if (!freq_entry_is_letter(text[i])) {
-                return DSD_FREQ_ENTRY_SYNTAX;
-            }
-        }
-        const int unit_places = freq_entry_unit_places(text + unit, end - unit);
-        if (unit_places < 0) {
-            return DSD_FREQ_ENTRY_UNIT;
-        }
-        places = (size_t)unit_places;
+    /* No unit when only spaces follow the number (trailing spaces are trimmed, so nothing does). */
+    result = (unit == end) ? freq_entry_bare_places(text, &num, &places)
+                           : freq_entry_unit_text_places(text, unit, end, &places);
+    if (result != DSD_FREQ_ENTRY_OK) {
+        return result;
     }
 
-    /* The integer digits, then exactly `places` fraction digits (zero-padded). */
     uint32_t value = 0;
-    for (size_t i = int_begin; i < int_end; i++) {
-        if (!freq_entry_push_digit(&value, (uint32_t)(text[i] - '0'))) {
-            return DSD_FREQ_ENTRY_TOO_HIGH;
-        }
-    }
-    for (size_t k = 0; k < places; k++) {
-        const size_t i = frac_begin + k;
-        const uint32_t digit = i < frac_end ? (uint32_t)(text[i] - '0') : 0u;
-        if (!freq_entry_push_digit(&value, digit)) {
-            return DSD_FREQ_ENTRY_TOO_HIGH;
-        }
-    }
-    /* Fraction digits past the unit's places must be zeros. The range wins over the sub-Hz
-     * refusal: at UINT32_MAX any non-zero tail is above the limit. */
-    for (size_t i = frac_begin + places; i < frac_end; i++) {
-        if (text[i] != '0') {
-            return value == UINT32_MAX ? DSD_FREQ_ENTRY_TOO_HIGH : DSD_FREQ_ENTRY_SUB_HZ;
-        }
+    result = freq_entry_accumulate(text, &num, places, &value);
+    if (result != DSD_FREQ_ENTRY_OK) {
+        return result;
     }
     if (value == 0u) {
         return DSD_FREQ_ENTRY_ZERO;

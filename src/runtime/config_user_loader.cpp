@@ -281,17 +281,23 @@ apply_rtl_sql_mode(const char* val, dsdneoUserConfig* cfg) {
     }
 }
 
+/* rtl_freq is kept as text. A value cut to fit would parse as another frequency ("146.52...M" without its M), so one
+   too long for the field is refused and the key keeps what was there. */
+static void
+apply_rtl_freq(const char* key_lc, const char* val, dsdneoUserConfig* cfg) {
+    if (strlen(val) >= sizeof cfg->rtl_freq) {
+        LOG_WARN("Config: invalid %s = '%s'; too long, keeping previous/default value\n", key_lc, val);
+        return;
+    }
+    copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
+}
+
 static int
 apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
     if (strcmp(key_lc, "rtl_device") == 0) {
         (void)apply_integer_setting(val, 0, mode, &cfg->rtl_device);
     } else if (strcmp(key_lc, "rtl_freq") == 0) {
-        /* A value cut to fit would parse as another frequency ("146.52...M" without its M), so it is refused. */
-        if (strlen(val) >= sizeof cfg->rtl_freq) {
-            LOG_WARN("Config: invalid %s = '%s'; too long, keeping previous/default value\n", key_lc, val);
-        } else {
-            copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
-        }
+        apply_rtl_freq(key_lc, val, cfg);
     } else if (strcmp(key_lc, "rtl_gain") == 0) {
         if (apply_integer_setting(val, 22, mode, &cfg->rtl_gain)) {
             cfg->rtl_gain_is_set = 1;
