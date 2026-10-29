@@ -190,11 +190,17 @@ typedef struct {
 
 /* The dibit history the frame sync's windows are built from, as a getFrameSync() call left it on a no-sync exit (the
  * timeout after a matchless pass, or the hunt budget's), with where the stream was then. The next call starts from it
- * when nothing came between: the symbol clock has not moved, and neither the clock's epoch, the input, the carrier, the
- * SPS hunt profile nor the modulation changed. So a burst that began before the exit and ends after it is matched like
- * one that does not straddle it; before, the new call started with no history, and a TETRA uplink burst whose training
- * ended fewer than its window's symbols into the call was never matched. Every other exit, a sync above all, drops it.
- * Written and read by the frame sync alone (src/dsp/dsd_frame_sync.c); decoder-thread private. */
+ * when nothing came between: the symbol clock has not moved; neither the clock's epoch, the input, the carrier count,
+ * the trunk tuning generation, the SPS hunt profile nor the modulation changed; and no retune forgot the sync
+ * histories (dsd_state_forget_sync_join_histories(), which every trunk retune, off-thread tune applied, carrier change
+ * and acquisition reset runs) since the call began. The first symbol the next call reads is checked again, for a
+ * stream flush its read found. A sync matcher that reads only its window, or reads forward from its sync (TETRA, P25,
+ * NXDN, YSF, dPMR, D-STAR, M17), then matches a frame that began before the exit as one that did not; before, the new
+ * call started with no history, and a TETRA uplink burst whose training ended fewer than its window's symbols into the
+ * call was never matched. DMR and X2-TDMA read the part before their sync from the rolling dibit buffers, which the
+ * no-carrier reset clears, so for them it buys nothing. Every other exit, a sync above all, drops it. Written and read
+ * by the frame sync alone (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories();
+ * decoder-thread private. */
 typedef struct {
     char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
     int head;                                         /* the next slot to write */
@@ -203,8 +209,11 @@ typedef struct {
     uint32_t symbol_clock_epoch;
     uint32_t symbol_clock_input;
     uint32_t carrier_seq;
+    uint64_t tune_generation; /* dsd_trunk_tuning_generation() when the history began */
     int sps_hunt_idx;
     int rf_mod;
+    /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. */
+    uint32_t drops;
     uint8_t valid;
 } dsd_frame_sync_history_carry;
 
@@ -2569,6 +2578,10 @@ static inline void
 dsd_state_forget_sync_join_histories(dsd_state* state) {
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     dsd_sync_hit_history_clear(&state->m17_join_hits);
+    /* The frame sync's own history from its last no-sync exit is the carrier left's too, and so is the history of a
+       call in progress, which may not be kept when that call ends (dsd_frame_sync_history_carry::drops). */
+    state->frame_sync_carry.valid = 0U;
+    state->frame_sync_carry.drops++;
 }
 
 static inline void

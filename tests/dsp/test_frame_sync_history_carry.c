@@ -16,7 +16,9 @@
  *
  * These cases drive getFrameSync() as the engine does across such an exit, with a symbol source that holds a control
  * uplink burst straddling it: the next call goes on from the history the last one kept when the stream went on unbroken,
- * and starts blind when it did not (a carrier change, a symbol read between the calls, another hunt profile).
+ * and starts blind when it did not: a carrier change, a trunk retune (in the exit's own no-sync hooks, as a P25 release
+ * makes one, or between the calls, on the decoder thread or off it), a completed tune, a stream flush the next read
+ * finds, a symbol read between the calls, another modulation, or another hunt profile.
  */
 
 #include <assert.h>
@@ -26,6 +28,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,6 +55,8 @@ enum {
 
 static char g_stream[STREAM_LEN];
 static int g_pos = 0;
+/* 1: the next read finds a stream flush, as an RTL reader does after a retune (dsd_symbol.c bumps the clock's epoch). */
+static int g_flush_on_next_read = 0;
 static char g_block1[CB_HALF];
 
 /* Filler that runs 0, 1, 2, 3 over and over, which no training sequence matches in any rotation (each holds a dibit
@@ -97,6 +103,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     (void)have_sync;
     const float symbol = dibit_level(g_pos < STREAM_LEN ? g_stream[g_pos] : (char)('0' + (g_pos & 3)));
     g_pos++;
+    if (g_flush_on_next_read) {
+        g_flush_on_next_read = 0;
+        state->symbol_clock_epoch++;
+    }
     dsd_symbol_history_push(state, symbol);
     state->symbolcnt++;
     state->symbol_clock++;
@@ -210,15 +220,142 @@ test_new_epoch_starts_blind(void) {
     free_state_buffers(&state);
 }
 
-/* The modulation changed between the calls: the history was sliced for the other one. */
+/* A trunk retune in the exit's own no-sync hooks, as a P25 voice channel's release makes at hangtime (its return to the
+   control channel forgets the sync histories, dsd_engine_rxid_trunk_tune()): the history read on the carrier left is
+   not kept, though the exit comes after the retune. */
+static void
+retune_in_hooks(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_state_forget_sync_join_histories(state);
+}
+
+static void
+test_retune_in_no_sync_hooks_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    dsd_frame_sync_hooks hooks = {0};
+    hooks.no_carrier = retune_in_hooks;
+    dsd_frame_sync_hooks_set(&hooks);
+    assert(getFrameSync(&opts, &state) == -1);
+    assert(state.frame_sync_carry.valid == 0);
+    dsd_frame_sync_hooks_set(NULL);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* A tagged tune that completes in the hooks (the trunk tuning generation moves) is a retune too. */
+static void
+tune_completes_in_hooks(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    dsd_trunk_tuning_generation_advance();
+}
+
+static void
+test_tune_completing_in_no_sync_hooks_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    dsd_frame_sync_hooks hooks = {0};
+    hooks.no_carrier = tune_completes_in_hooks;
+    dsd_frame_sync_hooks_set(&hooks);
+    assert(getFrameSync(&opts, &state) == -1);
+    assert(state.frame_sync_carry.valid == 0);
+    dsd_frame_sync_hooks_set(NULL);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* A trunk retune on the decoder thread between the calls (the engine loop's ticks, noCarrier's return to the control
+   channel): it forgets the sync histories, and the carried one with them. */
+static void
+test_retune_between_calls_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    first_call_times_out(&opts, &state);
+    dsd_state_forget_sync_join_histories(&state);
+    assert(state.frame_sync_carry.valid == 0);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* A tune off the decoder thread (the watchdog's) between the calls: the next call applies it at its start
+   (dsd_frame_sync_apply_off_thread_tunes()), before it would take the history up. */
+static void
+test_off_thread_tune_between_calls_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    first_call_times_out(&opts, &state);
+    const uint32_t drops = state.frame_sync_carry.drops;
+    dsd_p25p1_decision read;
+    dsd_frame_sync_p25p1_read_decision(&read);
+    dsd_frame_sync_note_off_thread_tune(&read);
+    assert(dsd_frame_sync_off_thread_tune_pending());
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    assert(state.frame_sync_carry.drops != drops);
+    free_state_buffers(&state);
+}
+
+/* A tune that completed between the calls without forgetting anything on this thread (the generation moves). */
+static void
+test_completed_tune_between_calls_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    first_call_times_out(&opts, &state);
+    dsd_trunk_tuning_generation_advance();
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* The next call's first read finds a stream flush (an RTL retune's, which the reader notes only when it reads): the
+   history taken up at the call's start goes again. */
+static void
+test_flush_at_first_read_starts_blind(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    first_call_times_out(&opts, &state);
+    g_flush_on_next_read = 1;
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* The modulation changed between the calls: a lock the next call applies at its start (frame_sync_apply_cli_mod_lock())
+   moves rf_mod off the CQPSK the history was sliced on. */
 static void
 test_new_modulation_starts_blind(void) {
     static dsd_opts opts;
     static dsd_state state;
     init_uplink(&opts, &state);
     first_call_times_out(&opts, &state);
-    state.frame_sync_carry.rf_mod = 0;
+    opts.mod_qpsk = 0;
+    opts.mod_c4fm = 1;
     assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* The hunt steps to another profile at a no-sync exit: the history is kept with the profile it was read under, which
+   is not the one the next call runs, so the next call does not take it up. */
+static void
+test_profile_step_keeps_the_read_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_uplink(&opts, &state);
+    opts.mod_cli_lock = 0;
+    opts.frame_dmr = 1;
+    const int start = state.sps_hunt_idx;
+    int calls = 0;
+    while (state.sps_hunt_idx == start && calls < 40) {
+        (void)getFrameSync(&opts, &state); /* the burst may lock on the way: what matters is the exit that steps */
+        calls++;
+    }
+    assert(state.sps_hunt_idx != start);
+    /* Kept under the profile it was read under, which frame_sync_history_resume() compares with the one running. */
+    assert(state.frame_sync_carry.valid == 1 && state.frame_sync_carry.sps_hunt_idx == start);
     free_state_buffers(&state);
 }
 
@@ -228,7 +365,14 @@ main(void) {
     test_carrier_change_starts_blind();
     test_symbol_between_calls_starts_blind();
     test_new_epoch_starts_blind();
+    test_retune_in_no_sync_hooks_starts_blind();
+    test_tune_completing_in_no_sync_hooks_starts_blind();
+    test_retune_between_calls_starts_blind();
+    test_off_thread_tune_between_calls_starts_blind();
+    test_completed_tune_between_calls_starts_blind();
+    test_flush_at_first_read_starts_blind();
     test_new_modulation_starts_blind();
+    test_profile_step_keeps_the_read_profile();
     printf("FRAME_SYNC_HISTORY_CARRY: OK\n");
     return 0;
 }

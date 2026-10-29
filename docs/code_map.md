@@ -613,12 +613,17 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
   and `-fM` blank rows among them).
 - DSP `getFrameSync()` builds its sync windows from a dibit history that a no-sync exit (the timeout after a matchless
-  1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`, which takes it up only
-  when nothing came between: the same symbol clock, clock epoch, input, carrier count, SPS hunt profile and modulation
-  (the profile and modulation the history was read under). A burst that straddles the exit is then matched as one that
-  does not; before, a TETRA control uplink burst that began fewer than 20 symbols before it was lost. A sync, an input
-  interruption, a signal-search yield, shutdown and `dsd_frame_sync_reset_acquisition()` drop it. Test:
-  `FRAME_SYNC_HISTORY_CARRY`.
+  1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`. The next call takes it
+  up only when nothing came between: the same symbol clock, clock epoch, input, carrier count, trunk tuning generation,
+  SPS hunt profile and modulation (the profile and modulation the history was read under), and no
+  `dsd_state_forget_sync_join_histories()` (every decoder-thread trunk retune, off-thread tune applied, carrier change
+  and acquisition reset runs it) since the history began, so a P25 release's retune in the exit's own no-sync hooks
+  keeps nothing. Its first read checks the clock, epoch, carrier count, generation and drops again, for a flush an RTL
+  reader finds only when it reads. A matcher that reads only its window or reads its frame forward from the sync (TETRA,
+  P25, NXDN, YSF, dPMR, D-STAR, M17) then matches a frame that straddles the exit; before, a TETRA control uplink burst
+  that began fewer than 20 symbols before it was lost. DMR and X2-TDMA read their pre-sync half from the rolling dibit
+  buffers, which the no-carrier reset clears, so for them nothing changes. A sync, an input interruption, a
+  signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY`.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned

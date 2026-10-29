@@ -48,6 +48,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -511,8 +512,6 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     frame_sync_p25p1_chain_step_end(taken);
     state->symbol_history_count = 0;
     state->symbol_history_head = 0;
-    /* The hunt's own dibit history goes with the soft one: the next call starts blind. */
-    state->frame_sync_carry.valid = 0;
     state->sidx = 0;
     state->midx = 0;
     state->min = -15000;
@@ -527,7 +526,8 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->rtl_fsk_sps_accum = 0;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
-    /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it. */
+    /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it, and the
+       frame sync's history carried from its last no-sync exit. */
     dsd_state_forget_sync_join_histories(state);
     /* Nothing decoded since says the carrier is two-slot TDMA: a decoded frame of the next acquisition does. */
     state->tdma_carrier = 0U;
@@ -2944,6 +2944,16 @@ typedef struct frame_sync_runtime_ctx {
        leaves a history the next call cannot use (frame_sync_history_keep()). */
     int history_sps_idx;
     int history_rf_mod;
+    /* dsd_frame_sync_history_carry::drops and the trunk tuning generation when the history began: a drop or a completed
+       tune since then (a release's tune in the no-sync hooks, say) leaves a history that is not kept. */
+    uint32_t history_drops;
+    uint64_t history_tune_gen;
+    /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
+       read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
+    int resumed;
+    uint64_t resume_clock;
+    uint32_t resume_epoch;
+    uint32_t resume_carrier_seq;
     /* The 79- and 119-symbol TETRA burst windows are only built when TETRA is enabled. */
     int tetra_windows;
     unsigned int ready_windows;
@@ -3015,6 +3025,8 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->tetra_windows = opts->frame_tetra == 1;
     rt->history_sps_idx = state->sps_hunt_idx;
     rt->history_rf_mod = state->rf_mod;
+    rt->history_drops = state->frame_sync_carry.drops;
+    rt->history_tune_gen = dsd_trunk_tuning_generation();
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -3052,10 +3064,16 @@ frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* 
 _Static_assert(DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS == FRAME_SYNC_HISTORY_CAPACITY,
                "the carried history is the whole history ring");
 
-/* A no-sync exit: keep the history for the next call, with where the stream is (dsd_frame_sync_history_carry). */
+/* A no-sync exit: keep the history for the next call, with where the stream is (dsd_frame_sync_history_carry). Not when
+ * the history was dropped or a tune completed since it began: the exit's own hooks run first, and a P25 release there
+ * returns to the control channel, so the history is the carrier left's. */
 static void
 frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
+    if (carry->drops != rt->history_drops || dsd_trunk_tuning_generation() != rt->history_tune_gen) {
+        carry->valid = 0;
+        return;
+    }
     DSD_MEMCPY(carry->dibits, rt->symbol_history, sizeof(carry->dibits));
     carry->head = rt->history_head;
     carry->count = rt->history_count;
@@ -3067,6 +3085,7 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
        profile differs and frame_sync_history_resume() drops it. */
     carry->sps_hunt_idx = rt->history_sps_idx;
     carry->rf_mod = rt->history_rf_mod;
+    carry->tune_generation = rt->history_tune_gen;
     carry->valid = 1;
 }
 
@@ -3085,8 +3104,8 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
                          && carry->symbol_clock_epoch == state->symbol_clock_epoch
                          && carry->symbol_clock_input == state->symbol_clock_input
                          && carry->carrier_seq == state->carrier_seq && carry->sps_hunt_idx == state->sps_hunt_idx
-                         && carry->rf_mod == state->rf_mod && carry->head >= 0
-                         && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
+                         && carry->rf_mod == state->rf_mod && carry->tune_generation == rt->history_tune_gen
+                         && carry->head >= 0 && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
                          && carry->count <= FRAME_SYNC_HISTORY_CAPACITY;
     carry->valid = 0;
     if (!unbroken) {
@@ -3095,6 +3114,29 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
     DSD_MEMCPY(rt->symbol_history, carry->dibits, sizeof(rt->symbol_history));
     rt->history_head = carry->head;
     rt->history_count = carry->count;
+    rt->resumed = 1;
+    rt->resume_clock = state->symbol_clock;
+    rt->resume_epoch = state->symbol_clock_epoch;
+    rt->resume_carrier_seq = state->carrier_seq;
+}
+
+/* The first symbol a call that took up a history reads: it must follow the history on the same stream (one symbol on
+ * the clock, the same epoch and carrier count, no tune completed, nothing dropped), or the history goes and the call
+ * starts from this symbol. */
+static void
+frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
+    if (!rt->resumed) {
+        return;
+    }
+    rt->resumed = 0;
+    const int unbroken = state->symbol_clock == rt->resume_clock + 1U && state->symbol_clock_epoch == rt->resume_epoch
+                         && state->carrier_seq == rt->resume_carrier_seq
+                         && state->frame_sync_carry.drops == rt->history_drops
+                         && dsd_trunk_tuning_generation() == rt->history_tune_gen;
+    if (!unbroken) {
+        rt->history_head = 0;
+        rt->history_count = 0;
+    }
 }
 
 static void
@@ -4792,6 +4834,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
+        frame_sync_history_confirm(&rt, state);
         frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, &rt.level_count, rt.t_max);
         frame_sync_maybe_auto_switch_modulation(opts, state, rt.t_max, &rt.lastt);
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);
