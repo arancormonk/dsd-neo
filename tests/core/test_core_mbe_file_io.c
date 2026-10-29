@@ -3625,6 +3625,9 @@ test_close_and_rename_wav_replaces_unsafe_identity_characters(void) {
                                           "_DSTAR_GROUP_TGT_CQCQCQ_SRC_N0CALL_ID51.wav");
     rc |= publish_unsafe_identity_case("M17 callsigns with '/' and '.'", "M17_CAN_7", "M17-M17 C", "AB1CD/P.2", 4021U,
                                        "_M17_CAN_7_GROUP_TGT_M17-M17_C_SRC_AB1CD_P_2.wav");
+    /* The system component is sanitized the same way; the sidecar's short_name keeps the system as received. */
+    rc |= publish_unsafe_identity_case("a system name with '/', ' ' and '.'", "SYS/A B.1", "100", "7", 100U,
+                                       "_SYS_A_B_1_GROUP_TGT_100_SRC_7.wav");
     return rc;
 }
 
