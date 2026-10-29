@@ -172,6 +172,16 @@ float mean_power(const float* samples, int len, int step);
 void full_demod(struct demod_state* d);
 
 /**
+ * @brief The TETRA chain's transfer sub-block, in symbols of mixer input.
+ *
+ * The chain moves the FLL's residual into its tracking mixer (dsd_fll_band_edge_transfer()) only at multiples of this
+ * many symbols of mixer input since the channel filter last started over (demod_state::tetra_sub_pos), running a
+ * block in pieces cut at those boundaries, so the transfer falls on the same sample however the input is cut into
+ * blocks. 96 symbols is 5.33 ms, the block an I/Q replay reads at every rate in the TETRA domain.
+ */
+#define DSD_TETRA_SUBBLOCK_SYMBOLS 96
+
+/**
  * @brief Whether the TETRA receive chain can run on a demodulator as it is configured now.
  *
  * True only when all of these hold: the channel profile is DSD_CH_LPF_PROFILE_TETRA; CQPSK is enabled; the symbol

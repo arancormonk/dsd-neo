@@ -4546,6 +4546,22 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     mixes and channel-filters; the matched filter, FLL and loops do not run, and the matched filter starts over for
     the reopen. `dsd_demod_reset_filter_state()` resets the matched filter too, and on the TETRA chain the AGC
     average. The symbols are sliced at the quadrant boundaries (TETRA protocol section).
+  - Block independence. The chain's output does not depend on where its input is cut into blocks.
+    `full_demod_tetra_stream_block()` runs a block in pieces cut at the transfer sub-block boundaries,
+    `DSD_TETRA_SUBBLOCK_SYMBOLS` (96 symbols, 5.33 ms, a replay's block at every rate in the domain) of mixer input
+    counted by `demod_state::tetra_sub_pos` from the channel filter's last start over (`channel_lpf_reset_state()`).
+    Each piece runs mixer, channel LPF, AGC, matched filter and FLL, and the transfer runs only on a piece that ends
+    on a boundary; the rest of a block after its last boundary transfers at the next one. Every stage streams with a
+    fixed lag, so the FLL has taken the same samples at each transfer whatever the cut. The squelch gate stays a
+    per-block decision on the first 256 channel samples, measured before the AGC: the pieces run as for an open
+    gate, and a closed one puts the FLL (its transfers with it) and the AGC average back, and advances the mixer's
+    phasor at the block's frequency (`dsd_tetra_premix_skip()`), as a closed whole block leaves them. The raw CQPSK
+    demodulator, which runs no FLL, runs the block whole. The Gardner runs the requested gain on the chain: the
+    lowered tracking gain (`op25_gardner_gain_mu_for_state()`) is decided from the lock at a block's start, and on
+    TETRA captures it also decoded less. On every committed TETRA fixture and both reporter captures, seven replay
+    chunk patterns (1/7, 1/2, 1 and 2 of the replay block, and irregular ones) decode the same lines, byte for byte
+    once the input level monitor's warning, which reports per read, is set aside. Test: `DSP_TETRA_CHAIN`
+    (`test_block_partitions()`).
   - Fallback. A TETRA profile on CQPSK whose chain cannot run warns once per stream per cause (`TETRA receive chain
     inactive: ...`: the rate out of the domain, a TED override that does not match the rate,
     `DSD_NEO_CHANNEL_LPF=0`) and runs the generic CQPSK path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1).
@@ -4655,8 +4671,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     omega, the delay line, the last symbol), so its symbols do not depend on the cut either: a block can make none, and
     a symbol the last block owed comes out of the next one. It writes them to the work buffer its input is not in
     (`hb_workbuf` when the channel filter left the block in `timing_buf`, as after an odd half-band pass count), up to
-    that buffer's capacity. Only its adaptive gain is decided per block. Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks,
-    warm and cold, from each buffer, bit-exact against the whole stream).
+    that buffer's capacity. Only its adaptive gain is decided per block, and not on the TETRA chain, which runs the
+    requested gain (TETRA receive chain above). Test: `DSP_COSTAS` (1-, 2- and 3-pair blocks, warm and cold, from
+    each buffer, bit-exact against the whole stream).
   - The post-demod audio decimator (`full_demod_apply_post_audio_decimation()`, only on an I/Q replay whose sidecar
     sets `post_downsample` above 1; every live source and committed fixture runs 1) streams on both paths: the 16-tap
     polyphase decimator (its history and phase) and, when that allocation fails, the fallback, a one-pole low-pass

@@ -400,6 +400,11 @@ struct demod_state {
     int tetra_rrc_pending;
     int tetra_rrc_taps_len;
     int tetra_rrc_sps;
+    /* Where the TETRA chain's mixer input stands within its transfer sub-block (dsd_tetra_subblock_len()): the samples
+       it took since the last sub-block boundary, counted from the channel filter's last start over (0 after a reset).
+       The mixer takes the FLL's residual only at those boundaries, so where the transfer falls does not depend on how
+       the input was cut into blocks. */
+    int tetra_sub_pos;
     /* The causes (DSD_TETRA_CHAIN_WARN_* bits, demod_pipeline.cpp) this stream has warned about once already: a TETRA
        profile whose chain cannot run. The stream open clears them. */
     int tetra_chain_warned;

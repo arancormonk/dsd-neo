@@ -346,6 +346,15 @@ void dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit);
 void dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs);
 
 /**
+ * @brief Advance the TETRA mixer's phasor over @p pairs samples at pre_freq, as dsd_tetra_premix_block() would, without
+ * rotating any: the phasor ends rotated by pairs * pre_freq from where it was (renormalized).
+ *
+ * @param f     FLL state holding pre_freq and the phasor.
+ * @param pairs Number of complex samples.
+ */
+void dsd_tetra_premix_skip(dsd_fll_band_edge_state_t* f, int pairs);
+
+/**
  * @brief The TETRA mixer bound at a DSP rate: 2*pi*DSD_TETRA_PREMIX_LIMIT_HZ/rate_out rad/sample, 0 for a rate that
  * is not positive.
  */

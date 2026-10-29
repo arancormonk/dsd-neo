@@ -6,10 +6,10 @@
 /*
  * The TETRA receive chain inside full_demod(): the activation predicate (dsd_demod_tetra_chain_wanted()) and the
  * transitions full_demod() runs when it changes between blocks, the chain's order (mixer, channel LPF, AGC 0.1,
- * matched filter, FLL and transfer), the squelch and signal-search behaviour, the once-per-stream warnings for a TETRA
- * profile whose chain cannot run, the pull-in on a clean synthetic stream, and a P25 stream after a TETRA session
- * running exactly as a fresh one, and an uplink session, which keeps only the TETRA channel filter. The tests force the
- * TETRA profile on the demodulator directly.
+ * matched filter, FLL and transfer), its output's independence of where the input is cut into blocks, the squelch and
+ * signal-search behaviour, the once-per-stream warnings for a TETRA profile whose chain cannot run, the pull-in on a
+ * clean synthetic stream, and a P25 stream after a TETRA session running exactly as a fresh one, and an uplink session,
+ * which keeps only the TETRA channel filter. The tests force the TETRA profile on the demodulator directly.
  */
 
 #include <atomic>
@@ -1041,6 +1041,117 @@ test_partition_invariance(void) {
     return rc;
 }
 
+/* The whole chain through full_demod() (mixer, channel LPF, AGC, matched filter, FLL and its transfers into the mixer,
+ * Gardner, differential, Costas) makes the same symbols however its input is cut into blocks: the transfer falls on
+ * the sub-block boundaries of the input's own sample count, and nothing after the FLL decides per block. A carrier
+ * well off centre makes the transfers matter: the mixer takes thousands of hertz in steps over the first blocks. */
+int
+run_chain(int rate, const std::vector<float>& iq, const std::vector<int>& cuts, std::vector<float>* out,
+          double* total_hz) {
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_tetra(s, rate);
+    size_t pos = 0;
+    out->clear();
+    float first_gain = -1.0f;
+    for (int n : cuts) {
+        const std::vector<float> sym = run_block(s, iq.data() + pos * 2U, n);
+        pos += (size_t)n;
+        out->insert(out->end(), sym.begin(), sym.end());
+        if (first_gain < 0.0f && !sym.empty()) {
+            first_gain = s->ted_effective_gain;
+        }
+    }
+    *total_hz = rad_to_hz(dsd_fll_band_edge_total_freq(&s->fll_band_edge_state), rate);
+    const int active = s->tetra_chain;
+    /* Locked long since, the Gardner still runs the gain it started with: lowering it is a block's decision. */
+    const float gain = s->ted_effective_gain;
+    free_demod(s);
+    if (!active) {
+        return fail("block partitions: chain not active");
+    }
+    return expect_near("block partitions: Gardner gain after lock", gain, first_gain, 0.0);
+}
+
+/* Cuts of @p total samples: every block @p size long, the last one short. */
+std::vector<int>
+cuts_of(int total, int size) {
+    std::vector<int> cuts;
+    for (int left = total; left > 0; left -= size) {
+        cuts.push_back(left < size ? left : size);
+    }
+    return cuts;
+}
+
+/* Cuts drawn uniformly from 1..max from a fixed seed. */
+std::vector<int>
+irregular_cuts(int total, int max, uint32_t seed) {
+    std::vector<int> cuts;
+    Lcg rng{seed};
+    for (int left = total; left > 0;) {
+        int n = 1 + (int)(rng.next() % (uint32_t)max);
+        n = n < left ? n : left;
+        cuts.push_back(n);
+        left -= n;
+    }
+    return cuts;
+}
+
+int
+block_partitions_at(int rate, double offset_hz) {
+    int rc = 0;
+    const int sps = rate / 18000;
+    const int sub = DSD_TETRA_SUBBLOCK_SYMBOLS * sps;
+    const int total = rate / 2; /* 0.5 s: the pull-in and the tracking after it */
+    const std::vector<float> iq = make_tetra_stream(rate, offset_hz, total, 0.3f, 0x1357u);
+    std::vector<float> ref;
+    double ref_hz = 0.0;
+    rc |= run_chain(rate, iq, cuts_of(total, sub), &ref, &ref_hz);
+    double worst_all = 0.0;
+    const std::vector<std::vector<int>> partitions = {
+        cuts_of(total, 2400),
+        cuts_of(total, sub / 7),
+        cuts_of(total, sub / 2 + 1),
+        cuts_of(total, 2 * sub),
+        irregular_cuts(total, 2 * sub, 1u),
+        irregular_cuts(total, 61, 7u),
+    };
+    for (size_t p = 0; p < partitions.size(); p++) {
+        std::vector<float> got;
+        double got_hz = 0.0;
+        rc |= run_chain(rate, iq, partitions[p], &got, &got_hz);
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "%d Hz, %+.0f Hz offset, partition %d: symbols", rate, offset_hz, (int)p);
+        rc |= expect_int(label, (int)got.size(), (int)ref.size());
+        double worst = 0.0;
+        for (size_t k = 0; k < got.size() && k < ref.size(); k++) {
+            worst = std::fmax(worst, std::fabs((double)got[k] - (double)ref[k]));
+        }
+        /* The SIMD kernels' and the phasor renormalization's rounding, not a different trajectory. */
+        DSD_SNPRINTF(label, sizeof label, "%d Hz, %+.0f Hz offset, partition %d: worst symbol difference", rate,
+                     offset_hz, (int)p);
+        rc |= expect_near(label, worst, 0.0, 1e-3);
+        worst_all = std::fmax(worst_all, worst);
+        DSD_SNPRINTF(label, sizeof label, "%d Hz, %+.0f Hz offset, partition %d: carrier estimate (Hz)", rate,
+                     offset_hz, (int)p);
+        rc |= expect_near(label, got_hz, ref_hz, 0.05);
+    }
+    DSD_FPRINTF(stdout, "TETRA chain block partitions at %d Hz, %+.0f Hz offset: %d symbols, worst difference %.3g\n",
+                rate, offset_hz, (int)ref.size(), worst_all);
+    return rc;
+}
+
+int
+test_block_partitions(void) {
+    int rc = 0;
+    rc |= block_partitions_at(72000, 3500.0);
+    rc |= block_partitions_at(54000, -2200.0);
+    rc |= block_partitions_at(144000, 6000.0);
+    return rc;
+}
+
 /* --- A P25 stream after a TETRA session --------------------------------------------------------------------- */
 
 /* What a stream switch at the same frequency resets: the filters, and the loops as a family switch starts them, but
@@ -1182,6 +1293,7 @@ main(void) {
     rc |= test_squelch_close_reopen();
     rc |= test_block_after_gap_makes_symbols();
     rc |= test_partition_invariance();
+    rc |= test_block_partitions();
     rc |= test_p25_after_tetra_session();
     rc |= test_filter_reset();
     if (rc == 0) {

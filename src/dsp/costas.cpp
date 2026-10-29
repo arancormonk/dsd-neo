@@ -232,6 +232,10 @@ cqpsk_symbol_rate_hz(const demod_state* d) {
     return (d->rate_out + (d->ted_sps / 2)) / d->ted_sps;
 }
 
+/* The Gardner gain: the requested one (ted_gain, else 0.025), lowered to 0.018 at 5500 sym/s and above once 240 symbols
+   in the lock metric holds at 0.05, unless a gain was set. The block decides it from the lock at its start, so where a
+   block starts decides when it moves; the TETRA chain, whose output must not depend on the cut, runs the requested gain
+   (on TETRA captures the lowered one also decoded less). */
 static float
 op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
     const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
@@ -244,7 +248,7 @@ op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
         return requested;
     }
 
-    if (cqpsk_symbol_rate_hz(d) < 5500) {
+    if (cqpsk_symbol_rate_hz(d) < 5500 || (d && d->tetra_chain)) {
         return requested;
     }
     if (!ted || ted->lock_count < 240) {
@@ -1479,6 +1483,34 @@ dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs) {
     }
     f->pre_re = (float)pr;
     f->pre_im = (float)pi;
+}
+
+extern "C" void
+dsd_tetra_premix_skip(dsd_fll_band_edge_state_t* f, int pairs) {
+    if (!f || pairs <= 0) {
+        return;
+    }
+    if (!stored_float_is_finite(&f->pre_freq)) {
+        f->pre_freq = 0.0f;
+        f->pre_re = 1.0f;
+        f->pre_im = 0.0f;
+        return;
+    }
+    double pr = 1.0;
+    double pi = 0.0;
+    if (stored_float_is_finite(&f->pre_re) && stored_float_is_finite(&f->pre_im)) {
+        const double mag2 = (double)f->pre_re * (double)f->pre_re + (double)f->pre_im * (double)f->pre_im;
+        if (mag2 > 0.25 && mag2 < 4.0) {
+            const double inv = 1.0 / std::sqrt(mag2);
+            pr = (double)f->pre_re * inv;
+            pi = (double)f->pre_im * inv;
+        }
+    }
+    const double angle = std::fmod((double)f->pre_freq * (double)pairs, 2.0 * 3.14159265358979323846);
+    const double step_r = std::cos(angle);
+    const double step_i = std::sin(angle);
+    f->pre_re = (float)(pr * step_r - pi * step_i);
+    f->pre_im = (float)(pr * step_i + pi * step_r);
 }
 
 extern "C" float
