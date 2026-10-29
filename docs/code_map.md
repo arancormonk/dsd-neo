@@ -8202,7 +8202,10 @@ Qt Quick frontend (`src/ui/qt`):
   - Limit (D2): `limitMb` (decimal MB, 0 none) applies only once the app has set it (`setLimitMb()`; a first pass
     never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change:
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
-    the total is at 95%; a file already gone is taken off the total without counting as removed. When the held files
+    the total is at 95%; a file already gone is taken off the total without counting as removed. A total over the
+    limit is first checked against the disk: every file it counts is looked at as `recheckRecordings()` looks (on the
+    worker, only when over), so one deleted behind the store's back (over USB, by a file manager) leaves the index
+    (kept and away when its root went), and the total is summed again before anything goes. When the held files
     keep it over (`m_limitPending`), the release of a selection or of the player's file wakes a pass that tries again,
     and so does every timed pass (an rdio upload's hold has no release to wake one). The total counts every available
     root, so each of them is checked again right before each removal (after its holds are asked), wherever the
@@ -8235,10 +8238,10 @@ Qt Quick frontend (`src/ui/qt`):
   - Tests: `UI_QT_RECORDING_STORE` (the tail, the decoder's own writer, History roles from the store, compaction,
     roots away vs emptied, changes behind the store, folders by uid, deletion safety, the limit, unfinished temp files,
     free space, export selection, a session running when the UI loads (a polled host), a start that does not wait for
-    the journals, rechecks, delete failures, exit during the first read, the player letting go of a held file, storage
-    lost while a root is listed or its folders read back, a folder read, a journal tailed, an unlink runs, the limit
-    runs (before its first removal, or as one is checked) or before a session start; a session start waking an idle
-    worker),
+    the journals, rechecks, the limit not counting files deleted behind its back, delete failures, exit during the
+    first read, the player letting go of a held file, storage lost while a root is listed or its folders read back, a
+    folder read, a journal tailed, an unlink runs, the limit runs (as it looks at its files, before its first removal,
+    or as one is checked) or before a session start; a session start waking an idle worker),
     `UI_QT_SESSION_ARGS` and `UI_QT_SCAN_LIST_ROUNDTRIP` (the starters' session calls and argv, refused extras),
     `UI_QT_SESSION_ARGS_PARSE` (each start path's argv through the real parser; the live switches through the real
     bridge and queue, refused with no storage and beside a static WAV; `RecordingStatus`), the host surface in

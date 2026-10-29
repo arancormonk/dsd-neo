@@ -397,6 +397,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Let History reads waiting for the lock take it before the worker takes it again (the mutex is not fair). */
     void yieldToReaders() const;
     void processRechecks(Pass* pass);
+    /* Look at the files of @p ids again: a gone one leaves the index (kept when its root went: the storage-loss rule),
+     * one still there has its size read again. */
+    void recheckEntries(const QStringList& ids, Pass* pass);
     void processDeletes(Pass* pass);
     /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
     DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr);

@@ -1032,7 +1032,12 @@ RecordingStore::processRechecks(Pass* pass) {
         ids = m_recheckQueue.values();
         m_recheckQueue.clear();
     }
-    for (const QString& id : std::as_const(ids)) {
+    recheckEntries(ids, pass);
+}
+
+void
+RecordingStore::recheckEntries(const QStringList& ids, Pass* pass) {
+    for (const QString& id : ids) {
         yieldToReaders();
         int root = -1;
         {
@@ -1194,6 +1199,7 @@ RecordingStore::enforceLimit(Pass* pass) {
     int removed = 0;
     bool held = false;
     bool over = false;
+    bool looked = false;
     // A root found gone during the run took its recordings out of the usage: the total is summed again over the roots
     // still there, and only then is it decided whether anything needs to go.
     for (bool recount = true; recount;) {
@@ -1201,6 +1207,7 @@ RecordingStore::enforceLimit(Pass* pass) {
         held = false;
         over = false;
         QList<Candidate> candidates;
+        QStringList counted;
         qint64 total = 0;
         qint64 limit = 0;
         // The roots the total counts.
@@ -1232,9 +1239,22 @@ RecordingStore::enforceLimit(Pass* pass) {
             for (const Entry& entry : std::as_const(entries)) {
                 const auto folder = folders.constFind(entry.folder);
                 if (folder != folders.cend() && rootAvailable.value(folder->root)) {
-                    candidates.append({entry.id, entry.bytes, entry.start, entry.order});
+                    if (looked) {
+                        candidates.append({entry.id, entry.bytes, entry.start, entry.order});
+                    } else {
+                        counted.append(entry.id);
+                    }
                 }
             }
+        }
+        if (!looked) {
+            // Over on the sizes the index holds, which a file deleted behind the store's back (over USB, by a file
+            // manager) still counts: every file the total counts is looked at as a recheck looks, a gone one leaving
+            // the index (away, not deleted, when its root went), and the total is summed again before anything goes.
+            looked = true;
+            recheckEntries(counted, pass);
+            recount = true;
+            continue;
         }
         // Oldest first (an unfinished recording by its file's time), down to 95% so one more call does not start again.
         std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {

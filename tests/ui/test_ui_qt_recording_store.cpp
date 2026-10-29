@@ -1756,6 +1756,77 @@ test_recheck_recordings(void) {
                && QFileInfo::exists(folder + QStringLiteral("/g2.wav")) && s.store.usedBytes() == 950000);
 }
 
+/* Issue #708: a recording deleted behind the store's back (over USB, by a file manager) still counted its indexed size,
+ * and the limit removed an older recording to make room it did not need. The 1 GB case at a thousandth of its size: a
+ * 1 MB limit, 400 kB and 500 kB indexed, the newer 500 kB deleted outside the app, then 200 kB more. What is on disk is
+ * 600 kB, under the limit: the limit looks at the files it counts first, the gone one leaves the index, and the 400 kB
+ * recording stays. */
+void
+test_limit_counts_only_files_still_there(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.store.setLimitMb(1);
+    record(folder, QStringLiteral("0000000000000067-1"), QStringLiteral("older.wav"), 1754712000, 700, 400000);
+    record(folder, QStringLiteral("0000000000000067-2"), QStringLiteral("newer.wav"), 1754712100, 701, 500000);
+    s.pass();
+    expect("gone behind its back: both under the limit",
+           s.store.recordingCount() == 2 && s.store.usedBytes() == 900000 && s.store.removedByLimit() == 0);
+    QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
+    expect("gone behind its back: the newer one is deleted outside the app",
+           QFile::remove(folder + QStringLiteral("/newer.wav")));
+    record(folder, QStringLiteral("0000000000000067-3"), QStringLiteral("latest.wav"), 1754712200, 702, 200000);
+    s.pass();
+    expect("gone behind its back: the older recording stays",
+           QFileInfo::exists(folder + QStringLiteral("/older.wav")) && s.store.removedByLimit() == 0);
+    expect("gone behind its back: the gone one leaves the index, announced",
+           s.store.recordingCount() == 2 && s.store.usedBytes() == 600000
+               && !s.store.isIndexedPath(folder + QStringLiteral("/newer.wav")) && spied(news, fragment(701)));
+}
+
+/* Issue #708: the limit's look at the files it counts keeps the storage-loss rule. A file missing because its storage
+ * went as the pass ran is away, not deleted: it stays indexed and its storage reads as away. Laid out so nothing else
+ * notices the storage going first: the external folder holds no journal for a tail to miss, only an unfinished
+ * recording an earlier process left, and the storage leaves as the internal journal is tailed. */
+void
+test_limit_count_keeps_storage_that_went(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString outer = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    const QString inner = roots.internal + QStringLiteral("/Metro (5e6f7a8b)");
+    write_folder_json(outer, QString(kUidA), QStringLiteral("County"));
+    write_folder_json(inner, QString(kUidC), QStringLiteral("Metro"));
+    const QString temp = outer + QStringLiteral("/TEMP_20261027_120000_0123456789ABCDEF_9.wav");
+    make_file(temp, 500000);
+    record(inner, QStringLiteral("00000000000000F9-1"), QStringLiteral("old.wav"), 1754705000, 60, 400000);
+    Store s(roots.list(), false);
+    s.store.setLimitMb(1);
+    s.start();
+    expect("storage went: both indexed, under the limit",
+           s.store.unfinishedCount() == 1 && s.store.recordingCount() == 1 && s.store.removedByLimit() == 0);
+    std::atomic<bool> moved{false};
+    s.store.setTailHookForTest([&](const QString&) {
+        if (!moved.exchange(true)) {
+            (void)QDir().rename(ext, away);
+        }
+    });
+    record(inner, QStringLiteral("00000000000000F9-2"), QStringLiteral("new.wav"), 1754705100, 61, 200000);
+    s.pass();
+    expect("storage went: as the journal was tailed", moved.load() && !QFileInfo::exists(temp));
+    expect("storage went: the recording there stays indexed, its storage away",
+           s.store.unfinishedCount() == 1 && folder_away(s.store, kUidA));
+    expect("storage went: what is left is under the limit",
+           QFileInfo::exists(inner + QStringLiteral("/old.wav")) && s.store.removedByLimit() == 0);
+    s.store.setTailHookForTest({});
+    expect("storage went: it comes back", QDir().rename(away, ext));
+    s.pass();
+    expect("storage went: back over the limit, the oldest goes", !QFileInfo::exists(inner + QStringLiteral("/old.wav"))
+                                                                     && QFileInfo::exists(temp)
+                                                                     && s.store.removedByLimit() == 1);
+}
+
 /* Issue #708, I3: a delete the filesystem refuses is counted and its reason kept for the Call recordings screen, the
  * recording stays indexed, and each cause (asked for, the limit) is logged once per run. */
 void
@@ -2216,6 +2287,8 @@ main(int argc, char** argv) {
     test_root_gone_before_a_session_start();
     test_session_start_wakes_the_worker();
     test_recheck_recordings();
+    test_limit_counts_only_files_still_there();
+    test_limit_count_keeps_storage_that_went();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
     test_player_release_wakes_a_waiting_delete();
