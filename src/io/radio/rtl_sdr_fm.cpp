@@ -2601,6 +2601,7 @@ rtl_stream_publish_iq_controls(void) {
 }
 
 static void rtl_stream_publish_demod_profile_snapshot(void);
+static void rtl_stream_seed_open_profile(void);
 static void rtl_stream_publish_ted_bias(void);
 
 /* Main-thread SNR bias/estimator paths: read the published mirrors, not the
@@ -9053,7 +9054,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
      * teardown, so a stale request cannot override this session's startup
      * profile on the demod thread's first block. */
     rtl_stream_clear_demod_profile_request();
-    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_seed_open_profile();
     rtl_stream_publish_iq_controls();
     if (stream_open_start_io_pipeline(opts, source_kind) != 0) {
         // Pipeline initialization succeeded, so all teardown primitives exist.
@@ -9899,7 +9900,22 @@ rtl_stream_publish_ted_bias(void) {
     g_pub_ted_bias_q14.store(bias_q14, std::memory_order_relaxed);
 }
 
+/* The profile mirrors a stream opens with, from its configured demod state before any thread starts. The TETRA chain's
+   predicate is evaluated first, as the first block's boundary would (dsd_demod_update_tetra_chain()), so a TETRA open
+   publishes the TETRA profile it runs from the start rather than WIDE until the first block, and that boundary finds
+   the chain entered and runs no transition again. */
+static void
+rtl_stream_seed_open_profile(void) {
+    dsd_demod_update_tetra_chain(&demod);
+    rtl_stream_publish_demod_profile_snapshot();
+}
+
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_seed_open_profile(void) {
+    rtl_stream_seed_open_profile();
+}
+
 extern "C" void
 rtl_stream_test_publish_demod_snapshot(void) {
     rtl_stream_publish_demod_profile_snapshot();

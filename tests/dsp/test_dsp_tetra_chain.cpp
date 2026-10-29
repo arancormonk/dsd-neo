@@ -315,6 +315,55 @@ test_predicate_truth_table(void) {
     return rc;
 }
 
+/* A stream open evaluates the predicate before any block (dsd_demod_update_tetra_chain()): it enters the chain then,
+ * as the first block's boundary would, splitting the estimate and loading the TETRA FLL. The first block then runs no
+ * transition: its symbols are the same as a stream that entered at that block, and a further evaluation with nothing
+ * changed leaves the histories the blocks built alone. */
+int
+test_open_evaluates_chain(void) {
+    int rc = 0;
+    demod_state* a = new_demod();
+    demod_state* b = new_demod();
+    if (!a || !b) {
+        free_demod(a);
+        free_demod(b);
+        return fail("alloc");
+    }
+    configure_tetra(a, 72000);
+    configure_tetra(b, 72000);
+    a->fll_band_edge_state.freq = (float)hz_to_rad(-3000.0, 72000);
+    b->fll_band_edge_state.freq = (float)hz_to_rad(-3000.0, 72000);
+    dsd_demod_update_tetra_chain(a);
+    rc |= expect_int("open: chain entered before any block", a->tetra_chain, 1);
+    rc |= expect_near("open: FLL rolloff", a->fll_band_edge_state.rolloff, 0.35, 1e-6);
+    rc |= expect_near("open: estimate in the mixer (Hz)", rad_to_hz(a->fll_band_edge_state.pre_freq, 72000), -3000.0,
+                      0.05);
+    rc |= expect_int("open: memo for the rate", a->tetra_design_rate_out, 72000);
+    const std::vector<float> stream = make_tetra_stream(72000, 3000.0, 1440 * 6, 0.3f, 0x4321u);
+    for (int k = 0; k < 6; k++) {
+        const std::vector<float> sa = run_block(a, stream.data() + (size_t)k * 2880U, 1440);
+        const std::vector<float> sb = run_block(b, stream.data() + (size_t)k * 2880U, 1440);
+        if (sa != sb) {
+            rc |= fail("open: symbols differ from a stream that entered at its first block");
+            break;
+        }
+    }
+    rc |= expect_int("open: still active", a->tetra_chain, 1);
+    const int pending = a->tetra_rrc_pending;
+    const float agc = a->cqpsk_agc_avg;
+    const float hist = a->tetra_rrc_hist_i[DSD_TETRA_RRC_HIST_LEN - 1];
+    dsd_demod_update_tetra_chain(a);
+    rc |= expect_int("again: matched filter pending kept", a->tetra_rrc_pending, pending);
+    rc |= expect_near("again: AGC average kept", a->cqpsk_agc_avg, agc, 0.0);
+    rc |= expect_near("again: matched filter history kept", a->tetra_rrc_hist_i[DSD_TETRA_RRC_HIST_LEN - 1], hist, 0.0);
+    if (std::fabs((double)agc - 1.0) < 1e-9) {
+        rc |= fail("again: the blocks left the AGC average at its reset value, so the check proves nothing");
+    }
+    free_demod(a);
+    free_demod(b);
+    return rc;
+}
+
 /* The TETRA channel design's realizability is memoized by rate in the demod state: the block boundary checks it once
  * per rate and the predicate reads the memo, so no block designs the filter again. A memo for another rate is never
  * read, and a rate change refreshes it at the next boundary. */
@@ -1009,6 +1058,7 @@ main(void) {
     dsd_neo_log_set_tap(count_tetra_warnings, NULL);
     int rc = 0;
     rc |= test_predicate_truth_table();
+    rc |= test_open_evaluates_chain();
     rc |= test_design_memo();
     rc |= test_cqpsk_timing_sps();
     rc |= test_cold_start_activates();

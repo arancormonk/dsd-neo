@@ -2056,9 +2056,10 @@ expect_landing_cqpsk_truth_table(void) {
 }
 
 /*
- * A TETRA stream opened at 72 kHz runs its receive chain from the first block (full_demod() sets tetra_chain from
- * dsd_demod_tetra_chain_wanted()), so the profile it publishes is TETRA's and the channel width a frontend draws, twice
- * the protected edge, is the 22.5 kHz TETRA channel rather than WIDE's 16 kHz.
+ * A TETRA stream opened at 72 kHz runs its receive chain from the open: the open evaluates the activation predicate
+ * once its configuration is final (dsd_demod_update_tetra_chain()), so the profile it publishes before any block runs
+ * is TETRA's and the channel width a frontend draws, twice the protected edge, is the 22.5 kHz TETRA channel rather
+ * than WIDE's 16 kHz. The first block's boundary then finds the chain entered and runs no transition again.
  */
 static int
 expect_tetra_open_publishes_tetra_width(void) {
@@ -2075,8 +2076,7 @@ expect_tetra_open_publishes_tetra_width(void) {
     rtl_demod_config_from_env_and_opts(&demod, &opts);
     rtl_demod_select_defaults_for_mode(&demod, &opts, &out);
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &out, 72000);
-    demod.tetra_chain = dsd_demod_tetra_chain_wanted(&demod); /* as the first block's boundary sets it */
-    rtl_stream_test_publish_demod_snapshot();
+    rtl_stream_test_seed_open_profile(); /* what dsd_rtl_stream_open() publishes before any block runs */
     int running = -1;
     int rate = 0;
     (void)rtl_stream_get_running_symbol_profile(&rate, nullptr, &running);
@@ -2190,6 +2190,11 @@ expect_tetra_profile_validators(void) {
         {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_WIDE},
         {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
         {0, -1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
+        /* A switch to TETRA's 18000 sym/s that DSD_NEO_CQPSK lands on CQPSK, whatever filter the request named (WIDE
+           for the FSK discriminator, or none chosen), runs the TETRA profile: every CQPSK install shares one rule
+           (rtl_demod_cqpsk_channel_profile()). */
+        {1, 0, DSD_CH_LPF_PROFILE_WIDE, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, -1, DSD_CH_LPF_PROFILE_WIDE, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
         {1, 0, DSD_CH_LPF_PROFILE_12K5, 4800, 1, DSD_CH_LPF_PROFILE_P25_CQPSK},
         {0, 1, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 1, DSD_CH_LPF_PROFILE_P25_C4FM},
     };

@@ -34,13 +34,21 @@ reproduce byte for byte on one numpy version.
 
 Usage:
     python3 tools/build_iq_fixtures.py [--out tests/fixtures/iq] [--cache .iq-cache]
+    python3 tools/build_iq_fixtures.py --verify [--out tests/fixtures/iq]
+
+--verify checks the committed set against the generator: it copies the --out directory to a fresh temporary
+directory, regenerates the derived fixtures there exactly as --derived-only does, and byte-compares every file
+against the original. It prints each file that differs, is missing or is new, and exits 1 on any difference, 0 when
+every derived fixture reproduces byte for byte. It never writes to --out.
 """
 
 import argparse
+import filecmp
 import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -337,7 +345,7 @@ DERIVED_NOISE = [
 # CRC (all zero bits are a codeword of every linear code); the AACH keeps it out (docs/testing.md). Deterministic from
 # the seed; complex Gaussian noise added at the source's own level, sigma in LSB of the cu8 range. The sidecar keeps the
 # source's centre frequency. Sigma is set for the TETRA receive chain: at 24 LSB it decodes nearly every SCH/F block
-# (51 CRC ok), leaving none to gate; 38 LSB, from a sweep of 24-56, leaves it 12 CRC ok and 16 gated lines.
+# (53 SCH/F CRC ok), leaving none to gate; 38 LSB, from a sweep of 24-56, leaves it 13 CRC ok and 16 gated lines.
 #
 # name, source, start_s, stop_s, seed, sigma (LSB of the cu8 range)
 DERIVED_TETRA_GAP = [
@@ -1955,6 +1963,70 @@ def check_only_names(only):
             raise SystemExit(f"--only {name}: no such fixture")
 
 
+def build_all_derived(out_dir, dmr_synth_gen, cache):
+    """Write every fixture derived from committed ones or synthesized (what --derived-only regenerates)."""
+    total = 0
+    total += build_derived(out_dir)
+    total += build_noise(out_dir)
+    total += build_clip(out_dir)
+    total += build_derived_retune(out_dir)
+    total += build_derived_gap(out_dir)
+    total += build_dpmr_synth(out_dir)
+    total += build_tetra_synth(out_dir)
+    total += build_tetra_gap(out_dir)
+    total += build_nfm_synth(out_dir)
+    total += build_am_synth(out_dir)
+    total += build_analog_synth(out_dir)
+    total += build_squelch_burst(out_dir)
+    if dmr_synth_gen:
+        total += build_dmr_voice_synth(out_dir, dmr_synth_gen, cache)
+    else:
+        print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+    return total
+
+
+def differing_files(committed, regenerated):
+    """Relative paths that differ between two fixture trees: changed bytes, or present in only one of them."""
+    def tree(root):
+        found = set()
+        for base, _dirs, files in os.walk(root):
+            for name in files:
+                found.add(os.path.relpath(os.path.join(base, name), root))
+        return found
+
+    before = tree(committed)
+    after = tree(regenerated)
+    differing = []
+    for rel in sorted(before | after):
+        if rel not in after:
+            differing.append((rel, "missing after regeneration"))
+        elif rel not in before:
+            differing.append((rel, "new"))
+        elif not filecmp.cmp(os.path.join(committed, rel), os.path.join(regenerated, rel), shallow=False):
+            differing.append((rel, "differs"))
+    return differing
+
+
+def verify_derived(args):
+    """--verify: regenerate the derived fixtures in a temporary copy of --out and compare it byte for byte."""
+    committed = os.path.abspath(args.out)
+    if not os.path.isdir(committed):
+        raise SystemExit(f"--verify: {committed} is not a directory")
+    with tempfile.TemporaryDirectory(prefix="iq-fixtures-verify-") as scratch:
+        copy = os.path.join(scratch, "iq")
+        shutil.copytree(committed, copy)
+        build_all_derived(copy, args.dmr_synth_gen, args.cache)
+        differing = differing_files(committed, copy)
+    if differing:
+        for rel, why in differing:
+            print(f"verify: {rel}: {why}")
+        print(f"verify: FAILED, {len(differing)} file(s) differ from {committed}")
+        return 1
+    count = sum(len(files) for _base, _dirs, files in os.walk(committed))
+    print(f"verify: OK, every derived fixture reproduces byte for byte ({count} files in {committed})")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=os.path.join("tests", "fixtures", "iq"))
@@ -1973,7 +2045,17 @@ def main():
         action="append",
         help="regenerate just the named fixture(s); other fixtures and their downloads are skipped",
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="regenerate the derived fixtures into a temporary copy of --out and byte-compare them with it; "
+        "exit 1 on any difference (--out is never written)",
+    )
     args = parser.parse_args()
+    if args.verify:
+        if args.only:
+            raise SystemExit("--verify regenerates every derived fixture; it takes no --only")
+        return verify_derived(args)
     if args.only:
         check_only_names(args.only)
 
@@ -1984,22 +2066,7 @@ def main():
         total += build_upstream(args)
 
     if not args.only:
-        total += build_derived(args.out)
-        total += build_noise(args.out)
-        total += build_clip(args.out)
-        total += build_derived_retune(args.out)
-        total += build_derived_gap(args.out)
-        total += build_dpmr_synth(args.out)
-        total += build_tetra_synth(args.out)
-        total += build_tetra_gap(args.out)
-        total += build_nfm_synth(args.out)
-        total += build_am_synth(args.out)
-        total += build_analog_synth(args.out)
-        total += build_squelch_burst(args.out)
-        if args.dmr_synth_gen:
-            total += build_dmr_voice_synth(args.out, args.dmr_synth_gen, args.cache)
-        else:
-            print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+        total += build_all_derived(args.out, args.dmr_synth_gen, args.cache)
     else:
         for name in derived_fixture_names():
             if name in args.only:

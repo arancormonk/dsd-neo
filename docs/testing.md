@@ -424,6 +424,14 @@ through the beat fading and frequency-selective ISI seen on real LSM simulcast
 systems. Derived fixtures regenerate offline from the committed sources:
 `python3 tools/build_iq_fixtures.py --derived-only` (no network or ffmpeg).
 
+Run `python3 tools/build_iq_fixtures.py --verify` after any change to the generator. It copies `tests/fixtures/iq` (or
+the `--out` directory given) to a fresh temporary directory, regenerates every derived fixture there by the
+`--derived-only` path, and byte-compares the result with the committed set: it prints each file that differs, is
+missing or is new and exits 1, or exits 0 when every derived fixture reproduces byte for byte, and never writes to the
+committed set. A generator change that is meant to change fixtures must then change only the intended files: regenerate
+into a copy, check that `diff -rq` against the committed set lists exactly those, copy only those in, and run
+`--verify` again, which must pass. It is not a CTest case (the bytes are pinned to one numpy version).
+
 `nxdn48_attenuated` is `nxdn48` replayed 20 dB down, for the per-row squelch cases
 (`DECODE_IQ_SCAN_NXDN48_SQUELCH_*`, issue #521). The source is normalized near full scale, so
 its channel power leaves no room for a closed threshold inside the `--squelch-db` range; 20 dB
@@ -509,8 +517,9 @@ raised cosine at roll-off 0.2, which put inter-symbol interference behind the re
 `_TWO_RAY` variant offsets the second path by 3 Hz at the fixtures' own 54 kHz (`simulcast_two_ray(...,
 sample_rate=54000)`; the helper defaults to the 48 kHz of every other caller). `TOOLS_BUILD_IQ_FIXTURES_TETRA`
 (`tests/tools/test_build_iq_fixtures_tetra.py`) checks the pulse against the closed form within 1e-9 and the helper's
-phase step. Regenerating them with `--derived-only` into a copy of `tests/fixtures/iq` changes the ten `tetra_bsch_*`
-captures and `tetra_call_gap_noisy_72k` and leaves every other derived fixture byte for byte. They repeat one
+phase step. Regenerating them with `--derived-only` into a copy of `tests/fixtures/iq` changed the ten `tetra_bsch_*`
+captures and `tetra_call_gap_noisy_72k` and left every other derived fixture byte for byte; `--verify` passes on the
+committed set. They repeat one
 sequence 100 times at 54 kHz: a synchronisation burst with a CRC-valid BSCH (MCC 460, MNC 4242, colour code 17), a
 normal downlink burst whose two SCH/HD half slots carry SYSINFO and a MAC-RESOURCE channel allocation, and a full-slot
 TCH/S burst whose class-2 CRC passes. `DECODE_IQ_TETRA_BSCH`, `_SYSINFO`, `_CHANNEL_ALLOCATION` and `_TCH_FS` assert

@@ -4484,7 +4484,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` and `dsd_fll_band_edge_fold()` move
   the estimate between the parts without changing the sum. With `pre_freq` 0 (every non-TETRA chain) all of this is
   the FLL frequency as before.
-  `full_demod()` sets `tetra_chain` itself, once per block after the half-band decimation, from
+  `full_demod()` sets `tetra_chain` itself, once per block after the half-band decimation
+  (`dsd_demod_update_tetra_chain()`, which `dsd_rtl_stream_open()` also runs once the open's configuration is final, so
+  a TETRA open publishes the TETRA profile before any block and the first block runs no transition), from
   `dsd_demod_tetra_chain_wanted()`: the TETRA profile on CQPSK at 18 ksym/s, an effective TED sps (the override when
   set) and `ted_sps` itself (what the Gardner TED and the FLL run at, `dsd_cqpsk_timing_sps()`, ted_sps or 5) both of
   exactly rate_out / 18000, a rate in the 36-144 kHz domain, the channel LPF on, and a TETRA channel design for the

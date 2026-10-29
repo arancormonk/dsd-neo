@@ -180,16 +180,29 @@ void full_demod(struct demod_state* d);
  * (demod_state::tetra_design_rate_out): full_demod() checks the design once per rate, and the predicate reads the memo
  * for its rate, designing only when the memo is for another one.
  *
- * full_demod() evaluates it once per block, after the half-band decimation, and keeps the result in
- * demod_state::tetra_chain, running the state transition when it changes: entering splits the carrier estimate into
- * the TETRA mixer and re-initializes the band-edge FLL with the TETRA parameters; leaving folds the mixer back into
- * the FLL and re-initializes it with the P25 parameters; either way the mixer phasor, the channel LPF, the matched
- * filter and the CQPSK AGC average start over. Setters never evaluate it.
+ * full_demod() evaluates it once per block, after the half-band decimation (dsd_demod_update_tetra_chain(), which a
+ * stream open also calls), and keeps the result in demod_state::tetra_chain, running the state transition when it
+ * changes: entering splits the carrier estimate into the TETRA mixer and re-initializes the band-edge FLL with the
+ * TETRA parameters; leaving folds the mixer back into the FLL and re-initializes it with the P25 parameters; either way
+ * the mixer phasor, the channel LPF, the matched filter and the CQPSK AGC average start over. Setters never evaluate
+ * it.
  *
  * @param d Demodulator state (NULL reads false).
  * @return 1 when the chain can run, else 0.
  */
 int dsd_demod_tetra_chain_wanted(const struct demod_state* d);
+
+/**
+ * @brief Evaluate the TETRA chain's activation predicate and run the state transition when the answer changed.
+ *
+ * full_demod() calls this at every block boundary, after the half-band decimation. A stream open calls it once its
+ * configuration is final, before any block runs, so a TETRA open runs the chain, and publishes the TETRA profile, from
+ * the start; the first block then finds demod_state::tetra_chain already set and runs no transition. With nothing
+ * changed since the last call it does nothing (it warns once per cause about a TETRA profile whose chain cannot run).
+ *
+ * @param d Demodulator state (NULL does nothing).
+ */
+void dsd_demod_update_tetra_chain(struct demod_state* d);
 
 /**
  * @brief Averaging weight of the CQPSK RMS AGC (OP25 rms_agc alpha; the decay is 1 - alpha).

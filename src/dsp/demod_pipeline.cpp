@@ -1451,15 +1451,19 @@ tetra_chain_reset_histories(struct demod_state* d) {
 }
 
 /*
- * The block boundary: evaluate the predicate and, when it changed since the last block, run the transition.
+ * The block boundary (and a stream open, dsd_demod_update_tetra_chain()): evaluate the predicate and, when it changed
+ * since the last evaluation, run the transition.
  * - Entering: the combined estimate is split into the mixer (up to its bound at this rate) and the FLL, which is
  *   re-initialized with the TETRA parameters keeping its frequency.
  * - Leaving: the FLL is re-initialized with the P25 parameters keeping its frequency, then the mixer is folded into
  *   it (clamped to its +-1 rad/sample), so the TETRA profile runs main's path from this block on.
  * The FLL is designed for the sps op25_fll_band_edge_cc() runs at, so it does not redesign again on the block.
  */
-static void
-full_demod_update_tetra_chain(struct demod_state* d) {
+extern "C" void
+dsd_demod_update_tetra_chain(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
     tetra_design_memo_refresh(d);
     const int want = dsd_demod_tetra_chain_wanted(d);
     if (!want) {
@@ -2444,7 +2448,7 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     full_demod_apply_halfband_decimation(d);
-    full_demod_update_tetra_chain(d);
+    dsd_demod_update_tetra_chain(d);
     full_demod_tetra_premix(d);
     channel_lpf_apply(d);
     if (full_demod_front_end_empty(d)) {

@@ -1529,9 +1529,9 @@ rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int chann
         return channel_profile;
     }
     if (landing_cqpsk > 0) {
-        /* demod_apply_channel_lpf_defaults(): CQPSK output runs the P25 CQPSK filter, except TETRA, whose own profile
-           describes its CQPSK chain. */
-        return channel_profile == DSD_CH_LPF_PROFILE_TETRA ? DSD_CH_LPF_PROFILE_TETRA : DSD_CH_LPF_PROFILE_P25_CQPSK;
+        /* demod_apply_channel_lpf_defaults(): CQPSK output runs the P25 CQPSK filter, except at TETRA's 18000 sym/s,
+           whose own profile describes its CQPSK chain; the one rule every CQPSK install shares. */
+        return rtl_demod_cqpsk_channel_profile(symbol_rate_hz);
     }
     if (channel_profile == DSD_CH_LPF_PROFILE_P25_CQPSK && symbol_rate_hz == 4800) {
         /* A P25 Phase 1 open on the FSK discriminator filters with the C4FM profile. */
