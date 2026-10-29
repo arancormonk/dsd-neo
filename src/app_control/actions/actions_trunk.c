@@ -38,10 +38,10 @@ trunk_action_toast(dsd_state* state, int seconds, const char* text) {
 
 /* A trunk scan sets trunking per target, and its coordinator keeps the tuner whether running or paused: trunking
    turned off under it would leave a target following a call with no recovery, and turned on would follow a paused
-   scan's manual frequency as a trunked target (issue #671, B5). */
+   scan's manual frequency as a trunked target (issue #671, B5). A coordinator publishes its targets, paused or not. */
 static int
 trunk_refused_under_trunk_scan(const dsd_opts* opts, dsd_state* state) {
-    if (opts->trunk_scan_enabled != 1) {
+    if (opts->trunk_scan_enabled != 1 || !state || state->trunk_scan_target_count == 0U) {
         return 0;
     }
     trunk_action_toast(state, 3, "Trunk scan: each target sets its own trunking");
@@ -52,15 +52,15 @@ static void
 trunk_enable_on(dsd_opts* opts, dsd_state* state) {
     /* Leave the conventional row and transfer tuner ownership as one guarded
      * step: watchdog admission also observes scanner_mode (#554). A paused -Y
-     * scan ends here as a running one does (issue #671). */
+     * scan ends here as a running one does (issue #671). A trunk-scan target's
+     * scope is never this command's to leave. */
     p25_sm_tick_guard_enter();
     opts->trunk_enable = 1;
-    (void)svc_leave_channel_scan(opts, state);
-    dsd_scan_keys_leave(state);
-    opts->scanner_mode = 0;
-    if (state) {
-        state->operator_tuned = 0U; /* trunking owns the tuner again */
+    if (opts->trunk_scan_enabled != 1) {
+        (void)svc_leave_channel_scan(opts, state);
+        dsd_scan_keys_leave(state);
     }
+    opts->scanner_mode = 0;
     p25_sm_tick_guard_leave();
 }
 
@@ -173,8 +173,6 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     if (was_scanner) {
         (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
-    } else {
-        state->operator_tuned = 0U; /* the scan owns the tuner again */
     }
     return TRUNK_ACTION_DONE;
 }

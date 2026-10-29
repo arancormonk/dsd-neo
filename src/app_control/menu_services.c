@@ -2322,7 +2322,11 @@ svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
 static void svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report);
 
 int
-svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg) {
+svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg,
+                              int* out_paused) {
+    if (out_paused) {
+        *out_paused = 0;
+    }
     if (!opts || !state) {
         return -1;
     }
@@ -2332,7 +2336,10 @@ svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc
     if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT) {
         /* The target's calls end under its name before the boundary, which then forgets the carrier left. */
         dsd_trunk_scan_leave_report report;
-        (void)svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report);
+        const int paused = svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report) == 0;
+        if (out_paused) {
+            *out_paused = paused;
+        }
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
         svc_trunk_scan_settle_gain(opts, state, &report);
     }

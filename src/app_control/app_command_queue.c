@@ -499,6 +499,16 @@ ui_input_left(dsd_opts* opts, dsd_state* state) {
     dsd_engine_decode_clock_leave_replay(opts, state);
 }
 
+/* An input switch that ran ends a paused -Y scan, as a stop would: its timing and rows were the input left's. A switch
+   refused, or rolled back to the input that ran, keeps it (issue #671). The caller holds the P25 SM tick guard. */
+static void
+ui_input_switch_ends_paused_scan(dsd_opts* opts, dsd_state* state) {
+    if (state->lcn_scan_paused) {
+        (void)svc_leave_channel_scan(opts, state);
+        dsd_scan_keys_leave(state);
+    }
+}
+
 /* The audio input changed: the old one is left (ui_input_left()), then the output follows the
    new input's policy. */
 static int
@@ -545,12 +555,7 @@ ui_cmd_finish_input_switch(dsd_opts* opts, dsd_state* state, int rc, const char*
     switch (rc) {
         case DSD_AUDIO_INPUT_SWITCHED:
             dsd_engine_note_input_replaced(state);
-            if (state->lcn_scan_paused) {
-                /* A paused -Y scan was the input left's (its timing and rows): the switch ends it, as a stop would.
-                   A switch refused or rolled back keeps it (issue #671). */
-                (void)svc_leave_channel_scan(opts, state);
-                dsd_scan_keys_leave(state);
-            }
+            ui_input_switch_ends_paused_scan(opts, state);
             if (ui_input_switched(opts, state) != 0) {
                 return UI_CMD_APPLY_FAILED;
             }
@@ -1824,6 +1829,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
     } else if (rc == 0) {
         ui_radio_row_took_over(opts, state, pcm_timing_rate_hz);
+        ui_input_switch_ends_paused_scan(opts, state);
         /* The output follows the new input under the guard too: the watchdog may flush audio into the stream a
            reconfigure closes (issue #634). */
         output_failed = ui_input_switched(opts, state) != 0;
@@ -2055,8 +2061,9 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
     int rc;
     *scan_paused = 0;
     const int over_trunk_scan = dsd_trunk_scan_owns_tuner(opts, state);
+    int trunk_scan_paused = 0;
     if (over_trunk_scan) {
-        rc = svc_pause_trunk_scan_for_tune(opts, state, v, ui_cmd_tune_leg);
+        rc = svc_pause_trunk_scan_for_tune(opts, state, v, ui_cmd_tune_leg, &trunk_scan_paused);
     } else {
         rc = ui_cmd_tune_leg(opts, state, v);
     }
@@ -2064,7 +2071,7 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
         return rc;
     }
     if (over_trunk_scan) {
-        *scan_paused = 1;
+        *scan_paused = trunk_scan_paused;
     } else {
         /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);

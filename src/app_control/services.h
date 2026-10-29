@@ -711,9 +711,11 @@ typedef int (*svc_tune_leg_fn)(dsd_opts* opts, dsd_state* state, uint32_t hz);
  * ran a tuner gain of its own, a stream restart on the configured gain. A tune that is refused or deferred leaves the
  * scan running, untouched. Decoder thread only; radio builds (the frequency entry is a radio build's command).
  *
+ * @param out_paused May be NULL. Set to 1 when the scan paused, else 0 (no coordinator behind the flag included).
  * @return The tune leg's result.
  */
-int svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg);
+int svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg,
+                                  int* out_paused);
 
 /**
  * @brief Pause the running trunk scan where it is, no tune following (`y`, a tuner release; issue #671).

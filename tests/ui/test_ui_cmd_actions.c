@@ -807,13 +807,14 @@ test_scanner_toggle_pauses_and_resumes(void) {
     rc |= expect_int("y on a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
     rc |= expect_true("no row: still paused", state.lcn_scan_paused == 1U && opts.scanner_mode == 0);
 
-    /* Not paused: y starts the scanner, which owns the tuner again, and stops it. */
+    /* Not paused: y starts the scanner and stops it. The tuner stays the operator's in the record: only a resume, or a
+       new session, clears that (issue #671 ruling). */
     state.lcn_scan_paused = 0U;
     state.operator_tuned = 1U;
     rc |= expect_int("resume with nothing paused", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("nothing paused toast", strcmp(state.ui_msg, "Not scanning: no paused scan to resume") == 0);
     rc |= expect_int("y starts", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
-    rc |= expect_true("started, the scan's tuner", opts.scanner_mode == 1 && state.operator_tuned == 0U);
+    rc |= expect_true("started; operator_tuned kept", opts.scanner_mode == 1 && state.operator_tuned == 1U);
     rc |= expect_int("resume of a running list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("running list toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
     rc |= expect_int("y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
@@ -833,6 +834,7 @@ test_trunking_under_a_scan(void) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         opts.trunk_scan_enabled = 1;
+        state.trunk_scan_target_count = 2U;
         opts.trunk_enable = paused ? 0 : 1;
         state.trunk_scan_paused = (uint8_t)paused;
         const int before = opts.trunk_enable;
@@ -853,6 +855,15 @@ test_trunking_under_a_scan(void) {
         }
     }
 
+    /* The flag with no coordinator behind it (none was set up): trunking is the operator's to switch. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_scan_enabled = 1;
+    struct dsd_app_command t = {0};
+    t.id = DSD_APP_CMD_TRUNK_TOGGLE;
+    rc |= expect_int("t with no coordinator", dispatch_one(dsd_app_actions_trunk, &opts, &state, &t), 1);
+    rc |= expect_int("t with no coordinator switches trunking", opts.trunk_enable, 1);
+
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.lcn_scan_paused = 1U;
@@ -862,8 +873,9 @@ test_trunking_under_a_scan(void) {
     rc |= expect_true("trunk off keeps the pause", state.lcn_scan_paused == 1U && opts.trunk_enable == 0);
     cmd = cmd_i32(DSD_APP_CMD_TRUNK_SET, 1);
     rc |= expect_int("trunk on under a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd), 1);
-    rc |= expect_true("trunk on ends the pause; trunking owns the tuner",
-                      state.lcn_scan_paused == 0U && opts.trunk_enable == 1 && state.operator_tuned == 0U);
+    /* The calls followed from here belong to the system explored, not a scan's saved name: operator_tuned stays. */
+    rc |= expect_true("trunk on ends the pause; operator_tuned kept",
+                      state.lcn_scan_paused == 0U && opts.trunk_enable == 1 && state.operator_tuned == 1U);
     return rc;
 }
 

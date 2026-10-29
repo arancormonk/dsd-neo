@@ -15939,6 +15939,19 @@ test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
                      1);
     rc |= expect_int("gain entry: still paused", state.trunk_scan_paused, 1);
 
+    /* A reopen that fails: the input starts again through the recovery path, on the configured gain, and the pause
+       stands. */
+    rc |= trunk_scan_y(&opts, &state, "gain resume before a failed reopen");
+    rc |= expect_int("own gain before a failed reopen", opts.rtl_gain_value == 10 && state.trunk_scan_paused == 0, 1);
+    g_config_rtl_creates = 0;
+    g_config_rtl_fail_starts = 1;
+    rc |= trunk_scan_y(&opts, &state, "pause with a failed reopen");
+    g_config_rtl_fail_starts = 0;
+    rc |= expect_int("failed reopen: started again on the configured gain",
+                     g_config_rtl_creates == 2 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("failed reopen: still paused, configured gain",
+                     state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
+
     /* Resumed onto "own", advanced to "inherit" (the configured gain), paused again: nothing to reopen. */
     rc |= trunk_scan_y(&opts, &state, "gain resume");
     rc |= expect_int("gain resume: own gain again", opts.rtl_gain_value == 10 && state.trunk_scan_paused == 0, 1);
@@ -19558,6 +19571,62 @@ test_channel_map_import_names_rows_the_dsp_rate_skips(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /*
+ * Issue #671: Input > Switch source > RTL-SDR (or Airspy) is an input switch like the PCM rows: one that runs ends a
+ * paused -Y scan, whose timing and rows were the input left's; one refused before it changes anything, or whose start
+ * fails and puts the input that ran back, keeps the pause.
+ */
+static int
+test_rtl_row_switch_ends_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    reset_config_rtl_wrap();
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "voice.wav");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtl:0:851.0125M:22:0:12");
+    state.lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(&state, 1) = 852375000;
+    state.lcn_freq_roll = 1;
+    state.lcn_scan_paused = 1U;
+    state.operator_tuned = 1U;
+
+    /* Refused before anything changes: a width the 12 kHz DSP bandwidth cannot filter. */
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 16000;
+    opts.rtl_dsp_bw_khz = 12;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("refused rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("refused rtl row toast", state.ui_msg, "Refused: NFM 16 kHz");
+    rc |= expect_int("refused rtl row keeps the pause", state.lcn_scan_paused == 1 && state.lcn_freq_roll == 1, 1);
+    opts.analog_only = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+
+    /* The start fails: the input that ran is put back, and the pause with it. */
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("failed rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("failed rtl row failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("failed rtl row keeps the pause", state.lcn_scan_paused, 1);
+
+    /* The switch runs: the pause ends. */
+    g_config_rtl_fail_starts = 0;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("rtl row runs", opts.audio_in_type == AUDIO_IN_RTL && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("rtl row ends the pause", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
+
+    g_config_rtl_open_ok = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #634: a switch to a PCM input keeps the radio spec it replaced, and Input > Switch source > RTL-SDR goes back to
  * it: the rtl_tcp server or SoapySDR device the session ran, not a USB RTL-SDR the PCM name would make of it. The
  * destination is checked before the running input is touched, and a refusal leaves the input's name as it was. The
@@ -21320,6 +21389,15 @@ test_frequency_entry_pauses_a_running_list(void) {
     rc |= expect_int("entry over a pending resume stays paused",
                      opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
 
+    /* The trunk-scan flag with no coordinator behind it: the entry tunes, and pauses nothing it could name. */
+    (void)svc_leave_channel_scan(&opts, &state);
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    rc |= drain_entry(&opts, &state, 866000000U, "entry with no coordinator");
+    rc |= expect_str("entry with no coordinator toast", state.ui_msg, "Applied: frequency -> 866.000000 MHz");
+    opts.trunk_scan_enabled = 0;
+
     dsd_app_command_test_set_tune_leg(NULL);
     freeState(&state);
     return rc;
@@ -21411,6 +21489,22 @@ test_paused_list_controls_and_stops(void) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release before clear");
     rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "clear");
     rc |= expect_int("clear stops the scan", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
+
+    /* A RadioReference import refused before it changes anything keeps the pause; one it adopts stops the scan. */
+    seed_running_list(&opts, &state);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release before rr");
+    dsd_app_rr_apply_payload rr;
+    DSD_MEMSET(&rr, 0, sizeof rr);
+    rr.decode_mode = (int32_t)DSDCFG_MODE_UNSET;
+    rc |= expect_int("refused rr queued", dsd_app_command_set_rr_apply(&rr), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refused rr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("refused rr toast", state.ui_msg, "Failed: RR import -> decode mode");
+    rc |= expect_int("refused rr keeps the pause", state.lcn_scan_paused == 1 && state.lcn_freq_count == 3, 1);
+    rr.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+    rc |= expect_int("rr queued", dsd_app_command_set_rr_apply(&rr), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("rr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("rr applied", state.ui_msg, "Applied: RR import");
+    rc |= expect_int("rr stops the scan", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
 
     /* An input switch that fails keeps the pause; one that runs stops the scan. */
     seed_running_list(&opts, &state);
@@ -21760,6 +21854,7 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rtl_enable_input_holds_the_nfm_width();
     rc |= test_rtl_row_returns_to_the_radio_a_switch_left();
+    rc |= test_rtl_row_switch_ends_a_paused_list();
     rc |= test_rtl_row_closes_the_pcm_input_it_replaced();
     rc |= test_input_switch_that_fails_keeps_the_running_input();
     rc |= test_input_switch_holds_the_watchdog_guard();
