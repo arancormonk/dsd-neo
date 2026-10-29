@@ -188,6 +188,13 @@ typedef struct {
     const char* api_token_file;
 } cli_net_args;
 
+/* The call recording options (--wav-journal, --record-unknown-only; issue #708) the long-option pre-scan collects and
+   applies after it. */
+typedef struct {
+    const char* wav_journal;
+    int record_unknown_only;
+} cli_recording_args;
+
 /* First octet of an address cli_is_numeric_ipv4_address() accepted is 127. */
 static int
 cli_ipv4_is_loopback(const char* in) {
@@ -1724,7 +1731,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--wav-journal") == 0 && i + 1 < argc) {                                                   \
-            wav_journal_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                               \
+            recording_cli.wav_journal = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-sm-log") == 0 && i + 1 < argc) {                                                    \
@@ -1760,7 +1767,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
-            record_unknown_only_cli = 1;                                                                               \
+            recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
@@ -2277,8 +2284,8 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         dsd_frame_log_close(opts);                                                                                     \
         LOG_INFO("NOTICE: Frame log file: %s\n", opts->frame_log_file);                                                \
     }                                                                                                                  \
-    if (wav_journal_cli) {                                                                                             \
-        DSD_SNPRINTF(opts->wav_journal_file, sizeof opts->wav_journal_file, "%s", wav_journal_cli);                    \
+    if (recording_cli.wav_journal) {                                                                                   \
+        DSD_SNPRINTF(opts->wav_journal_file, sizeof opts->wav_journal_file, "%s", recording_cli.wav_journal);          \
         LOG_INFO("NOTICE: Call recording journal: %s\n", opts->wav_journal_file);                                      \
     }                                                                                                                  \
     if (p25_sm_log_cli) {                                                                                              \
@@ -2360,7 +2367,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         opts->rdio_api_delete_after_upload = 1;                                                                        \
         LOG_INFO("NOTICE: Rdio API delete-after-upload enabled\n");                                                    \
     }                                                                                                                  \
-    if (record_unknown_only_cli) {                                                                                     \
+    if (recording_cli.record_unknown_only) {                                                                           \
         opts->record_unknown_only = 1;                                                                                 \
         LOG_INFO("NOTICE: Recording only talkgroups not in the talkgroup list\n");                                     \
     }                                                                                                                  \
@@ -2559,11 +2566,11 @@ cli_finish_parse(dsd_opts* opts, const dsd_state* state, int parse_rc, int analo
     return parse_rc;
 }
 
+// CLI long options: the pre-scan collects them into the *_cli locals dsd_parse_args() starts with.
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
     dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    // CLI long options (pre-scan) ------------------------------------------------
     const char* calc_csv_cli = NULL;
     const char* calc_step_cli = NULL;
     const char* calc_ccf_cli = NULL;
@@ -2574,7 +2581,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* frontend_cli = NULL;
     const char* frame_log_cli = NULL;
     const char* p25_sm_log_cli = NULL;
-    const char* wav_journal_cli = NULL;
     const char* rdio_mode_cli = NULL;
     const char* rdio_system_id_cli = NULL;
     const char* rdio_api_url_cli = NULL;
@@ -2582,7 +2588,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rdio_upload_timeout_cli = NULL;
     const char* rdio_upload_retries_cli = NULL;
     int rdio_api_delete_after_upload_cli = 0;
-    int record_unknown_only_cli = 0;
+    cli_recording_args recording_cli = {NULL, 0};
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
