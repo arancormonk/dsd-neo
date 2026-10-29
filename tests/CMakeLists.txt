@@ -13132,6 +13132,27 @@ add_test(
     COMMAND dsd-neo_test_dibit_rtl_fsk_reliability
 )
 
+# TETRA slices its pi/4-DQPSK symbols at the quadrant boundaries and takes its
+# soft costs against the fixed levels, never the adaptive four-level slicer's
+add_executable(
+    dsd-neo_test_dibit_tetra_quadrant_slicer
+    core/test_dibit_tetra_quadrant_slicer.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/call_state_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_dibit_tetra_quadrant_slicer
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dibit_tetra_quadrant_slicer
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DIBIT_TETRA_QUADRANT_SLICER
+    COMMAND dsd-neo_test_dibit_tetra_quadrant_slicer
+)
+
 # These standalone slicer tests supply their own clock/config/radio stubs.
 # Pull only the statistics objects from the DSP archive without adding the
 # full DSP test support or inheriting its radio feature definitions.
@@ -13140,6 +13161,7 @@ foreach(
     dsd-neo_test_dibit_symbol_bin_soft
     dsd-neo_test_dibit_two_level_reliability
     dsd-neo_test_dibit_rtl_fsk_reliability
+    dsd-neo_test_dibit_tetra_quadrant_slicer
 )
     if(MSVC)
         target_link_options(

@@ -7085,8 +7085,12 @@ and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA
 symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`), where the RTL front end and a soft symbol capture give them;
 a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
 (`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
-into the PCM sample domain; scaled, both inner levels would slice as outer ones. Tests: `FRAME_SYNC_INTERNAL_HELPERS`,
-`TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`.
+into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same way:
+under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the adaptive
+four-level slicer's `center`/`umid`/`lmid`, which put the inner/outer edge near ±60° instead of ±90°, and the decoder's
+soft costs come from `cqpsk_soft_symbol_to_viterbi_cost()`, taken against the fixed levels ±1 and ±3 (the four-level
+mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). Tests: `FRAME_SYNC_INTERNAL_HELPERS`,
+`TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`, `DIBIT_TETRA_QUADRANT_SLICER`.
 
 #### Signalling decoders
 
