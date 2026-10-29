@@ -13852,6 +13852,31 @@ add_test(
     COMMAND dsd-neo_test_io_iq_replay_rate_plan
 )
 
+# Why a replay path cannot be opened: a symbolic link, a missing or unreadable file, a sniff read that fails (through
+# a seam built with DSD_NEO_TEST_HOOKS, on both the path's and a sidecar's data_file sniff), short input, and the
+# sidecar fallback.
+add_executable(
+    dsd-neo_test_io_iq_replay_open_errors
+    io/test_io_iq_replay_open_errors.c
+    ${PROJECT_SOURCE_DIR}/src/io/iq/iq_replay.c
+)
+target_include_directories(
+    dsd-neo_test_io_iq_replay_open_errors
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/iq
+)
+target_compile_definitions(
+    dsd-neo_test_io_iq_replay_open_errors
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_io_iq_replay_open_errors
+    PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
+)
+add_test(
+    NAME IO_IQ_REPLAY_OPEN_ERRORS
+    COMMAND dsd-neo_test_io_iq_replay_open_errors
+)
+
 # WAV I/Q recordings (issue #701): the parser, the replay reader's cf32 conversion and partial reads, seeking, the
 # centre and start time sources, --iq-info, and a sidecar beside a WAV.
 add_executable(dsd-neo_test_io_iq_wav io/test_io_iq_wav.c)

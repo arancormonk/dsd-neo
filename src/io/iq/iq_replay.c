@@ -19,6 +19,7 @@
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/posix_compat.h"
+#include "iq_replay_test_hooks.h"
 
 /* A WAV read converts at most this many frames per pass, through 64 KiB of raw bytes and 64 KiB of cf32. */
 #define REPLAY_WAV_SCRATCH_BYTES 65536U
@@ -2301,17 +2302,102 @@ dsd_iq_replay_estimate_duration_seconds(uint64_t data_bytes, dsd_iq_sample_forma
     return (double)complex_samples / (double)sample_rate_hz;
 }
 
-/* What @p path's first bytes are (a dsd_iq_wav_sniff_result), or -1 when it cannot be opened as a regular file. */
-static int
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_test_sniff_read_fail_after = -1;
+
+void
+dsd_iq_replay_test_fail_sniff_read(int after) {
+    g_test_sniff_read_fail_after = after;
+}
+#endif
+
+/* What replay_sniff_file() found at a path. */
+typedef struct {
+    int sniff;       /* a dsd_iq_wav_sniff_result, or -1 when the first bytes were not read */
+    int open_errno;  /* why the path could not be opened as a regular file, or 0 */
+    int read_failed; /* the read of the first bytes failed: an I/O error, not a file too short to hold a header */
+    int read_errno;  /* that read's errno, when read_failed */
+} replay_sniff;
+
+/* Read up to @p len of a file's first bytes; *@p out_failed set, with *@p out_errno, when the read fails rather than
+ * reaching the file's end. */
+static size_t
+replay_sniff_read(uint8_t* head, size_t len, FILE* fp, int* out_failed, int* out_errno) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_test_sniff_read_fail_after == 0) {
+        g_test_sniff_read_fail_after = -1;
+        *out_failed = 1;
+        *out_errno = EIO;
+        return 0U;
+    }
+    if (g_test_sniff_read_fail_after > 0) {
+        g_test_sniff_read_fail_after--;
+    }
+#endif
+    errno = 0;
+    const size_t n = fread(head, 1, len, fp);
+    if (n < len && ferror(fp)) {
+        *out_failed = 1;
+        *out_errno = errno != 0 ? errno : EIO;
+    }
+    return n;
+}
+
+/* What @p path's first bytes are, or why they could not be read. */
+static replay_sniff
 replay_sniff_file(const char* path) {
+    replay_sniff out = {-1, 0, 0, 0};
+    errno = 0;
     FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
     if (!fp) {
-        return -1;
+        out.open_errno = errno != 0 ? errno : EINVAL;
+        return out;
     }
     uint8_t head[DSD_IQ_WAV_SNIFF_BYTES];
-    const size_t n = fread(head, 1, sizeof(head), fp);
+    const size_t n = replay_sniff_read(head, sizeof(head), fp, &out.read_failed, &out.read_errno);
     fclose(fp);
-    return dsd_iq_wav_sniff(head, n);
+    if (!out.read_failed) {
+        out.sniff = dsd_iq_wav_sniff(head, n);
+    }
+    return out;
+}
+
+/* Whether @p err is how an open that does not follow a final symbolic link refuses one. */
+static int
+replay_errno_is_symlink(int err) {
+#ifdef ELOOP
+    if (err == ELOOP) {
+        return 1;
+    }
+#endif
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+    if (err == EMLINK) { /* their O_NOFOLLOW refusal */
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+/* Why @p path, which replay could not open with @p err, is refused. */
+static int
+replay_refuse_open(const char* path, int err, char* err_buf, size_t err_buf_size) {
+    if (replay_errno_is_symlink(err)) {
+        set_error(err_buf, err_buf_size,
+                  "'%s' is a symbolic link, or a path the system would not follow; replay opens regular files only",
+                  path);
+    } else if (err == EINVAL) {
+        /* dsd_fopen_existing_regular_file()'s refusal of a directory, FIFO, device or (on Windows) reparse point. */
+        set_error(err_buf, err_buf_size, "'%s' is not a regular file; replay opens regular files only", path);
+    } else {
+        set_error(err_buf, err_buf_size, "cannot open '%s': %s", path, strerror(err));
+    }
+    return DSD_IQ_ERR_IO;
+}
+
+static int
+replay_refuse_unreadable(const char* path, const replay_sniff* sniff, char* err_buf, size_t err_buf_size) {
+    set_error(err_buf, err_buf_size, "failed to read '%s': %s", path, strerror(sniff->read_errno));
+    return DSD_IQ_ERR_IO;
 }
 
 /* Whether @p type is a whole JSON value on its own: a string, number, true, false or null. */
@@ -2445,25 +2531,39 @@ replay_read_metadata_internal(const char* path, dsd_iq_replay_config* out_cfg, i
 
     /* A WAV recording describes itself (issue #701): it is recognised before any sidecar is looked for, and a sidecar
        beside it is only reported as ignored. */
-    int sniff = -1;
+    replay_sniff sniff = {-1, 0, 0, 0};
     if (!has_suffix(path, ".json")) {
         sniff = replay_sniff_file(path);
-        if (sniff == DSD_IQ_WAV_SNIFF_WAV) {
+        if (sniff.read_failed) {
+            return replay_refuse_unreadable(path, &sniff, err_buf, err_buf_size);
+        }
+        if (sniff.sniff == DSD_IQ_WAV_SNIFF_WAV) {
             char sidecar[2048];
             char sidecar_err[64];
             const int have_sidecar =
                 resolve_metadata_path(path, sidecar, sizeof(sidecar), sidecar_err, sizeof(sidecar_err)) == DSD_IQ_OK;
             return replay_wav_config(path, path, have_sidecar ? sidecar : NULL, out_cfg, err_buf, err_buf_size);
         }
-        if (sniff == DSD_IQ_WAV_SNIFF_RIFX) {
+        if (sniff.sniff == DSD_IQ_WAV_SNIFF_RIFX) {
             return replay_refuse_rifx(path, err_buf, err_buf_size);
         }
     }
 
+    /* A path that could not be opened may still name a capture through its sidecar (the bare name given to
+       --iq-capture, say); only when there is none is the open's reason the answer. */
     char metadata_path[2048];
     int mrc = resolve_metadata_path(path, metadata_path, sizeof(metadata_path), err_buf, err_buf_size);
     if (mrc != DSD_IQ_OK) {
-        if (sniff == DSD_IQ_WAV_SNIFF_NOT_WAV && has_suffix(path, ".wav")) {
+        if (mrc == DSD_IQ_ERR_IO && sniff.open_errno == ENOENT) {
+            set_error(err_buf, err_buf_size,
+                      "cannot open '%s': %s, and it has no sidecar (tried '%s.json' and '%s.iq.json')", path,
+                      strerror(ENOENT), path, path);
+            return DSD_IQ_ERR_IO;
+        }
+        if (mrc == DSD_IQ_ERR_IO && sniff.open_errno != 0) {
+            return replay_refuse_open(path, sniff.open_errno, err_buf, err_buf_size);
+        }
+        if (sniff.sniff == DSD_IQ_WAV_SNIFF_NOT_WAV && has_suffix(path, ".wav")) {
             set_error(err_buf, err_buf_size,
                       "'%s' is not a WAV file (no RIFF, RF64 or BW64 WAVE header) and has no sidecar (tried '%s.json' "
                       "and '%s.iq.json')",
@@ -2486,12 +2586,22 @@ replay_read_metadata_internal(const char* path, dsd_iq_replay_config* out_cfg, i
     char data_path[2048];
     if (prepass_data_file(json, json_len, data_file, sizeof(data_file))
         && resolve_data_path(metadata_path, data_file, data_path, sizeof(data_path), NULL, 0) == DSD_IQ_OK) {
-        const int data_sniff = replay_sniff_file(data_path);
-        if (data_sniff == DSD_IQ_WAV_SNIFF_WAV) {
+        const replay_sniff data_sniff = replay_sniff_file(data_path);
+        if (data_sniff.read_failed) {
+            free(json);
+            return replay_refuse_unreadable(data_path, &data_sniff, err_buf, err_buf_size);
+        }
+        /* A missing data file still leaves the sidecar readable (--iq-info); the replay's open reports it. Any other
+           reason the data file cannot be opened is reported here, before the sidecar's other fields are judged. */
+        if (data_sniff.open_errno != 0 && data_sniff.open_errno != ENOENT) {
+            free(json);
+            return replay_refuse_open(data_path, data_sniff.open_errno, err_buf, err_buf_size);
+        }
+        if (data_sniff.sniff == DSD_IQ_WAV_SNIFF_WAV) {
             free(json);
             return replay_wav_config(data_path, metadata_path, metadata_path, out_cfg, err_buf, err_buf_size);
         }
-        if (data_sniff == DSD_IQ_WAV_SNIFF_RIFX) {
+        if (data_sniff.sniff == DSD_IQ_WAV_SNIFF_RIFX) {
             free(json);
             return replay_refuse_rifx(data_path, err_buf, err_buf_size);
         }
@@ -2676,9 +2786,10 @@ dsd_iq_replay_open(const char* path, dsd_iq_replay_config* out_cfg, dsd_iq_repla
         dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_ALLOC;
     }
+    errno = 0;
     src->fp = dsd_fopen_existing_regular_file(cfg.data_path, "rb");
     if (!src->fp) {
-        set_error(err_buf, err_buf_size, "failed to open replay data '%s': %s", cfg.data_path, strerror(errno));
+        (void)replay_refuse_open(cfg.data_path, errno != 0 ? errno : EINVAL, err_buf, err_buf_size);
         free(src);
         dsd_iq_replay_config_clear(&cfg);
         return DSD_IQ_ERR_IO;

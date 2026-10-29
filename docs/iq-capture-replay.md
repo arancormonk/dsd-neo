@@ -56,6 +56,13 @@ Path handling:
 - A `.wav` path that holds no WAV header and has no sidecar is refused: `'x.wav' is not a WAV file (no RIFF, RF64 or
   BW64 WAVE header) and has no sidecar (tried 'x.wav.json' and 'x.wav.iq.json')`. A big-endian RIFX file is refused
   too.
+- A path that cannot be opened, and has no sidecar to name a capture through, is refused with the reason: a missing
+  file (`cannot open 'x.wav': No such file or directory, and it has no sidecar (tried ...)`), a symbolic link (`'x.wav'
+  is a symbolic link, or a path the system would not follow; replay opens regular files only`), a directory or other
+  non-regular file, or the system's error (`Permission denied`). A sidecar's `data_file` that is a symbolic link or
+  cannot be opened is refused the same way; one that is missing leaves the sidecar readable for `--iq-info`, and the
+  replay reports the missing file. A read of a file's first bytes that fails is reported as `failed to read`; a file
+  shorter than a WAV header is read as not a WAV.
 
 ## Format Notes
 
@@ -501,6 +508,12 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass. A pass that handed
   the demodulator no samples is not rewound: the replay logs a warning and ends there, as it does at the end without
   `--iq-loop`.
+- A pass that reads to the end of the capture with every chunk handed to the demodulator logs
+  `IQ replay: end of capture after N samples`, where N counts the complex samples that pass read at the capture's own
+  rate (before any resampling). It is logged once the decoder has read everything the pass decoded to: when the
+  stream stops after a replay the decoder read to its end, just before `soft stopping...`, and under `--iq-loop` once
+  per pass, just before the `--iq-loop rewound` line. A replay that stops early, fails to read, or cannot hand a chunk
+  on does not log it, so a log without it did not replay the whole capture.
 - Only the metadata-scheduled replay events retune a replay. The retunes a user asks for are refused during one, from
   the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
   than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control

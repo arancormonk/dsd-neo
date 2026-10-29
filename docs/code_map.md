@@ -5194,6 +5194,14 @@ Key public headers:
     sidecar warnings); `args.c` logs the open notice and a one-line summary (`cli_log_iq_replay_wav_summary()`). Tests:
     `IO_IQ_WAV` (with an unfinalized WAV read near its end past 4 GiB, on a sparse file), `IQ_INFO_WAV_SCBS`,
     `FUZZ_IO_IQ_WAV`
+  - Replay path open errors (`replay_sniff_file()` in `src/io/iq/iq_replay.c`): both sniffs (the given path's and a
+    sidecar's `data_file`) return a `replay_sniff` with the open's errno and a read failure flag. A read that fails is
+    `failed to read`, never a sidecar search; a file too short for a WAV header reads as not a WAV. A path that cannot
+    be opened still resolves through its sidecar; with none, the open's reason is the error (`replay_refuse_open()`:
+    the symbolic-link wording for ELOOP, "not a regular file" for the EINVAL `dsd_fopen_existing_regular_file()` gives
+    a directory, FIFO or reparse point, else strerror). A `data_file` that cannot be opened for any reason but ENOENT
+    is refused at once; a missing one leaves the sidecar readable for `--iq-info`. The sniff read seam
+    (`iq_replay_test_hooks.h`, `DSD_NEO_TEST_HOOKS` only) fails one sniff read. Test: `IO_IQ_REPLAY_OPEN_ERRORS`.
   - Replay rate plan (issue #701, user rules in `docs/iq-capture-replay.md` "Rate Chain And Resampling"):
     `dsd_iq_replay_plan_rate()` picks the chain a replay runs for the mode's DSP rate
     and `dsd_iq_replay_apply_rate_plan()` writes it into the config (`dsp_input_rate_hz`, base, post, demod;
@@ -5762,6 +5770,15 @@ Notes:
     block and nothing discarded; a decoder stalled at a RESET or a rewind loses nothing; the demod taking the purge
     flag keeps the next chunk; a purge a stop left untaken does not reach the next replay; the reset plans of a hop
     and a hop back; bounded stops at an event boundary and at a rewind).
+  - I/Q replay end-of-capture notice (`IQ replay: end of capture after N samples`). `replay_handle_empty_read()` in
+    `rtl_device.cpp` is the one place a pass reaches the capture's end cleanly (no read error pending, every chunk
+    read handed to the demod, no stop), and decides the notice there, with N the capture samples the pass read. It is
+    logged only once the decoder has read everything the pass decoded to, so it never lands among the decoder's lines:
+    under `--iq-loop` by the reader after the rewind's idle boundary, before the rewound line; otherwise the reader
+    leaves it in `rtl_replay_eof_state::replay_end_notice` and `dsd_rtl_stream_soft_stop()` logs it when the decoder
+    found the output drained. A stop, a read failure or a chunk that could not be handed on logs none. Tests:
+    `IO_RTL_REPLAY_EOF_AND_CF32` (the count for cu8 and cf32, once a loop pass, none on a stop before or after the
+    reader's end, a read failure or a file cut short).
   - I/Q replay tuned frequency (issue #575). A replayed RETUNE moves the demod, but `opts->rtlsdr_center_freq` keeps
     the capture's opening centre: a live retune is deferred during a replay before it writes the field, and the DMR,
     NXDN, EDACS and P25/DMR trunking paths read it as the control or current channel, so moving it would change how a

@@ -998,6 +998,7 @@ struct RtlSdrInternals {
     std::atomic<uint64_t> replay_last_submit_gen{0U};
     std::atomic<uint64_t> replay_last_submit_gen_at_eof{0U};
     std::atomic<uint64_t> replay_last_consume_gen{0U};
+    std::atomic<uint64_t> replay_end_notice{0U}; /* see rtl_replay_eof_state::replay_end_notice */
     /* The capture chunk in the input ring: the replay reader writes it before the commit, the demod copies it at reserve
        (struct rtl_replay_chunk_meta). */
     struct rtl_replay_chunk_meta replay_chunk{};
@@ -1211,6 +1212,7 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_last_submit_gen.store(0, std::memory_order_release);
     s->replay_last_submit_gen_at_eof.store(0, std::memory_order_release);
     s->replay_last_consume_gen.store(0, std::memory_order_release);
+    s->replay_end_notice.store(0U, std::memory_order_release);
     s->replay_chunk = rtl_replay_chunk_meta{};
     /* The internals are calloc'ed, so the virtual block 0 is set here. */
     s->replay_out_written.store(1U, std::memory_order_release);
@@ -8106,6 +8108,7 @@ stream_open_fill_replay_eof_state(struct rtl_replay_eof_state* eof_state) {
     eof_state->replay_last_submit_gen_at_eof = &g_stream->replay_last_submit_gen_at_eof;
     eof_state->replay_last_consume_gen = &g_stream->replay_last_consume_gen;
     eof_state->chunk = &g_stream->replay_chunk;
+    eof_state->replay_end_notice = &g_stream->replay_end_notice;
     eof_state->eof_m = &g_stream->replay_eof_m;
     eof_state->eof_cond = &g_stream->replay_eof_cond;
     eof_state->on_input_drained = rtl_replay_on_input_drained;
@@ -9005,6 +9008,14 @@ dsd_rtl_stream_open(dsd_opts* opts) {
  */
 extern "C" int
 dsd_rtl_stream_soft_stop(void) {
+    /* A replay whose decoder read every output of a capture the reader read to its end: the stop comes once the
+       decoder has finished, so the notice follows every line the capture decoded to and starts a line of its own. */
+    if (g_stream && g_stream->replay_output_drained.load(std::memory_order_acquire)) {
+        const uint64_t end_notice = g_stream->replay_end_notice.exchange(0U, std::memory_order_acq_rel);
+        if (end_notice > 0U) {
+            LOG_INFO("IQ replay: end of capture after %llu samples\n", (unsigned long long)(end_notice - 1U));
+        }
+    }
     LOG_INFO("soft stopping...\n");
     ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();

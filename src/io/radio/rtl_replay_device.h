@@ -51,6 +51,11 @@ struct rtl_replay_eof_state {
     std::atomic<uint64_t>* replay_last_submit_gen_at_eof;
     std::atomic<uint64_t>* replay_last_consume_gen;
     struct rtl_replay_chunk_meta* chunk; /* the chunk in the input ring (see struct rtl_replay_chunk_meta) */
+    /* A replay that reached the capture's end cleanly with no --iq-loop rewind after it: the capture samples its last
+       pass read, plus one, stored by the reader before it marks EOF; 0 for none. The stream's stop logs the
+       end-of-capture notice from it when the decoder read all the output (dsd_rtl_stream_soft_stop()), so the notice
+       follows every line the capture decoded to. */
+    std::atomic<uint64_t>* replay_end_notice;
     dsd_mutex_t* eof_m;
     dsd_cond_t* eof_cond;
     rtl_replay_input_drained_cb on_input_drained;
