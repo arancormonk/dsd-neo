@@ -950,14 +950,14 @@ Window {
         // tick; ingest them under its own label before the label changes hands,
         // or its tail calls read as the new system's.
         uiController.flushHistory();
-        callHistory.sessionLabel = sys.name;
-        callHistory.sessionUid = (!scan && sys.uid) ? sys.uid : "";
-        // A new decode session, begun after its predecessor's tail is logged above.
+        // A new decode session on this system, begun after its predecessor's tail is
+        // logged above, in one call: the history's background capture never runs on
+        // a label, system or session only partly changed.
         // The monitor's recent-calls pane and the heard talkgroups show this session,
         // not the whole log. They select the rows the history logs in it, not rows
         // stamped after a clock reading: a replay's calls carry the capture's time,
         // and the decode clock may not have moved to it yet.
-        callHistory.beginSession();
+        callHistory.beginSessionOn(sys.name, (!scan && sys.uid) ? sys.uid : "");
         monitorView.historySession = callHistory.session;
         talkgroups.historySession = callHistory.session;
     }
@@ -1370,8 +1370,7 @@ Window {
                 // a system the session detached from.
                 mainRoot.sessionRow = -1;
                 uiController.flushHistory();
-                callHistory.sessionLabel = qsTr("Exploring");
-                callHistory.sessionUid = "";
+                callHistory.setSessionSystem(qsTr("Exploring"), "");
             }
             onSaveAsSystem: function (freqHz) {
                 wizard.openForFound(mainRoot.sessionSystem, Util.mhzValueText(freqHz));

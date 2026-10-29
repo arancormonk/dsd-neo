@@ -1441,6 +1441,21 @@ class CallLogStore : public QAbstractListModel {
         Q_EMIT sessionChanged();
     }
 
+    /** @brief A start on a system (CallHistoryModel::beginSessionOn()). */
+    Q_INVOKABLE void
+    beginSessionOn(const QString& label, const QString& uid) {
+        setSessionLabel(label);
+        setSessionUid(uid);
+        beginSession();
+    }
+
+    /** @brief The session's system, the session kept (CallHistoryModel::setSessionSystem()). */
+    Q_INVOKABLE void
+    setSessionSystem(const QString& label, const QString& uid) {
+        setSessionLabel(label);
+        setSessionUid(uid);
+    }
+
     QStringList
     systemLabels() const {
         return m_rows.isEmpty() ? QStringList() : QStringList{m_systemName};

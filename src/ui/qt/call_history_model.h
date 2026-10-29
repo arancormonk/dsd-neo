@@ -184,6 +184,17 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     Q_INVOKABLE void beginSession();
 
+    /**
+     * @brief Begin a new decode session (beginSession()) on the system @p label, @p uid (sessionLabel, sessionUid).
+     *
+     * One change, not three setter calls: while the app is away the background tap is handed off once and started
+     * again only after every field moved, so a call it finds is never attributed to half of the change.
+     */
+    Q_INVOKABLE void beginSessionOn(const QString& label, const QString& uid);
+
+    /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
+    Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
@@ -682,6 +693,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief Arm m_dayTimer for the next local midnight. */
     void scheduleDayRollover();
+    /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, under one
+     * handoff of the background tap. */
+    void changeSession(const QString& label, const QString& uid, bool begin);
+    /** @brief beginSession()'s step: the next session number, and the clear and read position a start keeps. */
+    void advanceSession();
     /** @brief Whether the clear mark covers rows of the ring being read (settleClear() has bound or dropped it). */
     bool clearApplies() const;
     /** @brief Settle the clear mark against ring @p ring read at @p pushSeq: bind a pending one, drop one made on

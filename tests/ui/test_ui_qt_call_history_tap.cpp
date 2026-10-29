@@ -944,6 +944,72 @@ test_session_change_while_hidden(void) {
            row_attributed(model, 33002U, newSession, newLabel, newUid));
 }
 
+/* A session change while hidden moves its fields together: Main.startWithMap() begins the session on the new system,
+ * and an explore detach moves the system, each in one call. A call the new decoder commits as soon as the change is
+ * heard of (the first field's signal), and that the running tap polls then, is attributed wholly to the new session:
+ * the tap never runs on half of the change. */
+void
+test_session_fields_change_together_while_hidden(void) {
+    resetStorage();
+    const QString oldLabel = QStringLiteral("Old system");
+    const QString oldUid = QStringLiteral("old-system-uid");
+    const QString newLabel = QStringLiteral("New system");
+    const QString newUid = QStringLiteral("new-system-uid");
+    const QString exploring = QStringLiteral("Exploring");
+    CallHistoryModel model;
+    start_tap(model);
+    model.beginSessionOn(oldLabel, oldUid);
+    const qint64 oldSession = model.session();
+    Decoder oldDecoder;
+    oldDecoder.commit(0, 34000U, 99U, 1754970000);
+    oldDecoder.publish();
+    gui_ingest(model);
+
+    set_app_state(Qt::ApplicationHidden);
+    expect("fields together: the tap runs while hidden", model.backgroundCaptureRunningForTest());
+    Decoder newDecoder;
+    uint32_t heardTg = 0U;
+    time_t heardStart = 1754970060;
+    QObject::connect(&model, &CallHistoryModel::sessionLabelChanged, &model, [&] {
+        if (heardTg == 0U) {
+            return;
+        }
+        newDecoder.commit(0, heardTg, 100U, heardStart);
+        newDecoder.publish();
+        model.waitForBackgroundPollForTest();
+        heardTg = 0U;
+    });
+
+    // Main.startWithMap after an accepted asynchronous start: an ingest, then the session on the new system.
+    gui_ingest(model);
+    heardTg = 34001U;
+    model.beginSessionOn(newLabel, newUid);
+    const qint64 newSession = model.session();
+    expect("fields together: the start's call was committed", heardTg == 0U);
+    expect("fields together: the tap still runs after the start", model.backgroundCaptureRunningForTest());
+
+    // The session detaches from its saved system (Main's explore detach): an ingest, then the system it now is.
+    gui_ingest(model);
+    heardTg = 34002U;
+    heardStart = 1754970120;
+    model.setSessionSystem(exploring, QString());
+    expect("fields together: the detach's call was committed", heardTg == 0U);
+    expect("fields together: the detach keeps the session", model.session() == newSession);
+    expect("fields together: the tap still runs after the detach", model.backgroundCaptureRunningForTest());
+
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+
+    expect("fields together: every call is in History once", model.count() == 3);
+    expect("fields together: the old session's call keeps it",
+           row_attributed(model, 34000U, oldSession, oldLabel, oldUid));
+    expect("fields together: the call heard at the start is wholly the new session's",
+           row_attributed(model, 34001U, newSession, newLabel, newUid));
+    expect("fields together: the call heard at the detach is wholly the detached system's",
+           row_attributed(model, 34002U, newSession, exploring, QString()));
+}
+
 } // namespace
 
 int
@@ -981,6 +1047,7 @@ main(int argc, char** argv) {
     test_long_spill_of_repeated_notices_folds_bounded();
     test_failed_spill_read_keeps_the_spill();
     test_session_change_while_hidden();
+    test_session_fields_change_together_while_hidden();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

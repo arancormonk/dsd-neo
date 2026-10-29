@@ -8022,10 +8022,13 @@ Qt Quick frontend (`src/ui/qt`):
     takes none of the spill as read: the lines before the failure fold, the spill stays whole, and the next fold (the
     next handoff or load) reads it again, the lines already folded adding nothing. `clearAll()` while the tap runs stops it, takes its read position into
     the mark, empties the spill and starts it again; after the app returned but before the first ingest it hands the tap
-    off instead, which leaves it stopped. A session change while the tap runs (`setSessionLabel()`,
-    `setSessionUid()`, `beginSession()`: a deferred restart or a USB start's continuation completing while the app is
-    away) hands the tap off first, so what it found keeps the old attribution, and starts it again on the new session
-    unless the app's return already owes the handoff (`handOffBackgroundCaptureForSession()`). Decided limit: the tap binds a clear the model made before it had read any
+    off instead, which leaves it stopped. A session change while the tap runs (`beginSessionOn()`,
+    `setSessionSystem()` and the single setters: a deferred restart or a USB start's continuation completing while the
+    app is away) hands the tap off first, so what it found keeps the old attribution, and starts it again on the new
+    session unless the app's return already owes the handoff (`handOffBackgroundCaptureForSession()`). A change of more
+    than one field (label, uid, session number) is one call with one handoff, and the tap starts again only after every
+    field moved: Main's start (`beginSessionOn()`) and explore detach (`setSessionSystem()`) never let it run on half a
+    change. Decided limit: the tap binds a clear the model made before it had read any
     ring per slot, at its first copy of each, and the model adopts the binding only once both slots are bound (its own
     mark binds both slots together). A tap that read one slot only leaves the mark pending, the model binds it at its
     own first read, and the ring rows between the two binds stay hidden in that ring (the tap's spilled rows are already

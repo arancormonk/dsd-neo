@@ -490,31 +490,63 @@ CallHistoryModel::roleNames() const {
 
 void
 CallHistoryModel::setSessionLabel(const QString& label) {
-    if (label == m_sessionLabel) {
-        return;
-    }
-    const bool resumeTap = handOffBackgroundCaptureForSession();
-    m_sessionLabel = label;
-    m_settings.setValue(QLatin1String(kSessionLabelKey), label);
-    resumeBackgroundCapture(resumeTap);
-    Q_EMIT sessionLabelChanged();
+    changeSession(label, m_sessionUid, false);
 }
 
 void
 CallHistoryModel::setSessionUid(const QString& uid) {
-    if (uid == m_sessionUid) {
-        return;
-    }
-    const bool resumeTap = handOffBackgroundCaptureForSession();
-    m_sessionUid = uid;
-    m_settings.setValue(QLatin1String(kSessionUidKey), uid);
-    resumeBackgroundCapture(resumeTap);
-    Q_EMIT sessionUidChanged();
+    changeSession(m_sessionLabel, uid, false);
 }
 
 void
 CallHistoryModel::beginSession() {
+    changeSession(m_sessionLabel, m_sessionUid, true);
+}
+
+void
+CallHistoryModel::beginSessionOn(const QString& label, const QString& uid) {
+    changeSession(label, uid, true);
+}
+
+void
+CallHistoryModel::setSessionSystem(const QString& label, const QString& uid) {
+    changeSession(label, uid, false);
+}
+
+void
+CallHistoryModel::changeSession(const QString& label, const QString& uid, bool begin) {
+    const bool labelMoved = label != m_sessionLabel;
+    const bool uidMoved = uid != m_sessionUid;
+    if (!labelMoved && !uidMoved && !begin) {
+        return;
+    }
+    // One handoff for every field: a tap started again between them would attribute what it finds to half the change.
     const bool resumeTap = handOffBackgroundCaptureForSession();
+    if (labelMoved) {
+        m_sessionLabel = label;
+        m_settings.setValue(QLatin1String(kSessionLabelKey), label);
+    }
+    if (uidMoved) {
+        m_sessionUid = uid;
+        m_settings.setValue(QLatin1String(kSessionUidKey), uid);
+    }
+    if (begin) {
+        advanceSession();
+    }
+    resumeBackgroundCapture(resumeTap);
+    if (labelMoved) {
+        Q_EMIT sessionLabelChanged();
+    }
+    if (uidMoved) {
+        Q_EMIT sessionUidChanged();
+    }
+    if (begin) {
+        Q_EMIT sessionChanged();
+    }
+}
+
+void
+CallHistoryModel::advanceSession() {
     m_session++;
     m_settings.setValue(QLatin1String(kSessionKey), m_session);
     /* A start usually brings a fresh ring, but not always: an embedding host can run again on the
@@ -540,8 +572,6 @@ CallHistoryModel::beginSession() {
         m_ringPushSeqRing = 0U;
         m_ringRead = true;
     }
-    resumeBackgroundCapture(resumeTap);
-    Q_EMIT sessionChanged();
 }
 
 bool
