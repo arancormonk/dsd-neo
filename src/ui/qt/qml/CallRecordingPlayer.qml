@@ -265,9 +265,15 @@ Column {
     }
 
     onPartsChanged: {
-        // Nothing left to show it (the row trimmed away): what this block plays
+        // The part it plays no longer listed (the row trimmed away, or that
+        // part's file gone from a call of several): what this block plays
         // stops, as no control is left on screen for it.
-        if (parts.length === 0 && ownedPath !== "" && decoderHost.playbackPath === ownedPath && (decoderHost.playbackState === 1 || decoderHost.playbackState === 2 || decoderHost.playbackState === 3)) {
+        var listed = false;
+        for (var p = 0; p < parts.length; p++) {
+            if (parts[p].path === ownedPath)
+                listed = true;
+        }
+        if (!listed && ownedPath !== "" && decoderHost.playbackPath === ownedPath && (decoderHost.playbackState === 1 || decoderHost.playbackState === 2 || decoderHost.playbackState === 3)) {
             playAll = false;
             decoderHost.stopPlayback();
         }

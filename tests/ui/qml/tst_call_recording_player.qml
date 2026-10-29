@@ -525,6 +525,17 @@ Item {
             compare(lastHostCall().name, "stopPlayback", "no control is left for it, so it stops");
         }
 
+        // The playing part of a call of several gone from the list (its file
+        // deleted from a computer): the play stops, as no control is left for it.
+        function test_playing_part_gone_stops_its_playback() {
+            var uid = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 12000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            verify(callHistory.setRowRecordings(uid, [rec("t-2", pathB, 12000)]));
+            verify(item("historyRecording").visible, "the other part is still shown");
+            compare(lastHostCall().name, "stopPlayback", "the part that played is gone, so its play stops");
+        }
+
         // A save still running when its sheet closes ends quietly on another row's sheet.
         function test_save_ends_quietly_on_another_rows_sheet() {
             openWith([rec("t-1", pathA, 12000)]);
