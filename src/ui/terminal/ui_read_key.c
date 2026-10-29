@@ -31,6 +31,7 @@ static ui_read_key_get_wch_fn g_read_wch;
 static ui_read_key_getch_fn g_read_getch;
 #endif
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
 ui_read_key_set_hooks_for_test(ui_read_key_getch_fn read_getch, ui_read_key_get_wch_fn read_wch) {
