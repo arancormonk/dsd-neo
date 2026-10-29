@@ -51,11 +51,13 @@
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <limits.h>
 #include <math.h>
+#include <sndfile.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
