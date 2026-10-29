@@ -56,32 +56,41 @@ short_option_grouped(const QString& token) {
 }
 
 /**
- * @brief The tokens of @p tokens the parser reads as options, not as the value of the option before them, walked as
- * the decoder walks its argv: a long option by the parser's own arity (dsd_cli_long_option_arity()), a short option
- * that takes a value and has none attached taking the next token whatever it looks like, as getopt does, and nothing
- * after "--".
+ * @brief The tokens of @p tokens the parser reads as options, not as the value of the option before them, found as the
+ * decoder finds them, in two passes up to "--". First its long options come out of the whole list wherever they stand,
+ * a short option's value position included, each with the value its arity takes (dsd_cli_long_option_arity()), as
+ * dsd_parse_args()' pre-scan and dsd_cli_compact_args() take them. Then getopt reads what is left: a short option that
+ * takes a value and has none attached takes the next token whatever it looks like. Both kinds are returned, and the
+ * operands getopt leaves too.
  */
 QStringList
 option_tokens(const QString& tokens) {
     const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     QStringList options;
+    QStringList rest;
     for (qsizetype i = 0; i < split.size(); ++i) {
         const QString& token = split.at(i);
         if (token == QLatin1String("--")) {
             break;
         }
+        const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
+        if (arity == DSD_CLI_LONG_UNKNOWN) {
+            rest.append(token);
+            continue;
+        }
         options.append(token);
         const bool hasNext = i + 1 < split.size();
-        bool takesNext = false;
-        if (token.startsWith(QLatin1String("--"))) {
-            const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
-            takesNext =
-                arity == DSD_CLI_LONG_NEXT
-                || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
-        } else if (token.size() == 2 && token.at(0) == QLatin1Char('-')) {
-            takesNext = short_takes_value(token.at(1));
-        }
+        const bool takesNext =
+            arity == DSD_CLI_LONG_NEXT
+            || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
         if (takesNext && hasNext) {
+            ++i;
+        }
+    }
+    for (qsizetype i = 0; i < rest.size(); ++i) {
+        const QString& token = rest.at(i);
+        options.append(token);
+        if (token.size() == 2 && token.at(0) == QLatin1Char('-') && short_takes_value(token.at(1))) {
             ++i;
         }
     }

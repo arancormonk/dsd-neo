@@ -8,7 +8,8 @@
  * saved system, Explore, a scan list) goes through its starter with a recording folder from a stand-in store, and the
  * argv the host receives is parsed as the decoder parses it: the folder, the journal beside it, per-call recording and
  * unknown-only land in the options, and nothing deletes a recording. Then Settings' live switches go through the real
- * command bridge and queue into those options.
+ * command bridge and queue into those options, and the extra options the app refuses are refused where the parser
+ * would honour them.
  */
 
 #include <QByteArray>
@@ -675,6 +676,70 @@ test_status_readings(void) {
                                            && status.refusalCount() == refusals + 2);
 }
 
+enum class Applied { Journal, DeleteAfterUpload, Folder, StaticWav, PerCall };
+
+/* Whether the parse in @p opts applied the recording option @p what, with its value under @p scratch. */
+bool
+applied(Applied what, const dsd_opts& opts, const QString& scratch) {
+    switch (what) {
+        case Applied::Journal: return QString::fromUtf8(opts.wav_journal_file) == scratch + QStringLiteral("/j.jsonl");
+        case Applied::DeleteAfterUpload: return opts.rdio_api_delete_after_upload != 0;
+        case Applied::Folder: return QString::fromUtf8(opts.wav_out_dir) == scratch;
+        case Applied::StaticWav: return opts.static_wav_file != 0;
+        case Applied::PerCall: return opts.dmr_stereo_wav != 0;
+    }
+    return false;
+}
+
+/*
+ * The call recording options the app owns are refused wherever the parser would honour them, and only there: the
+ * parser takes its long options out of the whole command line first (a short option's value position included), and
+ * getopt then reads what is left. Each case is parsed as the decoder parses it, to show what it honours, and then
+ * judged by session_args_recording_extra_error(). %1 is a scratch folder (-7 makes it, -w writes there).
+ */
+void
+test_extras_judged_as_the_parser_reads_them(const QString& scratch) {
+    using dsd_qt::session_args_recording_extra_error;
+    using dsd_qt::SessionArgsError;
+
+    struct Case {
+        const char* extras;
+        bool honoured; // the parser applies the recording option
+        SessionArgsError refusal;
+        bool recordCalls;
+        bool noStorage;
+        Applied what;
+    };
+
+    const Case cases[] = {
+        // A long option where a short option's value would be: the parser takes it out first and honours it.
+        {"-o --wav-journal %1/j.jsonl null", true, SessionArgsError::CallRecordingOption, false, false,
+         Applied::Journal},
+        {"-o --rdio-api-delete-after-upload null", true, SessionArgsError::CallRecordingOption, false, false,
+         Applied::DeleteAfterUpload},
+        // Once it is out, the short options after it pair up anew: -7, -w and -P are options again.
+        {"-o --strict-crc -o -7 %1", true, SessionArgsError::CallRecordingOption, false, false, Applied::Folder},
+        {"-o --strict-crc -o -w %1/out.wav", true, SessionArgsError::CallRecordingStaticWav, true, false,
+         Applied::StaticWav},
+        {"-o --strict-crc -o -P", true, SessionArgsError::CallRecordingNoStorage, false, true, Applied::PerCall},
+        // And the other way: what becomes a short option's value is no option.
+        {"-o --strict-crc -7 %1", false, SessionArgsError::None, false, false, Applied::Folder},
+        {"-o --strict-crc -w %1/out.wav", false, SessionArgsError::None, true, false, Applied::StaticWav},
+        {"-o --strict-crc -P", false, SessionArgsError::None, false, true, Applied::PerCall},
+    };
+    for (const Case& c : cases) {
+        const QString extras = QString::fromLatin1(c.extras).arg(scratch);
+        Decoder decoder;
+        const bool parsed = parse(extras.split(QLatin1Char(' '), Qt::SkipEmptyParts), decoder);
+        expect(qPrintable(QStringLiteral("the parser %1: %2")
+                              .arg(c.honoured ? QStringLiteral("honours") : QStringLiteral("ignores"), extras)),
+               parsed && applied(c.what, *decoder.opts, scratch) == c.honoured);
+        expect(qPrintable(QStringLiteral("%1: %2").arg(
+                   c.honoured ? QStringLiteral("refused") : QStringLiteral("accepted"), extras)),
+               session_args_recording_extra_error(extras, c.recordCalls, c.noStorage) == c.refusal);
+    }
+}
+
 } // namespace
 
 int
@@ -705,6 +770,7 @@ main(int argc, char** argv) {
         test_live_beside_a_static_wav(prefs, sessions, dir.filePath(QStringLiteral("static.wav")));
         test_status_follows_the_session(prefs);
         test_status_waits_for_the_run(prefs, sessions);
+        test_extras_judged_as_the_parser_reads_them(dir.filePath(QStringLiteral("extras")));
     }
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {
