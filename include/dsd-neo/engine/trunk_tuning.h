@@ -119,6 +119,12 @@ void dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_stat
  * here: the client's record of the peer skips a repeat, and RigctlRebindPeer() hands a reconnect that record (issue
  * #621). */
 void dsd_engine_rigctl_tune_cache_forget(void);
+/** @brief Forget the frequencies the legacy legs last sent, rigctl's and the RTL stream's (issue #671): the untyped -Y
+ * step and the direct control-channel return skip a repeat of them, which holds only while nothing else moved the
+ * receiver. A manual tune moves it without writing them, so every accepted one forgets them: the carrier boundary of a
+ * tune the user asked for (DSD_CARRIER_BOUNDARY_TUNE) does, and so must a manual tune that runs no boundary (a channel
+ * cycle or return under trunking). A -Y resume forgets them too. Decoder thread. */
+void dsd_engine_legacy_tune_caches_forget(void);
 /**
  * @brief Release the call state a tuned voice channel owns, without tuning.
  *

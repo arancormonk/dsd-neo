@@ -1206,6 +1206,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->trunk_chan_map_seq = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
+    state->lcn_scan_session = 0U;
     /* last_cc_sync_time, last_vc_sync_time and last_t3_tune_time, on the list the engine's replay rebase shares. */
     dsd_state_rebase_decode_timestamps(NULL, state);
     state->rtl_fsk_reacquire_last_sync_time = 0;

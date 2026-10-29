@@ -1066,7 +1066,8 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
  *                cannot hold one past 2147.483647 MHz.
  * @param out_pending_id May be NULL; the ID a timed-out RTL tune's completion will be reported under, 0 otherwise.
  * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code. An RTL timeout leaves an
- *         accepted request active and retains its target in opts->rtlsdr_center_freq.
+ *         accepted request active and retains its target in opts->rtlsdr_center_freq; an RTL failure puts the centre
+ *         the controller last applied there (set_rtl_frequency()).
  */
 int
 io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
@@ -1094,4 +1095,25 @@ io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq
     // Update cached frequency only after the selected backend accepts the request.
     opts->rtlsdr_center_freq = applied_freq;
     return 0;
+}
+
+int
+io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
+    if (!opts || freq_hz == 0U) {
+        return -1;
+    }
+#ifdef USE_RADIO
+    uint32_t applied_freq = freq_hz;
+    const int rc = set_rtl_frequency(opts, state, freq_hz, &applied_freq, out_pending_id);
+    if (rc == 0) {
+        opts->rtlsdr_center_freq = applied_freq;
+    }
+    return rc;
+#else
+    (void)state;
+    return -1;
+#endif
 }

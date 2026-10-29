@@ -37,11 +37,13 @@ typedef struct {
     uint32_t prior_applied_hz;
     int row;
     uint32_t scan_session;
-    uint32_t map_seq;
+    uint64_t map_seq;
     uint32_t session_generation;
 } dsd_manual_tune_record;
 
 static dsd_manual_tune_record g_record;
+/* The record the last poll that took a completion settled. */
+static dsd_manual_tune_settled g_settled;
 static atomic_int g_record_pending = 0;
 /* (ID count << 32) | (uint32_t)result of the last manual-tune completion; 0 when none came. */
 static dsd_atomic_u64 g_completion = {0U};
@@ -76,7 +78,7 @@ dsd_engine_manual_tune_completion(uint64_t id, int result) {
 
 void
 dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
-                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint32_t map_seq) {
+                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t map_seq) {
     dsd_engine_manual_tune_supersede(state);
     if (id == 0U) {
         return;
@@ -114,6 +116,11 @@ dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
         return DSD_MANUAL_TUNE_NONE;
     }
     atomic_store(&g_record_pending, 0);
+    g_settled.kind = g_record.kind;
+    g_settled.requested_hz = g_record.requested_hz;
+    g_settled.row = g_record.row;
+    g_settled.scan_session = g_record.scan_session;
+    g_settled.map_seq = g_record.map_seq;
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
         return DSD_MANUAL_TUNE_LANDED;
     }
@@ -123,11 +130,19 @@ dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
             opts->rtlsdr_center_freq = applied_hz;
         }
     }
-    if (state) {
+    /* A scan step that failed retries its row, as one that failed in its wait does, unannounced. */
+    if (state && g_record.kind == DSD_MANUAL_TUNE_ENTRY) {
         char mhz[16];
         (void)dsd_freq_hz_mhz_text(g_record.requested_hz, mhz, sizeof mhz);
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: frequency -> %s MHz", mhz);
         state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
     }
     return DSD_MANUAL_TUNE_FAILED;
+}
+
+void
+dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out) {
+    if (out) {
+        *out = g_settled;
+    }
 }

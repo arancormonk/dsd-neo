@@ -6780,7 +6780,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_no_carrier_reset
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -6815,6 +6815,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
+            "-Wl,--wrap=rtl_stream_get_last_applied_freq"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
             ${LIBS}
@@ -8029,6 +8030,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
+            "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
             "LINKER:--wrap=dmr_data_burst_handler"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"

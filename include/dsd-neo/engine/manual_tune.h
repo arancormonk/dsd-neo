@@ -44,12 +44,12 @@ enum {
  * @param requested_hz     The frequency asked for, which a failure names.
  * @param prior_applied_hz The centre in force before the tune, where a failure goes back to when the stream has none.
  * @param row              The scan row the tune enters, -1 for an entry.
- * @param scan_session     The scan session the tune belongs to (0 for an entry).
- * @param map_seq          The channel map revision the row belongs to (0 for an entry).
+ * @param scan_session     The -Y scan session the row belongs to (dsd_state::lcn_scan_session; 0 for an entry).
+ * @param map_seq          The channel map revision the row belongs to (dsd_state::trunk_chan_map_seq; 0 for an entry).
  */
 void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id,
                                          uint32_t requested_hz, uint32_t prior_applied_hz, int row,
-                                         uint32_t scan_session, uint32_t map_seq);
+                                         uint32_t scan_session, uint64_t map_seq);
 
 /**
  * @brief Forget the noted tune: another tune of the receiver, a stream reopen, a scan pause or stop, or a list
@@ -62,7 +62,9 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  *
  * Costs one atomic load while nothing is noted. A record whose stream session has ended (rtl_stream_session_generation())
  * is dropped. On a failure, @p opts->rtlsdr_center_freq goes back to the centre the stream last applied (or the prior
- * one noted), and a toast names the frequency that failed.
+ * one noted), and for an entry a toast names the frequency that failed. An untyped -Y step's failure is not toasted:
+ * the scan retries the row, as after a step that failed in its wait, and the engine's loop settles the row
+ * (dsd_engine_scan_untyped_poll()).
  *
  * @return DSD_MANUAL_TUNE_NONE, DSD_MANUAL_TUNE_LANDED or DSD_MANUAL_TUNE_FAILED.
  */

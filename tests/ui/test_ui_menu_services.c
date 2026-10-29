@@ -546,7 +546,7 @@ static int g_note_pending_row = 0;
 
 void
 dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
-                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint32_t map_seq) {
+                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t map_seq) {
     (void)state;
     (void)scan_session;
     (void)map_seq;

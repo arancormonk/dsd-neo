@@ -56,6 +56,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -3189,6 +3190,9 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
             /* This leg has no correlated tune request to await, so an accepted
              * timeout (issued, not yet confirmed) is reported as complete. */
             tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+            /* It moves the receiver without the engine's legacy legs, and runs no carrier boundary to tell them
+               (issue #671). */
+            dsd_engine_legacy_tune_caches_forget();
         }
     }
     if (out_result) {

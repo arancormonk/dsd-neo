@@ -115,6 +115,7 @@
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
 static int g_manual_tune_supersedes = 0;
+static int g_legacy_cache_forgets = 0;
 static uint32_t g_io_control_tune_freq = 0U;
 /* Calls that dropped the frame-sync modulation votes from outside the frame-sync object (issue #671). */
 static int g_mod_state_resets = 0;
@@ -201,6 +202,8 @@ int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
 void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __real_dsd_engine_legacy_tune_caches_forget(void);
+void __wrap_dsd_engine_legacy_tune_caches_forget(void);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
                                       uint64_t* out_pending_id);
 void __real_dsd_frame_sync_reset_mod_state(void);
@@ -367,6 +370,15 @@ __wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
     __real_dsd_engine_manual_tune_supersede(state);
 }
 
+/* The engine's legacy tune caches forgotten by a tune app-control makes without a carrier boundary (issue #671):
+   counted, and forgotten for real. Only calls from outside the engine object reach the wrap, so a boundary's own forget
+   is not counted. */
+void
+__wrap_dsd_engine_legacy_tune_caches_forget(void) {
+    g_legacy_cache_forgets++;
+    __real_dsd_engine_legacy_tune_caches_forget();
+}
+
 /* The frame-sync modulation votes dropped (issue #671): counted, and dropped for real. Only calls from outside the
    frame-sync object reach the wrap, so an acquisition reset's own drop is not counted. */
 void
@@ -509,6 +521,7 @@ reset_io_control_tune_stub(int result) {
     g_io_control_applied_freq = 0U;
     g_mod_state_resets = 0;
     g_manual_tune_supersedes = 0;
+    g_legacy_cache_forgets = 0;
 }
 
 static void
@@ -1798,6 +1811,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("deferred channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("deferred channel cycle raw tune calls", g_io_control_tune_calls, 1);
     rc |= expect_int("deferred channel cycle keeps a pending manual tune", g_manual_tune_supersedes, 0);
+    rc |= expect_int("deferred channel cycle keeps the legacy tune caches", g_legacy_cache_forgets, 0);
     rc |= expect_true("deferred channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("deferred channel cycle CC tune calls", g_cc_tune_calls, 0);
     rc |= expect_int("deferred channel cycle keeps roll", state.lcn_freq_roll, 0);
@@ -1822,6 +1836,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
     rc |= expect_int("accepted channel cycle uses raw tune", g_io_control_tune_calls, 1);
     rc |= expect_int("accepted channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
+    rc |= expect_int("accepted channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
     rc |= expect_true("accepted channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("accepted channel cycle skips CC tune", g_cc_tune_calls, 0);
     rc |= expect_int("accepted channel cycle keeps SPS", state.samplesPerSymbol, 8);

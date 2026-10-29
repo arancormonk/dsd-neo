@@ -13275,6 +13275,18 @@ rtl_stream_test_manual_tune_standin_tune(dsd_opts* stream_opts, uint32_t frequen
 }
 
 extern "C" int
+rtl_stream_test_manual_tune_standin_queued(uint64_t* out_token) {
+    if (out_token == nullptr) {
+        return -1;
+    }
+    dsd_mutex_lock(&controller.hop_m);
+    const int pending = controller.manual_retune_pending.load(std::memory_order_acquire) != 0 ? 1 : 0;
+    *out_token = pending != 0 ? controller.manual_retune_token : 0U;
+    dsd_mutex_unlock(&controller.hop_m);
+    return pending;
+}
+
+extern "C" int
 rtl_stream_test_manual_tune_standin_take(uint64_t* out_token, uint32_t* out_freq_hz) {
     if (!out_token || !out_freq_hz || g_test_manual_tune_taken_valid
         || !controller.manual_retune_pending.load(std::memory_order_acquire)) {

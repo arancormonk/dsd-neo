@@ -229,14 +229,27 @@ test_second_entry_coalesces_into_a_queued_one(fixture* f) {
     fixture_end();
 }
 
-/* The controller thread's part in a failed coalesced request: once the second entry has queued over the first, take the
-   request and fail it while that entry still waits. */
+/* The controller thread's part in a failed coalesced request. It waits for the second entry to queue over the first
+   (the queued request's tag is no longer the first entry's), then takes the request and fails it while that entry
+   still waits. The tag is the handshake: no ordering rests on a sleep. */
+typedef struct {
+    uint64_t first_id;
+    uint64_t taken_token;
+} coalesced_failure;
+
 static DSD_THREAD_RETURN_TYPE
 fail_the_coalesced_request(void* arg) {
-    uint64_t* taken_token = (uint64_t*)arg;
+    coalesced_failure* c = (coalesced_failure*)arg;
+    uint64_t queued = c->first_id;
+    /* Bounded so a broken handshake fails the test instead of hanging it: 10 s, far past the entry's 500 ms wait. */
+    for (int tries = 0; tries < 10000; tries++) {
+        if (rtl_stream_test_manual_tune_standin_queued(&queued) == 1 && queued != c->first_id) {
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
     uint32_t hz = 0U;
-    dsd_sleep_ms(100U);
-    if (rtl_stream_test_manual_tune_standin_take(taken_token, &hz) == 0) {
+    if (queued != c->first_id && rtl_stream_test_manual_tune_standin_take(&c->taken_token, &hz) == 0) {
         (void)rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ);
     }
     DSD_THREAD_RETURN;
@@ -248,16 +261,17 @@ fail_the_coalesced_request(void* arg) {
 static void
 test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(fixture* f) {
     fixture_begin(f);
-    (void)enter_frequency(f, ENTRY_A_HZ);
-    uint64_t taken_token = 0U;
+    coalesced_failure controller_side = {0U, 0U};
+    controller_side.first_id = enter_frequency(f, ENTRY_A_HZ);
     dsd_thread_t controller_thread;
-    assert(dsd_thread_create(&controller_thread, fail_the_coalesced_request, &taken_token) == 0);
+    assert(dsd_thread_create(&controller_thread, fail_the_coalesced_request, &controller_side) == 0);
     uint64_t pending_id = UINT64_MAX;
     const int rc = io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &pending_id);
     assert(dsd_thread_join(controller_thread) == 0);
     assert(rc == RTL_STREAM_TUNE_FAILED);
     assert(pending_id == 0U);
-    assert((taken_token & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+    assert((controller_side.taken_token & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+    assert(controller_side.taken_token != controller_side.first_id);
     /* As svc_rtl_tune() does with a result that reached the controller: nothing pending, the record superseded. */
     dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_ENTRY, pending_id, ENTRY_B_HZ, ENTRY_A_HZ, -1, 0U,
                                         0U);

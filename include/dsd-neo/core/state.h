@@ -2194,7 +2194,11 @@ struct dsd_state {
     //trunking lcn freq list
     int lcn_freq_count;
     int lcn_freq_roll; //number we have 'rolled' to in search of the CC
-    int is_con_plus;   //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync
+    /* The -Y scan session (issue #671): it moves whenever a -Y scan ends (dsd_engine_channel_scan_leave(): a stop, a
+       list replacement, a trunk-scan start), so a row tune that timed out under one scan never commits its row in the
+       next. */
+    uint32_t lcn_scan_session;
+    int is_con_plus; //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync
 
     //new nxdn stuff
     int nxdn_part_of_frame;

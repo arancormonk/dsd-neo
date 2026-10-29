@@ -1122,6 +1122,9 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return 0;
     }
+    /* Every -Y scan ends here, so a row tune still pending from this one never commits its row in the next (issue
+       #671). */
+    state->lcn_scan_session++;
     const int active = channel_scan_get(state) != NULL || dsd_scan_mode_configured_view(state) != NULL
                        || dsd_scan_mode_updating(state);
     if (active) {

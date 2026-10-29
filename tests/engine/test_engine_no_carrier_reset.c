@@ -75,6 +75,13 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "test_support.h"
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+#include <dsd-neo/engine/manual_tune.h>
+#include <dsd-neo/io/control.h>
+#include "manual_tune_pending.h"
+#include "scan_step_untyped.h"
+#endif
+
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -155,6 +162,8 @@ static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
 static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+/* The centre the fake controller last applied, which rtl_stream_get_last_applied_freq() reports (0: none known). */
+static uint32_t g_rtl_last_applied_hz = 0U;
 static int g_rtl_output_rate = 48000;
 static int g_rtl_cqpsk_enable = 0;
 static int g_rtl_symbol_rate_hz = 6000;
@@ -265,6 +274,7 @@ reset_rtl_profile_fakes(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_hz = 0U;
     g_rtl_output_rate = 48000;
     g_rtl_cqpsk_enable = 1;
     g_rtl_symbol_rate_hz = 6000;
@@ -636,6 +646,18 @@ hold_outstanding_tune(uint32_t freq, uint64_t request_id) {
     slot->profile = fake_take_pending_profile();
 }
 
+/* A completion as the engine's callback dispatches it (trunk_tuning_hooks_install.c): a manual tune's ID to the
+ * manual-tune slot, every other one to the trunk-tuning ledger. */
+static void
+fake_publish_completion(uint64_t request_id, dsd_trunk_tune_result result) {
+    if ((request_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U) {
+        dsd_engine_manual_tune_completion(request_id, result == DSD_TRUNK_TUNE_RESULT_OK ? RTL_STREAM_TUNE_OK
+                                                                                         : RTL_STREAM_TUNE_FAILED);
+        return;
+    }
+    dsd_trunk_tuning_request_publish(request_id, result);
+}
+
 /* The controller lands @p r and completes its request with @p result: OK applies its profile to the fake front end,
  * FAILED applies none of it. */
 static void
@@ -650,10 +672,10 @@ land_outstanding_tune(fake_retune* r, dsd_trunk_tune_result result) {
         fake_put_pending_profile(&waiting);
     }
     if (r->coalesced_request_id != 0U) {
-        dsd_trunk_tuning_request_publish(r->coalesced_request_id, result);
+        fake_publish_completion(r->coalesced_request_id, result);
     }
     if (r->request_id != 0U) {
-        dsd_trunk_tuning_request_publish(r->request_id, result);
+        fake_publish_completion(r->request_id, result);
     }
     *r = (fake_retune){0};
 }
@@ -744,6 +766,15 @@ void
 __wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
     g_manual_tune_supersedes++;
     __real_dsd_engine_manual_tune_supersede(state);
+}
+
+int
+__wrap_rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
+    if (!out_freq_hz || g_rtl_last_applied_hz == 0U) {
+        return -1;
+    }
+    *out_freq_hz = g_rtl_last_applied_hz;
+    return 0;
 }
 
 int
@@ -1668,6 +1699,345 @@ test_trunk_scan_nfm_target_then_trunked_target(void) {
 // The live-scanner loop runs dsd_engine_scan_visit_tick() immediately before every noCarrier()
 // pass, so by the time the step predicate runs the row on air has always been reconciled with the
 // anchor. These cases drive noCarrier() in isolation, so they stand in for that tick.
+static int expect_case(const char* label, const char* what, int cond);
+static void seed_rx_tone_publication(dsd_state* state, int tenths);
+static int rx_tone_publication_cleared(const dsd_state* state, uint32_t seeded_generation);
+
+/* Issue #671 (B2): a manual tune moves the receiver without the legacy legs, so what they last sent no longer says where
+   it is. The step skips a frequency it last sent, so after a frequency entry it must retune a row it had landed on
+   before, or the radio stays on the entry while the scan names (and keys) that row. A list of two rows with the second
+   avoided makes the step come back to the first. */
+static int
+test_legacy_step_retunes_after_a_manual_tune(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 981012500;
+    state->trunk_lcn_freq[1] = 982012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    (void)dsd_state_trunk_lcn_avoid_set(state, 1U, 1);
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("b2-rtl-step-lands-row-0",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == 981012500U && state->lcn_freq_roll == 1);
+
+    /* The frequency entry, as svc_rtl_set_freq() makes it: the tune, then the carrier boundary of a tune. */
+    rc |= expect_true("b2-rtl-entry-tunes", io_control_set_freq(opts, state, 982012500U) == 0 && g_rtl_tune_calls == 2
+                                                && g_rtl_tune_freq == 982012500U);
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    if (g_rtl_tune_calls != 3) {
+        DSD_FPRINTF(stderr, "b2: the step back to row 0 made %d tunes (want 1), last to %u Hz\n", g_rtl_tune_calls - 2,
+                    g_rtl_tune_freq);
+    }
+    rc |= expect_true("b2-rtl-step-back-retunes",
+                      g_rtl_tune_calls == 3 && g_rtl_tune_freq == 981012500U && state->lcn_freq_roll == 1);
+    rc |= expect_true("b2-rtl-step-back-caches-the-centre", opts->rtlsdr_center_freq == 981012500U);
+    free_test_runtime(opts, state);
+
+    /* The rigctl leg likewise, on PCM input: an accepted tune's boundary forgets the frequency it last sent. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    opts->scanner_mode = 1;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->trunk_hangtime = 1;
+    state->trunk_lcn_freq[0] = 983012500;
+    state->trunk_lcn_freq[1] = 984012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    (void)dsd_state_trunk_lcn_avoid_set(state, 1U, 1);
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("b2-rigctl-step-lands-row-0", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == 983012500);
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("b2-rigctl-step-back-retunes", g_rigctl_setfreq_calls == 2 && g_rigctl_setfreq_freq == 983012500);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* An untyped list of two rows with a key set on row 0 (rkey 9 = 999), for the issue #671 B22 cases. */
+static int
+setup_untyped_keyed_list(dsd_opts* opts, dsd_state* state, long int row0_hz, long int row1_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_engine_manual_tune_supersede(state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    opts->rtlsdr_center_freq = 980012500U;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = row0_hz;
+    state->trunk_lcn_freq[1] = row1_hz;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    dsd_key_set ks;
+    DSD_MEMSET(&ks, 0, sizeof(ks));
+    ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+    if (ks.entries == NULL) {
+        return -1;
+    }
+    ks.count = 1U;
+    ks.present = 1;
+    ks.keyloader = 1;
+    ks.entries[0].index = 9U;
+    ks.entries[0].value = 999ULL;
+    ks.entries[0].loaded = 1U;
+    if (dsd_state_trunk_lcn_keys_set(state, 0U, &ks) != 0) {
+        dsd_key_set_free(&ks);
+        return -1;
+    }
+    return 0;
+}
+
+/* A step whose RTL tune times out, left outstanding on the fake controller (g_retune_in_flight). Returns the deadline
+   the step was due by. */
+static time_t
+step_into_a_timed_out_tune(dsd_opts* opts, dsd_state* state) {
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    const time_t deadline = time(NULL) - 11;
+    state->last_cc_sync_time = deadline;
+    noCarrier(opts, state);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return deadline;
+}
+
+/* Issue #671 (B22): the untyped step treated an RTL tune that timed out as a failure, though the controller can land
+   it later, which left the receiver on the new row while the cursor, the label and the keys stayed on the old one. The
+   row now waits for its tune: nothing commits while it is pending, and the landing commits it after the carrier
+   boundary. A late failure abandons it as a failure in the wait does: the cursor stays for a retry, the cached centre
+   goes back where the receiver stayed, unannounced. */
+static int
+test_legacy_step_commits_a_timed_out_row_when_it_lands(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 985012500, 986012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t tone_generation = state->analog_rx.generation;
+    const time_t pending_deadline = step_into_a_timed_out_tune(opts, state);
+    rc |= expect_true("b22-timeout-tunes-row-0", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 985012500U);
+    rc |=
+        expect_true("b22-timeout-leaves-a-tagged-request",
+                    g_retune_in_flight.active && (g_retune_in_flight.request_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
+    /* Before the completion: the cursor, the keys and the deadline stay (the guarantees the timeout always kept). */
+    rc |= expect_true("b22-pending-keeps-candidate", state->lcn_freq_roll == 0);
+    rc |= expect_true("b22-pending-keeps-deadline", state->last_cc_sync_time == pending_deadline);
+    rc |= expect_true("b22-pending-keeps-keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    rc |= expect_true("b22-pending-keeps-the-tone", !rx_tone_publication_cleared(state, tone_generation));
+    rc |= expect_true("b22-pending-caches-the-target", opts->rtlsdr_center_freq == 985012500U);
+    rc |= expect_true("b22-no-completion-yet",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE && state->lcn_freq_roll == 0);
+
+    const uint32_t carrier_seq = state->carrier_seq;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    const int landed = dsd_engine_scan_untyped_poll(opts, state);
+    if (landed != DSD_MANUAL_TUNE_LANDED || state->lcn_freq_roll != 1) {
+        DSD_FPRINTF(stderr, "b22 landing: poll %d, roll %d, rkey %llu (want %d, 1, 999)\n", landed,
+                    state->lcn_freq_roll, (unsigned long long)state->rkey_array[9], DSD_MANUAL_TUNE_LANDED);
+    }
+    rc |= expect_true("b22-landing-polls-landed", landed == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_true("b22-landing-runs-the-boundary", state->carrier_seq != carrier_seq);
+    rc |= expect_true("b22-landing-commits-the-row", state->lcn_freq_roll == 1);
+    rc |= expect_true("b22-landing-installs-the-keys",
+                      state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    rc |= expect_true("b22-landing-clears-the-tone", rx_tone_publication_cleared(state, tone_generation));
+    rc |= expect_true("b22-landing-restarts-the-clocks", state->last_cc_sync_time > pending_deadline);
+    rc |= expect_true("b22-landing-keeps-the-centre", opts->rtlsdr_center_freq == 985012500U);
+    rc |= expect_true("b22-landing-no-toast", state->ui_msg[0] == '\0');
+
+    /* Row 1 times out next, and fails late where the receiver stayed on row 0. */
+    (void)step_into_a_timed_out_tune(opts, state);
+    rc |= expect_true("b22-second-timeout-tunes-row-1", g_rtl_tune_freq == 986012500U && state->lcn_freq_roll == 1);
+    rc |= expect_true("b22-second-timeout-caches-the-target", opts->rtlsdr_center_freq == 986012500U);
+    opts->scan_max_visit_ms = 2000; /* the windows a failure reopens are observable */
+    state->last_cc_sync_time = pending_deadline;
+    g_rtl_last_applied_hz = 985012500U;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    const int failed = dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_true("b22-late-failure-polls-failed", failed == DSD_MANUAL_TUNE_FAILED);
+    rc |= expect_true("b22-late-failure-keeps-candidate", state->lcn_freq_roll == 1);
+    rc |= expect_true("b22-late-failure-keeps-keys", state->rkey_array[9] == 999ULL);
+    rc |= expect_true("b22-late-failure-reverts-the-centre", opts->rtlsdr_center_freq == 985012500U);
+    rc |= expect_true("b22-late-failure-reopens-the-windows", state->last_cc_sync_time > pending_deadline);
+    rc |= expect_true("b22-late-failure-no-toast", state->ui_msg[0] == '\0');
+    opts->scan_max_visit_ms = 0;
+
+    /* The cursor stayed, so the next step retries row 1, and lands it. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    const int calls = g_rtl_tune_calls;
+    noCarrier(opts, state);
+    rc |= expect_true("b22-retry-after-late-failure",
+                      g_rtl_tune_calls == calls + 1 && g_rtl_tune_freq == 986012500U && state->lcn_freq_roll == 2);
+    rc |= expect_true("b22-retry-leaves-the-keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #671 (N8): a row tune that timed out belongs to its scan. A stop of that scan (the leave every -Y stop runs,
+   here followed by a restart before the landing) or a replaced list drops its row, so a late success commits nothing
+   and only the frequency stands; a late failure only puts the cached centre back. */
+static int
+test_legacy_step_landing_after_the_scan_changed_commits_nothing(void) {
+    int rc = 0;
+    for (int variant = 0; variant < 3; variant++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (setup_untyped_keyed_list(opts, state, 987012500, 988012500) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        static const char* const variant_names[] = {"stop", "list", "stop-fail"};
+        const char* what = variant_names[variant];
+        (void)step_into_a_timed_out_tune(opts, state);
+        rc |= expect_case(what, "the step times out on row 0",
+                          g_retune_in_flight.active && g_rtl_tune_freq == 987012500U && state->lcn_freq_roll == 0);
+        if (variant == 1) {
+            state->trunk_chan_map_seq++; /* a list replacement (chan_map_adopt()) */
+        } else {
+            (void)dsd_engine_channel_scan_leave(opts,
+                                                state); /* `y` stops the scan; it starts again before the landing */
+        }
+        const uint32_t carrier_seq = state->carrier_seq;
+        const time_t deadline = state->last_cc_sync_time;
+        g_rtl_last_applied_hz = 980012500U;
+        land_outstanding_tune(&g_retune_in_flight,
+                              variant == 2 ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+        const int polled = dsd_engine_scan_untyped_poll(opts, state);
+        rc |= expect_case(what, "the completion is taken",
+                          polled == (variant == 2 ? DSD_MANUAL_TUNE_FAILED : DSD_MANUAL_TUNE_LANDED));
+        rc |=
+            expect_case(what, "no row commits",
+                        state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+        rc |= expect_case(what, "no boundary runs", state->carrier_seq == carrier_seq);
+        rc |= expect_case(what, "the clocks stay", state->last_cc_sync_time == deadline);
+        rc |= expect_case(what, "only the frequency stands",
+                          opts->rtlsdr_center_freq == (variant == 2 ? 980012500U : 987012500U));
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Issue #671: an untyped step's RTL tune that fails in its wait puts the cached centre back where the receiver stayed,
+   as a frequency entry's does: a target an earlier tune's timeout cached, which this request coalesced over, was never
+   reached. */
+static int
+test_legacy_step_failure_reconciles_the_cached_centre(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 989012500, 990012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    opts->rtlsdr_center_freq = 991012500U; /* an entry's timed-out target */
+    g_rtl_last_applied_hz = 980012500U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("step-failure-attempts", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 989012500U);
+    rc |= expect_true("step-failure-keeps-candidate", state->lcn_freq_roll == 0);
+    if (opts->rtlsdr_center_freq != 980012500U) {
+        DSD_FPRINTF(stderr, "step failure: cached centre %u Hz (want 980012500 Hz)\n", opts->rtlsdr_center_freq);
+    }
+    rc |= expect_true("step-failure-reconciles-the-centre", opts->rtlsdr_center_freq == 980012500U);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The pieces a -Y resume takes from the step (issue #671): the next row (a resume skips placeholders, the timed step
+   parks on them) and entering it, which commits only a row whose tune landed. */
+static int
+test_untyped_find_and_enter_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 992012500, 993012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    state->trunk_lcn_freq[2] = 0;
+    state->trunk_lcn_freq[3] = 994012500;
+    state->lcn_freq_count = 4;
+    (void)dsd_state_trunk_lcn_avoid_set(state, 1U, 1);
+    rc |= expect_true("find-row-from-the-roll", dsd_engine_scan_untyped_find_row(state, 0, 0) == 0);
+    rc |= expect_true("find-row-skips-avoided", dsd_engine_scan_untyped_find_row(state, 1, 0) == 2);
+    rc |= expect_true("find-row-skips-placeholders", dsd_engine_scan_untyped_find_row(state, 1, 1) == 3);
+    rc |= expect_true("find-row-wraps", dsd_engine_scan_untyped_find_row(state, 4, 1) == 0);
+    (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(state, 3U, 1);
+    rc |= expect_true("find-row-none-left", dsd_engine_scan_untyped_find_row(state, 0, 1) == -1);
+    (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 0);
+    (void)dsd_state_trunk_lcn_avoid_set(state, 3U, 0);
+
+    const double now = (double)time(NULL);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_true("enter-row-failed",
+                      dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_FAILED
+                          && state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    uint32_t carrier_seq = state->carrier_seq;
+    rc |= expect_true("enter-row-ok", dsd_engine_scan_untyped_enter_row(opts, state, 0, now) == DSD_UNTYPED_STEP_OK);
+    rc |=
+        expect_true("enter-row-ok-commits", state->lcn_freq_roll == 1 && state->rkey_array[9] == 999ULL
+                                                && state->carrier_seq != carrier_seq && g_rtl_tune_freq == 992012500U);
+    carrier_seq = state->carrier_seq;
+    rc |= expect_true("enter-row-placeholder-parks",
+                      dsd_engine_scan_untyped_enter_row(opts, state, 2, now) == DSD_UNTYPED_STEP_OK
+                          && state->lcn_freq_roll == 3 && state->carrier_seq == carrier_seq
+                          && state->rkey_array[9] == 999ULL);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("enter-row-pending",
+                      dsd_engine_scan_untyped_enter_row(opts, state, 3, now) == DSD_UNTYPED_STEP_PENDING
+                          && state->lcn_freq_roll == 3 && state->rkey_array[9] == 999ULL);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("enter-row-pending-lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
+                                                     && state->lcn_freq_roll == 4 && state->rkey_array[9] == 0ULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static void
 seed_visit_anchor(dsd_state* state, double anchor_m) {
     dsd_scan_voice_gate_note_retune(state, anchor_m);
@@ -7323,6 +7693,11 @@ main(void) {
     rc |= test_typed_scan_nfm_rows_switch_family(1);
     rc |= test_trunk_scan_nfm_target_then_trunked_target();
     rc |= test_visit_cap_scanner_hops();
+    rc |= test_legacy_step_retunes_after_a_manual_tune();
+    rc |= test_legacy_step_commits_a_timed_out_row_when_it_lands();
+    rc |= test_legacy_step_landing_after_the_scan_changed_commits_nothing();
+    rc |= test_legacy_step_failure_reconciles_the_cached_centre();
+    rc |= test_untyped_find_and_enter_row();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_moves_on_while_an_nfm_retune_is_in_flight(DSD_TRUNK_SCAN_CONTROL_ADVANCE,

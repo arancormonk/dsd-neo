@@ -46,12 +46,14 @@ int dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_
 /* The manual-tune stand-in (issue #671): the process controller with no stream and no controller thread. begin
  * initializes it with @p applied_hz as the centre last applied; a tune through it (rtl_stream_tune_tagged()'s path,
  * on @p stream_opts as the stream's own copy) queues its request and times out after the synchronous wait. take
- * removes the queued request as the controller thread does (its tag and target out), and finish lands it with
+ * removes the queued request as the controller thread does (its tag and target out), queued reads the tag of the
+ * request still queued without taking it (1 when one is queued, its tag out; 0 when none), and finish lands it with
  * @p result and @p applied_hz applied, publishing the completion to the registered callback. stop does what a stream
  * stop does to retunes: the session generation moves, and the queued request is failed under its tag (returns 1 when
  * one was). end releases the controller; tune only between begin and end. */
 int rtl_stream_test_manual_tune_standin_begin(uint32_t applied_hz);
 int rtl_stream_test_manual_tune_standin_tune(dsd_opts* stream_opts, uint32_t frequency, uint64_t token);
+int rtl_stream_test_manual_tune_standin_queued(uint64_t* out_token);
 int rtl_stream_test_manual_tune_standin_take(uint64_t* out_token, uint32_t* out_freq_hz);
 int rtl_stream_test_manual_tune_standin_finish(int result, uint32_t applied_hz);
 int rtl_stream_test_manual_tune_standin_stop(void);

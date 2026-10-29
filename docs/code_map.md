@@ -2650,15 +2650,39 @@ A manual tune stays out of that ledger (issue #671, `include/dsd-neo/engine/manu
 the caller notes one pending record (`dsd_engine_manual_tune_note_pending()`; `svc_rtl_tune()` for the frequency entry,
 tap-to-tune and the Airspy live apply). The engine's one RTL completion callback (`trunk_tuning_hooks_install.c`) sends
 manual IDs into a single atomic slot and every other ID to the ledger, so `dsd_trunk_tuning_frame_is_current()` never
-waits on a manual tune. The decoder loop polls (`dsd_engine_manual_tune_poll()`, one atomic load while nothing is
-pending). A late failure puts `opts->rtlsdr_center_freq` back on the stream's applied centre and toasts
-`Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. Every other tune of the receiver
-that reached the controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual tune, an owner
-tune (`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg, a Signal search visit, `request_manual_tune()`'s
-direct leg and the RadioReference apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`),
-since a stop fails the queued request under its tag. The record is process-wide, as the controller and its callback
-are. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer
-entry, coalescing and a stop), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+waits on a manual tune. The decoder loop polls (`dsd_engine_scan_untyped_poll()` over `dsd_engine_manual_tune_poll()`,
+one atomic load while nothing is pending). A late failure puts `opts->rtlsdr_center_freq` back on the stream's applied
+centre and, for an entry, toasts `Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. The
+cached centre follows a tune that fails inside its wait the same way: `io_control_set_freq_tagged()` (and
+`dsd_engine_tune_rtl()`) put it on the centre the controller last applied, since a target an earlier timeout cached,
+which the failed request may have coalesced over, was never reached. Every other tune of the receiver that reached the
+controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another manual tune, an owner tune
+(`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg (unless it timed out, when it notes its own record), the
+direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the RadioReference
+apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the queued request
+under its tag. The record is process-wide, as the controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING`
+(the real controller stood in for, with late failure, late success, a newer entry, coalescing, a failure inside a
+coalesced wait and a stop), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+
+The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared
+pieces engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It
+finds the next row (`dsd_engine_scan_untyped_find_row()`: not avoided; a placeholder parks the timed step where it is,
+and `skip_placeholders` skips it) and tunes every configured front end, rigctl first, then RTL through
+`io_control_set_rtl_freq_tagged()`, so the cached centre follows the outcome as a manual tune's does. A tune that
+landed runs the `SCAN_STEP` carrier boundary (in `no_carrier_run()`, after the playout drain and any control-channel
+return), then installs the row: the cursor past it, its keys, the analog reset, fresh scan clocks. An RTL timeout notes
+an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`, moved by every
+`dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start) and `trunk_chan_map_seq`; until the
+completion the cursor, the keys and the deadline stay. A landing commits the row (boundary, then install) only while the
+scan is still that one: `-Y` on, no modes, the same session and map, the row still on the frequency tuned. Otherwise
+nothing commits, and only the frequency stands. A late failure abandons the row as a failure inside the wait does: the
+cursor stays for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the
+outgoing boundary and resets the received tone, but keeps the cursor and the deadline.
+`dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary inside, for a caller outside the
+no-carrier pass. The legacy legs skip a frequency they last sent; a manual tune moves the receiver without them, so
+`dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every tune `request_manual_tune()`'s
+direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing and late failure, a
+landing after a stop or a list replacement, a failure's centre, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 ## App-Control
 
