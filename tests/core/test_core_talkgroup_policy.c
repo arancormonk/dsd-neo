@@ -2062,6 +2062,19 @@ test_ota_final_blocks(void) {
 }
 
 /* The record decision of a group (@p private_call 0) or private call, with --record-unknown-only off or on. */
+/* Member by member: the struct has padding, so its bytes can differ between equal decisions. */
+static int
+same_decision(const dsd_tg_policy_decision* a, const dsd_tg_policy_decision* b) {
+    return a->target_id == b->target_id && a->source_id == b->source_id && a->encrypted == b->encrypted
+           && a->data_call == b->data_call && a->private_call == b->private_call && a->tune_allowed == b->tune_allowed
+           && a->audio_allowed == b->audio_allowed && a->record_allowed == b->record_allowed
+           && a->stream_allowed == b->stream_allowed && a->priority == b->priority
+           && a->preempt_requested == b->preempt_requested && a->block_reasons == b->block_reasons
+           && a->tg_hold_active == b->tg_hold_active && a->tg_hold_match == b->tg_hold_match
+           && strncmp(a->mode, b->mode, sizeof a->mode) == 0 && strncmp(a->name, b->name, sizeof a->name) == 0
+           && a->match == b->match;
+}
+
 static dsd_tg_policy_decision
 eval_record(dsd_opts* opts, const dsd_state* state, int unknown_only, int private_call, uint32_t target, uint32_t src) {
     dsd_tg_policy_decision decision;
@@ -2132,8 +2145,8 @@ test_record_unknown_only(void) {
     /* Mode B already blocks everything: the rule adds nothing to it. */
     const dsd_tg_policy_decision off = eval_record(opts, state, 0, 0, 300, 1);
     d = eval_record(opts, state, 1, 0, 300, 1);
-    rc |= expect_true("mode B decides alone", memcmp(&off, &d, sizeof d) == 0
-                                                  && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) && !d.record_allowed);
+    rc |= expect_true("mode B decides alone",
+                      same_decision(&off, &d) && (d.block_reasons & DSD_TG_POLICY_BLOCK_MODE) && !d.record_allowed);
 
     /* A matching Hold is reported, not merged: the media gates let a held call record past a record block. */
     state->tg_hold = 100;
