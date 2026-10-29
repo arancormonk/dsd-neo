@@ -57,7 +57,11 @@ dsd_tetra_dsp_rate_advice(const dsd_opts* opts, int rate_hz, int brief, char* ou
     char rate_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
     if (brief) {
-        DSD_SNPRINTF(out, out_size, "DSP rate %s is no multiple of 18 kHz%s", rate_text, tetra_rate_fix(opts, 1));
+        /* Say which way the rate is wrong: a multiple of 18 kHz can still be out of range (18 or 162 kHz). */
+        DSD_SNPRINTF(out, out_size,
+                     rate_hz % DSD_TETRA_SYMBOL_RATE_HZ != 0 ? "DSP rate %s is no multiple of 18 kHz%s"
+                                                             : "DSP rate %s is outside 36 to 144 kHz%s",
+                     rate_text, tetra_rate_fix(opts, 1));
     } else {
         DSD_SNPRINTF(out, out_size, "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not %s%s",
                      rate_text, tetra_rate_fix(opts, 0));
