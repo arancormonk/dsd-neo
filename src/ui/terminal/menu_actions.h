@@ -189,6 +189,13 @@ void act_toggle_ui_channels(void* v);
 void act_toggle_ui_compact(void* v);
 void act_toggle_ui_p25_callsign(void* v);
 
+// ---- Frequency prompt ----
+struct UiCtx;
+/* Open the frequency prompt (MHz, or a unit; issue #670), empty or prefilled with prefill (NULL for none). Its answer
+   goes to cb_rtl_freq_text(), which reopens it here with the text kept after a refusal. Built without USE_RADIO too,
+   so that callback links in every build. */
+void ui_open_freq_prompt(struct UiCtx* c, const char* prefill);
+
 // ---- RTL-SDR actions (USE_RADIO only) ----
 #ifdef USE_RADIO
 bool is_airspy_input(const void* v);

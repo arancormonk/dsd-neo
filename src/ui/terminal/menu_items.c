@@ -166,8 +166,8 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
     {.id = "rtl.freq",
      .is_enabled = rtl_freq_offered,
      .label_fn = lbl_rtl_freq,
-     .help =
-         "Set frequency in Hz; selects a new CC during P25 trunking. Hidden during trunk scan, which owns the tuner.",
+     .help = "Tune in MHz (146.52) or add a unit (Hz, k, M, G). Without a unit, 1000000 and above is Hz. Selects a new "
+             "CC during P25 trunking. Hidden during trunk scan and I/Q replay.",
      .on_select = rtl_set_freq},
     {.id = "rtl.gain",
      .is_enabled = is_non_airspy_input,

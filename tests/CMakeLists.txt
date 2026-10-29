@@ -89,6 +89,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
@@ -123,6 +124,7 @@ elseif(MSVC)
         runtime/test_runtime_number_text.c
         runtime/test_runtime_squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
@@ -2671,6 +2673,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -3289,6 +3292,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
         ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
