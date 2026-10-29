@@ -7467,8 +7467,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     PDCurses keep `getch()`. Prompts (`menu_prompts.c`) never drop a typed character silently: one the field cannot
     hold adds one `?` (a UTF-8 lead byte on ncurses, any non-printable 0x80-0xFF byte on PDCurses,
     `UI_KEY_WIDE_CHAR`), PDCurses keypad `+ - * /` type their characters, other keys are ignored and `isprint()` only
-    sees 0..0xFF. Integer prompts refuse a value outside `int` instead of wrapping. Tests: `UI_READ_KEY`,
-    `UI_PROMPT_VALIDATION`, `UI_PROMPT_SECRET`.
+    sees 0..0xFF. Integer prompts refuse a value outside `int` instead of wrapping. Every Enter check (main screen,
+    menu, prompt, help, chooser, RadioReference panel) asks `ui_key_is_enter()`: `'\n'`, `'\r'`, `KEY_ENTER`, and
+    PDCurses keypad Enter `PADENTER`, which PDCurses sends instead of `KEY_ENTER` (no fallback define on ncurses;
+    modified keypad Enter stays unbound). Extra accept keys such as Right stay at the call site. Tests:
+    `UI_READ_KEY`, `UI_PROMPT_VALIDATION`, `UI_PROMPT_SECRET`, `UI_HOTKEYS_REGRESSION` (the fake `tests/ui/curses.h`
+    defines `PADENTER`), `UI_RR_PANEL_KEYS`.
   - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in

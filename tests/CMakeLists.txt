@@ -2785,6 +2785,27 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
 
+    # The real panel; the wizard core, prompt widgets and app-control commands are stubbed in the test.
+    add_executable(
+        dsd-neo_test_ui_rr_panel_keys
+        ui/test_ui_rr_panel_keys.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel_format.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_panel_keys
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_rr_panel_keys
+        PRIVATE dsd-neo_runtime ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
+
     add_executable(
         dsd-neo_test_ui_rr_library
         ui/test_ui_rr_library.c

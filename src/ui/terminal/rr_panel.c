@@ -45,6 +45,7 @@
 #include "rr_panel.h"
 #include "rr_panel_format.h"
 #include "rr_wizard_core.h"
+#include "ui_keys.h"
 
 /* One import is at most two files (a group list and a channel map); the browser
    refreshes both in turn from a queue the panel owns. */
@@ -1129,7 +1130,7 @@ rr_panel_is_cancel_key(int ch) {
 
 static int
 rr_panel_is_accept_key(int ch) {
-    return (ch == 10 || ch == KEY_ENTER || ch == '\r');
+    return ui_key_is_enter(ch);
 }
 
 static int

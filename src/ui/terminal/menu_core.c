@@ -34,6 +34,7 @@
 #include "menu_internal.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
+#include "ui_keys.h"
 
 static int g_overlay_open = 0;
 static UiMenuFrame g_stack[8];
@@ -389,7 +390,7 @@ ui_menu_handle_back_key(int ch) {
 
 static int
 ui_menu_is_activate_key(int ch) {
-    return ch == KEY_RIGHT || ch == 10 || ch == KEY_ENTER || ch == '\r';
+    return ch == KEY_RIGHT || ui_key_is_enter(ch);
 }
 
 void

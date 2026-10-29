@@ -631,7 +631,7 @@ ui_prompt_handle_key(int ch) {
         ui_prompt_delete_at_cursor();
         return 1;
     }
-    if (ch == 10 || ch == KEY_ENTER || ch == '\r') {
+    if (ui_key_is_enter(ch)) {
         ui_prompt_submit();
         return 1;
     }
@@ -997,7 +997,7 @@ ui_help_is_close_key(int ch) {
     /* Esc, Left, Enter and h close help; 'q' is deliberately not a close key
        anywhere inside the menu, because it quits the program from the main
        screen and the habit carried over. */
-    return (ch == DSD_KEY_ESC || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_LEFT);
+    return (ch == DSD_KEY_ESC || ch == 'h' || ch == 'H' || ui_key_is_enter(ch) || ch == KEY_LEFT);
 }
 
 static int
@@ -1344,7 +1344,7 @@ ui_chooser_is_cancel_key(int ch) {
 
 static int
 ui_chooser_is_accept_key(int ch) {
-    return (ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_RIGHT);
+    return (ui_key_is_enter(ch) || ch == KEY_RIGHT);
 }
 
 int

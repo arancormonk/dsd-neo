@@ -198,7 +198,7 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
         (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot);
         return 1;
     }
-    if (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER) {
+    if (ui_key_is_enter(c)) {
         if (opts->m17encoder == 0) {
             ui_menu_open_async(opts, state);
         }

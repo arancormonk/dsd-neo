@@ -414,6 +414,20 @@ test_prompt_keypad_character_keys(void) {
     submit_plain_prompt("-50+*/");
 }
 
+/* Keypad Enter on a Windows terminal submits like Enter (B13). */
+static void
+test_prompt_keypad_enter_submits(void) {
+#ifdef PADENTER
+    open_plain_prompt();
+    type_text("146.52");
+    assert(ui_prompt_handle_key(PADENTER) == 1);
+    assert(ui_prompt_active() == 0);
+    assert(g_string_done_called == 1);
+    assert(g_string_was_null == 0);
+    assert(strcmp(g_string_text, "146.52") == 0);
+#endif
+}
+
 static void
 test_typed_prompt_cancel_paths(void) {
     reset_int_capture();
@@ -599,6 +613,14 @@ test_help_activation_and_close_keys(void) {
     assert(ui_help_active() == 1);
     assert(ui_help_handle_key('\r') == 1);
     assert(ui_help_active() == 0);
+
+#ifdef PADENTER
+    /* Keypad Enter on a Windows terminal closes help like Enter (B13). */
+    ui_help_open("close with keypad enter");
+    assert(ui_help_active() == 1);
+    assert(ui_help_handle_key(PADENTER) == 1);
+    assert(ui_help_active() == 0);
+#endif
 
     ui_help_open("close with escape");
     assert(ui_help_active() == 1);
@@ -850,6 +872,7 @@ main(void) {
     test_prompt_ignores_non_character_keys();
     test_prompt_marks_unholdable_characters();
     test_prompt_keypad_character_keys();
+    test_prompt_keypad_enter_submits();
     test_typed_prompt_cancel_paths();
     test_chooser_edge_paths();
     test_chooser_page_navigation_clamps_selection();
