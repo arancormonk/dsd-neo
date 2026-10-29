@@ -241,6 +241,9 @@ dsd_id_decimal(uint32_t id, char* out, size_t out_size) {
 static size_t
 id_pattern_text_len(const dsd_id_pattern* p) {
     size_t plen = 0;
+    /* The clamp only bounds the read: parsing and dsd_id_pattern_from_canonical() store at most ID_PATTERN_CANON_MAX
+     * characters and a terminator, so it never shortens a stored pattern, and an unterminated text is not read past
+     * its array. */
     while (plen < ID_PATTERN_CANON_MAX && p->text[plen] != '\0') {
         plen++;
     }

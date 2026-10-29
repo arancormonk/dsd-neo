@@ -74,6 +74,8 @@ test_parse_examples(void) {
     rc |= expect_parse("1X*", "1x*", 1U, 1U);
     rc |= expect_parse("1**2", "1*2", 2U, 1U);
     rc |= expect_parse("429496729x", "429496729x", 9U, 0U);
+    /* A literal 0 after a star is no leading zero: the pattern starts with the star, and "*0" is every ID ending 0. */
+    rc |= expect_parse("*0", "*0", 1U, 1U);
     /* Fifteen canonical characters is the limit, and the limit applies after collapsing stars. */
     rc |= expect_parse("*1*2*3*4*5*6*7*", "*1*2*3*4*5*6*7*", 7U, 1U);
     rc |= expect_parse("1****************2", "1*2", 2U, 1U);
@@ -175,6 +177,12 @@ test_match_table(void) {
     rc |= expect_match("x", 0U, 1);
     rc |= expect_match("x", 9U, 1);
     rc |= expect_match("x", 10U, 0);
+
+    rc |= expect_match("*0", 0U, 1); /* the star matches no digits */
+    rc |= expect_match("*0", 10U, 1);
+    rc |= expect_match("*0", 4294967290U, 1);
+    rc |= expect_match("*0", 5U, 0);
+    rc |= expect_match("*0", 101U, 0);
 
     rc |= expect_match("*", 0U, 1);
     rc |= expect_match("*", 4294967295U, 1);
