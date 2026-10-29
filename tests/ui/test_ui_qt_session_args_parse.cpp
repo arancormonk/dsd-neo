@@ -50,6 +50,32 @@
 #include "scan_lists_model.h"
 #include "session_args.h"
 
+#ifdef DSD_NEO_TEST_SUBMIT_WRAP
+/* The queue refuses a submission only for a session that closed between two of the bridge's; this stands in for that
+   race: the bridge's submission of g_refuse_cmd is refused, every other one goes to the real queue. */
+static int g_refuse_cmd = 0;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* and __real_* symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+extern "C" int __real_dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz);
+extern "C" int __real_dsd_app_command_set_i32(int cmd_id, int32_t value);
+extern "C" int __wrap_dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz);
+extern "C" int __wrap_dsd_app_command_set_i32(int cmd_id, int32_t value);
+
+int
+__wrap_dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
+    return cmd_id == g_refuse_cmd ? DSD_APP_COMMAND_SUBMIT_REJECTED
+                                  : __real_dsd_app_command_submit(cmd_id, payload, payload_sz);
+}
+
+int
+__wrap_dsd_app_command_set_i32(int cmd_id, int32_t value) {
+    return cmd_id == g_refuse_cmd ? DSD_APP_COMMAND_SUBMIT_REJECTED : __real_dsd_app_command_set_i32(cmd_id, value);
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#endif
+
 namespace {
 
 int g_failures = 0;
@@ -298,6 +324,86 @@ test_live_commands(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     expect("the session stops recording", opts->record_unknown_only == 0 && opts->dmr_stereo_wav == 0
                                               && opts->wav_out_f == nullptr && opts->wav_out_fR == nullptr
                                               && !status.perCall() && !status.unknownOnly());
+}
+
+/* A session started with Record calls on, whose first live switch is unknown-only (D8): the status shows it applying,
+ * then applied, though no Record calls switch was sent in the session before it. */
+void
+test_live_unknown_only_first(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    prefs.setRecordCalls(true);
+    bool started = false;
+    LiveSession live(prefs, sessions, &started);
+    expect("a session recording each call starts", started && live.decoder.opts->dmr_stereo_wav == 1);
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
+    status.setRunUp(true);
+    status.refresh();
+    expect("the status has nothing sent yet", status.perCall() && status.commandState() == "none");
+    expect("unknown-only on is queued", bridge.setRecordUnknownOnly(true));
+    status.refresh();
+    expect("and shows applying", status.commandState() == "pending" && status.command() == "unknownOnly");
+    expect("it applies", live.drain() == 1 && live.decoder.opts->record_unknown_only == 1);
+    status.refresh();
+    expect("and shows applied", status.commandState() == "applied" && status.unknownOnly());
+    prefs.setRecordCalls(false);
+}
+
+#ifdef DSD_NEO_TEST_SUBMIT_WRAP
+/* Record calls off where one of its two submissions is refused: the session never records more than it did. A refused
+ * stop sends nothing (unknown-only stays on); a refused unknown-only after the stop leaves the session stopped. */
+void
+test_live_record_off_half_sent(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    prefs.setRecordCalls(true);
+    prefs.setRecordUnknownOnly(true);
+    for (const int refused :
+         {static_cast<int>(DSD_APP_CMD_WAV_STOP), static_cast<int>(DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET)}) {
+        const bool stop_refused = refused == DSD_APP_CMD_WAV_STOP;
+        bool started = false;
+        LiveSession live(prefs, sessions, &started);
+        dsd_opts* opts = live.decoder.opts.get();
+        expect("a session recording unknown talkgroups starts",
+               started && opts->dmr_stereo_wav == 1 && opts->record_unknown_only == 1);
+        dsd_qt::CommandBridge bridge;
+        dsd_qt::RecordingStatus status;
+        bridge.setRecordingStatus(&status);
+        status.setSessionActive(true);
+        status.setRunUp(true);
+        g_refuse_cmd = refused;
+        const bool sent = bridge.setRecordCalls(false, true);
+        g_refuse_cmd = 0;
+        (void)live.drain();
+        if (stop_refused) {
+            expect("a refused stop reads as not sent", !sent);
+            expect("and leaves the session as it was, unknown talkgroups only",
+                   opts->dmr_stereo_wav == 1 && opts->record_unknown_only == 1);
+        } else {
+            expect("the stop went in", sent);
+            expect("and the session stops recording", opts->dmr_stereo_wav == 0);
+        }
+    }
+    prefs.setRecordCalls(false);
+    prefs.setRecordUnknownOnly(false);
+}
+#endif
+
+/* A switch while the process's first session is still starting: the decoder has published no recording view yet, and
+ * the refusal says the session is starting, not that none runs. Runs before any session publishes a view. */
+void
+test_first_session_starting() {
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::RecordingStatus status;
+    bridge.setRecordingStatus(&status);
+    status.setSessionActive(true);
+    dsd_app_recording_view view{};
+    expect("no view published yet", dsd_app_recording_view_get(&view) == 0);
+    expect("Record calls on is refused", !bridge.setRecordCalls(true, false));
+    expect("as a session still starting", status.refusal() == QStringLiteral("starting"));
+    expect("unknown-only too", !bridge.setRecordUnknownOnly(true) && status.refusal() == QStringLiteral("starting"));
+    status.setSessionActive(false);
+    expect("with no session it is refused", !bridge.setRecordCalls(true, false));
+    expect("as no session", status.refusal() == QStringLiteral("no-session"));
 }
 
 /* A session started with no storage for call recordings names no folder: Record calls on is refused there, nothing is
@@ -569,11 +675,16 @@ main(int argc, char** argv) {
     expect("the session's folder", QDir().mkpath(sessions.folder));
     {
         dsd_qt::AppPrefs prefs;
+        test_first_session_starting();
         test_saved_system(prefs, sessions);
         test_explore(prefs, sessions);
         test_scan_list(prefs, sessions);
         test_status_readings();
         test_live_commands(prefs, sessions);
+        test_live_unknown_only_first(prefs, sessions);
+#ifdef DSD_NEO_TEST_SUBMIT_WRAP
+        test_live_record_off_half_sent(prefs, sessions);
+#endif
         test_live_without_storage(prefs);
         test_live_beside_a_static_wav(prefs, sessions, dir.filePath(QStringLiteral("static.wav")));
         test_status_follows_the_session(prefs);

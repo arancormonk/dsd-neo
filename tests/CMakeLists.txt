@@ -19142,6 +19142,11 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_session_args_parse.cpp
     )
     if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        # GNU ld --wrap stands in for a session that closes between the bridge's two submissions.
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_session_args_parse
+            PRIVATE DSD_NEO_TEST_SUBMIT_WRAP=1
+        )
         target_link_libraries(
             dsd-neo_test_ui_qt_session_args_parse
             PRIVATE
@@ -19149,6 +19154,8 @@ if(DSD_ENABLE_QT_UI)
                 "-Wl,--start-group"
                 ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
                 "-Wl,--end-group"
+                "-Wl,--wrap=dsd_app_command_submit"
+                "-Wl,--wrap=dsd_app_command_set_i32"
                 ${LIBS}
                 dsd-neo_test_support
         )
