@@ -489,10 +489,43 @@ RecordingStore::refreshRoots(bool first, Pass* pass) {
         } else if (now != was.at(i)) {
             // Gone: what it held stays indexed, untouched, until it comes back and is read again.
             const std::lock_guard<std::mutex> lock(m_mutex);
-            m_rootAvailable[i] = now;
-            pass->dirty = true;
+            markRootAwayLocked(i, pass);
         }
     }
+}
+
+void
+RecordingStore::markRootAwayLocked(int root, Pass* pass) {
+    if (root < 0 || root >= m_rootAvailable.size()) {
+        return;
+    }
+    m_rootAvailable[root] = false;
+    pass->dirty = true;
+    for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
+        if (!it->fragment.isEmpty() && m_folders.value(it->folder).root == root) {
+            pass->fragments.insert(it->fragment);
+        }
+    }
+}
+
+bool
+RecordingStore::rootStillAvailable(int root, Pass* pass) {
+    QString rootPath;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        if (root < 0 || root >= m_roots.size()) {
+            return true;
+        }
+        rootPath = m_roots.at(root);
+    }
+    if (rootAvailableNow(rootPath)) {
+        return true;
+    }
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_rootAvailable.value(root)) {
+        markRootAwayLocked(root, pass);
+    }
+    return false;
 }
 
 void
@@ -567,6 +600,11 @@ void
 RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pass) {
     Folder folder;
     if (!read_folder_json(path, &folder.uid, &folder.kind, &folder.name)) {
+        // A root that went away since the pass began (unmounted, a USB session) took the folder.json with it: nothing
+        // in it is deleted.
+        if (!rootStillAvailable(root, pass)) {
+            return;
+        }
         // Not a folder the app made, or not any more (removed from a computer while its root is there, perhaps
         // between the folder table's read and this one): nothing in it is managed, and no session is given it.
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -711,11 +749,15 @@ RecordingStore::tailFolder(const QString& path, qint64 offset, Pass* pass) {
         return;
     }
     if (size < offset) {
-        // Shorter than what was read: replaced or truncated behind the store's back. Read it again from the start.
+        // Shorter than what was read: replaced or truncated behind the store's back, or gone with a root that went
+        // away since the pass began, which is left as it is. Read it again from the start.
         int root = -1;
         {
             const std::lock_guard<std::mutex> lock(m_mutex);
             root = m_folders.value(path).root;
+        }
+        if (!rootStillAvailable(root, pass)) {
+            return;
         }
         loadFolder(path, root, true, pass);
         return;

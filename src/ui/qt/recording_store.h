@@ -350,6 +350,12 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void run();
     void pass(bool first);
     void refreshRoots(bool first, Pass* pass);
+    /* @p root turned unavailable: what it held stays indexed, untouched, and the rows its recordings belong to are told
+     * (their recordings now read as away). Under the store's lock. */
+    void markRootAwayLocked(int root, Pass* pass);
+    /* Whether @p root is still there, for a pass that finds one of its folders' files gone: one that went away since
+     * the pass began is marked away, and nothing in it is treated as deleted. */
+    bool rootStillAvailable(int root, Pass* pass);
     void rebuildRoot(int root, Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);

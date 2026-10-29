@@ -591,11 +591,14 @@ test_roots_unavailable_vs_deleted(void) {
         s.pass();
         expect("both recordings, not the stray file", s.store.recordingCount() == 2 && s.store.usedBytes() == 2000);
 
+        QSignalSpy away_news(&s.store, &RecordingStore::recordingFragmentsChanged);
         expect("the storage goes away", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
         s.pass();
         const QVariantMap a = s.store.recordingsForFragments({fragment(60)}).value(0).toMap();
         expect("what it held stays indexed, marked away",
                s.store.recordingCount() == 2 && !a.isEmpty() && !a.value("available").toBool());
+        expect("and the rows it belongs to are told, so a player shows the storage away",
+               spied(away_news, fragment(60)) && spied(away_news, fragment(61)));
         expect("the other root is still there", s.store.available());
         s.store.deleteRecording(QStringLiteral("00000000000000EE-1"));
         s.pass();
@@ -1202,6 +1205,91 @@ test_folder_gone_before_its_read(void) {
     }
 }
 
+/* A folder.json for @p uid named @p name in @p folder, made if need be. */
+void
+write_folder_json(const QString& folder, const QString& uid, const QString& name) {
+    QDir().mkpath(folder);
+    QFile json(folder + QStringLiteral("/folder.json"));
+    if (!json.open(QIODevice::WriteOnly)
+        || json.write(QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"%2\"}\n").arg(uid, name).toUtf8())
+               < 0) {
+        g_failures++;
+    }
+}
+
+/* Issue #708: a root that goes away within one pass, after the pass found it there, is not read as its folders being
+ * deleted. The folder-load hook takes the external storage away in the middle of a pass. Tail: a folder already read
+ * finds its journal gone; it keeps its recordings, which read as away. Read: a folder not read yet finds its
+ * folder.json gone; it stays in the table. */
+void
+test_root_gone_mid_pass(void) {
+    {
+        Roots roots;
+        const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+        const QString internalParent = roots.dir.path() + QStringLiteral("/int");
+        // Away at start: a file stands where its parent folder would go, so the store cannot make it.
+        expect("the internal root starts away", QDir(internalParent).removeRecursively());
+        make_file(internalParent, 1);
+        Store s(roots.list());
+        const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        record(folder, QStringLiteral("00000000000000EE-1"), QStringLiteral("a.wav"), 1754705000, 60);
+        s.store.endSession();
+        s.pass();
+        expect("tail: the recording is indexed", s.store.recordingCount() == 1);
+
+        // The internal root comes back holding a folder, so the next pass reads it, and that read takes the
+        // external storage away, after the pass found it there and before it tails the external folder.
+        expect("the internal root comes back", QFile::remove(internalParent));
+        write_folder_json(roots.internal + QStringLiteral("/Metro (5e6f7a8b)"), QString(kUidC),
+                          QStringLiteral("Metro"));
+        std::atomic<bool> moved{false};
+        s.store.setFolderLoadHookForTest([&](const QString&) {
+            if (!moved.exchange(true)) {
+                (void)QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away);
+            }
+        });
+        QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
+        s.pass();
+        expect("tail: the storage went mid-pass", moved.load() && !QFileInfo::exists(folder));
+        const QVariantMap a = s.store.recordingsForFragments({fragment(60)}).value(0).toMap();
+        expect("tail: the recording stays indexed, marked away",
+               s.store.recordingCount() == 1 && !a.isEmpty() && !a.value("available").toBool());
+        expect("tail: its row is told", spied(news, fragment(60)));
+        expect("tail: its folder stays in the table", s.store.folderPathsForTest().contains(QDir::cleanPath(folder)));
+        s.store.setFolderLoadHookForTest({});
+        expect("tail: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+        s.pass();
+        const QVariantMap back = s.store.recordingsForFragments({fragment(60)}).value(0).toMap();
+        expect("tail: read again, available", s.store.recordingCount() == 1 && back.value("available").toBool());
+    }
+    {
+        Roots roots;
+        const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+        const QString first = QDir::cleanPath(roots.external + QStringLiteral("/County (1a2b3c4d)"));
+        const QString second = QDir::cleanPath(roots.external + QStringLiteral("/Metro (5e6f7a8b)"));
+        write_folder_json(first, QString(kUidA), QStringLiteral("County"));
+        write_folder_json(second, QString(kUidC), QStringLiteral("Metro"));
+        std::atomic<bool> moved{false};
+        RecordingStore store;
+        store.setRoots(roots.list());
+        store.setTimingForTest(3600000, 3600000);
+        store.hostSessionReport(true, false, false);
+        // The first folder read takes the storage away; the second then finds no folder.json.
+        store.setFolderLoadHookForTest([&](const QString&) {
+            if (!moved.exchange(true)) {
+                (void)QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away);
+            }
+        });
+        store.start();
+        store.waitForPassForTest();
+        QCoreApplication::processEvents();
+        expect("read: the storage went mid-pass", moved.load());
+        expect("read: both folders stay in the table",
+               store.folderPathsForTest().contains(first) && store.folderPathsForTest().contains(second));
+        store.setFolderLoadHookForTest({});
+    }
+}
+
 /* Issue #708, I2: files removed outside the app (a computer over USB) leave the index when the player, an export or a
  * share finds them missing and asks the store to look again; the limit never counts an already gone file as one it
  * removed. */
@@ -1626,6 +1714,7 @@ main(int argc, char** argv) {
     test_session_running_at_ui_load();
     test_start_does_not_wait_for_journals();
     test_folder_gone_before_its_read();
+    test_root_gone_mid_pass();
     test_recheck_recordings();
     test_delete_failures_are_reported();
     test_stop_during_the_first_read();
