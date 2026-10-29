@@ -441,6 +441,29 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     return import_src_csv_if_needed(opts, state);
 }
 
+/* Whether the run opens its per-call WAVs at start (open_recording_outputs_if_needed()). */
+static int
+per_call_recording_opens_at_start(const dsd_opts* opts) {
+    return opts->dmr_stereo_wav == 1 && opts->wav_out_f == NULL && opts->wav_out_fR == NULL;
+}
+
+/* The per-call folder (-7) is created when decoding starts. Ahead of the journal's open: a journal named inside a new
+   folder (`-P -7 ./calls --wav-journal ./calls/recordings.jsonl`) opens with the folder there (issue #708). */
+static void
+create_per_call_folder_if_needed(const dsd_opts* opts) {
+    if (!opts || !per_call_recording_opens_at_start(opts)) {
+        return;
+    }
+    dsd_stat_t st;
+    char wav_file_directory[1024];
+    DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
+    wav_file_directory[sizeof wav_file_directory - 1] = '\0';
+    if (dsd_stat_path(wav_file_directory, &st) == -1) {
+        LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);
+        dsd_mkdir(wav_file_directory, 0700);
+    }
+}
+
 static void
 open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -453,16 +476,9 @@ open_recording_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
     }
 
     /* -P opens nothing while it is parsed: the per-call files open here, in the folder the whole command line and
-       config name, after the decode clock has moved onto a replay's capture (issue #708). */
-    if (opts->dmr_stereo_wav == 1 && opts->wav_out_f == NULL && opts->wav_out_fR == NULL) {
-        dsd_stat_t st;
-        char wav_file_directory[1024];
-        DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-        wav_file_directory[sizeof wav_file_directory - 1] = '\0';
-        if (dsd_stat_path(wav_file_directory, &st) == -1) {
-            LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);
-            dsd_mkdir(wav_file_directory, 0700);
-        }
+       config name, after the decode clock has moved onto a replay's capture (issue #708). The folder is there by now
+       (create_per_call_folder_if_needed()). */
+    if (per_call_recording_opens_at_start(opts)) {
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_time = dsd_decode_time();
@@ -3910,6 +3926,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
        opens before the run's first recording does, and a journal that does not open leaves decoding and recording
        running, reported by the recording view. */
     dsd_wav_recording_session_reset();
+    create_per_call_folder_if_needed(opts);
     (void)dsd_wav_journal_open(opts->wav_journal_file);
     open_recording_outputs_if_needed(opts, state);
 
