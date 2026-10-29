@@ -20,7 +20,10 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/radioreference_import.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stddef.h>
 #include <stdio.h>

@@ -1115,7 +1115,7 @@ static int
 test_rtl_freq_too_long_is_refused(void) {
     std::string long_freq = "146520000.";
     long_freq.append(53, '0');
-    long_freq += "M";
+    long_freq += 'M';
     if (long_freq.size() != 64U) {
         DSD_FPRINTF(stderr, "test value is %zu characters, want 64\n", long_freq.size());
         return 1;

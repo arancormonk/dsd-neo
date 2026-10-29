@@ -26,7 +26,6 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
