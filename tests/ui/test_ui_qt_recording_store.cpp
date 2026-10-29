@@ -1763,7 +1763,7 @@ test_recheck_recordings(void) {
  * recording stays. */
 void
 test_limit_counts_only_files_still_there(void) {
-    Roots roots;
+    const Roots roots;
     Store s(roots.list());
     const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
     s.store.endSession();
@@ -1773,7 +1773,7 @@ test_limit_counts_only_files_still_there(void) {
     s.pass();
     expect("gone behind its back: both under the limit",
            s.store.recordingCount() == 2 && s.store.usedBytes() == 900000 && s.store.removedByLimit() == 0);
-    QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
+    const QSignalSpy news(&s.store, &RecordingStore::recordingFragmentsChanged);
     expect("gone behind its back: the newer one is deleted outside the app",
            QFile::remove(folder + QStringLiteral("/newer.wav")));
     record(folder, QStringLiteral("0000000000000067-3"), QStringLiteral("latest.wav"), 1754712200, 702, 200000);

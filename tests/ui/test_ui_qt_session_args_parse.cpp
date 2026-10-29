@@ -761,7 +761,7 @@ test_refused_option_after_each_value_option(const QString& scratch) {
     using dsd_qt::session_args_recording_extra_error;
     using dsd_qt::SessionArgsError;
 
-    QTemporaryDir cwd;
+    const QTemporaryDir cwd;
     const QString was = QDir::currentPath();
     expect("matrix: a scratch working folder", cwd.isValid() && QDir::setCurrent(cwd.path()));
     int letters = 0;
