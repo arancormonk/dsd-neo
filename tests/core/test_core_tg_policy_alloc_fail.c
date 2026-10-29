@@ -297,6 +297,25 @@ test_scan_keys_follow_every_mutation(void) {
     rc |= keys_ok("learn replace", st);
     rc |= expect_true("alias decides no talkgroup", group_match_name(st, 7000, NULL) == DSD_TG_POLICY_MATCH_NONE);
 
+    /* Session avoids live outside the rows: adding and clearing one keeps every row key and the lookups, and still
+       advances the generation, so snapshots copy the table again. */
+    unsigned int before = 0;
+    unsigned int after = 0;
+    dsd_tg_policy_table_version(st, NULL, &before);
+    rc |= expect_true("avoid add", dsd_tg_policy_session_avoid_add(st, 1005) == 0);
+    rc |= keys_ok("avoid add", st);
+    dsd_tg_policy_table_version(st, NULL, &after);
+    rc |= expect_true("avoid add moves the generation", after != before);
+    rc |= expect_true("avoid add keeps lookups", group_match_name(st, 345, "PATTERN") == DSD_TG_POLICY_MATCH_PATTERN
+                                                     && dsd_tg_policy_session_avoid_contains(st, 1005));
+    before = after;
+    dsd_tg_policy_session_avoid_clear(st);
+    rc |= keys_ok("avoid clear", st);
+    dsd_tg_policy_table_version(st, NULL, &after);
+    rc |= expect_true("avoid clear moves the generation", after != before);
+    rc |= expect_true("avoid clear keeps lookups", group_match_name(st, 1005, "ROW") == DSD_TG_POLICY_MATCH_EXACT
+                                                       && !dsd_tg_policy_session_avoid_contains(st, 1005));
+
     /* Mode edits take the alias row over: its key stops being an alias. */
     rc |= expect_true("set_mode takes the alias over", dsd_tg_policy_set_mode(st, 7000, 7000, "B") == 0);
     rc |= keys_ok("set_mode", st);

@@ -1432,8 +1432,9 @@ suite runs under this compiler.
   `UI_NCURSES_PRINTER_HELPERS` (`test_target_labels_follow_call_kind`).
 - Invariant (scan keys, `talkgroup_policy.c`): the lookups scan a compact key per row (`tg_policy_row_key`: bounds,
   kind, learned-alias flag) stored after the entries in the table's one allocation, never the full entries; a pattern
-  row's text is read from its entry. Appends set their key; every other mutation (edit, replace, remove, selection
-  rebuild) resyncs the keys (`tg_policy_table_note_mutation_kind()`), growth moves them, clones copy them. The public
+  row's text is read from its entry. Appends set their key; every other row mutation (edit, replace, remove, selection
+  rebuild) resyncs the keys (`tg_policy_table_note_mutation_kind()`), growth moves them, clones copy them. A session
+  avoid add or clear touches no row, so it only advances the generation (`tg_policy_table_note_changed()`). The public
   `dsd_tg_policy_entry` is unchanged. Tests: `CORE_TG_POLICY_ALLOC_FAIL` (`test_scan_keys_follow_every_mutation`).
 - Invariant (unknown endpoints, `talkgroup_policy.c`): an endpoint ID of 0 is unknown, never an ID. Private
   evaluation, the followed calls' priority refresh and the radio list's policy lookups look up no row for a 0 source
@@ -1492,8 +1493,9 @@ suite runs under this compiler.
   the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
   label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target. A private call has no
   talkgroup: `apply_cmd_lockout_resolve_target()` refuses its lockout with a toast (issue #773), since the talkgroup
-  row it would write blocks the talkgroup with the radio's number; a radio is blocked from the radio ID list. Skip
-  still passes the call by (`APP_COMMAND_QUEUE`, `test_lockout_refuses_a_private_call()`).
+  row it would write blocks the talkgroup with the radio's number; a radio is blocked from the radio ID list.
+  `dsd_call_kind` does not tell individual from group data, so a data call is locked out as a talkgroup (decided
+  limit). Skip still passes the call by (`APP_COMMAND_QUEUE`, `test_lockout_refuses_a_private_call()`).
 - Invariant (record only unknown talkgroups, issue #708: `opts->record_unknown_only`, `--record-unknown-only`, INI
   `[recording] unknown_talkgroups_only`, `DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET`): the group and private evaluators turn
   it into the explicit record block a row's `record=off` takes (`record_allowed` 0, `DSD_TG_POLICY_BLOCK_RECORD`), so
