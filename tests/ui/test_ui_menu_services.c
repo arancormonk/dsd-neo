@@ -2713,7 +2713,9 @@ test_p25_bandplan_import_and_export_services(void) {
 
     // Success: imported into the live state, path recorded, pending announcements re-resolved.
     g_bandplan_import_result = 0;
+    opts.next_start.pending = DSD_NEXT_START_BAND_PLAN; // a plan a config left waiting: the import sets one now
     rc |= expect_int("bandplan import ok", svc_import_p25_bandplan(&opts, &state, "plan.csv"), 0);
+    rc |= expect_int("bandplan import drops a waiting plan", (int)opts.next_start.pending, 0);
     rc |= expect_int("bandplan import loaded the live state", state.p25_bandplan_row_count, 1);
     rc |= expect_str("bandplan import path recorded", opts.p25_bandplan_in_file, "plan.csv");
     rc |= expect_int("bandplan import resolves pending announcements", g_bandplan_resolve_calls, 1);

@@ -8004,8 +8004,7 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
 /* What a save would write once the config (@p ctx) is applied, in @p next (the save as it stands,
    svc_check_next_start()): the fields of the trunk-scan rules a config names replace those the session would save, as
    staging, the next-start hold (cfg_restore_lifecycle_owned()) and the owner settle (cfg_settle_scan_owner()) leave
-   them. A path is named only when the config sets one. A [trunking] names the tuner owner: trunking on wins, else its
-   scanner flag runs the -Y scanner or stops it (a paused one included), and trunking off leaves the flag as it is. */
+   them. A path is named only when the config sets one. A [trunking] names the tuner owner. */
 static void
 cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
     const dsdneoUserConfig* cfg = (const dsdneoUserConfig*)ctx;
@@ -8026,11 +8025,16 @@ cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
         DSD_SNPRINTF(next->trunk_p25_bandplan_csv, sizeof next->trunk_p25_bandplan_csv, "%s",
                      cfg->trunk_p25_bandplan_csv);
     }
+    /* As staging (apply_trunking_config()) and the owner settle leave them: trunking on wins; else the scanner on runs
+       with trunking off; else the scanner is off and trunking stays as it is. */
     if (cfg->trunk_enabled) {
         next->trunk_enabled = 1;
         next->trunk_scanner = 0;
+    } else if (cfg->trunk_scanner) {
+        next->trunk_enabled = 0;
+        next->trunk_scanner = 1;
     } else {
-        next->trunk_scanner = cfg->trunk_scanner ? 1 : 0;
+        next->trunk_scanner = 0;
     }
 }
 
@@ -8633,13 +8637,17 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
 #else
     cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, 1);
 #endif
-    /* A failed output reconfigure, or a width the front end refused after the check, leaves the config applied. */
+    /* A failed output reconfigure, a width the front end refused after the check, or a recording file that did not
+       open leaves the config applied, and fails it: a failure is reported as one, with what waits for a restart beside
+       it. */
     *kept = 1;
     if (restart_causes != 0) {
         cfg_keep_restart_note(state, restart_names);
-        return UI_CMD_APPLY_RESTART_REQUIRED;
     }
-    return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+    if (reconfigure_rc != 0 || recording_rc != 0) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    return (restart_causes != 0) ? UI_CMD_APPLY_RESTART_REQUIRED : UI_CMD_APPLY_COMPLETED;
 }
 
 /*
@@ -8670,6 +8678,78 @@ cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, con
     }
 }
 
+/* What a waiting value is, as the status line names it. */
+static const char*
+cfg_next_start_name(uint32_t bit) {
+    switch (bit) {
+        case DSD_NEXT_START_TRUNK_SCAN: return "trunk scan";
+        case DSD_NEXT_START_CHANNEL_MAP: return "channel map";
+        case DSD_NEXT_START_BAND_PLAN: return "band plan";
+        default: return "trunk scan list";
+    }
+}
+
+/* Say a waiting value was dropped: after the apply's own message, without a restart note it may no longer be true
+   (the log has that note), or briefly when the line has no room. */
+static void
+cfg_note_dropped_next_start(dsd_state* state, uint32_t bit) {
+    char base[sizeof state->ui_msg];
+    DSD_SNPRINTF(base, sizeof base, "%s", state->ui_msg);
+    char* restart = strstr(base, "; restart");
+    if (restart) {
+        *restart = '\0';
+    }
+    const char* name = cfg_next_start_name(bit);
+    if (strlen(base) + strlen("; the  waiting for a restart is dropped") + strlen(name) < sizeof state->ui_msg) {
+        ui_set_toast(state, 5, "%s%sthe %s waiting for a restart is dropped", base, base[0] ? "; " : "", name);
+    } else {
+        ui_set_toast(state, 5, "%s; waiting %s dropped (see log)", base, name);
+    }
+}
+
+/*
+ * Whatever a config apply leaves, the save still starts (issue #671): what a rolled-back config puts back for the next
+ * start meets the rest of that config, which stays (its tuner owner, a band plan off a coordinator), and a config kept
+ * with no input running leaves a paused -Y scan paused, which a save writes as the scanner on. A rule the save now
+ * newly breaks against @p before (the save before the apply) is closed by dropping the waiting values it combines,
+ * the trunk-scan flag first, each logged once and named on the status line.
+ */
+static void
+cfg_keep_next_start_startable(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* before,
+                              dsdneoUserConfig* after) {
+    static const uint32_t k_drop_order[] = {
+        DSD_NEXT_START_TRUNK_SCAN,
+        DSD_NEXT_START_CHANNEL_MAP,
+        DSD_NEXT_START_BAND_PLAN,
+        DSD_NEXT_START_TRUNK_SCAN_TARGETS,
+    };
+    char why[256];
+    dsd_snapshot_opts_to_user_config(opts, state, after);
+    if (dsd_user_config_check_trunk_scan_startable(after, before, why, sizeof why) == 0) {
+        return;
+    }
+    uint32_t first_dropped = 0U;
+    for (size_t i = 0; i < sizeof k_drop_order / sizeof k_drop_order[0]; i++) {
+        const uint32_t bit = k_drop_order[i];
+        if ((opts->next_start.pending & bit) == 0U) {
+            continue;
+        }
+        opts->next_start.pending &= ~bit;
+        LOG_WARN("Config: the %s waiting for a restart is dropped: the next start would refuse it (%s).\n",
+                 cfg_next_start_name(bit), why);
+        if (first_dropped == 0U) {
+            first_dropped = bit;
+        }
+        dsd_snapshot_opts_to_user_config(opts, state, after);
+        if (dsd_user_config_check_trunk_scan_startable(after, before, why, sizeof why) == 0) {
+            break;
+        }
+    }
+    if (first_dropped != 0U) {
+        cfg_note_dropped_next_start(state, first_dropped);
+    }
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -8686,11 +8766,31 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         return UI_CMD_APPLY_FAILED;
     }
     DSD_MEMCPY(next_before, &opts->next_start, sizeof *next_before);
+    /* Only a config naming [trunking] or [trunk_scan] moves what the trunk-scan rules read. */
+    int has_trunking = 0;
+    int has_trunk_scan = 0;
+    DSD_MEMCPY(&has_trunking, c->data + offsetof(dsdneoUserConfig, has_trunking), sizeof has_trunking);
+    DSD_MEMCPY(&has_trunk_scan, c->data + offsetof(dsdneoUserConfig, has_trunk_scan), sizeof has_trunk_scan);
+    dsdneoUserConfig* saves = NULL;
+    if (has_trunking || has_trunk_scan) {
+        saves = (dsdneoUserConfig*)calloc(2, sizeof *saves);
+        if (!saves) {
+            free(next_before);
+            ui_set_toast(state, 5, "Config not applied: out of memory");
+            return UI_CMD_APPLY_FAILED;
+        }
+        dsd_snapshot_opts_to_user_config(opts, state, &saves[0]);
+    }
     int kept = 0;
     const int rc = cfg_apply(opts, state, c, &kept);
     if (!kept) {
         DSD_MEMCPY(&opts->next_start, next_before, sizeof opts->next_start);
-    } else if (c->n >= sizeof(dsd_app_config_load_payload)) {
+    }
+    if (saves) {
+        cfg_keep_next_start_startable(opts, state, &saves[0], &saves[1]);
+        free(saves);
+    }
+    if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
         cfg_adopt_loaded_autosave(state, c, msg_before, msg_expire_before);
     }
     free(next_before);

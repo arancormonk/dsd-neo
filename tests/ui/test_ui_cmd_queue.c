@@ -8526,6 +8526,20 @@ test_config_restart_required_says_what_waits(void) {
                      "Config applied; restart to use the new frontend.\n");
     freeState(&state);
 
+    /* Round 5: an output reconfigure that fails fails the apply, restart or not; the restart note stays beside it. */
+    init_test_context(&opts, &state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    g_reconfigure_output_fails = 1;
+    rc |= expect_true("frontend, reconfigure fails: queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("frontend, reconfigure fails: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_reconfigure_output_fails = 0;
+    rc |= expect_int("frontend, reconfigure fails: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("frontend, reconfigure fails: not reported as restart-required",
+                     dsd_app_command_test_last_restart_required(), 0);
+    rc |= expect_str("frontend, reconfigure fails: toast", state.ui_msg,
+                     "Failed: audio output reconfigure; restart to use the new frontend");
+    freeState(&state);
+
     init_test_context(&opts, &state);
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     cfg.has_input = 1;
@@ -21837,6 +21851,40 @@ test_config_refuses_what_the_next_start_refuses(void) {
         opts.scanner_mode = 0;
         freeState(&state);
     }
+    /* Round 5: over a trunking session the scanner on turns trunking off, as staging does: a config naming the scanner
+       (trunking off) and a trunk scan is refused there too, and so is the scanner alone beside a trunk scan already
+       waiting. Before this the check judged trunking still on and passed both. */
+    for (int waiting = 0; waiting <= 1; waiting++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = 1;
+        if (waiting) {
+            opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+            opts.next_start.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+                         "targets.csv");
+        }
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        cfg.trunk_scanner = 1;
+        if (!waiting) {
+            cfg.has_trunk_scan = 1;
+            cfg.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        }
+        rc |= drain_config(&opts, &state, &cfg,
+                           waiting ? "trunking session: scanner, trunk scan waiting"
+                                   : "trunking session: scanner and trunk scan");
+        rc |=
+            expect_str(waiting ? "trunking session, trunk scan waiting: the scanner is refused"
+                               : "trunking session: the scanner and a trunk scan are refused",
+                       state.ui_msg, "Config not applied: trunking.scanner cannot be combined with trunk_scan.enabled");
+        rc |=
+            expect_int("trunking session: the owner is as it was", opts.trunk_enable == 1 && opts.scanner_mode == 0, 1);
+        opts.trunk_enable = 0;
+        opts.scanner_mode = 0;
+        freeState(&state);
+    }
+
     /* Trunking on wins over the scanner, at startup as in staging: that config's trunk scan waits. */
     init_test_context(&opts, &state);
     DSD_MEMSET(&cfg, 0, sizeof cfg);
@@ -22696,6 +22744,104 @@ test_config_failed_reopen_keeps_a_paused_list(void) {
     freeState(&state);
     return rc;
 }
+
+/* The save the session writes now passes startup's trunk-scan rules, and no trunk scan waits for the next start. */
+static int
+expect_save_starts_without_the_waiting_trunk_scan(const dsd_opts* opts, const dsd_state* state, const char* label) {
+    static dsdneoUserConfig saved;
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    char why[256];
+    int rc = expect_int(label, dsd_user_config_check_trunk_scan_startable(&saved, NULL, why, sizeof why), 0);
+    rc |=
+        expect_int(label, (opts->next_start.pending & DSD_NEXT_START_TRUNK_SCAN) == 0U && !saved.trunk_scan_enabled, 1);
+    rc |= expect_contains(label, state->ui_msg, "; the trunk scan waiting for a restart is dropped");
+    if (rc) {
+        DSD_FPRINTF(stderr, "  %s (%s)\n", label, why);
+    }
+    return rc;
+}
+
+/*
+ * Issue #671 (round 5): whatever a config apply leaves, the save still starts. "Config not applied" puts back what was
+ * waiting for the next start, but a rolled-back config keeps the rest of it (its tuner owner, a band plan off a
+ * coordinator): a trunk scan an earlier config left waiting would come back beside the scanner or band plan this one
+ * installed, which startup refuses. That waiting trunk scan is dropped, and the status line and log say so. The same
+ * for a config kept with no input running over a paused -Y scan, whose pause stays (a save writes the scanner on)
+ * while its trunk scan would wait. Before this the save wrote both.
+ */
+static int
+test_config_leaves_a_save_that_starts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    int rc = 0;
+    for (int shape = 0; shape < 3; shape++) {
+        init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+        opts.rtltcp_enabled = 1;
+        DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "127.0.0.1");
+        opts.rtltcp_portno = 1234;
+        reset_rx_family_wrap();
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = 1;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_input = 1;
+        cfg.input_source = DSDCFG_INPUT_RTLTCP;
+        DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
+        cfg.rtltcp_port = 1234;
+        cfg.has_trunking = 1;
+        cfg.has_trunk_scan = 1;
+        static const char* const k_labels[] = {
+            "rolled back: the scanner beside a waiting trunk scan",
+            "rolled back: a band plan beside a waiting trunk scan",
+            "kept with no input: a paused scan beside its trunk scan",
+        };
+        const char* label = k_labels[shape];
+        if (shape < 2) {
+            /* An earlier config's trunk scan waits; this one turns it off and installs the scanner or a band plan, and
+               its input fails and is rolled back. */
+            opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+            opts.next_start.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+                         "targets.csv");
+            cfg.trunk_scan_enabled = 0;
+            if (shape == 0) {
+                cfg.trunk_scanner = 1;
+            } else {
+                DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+            }
+        } else {
+            /* A paused -Y scan with no stream running: the config (scanner off, a trunk scan on) is kept, but its input
+               does not start, so the pause stays. */
+            seed_running_list(&opts, &state);
+            opts.scanner_mode = 0;
+            state.lcn_scan_paused = 1U;
+            state.operator_tuned = 1U;
+            state.rtl_ctx = NULL;
+            cfg.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        }
+        rc |= submit_config(&opts, &state, &cfg, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_save_starts_without_the_waiting_trunk_scan(&opts, &state, label);
+        if (shape == 0) {
+            rc |= expect_int("rolled back: the scanner stays installed", opts.scanner_mode, 1);
+        } else if (shape == 1) {
+            rc |= expect_str("rolled back: the band plan stays", opts.p25_bandplan_in_file, "plan.csv");
+        } else {
+            rc |= expect_int("kept with no input: still paused", state.lcn_scan_paused, 1);
+        }
+        opts.scanner_mode = 0;
+        reset_config_rtl_wrap();
+        reset_rx_family_wrap();
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
 #endif
 #endif
 
@@ -22728,6 +22874,7 @@ main(void) {
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_config_failed_reopen_keeps_a_paused_list();
+    rc |= test_config_leaves_a_save_that_starts();
 #endif
 #if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
     rc |= test_radio_control_unavailable_toasts();

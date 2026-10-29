@@ -905,6 +905,8 @@ svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path) {
         return -1;
     }
     DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", path);
+    /* The plan runs now, and a save writes it, as svc_check_next_start() judged (issue #671). */
+    opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_BAND_PLAN;
     // Announcements parked for want of an IDEN can resolve against the seeded tables now.
     p25_resolve_pending_announcements(opts, state);
     return 0;

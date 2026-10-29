@@ -661,7 +661,10 @@ field, and the decoder refuses the rest when it applies the command.
   `scanner_toggle` will not start the scanner (`Scanner not started: ...`), and
   channel-map and band-plan imports are refused the same way. A config whose
   input does not start is rolled back and, like a refused one, leaves nothing
-  waiting for the next start.
+  waiting for the next start; a value an earlier config left waiting that would
+  now break those rules is dropped, and `status.message` says so (`...; the
+  trunk scan waiting for a restart is dropped`). An apply that fails (an output
+  reconfigure, say) is reported as failed even when it also needs a restart.
   Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
   back at shutdown and a save writes, not the parked target's. Over a paused
   `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or
