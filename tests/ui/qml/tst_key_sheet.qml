@@ -651,6 +651,11 @@ Item {
             verify(!parts.scope.visible);
             compare(sheet.profileScope, 1);
             verify(!parts.line.visible, "no target name under a hidden scope choice");
+            // A target-scope Apply is refused now too, so the note stays, and
+            // it offers no target to apply to.
+            var left = findChild(sheet, "keySheetTargetLeft");
+            verify(left.visible, "the stopped scan is noted");
+            compare(left.text, "The scan has left North site. Reopen the editor before applying.");
             // Without a target there is no choice and no name.
             sheet.visible = false;
             testContext.setMetric("scanTargetId", "");
@@ -706,7 +711,7 @@ Item {
                 compare(parts.line.text, "Applies to North site");
                 verify(left !== null, "the note that the scan has left is missing");
                 verify(left.visible, "the sheet says the scan has left the target");
-                compare(left.text, "The scan has left North site. Reopen to apply to the current target.");
+                compare(left.text, "The scan has left North site. Reopen the editor before applying.");
                 // Latched: the scan coming back does not take the note away.
                 testContext.setMetric("scanTargetId", "target-2");
                 verify(left.visible, "the note stays as the scan rotates");
@@ -722,6 +727,55 @@ Item {
                 sheet.open();
                 compare(parts.line.text, "Applies to East site");
                 verify(!left.visible, "a reopened sheet has nothing to warn about");
+            } finally {
+                sheet.visible = false;
+                verify(decryptionProfiles.removeProfile(uid).ok);
+            }
+        }
+        // Opened before the scan had a target, the sheet captured none: a
+        // target appearing later is not the one Apply addresses, and the
+        // placeholder name its label source gives meanwhile is never shown.
+        function test_target_appearing_after_opening_is_not_named() {
+            var uid = decryptionProfiles.saveProfile({label: "Scan keys", protocol: "dmr", mode: "direct", directType: "basic", directValue: "51"}).uid;
+            verify(uid.length > 0);
+            try {
+                sheet.visible = false;
+                testContext.setMetric("scanTargetId", "");
+                sheet.targetName = "Target 0";
+                sheet.open();
+                verify(sheet.visible);
+                compare(sheet.profileScope, 0);
+                sheet.selectedProfileUid = uid;
+                var scope = findChild(sheet, "keySheetScope");
+                var line = findChild(sheet, "keySheetTargetName");
+                var left = findChild(sheet, "keySheetTargetLeft");
+                verify(!scope.visible && !line.visible && !left.visible);
+                // The scan publishes its first target under the open sheet.
+                testContext.setMetric("scanTargetId", "target-2");
+                sheet.targetName = "North site";
+                verify(scope.visible);
+                verify(!left.visible, "nothing to note under session defaults");
+                scope.currentIndex = 1;
+                scope.activated(1);
+                compare(sheet.profileScope, 1);
+                verify(!line.visible, "no name was captured, so none is shown");
+                verify(line.text.indexOf("Target 0") < 0, line.text);
+                verify(left.visible, "the target changed since the sheet opened");
+                compare(left.text, "The scan target changed. Reopen the editor before applying.");
+                // Apply sends the context it opened with, which has no target, and the
+                // decoder's refusal says the same as the note.
+                var apply = visualText(sheet, "Apply profile to this target");
+                verify(apply !== null);
+                apply.activate();
+                compare(commands.lastProfileScope(), 1);
+                compare(commands.lastProfileTarget(), "");
+                uiController.finishDecryption(commands.lastDecryptionRequest(), -2);
+                compare(sheet.notice, "The session or target changed. Reopen the editor before applying.");
+                // Reopened on the target, the sheet names it and notes nothing.
+                sheet.visible = false;
+                sheet.open();
+                compare(line.text, "Applies to North site");
+                verify(line.visible && !left.visible);
             } finally {
                 sheet.visible = false;
                 verify(decryptionProfiles.removeProfile(uid).ok);

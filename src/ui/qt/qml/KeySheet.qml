@@ -68,7 +68,9 @@ ModalSheet {
         selectedProfileUid = materialProfile.uid || "";
         profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
         context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
-        openedTargetName = targetName;
+        // Only a real target has a name: the label source falls back to
+        // "Target <ordinal>" without one.
+        openedTargetName = (metrics.scanTargetId || "").length ? targetName : "";
         targetLeft = false;
         advancedOpen = false;
         savingDraft = false;
@@ -321,8 +323,10 @@ ModalSheet {
     Text {
         objectName: "keySheetTargetLeft"
         width: parent.width
-        visible: sheet.profileScope === 1 && sheet.targetLeft && sheet.openedTargetName.length > 0
-        text: qsTr("The scan has left %1. Reopen to apply to the current target.").arg(sheet.openedTargetName)
+        // It promises no target to come: the scan may have stopped. The second
+        // sentence is the decoder's own refusal advice.
+        visible: sheet.profileScope === 1 && sheet.targetLeft
+        text: sheet.openedTargetName.length ? qsTr("The scan has left %1. Reopen the editor before applying.").arg(sheet.openedTargetName) : qsTr("The scan target changed. Reopen the editor before applying.")
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
