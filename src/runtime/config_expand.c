@@ -15,6 +15,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/config.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -83,13 +84,13 @@ static int
 get_home_dir(char* out, size_t cap) {
 #if defined(_WIN32)
     /* Try USERPROFILE first, then HOMEDRIVE+HOMEPATH */
-    const char* userprofile = getenv("USERPROFILE");
+    const char* userprofile = dsd_env_get("USERPROFILE");
     if (userprofile && *userprofile) {
         return home_dir_copy(userprofile, out, cap);
     }
 
-    const char* homedrive = getenv("HOMEDRIVE");
-    const char* homepath = getenv("HOMEPATH");
+    const char* homedrive = dsd_env_get("HOMEDRIVE");
+    const char* homepath = dsd_env_get("HOMEPATH");
     if (homedrive && homepath) {
         const int n = DSD_SNPRINTF(out, cap, "%s%s", homedrive, homepath);
         return (n >= 0 && (size_t)n < cap) ? 1 : -1;
@@ -97,7 +98,7 @@ get_home_dir(char* out, size_t cap) {
     return 0;
 #else
     /* Try $HOME first */
-    const char* home = getenv("HOME");
+    const char* home = dsd_env_get("HOME");
     if (home && *home) {
         return home_dir_copy(home, out, cap);
     }
@@ -192,7 +193,7 @@ copy_env_value(char** dst, const char* dst_end, const char* var_start, size_t va
     DSD_MEMCPY(var_name, var_start, var_len);
     var_name[var_len] = '\0';
 
-    const char* var_val = getenv(var_name);
+    const char* var_val = dsd_env_get(var_name);
     if (!var_val) {
         return 0;
     }

@@ -24,6 +24,13 @@
 #include "dsd-neo/platform/threading.h"
 #include "dsd-neo/platform/timing.h"
 
+/* The backend reads its variables through the override store (#782); this test links no platform library, and no
+   override is ever set here, so the process environment is the whole answer. */
+const char*
+dsd_env_get(const char* name) {
+    return getenv(name);
+}
+
 static int g_pa_simple_new_fail;
 static int g_pa_simple_new_calls;
 static uint64_t g_pa_simple_new_delay_ns; /* how long an open takes on the fake clock */

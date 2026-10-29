@@ -482,13 +482,11 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 void dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Read an environment variable value via runtime wrappers.
- *
- * Intended for UI/debug tooling that needs generic env access without calling
- * `getenv()` directly outside runtime.
+ * @brief Read an environment variable as the process sees it: dsd_env_get() (<dsd-neo/platform/env.h>), so session
+ * and host overrides apply over the process environment.
  *
  * @param name Environment variable name.
- * @return Pointer to value string (owned by the C library) or NULL if unset.
+ * @return The value, or NULL if unset or hidden. An override's pointer stays valid for the life of the process.
  */
 const char* dsd_neo_env_get(const char* name);
 

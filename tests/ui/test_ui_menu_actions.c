@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -582,9 +583,10 @@ dsd_user_config_list_profiles(const char* path, const char** names, char* names_
     return 2;
 }
 
+/* The terminal's toggles override a variable for the session only (#782). */
 int
-dsd_setenv(const char* name, const char* value, int overwrite) {
-    (void)overwrite;
+dsd_env_set(dsd_env_layer layer, const char* name, const char* value) {
+    assert(layer == DSD_ENV_LAYER_SESSION);
     DSD_SNPRINTF(g_env_name, sizeof g_env_name, "%s", name ? name : "");
     DSD_SNPRINTF(g_env_value, sizeof g_env_value, "%s", value ? value : "");
     return 0;

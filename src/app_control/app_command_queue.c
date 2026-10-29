@@ -60,9 +60,9 @@
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -933,7 +933,7 @@ apply_dsp_op_iq_and_ted(const dsd_app_dsp_payload* p) {
             int on = rtl_stream_get_iq_balance();
             int new_on = on ? 0 : 1;
             rtl_stream_toggle_iq_balance(new_on);
-            dsd_setenv("DSD_NEO_IQ_BALANCE", new_on ? "1" : "0", 1);
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_BALANCE", new_on ? "1" : "0");
             return 1;
         }
         case DSD_APP_DSP_OP_IQ_DC_TOGGLE: {
@@ -941,7 +941,7 @@ apply_dsp_op_iq_and_ted(const dsd_app_dsp_payload* p) {
             int on = rtl_stream_get_iq_dc(&k);
             int new_on = on ? 0 : 1;
             rtl_stream_set_iq_dc(new_on, -1);
-            dsd_setenv("DSD_NEO_IQ_DC_BLOCK", new_on ? "1" : "0", 1);
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_DC_BLOCK", new_on ? "1" : "0");
             return 1;
         }
         case DSD_APP_DSP_OP_IQ_DC_K_DELTA: {

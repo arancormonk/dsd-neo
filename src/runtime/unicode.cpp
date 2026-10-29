@@ -9,6 +9,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
@@ -47,7 +48,7 @@ static UINT g_saved_console_input_cp = 0;
 
 static int
 env_truthy(const char* name) {
-    const char* v = getenv(name);
+    const char* v = dsd_env_get(name);
     if (!v || !*v) {
         return 0;
     }
@@ -82,7 +83,7 @@ str_icontains(const char* haystack, const char* needle) {
 #if DSD_PLATFORM_WIN_NATIVE
 static int
 env_nonempty(const char* name) {
-    const char* v = getenv(name);
+    const char* v = dsd_env_get(name);
     return v && *v;
 }
 

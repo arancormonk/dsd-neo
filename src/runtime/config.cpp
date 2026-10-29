@@ -17,6 +17,7 @@
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <errno.h>
@@ -506,10 +507,10 @@ default_cache_dir(char* dst, size_t dst_size) {
     }
     dst[0] = '\0';
 
-    const char* base = getenv("HOME");
+    const char* base = dsd_env_get("HOME");
 #if defined(_WIN32)
     if (!env_is_set(base)) {
-        base = getenv("LOCALAPPDATA");
+        base = dsd_env_get("LOCALAPPDATA");
     }
 #endif
     if (env_is_set(base)) {
@@ -577,12 +578,12 @@ config_init_defaults(dsdneoRuntimeConfig& c) {
 static void
 config_init_paths_and_cache(dsdneoRuntimeConfig& c) {
     /* User config discovery */
-    const char* cfgp = getenv("DSD_NEO_CONFIG");
+    const char* cfgp = dsd_env_get("DSD_NEO_CONFIG");
     c.config_path_is_set = env_is_set(cfgp);
     env_copy_str(c.config_path, sizeof c.config_path, cfgp);
 
     /* Cache/path knobs */
-    const char* cache_dir = getenv("DSD_NEO_CACHE_DIR");
+    const char* cache_dir = dsd_env_get("DSD_NEO_CACHE_DIR");
     c.cache_dir_is_set = env_is_set(cache_dir);
     if (c.cache_dir_is_set) {
         env_copy_str(c.cache_dir, sizeof c.cache_dir, cache_dir);
@@ -590,7 +591,7 @@ config_init_paths_and_cache(dsdneoRuntimeConfig& c) {
         default_cache_dir(c.cache_dir, sizeof c.cache_dir);
     }
 
-    const char* cc_cache = getenv("DSD_NEO_CC_CACHE");
+    const char* cc_cache = dsd_env_get("DSD_NEO_CC_CACHE");
     c.cc_cache_is_set = env_is_set(cc_cache);
     if (c.cc_cache_is_set) {
         c.cc_cache_enable = env_is_falsey(cc_cache) ? 0 : 1;
@@ -600,55 +601,55 @@ config_init_paths_and_cache(dsdneoRuntimeConfig& c) {
 static void
 config_init_realtime_and_cpu(dsdneoRuntimeConfig& c) {
     /* Realtime scheduling and CPU affinity */
-    const char* rt = getenv("DSD_NEO_RT_SCHED");
+    const char* rt = dsd_env_get("DSD_NEO_RT_SCHED");
     c.rt_sched_is_set = env_is_set(rt);
     c.rt_sched_enable = c.rt_sched_is_set ? (env_is_falsey(rt) ? 0 : 1) : 0;
 
-    const char* rpu = getenv("DSD_NEO_RT_PRIO_USB");
+    const char* rpu = dsd_env_get("DSD_NEO_RT_PRIO_USB");
     c.rt_prio_usb_is_set = env_parse_int_range(rpu, 1, 99, &c.rt_prio_usb);
 
-    const char* rpd = getenv("DSD_NEO_RT_PRIO_DONGLE");
+    const char* rpd = dsd_env_get("DSD_NEO_RT_PRIO_DONGLE");
     c.rt_prio_dongle_is_set = env_parse_int_range(rpd, 1, 99, &c.rt_prio_dongle);
 
-    const char* rpm = getenv("DSD_NEO_RT_PRIO_DEMOD");
+    const char* rpm = dsd_env_get("DSD_NEO_RT_PRIO_DEMOD");
     c.rt_prio_demod_is_set = env_parse_int_range(rpm, 1, 99, &c.rt_prio_demod);
 
-    const char* cpuu = getenv("DSD_NEO_CPU_USB");
+    const char* cpuu = dsd_env_get("DSD_NEO_CPU_USB");
     c.cpu_usb_is_set = env_parse_int_range(cpuu, 0, 4096, &c.cpu_usb);
 
-    const char* cpud = getenv("DSD_NEO_CPU_DONGLE");
+    const char* cpud = dsd_env_get("DSD_NEO_CPU_DONGLE");
     c.cpu_dongle_is_set = env_parse_int_range(cpud, 0, 4096, &c.cpu_dongle);
 
-    const char* cpum = getenv("DSD_NEO_CPU_DEMOD");
+    const char* cpum = dsd_env_get("DSD_NEO_CPU_DEMOD");
     c.cpu_demod_is_set = env_parse_int_range(cpum, 0, 4096, &c.cpu_demod);
 }
 
 static void
 config_init_bootstrap_and_debug(dsdneoRuntimeConfig& c) {
     /* Bootstrap/system toggles */
-    const char* ftz = getenv("DSD_NEO_FTZ_DAZ");
+    const char* ftz = dsd_env_get("DSD_NEO_FTZ_DAZ");
     c.ftz_daz_is_set = env_is_set(ftz);
     c.ftz_daz_enable = c.ftz_daz_is_set ? (env_is_falsey(ftz) ? 0 : 1) : 0;
 
-    const char* nb = getenv("DSD_NEO_NO_BOOTSTRAP");
+    const char* nb = dsd_env_get("DSD_NEO_NO_BOOTSTRAP");
     c.no_bootstrap_is_set = env_is_set(nb);
     c.no_bootstrap_enable = c.no_bootstrap_is_set ? (env_is_falsey(nb) ? 0 : 1) : 0;
 
-    const char* nsh = getenv("DSD_NEO_NO_SIGNAL_HANDLERS");
+    const char* nsh = dsd_env_get("DSD_NEO_NO_SIGNAL_HANDLERS");
     c.no_signal_handlers_is_set = env_is_set(nsh);
     c.no_signal_handlers_enable = c.no_signal_handlers_is_set ? (env_is_falsey(nsh) ? 0 : 1) : 0;
 
     /* Debug/tuning toggles */
-    const char* ds = getenv("DSD_NEO_DEBUG_SYNC");
+    const char* ds = dsd_env_get("DSD_NEO_DEBUG_SYNC");
     c.debug_sync_is_set = env_is_set(ds);
     c.debug_sync_enable = c.debug_sync_is_set ? (env_is_falsey(ds) ? 0 : 1) : 0;
 
-    const char* dcq = getenv("DSD_NEO_DEBUG_CQPSK");
+    const char* dcq = dsd_env_get("DSD_NEO_DEBUG_CQPSK");
     c.debug_cqpsk_is_set = env_is_set(dcq);
     c.debug_cqpsk_enable = c.debug_cqpsk_is_set ? (env_is_falsey(dcq) ? 0 : 1) : 0;
 
     /* A level, so "2" selects the per-sample trace rather than reading as a plain truthy 1. */
-    const char* dst = getenv("DSD_NEO_DEBUG_SYMBOL_TIMING");
+    const char* dst = dsd_env_get("DSD_NEO_DEBUG_SYMBOL_TIMING");
     int symbol_timing_level = 0;
     if (env_parse_int_range(dst, 0, DSD_NEO_SYMBOL_TIMING_TRACE, &symbol_timing_level)) {
         c.debug_symbol_timing_is_set = 1;
@@ -664,7 +665,7 @@ config_init_bootstrap_and_debug(dsdneoRuntimeConfig& c) {
 
 static void
 config_init_cqpsk_toggle(dsdneoRuntimeConfig& c) {
-    const char* cq = getenv("DSD_NEO_CQPSK");
+    const char* cq = dsd_env_get("DSD_NEO_CQPSK");
     c.cqpsk_is_set = env_is_set(cq);
     if (c.cqpsk_is_set) {
         if (env_is_truthy(cq)) {
@@ -679,11 +680,11 @@ config_init_cqpsk_toggle(dsdneoRuntimeConfig& c) {
 
 static void
 config_init_cqpsk_sync(dsdneoRuntimeConfig& c) {
-    const char* cqi = getenv("DSD_NEO_CQPSK_SYNC_INV");
+    const char* cqi = dsd_env_get("DSD_NEO_CQPSK_SYNC_INV");
     c.cqpsk_sync_inv_is_set = env_is_set(cqi);
     c.cqpsk_sync_inv = c.cqpsk_sync_inv_is_set ? (env_is_falsey(cqi) ? 0 : 1) : 0;
 
-    const char* cqn = getenv("DSD_NEO_CQPSK_SYNC_NEG");
+    const char* cqn = dsd_env_get("DSD_NEO_CQPSK_SYNC_NEG");
     c.cqpsk_sync_neg_is_set = env_is_set(cqn);
     c.cqpsk_sync_neg = c.cqpsk_sync_neg_is_set ? (env_is_falsey(cqn) ? 0 : 1) : 0;
 }
@@ -695,7 +696,7 @@ config_init_cqpsk(dsdneoRuntimeConfig& c) {
     config_init_cqpsk_sync(c);
 
     /* Keep the warm-start safety switch at the canonical calibration boundary. */
-    const char* warmstart = getenv("DSD_NEO_SYNC_WARMSTART");
+    const char* warmstart = dsd_env_get("DSD_NEO_SYNC_WARMSTART");
     c.sync_warmstart_is_set = env_is_set(warmstart);
     if (c.sync_warmstart_is_set && strcmp(warmstart, "0") == 0) {
         c.sync_warmstart_enable = 0;
@@ -705,69 +706,69 @@ config_init_cqpsk(dsdneoRuntimeConfig& c) {
 static void
 config_init_dmr_and_p25(dsdneoRuntimeConfig& c) {
     /* DMR timers */
-    const char* dmr_hang = getenv("DSD_NEO_DMR_HANGTIME");
+    const char* dmr_hang = dsd_env_get("DSD_NEO_DMR_HANGTIME");
     c.dmr_hangtime_is_set = env_parse_double_range(dmr_hang, 0.0, 10.0, &c.dmr_hangtime_s);
 
-    const char* dmr_gt = getenv("DSD_NEO_DMR_GRANT_TIMEOUT");
+    const char* dmr_gt = dsd_env_get("DSD_NEO_DMR_GRANT_TIMEOUT");
     c.dmr_grant_timeout_is_set = env_parse_double_range(dmr_gt, 0.0, 30.0, &c.dmr_grant_timeout_s);
 
     /* P25 timers/holds */
-    const char* p25_hang = getenv("DSD_NEO_P25_HANGTIME");
+    const char* p25_hang = dsd_env_get("DSD_NEO_P25_HANGTIME");
     c.p25_hangtime_is_set = env_parse_double_range(p25_hang, 0.0, 10.0, &c.p25_hangtime_s);
 
-    const char* p25_gt = getenv("DSD_NEO_P25_GRANT_TIMEOUT");
+    const char* p25_gt = dsd_env_get("DSD_NEO_P25_GRANT_TIMEOUT");
     c.p25_grant_timeout_is_set = env_parse_double_range(p25_gt, 0.0, 30.0, &c.p25_grant_timeout_s);
 
-    const char* p25_cc = getenv("DSD_NEO_P25_CC_GRACE");
+    const char* p25_cc = dsd_env_get("DSD_NEO_P25_CC_GRACE");
     c.p25_cc_grace_is_set = env_parse_double_range(p25_cc, 0.0, 30.0, &c.p25_cc_grace_s);
 
-    const char* p25_vcg = getenv("DSD_NEO_P25_VC_GRACE");
+    const char* p25_vcg = dsd_env_get("DSD_NEO_P25_VC_GRACE");
     c.p25_vc_grace_is_set = env_parse_double_range(p25_vcg, 0.0, 10.0, &c.p25_vc_grace_s);
 
-    const char* p25_mh = getenv("DSD_NEO_P25_MAC_HOLD");
+    const char* p25_mh = dsd_env_get("DSD_NEO_P25_MAC_HOLD");
     c.p25_mac_hold_is_set = env_parse_double_range(p25_mh, 0.0, 10.0, &c.p25_mac_hold_s);
 
-    const char* p25_vh = getenv("DSD_NEO_P25_VOICE_HOLD");
+    const char* p25_vh = dsd_env_get("DSD_NEO_P25_VOICE_HOLD");
     c.p25_voice_hold_is_set = env_parse_double_range(p25_vh, 0.0, 5.0, &c.p25_voice_hold_s);
 
-    const char* p25_wd = getenv("DSD_NEO_P25_WD_MS");
+    const char* p25_wd = dsd_env_get("DSD_NEO_P25_WD_MS");
     c.p25_wd_ms_is_set = env_parse_int_range(p25_wd, 20, 2000, &c.p25_wd_ms);
 
     /* P25 follower (UI-exposed) knobs */
-    const char* p25_mfd = getenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
+    const char* p25_mfd = dsd_env_get("DSD_NEO_P25_MIN_FOLLOW_DWELL");
     c.p25_min_follow_dwell_is_set = env_parse_double_range(p25_mfd, 0.0, 120.0, &c.p25_min_follow_dwell_s);
 
-    const char* p25_gvt = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
+    const char* p25_gvt = dsd_env_get("DSD_NEO_P25_GRANT_VOICE_TO");
     c.p25_grant_voice_to_is_set = env_parse_double_range(p25_gvt, 0.0, 120.0, &c.p25_grant_voice_to_s);
 
-    const char* p25_fe = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
+    const char* p25_fe = dsd_env_get("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
     c.p25_force_release_extra_is_set = env_parse_double_range(p25_fe, 0.0, 120.0, &c.p25_force_release_extra_s);
 
-    const char* p25_fm = getenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
+    const char* p25_fm = dsd_env_get("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
     c.p25_force_release_margin_is_set = env_parse_double_range(p25_fm, 0.0, 120.0, &c.p25_force_release_margin_s);
 
-    const char* p25_ehp = getenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
+    const char* p25_ehp = dsd_env_get("DSD_NEO_P25P1_ERR_HOLD_PCT");
     c.p25p1_err_hold_pct_is_set = env_parse_double_range(p25_ehp, 0.0, 100.0, &c.p25p1_err_hold_pct);
 
-    const char* p25_ehs = getenv("DSD_NEO_P25P1_ERR_HOLD_S");
+    const char* p25_ehs = dsd_env_get("DSD_NEO_P25P1_ERR_HOLD_S");
     c.p25p1_err_hold_s_is_set = env_parse_double_range(p25_ehs, 0.0, 120.0, &c.p25p1_err_hold_s);
 
-    const char* p25_afc_status_gate = getenv("DSD_NEO_P25_AFC_STATUS_GATE");
+    const char* p25_afc_status_gate = dsd_env_get("DSD_NEO_P25_AFC_STATUS_GATE");
     c.p25_afc_status_gate_is_set = env_is_set(p25_afc_status_gate);
     c.p25_afc_status_gate_enable = c.p25_afc_status_gate_is_set ? (env_is_truthy(p25_afc_status_gate) ? 1 : 0) : 0;
 
-    const char* p25_soft_thr = getenv("DSD_NEO_P25_SOFT_ERASURE_THRESHOLD");
+    const char* p25_soft_thr = dsd_env_get("DSD_NEO_P25_SOFT_ERASURE_THRESHOLD");
     c.p25_soft_erasure_threshold_is_set = env_parse_int_range(p25_soft_thr, 0, 255, &c.p25_soft_erasure_threshold);
 
-    const char* p25p1_soft_thr = getenv("DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD");
+    const char* p25p1_soft_thr = dsd_env_get("DSD_NEO_P25P1_SOFT_ERASURE_THRESHOLD");
     c.p25p1_soft_erasure_threshold_is_set =
         env_parse_int_range(p25p1_soft_thr, 0, 255, &c.p25p1_soft_erasure_threshold);
 
-    const char* p25p2_soft_thr = getenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD");
+    const char* p25p2_soft_thr = dsd_env_get("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD");
     c.p25p2_soft_erasure_threshold_is_set =
         env_parse_int_range(p25p2_soft_thr, 0, 255, &c.p25p2_soft_erasure_threshold);
 
-    const char* p25_soft_override = getenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE");
+    const char* p25_soft_override = dsd_env_get("DSD_NEO_P25_SOFT_HARD_OVERRIDE");
     c.p25_soft_hard_override_is_set = env_is_set(p25_soft_override);
     c.p25_soft_hard_override_enable = c.p25_soft_hard_override_is_set ? (env_is_falsey(p25_soft_override) ? 0 : 1) : 1;
 }
@@ -775,27 +776,27 @@ config_init_dmr_and_p25(dsdneoRuntimeConfig& c) {
 static void
 config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
     /* Input processing knobs */
-    const char* iv = getenv("DSD_NEO_INPUT_VOLUME");
+    const char* iv = dsd_env_get("DSD_NEO_INPUT_VOLUME");
     c.input_volume_is_set = env_parse_int_range(iv, 1, 16, &c.input_volume_multiplier);
 
-    const char* iw = getenv("DSD_NEO_INPUT_WARN_DB");
+    const char* iw = dsd_env_get("DSD_NEO_INPUT_WARN_DB");
     c.input_warn_db_is_set = env_parse_double_range(iw, -200.0, 0.0, &c.input_warn_db);
 
     /* DMR TIII tools (one-shot LCN calculator) */
-    const char* t3csv = getenv("DSD_NEO_DMR_T3_CALC_CSV");
+    const char* t3csv = dsd_env_get("DSD_NEO_DMR_T3_CALC_CSV");
     c.dmr_t3_calc_csv_is_set = env_is_set(t3csv);
     env_copy_str(c.dmr_t3_calc_csv, sizeof c.dmr_t3_calc_csv, t3csv);
 
-    const char* t3step = getenv("DSD_NEO_DMR_T3_STEP_HZ");
+    const char* t3step = dsd_env_get("DSD_NEO_DMR_T3_STEP_HZ");
     c.dmr_t3_step_hz_is_set = env_parse_long_range(t3step, 1, 1000000000L, &c.dmr_t3_step_hz);
 
-    const char* t3ccl = getenv("DSD_NEO_DMR_T3_CC_LCN");
+    const char* t3ccl = dsd_env_get("DSD_NEO_DMR_T3_CC_LCN");
     c.dmr_t3_cc_lcn_is_set = env_parse_long_range(t3ccl, 1, 1000000000L, &c.dmr_t3_cc_lcn);
 
-    const char* t3start = getenv("DSD_NEO_DMR_T3_START_LCN");
+    const char* t3start = dsd_env_get("DSD_NEO_DMR_T3_START_LCN");
     c.dmr_t3_start_lcn_is_set = env_parse_long_range(t3start, 1, 1000000000L, &c.dmr_t3_start_lcn);
 
-    const char* t3ccf = getenv("DSD_NEO_DMR_T3_CC_FREQ");
+    const char* t3ccf = dsd_env_get("DSD_NEO_DMR_T3_CC_FREQ");
     c.dmr_t3_cc_freq_is_set = 0;
     if (env_is_set(t3ccf)) {
         double v = 0.0;
@@ -811,7 +812,7 @@ config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
     }
 
     /* DMR TIII heuristic fill */
-    const char* t3h = getenv("DSD_NEO_DMR_T3_HEUR");
+    const char* t3h = dsd_env_get("DSD_NEO_DMR_T3_HEUR");
     c.dmr_t3_heur_is_set = env_is_set(t3h);
     c.dmr_t3_heur_enable = c.dmr_t3_heur_is_set ? (env_is_falsey(t3h) ? 0 : 1) : 0;
 }
@@ -819,7 +820,7 @@ config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
 static void
 config_init_tcp_and_rigctl(dsdneoRuntimeConfig& c) {
     /* TCP/rigctl knobs */
-    const char* tbs = getenv("DSD_NEO_TCP_BUFSZ");
+    const char* tbs = dsd_env_get("DSD_NEO_TCP_BUFSZ");
     c.tcp_bufsz_is_set = 0;
     if (env_is_set(tbs)) {
         long v = 0;
@@ -829,28 +830,28 @@ config_init_tcp_and_rigctl(dsdneoRuntimeConfig& c) {
         }
     }
 
-    const char* twa = getenv("DSD_NEO_TCP_WAITALL");
+    const char* twa = dsd_env_get("DSD_NEO_TCP_WAITALL");
     c.tcp_waitall_is_set = env_is_set(twa);
     if (c.tcp_waitall_is_set) {
         c.tcp_waitall_enable = env_is_falsey(twa) ? 0 : 1;
     }
 
-    const char* tau = getenv("DSD_NEO_TCP_AUTOTUNE");
+    const char* tau = dsd_env_get("DSD_NEO_TCP_AUTOTUNE");
     c.tcp_autotune_is_set = env_is_set(tau);
     if (c.tcp_autotune_is_set) {
         c.tcp_autotune_enable = env_is_falsey(tau) ? 0 : 1;
     }
 
-    const char* tstats = getenv("DSD_NEO_TCP_STATS");
+    const char* tstats = dsd_env_get("DSD_NEO_TCP_STATS");
     c.tcp_stats_is_set = env_is_set(tstats);
     if (c.tcp_stats_is_set) {
         c.tcp_stats_enable = env_is_falsey(tstats) ? 0 : 1;
     }
 
-    const char* tmt = getenv("DSD_NEO_TCP_MAX_TIMEOUTS");
+    const char* tmt = dsd_env_get("DSD_NEO_TCP_MAX_TIMEOUTS");
     c.tcp_max_timeouts_is_set = env_parse_int_range(tmt, 1, 100, &c.tcp_max_timeouts);
 
-    const char* trb = getenv("DSD_NEO_TCP_RCVBUF");
+    const char* trb = dsd_env_get("DSD_NEO_TCP_RCVBUF");
     c.tcp_rcvbuf_is_set = 0;
     if (env_is_set(trb)) {
         long v = 0;
@@ -860,13 +861,13 @@ config_init_tcp_and_rigctl(dsdneoRuntimeConfig& c) {
         }
     }
 
-    const char* trt = getenv("DSD_NEO_TCP_RCVTIMEO");
+    const char* trt = dsd_env_get("DSD_NEO_TCP_RCVTIMEO");
     c.tcp_rcvtimeo_is_set = env_parse_int_range(trt, 100, 60000, &c.tcp_rcvtimeo_ms);
 
-    const char* rrt = getenv("DSD_NEO_RIGCTL_RCVTIMEO");
+    const char* rrt = dsd_env_get("DSD_NEO_RIGCTL_RCVTIMEO");
     c.rigctl_rcvtimeo_is_set = env_parse_int_range(rrt, 100, 60000, &c.rigctl_rcvtimeo_ms);
 
-    const char* tpb = getenv("DSD_NEO_TCP_PREBUF_MS");
+    const char* tpb = dsd_env_get("DSD_NEO_TCP_PREBUF_MS");
     c.tcp_prebuf_ms_is_set = env_parse_int_range(tpb, 5, 1000, &c.tcp_prebuf_ms);
 }
 
@@ -893,13 +894,13 @@ config_parse_rtl_direct_mode(const char* rdir) {
 
 static void
 config_init_rtl_agc_and_direct(dsdneoRuntimeConfig& c) {
-    const char* ragc = getenv("DSD_NEO_RTL_AGC");
+    const char* ragc = dsd_env_get("DSD_NEO_RTL_AGC");
     c.rtl_agc_is_set = env_is_set(ragc);
     if (c.rtl_agc_is_set) {
         c.rtl_agc_enable = env_is_falsey(ragc) ? 0 : 1;
     }
 
-    const char* rdir = getenv("DSD_NEO_RTL_DIRECT");
+    const char* rdir = dsd_env_get("DSD_NEO_RTL_DIRECT");
     c.rtl_direct_is_set = env_is_set(rdir);
     if (c.rtl_direct_is_set) {
         c.rtl_direct_mode = config_parse_rtl_direct_mode(rdir);
@@ -908,19 +909,19 @@ config_init_rtl_agc_and_direct(dsdneoRuntimeConfig& c) {
 
 static void
 config_init_rtl_offset_xtal_testmode(dsdneoRuntimeConfig& c) {
-    const char* rot = getenv("DSD_NEO_RTL_OFFSET_TUNING");
+    const char* rot = dsd_env_get("DSD_NEO_RTL_OFFSET_TUNING");
     c.rtl_offset_tuning_is_set = env_is_set(rot);
     if (c.rtl_offset_tuning_is_set) {
         c.rtl_offset_tuning_enable = env_is_falsey(rot) ? 0 : 1;
     }
 
-    const char* rxt = getenv("DSD_NEO_RTL_XTAL_HZ");
+    const char* rxt = dsd_env_get("DSD_NEO_RTL_XTAL_HZ");
     c.rtl_xtal_hz_is_set = env_parse_int_range(rxt, 1, 1000000000, &c.rtl_xtal_hz);
 
-    const char* txt = getenv("DSD_NEO_TUNER_XTAL_HZ");
+    const char* txt = dsd_env_get("DSD_NEO_TUNER_XTAL_HZ");
     c.tuner_xtal_hz_is_set = env_parse_int_range(txt, 1, 1000000000, &c.tuner_xtal_hz);
 
-    const char* rtm = getenv("DSD_NEO_RTL_TESTMODE");
+    const char* rtm = dsd_env_get("DSD_NEO_RTL_TESTMODE");
     c.rtl_testmode_is_set = env_is_set(rtm);
     if (c.rtl_testmode_is_set) {
         c.rtl_testmode_enable = env_is_falsey(rtm) ? 0 : 1;
@@ -929,20 +930,20 @@ config_init_rtl_offset_xtal_testmode(dsdneoRuntimeConfig& c) {
 
 static void
 config_init_rtl_if_gains_and_tuner_bw(dsdneoRuntimeConfig& c) {
-    const char* rig = getenv("DSD_NEO_RTL_IF_GAINS");
+    const char* rig = dsd_env_get("DSD_NEO_RTL_IF_GAINS");
     c.rtl_if_gains_is_set = env_is_set(rig);
     env_copy_str(c.rtl_if_gains, sizeof c.rtl_if_gains, rig);
 
-    const char* rv = getenv("DSD_NEO_RTL_VERIFY");
+    const char* rv = dsd_env_get("DSD_NEO_RTL_VERIFY");
     c.rtl_verify_is_set = env_is_set(rv);
     if (c.rtl_verify_is_set) {
         c.rtl_verify_enable = env_is_falsey(rv) ? 0 : 1;
     }
 
-    const char* rva = getenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    const char* rva = dsd_env_get("DSD_NEO_RTL_VERIFY_ATTEMPTS");
     c.rtl_verify_attempts_is_set = env_parse_int_range(rva, 1, 10, &c.rtl_verify_attempts);
 
-    const char* tbw = getenv("DSD_NEO_TUNER_BW_HZ");
+    const char* tbw = dsd_env_get("DSD_NEO_TUNER_BW_HZ");
     c.tuner_bw_hz_is_set = 0;
     if (env_is_set(tbw)) {
         if (dsd_strcasecmp(tbw, "auto") == 0) {
@@ -969,40 +970,40 @@ config_init_rtl_and_tuner(dsdneoRuntimeConfig& c) {
 static void
 config_init_tuner_autogain(dsdneoRuntimeConfig& c) {
     /* Supervisory tuner autogain knobs */
-    const char* tag = getenv("DSD_NEO_TUNER_AUTOGAIN");
+    const char* tag = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN");
     c.tuner_autogain_is_set = env_is_set(tag);
     c.tuner_autogain_enable = c.tuner_autogain_is_set ? (env_is_truthy(tag) ? 1 : 0) : 0;
 
-    const char* tap = getenv("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS");
+    const char* tap = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS");
     c.tuner_autogain_probe_ms_is_set = env_parse_int_range(tap, 0, 20000, &c.tuner_autogain_probe_ms);
 
-    const char* tas = getenv("DSD_NEO_TUNER_AUTOGAIN_SEED_DB");
+    const char* tas = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN_SEED_DB");
     c.tuner_autogain_seed_db_is_set = env_parse_double_range(tas, 0.0, 60.0, &c.tuner_autogain_seed_db);
 
-    const char* tss = getenv("DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB");
+    const char* tss = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN_SPEC_SNR_DB");
     c.tuner_autogain_spec_snr_db_is_set = env_parse_double_range(tss, 0.0, 60.0, &c.tuner_autogain_spec_snr_db);
 
-    const char* tir = getenv("DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO");
+    const char* tir = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO");
     c.tuner_autogain_inband_ratio_is_set = env_parse_double_range(tir, 0.10, 0.95, &c.tuner_autogain_inband_ratio);
 
-    const char* tus = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB");
+    const char* tus = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB");
     c.tuner_autogain_up_step_db_is_set = env_parse_double_range(tus, 1.0, 10.0, &c.tuner_autogain_up_step_db);
 
-    const char* tup = getenv("DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST");
+    const char* tup = dsd_env_get("DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST");
     c.tuner_autogain_up_persist_is_set = env_parse_int_range(tup, 1, 5, &c.tuner_autogain_up_persist);
 }
 
 static void
 config_init_auto_ppm(dsdneoRuntimeConfig& c) {
     /* Auto-PPM knobs */
-    const char* appm = getenv("DSD_NEO_AUTO_PPM");
+    const char* appm = dsd_env_get("DSD_NEO_AUTO_PPM");
     c.auto_ppm_is_set = env_is_set(appm);
     c.auto_ppm_enable = c.auto_ppm_is_set ? (env_is_truthy(appm) ? 1 : 0) : 0;
 
-    const char* apsnr = getenv("DSD_NEO_AUTO_PPM_SNR_DB");
+    const char* apsnr = dsd_env_get("DSD_NEO_AUTO_PPM_SNR_DB");
     c.auto_ppm_snr_db_is_set = env_parse_double_range(apsnr, 0.0, 40.0, &c.auto_ppm_snr_db);
 
-    const char* apwr = getenv("DSD_NEO_AUTO_PPM_PWR_DB");
+    const char* apwr = dsd_env_get("DSD_NEO_AUTO_PPM_PWR_DB");
     c.auto_ppm_pwr_db_is_set = 0;
     if (env_is_set(apwr)) {
         double v = 0.0;
@@ -1012,13 +1013,13 @@ config_init_auto_ppm(dsdneoRuntimeConfig& c) {
         }
     }
 
-    const char* azppm = getenv("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM");
+    const char* azppm = dsd_env_get("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM");
     c.auto_ppm_zerolock_ppm_is_set = env_parse_double_range(azppm, 0.0, 2.0, &c.auto_ppm_zerolock_ppm);
 
-    const char* azhz = getenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ");
+    const char* azhz = dsd_env_get("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ");
     c.auto_ppm_zerolock_hz_is_set = env_parse_int_range(azhz, 10, 500, &c.auto_ppm_zerolock_hz);
 
-    const char* afrz = getenv("DSD_NEO_AUTO_PPM_FREEZE");
+    const char* afrz = dsd_env_get("DSD_NEO_AUTO_PPM_FREEZE");
     c.auto_ppm_freeze_is_set = env_is_set(afrz);
     if (c.auto_ppm_freeze_is_set) {
         c.auto_ppm_freeze_enable = env_is_falsey(afrz) ? 0 : 1;
@@ -1028,7 +1029,7 @@ config_init_auto_ppm(dsdneoRuntimeConfig& c) {
 static void
 config_init_resamp(dsdneoRuntimeConfig& c) {
     /* RESAMP */
-    const char* rs = getenv("DSD_NEO_RESAMP");
+    const char* rs = dsd_env_get("DSD_NEO_RESAMP");
     c.resamp_is_set = env_is_set(rs);
     c.resamp_disable = 0;
     c.resamp_target_hz = 48000;
@@ -1047,8 +1048,8 @@ config_init_resamp(dsdneoRuntimeConfig& c) {
 static void
 config_init_costas(dsdneoRuntimeConfig& c) {
     /* CQPSK Costas loop (carrier recovery) using GNU Radio control loop */
-    const char* cbw = getenv("DSD_NEO_COSTAS_BW");
-    const char* cdp = getenv("DSD_NEO_COSTAS_DAMPING");
+    const char* cbw = dsd_env_get("DSD_NEO_COSTAS_BW");
+    const char* cdp = dsd_env_get("DSD_NEO_COSTAS_DAMPING");
     c.costas_bw_is_set = env_is_set(cbw);
     c.costas_damping_is_set = env_is_set(cdp);
     if (c.costas_bw_is_set) {
@@ -1070,7 +1071,7 @@ config_init_ted(dsdneoRuntimeConfig& c) {
     /* CQPSK/OP25 Gardner timing gain, in the range the setter allows (rtl_stream_set_ted_gain(): 0.01..0.5), so a
        startup value can neither freeze the loop nor drive it past what any control sets. A value that is not a finite
        number is no setting: the default stands (issue #669 B11). */
-    const char* tg = getenv("DSD_NEO_TED_GAIN");
+    const char* tg = dsd_env_get("DSD_NEO_TED_GAIN");
     double v = 0.0;
     c.ted_gain_is_set = env_is_set(tg) && env_parse_double_strict(tg, &v) && std::isfinite(v);
     if (c.ted_gain_is_set) {
@@ -1089,7 +1090,7 @@ config_init_costas_ted(dsdneoRuntimeConfig& c) {
 static void
 config_init_deemph(dsdneoRuntimeConfig& c) {
     /* Deemphasis */
-    const char* deemph = getenv("DSD_NEO_DEEMPH");
+    const char* deemph = dsd_env_get("DSD_NEO_DEEMPH");
     c.deemph_is_set = env_is_set(deemph);
     c.deemph_mode = DSD_NEO_DEEMPH_UNSET;
     if (c.deemph_is_set) {
@@ -1108,7 +1109,7 @@ config_init_deemph(dsdneoRuntimeConfig& c) {
 static void
 config_init_audio_lpf(dsdneoRuntimeConfig& c) {
     /* Audio LPF */
-    const char* alpf = getenv("DSD_NEO_AUDIO_LPF");
+    const char* alpf = dsd_env_get("DSD_NEO_AUDIO_LPF");
     c.audio_lpf_is_set = env_is_set(alpf);
     c.audio_lpf_disable = 0;
     c.audio_lpf_cutoff_hz = 0;
@@ -1133,12 +1134,12 @@ config_init_deemph_audio(dsdneoRuntimeConfig& c) {
 static void
 config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
     /* MT (intra-block worker pool) */
-    const char* mt = getenv("DSD_NEO_MT");
+    const char* mt = dsd_env_get("DSD_NEO_MT");
     c.mt_is_set = env_is_set(mt);
     c.mt_enable = (c.mt_is_set && mt[0] == '1') ? 1 : 0;
 
     /* Select the current combined CU8 transform or its supported two-pass equivalent. */
-    const char* combine_rot = getenv("DSD_NEO_COMBINE_ROT");
+    const char* combine_rot = dsd_env_get("DSD_NEO_COMBINE_ROT");
     c.combine_rot_is_set = env_is_set(combine_rot);
     if (c.combine_rot_is_set) {
         int value = 0;
@@ -1146,14 +1147,14 @@ config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
     }
 
     /* Disable fs/4 capture shift */
-    const char* dfs4 = getenv("DSD_NEO_DISABLE_FS4_SHIFT");
+    const char* dfs4 = dsd_env_get("DSD_NEO_DISABLE_FS4_SHIFT");
     c.fs4_shift_disable_is_set = env_is_set(dfs4);
     c.fs4_shift_disable = (c.fs4_shift_disable_is_set && dfs4[0] == '1') ? 1 : 0;
 
     /* Output clear/drain on retune */
-    const char* clr = getenv("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE");
-    const char* dms = getenv("DSD_NEO_RETUNE_DRAIN_MS");
-    const char* mms = getenv("DSD_NEO_RETUNE_MUTE_MS");
+    const char* clr = dsd_env_get("DSD_NEO_OUTPUT_CLEAR_ON_RETUNE");
+    const char* dms = dsd_env_get("DSD_NEO_RETUNE_DRAIN_MS");
+    const char* mms = dsd_env_get("DSD_NEO_RETUNE_MUTE_MS");
     c.output_clear_on_retune_is_set = env_is_set(clr);
     if (c.output_clear_on_retune_is_set) {
         int v = 0;
@@ -1182,7 +1183,7 @@ config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
 static void
 config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
     /* TCP input reconnect backoff (ms) */
-    const char* tb = getenv("DSD_NEO_TCPIN_BACKOFF_MS");
+    const char* tb = dsd_env_get("DSD_NEO_TCPIN_BACKOFF_MS");
     c.tcpin_backoff_ms_is_set = 0;
     c.tcpin_backoff_ms = 300;
     if (env_is_set(tb)) {
@@ -1194,7 +1195,7 @@ config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
     }
 
     /* Symbol window freeze for A/B testing */
-    const char* wf = getenv("DSD_NEO_WINDOW_FREEZE");
+    const char* wf = dsd_env_get("DSD_NEO_WINDOW_FREEZE");
     c.window_freeze_is_set = env_is_set(wf);
     if (c.window_freeze_is_set) {
         int v = 0;
@@ -1204,7 +1205,7 @@ config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
     }
 
     /* Optional JSON emitter for P25 PDUs */
-    const char* pj = getenv("DSD_NEO_PDU_JSON");
+    const char* pj = dsd_env_get("DSD_NEO_PDU_JSON");
     c.pdu_json_is_set = env_is_set(pj);
     if (c.pdu_json_is_set) {
         int v = 0;
@@ -1214,7 +1215,7 @@ config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
     }
 
     /* Optional SNR-based digital squelch threshold (dB) */
-    const char* snrsql = getenv("DSD_NEO_SNR_SQL_DB");
+    const char* snrsql = dsd_env_get("DSD_NEO_SNR_SQL_DB");
     c.snr_sql_is_set = env_is_set(snrsql);
     if (c.snr_sql_is_set) {
         int v = 0;
@@ -1227,8 +1228,8 @@ config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
 static void
 config_init_iq_and_channel_lpf(dsdneoRuntimeConfig& c) {
     /* Complex DC blocker */
-    const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
-    const char* dck = getenv("DSD_NEO_IQ_DC_SHIFT");
+    const char* dcb = dsd_env_get("DSD_NEO_IQ_DC_BLOCK");
+    const char* dck = dsd_env_get("DSD_NEO_IQ_DC_SHIFT");
     c.iq_dc_block_is_set = env_is_set(dcb);
     if (c.iq_dc_block_is_set) {
         int v = 0;
@@ -1246,7 +1247,7 @@ config_init_iq_and_channel_lpf(dsdneoRuntimeConfig& c) {
 
     /* Channel complex low-pass on RTL baseband (post-HB).
        Default: off for digital voice modes at 24 kHz; may be enabled via env. */
-    const char* clpf = getenv("DSD_NEO_CHANNEL_LPF");
+    const char* clpf = dsd_env_get("DSD_NEO_CHANNEL_LPF");
     c.channel_lpf_is_set = env_is_set(clpf);
     if (c.channel_lpf_is_set) {
         int v = 0;
@@ -1316,5 +1317,5 @@ dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* opts,
 
 extern "C" const char*
 dsd_neo_env_get(const char* name) {
-    return name ? getenv(name) : NULL;
+    return dsd_env_get(name);
 }

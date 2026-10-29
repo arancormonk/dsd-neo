@@ -18,6 +18,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
@@ -1195,7 +1196,7 @@ cb_audio_lpf(void* v, int ok, int hz) {
         return;
     }
     if (hz <= 0) {
-        dsd_setenv("DSD_NEO_AUDIO_LPF", "off", 1);
+        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUDIO_LPF", "off");
     } else {
         env_set_int("DSD_NEO_AUDIO_LPF", hz);
     }
@@ -1254,7 +1255,7 @@ cb_tcp_rcvbuf(void* v, int ok, int sz) {
         return;
     }
     if (sz <= 0) {
-        dsd_setenv("DSD_NEO_TCP_RCVBUF", "", 1);
+        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TCP_RCVBUF", "");
     } else {
         env_set_int("DSD_NEO_TCP_RCVBUF", sz);
     }
@@ -1270,7 +1271,7 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
         return;
     }
     if (ms <= 0) {
-        dsd_setenv("DSD_NEO_TCP_RCVTIMEO", "", 1);
+        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TCP_RCVTIMEO", "");
     } else {
         env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
     }
@@ -1305,11 +1306,12 @@ cb_env_edit_value(void* u, const char* val) {
         free(ec);
         return;
     }
-    if (*val) {
-        dsd_setenv(ec->name, val, 1);
+    /* A session override (#782): the process environment is never written while the decoder reads it. */
+    if (dsd_env_set(DSD_ENV_LAYER_SESSION, ec->name, *val ? val : NULL) != 0) {
+        ui_statusf("Could not set %s: too many variables changed", ec->name);
+    } else if (*val) {
         ui_statusf("Set %s", ec->name);
     } else {
-        dsd_unsetenv(ec->name);
         ui_statusf("Cleared %s", ec->name);
     }
     // Apply to runtime config as appropriate

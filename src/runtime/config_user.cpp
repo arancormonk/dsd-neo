@@ -23,6 +23,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/udp_comp_ports.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
@@ -677,18 +678,18 @@ dsd_user_config_default_path(void) {
     buf[0] = '\0';
 
 #if defined(_WIN32)
-    const char* appdata = getenv("APPDATA");
+    const char* appdata = dsd_env_get("APPDATA");
     if (appdata && *appdata) {
         DSD_SNPRINTF(buf, sizeof buf, "%s\\dsd-neo\\config.ini", appdata);
         buf[sizeof buf - 1] = '\0';
     }
 #else
-    const char* xdg = getenv("XDG_CONFIG_HOME");
+    const char* xdg = dsd_env_get("XDG_CONFIG_HOME");
     if (xdg && *xdg) {
         DSD_SNPRINTF(buf, sizeof buf, "%s/dsd-neo/config.ini", xdg);
         buf[sizeof buf - 1] = '\0';
     } else {
-        const char* home = getenv("HOME");
+        const char* home = dsd_env_get("HOME");
         if (home && *home) {
             DSD_SNPRINTF(buf, sizeof buf, "%s/.config/dsd-neo/config.ini", home);
             buf[sizeof buf - 1] = '\0';
@@ -1500,9 +1501,8 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
         return;
     }
     opts->rtl_auto_ppm = cfg->rtl_auto_ppm ? 1 : 0;
-    if (getenv("DSD_NEO_AUTO_PPM") == NULL) {
-        dsd_setenv("DSD_NEO_AUTO_PPM", opts->rtl_auto_ppm ? "1" : "0", 0);
-    }
+    /* An exported DSD_NEO_AUTO_PPM, or one an option already set, wins over the INI key. */
+    (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUTO_PPM", opts->rtl_auto_ppm ? "1" : "0");
 }
 
 /* A PCM source's squelch keys (issue #628), when the config names them: the noise squelch runs on audio input, and a
@@ -1831,12 +1831,9 @@ apply_dsp_config(const dsdneoUserConfig* cfg) {
     if (!cfg || !cfg->has_dsp) {
         return;
     }
-    if (getenv("DSD_NEO_IQ_BALANCE") == NULL) {
-        dsd_setenv("DSD_NEO_IQ_BALANCE", cfg->iq_balance ? "1" : "0", 0);
-    }
-    if (getenv("DSD_NEO_IQ_DC_BLOCK") == NULL) {
-        dsd_setenv("DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0", 0);
-    }
+    /* An exported variable, or one a toggle already set, wins over the INI key. */
+    (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_BALANCE", cfg->iq_balance ? "1" : "0");
+    (void)dsd_env_set_if_unset(DSD_ENV_LAYER_SESSION, "DSD_NEO_IQ_DC_BLOCK", cfg->iq_dc_block ? "1" : "0");
 }
 
 /* A section that is present sets every key it owns: a width left out is the default (0). The loader only stores
@@ -2198,10 +2195,10 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 static void
 snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->has_dsp = 1;
-    const char* iqb = getenv("DSD_NEO_IQ_BALANCE");
+    const char* iqb = dsd_env_get("DSD_NEO_IQ_BALANCE");
     int parsed = 0;
     cfg->iq_balance = (dsd_parse_int_strict(iqb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
-    const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
+    const char* dcb = dsd_env_get("DSD_NEO_IQ_DC_BLOCK");
     parsed = 0;
     cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }

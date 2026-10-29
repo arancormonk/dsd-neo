@@ -28,6 +28,13 @@
 #include "../../src/platform/audio_aaudio.c"
 #include "aaudio/AAudio.h"
 
+/* The backend reads its variables through the override store (#782); this test links no platform library, and no
+   override is ever set here, so the process environment is the whole answer. */
+const char*
+dsd_env_get(const char* name) {
+    return getenv(name);
+}
+
 #define FAKE_CAPTURE_SAMPLES 8192
 
 #define FAKE_BUILDER         ((AAudioStreamBuilder*)0x1)

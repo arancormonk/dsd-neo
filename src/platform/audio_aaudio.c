@@ -28,6 +28,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <stdint.h>
@@ -1313,7 +1314,7 @@ aaudio_fill_device(dsd_audio_device* dev, int is_input) {
  */
 static void
 aaudio_report_stats(const dsd_audio_stream* stream) {
-    const char* stats_env = getenv("DSD_NEO_AUDIO_STATS");
+    const char* stats_env = dsd_env_get("DSD_NEO_AUDIO_STATS");
     if (!stats_env || stats_env[0] == '\0') {
         return;
     }

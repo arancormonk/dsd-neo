@@ -16,6 +16,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
 #include "dsd-neo/core/safe_api.h"
@@ -47,7 +48,7 @@ std::atomic<int> g_log_sink{kLogSinkUnresolved};
  */
 int
 log_sink_from_env(void) {
-    const char* v = getenv("DSD_NEO_LOG_SINK");
+    const char* v = dsd_env_get("DSD_NEO_LOG_SINK");
     if (v != nullptr && (v[0] == 'p' || v[0] == 'P' || v[0] == 'l' || v[0] == 'L')) {
         /* "platform" or "logcat" */
         return (int)DSD_NEO_LOG_SINK_PLATFORM;

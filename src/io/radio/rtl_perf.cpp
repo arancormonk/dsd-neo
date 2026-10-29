@@ -10,6 +10,7 @@
 
 #include "rtl_perf.h"
 #include <atomic>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <errno.h>
@@ -55,7 +56,7 @@ exchange_counter(std::atomic<uint64_t>& counter) {
 
 uint64_t
 parse_interval_ns(void) {
-    const char* env = getenv("DSD_NEO_RTL_PERF_INTERVAL_MS");
+    const char* env = dsd_env_get("DSD_NEO_RTL_PERF_INTERVAL_MS");
     if (!env || !env[0]) {
         return 1000000000ULL;
     }
@@ -87,7 +88,7 @@ init_locked(void) {
     if (g_perf_state.load(std::memory_order_acquire) != 0) {
         return;
     }
-    const char* path = getenv("DSD_NEO_RTL_PERF_CSV");
+    const char* path = dsd_env_get("DSD_NEO_RTL_PERF_CSV");
     if (!path || !path[0]) {
         g_perf_state.store(1, std::memory_order_release);
         return;

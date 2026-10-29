@@ -10,7 +10,7 @@
 
 #include "menu_env.h"
 #include <dsd-neo/core/parse.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/config.h>
 #include <float.h> // IWYU pragma: keep
 #include <limits.h>
@@ -60,7 +60,7 @@ void
 env_set_int(const char* name, int v) {
     char buf[64];
     DSD_SNPRINTF(buf, sizeof buf, "%d", v);
-    dsd_setenv(name, buf, 1);
+    dsd_env_set(DSD_ENV_LAYER_SESSION, name, buf);
 }
 
 void
@@ -68,7 +68,7 @@ env_set_double(const char* name, double v) {
     char buf[64];
     // limit precision just for display sanity
     DSD_SNPRINTF(buf, sizeof buf, "%.6g", v);
-    dsd_setenv(name, buf, 1);
+    dsd_env_set(DSD_ENV_LAYER_SESSION, name, buf);
 }
 
 void

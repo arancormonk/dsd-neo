@@ -18,6 +18,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -66,6 +67,7 @@ static char g_env_name[128];
 static char g_env_value[128];
 static int g_env_set_calls;
 static int g_env_unset_calls;
+static int g_env_set_fails;
 static char g_env_int_name[128];
 static int g_env_int_value;
 static char g_env_double_name[128];
@@ -272,19 +274,20 @@ env_reparse_runtime_cfg(dsd_opts* opts) {
     g_reparse_calls++;
 }
 
+/* The callbacks override a variable for the session only (#782): never the host layer, never the environment. */
 int
-dsd_setenv(const char* name, const char* value, int overwrite) {
+dsd_env_set(dsd_env_layer layer, const char* name, const char* value) {
+    assert(layer == DSD_ENV_LAYER_SESSION);
     DSD_SNPRINTF(g_env_name, sizeof g_env_name, "%s", name ? name : "");
-    DSD_SNPRINTF(g_env_value, sizeof g_env_value, "%s", value ? value : "");
+    if (g_env_set_fails) {
+        return -1;
+    }
+    if (value == NULL) {
+        g_env_unset_calls++;
+        return 0;
+    }
+    DSD_SNPRINTF(g_env_value, sizeof g_env_value, "%s", value);
     g_env_set_calls++;
-    (void)overwrite;
-    return 0;
-}
-
-int
-dsd_unsetenv(const char* name) {
-    DSD_SNPRINTF(g_env_name, sizeof g_env_name, "%s", name ? name : "");
-    g_env_unset_calls++;
     return 0;
 }
 
@@ -354,6 +357,7 @@ reset_capture(void) {
     DSD_MEMSET(g_env_value, 0, sizeof g_env_value);
     g_env_set_calls = 0;
     g_env_unset_calls = 0;
+    g_env_set_fails = 0;
     DSD_MEMSET(g_env_int_name, 0, sizeof g_env_int_name);
     g_env_int_value = 0;
     DSD_MEMSET(g_env_double_name, 0, sizeof g_env_double_name);
@@ -1188,6 +1192,17 @@ test_env_editor_and_protocol_callbacks(void) {
     rc |= expect_int("env clear calls unset", g_env_unset_calls, 1);
     rc |= expect_int("env clear does not set an empty value", g_env_set_calls, 0);
     rc |= expect_int("env clear reparses", g_reparse_calls, 1);
+
+    /* A full override table refuses the edit, and the status says so rather than "Set". */
+    reset_capture();
+    g_env_set_fails = 1;
+    EnvEditCtx* full = (EnvEditCtx*)calloc(1, sizeof *full);
+    assert(full != NULL);
+    full->c = &ctx;
+    DSD_SNPRINTF(full->name, sizeof full->name, "%s", "DSD_NEO_TOO_MANY");
+    cb_env_edit_value(full, "1");
+    rc |= expect_int("env refused names the failure", strstr(g_status, "Could not set DSD_NEO_TOO_MANY") != NULL, 1);
+    g_env_set_fails = 0;
 
     reset_capture();
     cb_lr_custom(&ctx, "lrrp.txt");

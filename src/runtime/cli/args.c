@@ -30,6 +30,7 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/iq_wav.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -1116,7 +1117,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
             opts->rtltcp_autotune = 1;                                                                                 \
-            dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);                                                                \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TCP_AUTOTUNE", "1");                                           \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rtl-udp-control") == 0) {                                                               \
@@ -1394,7 +1395,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-vc-grace", DSD_PARSE_ARGS_NEXT_ARG(), opts->p25_vc_grace_s);         \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_vc_grace_s);                                               \
-            dsd_setenv("DSD_NEO_P25_VC_GRACE", buf, 1);                                                                \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_VC_GRACE", buf);                                           \
             LOG_INFO("NOTICE: P25: VC grace set to %.2fs (CLI).\n", opts->p25_vc_grace_s);                             \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1403,7 +1404,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                            opts->p25_min_follow_dwell_s);                                              \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_min_follow_dwell_s);                                       \
-            dsd_setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", buf, 1);                                                        \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_MIN_FOLLOW_DWELL", buf);                                   \
             LOG_INFO("NOTICE: P25: Min follow dwell set to %.2fs (CLI).\n", opts->p25_min_follow_dwell_s);             \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1412,7 +1413,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                            opts->p25_grant_voice_to_s);                                                \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_grant_voice_to_s);                                         \
-            dsd_setenv("DSD_NEO_P25_GRANT_VOICE_TO", buf, 1);                                                          \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_GRANT_VOICE_TO", buf);                                     \
             LOG_INFO("NOTICE: P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);           \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1421,7 +1422,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-mac-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
-            dsd_setenv("DSD_NEO_P25_MAC_HOLD", buf, 1);                                                                \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_MAC_HOLD", buf);                                           \
             LOG_INFO("NOTICE: P25: MAC hold set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1436,7 +1437,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", v);                                                                  \
-            dsd_setenv("DSD_NEO_P25_CC_GRACE", buf, 1);                                                                \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_CC_GRACE", buf);                                           \
             LOG_INFO("NOTICE: P25: CC grace set to %.2fs (CLI).\n", v);                                                \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1445,7 +1446,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                            opts->p25_force_release_extra_s);                                           \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_extra_s);                                    \
-            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf, 1);                                                     \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_FORCE_RELEASE_EXTRA", buf);                                \
             LOG_INFO("NOTICE: P25: Force-release extra set to %.2fs (CLI).\n", opts->p25_force_release_extra_s);       \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1454,7 +1455,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                            opts->p25_force_release_margin_s);                                          \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_force_release_margin_s);                                   \
-            dsd_setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf, 1);                                                    \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25_FORCE_RELEASE_MARGIN", buf);                               \
             LOG_INFO("NOTICE: P25: Force-release margin set to %.2fs (CLI).\n", opts->p25_force_release_margin_s);     \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1463,7 +1464,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                            opts->p25_p1_err_hold_pct);                                                 \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.1f", opts->p25_p1_err_hold_pct);                                          \
-            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", buf, 1);                                                          \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25P1_ERR_HOLD_PCT", buf);                                     \
             LOG_INFO("NOTICE: P25p1: Error-hold threshold set to %.1f%% (CLI).\n", opts->p25_p1_err_hold_pct);         \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1472,7 +1473,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                            opts->p25_p1_err_hold_s);                                                   \
             char buf[32];                                                                                              \
             DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_p1_err_hold_s);                                            \
-            dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", buf, 1);                                                            \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_P25P1_ERR_HOLD_S", buf);                                       \
             LOG_INFO("NOTICE: P25p1: Error-hold seconds set to %.2fs (CLI).\n", opts->p25_p1_err_hold_s);              \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1702,7 +1703,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--auto-ppm") == 0) {                                                                      \
             opts->rtl_auto_ppm = 1;                                                                                    \
-            dsd_setenv("DSD_NEO_AUTO_PPM", "1", 1);                                                                    \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUTO_PPM", "1");                                               \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--frontend") == 0) {                                                                      \
@@ -1952,7 +1953,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 DSD_CLI_PARSE_DOUBLE_OR_RETURN("--auto-ppm-snr", sv, opts->rtl_auto_ppm_snr_db);                       \
                 char buf[32];                                                                                          \
                 DSD_SNPRINTF(buf, sizeof buf, "%.2f", opts->rtl_auto_ppm_snr_db);                                      \
-                dsd_setenv("DSD_NEO_AUTO_PPM_SNR_DB", buf, 1);                                                         \
+                dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUTO_PPM_SNR_DB", buf);                                    \
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -2139,7 +2140,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     dsd_iq_replay_config_clear(&replay_cfg);
 
 #define DSD_PARSE_ARGS_TRAILING_BLOCK()                                                                                \
-    /* If CLI present, set env vars and maybe run calculator */                                                        \
+    /* If CLI present, set the session overrides the calculator reads and run it */                                    \
     if (calc_csv_cli) {                                                                                                \
         char calc_csv_path[DSD_CLI_LOCAL_PATH_MAX];                                                                    \
         if (!cli_resolve_existing_local_file_option("--calc-lcn", calc_csv_cli, calc_csv_path, sizeof calc_csv_path,   \
@@ -2164,18 +2165,18 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             && !cli_parse_long_option("--calc-start-lcn", calc_start_cli, 10, &calc_long_check, out_exit_rc)) {        \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
-        dsd_setenv("DSD_NEO_DMR_T3_CALC_CSV", calc_csv_path, 1);                                                       \
+        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_DMR_T3_CALC_CSV", calc_csv_path);                                  \
         if (calc_step_cli) {                                                                                           \
-            dsd_setenv("DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli, 1);                                                    \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_DMR_T3_STEP_HZ", calc_step_cli);                               \
         }                                                                                                              \
         if (calc_ccf_cli) {                                                                                            \
-            dsd_setenv("DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli, 1);                                                     \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_DMR_T3_CC_FREQ", calc_ccf_cli);                                \
         }                                                                                                              \
         if (calc_ccl_cli) {                                                                                            \
-            dsd_setenv("DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli, 1);                                                      \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_DMR_T3_CC_LCN", calc_ccl_cli);                                 \
         }                                                                                                              \
         if (calc_start_cli) {                                                                                          \
-            dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);                                                 \
+            dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_DMR_T3_START_LCN", calc_start_cli);                            \
         }                                                                                                              \
         /* Refresh typed env config after CLI writes. */                                                               \
         dsd_neo_config_init();                                                                                         \
@@ -2249,7 +2250,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         opts->input_volume_multiplier = mv;                                                                            \
         char b[16];                                                                                                    \
         DSD_SNPRINTF(b, sizeof b, "%d", mv);                                                                           \
-        dsd_setenv("DSD_NEO_INPUT_VOLUME", b, 1);                                                                      \
+        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_INPUT_VOLUME", b);                                                 \
         LOG_INFO("NOTICE: Input volume multiplier: %dx\n", mv);                                                        \
     } else if (cfg && cfg->input_volume_is_set) {                                                                      \
         opts->input_volume_multiplier = cfg->input_volume_multiplier;                                                  \
@@ -2269,7 +2270,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         opts->input_warn_db = thr;                                                                                     \
         char b[32];                                                                                                    \
         DSD_SNPRINTF(b, sizeof b, "%.1f", thr);                                                                        \
-        dsd_setenv("DSD_NEO_INPUT_WARN_DB", b, 1);                                                                     \
+        dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_INPUT_WARN_DB", b);                                                \
         LOG_INFO("NOTICE: Low input warning threshold: %.1f dBFS\n", thr);                                             \
     } else if (cfg && cfg->input_warn_db_is_set) {                                                                     \
         opts->input_warn_db = cfg->input_warn_db;                                                                      \

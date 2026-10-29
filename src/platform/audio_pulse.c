@@ -16,6 +16,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -1098,7 +1099,7 @@ dsd_audio_close(dsd_audio_stream* stream) {
             stream->thread_started = 0;
         }
 
-        const char* stats_env = getenv("DSD_NEO_AUDIO_STATS");
+        const char* stats_env = dsd_env_get("DSD_NEO_AUDIO_STATS");
         if (stats_env && stats_env[0] != '\0' && (stream->underruns || stream->drops)) {
             DSD_FPRINTF(stderr, "PulseAudio output stats: rate=%d ch=%d underruns=%llu drops=%llu\n",
                         stream->sample_rate, stream->channels, (unsigned long long)stream->underruns,

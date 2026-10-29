@@ -7973,6 +7973,41 @@ else()
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
 
+# #782: options, config and menus override variables inside the process and never write its environment, and a later
+# session in the same process does not inherit an earlier session's overrides.
+add_executable(
+    dsd-neo_test_runtime_env_overrides
+    runtime/test_runtime_env_overrides.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_env_overrides
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_runtime_env_overrides
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_runtime_env_overrides
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME RUNTIME_ENV_NO_PROCESS_WRITES
+    COMMAND dsd-neo_test_runtime_env_overrides no-process-writes
+)
+add_test(
+    NAME RUNTIME_SESSION_OVERRIDES_RESET
+    COMMAND dsd-neo_test_runtime_env_overrides session-reset
+)
+
 # Issue #708: the WAV recording commands through the real queue, the per-call writers' failure policy behind a
 # libsndfile seam, and the recording view.
 add_executable(
