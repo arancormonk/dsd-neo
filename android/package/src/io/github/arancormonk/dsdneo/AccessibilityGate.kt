@@ -21,14 +21,15 @@ fun bridgeWanted(f: A11yFacts): Boolean = f.touchExploration
 
 /**
  * The launch's decision. [env] is what `QT_ANDROID_DISABLE_ACCESSIBILITY` holds while Qt starts: `"1"` keeps the bridge
- * off, null (unset) leaves Qt's default. [activated] is whether Qt turns the bridge on as it starts, which it does only
- * when accessibility is enabled at that moment.
+ * off; `"0"` leaves Qt's default, since Qt keeps it off only for `1` or `true`. It is written rather than unset so the
+ * freeze after Qt starts never adds an environment entry (see [AccessibilityBridge]). [activated] is whether Qt turns
+ * the bridge on as it starts, which it does only when accessibility is enabled at that moment.
  */
-data class LaunchPlan(val wanted: Boolean, val activated: Boolean, val env: String?) {
+data class LaunchPlan(val wanted: Boolean, val activated: Boolean, val env: String) {
     companion object {
         fun of(f: A11yFacts): LaunchPlan {
             val wanted = bridgeWanted(f)
-            return LaunchPlan(wanted, wanted && f.enabled, if (wanted) null else "1")
+            return LaunchPlan(wanted, wanted && f.enabled, if (wanted) "0" else "1")
         }
     }
 }
@@ -69,10 +70,12 @@ class AccessibilityGate<A : Any>(private val log: (String) -> Unit) {
     /** Whether a notice is owed and not on screen. */
     val noticePending: Boolean get() = state == State.PENDING
 
-    /** The first call decides for the process; later calls return that plan, whatever [f] says now. */
-    fun launch(f: A11yFacts): LaunchPlan {
+    /**
+     * The first call decides for the process; later calls return that plan, whatever [f] says now. [decided] is the
+     * plan Qt actually starts with: [LaunchPlan.of] unless the variable could not be written.
+     */
+    fun launch(f: A11yFacts, decided: LaunchPlan = LaunchPlan.of(f)): LaunchPlan {
         plan?.let { return it }
-        val decided = LaunchPlan.of(f)
         plan = decided
         lastWanted = decided.wanted
         if (decided.wanted && !decided.activated) {
@@ -169,12 +172,15 @@ class AccessibilityGate<A : Any>(private val log: (String) -> Unit) {
         log("accessibility: notice acknowledged")
     }
 
-    /** The notice's dialog was closed without the user (a stop or destroy); it waits for the next resume. */
+    /**
+     * The notice's dialog was closed without the user (a stop or destroy): it waits for the next resume, unless touch
+     * exploration has gone off since, which makes it moot.
+     */
     fun noticeDropped() {
         if (state != State.SHOWING) {
             return
         }
-        state = State.PENDING
+        state = if (lastWanted) State.PENDING else State.IDLE
         shownOn = null
         log("accessibility: notice dropped")
     }

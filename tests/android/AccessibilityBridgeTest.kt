@@ -86,17 +86,19 @@ private fun aServiceAloneLeavesTheBridgeOffAndFrozen(a: Activity) {
     AccessibilityBridge.effects = Recorder
     AccessibilityBridge.beforeQt(a)
     check(Os.env[VARIABLE] == "1") { "touch exploration off: the variable is 1 before Qt starts" }
+    check(Os.calls == listOf("setenv $VARIABLE=1")) { "one write, before Qt: ${Os.calls}" }
     Qt.onCreate()
     check(!Qt.bridgeOn && Qt.activations == 0) { "Qt's synchronous check at onCreate must see 1" }
     AccessibilityBridge.afterQt(a)
     check(Os.env[VARIABLE] == "1")
-    check(am.touchListeners.size == 1) { "one touch exploration listener" }
+    check(Os.calls == listOf("setenv $VARIABLE=1")) { "already 1: the freeze writes nothing while Qt runs: ${Os.calls}" }
+    check(am.touchListeners.size == 1 && am.touchListenerAdds == 1) { "one touch exploration listener" }
     check(Recorder.records == listOf(
         "accessibility: bridge off at launch (touch exploration off; accessibility on, 2 services bound)"
     )) { "launch record: ${Recorder.records}" }
     // A second afterQt (a second instance in the process) registers nothing more and records the launch once.
     AccessibilityBridge.afterQt(a)
-    check(am.touchListeners.size == 1 && Recorder.records.size == 1)
+    check(am.touchListenerAdds == 1 && Recorder.records.size == 1) { "registered once per process" }
     check(Os.env[VARIABLE] == "1")
 }
 
@@ -137,6 +139,32 @@ private fun whilePausedNothingUntilResume(a: Activity) {
     AccessibilityBridge.noticeAcknowledged()
 }
 
+private fun aNoticeThatCannotShowWaitsForTheNextResume(a: Activity) {
+    val shown = Recorder.shown.size
+    am.setState(enabled = true, touchExploration = false)
+    Recorder.showSucceeds = false
+    am.setState(enabled = true, touchExploration = true)
+    check(Recorder.shown.size == shown)
+    check(Recorder.records.last() == "accessibility: notice could not be shown; it waits for the next resume")
+    Recorder.showSucceeds = true
+    AccessibilityBridge.onPause(a)
+    AccessibilityBridge.onResume(a)
+    check(Recorder.shown.size == shown + 1 && Recorder.shown.last() === a)
+    AccessibilityBridge.noticeAcknowledged()
+}
+
+private fun aResumeReadsWhatTheListenerMissed(a: Activity) {
+    // The listener is the usual path; onResume re-reads the flags too, so a change it was not told of still shows.
+    val shown = Recorder.shown.size
+    AccessibilityBridge.onPause(a)
+    am.setState(enabled = true, touchExploration = false)
+    am.setStateSilently(enabled = true, touchExploration = true)
+    check(Recorder.shown.size == shown)
+    AccessibilityBridge.onResume(a)
+    check(Recorder.shown.size == shown + 1) { "onResume must read the facts and show the notice" }
+    AccessibilityBridge.noticeAcknowledged()
+}
+
 private fun theFirstServiceTurnedOnAfterLaunchFindsQtFrozen(a: Activity) {
     // No service left, then TalkBack as the first one: the enabled state really flips, so Qt's listener runs (run T1).
     am.setState(enabled = false, touchExploration = false)
@@ -144,7 +172,7 @@ private fun theFirstServiceTurnedOnAfterLaunchFindsQtFrozen(a: Activity) {
     am.setState(enabled = true, touchExploration = true)
     check(Qt.envSeen.isNotEmpty() && Qt.envSeen.all { it == "1" }) { "Qt's listener must see 1 on every call" }
     check(!Qt.bridgeOn && Qt.activations == 0) { "the bridge never turns on mid-session" }
-    check(Recorder.shown.size == 4) { "and the notice says to reopen the app" }
+    check(Recorder.shown.size == 6) { "and the notice says to reopen the app" }
 }
 
 private fun aDestroyedActivityHandsTheNoticeToTheNext(a: Activity) {
@@ -155,12 +183,36 @@ private fun aDestroyedActivityHandsTheNoticeToTheNext(a: Activity) {
     val b = Activity("second")
     Os.calls.clear()
     create(b)
-    check(Os.calls == listOf("setenv $VARIABLE=1")) { "a later instance only refreezes: ${Os.calls}" }
+    check(Os.calls.isEmpty()) { "a later instance writes nothing to the environment: ${Os.calls}" }
     check(Os.env[VARIABLE] == "1" && !Qt.bridgeOn)
     AccessibilityBridge.onResume(a)
-    check(Recorder.shown.size == 4) { "the destroyed activity's late resume is ignored" }
+    check(Recorder.shown.size == 6) { "the destroyed activity's late resume is ignored" }
     AccessibilityBridge.onResume(b)
-    check(Recorder.shown.size == 5 && Recorder.shown.last() === b) { "the pending notice reaches the next activity" }
+    check(Recorder.shown.size == 7 && Recorder.shown.last() === b) { "the pending notice reaches the next activity" }
+    // A's late stop must not close the dialog on B's window.
+    AccessibilityBridge.onStop(a)
+    AccessibilityBridge.onDestroy(a)
+    check(Recorder.dismissed == 2) { "a stale stop or destroy dismisses nothing" }
+
+    // C is created before B goes: B's own stop still closes its dialog, and C, once resumed, gets the notice.
+    val c = Activity("third")
+    create(c)
+    AccessibilityBridge.onResume(b)
+    check(Recorder.shown.size == 7) { "B is no longer the owner" }
+    AccessibilityBridge.onPause(b)
+    AccessibilityBridge.onStop(b)
+    check(Recorder.dismissed == 3) { "the dialog on B's window closes with B" }
+    AccessibilityBridge.onDestroy(b)
+    AccessibilityBridge.onResume(c)
+    check(Recorder.shown.size == 8 && Recorder.shown.last() === c)
+
+    // C goes with no successor: it is detached, so its late resume cannot take the notice.
+    AccessibilityBridge.onPause(c)
+    AccessibilityBridge.onStop(c)
+    AccessibilityBridge.onDestroy(c)
+    check(Recorder.dismissed == 4)
+    AccessibilityBridge.onResume(c)
+    check(Recorder.shown.size == 8) { "a destroyed activity is detached" }
 }
 
 private fun noRecordNamesAService() {
@@ -181,6 +233,8 @@ fun main() {
     talkBackWhileResumedShowsTheNoticeOnce(a)
     aStopClosesTheNoticeAndTheResumeBringsItBack(a)
     whilePausedNothingUntilResume(a)
+    aNoticeThatCannotShowWaitsForTheNextResume(a)
+    aResumeReadsWhatTheListenerMissed(a)
     theFirstServiceTurnedOnAfterLaunchFindsQtFrozen(a)
     aDestroyedActivityHandsTheNoticeToTheNext(a)
     noRecordNamesAService()

@@ -27,6 +27,9 @@ object AccessibilityRestartNotice : AccessibilityBridge.Effects {
 
     override fun showNotice(activity: Activity): Boolean {
         dismissNotice()
+        if (activity.isFinishing || activity.isDestroyed) {
+            return false
+        }
         val built = AlertDialog.Builder(activity)
             .setTitle(R.string.a11y_restart_title)
             .setMessage(R.string.a11y_restart_message)
@@ -39,9 +42,16 @@ object AccessibilityRestartNotice : AccessibilityBridge.Effects {
             dialog = built
             true
         } catch (e: WindowManager.BadTokenException) {
-            Log.w(TAG, "accessibility notice not shown: ${e.javaClass.simpleName}")
-            false
+            notShown(e)
+        } catch (e: WindowManager.InvalidDisplayException) {
+            // The display went away under a resume.
+            notShown(e)
         }
+    }
+
+    private fun notShown(e: RuntimeException): Boolean {
+        Log.w(TAG, "accessibility notice not shown: ${e.javaClass.simpleName}")
+        return false
     }
 
     override fun dismissNotice() {

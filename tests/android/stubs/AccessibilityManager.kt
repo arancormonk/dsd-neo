@@ -24,6 +24,13 @@ class AccessibilityManager {
     val stateListeners = linkedSetOf<AccessibilityStateChangeListener>()
     val touchListeners = linkedSetOf<TouchExplorationStateChangeListener>()
     var serviceListReads = 0
+    var touchListenerAdds = 0
+
+    /** Changes the cached flags without running any listener, as a change the app was not told of. */
+    fun setStateSilently(enabled: Boolean, touchExploration: Boolean) {
+        isEnabled = enabled
+        isTouchExplorationEnabled = touchExploration
+    }
 
     fun setState(enabled: Boolean, touchExploration: Boolean) {
         val enabledChanged = enabled != isEnabled
@@ -43,8 +50,10 @@ class AccessibilityManager {
     fun addAccessibilityStateChangeListener(listener: AccessibilityStateChangeListener): Boolean =
         stateListeners.add(listener)
 
-    fun addTouchExplorationStateChangeListener(listener: TouchExplorationStateChangeListener): Boolean =
-        touchListeners.add(listener)
+    fun addTouchExplorationStateChangeListener(listener: TouchExplorationStateChangeListener): Boolean {
+        touchListenerAdds++
+        return touchListeners.add(listener)
+    }
 
     companion object {
         val device = AccessibilityManager()

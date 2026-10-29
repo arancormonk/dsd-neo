@@ -39,13 +39,13 @@ private fun thePredicateIsTouchExplorationOnly() {
     }
     for (facts in listOf(TALKBACK, TALKBACK_AND_SERVICE)) {
         check(bridgeWanted(facts))
-        check(LaunchPlan.of(facts) == LaunchPlan(wanted = true, activated = true, env = null)) {
-            "touch exploration on leaves the variable unset, so Qt turns the bridge on: $facts"
+        check(LaunchPlan.of(facts) == LaunchPlan(wanted = true, activated = true, env = "0")) {
+            "touch exploration on writes 0, which Qt does not read as off, so Qt turns the bridge on: $facts"
         }
     }
     // Not seen on Android (touch exploration implies enabled), but decided: wanted, Qt does not activate, so a notice.
     val odd = A11yFacts(enabled = false, touchExploration = true, boundServices = 0)
-    check(LaunchPlan.of(odd) == LaunchPlan(wanted = true, activated = false, env = null))
+    check(LaunchPlan.of(odd) == LaunchPlan(wanted = true, activated = false, env = "0"))
     val records = mutableListOf<String>()
     val gate = AccessibilityGate<GateActivity> { records += it }
     gate.launch(odd)
@@ -60,6 +60,18 @@ private fun theFirstLaunchDecidesForTheProcess() {
     val first = gate.launch(SERVICE_ONLY)
     check(gate.launch(TALKBACK) === first && gate.plan === first) { "a later launch returns the stored plan" }
     check(gate.launch(OFF) == LaunchPlan(wanted = false, activated = false, env = "1"))
+}
+
+private fun aLaunchWhoseVariableWasNotWrittenFollowsQtsDefault() {
+    // The bridge could not write 1, so Qt's default turned the bridge on for the bound service: never ask.
+    val rig = Rig()
+    val plan = rig.gate.launch(SERVICE_ONLY, LaunchPlan.of(SERVICE_ONLY).copy(activated = SERVICE_ONLY.enabled))
+    check(plan.activated && rig.gate.plan === plan)
+    rig.gate.attach(rig.a)
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+    check(rig.gate.onFacts(TALKBACK_AND_SERVICE) == Notice.NONE) { "TalkBack can already read this process" }
+    check(rig.gate.record(SERVICE_ONLY, plan) ==
+        "accessibility: bridge on at launch (touch exploration off; accessibility on, 2 services bound)")
 }
 
 private fun aRisingEdgeWhileOffAsksOnce() {
@@ -150,6 +162,20 @@ private fun aDialogClosedWithoutOkComesBack() {
     )) { "records: ${rig.records}" }
 }
 
+private fun aDroppedNoticeIsMootOnceTouchExplorationIsOff() {
+    // TalkBack turned on by accident, the dialog shows, TalkBack goes off again, and the app is left (#782 T4 M1).
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    check(rig.gate.onFacts(OFF) == Notice.NONE)
+    check(rig.gate.showingOn(rig.a)) { "a notice on screen stays until its OK" }
+    rig.gate.paused(rig.a)
+    rig.gate.noticeDropped()
+    check(!rig.gate.noticePending) { "with touch exploration off, a dropped notice is not owed again" }
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+    rig.show(rig.gate.onFacts(TALKBACK)) // The next rising edge still asks.
+}
+
 private fun afterOkNothingUntilTheNextRisingEdge() {
     val rig = Rig()
     rig.start(OFF)
@@ -205,6 +231,7 @@ private fun theRecordHoldsFlagsAndCountsOnly() {
 fun main() {
     thePredicateIsTouchExplorationOnly()
     theFirstLaunchDecidesForTheProcess()
+    aLaunchWhoseVariableWasNotWrittenFollowsQtsDefault()
     aRisingEdgeWhileOffAsksOnce()
     aFallingThenRisingEdgeAsksAgain()
     aBridgeOnAtLaunchNeverAsks()
@@ -212,6 +239,7 @@ fun main() {
     aPendingNoticeOutlivesItsActivity()
     staleCallbacksAreIgnored()
     aDialogClosedWithoutOkComesBack()
+    aDroppedNoticeIsMootOnceTouchExplorationIsOff()
     afterOkNothingUntilTheNextRisingEdge()
     theRecordHoldsFlagsAndCountsOnly()
     println("PASS: the accessibility gate decides once, and the notice reaches only a resumed activity, never lost")
