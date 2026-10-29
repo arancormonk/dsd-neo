@@ -2759,12 +2759,13 @@ dsd_decode_clock_use_system(); /* on every return path */
 ### Environment variables in tests
 
 Production code never writes the process environment (#782): an option, an INI key or a menu sets a session
-override in `<dsd-neo/platform/env.h>`, and every reader goes through `dsd_env_get()`. A test that needs a user's
-exported variable seeds the real environment with `dsd_test_setenv()`/`dsd_test_unsetenv()` from
-`tests/test_support/test_env.h` (every test target can include it), before it starts a thread that reads it. An
-override wins over the environment, so a test that runs code which sets one (a parse, a bootstrap, a menu toggle) and
-then exports a new value calls `dsd_env_clear_layer(DSD_ENV_LAYER_SESSION)` first, or sets the override itself with
-`dsd_env_set()`. To prove that a path writes nothing, compare `environ` before and after, as
+override in `<dsd-neo/platform/env.h>`, and every reader copies values out through `dsd_env_read()` or
+`dsd_env_value`. A test that needs a user's exported variable seeds the real environment with `dsd_test_setenv()`/
+`dsd_test_unsetenv()` from `tests/test_support/test_env.h` (every test target can include it), before it starts a
+thread that reads it; those also move `dsd_env_generation()`, so a reader that caches by it (the Unicode check) reads
+again. An override wins over the environment, so a test that runs code which sets one (a parse, a bootstrap, a menu
+toggle) and then exports a new value calls `dsd_env_clear_layer(DSD_ENV_LAYER_SESSION)` first, or sets the override
+itself with `dsd_env_set()`. To prove that a path writes nothing, compare `environ` before and after, as
 `RUNTIME_ENV_NO_PROCESS_WRITES` does: neither ASan nor TSan intercepts `setenv()`/`getenv()`, so a sanitizer run cannot
 see the race itself.
 

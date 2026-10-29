@@ -2582,9 +2582,9 @@ Misc
 - `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
 - `DSD_NEO_NO_SIGNAL_HANDLERS=1` — do not install the `SIGINT`/`SIGTERM`/`SIGHUP` handlers; for hosts that embed
   the decoder in their own process and drive shutdown themselves (a host can also set it in-process with
-  `dsd_env_set(DSD_ENV_LAYER_HOST, ...)` from `<dsd-neo/platform/env.h>`, as the Android app does). Without it, a hangup (`SIGHUP`, the terminal closed
-  or an SSH session dropped) shuts down as `SIGINT` does, finalizing recordings and the call in progress, unless the
-  session was started ignoring it (`nohup`)
+  `dsd_env_set(DSD_ENV_LAYER_HOST, ...)` from `<dsd-neo/platform/env.h>`, as the Android app does). Without it, a
+  hangup (`SIGHUP`, the terminal closed or an SSH session dropped) shuts down as `SIGINT` does, finalizing
+  recordings and the call in progress, unless the session was started ignoring it (`nohup`)
 - `DSD_NEO_LOG_SINK=stderr|platform` — destination for runtime log messages (default `stderr`). `platform`
   selects the operating system's native logging facility where one exists — on Android that is logcat under
   the `dsd-neo` tag, with severities mapped from the log level; elsewhere it behaves like `stderr`. Read once

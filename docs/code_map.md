@@ -752,19 +752,23 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - Environment overrides (#782): `include/dsd-neo/platform/env.h` (`src/platform/env.c`) is the program's only
     reader of the process environment, and nothing in the program writes it. On Android's bionic, adding a variable
     can free the `environ` array another thread's `getenv()` is walking, and every `localtime_r()` reads `TZ`.
-    `dsd_env_get()` reads the session layer, then the host layer, then the process environment, so an exported
-    variable is still an input; `dsd_env_set()` sets a name in one layer or hides it (`NULL`: reads as unset), and
-    `dsd_env_set_if_unset()` is `setenv(..., 0)` checked under the store's lock. The host layer is the embedding
-    host's for the life of the process (Android's `nativeInit`); the session layer is one session's options, INI keys
-    and menu toggles, and `dsd_runtime_bootstrap()` clears it. Values are interned per name and never freed, so a
-    pointer a reader holds stays valid and memory grows only with distinct (name, value) pairs; a 256-name table
-    behind one mutex, read only at cold sites (config init, a stream start or close, a menu redraw, a talkgroup
-    preempt that would displace a call). Semgrep enforces it: `dsd-neo.env-read-through-store` and
-    `dsd-neo.no-environment-write` (C/C++, exempting only the store and `src/ui/qt/qml_gc_policy.h`, whose
-    `QV4_GC_TIMELIMIT` is Qt's own input), and `dsd-neo.no-environment-write-kotlin` (only `QmlGcPolicy.kt` and
-    `AccessibilityBridge.kt`, before `super.onCreate()`). Tests seed the real environment through
-    `tests/test_support/test_env.h` (`dsd_test_setenv()`, `dsd_test_unsetenv()`), never through platform. Tests:
-    `PLATFORM_ENV_STORE`, `PLATFORM_ENV_STORE_THREADS` (run it under tsan-debug too)
+    `dsd_env_copy()`, `dsd_env_read()` (a caller's buffer; too long reads as unset with ERANGE) and the C++
+    `dsd_env_value` copy the session layer's value, else the host layer's, else the process environment's, so an
+    exported variable is still an input. No reader holds a pointer into the store. `dsd_env_set()` sets a name in one
+    layer or hides it (`NULL`: reads as unset), and `dsd_env_set_if_unset()` is `setenv(..., 0)` checked under the
+    store's lock; both fail with EINVAL or ENOMEM, and every caller logs or reports a refusal. The host layer is the
+    embedding host's for the life of the process (Android's `nativeInit`); the session layer is one session's
+    options, INI keys and menu toggles, and `dsd_runtime_bootstrap()` clears it. A replaced, hidden or cleared value
+    is zeroed (`DSD_SECURE_ZERO`) and freed at once, and a name with no override left frees its place, so the
+    256-name table counts live names. One mutex; read at cold sites (config init, a stream start or close, a menu
+    redraw, a talkgroup preempt that would displace a call), and the per-line Unicode check caches its
+    `DSD_FORCE_*` reads by `dsd_env_generation()`, a lock-free counter every change moves. Semgrep enforces it:
+    `dsd-neo.env-read-through-store` and `dsd-neo.no-environment-write` (C/C++, exempting only the store and
+    `src/ui/qt/qml_gc_policy.h`, whose `QV4_GC_TIMELIMIT` is Qt's own input, and banning `applyQmlGcPolicy()` calls
+    outside tests), and `dsd-neo.no-environment-write-kotlin` (only `QmlGcPolicy.kt` and `AccessibilityBridge.kt`,
+    before `super.onCreate()`); full scans include `android/`. Tests seed the real environment through
+    `tests/test_support/test_env.h` (`dsd_test_setenv()`, `dsd_test_unsetenv()`, which move the generation), never
+    through platform. Tests: `PLATFORM_ENV_STORE`, `PLATFORM_ENV_STORE_THREADS` (run it under tsan-debug too)
   - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes of a folder's volume only (`statvfs()`,
     `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
     never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
@@ -2205,12 +2209,13 @@ suite runs under this compiler.
     - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and
       `iq_dc_block`, each set only when unset, so an exported variable or an earlier option wins),
       `--interactive-setup` (hides `DSD_NEO_NO_BOOTSTRAP`), the RTL services, the I/Q DSP toggles and the terminal
-      menus set session overrides (`<dsd-neo/platform/env.h>`), never the process environment. `dsd_neo_config_init()`,
-      the user-config snapshot and every other reader read through `dsd_env_get()`, which `dsd_neo_env_get()`
-      forwards to. `dsd_runtime_bootstrap()` clears the session layer before anything else, so a host's next session
-      (the Android service's next Start) starts from the process environment and the host's overrides and never
-      inherits the last session's `--auto-ppm` or extra-argument knobs. Tests: `RUNTIME_ENV_NO_PROCESS_WRITES`,
-      `RUNTIME_SESSION_OVERRIDES_RESET`, `UI_MENU_ENV`
+      menus set session overrides (`<dsd-neo/platform/env.h>`), never the process environment; a refused one is
+      logged, or reported on the terminal's status line. `dsd_neo_config_init()`, the user-config snapshot and every
+      other reader copy values out of the store. `dsd_runtime_bootstrap()` clears the session layer (never the host
+      layer) before anything else, so a host's next session (the Android service's next Start) starts from the
+      process environment and the host's overrides and never inherits the last session's `--auto-ppm` or
+      extra-argument knobs. Tests: `RUNTIME_ENV_NO_PROCESS_WRITES` (with the `--interactive-setup` hide),
+      `RUNTIME_SESSION_OVERRIDES_RESET` (with a host override that survives), `UI_MENU_ENV`
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
@@ -10629,23 +10634,22 @@ keys and sends the arguments directly to `DecoderHost` in C++, returning only va
 
 ### QML garbage collector
 
-Every process that builds a QML engine sets `QV4_GC_TIMELIMIT=0` before the first engine exists. The Qt Quick
-Test `Setup` and the C++ tests that load production QML call `dsd_qt::applyQmlGcPolicy()`
-(`src/ui/qt/qml_gc_policy.h`). The Android app sets it from `QmlGcPolicy.kt` before `DsdNeoActivity`'s
-`super.onCreate()`, and no native code of the app writes the environment: once Qt's `main()` runs, adding an entry
-could free `environ` under the main thread's reads (#782). `nativeInit` sets `HOME`, `XDG_CONFIG_HOME` and
-`DSD_NEO_NO_SIGNAL_HANDLERS` as host overrides in the engine's store instead (it sets no `DSD_NEO_CACHE_DIR`: no
-Android build ever wrote the control-channel cache files that variable locates). `android_native_writes_no_environment`
-(`ANDROID_A11Y_BRIDGE_JVM`) scans every native source under `android/`, and every Kotlin file but `QmlGcPolicy.kt`
-and `AccessibilityBridge.kt`; after each link of `dsd-neo-app`, `cmake/check_no_environment_writers.cmake` refuses a
-library that imports `setenv`, `unsetenv`, `putenv` or `clearenv` from any code, vendored and static dependencies
-included (`ANDROID_LINK_ENV_WRITERS_*` test its parser on the host). With the limit at 0, each collection runs to completion
-instead of in Qt's default 5 ms time slices. Qt 6.11.2's incremental collector can free a QML object's function
-storage while the object is still being created. A `Connections` element's `function onX()` handler then crashes
-`QQmlConnections::connectSignalsToMethods()`. A Qt build with qtdeclarative 42c76d7acd (QTBUG-148459) skips
-the handler instead, without any error. On Qt 6.11.2 under load, the session-tools suite crashed 14 runs in 24
-with the default slices and none in 24 with the policy. The policy keeps a `QV4_GC_TIMELIMIT` that Qt parses as
-an integer.
+Every process that builds a QML engine sets `QV4_GC_TIMELIMIT=0` before the first engine exists. The Qt Quick Test
+`Setup` and the C++ tests that load production QML call `dsd_qt::applyQmlGcPolicy()` (`src/ui/qt/qml_gc_policy.h`). The
+Android app sets it from `QmlGcPolicy.kt` before `DsdNeoActivity`'s `super.onCreate()`, and no native code of the app
+writes the environment: once Qt's `main()` runs, adding an entry could free `environ` under the main thread's reads
+(#782). `nativeInit` sets `HOME`, `XDG_CONFIG_HOME` and `DSD_NEO_NO_SIGNAL_HANDLERS` as host overrides in the engine's
+store instead (it sets no `DSD_NEO_CACHE_DIR`: no Android build ever wrote the control-channel cache files that variable
+locates). `android_native_writes_no_environment` (`ANDROID_A11Y_BRIDGE_JVM`) scans every native source under `android/`,
+and every Kotlin file but `QmlGcPolicy.kt` and `AccessibilityBridge.kt`; after each link of `dsd-neo-app`,
+`cmake/check_no_environment_writers.cmake` refuses a library that imports `setenv`, `unsetenv`, `putenv`, `clearenv` or
+Qt's `qputenv`/`qunsetenv` from any code, vendored and static dependencies included (`ANDROID_LINK_ENV_WRITERS_*` test
+its parser on the host). With the limit at 0, each collection runs to completion instead of in Qt's default 5 ms time
+slices. Qt 6.11.2's incremental collector can free a QML object's function storage while the object is still being
+created. A `Connections` element's `function onX()` handler then crashes `QQmlConnections::connectSignalsToMethods()`. A
+Qt build with qtdeclarative 42c76d7acd (QTBUG-148459) skips the handler instead, without any error. On Qt 6.11.2 under
+load, the session-tools suite crashed 14 runs in 24 with the default slices and none in 24 with the policy. The policy
+keeps a `QV4_GC_TIMELIMIT` that Qt parses as an integer.
 
 ### Qt QML editing convention
 
