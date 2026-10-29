@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <errno.h>
 #include <math.h>
 #include <stddef.h>
@@ -366,9 +367,9 @@ dsd_squelch_dynamic_in_force(const dsd_opts* opts, const dsd_state* state) {
 }
 
 int
-dsd_squelch_noise_has_no_fm(const dsd_opts* opts) {
+dsd_squelch_noise_has_no_fm(const dsd_opts* opts, const dsd_state* state) {
     return opts && dsd_opts_is_analog_family(opts) && opts->analog_demod == DSD_ANALOG_DEMOD_AM
-           && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
+           && opts->scanner_mode != 1 && !dsd_trunk_scan_owns_tuner(opts, state);
 }
 
 int

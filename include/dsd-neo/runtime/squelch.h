@@ -171,11 +171,13 @@ void dsd_squelch_publish_status(const dsd_opts* opts, dsd_state* state);
 int dsd_squelch_dynamic_in_force(const dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief Whether @p opts runs the AM monitor on its own (-fM, no -Y or trunk scan): a session where a NOISE setting
- * has no FM channel to run on. A --squelch noise is refused there, and so is a frontend's request for it; a scan's AM
- * rows run a NOISE default as AUTO instead. 0 for NULL.
+ * @brief Whether @p opts runs the AM monitor on its own (-fM, no -Y or trunk scan running): a session where a NOISE
+ * setting has no FM channel to run on. A --squelch noise is refused there, and so is a frontend's request for it; a
+ * scan's AM rows run a NOISE default as AUTO instead. A paused trunk scan runs none of its targets (@p state's
+ * dsd_state::trunk_scan_paused, issue #671), so its manual AM session refuses it as one with no scan does; a NULL
+ * @p state reads as not paused. 0 for a NULL @p opts.
  */
-int dsd_squelch_noise_has_no_fm(const dsd_opts* opts);
+int dsd_squelch_noise_has_no_fm(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Whether the session follows EDACS analog voice calls (issue #625): a selected EDACS session

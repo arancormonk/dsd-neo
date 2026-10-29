@@ -9459,6 +9459,22 @@ test_squelch_setting_command(void) {
     rc |= expect_true("noise on AM refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
     rc |=
         expect_str("noise on AM toast", state.ui_msg, "Refused: the noise squelch needs an FM channel; AM takes auto");
+    /* Issue #671: a trunk scan running its targets takes the noise default for their rows (an AM target runs it as
+       auto); paused, the AM monitor runs on its own and refuses it as with no scan. */
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_paused = 1U;
+    rc |= expect_true("noise on AM, scan paused, queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
+    rc |= expect_int("noise on AM, scan paused, drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("noise on AM, scan paused, refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_str("noise on AM, scan paused, toast", state.ui_msg,
+                     "Refused: the noise squelch needs an FM channel; AM takes auto");
+    state.trunk_scan_paused = 0U;
+    rc |= expect_true("noise on AM, scan running, queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
+    rc |= expect_int("noise on AM, scan running, drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("noise on AM, scan running, applied",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 10);
+    opts.trunk_scan_enabled = 0;
+    dsd_squelch_setting_store(&opts, &level40);
     opts.analog_only = 0;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     dsd_rtl_stream_metrics_hooks_set(NULL);

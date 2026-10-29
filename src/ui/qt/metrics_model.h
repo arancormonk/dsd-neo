@@ -1115,8 +1115,8 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether the default may be the noise squelch: not on the AM monitor on its own (-fM, no scan), which
-     * refuses it (dsd_squelch_noise_has_no_fm()).
+     * @brief Whether the default may be the noise squelch: not on the AM monitor on its own (-fM, no scan running),
+     * which refuses it (dsd_squelch_noise_has_no_fm()).
      */
     bool
     squelchNoiseOffered() const {

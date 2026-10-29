@@ -983,7 +983,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.effective_squelch_auto = squelch.effective_auto != 0U;
     next.configured_squelch_noise = squelch.configured_noise != 0U;
     next.effective_squelch_noise = squelch.effective_noise != 0U;
-    next.squelch_noise_offered = dsd_squelch_noise_has_no_fm(opts_snapshot) == 0;
+    next.squelch_noise_offered = dsd_squelch_noise_has_no_fm(opts_snapshot, snapshot) == 0;
     /* A level setting keeps the margin it had, which Auto or Noise starts from again. */
     next.configured_squelch_margin_db = squelch.configured_margin_db;
     next.effective_squelch_margin_db = squelch.effective_margin_db;

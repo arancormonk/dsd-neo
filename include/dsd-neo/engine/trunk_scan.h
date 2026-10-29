@@ -293,7 +293,8 @@ int dsd_engine_scan_runs_configured_am_width(const dsd_opts* opts, const dsd_sta
  * @brief Whether anything in the session runs received-tone detection, so the configured tone policy can act (#527).
  *
  * Under the trunk-scan coordinator, an nfm-conventional target: every target runs its own type's mode, never the
- * configured one. A paused coordinator answers for the configured session in force, as below (issue #671). Otherwise dsd_channel_modes_conventional_hear_tones(): on the conventional -Y scanner with a channel
+ * configured one. A paused coordinator answers for the configured session in force, as below (issue #671). Otherwise
+ * dsd_channel_modes_conventional_hear_tones(): on the conventional -Y scanner with a channel
  * map, a row that runs the FM monitor (dsd_channel_modes_hear_tones()); without rows, the configured decode mode is the
  * analog FM monitor (dsd_scan_mode_configured_fm_monitor()). A --trunk-scan session whose coordinator has not started
  * counts as hearing them: its targets are judged when the scan starts. Read-only; 0 when @p opts or @p state is NULL.
@@ -365,7 +366,8 @@ int dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state);
  * @brief Append the parked targets' learned IDEN entries as band-plan rows.
  *
  * Walks every target except the active one (whose tables are live in @p state and are the
- * caller's to collect; a paused scan's active target is walked too, its tables saved at the pause) and appends each parked snapshot's ready FDMA/TDMA entries through
+ * caller's to collect; a paused scan's active target is walked too, its tables saved at the
+ * pause) and appends each parked snapshot's ready FDMA/TDMA entries through
  * dsd_p25_bandplan_append_tables(), which de-duplicates by identifier, table and WACN/SYS.
  * Serves the band-plan export; a session without a coordinator returns @p count unchanged.
  *
@@ -388,10 +390,10 @@ int dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_ba
  * skip the target at every visit.
  *
  * A parked target runs the edit at once (a paused scan's stores it for the target's next visit, issue #671): its scope
- * takes the merged options again (the squelch reaches the demod), and
- * @p out says whether the caller must hand the front end the new width (publish_width) or reopen the stream for the
- * new gain (restart_gain), and holds the edit before this one for dsd_engine_trunk_scan_restore_target_edit() should
- * that fail. Any other target runs it from its next visit. Nothing is written to the list or saved.
+ * takes the merged options again (the squelch reaches the demod), and @p out says whether the caller must hand the
+ * front end the new width (publish_width) or reopen the stream for the new gain (restart_gain), and holds the edit
+ * before this one for dsd_engine_trunk_scan_restore_target_edit() should that fail. Any other target runs it from its
+ * next visit. Nothing is written to the list or saved.
  *
  * Takes the P25 SM tick guard (try-enter) around the change, so the caller must not hold it; decoder thread only. A
  * width or gain edit of the parked target waits for its retune to land: only the request the caller makes after this

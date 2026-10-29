@@ -1133,7 +1133,7 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* stat
         }
         return 0;
     }
-    if (mode != DSD_SQUELCH_MODE_NOISE || !dsd_squelch_noise_has_no_fm(opts)) {
+    if (mode != DSD_SQUELCH_MODE_NOISE || !dsd_squelch_noise_has_no_fm(opts, state)) {
         return 0;
     }
     if (opts->rtl_squelch_cli_set) {

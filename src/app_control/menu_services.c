@@ -2621,7 +2621,7 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
     if (!dsd_squelch_setting_level_finite(setting)) {
         return -1;
     }
-    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts)) {
+    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts, state)) {
         return SVC_SQL_NOISE_NEEDS_FM;
     }
     /* The auto squelch learns a floor from the channel power DSD-neo's own receiver measures; audio input has none, so
