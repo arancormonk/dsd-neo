@@ -8129,6 +8129,40 @@ test_lockout_and_skip_pass_only_an_edacs_call(void) {
     return rc;
 }
 
+/* A private call's target is a radio: a lockout would write a talkgroup row with the radio's number, blocking that
+   talkgroup, so it is refused with a toast in both modes and the list is left alone; Skip still passes the call by
+   (issue #773). */
+static int
+test_lockout_refuses_a_private_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int persist = 0; persist <= 1; persist++) {
+        init_test_context(&opts, &state);
+        opts.persist_tg_lockouts = persist;
+        dsd_call_observation observation = {.protocol = DSD_SYNC_P25P1_POS,
+                                            .slot = 0U,
+                                            .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+                                            .ota_target_id = 4321U,
+                                            .policy_target_id = 4321U,
+                                            .ota_source_id = 1234U,
+                                            .observed_m = dsd_decode_now_mono_s()};
+        rc |=
+            expect_int("private call seeded", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_true("private lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+        rc |= expect_int("private lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("no session avoid for the radio", !dsd_tg_policy_session_avoid_contains(&state, 4321U));
+        dsd_tg_policy_lookup lookup;
+        rc |= expect_true("no talkgroup row for the radio", dsd_tg_policy_lookup_id(&state, 4321U, &lookup) != 0
+                                                                || lookup.match == DSD_TG_POLICY_MATCH_NONE);
+        rc |= expect_str("the refusal says why", state.ui_msg, "A private call has no talkgroup to lock out");
+        rc |= expect_call_phase("the private call stays active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+        freeState(&state);
+    }
+    return rc;
+}
+
 static int
 test_skip_commands(uint8_t slot) {
     static dsd_opts opts;
@@ -20765,6 +20799,7 @@ main(void) {
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_lockout_and_skip_pass_only_an_edacs_call();
+    rc |= test_lockout_refuses_a_private_call();
     rc |= test_skip_commands(0);
     rc |= test_skip_commands(1);
     rc |= test_temporary_lockout_commands(0);

@@ -101,6 +101,8 @@ last 15 s from the tap in this version; ProVoice has no skip.
 **Lock out** saves the block to the configured talkgroup list. **Settings → Listening
 → Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
+A private call has no talkgroup to avoid, so both are off for it; its **Hold** holds
+calls with that radio, and a radio is blocked from the radio ID list.
 **Skip** is unaffected by this setting and never saves. Avoids and unexpired call
 skips survive scan-target revisits; **Clear temporary avoids and call skips — current
 list** clears both in the active list. List reload/replacement or stopping the decoder
@@ -1900,7 +1902,8 @@ even after starting a single saved system. A running session can still release a
 existing hold, including from a different system's row with the same talkgroup ID.
 
 The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
-menu with **Hold TG** and **Avoid TG**/**Lock out**. Holding that talkgroup replaces any
+menu with **Hold TG** (**Hold radio** on a private call) and **Avoid TG**/**Lock out** (off on a
+private call). Holding that talkgroup replaces any
 existing hold and silences the other slot; **Release hold** clears it. The menu closes
 if its slot or talkgroup changes or the call ends.
 

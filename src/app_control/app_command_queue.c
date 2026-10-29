@@ -6356,7 +6356,9 @@ apply_cmd_lockout_resolve_target(const dsd_state* state, const struct dsd_app_co
     }
     *slot_out = slot;
     *target_out = (uint32_t)target;
-    return 1;
+    /* A private call's target is a radio. A lockout writes a talkgroup row, which would block the talkgroup with that
+       number; a radio is blocked from the radio ID list instead (issue #773). */
+    return call.kind == DSD_CALL_KIND_PRIVATE_VOICE ? 2 : 1;
 }
 
 static int
@@ -6932,7 +6934,11 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     uint8_t slot = 0U;
     uint32_t target = 0U;
     int upsert_rc = 0;
-    if (!apply_cmd_lockout_resolve_target(state, c, &slot, &target)) {
+    const int resolved = apply_cmd_lockout_resolve_target(state, c, &slot, &target);
+    if (resolved == 2) {
+        ui_set_toast(state, 4, "A private call has no talkgroup to lock out");
+    }
+    if (resolved != 1) {
         return 1;
     }
     const unsigned int tg = target;

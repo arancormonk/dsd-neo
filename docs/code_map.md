@@ -1490,7 +1490,10 @@ suite runs under this compiler.
   lockout, session avoid, mode B/DE). The P25 grant path stops at them before considering members, and every
   consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
   the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
-  label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target.
+  label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target. A private call has no
+  talkgroup: `apply_cmd_lockout_resolve_target()` refuses its lockout with a toast (issue #773), since the talkgroup
+  row it would write blocks the talkgroup with the radio's number; a radio is blocked from the radio ID list. Skip
+  still passes the call by (`APP_COMMAND_QUEUE`, `test_lockout_refuses_a_private_call()`).
 - Invariant (record only unknown talkgroups, issue #708: `opts->record_unknown_only`, `--record-unknown-only`, INI
   `[recording] unknown_talkgroups_only`, `DSD_APP_CMD_RECORD_UNKNOWN_ONLY_SET`): the group and private evaluators turn
   it into the explicit record block a row's `record=off` takes (`record_allowed` 0, `DSD_TG_POLICY_BLOCK_RECORD`), so
@@ -8689,8 +8692,12 @@ Qt Quick frontend (`src/ui/qt`):
   and the ENC and EMERGENCY tags, so at phone width it can yield (decided limit; the headline still names the other
   radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
   `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever
-  it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). Tests:
-  `tst_monitor_call_identity.qml`, `UI_QT_METRICS_MODEL` (`test_slot_kind_and_labels()`). `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
+  it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). The painted
+  hero headline (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name
+  the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a
+  private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio
+  (below). Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
+  (`test_slot_kind_and_labels()`). `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
   own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
   bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
   RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,

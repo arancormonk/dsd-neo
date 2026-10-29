@@ -111,9 +111,11 @@ Item {
     component AvoidAction: OutlineButton {
         property int heroSlot: 0
         property bool running: false
+        // A private call's target is a radio, which the decoder will not lock out as a talkgroup.
+        property bool privateCall: false
         text: metrics.persistTgLockouts ? qsTr("Lock out") : qsTr("Avoid TG")
-        accessibleName: metrics.persistTgLockouts ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session")
-        enabled: running && heroSlot !== 0
+        accessibleName: privateCall ? qsTr("A private call has no talkgroup to lock out") : metrics.persistTgLockouts ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session")
+        enabled: running && heroSlot !== 0 && !privateCall
         onClicked: commands.lockoutSlot(heroSlot === 2 ? 1 : 0)
     }
 
@@ -683,10 +685,14 @@ Item {
                     // cyan→magenta ramp per glyph run.
                     Canvas {
                         id: heroText
+                        objectName: "heroHeadlineText"
 
                         width: parent.width - (heroCompactDuration.visible ? heroCompactDuration.width + 12 : 0)
                         height: parent.height
                         visible: screen.heroSlot !== 0
+                        // Painted text has no text of its own for a screen reader.
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: screen.heroHeadline
 
                         onPaint: {
                             var ctx = getContext("2d");
@@ -2157,6 +2163,7 @@ Item {
         property bool menuPersist: false
         readonly property bool persistTgLockouts: metrics.persistTgLockouts
         property bool menuHeld: false
+        property bool menuPrivate: false
         readonly property bool heldHere: menuTgId > 0 && menuHeld
         title: qsTr("Slot %1").arg(menuSlot)
         onPersistTgLockoutsChanged: {
@@ -2167,6 +2174,7 @@ Item {
         function openForOtherSlot() {
             menuSlot = screen.otherSlot;
             menuTgId = screen.otherTgId;
+            menuPrivate = screen.otherPrivate;
             menuPersist = metrics.persistTgLockouts;
             menuHeld = metrics.heldTg === menuTgId;
             open();
@@ -2184,15 +2192,15 @@ Item {
         actions: [
             {
                 objectName: "otherSlotHold",
-                text: heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(Util.idText(menuTgId)),
-                description: qsTr("Only this talkgroup is heard; the other slot goes quiet"),
+                text: heldHere ? qsTr("Release hold") : menuPrivate ? qsTr("Hold radio %1").arg(Util.idText(menuTgId)) : qsTr("Hold TG %1").arg(Util.idText(menuTgId)),
+                description: menuPrivate ? qsTr("Only calls with this radio are heard; the other slot goes quiet") : qsTr("Only this talkgroup is heard; the other slot goes quiet"),
                 enabled: decoderHost.running && (heldHere || menuTgId > 0)
             },
             {
                 objectName: "otherSlotAvoid",
                 text: menuPersist ? qsTr("Lock out") : qsTr("Avoid TG"),
-                description: menuPersist ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session"),
-                enabled: decoderHost.running && menuSlot !== 0
+                description: menuPrivate ? qsTr("A private call has no talkgroup to lock out") : menuPersist ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session"),
+                enabled: decoderHost.running && menuSlot !== 0 && !menuPrivate
             }
         ]
         onTriggered: function (index) {
@@ -2323,8 +2331,9 @@ Item {
                 height: liveActions.cellHeight
                 maximumLineCount: liveActions.labelLines
                 wrapMode: Text.WordWrap
-                text: qsTr("Hold TG")
-                accessibleName: qsTr("Hold this talkgroup")
+                // A private call holds its radio: the decoder's hold matches either party of a private call.
+                text: screen.heroPrivate ? qsTr("Hold") : qsTr("Hold TG")
+                accessibleName: screen.heroPrivate ? qsTr("Hold calls with radio %1").arg(Util.idText(screen.heroTgId)) : qsTr("Hold this talkgroup")
                 checkable: true
                 checked: screen.holding
                 // Callsigns and dial strings have no numeric talkgroup to hold.
@@ -2351,6 +2360,7 @@ Item {
                 objectName: "avoidButton"
                 heroSlot: screen.heroSlot
                 running: decoderHost.running
+                privateCall: screen.heroPrivate
                 x: liveActions.inset + (3 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
                 y: Math.floor(3 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
                 width: liveActions.cell

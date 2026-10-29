@@ -54,6 +54,8 @@ Item {
                 testContext.setMetric(p + "CallEnc", false);
             }
             testContext.setMetric("leadSlot", 0);
+            testContext.setHostRunning(false);
+            testContext.resetCommands();
         }
 
         function test_hero_words_the_call_data() {
@@ -119,6 +121,39 @@ Item {
                 waitForRendering(monitor);
                 verify(privateTag.x < ids.x, "the PRIVATE tag leads the subline");
             }
+        }
+
+        // The painted headline names the call to a screen reader.
+        function test_headline_has_an_accessible_name() {
+            setCall(1, {kind: kindPrivate, name: "Dispatcher 7", tg: "2001234", id: 2001234, tgLabel: "Dispatcher 7", src: "100702", protocol: "TETRA"});
+            testContext.setMetric("leadSlot", 1);
+            var headline = item("heroHeadlineText");
+            compare(headline.Accessible.name, "Dispatcher 7");
+            compare(headline.Accessible.role, Accessible.StaticText);
+        }
+
+        // A private call's target is a radio: Hold holds calls with that radio (the decoder's hold matches either party),
+        // and Avoid / Lock out, which write a talkgroup row, are off. A talkgroup call keeps both.
+        function test_private_call_actions() {
+            testContext.setHostRunning(true);
+            setCall(1, {kind: kindPrivate, tg: "2001234", id: 2001234, src: "100702", protocol: "DMR"});
+            testContext.setMetric("leadSlot", 1);
+            var hold = item("holdTalkgroupButton");
+            var avoid = item("avoidButton");
+            compare(hold.text, "Hold");
+            compare(hold.accessibleName, "Hold calls with radio 2001234");
+            verify(hold.enabled);
+            verify(!avoid.enabled, "a private call has no talkgroup to lock out");
+            compare(avoid.accessibleName, "A private call has no talkgroup to lock out");
+            mouseClick(hold);
+            compare(testContext.holdCalls(), 1);
+            compare(testContext.lastHoldTg(), 2001234);
+            mouseClick(avoid);
+            compare(testContext.lockoutSlotCalls(), 0);
+            setCall(1, {kind: kindGroup, name: "Dispatch", tg: "456", id: 456, src: "100702", protocol: "DMR"});
+            compare(hold.text, "Hold TG");
+            compare(hold.accessibleName, "Hold this talkgroup");
+            verify(avoid.enabled);
         }
 
         // The tag follows the incumbent ENC tag's metrics: same height, so the subline keeps its reserved height.
