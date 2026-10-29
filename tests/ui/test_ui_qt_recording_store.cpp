@@ -54,6 +54,7 @@
 #include <initializer_list>
 #include <memory>
 #include <mutex>
+#include <qflags.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
