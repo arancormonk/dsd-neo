@@ -37,7 +37,15 @@ if(MSVC)
     )
 endif()
 
-link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
+# Production code never writes the process environment (#782); tests seed it through test_support/test_env.h, which
+# every test can include.
+add_library(dsd-neo_test_env INTERFACE)
+target_include_directories(
+    dsd-neo_test_env
+    INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/test_support
+)
+
+link_libraries(dsd-neo_warnings dsd-neo_test_assertions dsd-neo_test_env)
 
 # A Windows main thread gets a 1 MiB stack where Linux gives 8 MiB, so a test
 # with a multi-megabyte local overflows only on Windows (CTest reports it as a
@@ -14356,6 +14364,36 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_platform_nonce PRIVATE dsd-neo_platform)
 add_test(NAME PLATFORM_NONCE COMMAND dsd-neo_test_platform_nonce)
+
+# The environment override store (#782): every in-process reader goes through it and nothing writes the process
+# environment. The threads test races readers against a writer; run it under tsan-debug too.
+add_executable(
+    dsd-neo_test_platform_env_store
+    platform/test_platform_env_store.c
+)
+target_include_directories(
+    dsd-neo_test_platform_env_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_platform_env_store PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_ENV_STORE COMMAND dsd-neo_test_platform_env_store)
+
+add_executable(
+    dsd-neo_test_platform_env_store_threads
+    platform/test_platform_env_store_threads.c
+)
+target_include_directories(
+    dsd-neo_test_platform_env_store_threads
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_env_store_threads
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME PLATFORM_ENV_STORE_THREADS
+    COMMAND dsd-neo_test_platform_env_store_threads
+)
 
 if(DSD_AUDIO_BACKEND STREQUAL "none")
     add_executable(

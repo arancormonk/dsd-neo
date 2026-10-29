@@ -38,6 +38,7 @@ target_sources(
     dsd-neo_platform
     PRIVATE
         audio_concealment.c
+        env.c
         nonce.c
         write_frames.c
         ${PROJECT_SOURCE_DIR}/src/io/radio/tcp_quality_metrics.cpp
