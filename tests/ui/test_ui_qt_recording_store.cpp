@@ -575,6 +575,28 @@ test_journal_tail_settled(void) {
     expect("an offset past the end is not", !dsd_qt::recording_journal_tail_settled(empty, 4));
 }
 
+/* A folder whose folder.json goes away after it was read is no longer the app's: an ordinary pass drops it from the
+ * index, and its files stay where they are, beyond retention and deletes. */
+void
+test_folder_marker_gone_after_read(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("00000000000000EE-1"), QStringLiteral("kept.wav"), 1754704000, 70);
+    s.pass();
+    s.store.endSession();
+    s.pass();
+    expect("the folder's recording is indexed",
+           s.store.recordingCount() == 1 && s.store.hasRecordingForFragments({fragment(70)}));
+    expect("its folder.json is removed", QFile::remove(folder + QStringLiteral("/folder.json")));
+    s.pass();
+    expect("the next ordinary pass drops it from the index",
+           s.store.recordingCount() == 0 && !s.store.hasRecordingForFragments({fragment(70)}));
+    s.store.deleteRecording(QStringLiteral("00000000000000EE-1"));
+    s.pass();
+    expect("and its file stays, beyond deletes", QFileInfo::exists(folder + QStringLiteral("/kept.wav")));
+}
+
 /* A session that never ran may still reach the decoder: Android's start grace can show a start Failed while its intent
  * waits on a busy main thread, and the engine then opens that folder's journal. Such a folder is compacted only after
  * the host has seen a session running and then inactive. */
@@ -2365,6 +2387,7 @@ main(int argc, char** argv) {
     test_recording_roles_from_the_store();
     test_compaction();
     test_journal_tail_settled();
+    test_folder_marker_gone_after_read();
     test_compaction_waits_for_a_run();
     test_roots_unavailable_vs_deleted();
     test_changes_behind_the_store();

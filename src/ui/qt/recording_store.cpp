@@ -818,12 +818,14 @@ void
 RecordingStore::tailFolder(const QString& path, qint64 offset, Pass* pass) {
     QFile journal(path + QLatin1Char('/') + kJournalName);
     const qint64 size = journal.exists() ? journal.size() : 0;
-    if (size == offset) {
+    const bool marked = QFileInfo::exists(path + QLatin1Char('/') + kFolderFile);
+    if (size == offset && marked) {
         return;
     }
-    if (size < offset) {
+    if (size < offset || !marked) {
         // Shorter than what was read: replaced or truncated behind the store's back, or gone with a root that went
-        // away since the pass began, which is left as it is. Read it again from the start.
+        // away since the pass began, which is left as it is. Read it again from the start. So is a folder whose
+        // folder.json is gone: the read drops a folder that is no longer the app's, and retention never takes its files.
         int root = -1;
         {
             const std::lock_guard<std::mutex> lock(m_mutex);
