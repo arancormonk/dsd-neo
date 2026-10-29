@@ -103,6 +103,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
@@ -115,6 +116,8 @@
 
 _Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct dsd_app_command*)0)->data),
                "dsd_app_command payload too small for dsdneoUserConfig");
+_Static_assert(sizeof(dsd_app_config_load_payload) <= sizeof(((struct dsd_app_command*)0)->data),
+               "dsd_app_command payload too small for dsd_app_config_load_payload");
 _Static_assert(sizeof(dsd_app_rr_apply_payload) <= sizeof(((struct dsd_app_command*)0)->data),
                "dsd_app_command payload too small for dsd_app_rr_apply_payload");
 _Static_assert((int)DSD_APP_TG_ROW_EXACT == (int)DSD_TG_POLICY_ROW_EXACT
@@ -2901,7 +2904,7 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
                 ui_set_toast(state, 5, "Imported; %s", skipped);
             } else if (rc == 0) {
                 ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
-            } else {
+            } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
                 ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
             }
         }
@@ -2919,7 +2922,7 @@ ui_cmd_handle_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
                 ui_set_toast(state, 3, "Applied: P25 band plan imported -> %s", path);
-            } else {
+            } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
                 ui_set_toast(state, 4, "Failed: P25 band plan import -> %s", path);
             }
         }
@@ -4574,6 +4577,12 @@ dsd_app_command_apply_config(const dsdneoUserConfig* config) {
 }
 
 int
+dsd_app_command_load_config(const dsd_app_config_load_payload* payload) {
+    return payload ? dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, payload, sizeof *payload)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
 dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
     return payload ? dsd_app_command_submit(DSD_APP_CMD_CONFIG_METADATA_SET, payload, sizeof *payload)
                    : DSD_APP_COMMAND_SUBMIT_REJECTED;
@@ -6097,6 +6106,16 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     return decode_mode_apply_value(opts, state, mode);
 }
 
+/* The save an import leaves (svc_check_next_start()): the tuner owner it sets (rr_apply_tuner_owner()) and the channel
+   map it imports or clears (rr_apply_files()). */
+static void
+rr_apply_next_start(dsdneoUserConfig* save, const void* ctx) {
+    const dsd_app_rr_apply_payload* p = (const dsd_app_rr_apply_payload*)ctx;
+    save->trunk_enabled = p->trunking ? 1 : 0;
+    save->trunk_scanner = (!p->trunking && p->scanner) ? 1 : 0;
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", p->has_chan ? p->chan_path : "");
+}
+
 /**
  * @brief Everything that can refuse a RadioReference apply before it mutates anything.
  *
@@ -6111,6 +6130,14 @@ rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_appl
     // is what keeps a half-applied import off a live session.
     if (opts->trunk_scan_enabled == 1) {
         ui_set_toast(state, 4, "Failed: RR import -> trunk scan owns the channel map");
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* Nor may it leave a save a trunk scan waiting for the next start cannot start with (issue #671). */
+    char why[256];
+    if (svc_check_next_start(opts, state, rr_apply_next_start, p, why, sizeof why) != 0) {
+        LOG_WARN("RR import not applied: %s.\n", why);
+        why[strcspn(why, ";")] = '\0';
+        ui_set_toast(state, 4, "Failed: RR import -> %s", why);
         return UI_CMD_APPLY_FAILED;
     }
     /* <=, not <: DSDCFG_MODE_UNSET is 0 and is not a preset, so letting it through
@@ -7974,11 +8001,14 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     return UI_CMD_APPLY_FAILED;
 }
 
-/* What a save would write once @p cfg is applied, in @p next (the save as it stands, from dsd_snapshot_opts_to_user_config()):
-   the trunk-scan fields a config names replace those the session would save, as staging and the next-start hold
-   (cfg_restore_lifecycle_owned()) leave them. A path is named only when the config sets one. */
+/* What a save would write once the config (@p ctx) is applied, in @p next (the save as it stands,
+   svc_check_next_start()): the fields of the trunk-scan rules a config names replace those the session would save, as
+   staging, the next-start hold (cfg_restore_lifecycle_owned()) and the owner settle (cfg_settle_scan_owner()) leave
+   them. A path is named only when the config sets one. A [trunking] names the tuner owner: trunking on wins, else its
+   scanner flag runs the -Y scanner or stops it (a paused one included), and trunking off leaves the flag as it is. */
 static void
-cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const dsdneoUserConfig* cfg) {
+cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
+    const dsdneoUserConfig* cfg = (const dsdneoUserConfig*)ctx;
     if (cfg->has_trunk_scan) {
         next->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
         if (cfg->trunk_scan_targets_csv[0]) {
@@ -7986,47 +8016,46 @@ cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const dsdneoUserConfig* cf
                          cfg->trunk_scan_targets_csv);
         }
     }
-    if (cfg->has_trunking && cfg->trunk_chan_csv[0]) {
+    if (!cfg->has_trunking) {
+        return;
+    }
+    if (cfg->trunk_chan_csv[0]) {
         DSD_SNPRINTF(next->trunk_chan_csv, sizeof next->trunk_chan_csv, "%s", cfg->trunk_chan_csv);
     }
-    if (cfg->has_trunking && cfg->trunk_p25_bandplan_csv[0]) {
+    if (cfg->trunk_p25_bandplan_csv[0]) {
         DSD_SNPRINTF(next->trunk_p25_bandplan_csv, sizeof next->trunk_p25_bandplan_csv, "%s",
                      cfg->trunk_p25_bandplan_csv);
+    }
+    if (cfg->trunk_enabled) {
+        next->trunk_enabled = 1;
+        next->trunk_scanner = 0;
+    } else {
+        next->trunk_scanner = cfg->trunk_scanner ? 1 : 0;
     }
 }
 
 /*
  * What a config apply leaves for the next start is saved (dsd_opts::next_start), so it must be a config the next start
- * runs (issue #671): one whose trunk scan startup would refuse (a global channel map or P25 band plan beside it, or no
- * target list; dsd_user_config_check_trunk_scan_startable(), the rules --validate-config applies) is refused whole,
- * before anything changes, with the rule's reason. A session whose own save already breaks a rule is left to it: the
- * config did not break it.
+ * runs (issue #671): one that would newly break a rule startup refuses a trunk scan by (a global channel map, P25 band
+ * plan or -Y scanner beside it, or no target list; dsd_user_config_check_trunk_scan_startable(), the rules
+ * --validate-config applies) is refused whole, before anything changes, with the rule's reason. A rule the session's
+ * own save breaks already is the session's: a config that keeps it as it is, or fixes it, applies
+ * (svc_check_next_start()).
  */
 static int
 cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     if (!cfg->has_trunk_scan && !cfg->has_trunking) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    dsdneoUserConfig* next = (dsdneoUserConfig*)calloc(1, sizeof *next);
-    if (!next) {
-        ui_set_toast(state, 5, "Config not applied: out of memory");
-        return UI_CMD_APPLY_FAILED;
-    }
-    dsd_snapshot_opts_to_user_config(opts, state, next);
     char why[256];
-    int rc = UI_CMD_APPLY_COMPLETED;
-    if (dsd_user_config_check_trunk_scan_startable(next, why, sizeof why) == 0) {
-        cfg_overlay_trunk_scan_fields(next, cfg);
-        if (dsd_user_config_check_trunk_scan_startable(next, why, sizeof why) != 0) {
-            LOG_WARN("Config not applied: %s.\n", why);
-            /* The rule, without its advice, fits the status line; the log has both. */
-            why[strcspn(why, ";")] = '\0';
-            ui_set_toast(state, 5, "Config not applied: %s", why);
-            rc = UI_CMD_APPLY_FAILED;
-        }
+    if (svc_check_next_start(opts, state, cfg_overlay_trunk_scan_fields, cfg, why, sizeof why) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    free(next);
-    return rc;
+    LOG_WARN("Config not applied: %s.\n", why);
+    /* The rule, without its advice, fits the status line; the log has both. */
+    why[strcspn(why, ";")] = '\0';
+    ui_set_toast(state, 5, "Config not applied: %s", why);
+    return UI_CMD_APPLY_FAILED;
 }
 
 static int
@@ -8505,12 +8534,10 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
     return 0;
 }
 
+/* Apply the config @p c carries; @p kept is set when the config stays applied, the outcomes a "Config applied" toast (or
+   none) reports: a "Config not applied: ..." refusal or rollback leaves it 0. */
 static int
-ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (!state || c->n < sizeof(dsdneoUserConfig)) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
-    }
-
+cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int* kept) {
     dsdneoUserConfig cfg;
     char old_audio_in_dev[sizeof opts->audio_in_dev];
     char old_audio_out_dev[sizeof opts->audio_out_dev];
@@ -8600,16 +8627,63 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         if (!rollback.input.running && restart_causes != 0) {
             cfg_keep_restart_note(state, restart_names);
         }
+        *kept = !rollback.input.running;
         return UI_CMD_APPLY_FAILED;
     }
 #else
     cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, 1);
 #endif
+    /* A failed output reconfigure, or a width the front end refused after the check, leaves the config applied. */
+    *kept = 1;
     if (restart_causes != 0) {
         cfg_keep_restart_note(state, restart_names);
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
     return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+}
+
+/*
+ * A loaded file's apply (dsd_app_config_load_payload, issue #671): the autosave it brings is adopted only once the config
+ * stays applied, decided here on the decoder thread, so a load the decoder refuses or rolls back leaves the autosave
+ * where it was and the exit autosave never writes the session into the file that did not load. The status line then
+ * says what loaded, unless the apply said something of its own.
+ */
+static void
+cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, const char* msg_before,
+                          time_t msg_expire_before) {
+    /* The fields after the config, read field by field: the payload bytes carry no alignment. */
+    dsd_app_config_metadata_payload autosave;
+    char profile[sizeof(((dsd_app_config_load_payload*)0)->profile)];
+    DSD_MEMCPY(&autosave, c->data + offsetof(dsd_app_config_load_payload, autosave), sizeof autosave);
+    DSD_MEMCPY(profile, c->data + offsetof(dsd_app_config_load_payload, profile), sizeof profile);
+    autosave.path[sizeof autosave.path - 1] = '\0';
+    profile[sizeof profile - 1] = '\0';
+    state->config_autosave_enabled = autosave.autosave_enabled ? 1 : 0;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", autosave.path);
+    if (state->ui_msg_expire != msg_expire_before || strcmp(state->ui_msg, msg_before) != 0) {
+        return;
+    }
+    if (profile[0] != '\0') {
+        ui_set_toast(state, 3, "Profile loaded: %s", profile);
+    } else {
+        ui_set_toast(state, 3, "Config loaded from %s", autosave.path);
+    }
+}
+
+static int
+ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || c->n < sizeof(dsdneoUserConfig)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    char msg_before[sizeof state->ui_msg];
+    DSD_SNPRINTF(msg_before, sizeof msg_before, "%s", state->ui_msg);
+    const time_t msg_expire_before = state->ui_msg_expire;
+    int kept = 0;
+    const int rc = cfg_apply(opts, state, c, &kept);
+    if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
+        cfg_adopt_loaded_autosave(state, c, msg_before, msg_expire_before);
+    }
+    return rc;
 }
 
 static int

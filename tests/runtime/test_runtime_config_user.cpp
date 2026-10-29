@@ -1708,42 +1708,80 @@ test_snapshot_writes_the_next_start(void) {
     return rc;
 }
 
-/* Issue #671 (B1): the trunk-scan rules startup refuses to start without, on a composed config, with the reason. */
+/* Issue #671 (B1, round 4): the trunk-scan rules startup refuses to start without, on a composed config, with the
+   reason; with a config to compare against, only the rules newly broken. */
 static int
 test_check_trunk_scan_startable(void) {
     static dsdneoUserConfig cfg;
+    static dsdneoUserConfig before;
     char why[256];
     int rc = 0;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
-    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) != 0 || why[0] != '\0') {
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0 || why[0] != '\0') {
         DSD_FPRINTF(stderr, "startable: no trunk scan refused (%s)\n", why);
         rc |= 1;
     }
     cfg.trunk_scan_enabled = 1;
-    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) == 0
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
         || strcmp(why, "targets_csv is required when trunk_scan.enabled is true") != 0) {
         DSD_FPRINTF(stderr, "startable: no list: %s\n", why);
         rc |= 1;
     }
     DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
-    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) != 0) {
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0) {
         DSD_FPRINTF(stderr, "startable: a trunk scan with its list refused (%s)\n", why);
         rc |= 1;
     }
     DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
-    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) == 0
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
         || strncmp(why, "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled", 68) != 0) {
         DSD_FPRINTF(stderr, "startable: a band plan: %s\n", why);
         rc |= 1;
     }
     cfg.trunk_p25_bandplan_csv[0] = '\0';
     DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "chan.csv");
-    if (dsd_user_config_check_trunk_scan_startable(&cfg, why, sizeof why) == 0
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
         || strncmp(why, "trunking.chan_csv cannot be combined with trunk_scan.enabled", 60) != 0) {
         DSD_FPRINTF(stderr, "startable: a channel map: %s\n", why);
         rc |= 1;
     }
-    if (dsd_user_config_check_trunk_scan_startable(nullptr, why, sizeof why) == 0) {
+    cfg.trunk_chan_csv[0] = '\0';
+    cfg.trunk_scanner = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
+        || strncmp(why, "trunking.scanner cannot be combined with trunk_scan.enabled", 59) != 0) {
+        DSD_FPRINTF(stderr, "startable: the scanner: %s\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_enabled = 1; /* trunking wins over the scanner */
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "startable: trunking and the scanner refused (%s)\n", why);
+        rc |= 1;
+    }
+
+    /* Against a config that already breaks the map rule: that rule kept, or fixed, passes; another one refuses. */
+    DSD_MEMSET(&before, 0, sizeof before);
+    before.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(before.trunk_scan_targets_csv, sizeof before.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(before.trunk_chan_csv, sizeof before.trunk_chan_csv, "%s", "chan.csv");
+    cfg = before;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "other.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, &before, why, sizeof why) != 0 || why[0] != '\0') {
+        DSD_FPRINTF(stderr, "startable: the broken rule kept refused (%s)\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_scan_enabled = 0;
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, &before, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "startable: the broken rule fixed refused (%s)\n", why);
+        rc |= 1;
+    }
+    cfg = before;
+    DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, &before, why, sizeof why) == 0
+        || strncmp(why, "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled", 68) != 0) {
+        DSD_FPRINTF(stderr, "startable: another rule broken: %s\n", why);
+        rc |= 1;
+    }
+    if (dsd_user_config_check_trunk_scan_startable(nullptr, nullptr, why, sizeof why) == 0) {
         rc |= 1;
     }
     return rc;

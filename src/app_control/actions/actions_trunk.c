@@ -12,10 +12,12 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 
@@ -145,6 +147,29 @@ trunk_scan_is_paused(const dsd_opts* opts, const dsd_state* state) {
     return opts->trunk_scan_enabled == 1 && state->trunk_scan_paused;
 }
 
+/* The save a -Y start leaves (svc_check_next_start()): the scanner on, trunking off. */
+static void
+scanner_on_next_start(dsdneoUserConfig* save, const void* ctx) {
+    (void)ctx;
+    save->trunk_scanner = 1;
+    save->trunk_enabled = 0;
+}
+
+/* A -Y start beside a trunk scan a config left for the next start would make the save one startup refuses (issue
+   #671): refused, the rule on the status line, the scanner left off. */
+static int
+scanner_start_refused_for_next_start(const dsd_opts* opts, dsd_state* state) {
+    char why[256];
+    if (svc_check_next_start(opts, state, scanner_on_next_start, NULL, why, sizeof why) == 0) {
+        return 0;
+    }
+    why[strcspn(why, ";")] = '\0';
+    char text[sizeof state->ui_msg];
+    DSD_SNPRINTF(text, sizeof text, "Scanner not started: %s", why);
+    trunk_action_toast(state, 5, text);
+    return 1;
+}
+
 /* `y`: a paused scan resumes; a running trunk scan pauses where it is (it has no stop at runtime); a running -Y scan
    stops, and a stopped one starts (issue #671). A pending trunk-scan resume is running: `y` pauses it again. */
 static int
@@ -168,6 +193,9 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         return scan_resume_channel(opts, state);
     }
     const int was_scanner = opts->scanner_mode ? 1 : 0;
+    if (!was_scanner && scanner_start_refused_for_next_start(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
+    }
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
     if (was_scanner) {

@@ -399,36 +399,88 @@ validate_config_line(char* p, int line_num, const char* current_section, int is_
     validate_section_key_value(key, val, diags, line_num, current_section);
 }
 
-static void
-validate_composed_trunk_scan_requirements(const dsdneoUserConfig* cfg, const char* section, const char* key,
-                                          dsdcfg_diagnostics_t* diags) {
-    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_scan_targets_csv[0] != '\0') {
-        return;
-    }
-    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunk_scan", key ? key : "targets_csv",
-                     "targets_csv is required when trunk_scan.enabled is true");
+/* The rules startup refuses a composed config's trunk scan by (the CLI's runtime check, the engine setup and the trunk
+   scan's own init check, issue #671): each names the key the error is reported on, under [section] in a file and as
+   "section.key" in a profile. */
+namespace {
+struct trunk_scan_start_rule {
+    const char* section;
+    const char* key;
+    bool (*breaks)(const dsdneoUserConfig* cfg);
+    const char* message;
+};
+
+bool
+trunk_scan_lacks_targets(const dsdneoUserConfig* cfg) {
+    return cfg->trunk_scan_enabled != 0 && cfg->trunk_scan_targets_csv[0] == '\0';
 }
 
-static void
-validate_composed_trunk_scan_channel_map_conflict(const dsdneoUserConfig* cfg, const char* section, const char* key,
-                                                  dsdcfg_diagnostics_t* diags) {
-    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_chan_csv[0] == '\0') {
-        return;
-    }
-    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunking", key ? key : "chan_csv",
-                     "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values");
+bool
+trunk_scan_beside_channel_map(const dsdneoUserConfig* cfg) {
+    return cfg->trunk_scan_enabled != 0 && cfg->trunk_chan_csv[0] != '\0';
 }
 
-static void
-validate_composed_trunk_scan_p25_bandplan_conflict(const dsdneoUserConfig* cfg, const char* section, const char* key,
-                                                   dsdcfg_diagnostics_t* diags) {
-    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_p25_bandplan_csv[0] == '\0') {
+bool
+trunk_scan_beside_p25_bandplan(const dsdneoUserConfig* cfg) {
+    return cfg->trunk_scan_enabled != 0 && cfg->trunk_p25_bandplan_csv[0] != '\0';
+}
+
+/* The loader runs the -Y scanner only with trunking off (trunking wins when a config asks for both). */
+bool
+trunk_scan_beside_scanner(const dsdneoUserConfig* cfg) {
+    return cfg->trunk_scan_enabled != 0 && cfg->trunk_scanner != 0 && cfg->trunk_enabled == 0;
+}
+
+const trunk_scan_start_rule k_trunk_scan_start_rules[] = {
+    {
+        "trunk_scan",
+        "targets_csv",
+        trunk_scan_lacks_targets,
+        "targets_csv is required when trunk_scan.enabled is true",
+    },
+    {
+        "trunking",
+        "chan_csv",
+        trunk_scan_beside_channel_map,
+        "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values",
+    },
+    {
+        "trunking",
+        "p25_bandplan_csv",
+        trunk_scan_beside_p25_bandplan,
+        "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled; use per-target p25_bandplan_csv values",
+    },
+    {
+        "trunking",
+        "scanner",
+        trunk_scan_beside_scanner,
+        "trunking.scanner cannot be combined with trunk_scan.enabled; the -Y scanner and a trunk scan both own the "
+        "tuner",
+    },
+};
+
+/* Report every trunk-scan start rule @p cfg breaks; @p profile_section names the profile ("profile.<name>"), or NULL for
+   the file's own sections. */
+void
+validate_composed_trunk_scan_start(const dsdneoUserConfig* cfg, const char* profile_section,
+                                   dsdcfg_diagnostics_t* diags) {
+    if (cfg == nullptr || diags == nullptr) {
         return;
     }
-    dsdcfg_diags_add(
-        diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunking", key ? key : "p25_bandplan_csv",
-        "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled; use per-target p25_bandplan_csv values");
+    for (const trunk_scan_start_rule& rule : k_trunk_scan_start_rules) {
+        if (!rule.breaks(cfg)) {
+            continue;
+        }
+        if (profile_section == nullptr) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, rule.section, rule.key, rule.message);
+            continue;
+        }
+        char key[64];
+        DSD_SNPRINTF(key, sizeof key, "%s.%s", rule.section, rule.key);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, profile_section, key, rule.message);
+    }
 }
+} // namespace
 
 /* STRING keys get no format check from the schema walk, so the port list is checked here
    with the same parser the apply step uses. A bad entry is a warning: the good entries still
@@ -593,9 +645,7 @@ validate_composed_receive_names(const dsdneoUserConfig* cfg, const char* section
 
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
-    validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
-    validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
-    validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", diags);
+    validate_composed_trunk_scan_start(cfg, nullptr, diags);
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
     validate_composed_udp_comp_ports(cfg, "mode", "dmr_udp_comp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
@@ -610,9 +660,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     char section[64];
     DSD_SNPRINTF(section, sizeof section, "profile.%s", profile_name ? profile_name : "");
     section[sizeof section - 1] = '\0';
-    validate_composed_trunk_scan_requirements(cfg, section, "trunk_scan.targets_csv", diags);
-    validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
-    validate_composed_trunk_scan_p25_bandplan_conflict(cfg, section, "trunking.p25_bandplan_csv", diags);
+    validate_composed_trunk_scan_start(cfg, section, diags);
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
     validate_composed_udp_comp_ports(cfg, section, "mode.dmr_udp_comp_ports", diags);
     validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
@@ -867,22 +915,21 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
 }
 
 int
-dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, char* why, size_t why_size) {
+dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
+                                           size_t why_size) {
     if (why != nullptr && why_size > 0U) {
         why[0] = '\0';
     }
     if (cfg == nullptr) {
         return -1;
     }
-    dsdcfg_diagnostics_t diags;
-    dsdcfg_diags_init(&diags);
-    validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", &diags);
-    validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", &diags);
-    validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", &diags);
-    const int rc = diags.error_count > 0 ? -1 : 0;
-    if (rc != 0 && why != nullptr && why_size > 0U && diags.count > 0) {
-        DSD_SNPRINTF(why, why_size, "%s", diags.items[0].message);
+    for (const trunk_scan_start_rule& rule : k_trunk_scan_start_rules) {
+        if (rule.breaks(cfg) && (before == nullptr || !rule.breaks(before))) {
+            if (why != nullptr && why_size > 0U) {
+                DSD_SNPRINTF(why, why_size, "%s", rule.message);
+            }
+            return -1;
+        }
     }
-    dsdcfg_diags_free(&diags);
-    return rc;
+    return 0;
 }

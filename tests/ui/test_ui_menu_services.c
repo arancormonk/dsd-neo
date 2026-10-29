@@ -119,6 +119,33 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     }
 }
 
+/* The save and the trunk-scan start rules svc_check_next_start() holds an import to (runtime; APP_COMMAND_QUEUE runs
+   the real ones): the save is empty, plus the change; it passes unless g_next_start_why is set, and records the paths
+   the change leaves. */
+static const char* g_next_start_why;
+static char g_next_start_chan_csv[1024];
+static char g_next_start_plan_csv[1024];
+
+void
+dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    (void)opts;
+    (void)state;
+    DSD_MEMSET(cfg, 0, sizeof *cfg);
+}
+
+int
+dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
+                                           size_t why_size) {
+    (void)before;
+    DSD_SNPRINTF(g_next_start_chan_csv, sizeof g_next_start_chan_csv, "%s", cfg->trunk_chan_csv);
+    DSD_SNPRINTF(g_next_start_plan_csv, sizeof g_next_start_plan_csv, "%s", cfg->trunk_p25_bandplan_csv);
+    if (!g_next_start_why) {
+        return 0;
+    }
+    DSD_SNPRINTF(why, why_size, "%s", g_next_start_why);
+    return -1;
+}
+
 FILE*
 dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     (void)path;
@@ -2411,6 +2438,18 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("trunk-scan import preserves chan", (int)state.trunk_chan_map[201], 860000000);
     opts.trunk_scan_enabled = 0;
 
+    // Nor beside a trunk scan a config left for the next start (issue #671): the save would write both, which startup
+    // refuses. Refused with the rule on the status line, before anything is read.
+    g_next_start_why = "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values";
+    rc |= expect_int("next-start import refused", svc_import_channel_map(&opts, &state, "scan.csv"),
+                     SVC_REFUSED_FOR_NEXT_START);
+    rc |= expect_str("next-start check asked about the map", g_next_start_chan_csv, "scan.csv");
+    rc |= expect_str("next-start refusal toast", state.ui_msg,
+                     "Channel map not imported: trunking.chan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("next-start refusal preserves chan", (int)state.trunk_chan_map[201], 860000000);
+    rc |= expect_str("next-start refusal keeps path", opts.chan_in_file, "b.csv");
+    g_next_start_why = NULL;
+
     // dmr_lcn_trust is provenance for the map, not a separate table: a stale
     // "learned on the CC" byte would authorize an off-CC tune to a frequency
     // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
@@ -2638,6 +2677,18 @@ test_p25_bandplan_import_and_export_services(void) {
     rc |= expect_int("trunk scan refusal skips the importer", g_bandplan_import_calls, 0);
     rc |= expect_str("trunk scan refusal records no path", opts.p25_bandplan_in_file, "");
     opts.trunk_scan_enabled = 0;
+    // And beside a trunk scan a config left for the next start (issue #671).
+    g_next_start_why = "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled; use per-target "
+                       "p25_bandplan_csv values";
+    rc |= expect_int("bandplan import refused for the next start", svc_import_p25_bandplan(&opts, &state, "plan.csv"),
+                     SVC_REFUSED_FOR_NEXT_START);
+    rc |= expect_str("next-start check asked about the plan", g_next_start_plan_csv, "plan.csv");
+    rc |=
+        expect_str("next-start plan refusal toast", state.ui_msg,
+                   "P25 band plan not imported: trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("next-start refusal skips the dry run", g_bandplan_validate_calls, 0);
+    rc |= expect_str("next-start refusal records no path", opts.p25_bandplan_in_file, "");
+    g_next_start_why = NULL;
 
     // Dry run gate: a file that opens but yields no usable row must not touch the live plan.
     g_bandplan_validate_accepted = 0U;

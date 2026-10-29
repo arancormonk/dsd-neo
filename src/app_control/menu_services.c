@@ -771,6 +771,53 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
 }
 
 int
+svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
+                     char* why, size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!opts || !state || !change) {
+        return -1;
+    }
+    /* Two saves (a few tens of KB each) on the heap, once per change that can touch the trunk-scan rules. */
+    dsdneoUserConfig* before = (dsdneoUserConfig*)calloc(2, sizeof *before);
+    if (!before) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", "out of memory");
+        }
+        return -1;
+    }
+    dsdneoUserConfig* after = before + 1;
+    dsd_snapshot_opts_to_user_config(opts, state, before);
+    DSD_MEMCPY(after, before, sizeof *after);
+    change(after, ctx);
+    const int rc = dsd_user_config_check_trunk_scan_startable(after, before, why, why_size);
+    free(before);
+    return rc;
+}
+
+/* An import the next start would refuse (svc_check_next_start()): the rule, without its advice, fits the status line
+   ("Channel map not imported: <rule>"); the log has both. */
+static int
+svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) {
+    LOG_WARN("%s not imported: %s.\n", what, why);
+    why[strcspn(why, ";")] = '\0';
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s not imported: %s", what, why);
+    state->ui_msg_expire = dsd_realtime_time() + 5;
+    return SVC_REFUSED_FOR_NEXT_START;
+}
+
+static void
+svc_next_start_channel_map(dsdneoUserConfig* save, const void* ctx) {
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
+}
+
+static void
+svc_next_start_p25_bandplan(dsdneoUserConfig* save, const void* ctx) {
+    DSD_SNPRINTF(save->trunk_p25_bandplan_csv, sizeof save->trunk_p25_bandplan_csv, "%s", (const char*)ctx);
+}
+
+int
 svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
@@ -779,6 +826,11 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // maps per target, and adopting a global one here would wipe the target's.
     if (opts->trunk_scan_enabled == 1) {
         return -1;
+    }
+    /* Nor beside a trunk scan a config left for the next start: the save would write both, which startup refuses. */
+    char why[256];
+    if (svc_check_next_start(opts, state, svc_next_start_channel_map, path, why, sizeof why) != 0) {
+        return svc_refuse_import_for_next_start(state, "Channel map", why);
     }
     char old_path[sizeof(opts->chan_in_file)];
     DSD_MEMCPY(old_path, opts->chan_in_file, sizeof(old_path));
@@ -836,6 +888,10 @@ svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path) {
     if (opts->trunk_scan_enabled == 1) {
         LOG_WARN("P25 band plan import refused under trunk scan; set p25_bandplan_csv on the target instead.\n");
         return -1;
+    }
+    char why[256];
+    if (svc_check_next_start(opts, state, svc_next_start_p25_bandplan, path, why, sizeof why) != 0) {
+        return svc_refuse_import_for_next_start(state, "P25 band plan", why);
     }
     // Dry run before touching the live plan: the importer replaces the stored
     // rows wholesale, so a file that opens but carries no usable row (a

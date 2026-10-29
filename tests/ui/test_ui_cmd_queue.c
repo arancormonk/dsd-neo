@@ -21814,7 +21814,219 @@ test_config_refuses_what_the_next_start_refuses(void) {
     rc |= expect_int("trunk scan on, nothing global: waits", saved.trunk_scan_enabled, 1);
     rc |= expect_int("trunk scan on, nothing global: restart", dsd_app_command_test_last_restart_required(), 1);
     freeState(&state);
+
+    /* Round 4: the -Y scanner beside a trunk scan, which startup refuses as well. A config that names both (trunking
+       off), and a trunk scan turned on in a session running -Y, whose save writes the scanner on. */
+    static const char k_scanner_why[] = "trunking.scanner cannot be combined with trunk_scan.enabled";
+    for (int session_scans = 0; session_scans <= 1; session_scans++) {
+        init_test_context(&opts, &state);
+        opts.scanner_mode = session_scans;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        if (!session_scans) {
+            cfg.has_trunking = 1;
+            cfg.trunk_scanner = 1;
+        }
+        rc |=
+            expect_refused_for_the_next_start(&opts, &state, &cfg, &before, k_scanner_why,
+                                              session_scans ? "trunk scan on under -Y" : "trunk scan and the scanner");
+        rc |= expect_int("scanner refusal: the scanner is as it was", opts.scanner_mode, session_scans);
+        opts.scanner_mode = 0;
+        freeState(&state);
+    }
+    /* Trunking on wins over the scanner, at startup as in staging: that config's trunk scan waits. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    cfg.trunk_scanner = 1;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan, trunking and the scanner");
+    rc |= expect_int("trunking wins over the scanner: the trunk scan waits",
+                     saved.trunk_scan_enabled == 1 && saved.trunk_scanner == 0 && saved.trunk_enabled == 1, 1);
+    opts.trunk_enable = 0;
+    freeState(&state);
     return rc;
+}
+
+/*
+ * Issue #671 (round 4): a config is held only to the rules it would newly break. A session whose save already breaks
+ * one (a global channel map beside a trunk scan waiting for the next start) still takes a config that leaves that rule
+ * as it is or fixes it, but not one that breaks another: a band plan, or the scanner, beside that trunk scan. Before
+ * this, such a session took any config, the second conflict included.
+ */
+static int
+test_config_judges_only_what_it_breaks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+    for (int step = 0; step < 4; step++) {
+        init_test_context(&opts, &state);
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+        opts.next_start.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+                     "targets.csv");
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        if (step == 0) {
+            DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+            rc |= drain_config(&opts, &state, &cfg, "already broken: a band plan");
+            rc |=
+                expect_str("already broken: a band plan is refused", state.ui_msg,
+                           "Config not applied: trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled");
+            rc |= expect_str("already broken: no band plan", opts.p25_bandplan_in_file, "");
+        } else if (step == 1) {
+            cfg.trunk_scanner = 1;
+            rc |= drain_config(&opts, &state, &cfg, "already broken: the scanner");
+            rc |= expect_str("already broken: the scanner is refused", state.ui_msg,
+                             "Config not applied: trunking.scanner cannot be combined with trunk_scan.enabled");
+            rc |= expect_int("already broken: no scanner", opts.scanner_mode, 0);
+        } else if (step == 2) {
+            /* The same rule left as it is: another map, which waits for the next start like any map. */
+            DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "other_map.csv");
+            rc |= apply_then_save(&opts, &state, &cfg, &saved, "already broken: another map");
+            rc |= expect_int("already broken: another map applies", dsd_app_command_test_last_failed(), 0);
+            rc |= expect_str("already broken: another map waits", saved.trunk_chan_csv, "other_map.csv");
+        } else {
+            /* The rule fixed: the trunk scan turned off. */
+            cfg.has_trunking = 0;
+            cfg.has_trunk_scan = 1;
+            rc |= apply_then_save(&opts, &state, &cfg, &saved, "already broken: trunk scan off");
+            rc |= expect_int("already broken: trunk scan off applies", dsd_app_command_test_last_failed(), 0);
+            rc |= expect_int("already broken: trunk scan off is saved", saved.trunk_scan_enabled, 0);
+        }
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* A channel map, the same file read as a P25 band plan, and a RadioReference import that starts the scanner: none may
+   make the save a waiting trunk scan cannot start with. */
+static const char k_next_start_map[] = "channel,frequency_hz,name,mode,options\n1,461000000,one,dmr,\n";
+static const char k_next_start_plan[] =
+    "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n0,851006250,6250,1,-45000000,12500,,\n";
+
+/*
+ * Issue #671 (round 4): the frontends' own changes are held to the same rules as a config, once a config has left a
+ * trunk scan for the next start. A channel-map import, a P25 band-plan import, the scanner toggle and a RadioReference
+ * import that starts the scanner or brings a channel map are each refused with the rule they would break, and change
+ * nothing; clearing the map breaks none and still runs. Before this each was refused only under a running trunk scan,
+ * so the save wrote a config the next start refused.
+ */
+static int
+test_menu_refuses_what_the_next_start_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    char dir[DSD_TEST_PATH_MAX];
+    char map_path[DSD_TEST_PATH_MAX];
+    char plan_path[DSD_TEST_PATH_MAX];
+    int rc = expect_true("menu next start dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_menu_next_start") != NULL);
+    rc |= expect_int("menu next start map", dsd_test_path_join(map_path, sizeof map_path, dir, "map.csv"), 0);
+    rc |= expect_int("menu next start plan", dsd_test_path_join(plan_path, sizeof plan_path, dir, "plan.csv"), 0);
+    rc |= write_file_bytes(map_path, k_next_start_map, sizeof k_next_start_map - 1U);
+    rc |= write_file_bytes(plan_path, k_next_start_plan, sizeof k_next_start_plan - 1U);
+
+    init_decode_mode_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    rc |= drain_config(&opts, &state, &cfg, "menu next start: trunk scan waits");
+    rc |= expect_int("menu next start: the trunk scan waits",
+                     opts.trunk_scan_enabled == 0 && (opts.next_start.pending & DSD_NEXT_START_TRUNK_SCAN) != 0U, 1);
+
+    (void)post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map_path);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("menu next start: map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("menu next start: map import refused", state.ui_msg,
+                     "Channel map not imported: trunking.chan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("menu next start: no map", opts.chan_in_file[0] == '\0' && state.lcn_freq_count == 0, 1);
+
+    (void)post_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, plan_path);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("menu next start: plan import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_str("menu next start: plan import refused", state.ui_msg,
+                   "P25 band plan not imported: trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("menu next start: no plan",
+                     opts.p25_bandplan_in_file[0] == '\0' && state.p25_bandplan_row_count == 0, 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "menu next start: scanner toggle");
+    rc |= expect_str("menu next start: scanner refused", state.ui_msg,
+                     "Scanner not started: trunking.scanner cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("menu next start: no scanner", opts.scanner_mode, 0);
+
+    for (int with_map = 0; with_map <= 1; with_map++) {
+        dsd_app_rr_apply_payload p;
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+        p.scanner = with_map ? 0U : 1U;
+        p.has_chan = with_map ? 1U : 0U;
+        DSD_SNPRINTF(p.chan_path, sizeof p.chan_path, "%s", with_map ? map_path : "");
+        rc |= expect_int("menu next start: rr queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int("menu next start: rr drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_str(with_map ? "menu next start: rr map refused" : "menu next start: rr scanner refused",
+                         state.ui_msg,
+                         with_map ? "Failed: RR import -> trunking.chan_csv cannot be combined with trunk_scan.enabled"
+                                  : "Failed: RR import -> trunking.scanner cannot be combined with trunk_scan.enabled");
+        rc |= expect_int("menu next start: rr changed nothing", opts.scanner_mode == 0 && opts.chan_in_file[0] == '\0',
+                         1);
+    }
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "menu next start: map clear");
+    rc |= expect_str("menu next start: a clear still runs", state.ui_msg, "Applied: Channel map cleared");
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("menu next start: the save starts",
+                     dsd_user_config_check_trunk_scan_startable(&saved, NULL, NULL, 0) == 0 && saved.trunk_scan_enabled,
+                     1);
+    freeState(&state);
+    (void)remove(map_path);
+    (void)remove(plan_path);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+/* Load @p cfg as terminal Config > Load (@p autosave_enabled 1, the file's @p path) or a profile load (0, the file the
+   profile came from) does, and drain it. */
+static int
+drain_config_load(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int autosave_enabled, const char* path,
+                  const char* label) {
+    static dsd_app_config_load_payload load;
+    DSD_MEMSET(&load, 0, sizeof load);
+    load.config = *cfg;
+    load.autosave.autosave_enabled = autosave_enabled;
+    DSD_SNPRINTF(load.autosave.path, sizeof load.autosave.path, "%s", path);
+    DSD_SNPRINTF(load.profile, sizeof load.profile, "%s", autosave_enabled ? "" : "mobile");
+    int rc = expect_true(label, dsd_app_command_load_config(&load) > 0);
+    state->ui_msg[0] = '\0';
+    state->ui_msg_expire = 0;
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* Whether the file at @p path holds exactly @p n bytes @p want. */
+static int
+file_holds(const char* path, const char* want, size_t n) {
+    FILE* f = dsd_fopen_existing_regular_file(path, "rb");
+    if (!f) {
+        return 0;
+    }
+    char got[512];
+    const size_t read = fread(got, 1U, sizeof got, f);
+    (void)fclose(f);
+    return read == n && memcmp(got, want, n) == 0;
 }
 
 /*
@@ -21838,14 +22050,10 @@ test_config_load_then_exit_keeps_the_file(void) {
     static dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
     rc |= expect_int("load then exit: file loads", dsd_user_config_load(path, &cfg), 0);
-    dsd_app_config_metadata_payload meta;
-    DSD_MEMSET(&meta, 0, sizeof meta);
-    meta.autosave_enabled = 1;
-    DSD_SNPRINTF(meta.path, sizeof meta.path, "%s", path);
-    rc |= expect_true("load then exit: metadata queued", dsd_app_command_set_config_metadata(&meta) > 0);
-    rc |= expect_true("load then exit: config queued", dsd_app_command_apply_config(&cfg) > 0);
-    rc |= expect_int("load then exit: drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= drain_config_load(&opts, &state, &cfg, 1, path, "load then exit");
     rc |= expect_str("load then exit: the running map stays", opts.chan_in_file, "loaded_map.csv");
+    rc |= expect_int("load then exit: the autosave follows the file",
+                     state.config_autosave_enabled == 1 && strcmp(state.config_autosave_path, path) == 0, 1);
     dsd_engine_cleanup(&opts, &state);
     dsd_exitflag_store(0);
     DSD_MEMSET(&cfg, 0, sizeof cfg);
@@ -21854,6 +22062,72 @@ test_config_load_then_exit_keeps_the_file(void) {
     (void)remove(path);
     (void)dsd_test_rmdir(dir);
     freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671 (round 4): a Config > Load or profile load the decoder refuses leaves the autosave where it was. The
+ * session's autosave target and its on/off stay, and the exit autosave writes the session's config there, never into
+ * the file the operator tried to load. Before this the load pointed the autosave at that file first, and the exit
+ * autosave replaced the file with the session's config (a refused profile load turned the autosave off instead).
+ */
+static int
+test_refused_load_keeps_the_autosave(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    char dir[DSD_TEST_PATH_MAX];
+    char session_path[DSD_TEST_PATH_MAX];
+    char loaded_path[DSD_TEST_PATH_MAX];
+    int rc = expect_true("refused load dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_refused_autosave") != NULL);
+    rc |= expect_int("refused load session", dsd_test_path_join(session_path, sizeof session_path, dir, "session.ini"),
+                     0);
+    rc |= expect_int("refused load file", dsd_test_path_join(loaded_path, sizeof loaded_path, dir, "trunkscan.ini"), 0);
+    static const char k_ini[] = "[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n";
+    for (int profile = 0; profile <= 1; profile++) {
+        const char* label = profile ? "refused profile load" : "refused Config > Load";
+        rc |= write_file_bytes(loaded_path, k_ini, sizeof k_ini - 1U);
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_NULL;
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        state.config_autosave_enabled = 1;
+        DSD_SNPRINTF(state.config_autosave_path, sizeof state.config_autosave_path, "%s", session_path);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        rc |= expect_int(label, dsd_user_config_load(loaded_path, &cfg), 0);
+        rc |= drain_config_load(&opts, &state, &cfg, profile ? 0 : 1, loaded_path, label);
+        rc |= expect_str("refused load: the decoder says why", state.ui_msg,
+                         "Config not applied: trunking.chan_csv cannot be combined with trunk_scan.enabled");
+        rc |= expect_int("refused load: the autosave stays on", state.config_autosave_enabled, 1);
+        rc |= expect_str("refused load: the autosave target stays", state.config_autosave_path, session_path);
+        dsd_engine_cleanup(&opts, &state);
+        dsd_exitflag_store(0);
+        rc |= expect_int("refused load: the loaded file is untouched",
+                         file_holds(loaded_path, k_ini, sizeof k_ini - 1U), 1);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        rc |= expect_int("refused load: the session saved to its own target", dsd_user_config_load(session_path, &cfg),
+                         0);
+        rc |= expect_str("refused load: the session's map", cfg.trunk_chan_csv, "loaded_map.csv");
+        freeState(&state);
+        (void)remove(session_path);
+    }
+
+    /* A load that applies takes the autosave it brings, and the decoder says what loaded. */
+    for (int profile = 0; profile <= 1; profile++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_NULL;
+        state.config_autosave_enabled = 1;
+        DSD_SNPRINTF(state.config_autosave_path, sizeof state.config_autosave_path, "%s", session_path);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        rc |= drain_config_load(&opts, &state, &cfg, profile ? 0 : 1, loaded_path, "applied load");
+        char want[sizeof state.ui_msg];
+        DSD_SNPRINTF(want, sizeof want, "Config loaded from %s", loaded_path);
+        rc |= expect_str("applied load: the decoder says so", state.ui_msg, profile ? "Profile loaded: mobile" : want);
+        rc |= expect_int("applied load: the autosave it brings", state.config_autosave_enabled, profile ? 0 : 1);
+        rc |= expect_str("applied load: the autosave target", state.config_autosave_path, loaded_path);
+        freeState(&state);
+    }
+    (void)remove(loaded_path);
+    (void)dsd_test_rmdir(dir);
     return rc;
 }
 
@@ -22430,6 +22704,9 @@ main(void) {
     rc |= test_config_restart_settings_wait_for_the_next_start();
     rc |= test_config_load_then_exit_keeps_the_file();
     rc |= test_config_refuses_what_the_next_start_refuses();
+    rc |= test_config_judges_only_what_it_breaks();
+    rc |= test_menu_refuses_what_the_next_start_refuses();
+    rc |= test_refused_load_keeps_the_autosave();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_config_resumes_a_paused_list();
 #endif

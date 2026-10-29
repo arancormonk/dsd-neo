@@ -173,6 +173,11 @@ dsd_app_command_apply_config(const dsdneoUserConfig* config) {
 }
 
 int
+dsd_app_command_load_config(const dsd_app_config_load_payload* payload) {
+    return capture_command(DSD_APP_CMD_CONFIG_APPLY, payload, payload ? sizeof *payload : 0U);
+}
+
+int
 dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
     DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
     if (payload) {
@@ -579,14 +584,20 @@ test_config_callbacks_apply_and_report_failures(void) {
     rc |= expect_str("config load failure", g_status, "Failed to load config from /tmp/bad.toml");
     rc |= expect_int("config load failure no command", g_cmd.calls, 0);
 
+    /* Issue #671 (round 4): one command carries the config and the autosave it brings, which the decoder adopts only
+       when the config stays applied, and the decoder, not this callback, says whether it loaded. */
+    static dsd_app_config_load_payload load;
     reset_capture();
     cb_config_load(&ctx, "/tmp/good.toml");
-    rc |= expect_int("config load command count", g_cmd.calls, 2);
+    rc |= expect_int("config load command count", g_cmd.calls, 1);
     rc |= expect_int("config load command", g_cmd.id, DSD_APP_CMD_CONFIG_APPLY);
-    rc |= expect_int("config load metadata count", g_config_metadata_calls, 1);
-    rc |= expect_int("config load autosave enabled", g_config_metadata.autosave_enabled, 1);
-    rc |= expect_str("config load autosave path", g_config_metadata.path, "/tmp/good.toml");
-    rc |= expect_str("config load success status", g_status, "Config loaded from /tmp/good.toml");
+    rc |= expect_int("config load carries its autosave", (int)g_cmd.n, (int)sizeof load);
+    DSD_MEMCPY(&load, g_cmd.data, sizeof load);
+    rc |= expect_int("config load sets no autosave of its own", g_config_metadata_calls, 0);
+    rc |= expect_int("config load autosave enabled", load.autosave.autosave_enabled, 1);
+    rc |= expect_str("config load autosave path", load.autosave.path, "/tmp/good.toml");
+    rc |= expect_str("config load is the whole file", load.profile, "");
+    rc |= expect_int("config load claims nothing", g_status_calls, 0);
 
     reset_capture();
     cb_config_save_as(&ctx, NULL);
@@ -611,12 +622,15 @@ test_config_callbacks_apply_and_report_failures(void) {
     reset_capture();
     ProfileSelCtx* pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "mobile");
     chooser_done_config_profile(pctx, 0);
-    rc |= expect_int("profile load command count", g_cmd.calls, 2);
+    rc |= expect_int("profile load command count", g_cmd.calls, 1);
     rc |= expect_int("profile load command", g_cmd.id, DSD_APP_CMD_CONFIG_APPLY);
-    rc |= expect_int("profile load metadata count", g_config_metadata_calls, 1);
-    rc |= expect_int("profile load disables autosave", g_config_metadata.autosave_enabled, 0);
-    rc |= expect_str("profile load path", g_config_metadata.path, "/tmp/profiles.toml");
-    rc |= expect_str("profile load status", g_status, "Profile loaded: mobile");
+    rc |= expect_int("profile load carries its autosave", (int)g_cmd.n, (int)sizeof load);
+    DSD_MEMCPY(&load, g_cmd.data, sizeof load);
+    rc |= expect_int("profile load sets no autosave of its own", g_config_metadata_calls, 0);
+    rc |= expect_int("profile load disables autosave", load.autosave.autosave_enabled, 0);
+    rc |= expect_str("profile load path", load.autosave.path, "/tmp/profiles.toml");
+    rc |= expect_str("profile load names the profile", load.profile, "mobile");
+    rc |= expect_int("profile load claims nothing", g_status_calls, 0);
 
     reset_capture();
     pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "field");

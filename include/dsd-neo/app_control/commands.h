@@ -342,7 +342,7 @@ enum dsd_app_command_id {
 
     // DSP runtime (rtl_stream_*)
     DSD_APP_CMD_DSP_OP = 700,               // payload: dsd_app_dsp_payload
-    DSD_APP_CMD_CONFIG_APPLY = 710,         // payload: dsdneoUserConfig (see runtime/config.h)
+    DSD_APP_CMD_CONFIG_APPLY = 710,         // payload: dsdneoUserConfig, or dsd_app_config_load_payload
     DSD_APP_CMD_CONFIG_METADATA_SET = 711,  // payload: dsd_app_config_metadata_payload
     DSD_APP_CMD_SIGNAL_SEARCH_START = 712,  // payload: dsd_signal_search_config
     DSD_APP_CMD_SIGNAL_SEARCH_CONTROL = 713 // payload: dsd_signal_search_control
@@ -580,6 +580,19 @@ typedef struct {
     char path[1024];
 } dsd_app_config_metadata_payload;
 
+/**
+ * DSD_APP_CMD_CONFIG_APPLY of a loaded file (terminal Config > Load, a profile load): the config, and the autosave
+ * setting the session adopts only when the config stays applied (issue #671). Applied ("Config applied; ..." included),
+ * the session saves to @c autosave as CONFIG_METADATA_SET would set it, and the status line says what loaded unless the
+ * apply said something else; not applied ("Config not applied: ..."), the autosave stays as it was, so the exit
+ * autosave never writes the session into the file that did not load.
+ */
+typedef struct {
+    dsdneoUserConfig config; /* first: a CONFIG_APPLY handler reads the payload as the config */
+    dsd_app_config_metadata_payload autosave;
+    char profile[64]; /* the profile loaded from @c autosave.path, "" for the whole file */
+} dsd_app_config_load_payload;
+
 /** DSD_APP_CMD_TONE_FILTER_SET: the whole configured tone policy. Allow and block need a list; off keeps the one it is
  * given (or none). The list is the text dsd_tone_set_parse() reads, as typed; the command validates it. With
  * @c keep_list the edit is the mode alone: @c list must be "", and the list is the configured one as the decoder holds
@@ -677,6 +690,8 @@ int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);
 int dsd_app_command_apply_config(const dsdneoUserConfig* config);
 int dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload);
+/** Submit DSD_APP_CMD_CONFIG_APPLY with the loaded config and the autosave it brings (dsd_app_config_load_payload). */
+int dsd_app_command_load_config(const dsd_app_config_load_payload* payload);
 /** Submit DSD_APP_CMD_TONE_FILTER_SET with @p mode and @p list (NULL for none) as typed. A list longer than the payload
  * holds is rejected here (DSD_APP_COMMAND_SUBMIT_REJECTED), never cut to a list nobody typed. */
 int dsd_app_command_set_tone_filter(int32_t mode, const char* list);

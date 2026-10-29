@@ -652,12 +652,16 @@ field, and the decoder refuses the rest when it applies the command.
   included, writes them, so the restart runs them. A later config that names the
   running value again takes one back, and a channel-map import or clear sets the
   map at once. A config whose next start startup would refuse (a global
-  `chan_csv` or `p25_bandplan_csv` beside an enabled trunk scan, or a trunk scan
-  without `targets_csv`) is refused whole before anything changes, with the
-  rule in `status.message` (`Config not applied: trunking.chan_csv cannot be
-  combined with trunk_scan.enabled`). A config whose input does not start is
-  rolled back, but keeps its restart-only values for the next start, as the rest
-  of it stays applied.
+  `chan_csv` or `p25_bandplan_csv`, or `scanner = true` with trunking off,
+  beside an enabled trunk scan, or a trunk scan without `targets_csv`) is
+  refused whole before anything changes, with the rule in `status.message`
+  (`Config not applied: trunking.chan_csv cannot be combined with
+  trunk_scan.enabled`); a rule the session's save already breaks refuses only a
+  config that breaks another. While a trunk scan waits for the next start,
+  `scanner_toggle` will not start the scanner (`Scanner not started: ...`), and
+  channel-map and band-plan imports are refused the same way. A config whose
+  input does not start is rolled back, but keeps its restart-only values for the
+  next start, as the rest of it stays applied.
   Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
   back at shutdown and a save writes, not the parked target's. Over a paused
   `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or

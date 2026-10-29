@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <math.h>
 #include <stdint.h>
@@ -161,6 +162,27 @@ svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
         state->operator_tuned = 0U;
     }
     return g_trunk_resume_rc;
+}
+
+/* The next-start check (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one): passes unless
+   g_next_start_why is set, and records the save the change leaves from an empty one. */
+static const char* g_next_start_why;
+static int g_next_start_calls;
+static dsdneoUserConfig g_next_start_save;
+
+int
+svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
+                     char* why, size_t why_size) {
+    (void)opts;
+    (void)state;
+    g_next_start_calls++;
+    DSD_MEMSET(&g_next_start_save, 0, sizeof g_next_start_save);
+    change(&g_next_start_save, ctx);
+    if (!g_next_start_why) {
+        return 0;
+    }
+    DSD_SNPRINTF(why, why_size, "%s", g_next_start_why);
+    return -1;
 }
 
 int
@@ -879,6 +901,39 @@ test_trunking_under_a_scan(void) {
     return rc;
 }
 
+/* Issue #671 (round 4): a -Y start the next start would refuse (a trunk scan a config left waiting) is refused with the
+   rule, the scanner left off and trunking as it was; a stop is never asked. */
+static int
+test_scanner_start_held_to_the_next_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    struct dsd_app_command y = {0};
+    y.id = DSD_APP_CMD_SCANNER_TOGGLE;
+    opts.trunk_enable = 1;
+    g_next_start_calls = 0;
+    g_next_start_why =
+        "trunking.scanner cannot be combined with trunk_scan.enabled; the -Y scanner and a trunk scan both "
+        "own the tuner";
+    rc |= expect_int("next start: y refused", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
+    rc |= expect_true("next start: the rule on the status line",
+                      strcmp(state.ui_msg, "Scanner not started: trunking.scanner cannot be combined with "
+                                           "trunk_scan.enabled")
+                          == 0);
+    rc |= expect_true("next start: nothing changed", opts.scanner_mode == 0 && opts.trunk_enable == 1);
+    rc |= expect_true("next start: the save asked about runs the scanner, trunking off",
+                      g_next_start_calls == 1 && g_next_start_save.trunk_scanner == 1
+                          && g_next_start_save.trunk_enabled == 0);
+    g_next_start_why = NULL;
+    rc |= expect_int("next start: y starts", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("next start: scanning", opts.scanner_mode == 1 && opts.trunk_enable == 0);
+    rc |= expect_int("next start: y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("next start: a stop asks nothing", g_next_start_calls == 2 && opts.scanner_mode == 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -886,6 +941,7 @@ main(void) {
     rc |= test_trunk_actions();
     rc |= test_trunk_ownership_guard();
     rc |= test_scanner_toggle_pauses_and_resumes();
+    rc |= test_scanner_start_held_to_the_next_start();
     rc |= test_trunking_under_a_scan();
     rc |= test_radio_actions();
     rc |= test_logging_actions();

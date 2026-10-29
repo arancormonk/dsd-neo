@@ -238,8 +238,37 @@ int svc_set_pulse_input(dsd_opts* opts, dsd_state* state, const char* device);
 /** @brief Configure UDP audio output endpoint and enable it. */
 int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int port);
 
+/**
+ * The save the session would write after a change: @p save holds the one it would write now
+ * (dsd_snapshot_opts_to_user_config(), the values a config left for the next start included), which the callback edits
+ * as the change would leave it. @p ctx is the caller's.
+ */
+typedef void (*svc_next_start_change_fn)(dsdneoUserConfig* save, const void* ctx);
+
+/**
+ * @brief Whether a change keeps the next start one that starts (issue #671).
+ *
+ * Every save writes what the session runs and what a config left for the next start, so a change must not make that
+ * save one startup refuses: the save @p change leaves is held to dsd_user_config_check_trunk_scan_startable(), and only
+ * a rule the change newly breaks refuses it (a rule the session's own save breaks already, kept or fixed, does not).
+ * Asked before the change touches anything. A config apply, a channel-map or P25 band-plan import, the scanner toggle
+ * and a RadioReference import each ask it.
+ *
+ * @return 0 when the change may go ahead; -1 when it may not, with the rule's reason in @p why.
+ */
+int svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
+                         char* why, size_t why_size);
+
+/** An import refused by svc_check_next_start(): the reason is on the status line. */
+enum { SVC_REFUSED_FOR_NEXT_START = -3 };
+
 // Trunking & control helpers
-/** @brief Import a channel map CSV into runtime state. */
+/**
+ * @brief Import a channel map CSV into runtime state.
+ *
+ * Refused under trunk scan, and when a trunk scan waits for the next start (svc_check_next_start(): returns
+ * SVC_REFUSED_FOR_NEXT_START, with the rule on the status line).
+ */
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /**
  * @brief Hold the loaded channel map's analog (nfm or am) rows to the DSP rate they would run at (issue #526), as an
@@ -275,10 +304,12 @@ int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
  *
  * Dry-runs the file first and refuses one that yields no usable row, so a
  * mispicked CSV cannot replace the stored plan. Refused under trunk scan, where
- * band plans come per target (p25_bandplan_csv). On success the path is
+ * band plans come per target (p25_bandplan_csv), and when a trunk scan waits for
+ * the next start (svc_check_next_start()). On success the path is
  * recorded in opts->p25_bandplan_in_file and pending P25 announcements are
  * re-resolved against the newly seeded tables.
- * @return 0 on success, -1 otherwise.
+ * @return 0 on success, SVC_REFUSED_FOR_NEXT_START when the next start would refuse the plan (the rule is on the
+ *         status line), -1 otherwise.
  */
 int svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path);
 /**
