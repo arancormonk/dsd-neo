@@ -2407,18 +2407,21 @@ test_host_surface(void) {
     expect("the stopped file's delete runs once nothing plays it", waitGone(path(8)));
     expect("two recordings are left", s.store.recordingCount() == 2);
 
-    // A save copies one recording and releases its selection; a delete asked meanwhile waits for it.
+    // A save copies one recording and releases its selection; a delete asked meanwhile waits for it. The release
+    // (delivered by s.pass()) wakes the worker, which removes the original on its own time: the original's bytes are
+    // read before the save, and the copy is checked once the original is gone, never racing that delete.
     const QString dest = roots.dir.path() + QStringLiteral("/saved.wav");
+    const QByteArray original = read_all(path(3));
     QSignalSpy finished(&host, &dsd_qt::DecoderHost::recordingTransferFinished);
     const QVariantMap one = s.store.selectRecordings({id(3)});
     expect("a save begins", host.saveRecording(one, QUrl::fromLocalFile(dest).toString()));
     s.store.deleteRecording(id(3));
     s.pass();
-    expect("the save wrote the file", read_all(dest) == read_all(path(3)) && !read_all(dest).isEmpty());
     expect("it finished, once, done", finished.count() == 1
                                           && finished.at(0).at(0).toInt() == one.value("selection").toInt()
                                           && finished.at(0).at(1).toInt() == dsd_qt::DecoderHost::TransferDone);
     expect("and the delete it held ran after", waitGone(path(3)));
+    expect("the save wrote the file, which outlives the original", !original.isEmpty() && read_all(dest) == original);
 
     // An export runs on the host's own time; a second one meanwhile is refused as busy, releasing its own selection.
     record(folder, id(5), QStringLiteral("h5.wav"), 1754714005, 905);
