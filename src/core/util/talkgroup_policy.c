@@ -1729,6 +1729,17 @@ dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* stat
     return 1;
 }
 
+/* Whether a private call counts as known for record-unknown-only (issue #708). Either endpoint known makes the call
+   known, each on its own row: the row the call chose may be the other endpoint's learned alias. An endpoint's exact
+   lookup returns its non-alias row whenever it has one. */
+static int
+tg_policy_private_call_known(const dsd_opts* opts, int src_match, const dsd_tg_policy_entry* src_entry, int dst_match,
+                             const dsd_tg_policy_entry* dst_entry) {
+    return tg_policy_record_unknown_only(opts)
+           && ((src_match && !tg_policy_entry_is_learned_alias(src_entry))
+               || (dst_match && !tg_policy_entry_is_learned_alias(dst_entry)));
+}
+
 static int
 tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst, int encrypted,
                                 int data_call, int allow_unlisted, dsd_tg_policy_decision* out) {
@@ -1770,11 +1781,7 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_HOLD);
     }
     if (!mode_blocking && !hold_mismatch && chosen) {
-        /* Either endpoint known makes the call known, each on its own row: the row chosen above may be the other
-           endpoint's learned alias. An endpoint's exact lookup returns its non-alias row whenever it has one. */
-        const int known = tg_policy_record_unknown_only(opts)
-                          && ((src_match && !tg_policy_entry_is_learned_alias(&src_entry))
-                              || (dst_match && !tg_policy_entry_is_learned_alias(&dst_entry)));
+        const int known = tg_policy_private_call_known(opts, src_match, &src_entry, dst_match, &dst_entry);
         tg_policy_apply_explicit_media_blocks(out, chosen->audio == 0u,
                                               chosen->audio != 0u && (chosen->record == 0u || known),
                                               chosen->audio != 0u && chosen->stream == 0u);
