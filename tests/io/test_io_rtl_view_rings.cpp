@@ -22,6 +22,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/snr_bias.h>
 
 #include "rtl_view_rings.h"
 
@@ -173,12 +174,18 @@ test_eye_cache_tracks_inputs(void) {
     assert(!same_bits(c4fm_profile, c4fm_rate));
     (void)check_gfsk(&in, 1u);
     (void)check_gfsk(&in, 0u);
-    /* The TETRA chain flag keys the TETRA profile's noise bandwidth. */
+    /* The TETRA stage keys the TETRA profile's noise bandwidth. */
     in.channel_profile = DSD_CH_LPF_PROFILE_TETRA;
     const double c4fm_tetra_off = check_c4fm(&in, 1u);
-    in.tetra_chain = 1;
+    in.tetra_stage = DSD_SNR_TETRA_STAGE_CHAIN;
     const double c4fm_tetra_on = check_c4fm(&in, 1u);
     assert(!same_bits(c4fm_tetra_on, c4fm_tetra_off));
+    (void)check_gfsk(&in, 1u);
+    (void)check_gfsk(&in, 0u);
+    /* The TETRA channel filter alone (an uplink session) is a third bandwidth. */
+    in.tetra_stage = DSD_SNR_TETRA_STAGE_CHANNEL;
+    const double c4fm_tetra_channel = check_c4fm(&in, 1u);
+    assert(!same_bits(c4fm_tetra_channel, c4fm_tetra_on) && !same_bits(c4fm_tetra_channel, c4fm_tetra_off));
     (void)check_gfsk(&in, 1u);
     (void)check_gfsk(&in, 0u);
 

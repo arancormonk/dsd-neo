@@ -253,6 +253,10 @@ struct demod_state {
     /* 1 for the M17 encoder's monitor (issue #625): the FM/WIDE front end the encoder reads, set when the stream
        opens. Not part of the analog family, but the dynamic squelch runs on it (dsd_demod_encoder_monitor_active()). */
     int m17_encoder_monitor;
+    /* 1 for a trunked mode TETRA uplink session (--tetra-uplink), set when the stream opens. Its bursts keep the
+       receive path TETRA ran on before it had a chain of its own, apart from the TETRA channel filter: the TETRA chain
+       never activates for it (dsd_demod_tetra_chain_wanted(), dsd_demod_tetra_channel_runs()). */
+    int tetra_uplink;
     int analog_demod; /* dsd_analog_demod (runtime/analog_channel.h); 0 = FM */
     /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
        0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
@@ -381,8 +385,9 @@ struct demod_state {
     int symbol_rate_hz; /* FSK/CQPSK protocol symbol rate */
     int symbol_levels;  /* 2 or 4 for FSK; 4 for SYMBOL_CQPSK */
     /* 1 while the TETRA receive chain runs (DSD_CH_LPF_PROFILE_TETRA with the TETRA symbol profile); 0, the zeroed
-       default, runs every stream as before that chain existed, a TETRA-profile one with the legacy WIDE channel filter.
-       Keys the channel-filter plan and the SNR noise bandwidth. full_demod() alone writes it: once per block, at the
+       default, runs every stream as before that chain existed, a TETRA-profile one with the legacy WIDE channel filter
+       (an uplink session with the TETRA one, dsd_demod_tetra_channel_runs()). Keys the channel-filter plan and the SNR
+       noise bandwidth (dsd_demod_tetra_stage()). full_demod() alone writes it: once per block, at the
        block boundary, from dsd_demod_tetra_chain_wanted(), running the transition when the value changes. */
     int tetra_chain;
     /* The TETRA matched filter's state: outputs held back for look-ahead (0 after a reset), the tap count (0 = not

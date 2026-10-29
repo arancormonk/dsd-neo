@@ -82,10 +82,16 @@ main(void) {
         };
 
         const struct bw_case bw_cases[] = {
-            {DSD_CH_LPF_PROFILE_TETRA, 1, 9000.0},     {DSD_CH_LPF_PROFILE_TETRA, 0, 8415.0},
-            {DSD_CH_LPF_PROFILE_WIDE, 0, 8415.0},      {DSD_CH_LPF_PROFILE_6K25, 0, 3540.0},
-            {DSD_CH_LPF_PROFILE_12K5, 0, 6665.0},      {DSD_CH_LPF_PROFILE_PROVOICE, 0, 6665.0},
-            {DSD_CH_LPF_PROFILE_P25_C4FM, 0, 6665.0},  {DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 7065.0},
+            {DSD_CH_LPF_PROFILE_TETRA, 1, 9000.0},
+            {DSD_CH_LPF_PROFILE_TETRA, 0, 8415.0},
+            {DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHANNEL, 12114.0},
+            {DSD_CH_LPF_PROFILE_WIDE, DSD_SNR_TETRA_STAGE_CHANNEL, 8415.0},
+            {DSD_CH_LPF_PROFILE_WIDE, 0, 8415.0},
+            {DSD_CH_LPF_PROFILE_6K25, 0, 3540.0},
+            {DSD_CH_LPF_PROFILE_12K5, 0, 6665.0},
+            {DSD_CH_LPF_PROFILE_PROVOICE, 0, 6665.0},
+            {DSD_CH_LPF_PROFILE_P25_C4FM, 0, 6665.0},
+            {DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 7065.0},
             {DSD_CH_LPF_PROFILE_P25_CQPSK, 1, 7065.0},
         };
         for (size_t i = 0; i < sizeof(bw_cases) / sizeof(bw_cases[0]); i++) {

@@ -18,14 +18,14 @@ extern "C" {
  * @brief Inputs of a view-ring SNR fallback estimate besides the ring contents.
  *
  * `ted_sps` places the eye symbol centers and, with `rate_out`,
- * `channel_profile` and `tetra_chain`, sets the estimator bias
+ * `channel_profile` and `tetra_stage` (DSD_SNR_TETRA_STAGE_*), sets the estimator bias
  * (dsd_snr_bias_*_db()).
  */
 typedef struct {
     int ted_sps;
     int rate_out;
     int channel_profile;
-    int tetra_chain;
+    int tetra_stage;
 } rtl_view_snr_inputs;
 
 /** @brief Empty the constellation ring (retune), so stale points stop counting. */

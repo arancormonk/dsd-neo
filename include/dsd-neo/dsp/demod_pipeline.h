@@ -193,6 +193,29 @@ void full_demod(struct demod_state* d);
 int dsd_demod_tetra_chain_wanted(const struct demod_state* d);
 
 /**
+ * @brief Whether the TETRA channel filter (dsd_tetra_channel_design()) runs on a demodulator as it is now.
+ *
+ * It runs with the TETRA chain (demod_state::tetra_chain), and on a trunked mode uplink session
+ * (demod_state::tetra_uplink), which never runs the chain but keeps its channel filter (D10): the TETRA profile on
+ * CQPSK at 18000 sym/s with the channel LPF on, at a rate in the TETRA rate domain (dsd_tetra_dsp_rate_runs()) where
+ * the design succeeds (the memo dsd_demod_tetra_chain_wanted() reads). Otherwise a TETRA profile runs the legacy WIDE
+ * design, or with the channel LPF off none.
+ *
+ * @param d Demodulator state (NULL reads false).
+ * @return 1 when the TETRA channel filter is the plan, else 0.
+ */
+int dsd_demod_tetra_channel_runs(const struct demod_state* d);
+
+/**
+ * @brief The TETRA stage that bounds a demodulator's noise, for the SNR bias (dsd_snr_noise_bandwidth_hz()).
+ *
+ * @param d Demodulator state (NULL reads DSD_SNR_TETRA_STAGE_WIDE).
+ * @return DSD_SNR_TETRA_STAGE_CHAIN while the TETRA chain runs, DSD_SNR_TETRA_STAGE_CHANNEL while the TETRA channel
+ *         filter runs without it (dsd_demod_tetra_channel_runs()), else DSD_SNR_TETRA_STAGE_WIDE.
+ */
+int dsd_demod_tetra_stage(const struct demod_state* d);
+
+/**
  * @brief Evaluate the TETRA chain's activation predicate and run the state transition when the answer changed.
  *
  * full_demod() calls this at every block boundary, after the half-band decimation. A stream open calls it once its

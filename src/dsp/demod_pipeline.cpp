@@ -22,6 +22,7 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -130,7 +131,8 @@ clamp_float(float value, float lo, float hi) {
  *   - P25 C4FM: 6250 Hz protected passband edge.
  *   - P25 CQPSK/LSM: 6250 Hz protected passband edge plus guard.
  *   - TETRA: 11250 Hz protected passband edge (cutoff 12.5 kHz, 2.5 kHz transition) while the TETRA chain runs
- *     (demod_state::tetra_chain); otherwise the legacy WIDE design, exactly as TETRA ran before it had a profile.
+ *     (demod_state::tetra_chain) and on an uplink session (dsd_demod_tetra_channel_runs()); otherwise the legacy WIDE
+ *     design, exactly as TETRA ran before it had a profile.
  *
  * GNU Radio firdes::low_pass() interprets cutoff_freq as the center of the
  * transition band, not the last flat passband frequency. The design centers
@@ -615,12 +617,12 @@ dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps) {
 }
 
 /* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. The TETRA
- * profile designs its own channel, with no cap below the plan array and no fallback, only while the TETRA chain runs;
- * otherwise it runs the WIDE design. */
+ * profile designs its own channel, with no cap below the plan array and no fallback, while the TETRA channel filter
+ * runs (dsd_demod_tetra_channel_runs(): the TETRA chain, or an uplink session); otherwise it runs the WIDE design. */
 static int
 channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out) {
     if (profile == DSD_CH_LPF_PROFILE_TETRA) {
-        if (d->tetra_chain) {
+        if (dsd_demod_tetra_channel_runs(d)) {
             const int tetra_len =
                 dsd_tetra_channel_design(rate_out, d->channel_lpf_plan_taps, DSD_CHANNEL_LPF_MAX_TAPS);
             return tetra_len > 0 ? tetra_len : 0;
@@ -741,8 +743,8 @@ channel_lpf_ensure_plan(struct demod_state* d) {
        keeps its own profile filter. */
     const int width_hz =
         (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
-    /* The chain flag keys only the TETRA profile's plan: no other profile's design depends on it. */
-    const int tetra = (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && d->tetra_chain) ? 1 : 0;
+    /* Whether the TETRA channel filter runs keys only the TETRA profile's plan: no other profile's design depends on it. */
+    const int tetra = (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && dsd_demod_tetra_channel_runs(d)) ? 1 : 0;
     const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
     if (planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
         && d->channel_lpf_plan_width_hz == width_hz && d->channel_lpf_plan_tetra == tetra) {
@@ -1390,7 +1392,9 @@ tetra_design_memo_refresh(struct demod_state* d) {
 
 extern "C" int
 dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
-    if (!d || !tetra_chain_requested(d)) {
+    /* An uplink session never runs the chain: its short bursts, from radios at their own level and carrier, decode
+       better on the path TETRA ran before (D10), which keeps only the TETRA channel filter. */
+    if (!d || !tetra_chain_requested(d) || d->tetra_uplink) {
         return 0;
     }
     const int rate = d->rate_out;
@@ -1409,11 +1413,37 @@ dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
     return tetra_channel_design_realizable(rate);
 }
 
+extern "C" int
+dsd_demod_tetra_channel_runs(const struct demod_state* d) {
+    if (!d || !tetra_chain_requested(d)) {
+        return 0;
+    }
+    if (d->tetra_chain) {
+        return 1;
+    }
+    const int rate = d->rate_out;
+    if (!d->tetra_uplink || !d->channel_lpf_enable || !dsd_tetra_dsp_rate_runs(rate)) {
+        return 0;
+    }
+    if (d->tetra_design_rate_out == rate) {
+        return d->tetra_design_ok ? 1 : 0;
+    }
+    return tetra_channel_design_realizable(rate);
+}
+
+extern "C" int
+dsd_demod_tetra_stage(const struct demod_state* d) {
+    if (d && d->tetra_chain) {
+        return DSD_SNR_TETRA_STAGE_CHAIN;
+    }
+    return dsd_demod_tetra_channel_runs(d) ? DSD_SNR_TETRA_STAGE_CHANNEL : DSD_SNR_TETRA_STAGE_WIDE;
+}
+
 /* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
    chain of its own; say why, once per cause and stream. Nothing is said for a chain the mode does not ask for. */
 static void
 tetra_chain_warn_inactive(struct demod_state* d) {
-    if (!tetra_chain_requested(d)) {
+    if (!tetra_chain_requested(d) || d->tetra_uplink) {
         return;
     }
     const int rate = d->rate_out;

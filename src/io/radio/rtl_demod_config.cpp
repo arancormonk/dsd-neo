@@ -633,6 +633,9 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
     /* Written on every open: the global demod outlives a session. The dynamic squelch runs on the encoder's monitor
        (dsd_demod_encoder_monitor_active()). */
     demod->m17_encoder_monitor = encoder;
+    /* Written on every open as well: an uplink session keeps the receive path TETRA ran on before its chain, with the
+       TETRA channel filter (dsd_demod_tetra_channel_runs()). */
+    demod->tetra_uplink = (opts->tetra_uplink != 0) ? 1 : 0;
     demod_apply_output_kind(demod, opts);
 }
 

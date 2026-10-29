@@ -4461,8 +4461,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   width published for an unset default that plan runs.
   The TETRA profile (`DSD_CH_LPF_PROFILE_TETRA`, 6 in all three profile enums) runs its own design,
   `dsd_tetra_channel_design()` (GNU Radio's window design, cutoff 12.5 kHz, 2.5 kHz Blackman transition: 49 / 97 / 193
-  taps at 36 / 72 / 144 kHz, no clamp and no fallback, protected edge 11250 Hz), only while `demod_state::tetra_chain`
-  is set; with the flag clear it runs the legacy WIDE plan exactly. `DSP_CHANNEL_FILTERS` pins every other profile's
+  taps at 36 / 72 / 144 kHz, no clamp and no fallback, protected edge 11250 Hz), only while
+  `dsd_demod_tetra_channel_runs()` holds: while `demod_state::tetra_chain` is set, or on an uplink session (below);
+  otherwise it runs the legacy WIDE plan exactly. `DSP_CHANNEL_FILTERS` pins every other profile's
   plan at 24-144 kHz.
   The same flag picks the CQPSK chain's carrier parameters. The band-edge FLL has one design path
   (`fll_design()` in `costas.cpp`), which the lazy design in `op25_fll_band_edge_cc()` and
@@ -4502,9 +4503,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   not run, and the matched filter starts over for the reopen. `dsd_demod_reset_filter_state()` resets the matched
   filter too, and on the TETRA chain the AGC average. A TETRA profile on CQPSK whose chain cannot run warns once per
   stream per cause (rate out of the domain, a TED override that does not match the rate, `DSD_NEO_CHANNEL_LPF=0`) and
-  runs main's path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1). The stream publishes TETRA as the running channel
+  runs main's path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1). A trunked mode uplink session (`--tetra-uplink`,
+  `demod_state::tetra_uplink`, which `rtl_demod_init_for_mode()` writes on every open) never runs the chain (D10):
+  measured on `tetra_uplink_bursts_72k` the chain lost bursts that path decoded, so its predicate is false, nothing is
+  warned, and the stream keeps that path with the TETRA channel filter in place of WIDE wherever the rate domain
+  admits the rate and the channel LPF is on (`dsd_demod_tetra_channel_runs()`). The stream publishes TETRA as the running channel
   profile (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag
-  and so the UI channel width) only while the chain runs, WIDE otherwise; `rtl_stream_get_symbol_profile_full()`
+  and so the UI channel width) only while the TETRA channel filter runs, WIDE otherwise; `rtl_stream_get_symbol_profile_full()`
   keeps the configured profile the trunk-tuning restore puts back, and an open on the FSK discriminator turns a TETRA
   profile into WIDE (`rtl_demod_open_channel_profile()`). TETRA opens and runs on the TETRA profile: the mode mapping
   (`dsd_rtl_channel_profile_for()`) gives 18000 sym/s the TETRA profile with CQPSK (rf_mod 1) and WIDE for an FSK
@@ -4513,9 +4518,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   The TETRA profile only goes with CQPSK: CQPSK off returns it to WIDE, and the symbol-profile setter stores WIDE for it
   on the FSK discriminator. Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions,
   warnings, the WIDE-identical fallback, pull-in from +6 kHz and +600 Hz, squelch and signal-search, partition
-  invariance of the linear filters, P25 after a TETRA session), `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the
-  22.5 kHz width a TETRA open publishes).
-  The plan cache key is (rate_out, profile, width, TETRA chain). The SIMD complex FIR kernels size their scratch per
+  invariance of the linear filters, P25 after a TETRA session, the uplink's channel filter alone),
+  `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the 22.5 kHz width a TETRA open, downlink or uplink, publishes).
+  The plan cache key is (rate_out, profile, width, TETRA channel filter). The SIMD complex FIR kernels size their scratch per
   call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless
   (issue #572):
   `rtl_stream_apply_analog_request()` drops only the plan, and the half-band cascade and the channel FIR keep their
@@ -4672,8 +4677,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   samples, demod-thread appends, retune clears) and the fallback estimates over them behind
   `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer
   count raised for it, a batch count bumped when it ends). Each estimate caches per thread, keyed by batch count, TED
-  SPS, output rate, channel profile and TETRA chain flag (the SNR noise bandwidth, `dsd_snr_noise_bandwidth_hz()`,
-  follows the chain that runs: 9000 Hz one-sided for the TETRA chain, WIDE's for an inactive TETRA profile), and
+  SPS, output rate, channel profile and TETRA stage (`dsd_demod_tetra_stage()`; the SNR noise bandwidth,
+  `dsd_snr_noise_bandwidth_hz()`, follows the stage that runs: 9000 Hz one-sided for the TETRA chain, 12114 Hz for the
+  TETRA channel filter alone on an uplink session, WIDE's for an inactive TETRA profile), and
   returns exactly a fresh estimate's answer; a read a batch raced is answered (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
   `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
 - CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;

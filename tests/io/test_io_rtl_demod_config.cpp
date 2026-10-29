@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -2091,6 +2092,55 @@ expect_tetra_open_publishes_tetra_width(void) {
 }
 
 /*
+ * A trunked mode uplink session (--tetra-uplink) at 72 kHz never runs the TETRA chain (D10): its bursts keep the path
+ * TETRA ran before the chain, apart from the TETRA channel filter. The open records the session kind, the chain stays
+ * off, the running profile and the channel width a frontend draws are the TETRA filter's, and the SNR bias reads that
+ * filter's noise bandwidth.
+ */
+static int
+expect_tetra_uplink_open_keeps_channel_only(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_tetra = 1;
+    opts.mod_qpsk = 1;
+    opts.tetra_uplink = 1;
+    output_state out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.rate = 72000U;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    rtl_demod_init_for_mode(&demod, &out, &opts, 72000);
+    rtl_demod_config_from_env_and_opts(&demod, &opts);
+    rtl_demod_select_defaults_for_mode(&demod, &opts, &out);
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &out, 72000);
+    rtl_stream_test_seed_open_profile();
+    int running = -1;
+    (void)rtl_stream_get_running_symbol_profile(nullptr, nullptr, &running);
+    rc |= expect_int_eq("uplink open: session kind", demod.tetra_uplink, 1);
+    rc |= expect_int_eq("uplink open: chain off", demod.tetra_chain, 0);
+    rc |= expect_int_eq("uplink open: TETRA channel filter", dsd_demod_tetra_channel_runs(&demod), 1);
+    rc |= expect_int_eq("uplink open: running profile", running, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("uplink open: channel width (Hz)",
+                        (int)lround(2.0 * dsd_channel_lpf_protected_edge_hz(running)), 22500);
+    const double want_bias = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHANNEL);
+    if (!(fabs(rtl_stream_get_snr_bias_evm() - want_bias) <= 1e-9)) {
+        DSD_FPRINTF(stderr, "uplink open: SNR bias %.9f, want the TETRA channel filter's %.9f\n",
+                    rtl_stream_get_snr_bias_evm(), want_bias);
+        rc |= 1;
+    }
+    rtl_demod_cleanup(&demod);
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+
+    /* The next open without --tetra-uplink is a downlink session again: the global demod outlives a session. */
+    opts.tetra_uplink = 0;
+    rtl_demod_init_for_mode(&demod, &out, &opts, 72000);
+    rc |= expect_int_eq("downlink open after an uplink one: session kind", demod.tetra_uplink, 0);
+    rtl_demod_cleanup(&demod);
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    return rc;
+}
+
+/*
  * The channel profile the stream publishes to frontends and decoder labels (the metrics hooks' symbol profile) follows
  * the running chain: a TETRA profile reads TETRA only while the TETRA chain runs, and WIDE, the filter that runs, while
  * it does not. The configured profile, which a restore puts back, stays TETRA either way.
@@ -3017,6 +3067,7 @@ main(void) {
     rc |= expect_tetra_profile_validators();
     rc |= expect_tetra_published_profile_follows_chain();
     rc |= expect_tetra_open_publishes_tetra_width();
+    rc |= expect_tetra_uplink_open_keeps_channel_only();
     rc |= expect_analog_am_open();
     rc |= expect_audio_monitor_reset_clears_am_carrier();
     rc |= expect_analog_kind_switch();

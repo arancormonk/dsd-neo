@@ -8,7 +8,8 @@
  * transitions full_demod() runs when it changes between blocks, the chain's order (mixer, channel LPF, AGC 0.1,
  * matched filter, FLL and transfer), the squelch and signal-search behaviour, the once-per-stream warnings for a TETRA
  * profile whose chain cannot run, the pull-in on a clean synthetic stream, and a P25 stream after a TETRA session
- * running exactly as a fresh one. The tests force the TETRA profile on the demodulator directly.
+ * running exactly as a fresh one, and an uplink session, which keeps only the TETRA channel filter. The tests force the
+ * TETRA profile on the demodulator directly.
  */
 
 #include <cmath>
@@ -18,6 +19,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/firdes.h>
+#include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
@@ -724,6 +726,89 @@ test_inactive_runs_wide_path(void) {
     return rc;
 }
 
+/* An uplink session (demod_state::tetra_uplink, D10) never runs the chain: the predicate is false at every rate of the
+ * domain, and nothing is warned, since nothing the operator set keeps it off. Its stream keeps the path TETRA ran
+ * before the chain (the AGC at 0.45, the FLL at 0.2 x1, no mixer and no matched filter) with the TETRA channel filter
+ * in place of WIDE, where the domain admits the rate; off the domain it runs WIDE. */
+int
+test_uplink_keeps_channel_filter_only(void) {
+    int rc = 0;
+    rc |= expect_int("NULL demod: channel filter", dsd_demod_tetra_channel_runs(NULL), 0);
+    rc |= expect_int("NULL demod: stage", dsd_demod_tetra_stage(NULL), DSD_SNR_TETRA_STAGE_WIDE);
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    for (int rate = 36000; rate <= 144000; rate += 18000) {
+        DSD_MEMSET(s, 0, sizeof(*s));
+        configure_tetra(s, rate);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "downlink at %d Hz: stage", rate);
+        dsd_demod_update_tetra_chain(s);
+        rc |= expect_int(label, dsd_demod_tetra_stage(s), DSD_SNR_TETRA_STAGE_CHAIN);
+        DSD_MEMSET(s, 0, sizeof(*s));
+        configure_tetra(s, rate);
+        s->tetra_uplink = 1;
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz: predicate", rate);
+        rc |= expect_int(label, dsd_demod_tetra_chain_wanted(s), 0);
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz: channel filter", rate);
+        rc |= expect_int(label, dsd_demod_tetra_channel_runs(s), 1);
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz: stage", rate);
+        rc |= expect_int(label, dsd_demod_tetra_stage(s), DSD_SNR_TETRA_STAGE_CHANNEL);
+    }
+
+    DSD_MEMSET(s, 0, sizeof(*s));
+    configure_tetra(s, 72000);
+    s->tetra_uplink = 1;
+    g_warns = WarnCounts{};
+    const std::vector<float> iq = make_tetra_stream(72000, 1500.0, 1440 * 3, 0.3f, 0x55u);
+    for (int blk = 0; blk < 3; blk++) {
+        (void)run_block(s, iq.data() + (size_t)blk * 1440U * 2U, 1440);
+    }
+    static float want[DSD_CHANNEL_LPF_MAX_TAPS];
+    const int want_len = dsd_tetra_channel_design(72000, want, DSD_CHANNEL_LPF_MAX_TAPS);
+    rc |= expect_int("uplink: chain off", s->tetra_chain, 0);
+    rc |= expect_int("uplink: TETRA plan key", s->channel_lpf_plan_tetra, 1);
+    rc |= expect_int("uplink: TETRA design taps", s->channel_lpf_plan_taps_len, want_len);
+    if (want_len > 0 && std::memcmp(s->channel_lpf_plan_taps, want, (size_t)want_len * sizeof(float)) != 0) {
+        rc |= fail("uplink: installed plan is not the TETRA design");
+    }
+    rc |= expect_int("uplink: no matched filter", s->tetra_rrc_taps_len, 0);
+    rc |= expect_near("uplink: no mixer", s->fll_band_edge_state.pre_freq, 0.0, 0.0);
+    rc |= expect_near("uplink: FLL rolloff", s->fll_band_edge_state.rolloff, 0.2, 1e-6);
+    rc |= expect_near("uplink: FLL loop scale", s->fll_band_edge_state.loop_bw_scale, 1.0, 1e-6);
+    rc |= expect_near("uplink: AGC weight", dsd_cqpsk_agc_alpha(s->tetra_chain), 0.45, 1e-6);
+    rc |= expect_int("uplink: nothing warned", g_warns.total, 0);
+    if (s->result_len <= 0) {
+        rc |= fail("uplink: no symbols");
+    }
+
+    /* Off the domain (48 kHz) the uplink runs WIDE, as a downlink stream there does, and is not warned about either. */
+    DSD_MEMSET(s, 0, sizeof(*s));
+    configure_cqpsk(s, 48000, DSD_CH_LPF_PROFILE_TETRA, 18000, 3);
+    s->tetra_uplink = 1;
+    g_warns = WarnCounts{};
+    const std::vector<float> b48 = constant_block(960, 0.01f, 0.0f);
+    (void)run_block(s, b48.data(), 960);
+    rc |= expect_int("uplink at 48 kHz: channel filter", dsd_demod_tetra_channel_runs(s), 0);
+    rc |= expect_int("uplink at 48 kHz: WIDE plan key", s->channel_lpf_plan_tetra, 0);
+    rc |= expect_int("uplink at 48 kHz: stage", dsd_demod_tetra_stage(s), DSD_SNR_TETRA_STAGE_WIDE);
+    rc |= expect_int("uplink at 48 kHz: nothing warned", g_warns.total, 0);
+
+    /* With the channel LPF off (DSD_NEO_CHANNEL_LPF=0) no TETRA filter runs either, and nothing is warned. */
+    DSD_MEMSET(s, 0, sizeof(*s));
+    configure_tetra(s, 72000);
+    s->tetra_uplink = 1;
+    s->channel_lpf_enable = 0;
+    g_warns = WarnCounts{};
+    (void)run_block(s, iq.data(), 1440);
+    rc |= expect_int("uplink, LPF off: channel filter", dsd_demod_tetra_channel_runs(s), 0);
+    rc |= expect_int("uplink, LPF off: stage", dsd_demod_tetra_stage(s), DSD_SNR_TETRA_STAGE_WIDE);
+    rc |= expect_int("uplink, LPF off: nothing warned", g_warns.total, 0);
+    free_demod(s);
+    return rc;
+}
+
 /* --- Pull-in ------------------------------------------------------------------------------------------------ */
 
 /* A clean stream at 72 kHz, @p offset_hz above the centre: the combined estimate reaches the truth (minus the offset,
@@ -1067,6 +1152,7 @@ main(void) {
     rc |= test_cqpsk_toggle_leaves_and_enters();
     rc |= test_warned_fallbacks();
     rc |= test_inactive_runs_wide_path();
+    rc |= test_uplink_keeps_channel_filter_only();
     rc |= test_pull_in();
     rc |= test_squelch_close_reopen();
     rc |= test_signal_search_skip();
