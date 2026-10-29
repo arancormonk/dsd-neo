@@ -107,11 +107,20 @@ make_rtl_opts(void) {
     return opts;
 }
 
+/* Stops the dongle reading back another rate on its at_call-th rate write: the rate a refused retune's rollback puts
+ * back reads back as given. */
+struct readback_reset {
+    rtl_device_test_usb_dongle* dongle;
+    int at_call;
+};
+
 /* A stream's device on the fake dongle, its start programmed. */
 struct rig {
     std::unique_ptr<input_ring_state> ring = std::make_unique<input_ring_state>();
     /* Heap-held: the device keeps its address in a global while it is installed. */
     std::unique_ptr<rtl_device_test_usb_dongle> dongle = std::make_unique<rtl_device_test_usb_dongle>();
+    /* Heap-held as well: the dongle keeps its address as the op hook's context while a readback is armed. */
+    std::unique_ptr<readback_reset> readback = std::make_unique<readback_reset>();
     dsd_opts* opts = nullptr;
     rtl_device* dev = nullptr;
     rtl_stream_test_capture_result start{};
@@ -664,13 +673,6 @@ test_start_past_uint32_refused(void) {
 
 /* ---- Issue #670 B16: a retune whose actual-rate correction cannot be written ---- */
 
-/* Stops the dongle reading back another rate on its at_call-th rate write: the rate a refused retune's rollback puts
- * back reads back as given. */
-struct readback_reset {
-    rtl_device_test_usb_dongle* dongle;
-    int at_call;
-};
-
 void
 readback_reset_on_op(void* ctx, int op) {
     readback_reset* reset = static_cast<readback_reset*>(ctx);
@@ -682,7 +684,8 @@ readback_reset_on_op(void* ctx, int op) {
 
 /* A rig whose next retune's rate write reads back @p actual_rate and whose rollback's rate write reads back as given. */
 void
-arm_readback(rig& r, readback_reset* reset, uint32_t actual_rate) {
+arm_readback(rig& r, uint32_t actual_rate) {
+    readback_reset* reset = r.readback.get();
     r.dongle->tuner.actual_rate = actual_rate;
     reset->dongle = r.dongle.get();
     reset->at_call = r.dongle->calls[RTL_TEST_DONGLE_RATE] + 2;
@@ -718,8 +721,7 @@ void
 test_failed_rate_correction_rolls_back(void) {
     rig r;
     rig_open(r, kTunerR820T);
-    readback_reset reset{};
-    arm_readback(r, &reset, 960123U);
+    arm_readback(r, 960123U);
     const uint32_t corrected_hz = kHopsHz[0] + 960123U / 4U;
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value_set = 1;
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_value = (int)corrected_hz;
@@ -741,8 +743,7 @@ void
 test_rate_correction_past_uint32_rolls_back(void) {
     rig r;
     rig_open(r, kTunerR820T);
-    readback_reset reset{};
-    arm_readback(r, &reset, 960004U);
+    arm_readback(r, 960004U);
     const uint32_t center_hz = UINT32_MAX - kCapture960kHz / 4U;
     const int from = r.dongle->tuner.freq_log_count;
     const rtl_stream_test_capture_result got = manual_retune(center_hz, kRateIn960k);
@@ -782,8 +783,7 @@ void
 test_failed_rollback_stops_stream(void) {
     rig r;
     rig_open(r, kTunerR820T);
-    readback_reset reset{};
-    arm_readback(r, &reset, 960123U);
+    arm_readback(r, 960123U);
     /* The retune's own frequency write takes; the correction and the rollback's are refused. */
     r.dongle->faults[RTL_TEST_DONGLE_FREQ].fail_from_call = r.dongle->calls[RTL_TEST_DONGLE_FREQ] + 2;
     dsd_input_failure_clear();
