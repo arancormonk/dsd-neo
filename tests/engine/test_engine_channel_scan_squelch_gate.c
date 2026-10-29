@@ -41,7 +41,7 @@ static double g_pushed = -1.0;
 static int g_tunes;
 
 /* The tune always lands: the scanner commits the row as it would after a real retune. */
-/* No scanner tune here moves a backend and then fails (dsd_engine_scan_tune_moved()). */
+/* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()). */
 int
 dsd_engine_scan_tune_moved(void) {
     return 0;

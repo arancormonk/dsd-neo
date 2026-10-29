@@ -15,10 +15,10 @@
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 
-/* The fix for TETRA at a rate it cannot run, by what sets the rate: the RTL DSP bandwidth (in the spec form of the input
-   at hand), a SoapySDR or Airspy device, or an I/Q replay's capture. A replay re-plans its rate to TETRA's when TETRA
-   comes on (issue #701), so only a capture no plan resamples to a TETRA rate reaches its text. The brief form fits a
-   toast. */
+/* The fix for TETRA at a rate it cannot run, by what sets the rate: the RTL DSP bandwidth (in the spec form of the
+   input at hand), a SoapySDR or Airspy device, or an I/Q replay's capture. A replay re-plans its rate to TETRA's when
+   TETRA comes on (issue #701), so only a capture no plan resamples to a TETRA rate reaches its text. The brief form
+   fits a toast. */
 static const char*
 tetra_rate_fix(const dsd_opts* opts, int brief) {
     const char* dev = opts ? opts->audio_in_dev : NULL;

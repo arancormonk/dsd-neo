@@ -117,8 +117,9 @@ ul_training_score(const dsd_tetra_ul_timing* t, const dsd_tetra_ul_training* tr,
 
 /* How well the extended training sequence's first two and last two symbols, the four around the normal training
    sequence 1 inside it, agree with the rest of it: the magnitude-weighted mean of cos(their error) once the phasors are
-   turned back by @p phase (conjugated when the sequence matched conjugated, @p conj). Near 1 for a control burst; for a
-   normal burst whose neighbouring payload happens to resemble them, one symbol a quarter turn off gives at most 0.75. */
+   turned back by @p phase (conjugated when the sequence matched conjugated, @p conj). Near 1 for a control burst; for
+   a normal burst whose neighbouring payload happens to resemble them, one symbol a quarter turn off gives at most
+   0.75. */
 static float
 ul_ets_outer_agreement(const dsd_tetra_ul_timing* t, uint64_t newest, float phase, int conj) {
     static const int outer[4] = {0, 1, UL_ETS_LEN - 2, UL_ETS_LEN - 1};
@@ -148,10 +149,10 @@ ul_spans_overlap(const dsd_tetra_ul_burst* a, const dsd_tetra_ul_burst* b) {
     return a->start < b->end && b->start < a->end;
 }
 
-/* Keep @p b unless a burst still ahead of the strobe overlaps it with a training that scored as high; it replaces those
-   ahead of the strobe it overlaps. A burst the strobe passed blocks nothing: it was a peak on noise, or the burst before
-   this one, and a training that did not move the strobe yet is all that can still decide. With every slot taken it
-   replaces the burst that starts first. */
+/* Keep @p b unless a burst still ahead of the strobe overlaps it with a training that scored as high; it replaces
+   those ahead of the strobe it overlaps. A burst the strobe passed blocks nothing: it was a peak on noise, or the burst
+   before this one, and a training that did not move the strobe yet is all that can still decide. With every slot taken
+   it replaces the burst that starts first. */
 static void
 ul_burst_found(dsd_tetra_ul_timing* t, const dsd_tetra_ul_burst* b) {
     for (int i = 0; i < DSD_TETRA_UL_BURSTS; i++) {

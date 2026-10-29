@@ -173,7 +173,7 @@ static int tuned_am_width_hz = -1;
 /* The row's own width a rigctl leg would hand its peer (dsd_engine_scan_tuning_row_options()); 0 for none. */
 static int tuned_row_width_hz = -1;
 
-/* No scanner tune here moves a backend and then fails (dsd_engine_scan_tune_moved()). */
+/* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()). */
 int
 dsd_engine_scan_tune_moved(void) {
     return 0;

@@ -16536,7 +16536,7 @@ if(DSD_HAS_RADIO)
     # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
     # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
     # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP
-    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 21 of
+    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 8 of
     # them under an assigned control AACH and decodes none (before the AACH was read, 3 passed as speech).
     set(_dsd_tetra_aach_not_traffic
         "AACH (0/[0-9]+|[123]/[0-3])/[0-9]+\\]\\[TETRA TCH"
@@ -16583,7 +16583,8 @@ if(DSD_HAS_RADIO)
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     # AWGN at 3 dB SNR over the 72 kHz band: 3 identities and no speech against 53 and 20 TCH/FS bursts whose CRC
-    # passes. At least 32 wanted identities (60% of 53) and one accepted TCH/FS.
+    # passes (81 and 20 since TETRA slices at the quadrant boundaries). At least 32 wanted identities (60% of 53)
+    # and one accepted TCH/FS.
     add_test(
         NAME DECODE_IQ_TETRA_CALL_AWGN
         COMMAND
@@ -16627,7 +16628,7 @@ if(DSD_HAS_RADIO)
     # 2003, 2006, 2008, 2009, 2011, 2013, 2015 and 2016). Burst 2009 began 7 symbols before a matchless pass ended the
     # frame sync's call, which used to start the next call with no history, too little for its 79-symbol window
     # (FRAME_SYNC_HISTORY_CARRY). The receiver before the chain decoded 13 bursts (not 2001, 2009 and 2016); the
-    # TETRA chain, before uplink kept the earlier path with only the TETRA channel filter (D10), decoded 7; with it, 15;
+    # TETRA chain, before uplink kept the earlier path with only the TETRA channel filter, decoded 7; with it, 15;
     # with the history carried across the exit, all 16.
     set(_dsd_tetra_ul_mode "-fT --tetra-uplink --tetra-net 460,4242,17")
     set(_dsd_tetra_cb "\\[TETRA SCH/HU\\] CC=17 MAC-ACCESS enc=0 ssi=")

@@ -192,7 +192,21 @@ at 2000-01-01T00:00:00Z.
 The replay demodulates the channel at the recording's centre. A replay cannot be retuned, so a channel elsewhere in
 a wide recording is not decoded: set the recording program's centre (tuner) frequency on the carrier before recording,
 not only a VFO inside its band. A small offset, such as the +343 Hz the `tetra_call_real_air_72k` fixture's recording
-carries, is recovered as it is on air.
+carries, is recovered as it is on air (for TETRA, see the tuning tolerance under `-fT` in `docs/cli.md`).
+
+### SDR++ Baseband Recordings
+
+SDR++'s recorder, in baseband mode, writes the I/Q its tuner receives, centred on the tuner's centre frequency (the
+middle of the waterfall), not on the VFO. In SDR++'s usual tuning mode a click on the waterfall moves the VFO while
+the centre stays where it was, so a carrier under the VFO can sit tens of kHz from the recording's centre, and the
+replay does not decode it. Before recording:
+
+1. Turn on centre tuning with the toggle beside SDR++'s frequency display, so the frequency you tune is the centre
+   and the VFO stays on it.
+2. Tune to the carrier, then start the recording.
+
+The `NNNHz` in SDR++'s default file name is that centre frequency, and the replay takes it as the recording's centre
+(above). A carrier anywhere else in the recording is not decoded, whatever the VFO was on; record it again centred.
 
 Headers a recording program did not finish:
 
@@ -226,19 +240,19 @@ recording alike. The plan aims at a DSP rate D:
 - otherwise (a WAV recording, or a sidecar that recorded none) the mode's preset bandwidth (72 kHz under `-fT`, 24 kHz
   under the EDACS/ProVoice presets) or the 48 kHz default.
 
-Under TETRA a D that is not a multiple of 18 kHz becomes 72 kHz. TETRA's pi/4-DQPSK runs at 18 ksym/s, its symbols
-are timed at a whole number of samples each, and its CQPSK path skips the decimation after the demodulator
-(`post_downsample`), so the rate the half-band chain delivers must itself be a multiple of 18 kHz.
+Under TETRA a D that is not a multiple of 18 kHz from 36 to 144 kHz becomes 72 kHz. TETRA's pi/4-DQPSK runs at
+18 ksym/s, its symbols are timed at a whole number of samples each (2 to 8), and its CQPSK path skips the decimation
+after the demodulator (`post_downsample`), so the rate the half-band chain delivers must itself be one of those
+rates.
 
 The chain:
 
 - **Kept as recorded.** A sidecar capture with no DSP bandwidth asked for runs the chain it recorded
   (`base_decimation`, `post_downsample`, `demod_rate_hz`), exactly as before, unless the mode is TETRA and the chain
-  cannot run it: its rate after `base_decimation` is not a multiple of 18 kHz, or its `post_downsample` is above 1. A
-  TETRA chain that misses
-  only through a power-of-two `post_downsample` folds it into the half-band chain where that reaches a multiple of
-  18 kHz. Every committed fixture keeps its chain, and so does every committed TETRA fixture under TETRA but the
-  unmodified 50 kHz capture, which TETRA resamples.
+  cannot run it: its rate after `base_decimation` is not a multiple of 18 kHz from 36 to 144 kHz, or its
+  `post_downsample` is above 1. A TETRA chain that misses only through a power-of-two `post_downsample` folds it into
+  the half-band chain where that reaches one of those rates. Every committed fixture keeps its chain, and so does
+  every committed TETRA fixture under TETRA but the unmodified 50 kHz capture, which TETRA resamples.
 - **Otherwise** (a WAV recording, a DSP bandwidth asked for, or a recorded chain TETRA cannot run): a capture at
   D x 2^k (k from 0 to 10) is decimated by 2^k in the half-band chain with no resampling. Any other capture is
   resampled first, to R = D x 2^k, the largest such rate at or below its own (R = D when the capture is slower than
@@ -336,7 +350,7 @@ dsd-neo -fT -i rtltcp:192.168.1.10:1234:426.7M:22:0:72
 `-i tcp` and `-i udp` carry demodulated PCM audio, not I/Q (see `docs/network-audio.md`), so they cannot feed TETRA or
 any other mode that needs I/Q. dsd-neo has no input for headerless I/Q streamed over TCP or UDP (`cf32` or otherwise)
 from other SDR software. To decode TETRA from another SDR program, record a WAV I/Q recording there, centred on the
-carrier, and replay it with `--iq-replay`.
+carrier (in SDR++, see [SDR++ Baseband Recordings](#sdr-baseband-recordings)), and replay it with `--iq-replay`.
 
 ## Replay Pacing And The Decode Clock
 
@@ -509,8 +523,9 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   the demodulator no samples is not rewound: the replay logs a warning and ends there, as it does at the end without
   `--iq-loop`.
 - A pass that reads to the end of the capture with every chunk handed to the demodulator logs
-  `IQ replay: end of capture after N samples`, where N counts the complex samples that pass read at the capture's own
-  rate (before any resampling). It is logged once the decoder has read everything the pass decoded to: when the
+  `IQ replay: end of capture after N samples`, where N is the capture's end position in complex samples at its own
+  rate (before any resampling), counted from the capture's start: the whole capture, also for a replay that resumed
+  partway through after a re-plan. It is logged once the decoder has read everything the pass decoded to: when the
   stream stops after a replay the decoder read to its end, just before `soft stopping...`, and under `--iq-loop` once
   per pass, just before the `--iq-loop rewound` line. A replay that stops early, fails to read, or cannot hand a chunk
   on does not log it, so a log without it did not replay the whole capture.

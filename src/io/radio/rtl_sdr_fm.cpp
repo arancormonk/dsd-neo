@@ -8048,9 +8048,9 @@ stream_open_reset_auto_ppm_state(const dsd_opts* opts) {
 /* The DSP rate the last TETRA rate warning named (stream_open_warn_tetra_dsp_rate()), 0 for none. */
 static int g_tetra_rate_warned_hz = 0;
 
-/* TETRA's symbol timing needs a DSP rate that is a multiple of 18 kHz (dsd_tetra_dsp_rate_runs()); at any other
-   it decodes nothing, so a stream that opens TETRA there says why and what to change. Logged once per rate: a reopen
-   at the rate already named stays quiet. */
+/* TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz (dsd_tetra_dsp_rate_runs()); at any other
+   rate it decodes nothing, or runs without its receive chain, so a stream that opens TETRA there says why and what to
+   change. Logged once per rate: a reopen at the rate already named stays quiet. */
 static int
 stream_open_warn_tetra_dsp_rate(const dsd_opts* opts, int dsp_rate_hz) {
     char advice[DSD_TETRA_RATE_ADVICE_MAX];

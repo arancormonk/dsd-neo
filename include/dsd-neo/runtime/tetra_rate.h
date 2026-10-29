@@ -9,8 +9,8 @@
  *
  * TETRA is pi/4-DQPSK at 36 kbit/s, 18 ksym/s (EN 300 392-2 clause 5.3). The CQPSK timing loop its symbols come from
  * counts whole samples per symbol, so TETRA runs only where the DSP (demodulator) rate is a multiple of 18 kHz from
- * 36 to 144 kHz: the 72 kHz RTL DSP bandwidth (4 samples per symbol) on a live radio. The stream start warns about any other rate, and so
- * does a switch to TETRA at run time, with the fix for the input in force.
+ * 36 to 144 kHz: the 72 kHz RTL DSP bandwidth (4 samples per symbol) on a live radio. The stream start warns about any
+ * other rate, and so does a switch to TETRA at run time, with the fix for the input in force.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TETRA_RATE_H_
@@ -58,10 +58,10 @@ dsd_tetra_dsp_rate_runs(int rate_hz) {
  * The text names the rate and the fix for the input @p opts names (dsd_opts_analog_rate_source()): an RTL-SDR or
  * rtl_tcp input's 72 kHz DSP bandwidth in its spec form, a SoapySDR device's 72 kHz DSP bandwidth on a device that
  * delivers 1.152 MS/s, that no Airspy sample rate halves to a multiple of 18 kHz, or that an I/Q replay's capture
- * cannot be resampled to a TETRA rate (a replay re-plans to one otherwise, issue #701). The full text ("TETRA needs a DSP rate that is a multiple of 18 kHz
- * from 36 to 144 kHz, not 48 kHz: ...") is for the log. The brief one fits a toast and says which way the rate is
- * wrong: "DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz", or "DSP rate 162 kHz is outside
- * 36 to 144 kHz; ...".
+ * cannot be resampled to a TETRA rate (a replay re-plans to one otherwise, issue #701). The full text ("TETRA needs a
+ * DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 48 kHz: ...") is for the log. The brief one fits a
+ * toast and says which way the rate is wrong: "DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to
+ * 72 kHz", or "DSP rate 162 kHz is outside 36 to 144 kHz; ...".
  *
  * @param opts     Decoder options naming the input; NULL reads as an RTL-SDR.
  * @param rate_hz  The DSP rate TETRA runs at, in Hz; 0 or less is not known yet, which no advice is written for.

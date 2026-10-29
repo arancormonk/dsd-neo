@@ -430,7 +430,8 @@ the `--out` directory given) to a fresh temporary directory, regenerates every d
 missing or is new and exits 1, or exits 0 when every derived fixture reproduces byte for byte, and never writes to the
 committed set. A generator change that is meant to change fixtures must then change only the intended files: regenerate
 into a copy, check that `diff -rq` against the committed set lists exactly those, copy only those in, and run
-`--verify` again, which must pass. It is not a CTest case (the bytes are pinned to one numpy version).
+`--verify` again, which must pass. It is not a CTest case (the bytes are pinned to one numpy version). Without
+`--dmr-synth-gen` the copy keeps the committed `dmr_voice_synth`, and the OK line says that fixture was not verified.
 
 `nxdn48_attenuated` is `nxdn48` replayed 20 dB down, for the per-row squelch cases
 (`DECODE_IQ_SCAN_NXDN48_SQUELCH_*`, issue #521). The source is normalized near full scale, so
@@ -503,10 +504,12 @@ CRC, all zero bits pass the speech CRC too. `tetra_call_gap_noisy_72k` (`DERIVED
 stretch, 3.3 seconds with no speech in it, with complex Gaussian noise of sigma 38 LSB: before the AACH was read, 3
 of its blocks played as speech at sigma 24. The sigma is set for the TETRA receive chain, whose matched filter reads
 these blocks through more noise: at 24 LSB it decoded 53 of the stretch's SCH/F blocks, so none failed the CRC and the
-gate had nothing to read; swept from 24 to 56 LSB, 38 leaves it 13 that decode. `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE`
-requires at least 8 bursts read as assigned control that decode nothing (16 lines now; 8 to 18 over nine other noise
-seeds; the receiver before the TETRA chain reads only 4 here, against 21 at sigma 24), and both cases refuse a burst
-tried as speech behind an AACH saying control or unallocated. An AACH that cannot be read (four or more bit errors) says
+gate had nothing to read; swept from 24 to 56 LSB, 38 left it 13 that decode, and 25 since TETRA slices at the
+quadrant boundaries. `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE` requires at least 8 bursts read as assigned control that
+decode nothing. It reads exactly 8 now (16 before the quadrant slicer; over the noise seeds 24005 to 24013, 0 to 17;
+the receiver before the TETRA chain reads only 4 here, against 21 at sigma 24), so the committed seed sits on the
+threshold. Both cases refuse a burst tried as speech behind an AACH saying control or unallocated; none was tried on
+any of those seeds. An AACH that cannot be read (four or more bit errors) says
 nothing, and its block is still tried as speech: one false frame in 24 seed and level runs of this stretch got
 through that way, so the gate case asserts the AACH's decisions rather than the absence of every false frame.
 
@@ -521,7 +524,7 @@ before the TETRA chain against the chain, on the committed bytes:
 | Case | Fixture | Before | Chain | Asserted |
 |---|---|---|---|---|
 | `DECODE_IQ_TETRA_CALL_ADJACENT` | neighbour 25 kHz below at +30 dB (29.99 realized), on frequency | 0 | 232 | at least 139 identities, the SYSINFO and the allocation, never `MCC=460` |
-| `DECODE_IQ_TETRA_CALL_AWGN` | AWGN 3 dB SNR over 72 kHz | 3, no speech | 53, 20 TCH/FS | at least 32 identities and one accepted TCH/FS |
+| `DECODE_IQ_TETRA_CALL_AWGN` | AWGN 3 dB SNR over 72 kHz | 3, no speech | 81 (53 before the quadrant slicer), 20 TCH/FS | at least 32 identities (60% of 53) and one accepted TCH/FS |
 | `DECODE_IQ_TETRA_CALL_NEIGHBOUR_REJECT` | receiver 10 kHz below, neighbour +20 dB (20.00 realized) at -15 kHz | 36 neighbour identities | none of either | never `MCC=460`; the replay end notice with all 468000 samples |
 | `DECODE_IQ_TETRA_CALL_OFFSET_10K` | clean, receiver 10 kHz below | 217 | 224 | at least 207 identities (95% of 217) |
 
@@ -532,9 +535,9 @@ The rejection case accepts silence: the chain must not name the neighbour, and n
 SCH/F), carrying the MAC-ACCESS and MAC-DATA vectors of `tests/protocol/tetra/test_tetra_ul.c` from SSIs 2001 to 2016.
 Each is a radio of its own, 20 dB above or below the burst before it and 500 Hz away, and most follow noise-only
 slots. `DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS` and `_NORMAL_BURSTS` require each burst's PDU in order, the first after
-every gap included. The receiver before the TETRA chain decodes 13 of the 16 (not 2001, 2009 or 2016); the chain decoded
-7. So an uplink session keeps the earlier path and takes only the TETRA channel filter (decision D10,
-`dsd_demod_tetra_channel_runs()`), which decodes 15. The 16th, burst 2009, began 7 symbols before a matchless pass of
+every gap included. The receiver before the TETRA chain decodes 13 of the 16 (not 2001, 2009 or 2016); the chain
+decoded 7. So an uplink session keeps the earlier path and takes only the TETRA channel filter
+(`dsd_demod_tetra_channel_runs()`), which decodes 15. The 16th, burst 2009, began 7 symbols before a matchless pass of
 1800 symbols ended a `getFrameSync()` call, and the next call used to start with no dibit history: 69 symbols after it
 the burst's training ended, short of the 79-symbol control burst window. The frame sync now carries its history across
 a no-sync exit when the stream went on unbroken from there (`dsd_frame_sync_history_carry`;
@@ -550,8 +553,8 @@ training sequence (`tetra_uplink_timing.h`). That burst timing holds 128 symbols
 out where the Gardner's input stops: `DECODE_IQ_TETRA_UPLINK_SQUELCH` runs the uplink fixture under `--squelch -47`
 (every burst but the weak 2007, which the squelch closes on; before the drain on squelched blocks 4 decoded), and
 `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL` (`tetra_uplink_bursts_short_tail_72k`, the last two bursts with the capture ending
-20 symbols after the last) requires the last burst and then the end-of-capture notice. With the weak bursts 3, 6 and 9 dB lower (not committed) the sweep decoded 121, 114 and 105
-of 128 before and 128, 128 and 117 after.
+20 symbols after the last) requires the last burst and then the end-of-capture notice. With the weak bursts 3, 6 and
+9 dB lower (not committed) the sweep decoded 121, 114 and 105 of 128 before and 128, 128 and 117 after.
 
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are
 pi/4-DQPSK shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
@@ -3134,11 +3137,12 @@ Reading it:
     `HH:MM:SS` stamp of the line that printed the BSCH, less the capture's start time as the replay anchored its clock
     (`capture_started_utc`, a WAV's start time, else 2000-01-01T00:00:00Z) in the same local time zone, so the
     resolution is one second, and the capture is taken to start and end within one day and one UTC offset. It is not
-    measured from the first decoded line.
+    measured from the first decoded line. A wanted BSCH printed before the log's first stamp has no time and is passed
+    over; the column reads `NA` when no wanted BSCH has one.
   - `--capture` takes a WAV as well as a sidecar JSON. A WAV has no events to shift, so every repeat replays it as
-    recorded, one realization, and the run warns as for a capture with no events. The sidecar path is unchanged. Put the
-    centre frequency and the capture time in a WAV's name (`..._NNNHz.wav`) when it carries no `auxi` chunk; replay reads
-    them from there.
+    recorded, one realization, and the run warns as for a capture with no events. The sidecar path is unchanged. Put
+    the centre frequency and the capture time in a WAV's name (`..._NNNHz.wav`) when it carries no `auxi` chunk;
+    replay reads them from there.
   - A control against a copy of the baseline reads `+0.00 +/- 0.00` in every column. Compare captures, not repeats:
     each capture, and each of its frequency-shifted copies, is one realization.
 - **Soft-decision error counts are not a quality score on their own.** mbelib's

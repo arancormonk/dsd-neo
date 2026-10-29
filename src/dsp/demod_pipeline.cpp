@@ -1393,7 +1393,7 @@ tetra_design_memo_refresh(struct demod_state* d) {
 extern "C" int
 dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
     /* An uplink session never runs the chain: its short bursts, from radios at their own level and carrier, decode
-       better on the path TETRA ran before (D10), which keeps only the TETRA channel filter. */
+       better on the path TETRA ran before the chain, which keeps only the TETRA channel filter. */
     if (!d || !tetra_chain_requested(d) || d->tetra_uplink) {
         return 0;
     }
@@ -1550,7 +1550,7 @@ tetra_chain_reset_histories(struct demod_state* d) {
  * - Entering: the combined estimate is split into the mixer (up to its bound at this rate) and the FLL, which is
  *   re-initialized with the TETRA parameters keeping its frequency.
  * - Leaving: the FLL is re-initialized with the P25 parameters keeping its frequency, then the mixer is folded into
- *   it (clamped to its +-1 rad/sample), so the TETRA profile runs main's path from this block on.
+ *   it (clamped to its +-1 rad/sample), so the TETRA profile runs the generic CQPSK path from this block on.
  * The FLL is designed for the sps op25_fll_band_edge_cc() runs at, so it does not redesign again on the block.
  */
 extern "C" void

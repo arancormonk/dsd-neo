@@ -2382,7 +2382,14 @@ def verify_derived(args):
         print(f"verify: FAILED, {len(differing)} file(s) differ from {committed}")
         return 1
     count = sum(len(files) for _base, _dirs, files in os.walk(committed))
-    print(f"verify: OK, every derived fixture reproduces byte for byte ({count} files in {committed})")
+    if args.dmr_synth_gen:
+        print(f"verify: OK, every derived fixture reproduces byte for byte ({count} files in {committed})")
+    else:
+        # Without the generator the copy keeps the committed dmr_voice_synth, so it compares equal unchecked.
+        print(
+            f"verify: OK, every derived fixture but {DMR_VOICE_SYNTH_NAME} reproduces byte for byte ({count} files in "
+            f"{committed}); {DMR_VOICE_SYNTH_NAME} was not verified (needs --dmr-synth-gen)"
+        )
     return 0
 
 

@@ -250,9 +250,10 @@ void op25_costas_loop_cc(struct demod_state* d);
 int dsd_cqpsk_timing_sps(const struct demod_state* d);
 
 /**
- * @brief Initialize FLL band-edge filter for a given samples-per-symbol.
+ * @brief Initialize FLL band-edge filter for a given samples-per-symbol, with the P25 parameters.
  *
- * Designs the band-edge filters and sets loop parameters. Call this during
+ * Designs the band-edge filters and sets loop parameters with dsd_fll_band_edge_params_for(0): OP25's rolloff 0.2 and
+ * loop bandwidth 2*pi/sps/350, never the TETRA chain's (dsd_fll_band_edge_init_params()). Call this during
  * cold start or retune initialization to ensure the FLL is ready before
  * processing samples. This avoids the lazy initialization that can cause
  * poor acquisition on the first few sample blocks.

@@ -692,8 +692,8 @@ test_warned_fallbacks(void) {
     return rc;
 }
 
-/* While inactive, the TETRA profile runs main's path exactly: the same symbols as the WIDE profile on the same input
- * (the WIDE plan, the AGC at 0.45, the FLL at 0.2 x1). */
+/* While inactive, the TETRA profile runs the generic CQPSK path exactly: the same symbols as the WIDE profile on the
+ * same input (the WIDE plan, the AGC at 0.45, the FLL at 0.2 x1). */
 int
 test_inactive_runs_wide_path(void) {
     int rc = 0;
@@ -1130,7 +1130,7 @@ test_p25_after_tetra_session(void) {
 }
 
 /* A filter reset (every retune, family switch and reacquire runs one) starts the matched filter over, and on the
- * TETRA chain the AGC average with it; off the chain the AGC average is kept, as on main. */
+ * TETRA chain the AGC average with it; off the chain the AGC average is kept, as before the chain. */
 int
 test_filter_reset(void) {
     int rc = 0;

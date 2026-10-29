@@ -347,8 +347,9 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->costas_reset_pending = 0;
     s->ted_mu = 0.0f;
     s->sps_is_integer = 1;
-    /* A stream starts off the TETRA chain: its first block decides (full_demod()), and warns afresh about a TETRA
-       profile whose chain cannot run. */
+    /* A stream starts off the TETRA chain until its predicate is evaluated: by dsd_rtl_stream_open() once the open's
+       configuration is final, then at every block boundary (dsd_demod_update_tetra_chain()). It warns afresh about a
+       TETRA profile whose chain cannot run. */
     s->tetra_chain = 0;
     s->tetra_chain_warned = 0;
     ted_init_state(&s->ted_state);

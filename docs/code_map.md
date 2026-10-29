@@ -4477,92 +4477,12 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   `dsd_channel_lpf_legacy_wide_width_hz()` reports the passband the legacy WIDE plan has at a rate (the 144-tap design,
   its cutoff held to 0.9 x Nyquist, or above ~51.4 kHz the 63-tap fallback prototype, cut at a third of the rate), the
   width published for an unset default that plan runs.
-  The TETRA profile (`DSD_CH_LPF_PROFILE_TETRA`, 6 in all three profile enums) runs its own design,
-  `dsd_tetra_channel_design()` (GNU Radio's window design, cutoff 12.5 kHz, 2.5 kHz Blackman transition: 49 / 97 / 193
-  taps at 36 / 72 / 144 kHz, no clamp and no fallback, protected edge 11250 Hz), only while
-  `dsd_demod_tetra_channel_runs()` holds: while `demod_state::tetra_chain` is set, or on an uplink session (below);
-  otherwise it runs the legacy WIDE plan exactly. `DSP_CHANNEL_FILTERS` pins every other profile's
-  plan at 24-144 kHz.
-  The same flag picks the CQPSK chain's carrier parameters. The band-edge FLL has one design path
-  (`fll_design()` in `costas.cpp`), which the lazy design in `op25_fll_band_edge_cc()` and
-  `dsd_fll_band_edge_init_params()` both run with `dsd_fll_band_edge_params_for(tetra_chain)`: rolloff 0.35 and 4x
-  OP25's loop bandwidth 2*pi/sps/350 for the TETRA chain, 0.2 and 1x otherwise (filter size 2*sps+1 either way).
-  A redesign is keyed on (sps, rolloff, loop-bandwidth scale) and keeps the frequency estimate;
-  `dsd_fll_band_edge_init()` is the P25-parameter wrapper for callers without a demod. The CQPSK RMS AGC averages
-  with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA, OP25's 0.45 otherwise. `DSP_FLL_BAND_EDGE` pins the P25
-  design (taps, loop bandwidth, gains) to its values before the parameters existed.
-  The FLL state also holds the TETRA tracking mixer (`pre_freq` and a phasor; `dsd_tetra_premix_block()` rotates a
-  block by it, bounded by `dsd_tetra_pre_limit_rad()`, 8 kHz either side, with the FLL NCO's sign: both parts are
-  minus the carrier offset). The carrier estimate is the sum,
-  `dsd_fll_band_edge_total_freq()` = `pre_freq + freq`, and every reader that means the receiver's offset reads that
-  sum: the metrics CFO and band-edge exports (so auto-PPM, the terminal, Qt and the API), the retune seed cache and the
-  retune debug logs. `freq` alone is the FLL's residual: its loop, and the carrier-lock heuristic's saturation test
-  against the FLL clamp, read only it. A retune reset (`demod_reset_on_retune()`) applies the reset plan's decision
-  to the sum, clearing both parts or keeping the sum (rescaled to the new rate) and splitting it again with
-  `dsd_fll_band_edge_split_total()`, into the mixer up to its bound only while `tetra_chain` is set; every reset but a
-  CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` and `dsd_fll_band_edge_fold()` move
-  the estimate between the parts without changing the sum. With `pre_freq` 0 (every non-TETRA chain) all of this is
-  the FLL frequency as before.
-  `full_demod()` sets `tetra_chain` itself, once per block after the half-band decimation
-  (`dsd_demod_update_tetra_chain()`, which `dsd_rtl_stream_open()` also runs once the open's configuration is final, so
-  a TETRA open publishes the TETRA profile before any block and the first block runs no transition), from
-  `dsd_demod_tetra_chain_wanted()`: the TETRA profile on CQPSK at 18 ksym/s, an effective TED sps (the override when
-  set) and `ted_sps` itself (what the Gardner TED and the FLL run at, `dsd_cqpsk_timing_sps()`, ted_sps or 5) both of
-  exactly rate_out / 18000, a rate in the 36-144 kHz domain, the channel LPF on, and a TETRA channel design for the
-  rate (checked for the rate, not read from the installed plan, and memoized by rate in
-  `tetra_design_rate_out`/`tetra_design_ok`, which the block boundary refreshes, so no block designs the filter to
-  ask). Setters never evaluate it. When the value
-  changes between blocks, entering splits the combined estimate into the mixer and re-initializes the FLL with the
-  TETRA parameters, leaving re-initializes it with the P25 parameters and folds the mixer back, and both start the
-  mixer phasor, the channel LPF, the matched filter and the AGC average over. While active a block runs mixer ->
-  channel LPF -> AGC (0.1) -> matched filter (`dsd_tetra_rrc_design()`, streaming through `simd_fir_complex_apply()`
-  with its own `tetra_rrc_*` history, redesigned on an sps change) -> FLL -> `dsd_fll_band_edge_transfer()` ->
-  Gardner -> diff -> Costas. A squelched block still mixes and channel-filters; the matched filter, FLL and loops do
-  not run, and the matched filter starts over for the reopen. `dsd_demod_reset_filter_state()` resets the matched
-  filter too, and on the TETRA chain the AGC average. A TETRA profile on CQPSK whose chain cannot run warns once per
-  stream per cause (rate out of the domain, a TED override that does not match the rate, `DSD_NEO_CHANNEL_LPF=0`) and
-  runs main's path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1). A trunked mode uplink session (`--tetra-uplink`,
-  `demod_state::tetra_uplink`, which `rtl_demod_init_for_mode()` writes on every open) never runs the chain (D10):
-  measured on `tetra_uplink_bursts_72k` the chain lost bursts that path decoded, so its predicate is false, nothing is
-  warned, and the stream keeps that path with the TETRA channel filter in place of WIDE wherever the rate domain
-  admits the rate and the channel LPF is on (`dsd_demod_tetra_channel_runs()`). On that stage
-  (`dsd_demod_tetra_uplink_timing_runs()`, sps 2 to 8) the Gardner and Costas loops take each burst's timing and carrier
-  phase from its training sequence (`include/dsd-neo/dsp/tetra_uplink_timing.h`, `src/dsp/tetra_uplink_timing.c`):
-  both loops free-run on noise between bursts and pull in too slowly for a 103- or 231-symbol burst. The Gardner input
-  passes through a 128-symbol look-ahead that correlates every sample's differential phasor against the extended
-  (control burst) and normal (normal burst) training sequences, normalized by the Cauchy-Schwarz bound and the larger
-  of each sequence and its conjugate; a peak of at least 0.85 places the burst's grid and rotation (a normal burst only
-  once the two symbols after it showed no extended sequence, a control burst only when the extended sequence's four
-  outer symbols agree; overlapping bursts keep the higher score). When the strobe comes within two symbols of a burst's
-  first symbol it moves onto the grid by less than half a symbol, and the Costas loop takes the burst's rotation within
-  a quarter turn, frequency and smoothing reset, from the symbol after. `op25_gardner_cc()` and `op25_costas_loop_cc()`
-  run separate template instantiations for it, so every other stream runs the loops unchanged;
-  `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the stage and every block a signal
-  search drops (what it held would reach the decoder after the gap), starts the look-ahead over with the TED. The
-  look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the Gardner's input stops it is pushed
-  out as zeros through Gardner, differential, Costas and the phase demodulator: a level-squelched block runs that way
-  while signal is held (`full_demod()`), so a burst's end reaches the decoder before the squelch's silence, and at the
-  end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()` as a block of its own once the input
-  ended and the decoder took every block (`demod_replay_flush_uplink()`); `replay_demod_flush_owed`, set after every
-  replay block, keeps both drain decisions (`replay_demod_drain_decide()`, `replay_mark_input_drained()`) from counting
-  the demod drained before that, so the end-of-capture notice still follows the last burst. A live stream's stop drops
-  it with the rest of the pipeline's in-flight blocks. Tests: `DSP_TETRA_UPLINK_TIMING`,
-  `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`. The stream publishes TETRA as the running channel
-  profile (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag
-  and so the UI channel width) only while the TETRA channel filter runs, WIDE otherwise; `rtl_stream_get_symbol_profile_full()`
-  keeps the configured profile the trunk-tuning restore puts back, and an open on the FSK discriminator turns a TETRA
-  profile into WIDE (`rtl_demod_open_channel_profile()`). TETRA opens and runs on the TETRA profile: the mode mapping
-  (`dsd_rtl_channel_profile_for()`) gives 18000 sym/s the TETRA profile with CQPSK (rf_mod 1) and WIDE for an FSK
-  request, an open on CQPSK takes `rtl_demod_cqpsk_channel_profile()` (TETRA at 18000 sym/s, P25 CQPSK otherwise), and
-  so do the CQPSK installs (the CQPSK toggle and both TED setters), so none puts the P25 CQPSK filter on a TETRA stream.
-  The TETRA profile only goes with CQPSK: CQPSK off returns it to WIDE, and the symbol-profile setter stores WIDE for it
-  on the FSK discriminator. Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions,
-  warnings, the WIDE-identical fallback, pull-in from +6 kHz and +600 Hz, squelch and signal-search, partition
-  invariance of the linear filters, P25 after a TETRA session, the uplink's channel filter alone),
-  `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the 22.5 kHz width a TETRA open, downlink or uplink, publishes).
-  The plan cache key is (rate_out, profile, width, TETRA channel filter). The SIMD complex FIR kernels size their scratch per
-  call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is seamless
-  (issue #572):
+  The TETRA profile (`DSD_CH_LPF_PROFILE_TETRA`, 6 in all three profile enums) runs a design of its own while the
+  TETRA channel filter runs, and the legacy WIDE plan exactly otherwise (see "TETRA receive chain" below).
+  `DSP_CHANNEL_FILTERS` pins every other profile's plan at 24-144 kHz.
+  The plan cache key is (rate_out, profile, width, TETRA channel filter). The SIMD complex FIR kernels size their
+  scratch per call, so the 288-tap capacity needs no kernel change. A live width edit on the running monitor is
+  seamless (issue #572):
   `rtl_stream_apply_analog_request()` drops only the plan, and the half-band cascade and the channel FIR keep their
   histories and pending counts, so the new width's taps run over the true past and no sample is lost or repeated at
   the edit. The exception is an NFM edit between an explicit width and the unset default when
@@ -4576,6 +4496,103 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   the next one starts the filters over even on the same frequency. Tests:
   `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
   `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`).
+- TETRA receive chain (`demod_pipeline.cpp`, `costas.cpp`, `firdes.cpp`; user view in `docs/cli.md`, `-fT`). A
+  TETRA downlink runs a chain of its own; every other stream, and a TETRA profile whose chain cannot run, runs the
+  generic CQPSK path exactly as before the chain existed.
+  - Channel filter: `dsd_tetra_channel_design()` (GNU Radio's window design, cutoff 12.5 kHz, 2.5 kHz Blackman
+    transition: 49 / 97 / 193 taps at 36 / 72 / 144 kHz, no clamp and no fallback, protected edge 11250 Hz, so the
+    UI shows a 22.5 kHz width). It runs while `dsd_demod_tetra_channel_runs()` holds: while `demod_state::tetra_chain`
+    is set, or on an uplink session (below).
+  - Carrier parameters, picked by the same flag. The band-edge FLL has one design path (`fll_design()` in
+    `costas.cpp`), which the lazy design in `op25_fll_band_edge_cc()` and `dsd_fll_band_edge_init_params()` both run
+    with `dsd_fll_band_edge_params_for(tetra_chain)`: rolloff 0.35 and 4x OP25's loop bandwidth 2*pi/sps/350 for the
+    TETRA chain, 0.2 and 1x otherwise (filter size 2*sps+1 either way). A redesign is keyed on (sps, rolloff,
+    loop-bandwidth scale) and keeps the frequency estimate; `dsd_fll_band_edge_init()` is the P25-parameter wrapper
+    for callers without a demod. The CQPSK RMS AGC averages with `dsd_cqpsk_agc_alpha(tetra_chain)`: 0.1 for TETRA,
+    OP25's 0.45 otherwise (reference 0.85 either way). `DSP_FLL_BAND_EDGE` pins the P25 design (taps, loop
+    bandwidth, gains) to its values before the parameters existed.
+  - Tracking mixer and the combined estimate. The FLL state also holds the TETRA tracking mixer (`pre_freq` and a
+    phasor; `dsd_tetra_premix_block()` rotates a block by it, bounded by `dsd_tetra_pre_limit_rad()`, 8 kHz either
+    side, with the FLL NCO's sign: both parts are minus the carrier offset). The carrier estimate is the sum,
+    `dsd_fll_band_edge_total_freq()` = `pre_freq + freq`. The access rule: every reader that means the receiver's
+    offset reads that sum (the metrics CFO and band-edge exports, so auto-PPM, the terminal, Qt and the API; the
+    retune seed cache; the retune debug logs), and only the state transitions below split, reset or seed the parts.
+    `freq` alone is the FLL's residual: its loop, and the carrier-lock heuristic's saturation test against the FLL
+    clamp, read only it. A retune reset (`demod_reset_on_retune()`) applies the reset plan's decision to the sum,
+    clearing both parts or keeping the sum (rescaled to the new rate) and splitting it again with
+    `dsd_fll_band_edge_split_total()`, into the mixer up to its bound only while `tetra_chain` is set; every reset but
+    a CQPSK reacquire restarts the phasor at (1, 0). `dsd_fll_band_edge_transfer()` (once per block, after the FLL)
+    and `dsd_fll_band_edge_fold()` move the estimate between the parts without changing the sum. With `pre_freq` 0
+    (every non-TETRA chain) all of this is the FLL frequency as before.
+  - The predicate. `dsd_demod_update_tetra_chain()` sets `tetra_chain` at every block boundary in `full_demod()`,
+    after the half-band decimation and before the mixer, and `dsd_rtl_stream_open()` runs it once the open's
+    configuration is final, so a TETRA open publishes the TETRA profile before any block and the first block runs no
+    transition. Setters never evaluate it. It reads `dsd_demod_tetra_chain_wanted()`: the TETRA profile on CQPSK at
+    18 ksym/s, not an uplink session, an effective TED sps (the override when set) and `ted_sps` itself (what the
+    Gardner TED and the FLL run at, `dsd_cqpsk_timing_sps()`, ted_sps or 5) both exactly rate_out / 18000, a rate in
+    the 36-144 kHz domain (`dsd_tetra_dsp_rate_runs()`), the channel LPF on, and a TETRA channel design for the rate
+    (checked for the rate, not read from the installed plan, and memoized by rate in
+    `tetra_design_rate_out`/`tetra_design_ok`, which the block boundary refreshes, so no block designs the filter to
+    ask).
+  - Transitions. When the value changes between blocks, entering splits the combined estimate into the mixer and
+    re-initializes the FLL with the TETRA parameters; leaving re-initializes it with the P25 parameters and folds the
+    mixer back. Both start the mixer phasor, the channel LPF, the matched filter and the AGC average over.
+  - The block while active: mixer -> channel LPF -> AGC (0.1) -> matched filter -> FLL ->
+    `dsd_fll_band_edge_transfer()` -> Gardner -> diff -> Costas. The matched filter (`dsd_tetra_rrc_design()`) is a
+    root-raised-cosine of roll-off 0.35, 8 symbols each side (33 / 65 / 129 taps at sps 2 / 4 / 8), scaled to a sum
+    of squared taps of 1/sps; it streams through `simd_fir_complex_apply()` with its own `tetra_rrc_*` history and is
+    redesigned on an sps change. It sits ahead of the FLL: placed after it, a neighbour 30-40 dB stronger 25 kHz away
+    broke decoding on frequency, and the 4x FLL loop bandwidth restores the pull-in it costs. A squelched block still
+    mixes and channel-filters; the matched filter, FLL and loops do not run, and the matched filter starts over for
+    the reopen. `dsd_demod_reset_filter_state()` resets the matched filter too, and on the TETRA chain the AGC
+    average. The symbols are sliced at the quadrant boundaries (TETRA protocol section).
+  - Fallback. A TETRA profile on CQPSK whose chain cannot run warns once per stream per cause (`TETRA receive chain
+    inactive: ...`: the rate out of the domain, a TED override that does not match the rate,
+    `DSD_NEO_CHANNEL_LPF=0`) and runs the generic CQPSK path exactly (the WIDE plan, AGC 0.45, FLL 0.2 x1).
+  - Uplink. A trunked mode uplink session (`--tetra-uplink`, `demod_state::tetra_uplink`, which
+    `rtl_demod_init_for_mode()` writes on every open) never runs the chain: on `tetra_uplink_bursts_72k` the chain
+    lost bursts the generic path decoded. Its predicate is false, nothing is warned, and the stream keeps the generic
+    path with the TETRA channel filter in place of WIDE wherever the rate domain admits the rate and the channel LPF
+    is on (`dsd_demod_tetra_channel_runs()`). On that stage (`dsd_demod_tetra_uplink_timing_runs()`, sps 2 to 8) the
+    Gardner and Costas loops take each burst's timing and carrier phase from its training sequence
+    (`include/dsd-neo/dsp/tetra_uplink_timing.h`, `src/dsp/tetra_uplink_timing.c`): both loops free-run on noise
+    between bursts and pull in too slowly for a 103- or 231-symbol burst. The Gardner input passes through a
+    128-symbol look-ahead that correlates every sample's differential phasor against the extended (control burst) and
+    normal (normal burst) training sequences, normalized by the Cauchy-Schwarz bound and the larger of each sequence
+    and its conjugate; a peak of at least 0.85 places the burst's grid and rotation (a normal burst only once the two
+    symbols after it showed no extended sequence, a control burst only when the extended sequence's four outer
+    symbols agree; overlapping bursts keep the higher score). When the strobe comes within two symbols of a burst's
+    first symbol it moves onto the grid by less than half a symbol, and the Costas loop takes the burst's rotation
+    within a quarter turn, frequency and smoothing reset, from the symbol after. `op25_gardner_cc()` and
+    `op25_costas_loop_cc()` run separate template instantiations for it, so every other stream runs the loops
+    unchanged; `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the stage and every block
+    a signal search drops (what it held would reach the decoder after the gap), starts the look-ahead over with the
+    TED. The look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the Gardner's input stops it
+    is pushed out as zeros through Gardner, differential, Costas and the phase demodulator: a level-squelched block
+    runs that way while signal is held (`full_demod()`), so a burst's end reaches the decoder before the squelch's
+    silence, and at the end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()` as a block of its
+    own once the input ended and the decoder took every block (`demod_replay_flush_uplink()`);
+    `replay_demod_flush_owed`, set after every replay block, keeps both drain decisions (`replay_demod_drain_decide()`,
+    `replay_mark_input_drained()`) from counting the demod drained before that, so the end-of-capture notice still
+    follows the last burst. A live stream's stop drops it with the rest of the pipeline's in-flight blocks. Tests:
+    `DSP_TETRA_UPLINK_TIMING`, `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`,
+    `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`.
+  - Published profile. The stream publishes TETRA as the running channel profile
+    (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag and so
+    the UI channel width) only while the TETRA channel filter runs, WIDE otherwise;
+    `rtl_stream_get_symbol_profile_full()` keeps the configured profile the trunk-tuning restore puts back, and an
+    open on the FSK discriminator turns a TETRA profile into WIDE (`rtl_demod_open_channel_profile()`). TETRA opens
+    and runs on the TETRA profile: the mode mapping (`dsd_rtl_channel_profile_for()`) gives 18000 sym/s the TETRA
+    profile with CQPSK (rf_mod 1) and WIDE for an FSK request, an open on CQPSK takes
+    `rtl_demod_cqpsk_channel_profile()` (TETRA at 18000 sym/s, P25 CQPSK otherwise), and so do the CQPSK installs (the
+    CQPSK toggle and both TED setters), so none puts the P25 CQPSK filter on a TETRA stream. The TETRA profile only
+    goes with CQPSK: CQPSK off returns it to WIDE, and the symbol-profile setter stores WIDE for it on the FSK
+    discriminator.
+  - Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions, warnings, the WIDE-identical fallback,
+    pull-in from +6 kHz and +600 Hz, squelch and signal-search, partition invariance of the linear filters, P25 after
+    a TETRA session, the uplink's channel filter alone), `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the
+    22.5 kHz width a TETRA open, downlink or uplink, publishes), `DSP_CHANNEL_FILTERS`, `DSP_FLL_BAND_EDGE`, and the
+    `DECODE_IQ_TETRA_*` I/Q cases (`docs/testing.md`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,
   `simd_hb_decim2_real()` and `simd_fir_complex_apply()` in `<dsd-neo/dsp/simd_fir.h>`, every backend sharing the call
   contracts in `src/dsp/simd_fir_internal.h`) carry their look-ahead, and the half-band its decimation phase, from one
@@ -4719,8 +4736,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   count raised for it, a batch count bumped when it ends). Each estimate caches per thread, keyed by batch count, TED
   SPS, output rate, channel profile and TETRA stage (`dsd_demod_tetra_stage()`; the SNR noise bandwidth,
   `dsd_snr_noise_bandwidth_hz()`, follows the stage that runs: 9000 Hz one-sided for the TETRA chain, 12114 Hz for the
-  TETRA channel filter alone on an uplink session, WIDE's for an inactive TETRA profile), and
-  returns exactly a fresh estimate's answer; a read a batch raced is answered (relaxed, as before) but never cached. The decoder polls them per symbol, the rings change per block.
+  TETRA channel filter alone on an uplink session, WIDE's for an inactive TETRA profile), and returns exactly a fresh
+  estimate's answer; a read a batch raced is answered (relaxed, as before) but never cached. The decoder polls them
+  per symbol, the rings change per block.
   `IO_RTL_VIEW_RINGS` checks cached against fresh answers.
 - CF32 input levels (`runtime/input_level.c`): finite checks, peak and clipping stay in the input's float precision;
   `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original
@@ -5315,8 +5333,8 @@ Key public headers:
     D x 2^k at or below its rate (or up to D). The plan refuses a capture below 8 kHz, an upsample past 9x and a capture
     at 2 x 2^10 x D or faster. Stream open (`stream_open_plan_replay_rate()`) plans at every start for the target
     `stream_open_replay_target_hz()` picks (an EXPLICIT request, else the recorded bandwidth, else the request in force;
-    under TETRA 72 kHz for a target that is no multiple of 18 kHz) and refuses a start whose plan fails; the stream runs
-    the planned bandwidth while opts keeps the request, and the plan in force is kept for
+    under TETRA 72 kHz for a target outside 36-144 kHz in 18 kHz steps) and refuses a start whose plan fails; the
+    stream runs the planned bandwidth while opts keeps the request, and the plan in force is kept for
     `rtl_stream_replay_replan_check()`; the replay device resamples with `dsd_iq_resampler` (protected band 0.45 x D) in
     the reader thread only when `dsp_input_rate_hz` differs from the capture's, clears it at a RETUNE, RESET, MUTE and
     loop rewind, hands event callbacks the DSP input rate, and counts pacing and media time in capture samples
@@ -5876,11 +5894,12 @@ Notes:
     and a hop back; bounded stops at an event boundary and at a rewind).
   - I/Q replay end-of-capture notice (`IQ replay: end of capture after N samples`). `replay_handle_empty_read()` in
     `rtl_device.cpp` is the one place a pass reaches the capture's end cleanly (no read error pending, every chunk
-    read handed to the demod, no stop), and decides the notice there, with N the capture samples the pass read. It is
-    logged only once the decoder has read everything the pass decoded to, so it never lands among the decoder's lines:
-    under `--iq-loop` by the reader after the rewind's idle boundary, before the rewound line; otherwise the reader
-    leaves it in `rtl_replay_eof_state::replay_end_notice` and `dsd_rtl_stream_soft_stop()` logs it when the decoder
-    found the output drained. A stop, a read failure or a chunk that could not be handed on logs none. Tests:
+    read handed to the demod, no stop), and decides the notice there, with N the pass's end position in capture
+    samples (`data_offset` over the sample alignment: the whole capture, also after a re-plan resumed it partway). It
+    is logged only once the decoder has read everything the pass decoded to, so it never lands among the decoder's
+    lines: under `--iq-loop` by the reader after the rewind's idle boundary, before the rewound line; otherwise the
+    reader leaves it in `rtl_replay_eof_state::replay_end_notice` and `dsd_rtl_stream_soft_stop()` logs it when the
+    decoder found the output drained. A stop, a read failure or a chunk that could not be handed on logs none. Tests:
     `IO_RTL_REPLAY_EOF_AND_CF32` (the count for cu8 and cf32, once a loop pass, none on a stop before or after the
     reader's end, a read failure or a file cut short).
   - I/Q replay tuned frequency (issue #575). A replayed RETUNE moves the demod, but `opts->rtlsdr_center_freq` keeps
@@ -7103,10 +7122,10 @@ carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a
 the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no BSCH comes to say there:
 like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`: the mode, the DM colour
 code, its protection and the direct mode call with its canonical call), so the normal bursts after it are NUBs again
-and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the CQPSK
-symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile without the adaptive centre P25's
-CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end and a soft symbol capture give them;
-a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
+and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the
+CQPSK symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile without the adaptive centre
+P25's CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end and a soft symbol capture
+give them; a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
 (`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
 into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same way:
 under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the adaptive

@@ -2092,7 +2092,7 @@ expect_tetra_open_publishes_tetra_width(void) {
 }
 
 /*
- * A trunked mode uplink session (--tetra-uplink) at 72 kHz never runs the TETRA chain (D10): its bursts keep the path
+ * A trunked mode uplink session (--tetra-uplink) at 72 kHz never runs the TETRA chain: its bursts keep the path
  * TETRA ran before the chain, apart from the TETRA channel filter. The open records the session kind, the chain stays
  * off, the running profile and the channel width a frontend draws are the TETRA filter's, and the SNR bias reads that
  * filter's noise bandwidth.

@@ -6,10 +6,10 @@
  * Uplink bursts come from different radios, each with a clock of its own, and the Gardner TED and the Costas loop
  * free-run on noise between them. A control uplink burst is 103 symbols and a normal uplink burst 231, too short for
  * either loop to pull in from where a burst finds it: from half a symbol off the TED hangs for most of a burst, and the
- * Costas loop, clamped to a quarter turn either way, can meet a burst near 45 degrees from its lock and stay there. Both carry a known training
- * sequence (EN 300 392-2 clause 9.4.4.2.1, 9.4.4.2.4): the control burst the extended training sequence, symbols
- * 44 to 58 of 103 (clause 9.4.4.3.3), the normal burst normal training sequence 1 or 2, symbols 110 to 120 of 231
- * (clause 9.4.4.3.2).
+ * Costas loop, clamped to a quarter turn either way, can meet a burst near 45 degrees from its lock and stay there.
+ * Both carry a known training sequence (EN 300 392-2 clause 9.4.4.2.1, 9.4.4.2.4): the control burst the extended
+ * training sequence, symbols 44 to 58 of 103 (clause 9.4.4.3.3), the normal burst normal training sequence 1 or 2,
+ * symbols 110 to 120 of 231 (clause 9.4.4.3.2).
  *
  * The Gardner input of an uplink session passes through a look-ahead of DSD_TETRA_UL_LOOKAHEAD_SYMBOLS. On the way in
  * each sample's differential phasor x[n] conj(x[n - sps]) is correlated against both training sequences, on every
@@ -110,8 +110,8 @@ typedef struct {
     int carrier_pending;   /**< 1 while a burst's carrier phase waits for its symbol */
     uint64_t carrier_at;   /**< the symbol (symbols_out count) the carrier loop takes it from */
     float carrier_phase;   /**< that phase */
-    uint64_t
-        held_until; /**< pushed count once every non-zero sample pushed so far has come out (dsd_tetra_ul_timing_held()) */
+    /** The pushed count at which every non-zero sample pushed so far has come out (dsd_tetra_ul_timing_held()). */
+    uint64_t held_until;
 } dsd_tetra_ul_timing;
 
 /** Start over at @p sps (DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS): an empty look-ahead, no burst. */
@@ -150,7 +150,8 @@ int dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase);
  *
  * 0 when the look-ahead holds only zeros (or is not set up). Whenever the Gardner's input stops (a squelched block, the
  * end of a capture) the stage pushes this many zeros through, so a burst's last symbols reach the decoder then, not
- * after whatever comes next (dsd_demod_tetra_uplink_drain()).
+ * after whatever comes next: full_demod() on a squelched block, dsd_demod_tetra_uplink_flush() at the end of a
+ * replay.
  */
 size_t dsd_tetra_ul_timing_held(const dsd_tetra_ul_timing* t);
 
