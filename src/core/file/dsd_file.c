@@ -1339,6 +1339,22 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
     }
 }
 
+/* Export a published recording to rdio-scanner; returns whether an API upload was queued. The row's stream verdict
+   (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with no DirWatch sidecar and no
+   upload. A row the event layer never judged allows it. */
+static int
+wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
+                      const char* path, time_t opened) {
+    int rdio_queued = 0;
+    if (event_item != NULL && event_item->stream_blocked != 0U) {
+        return 0;
+    }
+    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, &rdio_queued) != 0) {
+        LOG_WARN("Rdio export failed for %s\n", path);
+    }
+    return rdio_queued;
+}
+
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
                       const Event_History_I* event_struct, time_t opened, int export_call, int analog,
@@ -1390,14 +1406,9 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
         return wav_file;
     }
 
-    /* The row's stream verdict (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with
-       no DirWatch sidecar and no upload. A row the event layer never judged allows it (init_event_history()). */
-    int rdio_queued = 0;
-    if (export_call && opts && final_size > 44 && (event_item == NULL || event_item->stream_blocked == 0U)) {
-        if (dsd_rdio_export_call_ex(opts, event_struct, new_filename, opened, &rdio_queued) != 0) {
-            LOG_WARN("Rdio export failed for %s\n", new_filename);
-        }
-    }
+    const int rdio_queued = (export_call && opts && final_size > 44)
+                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened)
+                                : 0;
     if (journal.on) {
         wav_journal_published(journal.id, new_filename, dir, event_struct, opened, journal.duration_ms, journal.rate,
                               owner, rdio_queued, journal.failed);
