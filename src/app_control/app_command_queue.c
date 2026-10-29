@@ -9295,17 +9295,31 @@ ui_show_stream_notice(dsd_state* state) {
     }
 }
 
+/* Ask the frontends to redraw once what the drain published has landed. A publication a watchdog tick put off asks at
+   the retry that lands it instead, so the request is never spent on the snapshot from before it. */
+static void
+ui_request_redraw_if_published(void) {
+    if (!dsd_app_telemetry_opts_snapshot_pending() && !dsd_app_telemetry_snapshot_pending()) {
+        dsd_telemetry_request_redraw();
+    }
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
     /* A publication a watchdog tick put off (snapshot_internal.h) goes out at the next drain, which the decode loop
        runs every pass: a flag read while none is waiting. */
-    if (dsd_app_telemetry_opts_snapshot_pending()) {
+    const int opts_pending = dsd_app_telemetry_opts_snapshot_pending();
+    const int state_pending = dsd_app_telemetry_snapshot_pending();
+    if (opts_pending) {
         dsd_telemetry_publish_opts_snapshot(opts);
     }
-    if (dsd_app_telemetry_snapshot_pending()) {
+    if (state_pending) {
         dsd_telemetry_publish_snapshot(state);
+    }
+    if (opts_pending || state_pending) {
+        ui_request_redraw_if_published();
     }
     ui_show_stream_notice(state);
     for (;;) {
@@ -9363,6 +9377,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (state) {
             dsd_telemetry_publish_snapshot(state);
         }
+        ui_request_redraw_if_published();
         n_applied++;
     }
     return n_applied;

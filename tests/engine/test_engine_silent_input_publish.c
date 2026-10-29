@@ -7,6 +7,7 @@
  * tick has left the guard, and the control pump's retry publishes it. Real: the app-control publishers, the control
  * pump and the runtime queries it registers, the hunt read (getSymbol()) and the tick guard. Simulated: the UDP input
  * (silent) and the tick (a thread holding the guard). */
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
@@ -25,6 +26,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -107,6 +109,7 @@ put_off_publication_reaches_the_frontends(dsd_opts* opts, dsd_state* state) {
     rc |= expect(held, "the tick holds the guard");
 
     /* A command's result, published while the tick runs: put off, not waited for. */
+    (void)dsd_app_frontend_redraw_consume();
     state->trunk_cc_freq = k_put_off_hz;
     dsd_telemetry_publish_snapshot(state);
     published = dsd_app_get_latest_snapshot();
@@ -145,7 +148,59 @@ put_off_publication_reaches_the_frontends(dsd_opts* opts, dsd_state* state) {
     rc |= expect(published_ms != 0U && published_ms - released_ms <= k_bound_ms,
                  "the put-off publication reaches the frontends soon after the tick, with the input still silent");
     rc |= expect(!dsd_app_telemetry_snapshot_pending(), "nothing is left pending");
+    rc |= expect(dsd_app_frontend_redraw_consume() == 1, "the put-off publication asks for a redraw as it lands");
     rc |= expect(interrupts_while_held == 0, "the hunt does not leave its read while the tick still holds the guard");
+    dsd_app_frontend_runtime_stop();
+    return rc;
+}
+
+/* Start a tick and wait until it holds the guard. */
+static int
+start_tick(dsd_thread_t* tick) {
+    g_tick.held = 0;
+    dsd_atomic_u64_store_release(&g_tick.released_ms, 0U);
+    if (dsd_thread_create(tick, watchdog_tick, NULL) != 0) {
+        return 0;
+    }
+    dsd_mutex_lock(&g_tick.mutex);
+    while (!g_tick.held) {
+        if (dsd_cond_timedwait(&g_tick.condition, &g_tick.mutex, 2000U) != 0) {
+            break;
+        }
+    }
+    const int held = g_tick.held;
+    dsd_mutex_unlock(&g_tick.mutex);
+    if (!held) {
+        dsd_thread_join(*tick);
+    }
+    return held;
+}
+
+/* Frontends that redraw on request (Qt's network, call-history and talkgroup models) learn of a drained command's
+   result, here a toast cleared, a command that asks for no redraw itself: its publication asks once it has landed, and a publication a tick put off asks when its retry
+   lands it, never before, while the frontends would redraw the snapshot from before it. */
+static int
+drained_publications_ask_for_a_redraw(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_start(opts, state);
+    (void)dsd_app_frontend_redraw_consume();
+    int rc = expect(dsd_app_command_action(DSD_APP_CMD_UI_MSG_CLEAR) > 0 && dsd_app_drain_cmds(opts, state) == 1
+                        && dsd_app_frontend_redraw_consume() == 1,
+                    "a drained command's publication asks for a redraw");
+
+    dsd_thread_t tick;
+    if (!start_tick(&tick)) {
+        dsd_app_frontend_runtime_stop();
+        return rc | expect(0, "the tick holds the guard");
+    }
+    const int drained = dsd_app_command_action(DSD_APP_CMD_UI_MSG_CLEAR) > 0 && dsd_app_drain_cmds(opts, state) == 1;
+    const int put_off = dsd_app_telemetry_opts_snapshot_pending() && dsd_app_telemetry_snapshot_pending()
+                        && dsd_atomic_u64_load_acquire(&g_tick.released_ms) == 0U;
+    rc |= expect(drained && put_off && dsd_app_frontend_redraw_consume() == 0,
+                 "a publication the tick put off asks for no redraw yet");
+    dsd_thread_join(tick);
+    rc |= expect(dsd_app_drain_cmds(opts, state) == 0 && !dsd_app_telemetry_opts_snapshot_pending()
+                     && !dsd_app_telemetry_snapshot_pending() && dsd_app_frontend_redraw_consume() == 1,
+                 "the retry that lands it asks for the redraw");
     dsd_app_frontend_runtime_stop();
     return rc;
 }
@@ -172,7 +227,8 @@ main(void) {
     (void)dsd_cond_init(&g_tick.condition);
     dsd_atomic_u64_init(&g_tick.released_ms, 0U);
 
-    const int rc = put_off_publication_reaches_the_frontends(opts, state);
+    int rc = put_off_publication_reaches_the_frontends(opts, state);
+    rc |= drained_publications_ask_for_a_redraw(opts, state);
 
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     dsd_cond_destroy(&g_tick.condition);

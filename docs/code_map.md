@@ -2600,25 +2600,26 @@ are read under `dsd_event_history_transaction_begin()`, as every other cross-thr
 **Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
 control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25
 SM tick guard on its own thread. `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
-therefore read the live state only under that guard: the copy, the notification record and the observers. Publishers
-run on the decoder thread only, and a publication never waits for a tick (a tick can last an RTL tune, up to 500 ms, or
+therefore read the live state only under that guard: the copy, the notification record and the observers. Publishers run
+on the decoder thread only, and a publication never waits for a tick (a tick can last an RTL tune, up to 500 ms, or
 rigctl round trips): a publisher already under the guard (a frame dispatch) uses that hold, since the guard is not
 re-entrant (`p25_sm_tick_guard_held_by_caller()`); any other tries it once (`dsd_app_publish_guard_try()` in
 `src/app_control/snapshot_internal.h`), and a busy guard puts the publication off with a pending flag
 (`dsd_app_telemetry_snapshot_pending()`, `dsd_app_telemetry_opts_snapshot_pending()`). A put-off publication is never
 dropped: the next publish of the same snapshot carries the state as it is then, and `dsd_app_drain_cmds()`, which the
 decode loop pumps every pass, retries it at its start (a flag read when nothing waits); the frame-sync hunt publishes
-every 50 ms. On a silent input the decode loop runs no pass, so the inputs that wait in slices leave their wait for
-it as for a queued command: app-control registers the query `dsd_runtime_publish_pending()` asks (runtime
-`control_pump.h`), true while a publication is put off and the tick has left the guard (`p25_sm_tick_guard_busy()`),
-and the UDP hunt wait (`dsd_symbol.c`), the M17 encoder's UDP wait and the RTL read with no stream ask it beside
+every 50 ms. The drain asks the frontends to redraw (`dsd_telemetry_request_redraw()`) once its publication has landed,
+after a command and at a retry that lands a put-off one, never while the snapshot is still the one before it. On a
+silent input the decode loop runs no pass, so the inputs that wait in slices leave their wait for it as for a queued
+command: app-control registers the query `dsd_runtime_publish_pending()` asks (runtime `control_pump.h`), true while a
+publication is put off and the tick has left the guard (`p25_sm_tick_guard_busy()`), and the UDP hunt wait
+(`dsd_symbol.c`), the M17 encoder's UDP wait and the RTL read with no stream ask it beside
 `dsd_runtime_controls_pending()`. A put-off publication on a silent UDP input reaches the frontends within a stream
 pause (`DSD_ANALOG_STREAM_PAUSE_MIN_MS`) of the silence or one wait slice (100 ms) after the tick ends, whichever is
-later; on an RTL device with no stream, at the read's next empty poll after the tick.
-It is not folded into the controls-pending query, whose signal-search and TCP-reconnect callers it would cut. A
-connected TCP or stdin input blocks in its read with no slices, so there the retry waits for the next sample or
-command, as a queued command already does. The hold is one copy long, and a watchdog tick that meets it waits for its
-next period.
+later; on an RTL device with no stream, at the read's next empty poll after the tick. It is not folded into the
+controls-pending query, whose signal-search and TCP-reconnect callers it would cut. A connected TCP or stdin input
+blocks in its read with no slices, so there the retry waits for the next sample or command, as a queued command already
+does. The hold is one copy long, and a watchdog tick that meets it waits for its next period.
 
 ### Control Pump (DSP/Protocol → Runtime ← App-Control)
 
