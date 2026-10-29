@@ -7543,6 +7543,31 @@ add_test(
     COMMAND dsd-neo_test_engine_dmr_cc_recovery
 )
 
+# A trunk scan paused and resumed (issue #671) through the real P25/DMR state machines, carrier boundary, tuning ledger
+# and P25 SM tick guard, driven by the app-control services and commands; only the tuner is simulated.
+add_executable(
+    dsd-neo_test_engine_trunk_scan_pause
+    engine/test_engine_trunk_scan_pause.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+)
+target_include_directories(
+    dsd-neo_test_engine_trunk_scan_pause
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/engine ${PROJECT_SOURCE_DIR}/src/core/util
+)
+target_compile_definitions(
+    dsd-neo_test_engine_trunk_scan_pause
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+target_link_libraries(
+    dsd-neo_test_engine_trunk_scan_pause
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_TRUNK_SCAN_PAUSE
+    COMMAND dsd-neo_test_engine_trunk_scan_pause
+)
+
 # Per-target squelch overrides (issue #521) observed through the production frame-sync power
 # gate: the real trunk scan coordinator moves between targets while the channel power is held.
 add_executable(
