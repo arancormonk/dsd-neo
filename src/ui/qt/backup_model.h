@@ -203,7 +203,7 @@ class BackupModel : public QObject {
 
     /**
      * Free bytes on the data root's volume, asked on the worker before staging (a negative answer means unknown).
-     * Empty: QStorageInfo. The function must be safe to call from the worker thread.
+     * Empty: dsd_path_free_bytes(). The function must be safe to call from the worker thread.
      */
     void setFreeBytes(std::function<qint64(const QString&)> freeBytes);
 

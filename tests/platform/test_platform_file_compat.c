@@ -9,6 +9,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -91,6 +92,36 @@ expect_path_canonical(void) {
     rc |= dsd_path_canonical(NULL, dot, sizeof dot) == -1 && errno == EINVAL ? 0 : 1;
     if (rc) {
         DSD_FPRINTF(stderr, "canonical: error cases\n");
+    }
+    return rc;
+}
+
+/* Issue #708: dsd_path_free_bytes() reads the free space of an existing folder or file's volume, and refuses a missing
+   path, an empty one and NULL. */
+static int
+expect_path_free_bytes(void) {
+    int rc = 0;
+    const int64_t here = dsd_path_free_bytes(".");
+    if (here < 0) {
+        DSD_FPRINTF(stderr, "free bytes: . read %lld\n", (long long)here);
+        rc = 1;
+    }
+    const char* name = "dsd_neo_free_bytes_test.tmp";
+    (void)remove(name);
+    FILE* fp = dsd_fopen_private(name, "wb");
+    if (fp) {
+        (void)fclose(fp);
+        rc |= dsd_path_free_bytes(name) >= 0 ? 0 : 1;
+    }
+    (void)remove(name);
+    errno = 0;
+    rc |= dsd_path_free_bytes("dsd_neo_free_bytes_missing_dir") == -1 && errno != 0 ? 0 : 1;
+    errno = 0;
+    rc |= dsd_path_free_bytes("") == -1 && errno == EINVAL ? 0 : 1;
+    errno = 0;
+    rc |= dsd_path_free_bytes(NULL) == -1 && errno == EINVAL ? 0 : 1;
+    if (rc) {
+        DSD_FPRINTF(stderr, "free bytes: error cases\n");
     }
     return rc;
 }
@@ -947,6 +978,7 @@ main(void) {
     rc |= expect_posix_compat_wrappers();
     rc |= expect_private_open_closes_on_exec();
     rc |= expect_path_canonical();
+    rc |= expect_path_free_bytes();
     rc |= expect_many_unique_temp_files();
     rc |= expect_temp_name_not_reused_after_rename();
     rc |= expect_descriptor_wrappers();

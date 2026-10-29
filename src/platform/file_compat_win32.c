@@ -106,6 +106,34 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
     return _stat64(path, st);
 }
 
+int64_t
+dsd_path_free_bytes(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (wide_len <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    wchar_t* wide = (wchar_t*)calloc((size_t)wide_len, sizeof(wchar_t));
+    if (!wide) {
+        errno = ENOMEM;
+        return -1;
+    }
+    ULARGE_INTEGER available;
+    available.QuadPart = 0;
+    const BOOL ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) > 0
+                    && GetDiskFreeSpaceExW(wide, &available, NULL, NULL);
+    free(wide);
+    if (!ok) {
+        errno = EIO;
+        return -1;
+    }
+    return available.QuadPart > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)available.QuadPart;
+}
+
 int
 dsd_fseek64(FILE* fp, int64_t offset, int whence) {
     if (!fp) {

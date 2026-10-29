@@ -26,7 +26,6 @@
 #include <QRunnable>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QStorageInfo>
 #include <QThread>
 #include <QUuid>
 #include <QVariant>
@@ -35,6 +34,7 @@
 #include <deque>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/backup_seal.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <mutex>
 #include <qflags.h>
@@ -320,8 +320,9 @@ class Inspection {
         if (m_parsed.error != BackupError::None) {
             return error_name(m_parsed.error);
         }
-        const qint64 free =
-            m_work.freeBytes ? m_work.freeBytes(m_work.root) : QStorageInfo(m_work.root).bytesAvailable();
+        const qint64 free = m_work.freeBytes
+                                ? m_work.freeBytes(m_work.root)
+                                : static_cast<qint64>(dsd_path_free_bytes(m_work.root.toUtf8().constData()));
         if (free >= 0 && free < 2 * static_cast<qint64>(m_archive.size()) + kStagingMarginBytes) {
             return error_name(BackupError::NoSpace);
         }

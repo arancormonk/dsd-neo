@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
@@ -74,6 +75,24 @@ dsd_fstat(int fd, dsd_stat_t* st) {
 int
 dsd_stat_path(const char* path, dsd_stat_t* st) {
     return stat(path, st);
+}
+
+int64_t
+dsd_path_free_bytes(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    struct statvfs vfs;
+    if (statvfs(path, &vfs) != 0) {
+        return -1;
+    }
+    const uint64_t unit = vfs.f_frsize != 0 ? (uint64_t)vfs.f_frsize : (uint64_t)vfs.f_bsize;
+    const uint64_t blocks = (uint64_t)vfs.f_bavail;
+    if (unit != 0 && blocks > (uint64_t)INT64_MAX / unit) {
+        return INT64_MAX;
+    }
+    return (int64_t)(blocks * unit);
 }
 
 int

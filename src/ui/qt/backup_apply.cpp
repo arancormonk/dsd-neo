@@ -27,10 +27,10 @@
 #include <QMap>
 #include <QRegularExpression>
 #include <QSet>
-#include <QStorageInfo>
 #include <QStringList>
 #include <QVariant>
 #include <algorithm>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <iterator>
@@ -874,8 +874,9 @@ class Applier {
             return failUnchanged(nothing_changed()); // the stage cannot be trusted
         }
         const qint64 oldBytes = LiveScan(m_root, &m_journal).run();
-        const qint64 free =
-            m_env.freeBytes ? m_env.freeBytes(m_root.path()) : QStorageInfo(m_root.path()).bytesAvailable();
+        const qint64 free = m_env.freeBytes
+                                ? m_env.freeBytes(m_root.path())
+                                : static_cast<qint64>(dsd_path_free_bytes(m_root.path().toUtf8().constData()));
         if (free >= 0 && free < m_staging.bytes + oldBytes + kSpaceMargin) {
             return result(ApplyOutcome::Deferred, space_reason());
         }

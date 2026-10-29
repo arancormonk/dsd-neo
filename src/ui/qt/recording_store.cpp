@@ -21,13 +21,13 @@
 #include <QMap>
 #include <QPointer>
 #include <QSaveFile>
-#include <QStorageInfo>
 #include <QVariant>
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
 #include <chrono>
 #include <dsd-neo/core/wav_journal.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <limits>
@@ -218,9 +218,9 @@ RecordingStore::RecordingStore(QObject* parent) : QObject(parent) {
         const QByteArray native = QFile::encodeName(path);
         return dsd_rdio_upload_holds(native.constData()) != 0;
     };
+    // Free bytes only: QStorageInfo also reads the volume's label, which Android's SELinux policy denies the app.
     m_freeSpaceProbe = [](const QString& path) {
-        QStorageInfo info(path);
-        return info.isValid() && info.isReady() ? info.bytesAvailable() : qint64{-1};
+        return static_cast<qint64>(dsd_path_free_bytes(path.toUtf8().constData()));
     };
     m_remove = [](const QString& path, QString* error) {
         QFile file(path);
