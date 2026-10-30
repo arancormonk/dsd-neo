@@ -933,9 +933,9 @@ the same system, scan list or Explore session; the RTL-SDR's open resets it firs
 With Signal search open, its screen says to plug the receiver back in and start
 the search again. **Dismiss** clears the notice and cancels a Reconnect still
 waiting. After the Activity is recreated (for example after Android reclaimed
-it in the background) the app cannot prove which saved system the service was
-running, so Reconnect there only asks for access and the notice ends "…tap
-Reconnect, then start it again."
+it in the background) the app names the running session again but holds no
+start to repeat, so Reconnect there only asks for access and the notice ends
+"…tap Reconnect, then start it again."
 
 A stop you ask for first wins: Stop and then an unplug while the session winds
 down shows no notice; an unplug and then Stop now keeps it. The receiver's own
@@ -955,9 +955,10 @@ Connect asks for, the last requested kind before the kind on the bus, so after a
 RTL-SDR request with only an Airspy plugged in it reads `NO RTL-SDR` and Retry
 answers "No RTL-SDR attached" until an Airspy system is started; **Dismiss** hides
 the notice for that Activity only, as it does any failure, so a recreated Activity
-shows a dismissed (but not acknowledged) notice again; a healthy session
-reattached after a recreation shows LIVE with no receiver sheet (LOST still shows
-if it ends).
+shows a dismissed (but not acknowledged) notice again. A healthy session
+reattached after a recreation is named as it was started (its saved system, scan
+list or Explore session), so its receiver pill opens the receiver sheet as before;
+LOST still shows if it ends.
 
 ### What a failed start says
 

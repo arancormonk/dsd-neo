@@ -33,6 +33,11 @@ class AppPrefs : public QObject {
     Q_PROPERTY(bool autoStartOnAttach READ autoStartOnAttach WRITE setAutoStartOnAttach NOTIFY autoStartOnAttachChanged)
     Q_PROPERTY(QString lastStartedKind READ lastStartedKind WRITE setLastStartedKind NOTIFY lastStartedKindChanged)
     Q_PROPERTY(QString lastStartedUid READ lastStartedUid WRITE setLastStartedUid NOTIFY lastStartedUidChanged)
+    /* The session the host last accepted a start for ("scan", "explore" or "saved") and its UID (issue #671). Written
+     * when the start is accepted, unlike lastStarted*, which wait for the post-initialization edge and drive Home and
+     * auto-start: a recreated Activity takes the identity of the session it finds running from these. Device-local. */
+    Q_PROPERTY(QString acceptedStartKind READ acceptedStartKind WRITE setAcceptedStartKind NOTIFY acceptedStartChanged)
+    Q_PROPERTY(QString acceptedStartUid READ acceptedStartUid WRITE setAcceptedStartUid NOTIFY acceptedStartChanged)
     Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
     Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
@@ -130,6 +135,10 @@ class AppPrefs : public QObject {
     QString lastStartedKind() const;
     void setLastStartedKind(const QString& value);
     QString lastStartedUid() const;
+    QString acceptedStartKind() const;
+    void setAcceptedStartKind(const QString& value);
+    QString acceptedStartUid() const;
+    void setAcceptedStartUid(const QString& value);
     void setLastStartedUid(const QString& value);
     double lastLat() const;
     void setLastLat(double value);
@@ -262,6 +271,7 @@ class AppPrefs : public QObject {
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
     void lastStartedUidChanged();
+    void acceptedStartChanged();
     void locationChanged();
 
     void appearanceChanged();

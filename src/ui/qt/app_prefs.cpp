@@ -81,6 +81,10 @@ enum Key {
     kRecordCalls,
     kRecordUnknownOnly,
     kRecordingLimitMb,
+    // The session the host last accepted a start for, written when it accepts, before the post-initialization edge
+    // writes lastStarted* (issue #671): what a recreated Activity finds running, which this device's service runs.
+    kAcceptedStartKind,
+    kAcceptedStartUid,
     kKeyCount
 };
 
@@ -123,6 +127,8 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"recording/recordCalls", true},
     {"recording/recordUnknownOnly", true},
     {"recording/limitMb", true},
+    {"listen/acceptedStartKind", false},
+    {"listen/acceptedStartUid", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -774,6 +780,34 @@ AppPrefs::setLastStartedKind(const QString& value) {
     }
     m_settings.setValue(key_name(kLastStartedKind), value);
     Q_EMIT lastStartedKindChanged();
+}
+
+QString
+AppPrefs::acceptedStartKind() const {
+    return m_settings.value(key_name(kAcceptedStartKind), QString()).toString();
+}
+
+void
+AppPrefs::setAcceptedStartKind(const QString& value) {
+    if (acceptedStartKind() == value) {
+        return;
+    }
+    m_settings.setValue(key_name(kAcceptedStartKind), value);
+    Q_EMIT acceptedStartChanged();
+}
+
+QString
+AppPrefs::acceptedStartUid() const {
+    return m_settings.value(key_name(kAcceptedStartUid), QString()).toString();
+}
+
+void
+AppPrefs::setAcceptedStartUid(const QString& value) {
+    if (acceptedStartUid() == value) {
+        return;
+    }
+    m_settings.setValue(key_name(kAcceptedStartUid), value);
+    Q_EMIT acceptedStartChanged();
 }
 
 QString

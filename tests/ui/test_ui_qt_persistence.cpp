@@ -920,6 +920,8 @@ test_prefs_key_table(void) {
         {"recordCalls", true, "recording/recordCalls"},
         {"recordUnknownOnly", true, "recording/recordUnknownOnly"},
         {"recordingLimitMb", 5000, "recording/limitMb"},
+        {"acceptedStartKind", QStringLiteral("scan"), "listen/acceptedStartKind"},
+        {"acceptedStartUid", QStringLiteral("uid-2"), "listen/acceptedStartUid"},
     };
     QStringList covered;
     int writable = 0;
@@ -998,9 +1000,10 @@ test_prefs_key_table(void) {
     }
     local.sort();
     const QStringList wantLocal = {
-        QStringLiteral("location/lastAccuracyM"),  QStringLiteral("location/lastFixAt"),
-        QStringLiteral("location/lastLat"),        QStringLiteral("location/lastLon"),
-        QStringLiteral("monitor/detailsExpanded"), QStringLiteral("ui/notificationExplained"),
+        QStringLiteral("listen/acceptedStartKind"), QStringLiteral("listen/acceptedStartUid"),
+        QStringLiteral("location/lastAccuracyM"),   QStringLiteral("location/lastFixAt"),
+        QStringLiteral("location/lastLat"),         QStringLiteral("location/lastLon"),
+        QStringLiteral("monitor/detailsExpanded"),  QStringLiteral("ui/notificationExplained"),
         QStringLiteral("ui/onboardingDone"),
     };
     expect("device-local set is exactly the pinned one", local == wantLocal);

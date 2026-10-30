@@ -3189,6 +3189,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("autoStartOnAttach")] = false;
         prefs[QStringLiteral("lastStartedKind")] = QString();
         prefs[QStringLiteral("lastStartedUid")] = QString();
+        prefs[QStringLiteral("acceptedStartKind")] = QString();
+        prefs[QStringLiteral("acceptedStartUid")] = QString();
         prefs[QStringLiteral("lastLat")] = 0.0;
         prefs[QStringLiteral("lastLon")] = 0.0;
         prefs[QStringLiteral("lastFixAt")] = 0;

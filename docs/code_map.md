@@ -8530,8 +8530,9 @@ Qt Quick frontend (`src/ui/qt`):
     attempt's system, scan list, Explore or Signal search. The `FailureCard` (`homeFailureCard`) button reads
     `retryText` "Reconnect" while the notice shows (`receiverNoticeShown`), and the details panel is hidden, so two
     Retry actions never compete. Reconnect is `retrySource()`: the usual USB gate (a permission prompt if needed), then
-    the same session. After an Activity recreation the UI has no verified link from the service's run to a saved
-    system or list (`attemptedSource` is empty), so Reconnect only asks for access to the lost kind, starts nothing,
+    the same session. After an Activity recreation `attemptedSource` is empty (the recreated UI names the running
+    session from `prefs.acceptedStart*`, but holds no start to repeat), so Reconnect only asks for access to the lost
+    kind, starts nothing,
     and the copy ends "Plug it back in, tap Reconnect, then start it again." (a stream failure: "Tap Reconnect to reset
     it, then start it again.", an Airspy's "Tap Reconnect, then start it again."). With Signal search open, its screen
     says "… plug it back in, then start the search again." (or "Start the search again to reset it.", an Airspy's
@@ -9118,7 +9119,12 @@ Qt Quick frontend (`src/ui/qt`):
     when the UI reads a row. `HistoryDetailSheet` offers a history Hold TG only with no scan and no operator hold
     (`scanKind === 0 && !operatorTuned`), since the session keeps its UID for the rows heard before. The
     post-initialization edge records
-    `sessionStartKind`/`sessionStartUid`, what was started, not what an early Explore made it. Tests:
+    `sessionStartKind`/`sessionStartUid`, what was started, not what an early Explore made it. A start the host
+    accepts also writes that pair to the device-local `prefs.acceptedStartKind/Uid` at once (`lastStarted*` stays
+    the initialized record Home and auto-start read); a recreated Activity that finds a session Running and started
+    nothing itself adopts it (`adoptReattachedSession()`): a scan list's list (`sessionScanList`, its map), Explore's
+    `exploring`, a saved system's map and row. With no session map, the hold's and a no-owner Explore's map take the
+    running input's kind from `metrics.radioSource` (`heldReceiver()`), never an assumed USB one. Tests:
     `UI_QT_METRICS_MODEL` (`test_scan_state()`), `UI_QT_CALL_HISTORY_MODEL`
     (`test_tuner_owner_stamps_set_row_identity()`), `UI_QT_QML_CALL_LISTS` (`tst_spectrum_screen.qml` 03j-03o,
     `tst_monitor_scan_target.qml`, `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`,
@@ -9273,8 +9279,10 @@ Qt Quick frontend (`src/ui/qt`):
   happened and that the session is finishing, with Cancel and **Stop now** (`decoderHost.stop()`, the user's Stop,
   which abandons the upload backlog). The sheet fixes its view when it opens, closes if `receiverLost` changes under it
   (OK never turns into Stop now under a finger) and closes with the screen. rtl_tcp, network and file sessions, and
-  every desktop session, keep an inert pill (StaticText, no tab stop); so does a healthy session the Monitor reattaches
-  to after an Activity recreation, which has no system map, while LOST still shows there from `receiverHealth`. In tier
+  every desktop session, keep an inert pill (StaticText, no tab stop). A healthy session the Monitor reattaches to after
+  an Activity recreation has its system map again (Main's `adoptReattachedSession()`, issue #671), so a USB or Airspy
+  system or scan list opens the sheet as a fresh start does; one the UI cannot name keeps the inert pill, while LOST
+  still shows there from `receiverHealth`. In tier
   5, where the header scrolls with the list, a lost receiver also shows as one fixed line above Stop
   (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens the same
   sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already fixes

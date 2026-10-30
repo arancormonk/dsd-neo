@@ -697,18 +697,20 @@ Window {
     property bool exploreRequested: false
 
     // A recreated Activity finds a session it did not start (the service
-    // outlived the old one): it takes the identity that start recorded at the
-    // post-initialization edge, so a scan list is still one -- its targets are
+    // outlived the old one): it takes the identity of the start the host last
+    // accepted (the acceptedStart pref pair, written with the start, so a session
+    // recreated before its initialization edge is still itself), as a start in
+    // this UI would have set it. A scan list is still one -- its targets are
     // named from the list, a pause hands the receiver to the operator with
-    // Resume scan -- and an Explore session is still free to tune. A saved
-    // system keeps the view-only default and the label History kept. A start in
-    // this UI sets the identity itself, and keeps it after the session ends: a
-    // late initialization edge still records it.
+    // Resume scan; an Explore session is still free to tune; a saved system has
+    // its map and row back (its title, sites, Edit, the key sheet's system). A
+    // start in this UI sets the identity itself, and keeps it after the session
+    // ends: a late initialization edge still records it.
     function adoptReattachedSession() {
         if (decoderHost.sessionState !== 2 || mainRoot.sessionStartKind.length > 0 || mainRoot.pendingStart)
             return;
-        mainRoot.sessionStartKind = prefs.lastStartedKind || "";
-        mainRoot.sessionStartUid = prefs.lastStartedUid || "";
+        mainRoot.sessionStartKind = prefs.acceptedStartKind || "";
+        mainRoot.sessionStartUid = prefs.acceptedStartUid || "";
         if (mainRoot.sessionStartKind === "scan") {
             mainRoot.sessionScanList = true;
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
@@ -718,8 +720,24 @@ Window {
             mainRoot.exploring = true;
             // Where it got to before the recreation is not known here.
             mainRoot.exploreRemembered = false;
+        } else if (mainRoot.sessionStartKind === "saved" && mainRoot.sessionStartUid.length > 0) {
+            var sys = savedSystems.getByUid(mainRoot.sessionStartUid);
+            if (sys && sys.uid) {
+                mainRoot.sessionSystem = sys;
+                mainRoot.sessionRow = savedSystems.rowForUid(sys.uid);
+            }
         }
         mainRoot.syncOperatorHold();
+    }
+
+    // The receiver an Explore map stands on when the operator takes the tuner:
+    // the session map's, or with none (a session the UI could not name) the
+    // running input's own, so the pill and Save as system match the receiver
+    // rather than assume a USB one. Off a radio there is none to name.
+    function heldReceiver(map) {
+        if (map && map.sourceType)
+            return map;
+        return metrics.radioSource || {};
     }
 
     function forgetOperatorHold() {
@@ -738,8 +756,8 @@ Window {
             mainRoot.pausedScanSystem = mainRoot.sessionSystem;
             mainRoot.pausedSessionRow = mainRoot.sessionRow;
             mainRoot.sessionRow = -1;
-            var held = mainRoot.sessionSystem;
-            mainRoot.sessionSystem = mainRoot.exploreSystem(held ? held.sourceType : "usb", held ? held.host : "", held ? held.port : 0, metrics.centerFreqHz > 0 ? Util.mhzValueText(metrics.centerFreqHz) : "");
+            var held = mainRoot.heldReceiver(mainRoot.sessionSystem);
+            mainRoot.sessionSystem = mainRoot.exploreSystem(held.sourceType || "", held.host || "", held.port || 0, metrics.centerFreqHz > 0 ? Util.mhzValueText(metrics.centerFreqHz) : "");
             if (mainRoot.sessionScanList) {
                 // Not Explore's to remember: the list is coming back.
                 mainRoot.exploring = true;
@@ -773,8 +791,8 @@ Window {
     // first tune are still the system's, and that tune stamps the ones after it
     // as the operator's.
     function exploreWithNoOwner() {
-        var was = mainRoot.sessionSystem;
-        mainRoot.sessionSystem = mainRoot.exploreSystem(was ? was.sourceType : "usb", was ? was.host : "", was ? was.port : 0, mainRoot.lastExploreFreqMhz);
+        var was = mainRoot.heldReceiver(mainRoot.sessionSystem);
+        mainRoot.sessionSystem = mainRoot.exploreSystem(was.sourceType || "", was.host || "", was.port || 0, mainRoot.lastExploreFreqMhz);
         // Which also means the saved row is no longer this session's, so the
         // session's edit action must not open -- and push CSVs into -- a system
         // the session detached from.
@@ -1058,6 +1076,8 @@ Window {
         var startExploring = !scan && (row < 0) && !sys.signalSearch;
         mainRoot.sessionStartKind = scan ? "scan" : startExploring ? "explore" : "saved";
         mainRoot.sessionStartUid = startExploring ? "" : sys.uid || "";
+        prefs.acceptedStartKind = mainRoot.sessionStartKind;
+        prefs.acceptedStartUid = mainRoot.sessionStartUid;
         mainRoot.forgetOperatorHold();
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
         mainRoot.awaitingSessionInitialized = true;
