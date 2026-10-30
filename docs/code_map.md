@@ -10700,6 +10700,11 @@ Each run gives its setup, then what must hold:
   and park focus on a neighbour while the list reorders. TalkBack stays on that neighbour and says nothing as it
   moves; swiping next and previous visits each entry once. Qt's bridge sends no reorder event, so TalkBack's cached
   child order of the sheet may lag until a show, hide or scroll; if swiping skips or repeats an entry, record it here.
+- **N-hold.** As N-rotate, on a scan list that mixes that P25 system with a DMR or analog target. With focus on a
+  neighbour row, let the scan hop to the other target, then swipe through the sheet; hop back and swipe again. On the
+  other target no P25 row is reached or read, the row that had focus reads nothing, and each section's "(none
+  announced)" is reached and read; back on the P25 target the rows are read as shown. An old row read on the other
+  target fails the check.
 
 ### Android screen modes
 
@@ -10951,23 +10956,32 @@ identification and saved names, the diagnostics lines (read only while paused). 
 item that has a value interface when its `Accessible` object is made, which these do not, so a moving value raises no
 event, and Android reads the value when it reads the node.
 
-A part whose state only its colour shows gives its words as `spokenText` (the strip's LOCK: "Carrier lock" / "No
-carrier lock"). Readings sit inside a group whose own place does not move, so a value whose width changes moves no
-accessible node (a LocationChanged becomes a main-thread task). A list handed over whole on each refresh feeds its
-Repeater through `qml/StableRows.qml`, a row per entry (`keyOf`, by default its place) with its words in the `line`
-role (`lineOf`): an entry that stays keeps its row, moved to its new place, and is renamed only when its own words
-change; an arriving entry takes the row of one that left (one rename), else a new row; rows are added and renamed at
-once and let go at the end of the turn, so a list emptied and refilled in one turn keeps them. The Network sheet keys
+A part whose state only its colour shows gives its words as `spokenText` (the strip's LOCK: "Carrier lock" / "No carrier
+lock"). Readings sit inside a group whose own place does not move, so a value whose width changes moves no accessible
+node (a LocationChanged becomes a main-thread task). A list handed over whole on each refresh feeds its Repeater through
+`qml/StableRows.qml`, a row per entry (`keyOf`, by default its place) with its words in the `line` role (`lineOf`): an
+entry that stays keeps its row, moved to its new place, and is renamed only when its own words change; an arriving entry
+takes the row of one that left (one rename), else a new row; rows are added and renamed at once and let go at the end of
+the turn, so a list emptied and refilled in one turn keeps them. Until a row past the end goes, the view hides it at
+once: `shown`, the list's length now, draws rows from it on at no opacity (no event; Qt then reports the row invisible),
+and `live`, the rows holding an entry (at once on a shrink, at the end of the turn on emptying), names them as nothing;
+the key sheet hides a departed slot's row and keeps it reading its last slot, never an empty one. The Network sheet keys
 its rows by entry (neighbours by frequency, patches by SGID, affiliations by RID and TG, radios by RID) and lists each
 section most recent first, so an entry heard again moves its row to the top: a move raises a LocationChanged for each
 row that shifts and nothing else, and every row is always named for the entry it shows. Its rows are not paced. With
 `holdWhenEmpty` (the Network sheet) an empty list keeps the rows, `live` 0: they leave the tree (`Accessible.ignored`,
-which raises ObjectDestroyed, not sent on by Android's bridge) and their column takes no height and is transparent, so
-a hop to a target with no P25 network costs the "(none announced)" lines and the sheet's layout, whatever the number
-of rows, and the next list reuses them. Hidden or removed instead, each row raises a hide (and a show coming back). The
-key sheet's slots are keyed by place, each row reading its slot by index. P25NetworkModel keeps the engine's
-last-seen times, which order its rows but are not shown, out of them. A scan hop publishes the new target's network in
-one replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the sheet is closed or the session is not
+which raises ObjectDestroyed, not sent on by Android's bridge), are transparent and unnamed, and their column takes no
+height; the next list reuses them. Nothing the rows raise then refreshes Android's cached copy of the sheet (only a show
+or hide does, `QtAccessibilityDelegate.java` `notifyObjectShow`/`notifyObjectHide`), so a held row must read as nothing
+there: transparent, Qt reports it invisible (`qaccessiblequickitem.cpp` `state()`), which Android passes on as not
+visible to the user, and unnamed it has no words, even with TalkBack's focus left on it. Unnaming is a NameChanged per
+row, one call into Java that returns at once unless TalkBack is on that row. Each section's "(none announced)" stays in
+the tree while hidden, so its show as the section empties refreshes Android's copy and a swipe reaches it, and its hide
+does so as the rows come back. A hop to a target with no P25 network therefore costs, in main-thread work on Android,
+one show or hide per section that empties or fills and the sheet's layout, whatever the number of rows. Hidden or
+removed instead, each row would raise a hide (and a show coming back). P25NetworkModel keeps the engine's last-seen
+times, which order its rows but are not shown, out of them. A scan hop publishes the new target's network in one
+replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the sheet is closed or the session is not
 live), never an empty list first.
 The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
 

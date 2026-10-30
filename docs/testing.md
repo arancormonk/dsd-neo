@@ -2728,22 +2728,28 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   change in separate notifications, at a 300 ms floor and the app's 5 s period, then moves the SNR for two floors: the
   strip renames once. Case C2 has the host leave a seek unapplied and playback stop, then plays past where the seek
   asked to land: no rename until the period. Case G holds a hidden monitor to silence at a 30 ms period.
-  `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field
-  group a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the
-  open Network sheet 10 refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename),
-  then one changed entry (one rename, at once), one new entry (one row added) and the same neighbours on another system
-  (each row renamed once, at once, and kept with its neighbour); `test_open_network_sheet_reorders_move_rows` moves
-  one neighbour to the top 16 times, 100 ms apart: no show, hide or rename, every row read as what it shows at every
-  refresh, and the row a listener is on moving with its neighbour; `test_open_network_sheet_capped_arrivals` has 20
-  radios register into a full section of 100: at most one rename each, none elsewhere, and the radio at row 50 keeping
-  its row and name; `test_open_network_sheet_clear_and_refill` empties and refills the list in one turn (nothing at
-  all) and a turn apart (the rows kept, out of the tree in between); `test_open_network_sheet_on_hops` publishes 10
-  hops between an eight- and a six-neighbour target to the app's own P25NetworkModel as UiController does
+  `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
+  a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the open Network sheet 10
+  refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename), then one changed entry
+  (one rename, at once), one new entry (one row added) and the same neighbours on another system (each row renamed once,
+  at once, and kept with its neighbour); `test_open_network_sheet_reorders_move_rows` moves one neighbour to the top 16
+  times, 100 ms apart: no show, hide or rename, every row read as what it shows at every refresh, and the row a listener
+  is on moving with its neighbour; `test_open_network_sheet_capped_arrivals` has 20 radios register into a full section
+  of 100: at most one rename each, none elsewhere, and the radio at row 50 keeping its row and name;
+  `test_open_network_sheet_clear_and_refill` empties and refills the list in one turn (nothing at all) and a turn apart
+  (the rows kept, out of the tree in between, and only "(none announced)" showing and hiding);
+  `test_open_network_sheet_hold_reads_nothing` empties the list: each held row reports itself invisible and unnamed, and
+  the section's "(none announced)" is in the tree and shows once;
+  `test_open_network_sheet_shrink_hides_departed_rows_at_once` shrinks 8 rows to 6 and, before the event loop runs
+  again, draws and names only the 6, the 2 hiding as they go; `test_open_key_sheet_drops_a_slot_at_once` drops the key
+  sheet's second slot: its row is hidden at once and never reads an empty slot; `test_open_network_sheet_on_hops`
+  publishes 10 hops between an eight- and a six-neighbour target to the app's own P25NetworkModel as UiController does
   (`testContext.hopNetwork()`): two rows hide or show a hop, the row at index 3 stays the same item, and each row ends
-  on the new target's entry; `test_open_network_sheet_on_mixed_hops` hops 10 times between a P25 target and one with
-  no P25 network, for 8 and for 30 neighbours: the rows raise nothing Android's bridge sends, no row is shown or read
-  on the other target, and the sheet's events are the same for both counts; `test_open_key_sheet_keeps_its_slot_rows`
-  publishes new slot lists to the open key sheet (no show or hide).
+  on the new target's entry; `test_open_network_sheet_on_mixed_hops` hops 10 times between a P25 target and one with no
+  P25 network, for 8 and for 30 neighbours: the rows raise no show, hide, move or description change, only one rename
+  each a hop (unnamed as they are held, named as they come back), no row is shown or read on the other target, "(none
+  announced)" shows and hides once a hop, and the sheet's main-thread events are the same for both counts;
+  `test_open_key_sheet_keeps_its_slot_rows` publishes new slot lists to the open key sheet (no show or hide).
 
 The Android side, which no host test reaches, is checked by hand on an emulator: "Qt upgrade checks" in
 `docs/code_map.md`.
