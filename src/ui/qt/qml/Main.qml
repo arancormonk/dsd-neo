@@ -479,6 +479,16 @@ Window {
             mainRoot.updateSystemBars();
         }
     }
+    // A list added or edited names its targets in History at once.
+    Connections {
+        target: scanLists
+        function onCountChanged() {
+            mainRoot.publishChannelNames();
+        }
+        function onDataChanged() {
+            mainRoot.publishChannelNames();
+        }
+    }
     Connections {
         target: decoderHost
         ignoreUnknownSignals: true
@@ -970,8 +980,23 @@ Window {
         }
         return names;
     }
+    // History names a call heard under any scan list, not only the running
+    // session's: every saved list's targets, then the session's own (a list
+    // edited since it started keeps its names until it is started again).
+    function historyChannelNames() {
+        var names = {};
+        for (var i = 0; i < scanLists.count; ++i) {
+            var listNames = mainRoot.channelNamesOf(scanLists.get(i));
+            for (var uid in listNames)
+                names[uid] = listNames[uid];
+        }
+        var sessionNames = mainRoot.scanChannelNames;
+        for (var id in sessionNames)
+            names[id] = sessionNames[id];
+        return names;
+    }
     function publishChannelNames() {
-        callHistory.setChannelNames(mainRoot.scanChannelNames);
+        callHistory.setChannelNames(mainRoot.historyChannelNames());
         metrics.setChannelNames(mainRoot.scanChannelNames);
     }
 

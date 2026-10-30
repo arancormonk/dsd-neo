@@ -997,7 +997,9 @@ suite runs under this compiler.
   frontend words it as a target or a channel and never names both at once. The Qt app writes each entry's uid as the
   target id, so its History and monitor show the entry's name for it (`CallHistoryModel::setChannelNames()`,
   `MetricsModel::setChannelNames()`, from Main's scan list, issue #671): History maps it only for display, and a row
-  keeps the id it was heard on, which tells two targets of one name apart and outlives a rename. Those names come from a channel-map CSV
+  keeps the id it was heard on, which tells two targets of one name apart and outlives a rename. History's names add
+  up across sessions (every saved scan list's, then the session's), and each row persists the name it was logged
+  with, so an earlier session's rows stay named after another starts or a relaunch. Those names come from a channel-map CSV
   that opts in with a `name` header column and live in a heap store beside the scan list, reached through
   `dsd_state_trunk_lcn_name_get()`/`_set()`/`_reserve()`/`_free()` in `src/core/util/dsd_state_trunk_lcn.c` and
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a

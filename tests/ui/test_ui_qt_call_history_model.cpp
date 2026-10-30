@@ -611,6 +611,41 @@ test_target_ids_read_as_their_names(void) {
                && model.data(model.index(1), CallHistoryModel::ChannelRole).toString() == "Dispatch");
 }
 
+/* Gate review: another session's names come in for a scan list or a saved system started next. The rows an earlier
+ * session logged keep their target's name, and match a search for it, instead of reverting to the id; and a row keeps
+ * the name it was logged with across a relaunch that names nothing. A newer name for the same id still replaces it. */
+void
+test_target_names_outlive_their_session(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754500400;
+    {
+        CallHistoryModel model;
+        model.setChannelNames(QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County")}});
+        ring.commit(0, 5101, 100, when, when + 3, "", "", "96e4230d-7220-4a76");
+        model.refresh(ring.state);
+        model.setChannelNames(QVariantMap{{QStringLiteral("0b1f-other-list"), QStringLiteral("Marion County")}});
+        expect("an earlier session's row keeps its target's name",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Benton County"
+                   && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County");
+        CallHistoryFilterModel filter;
+        filter.setSourceModel(&model);
+        filter.setFilterText(QStringLiteral("benton"));
+        expect("a search still finds it by name", filter.rowCount() == 1);
+    } // destructor flushes the stores
+    {
+        CallHistoryModel relaunched;
+        expect("a relaunch that names nothing keeps the logged name",
+               relaunched.count() == 1
+                   && relaunched.data(relaunched.index(0), CallHistoryModel::NameRole).toString() == "Benton County");
+        relaunched.setChannelNames(
+            QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County North")}});
+        expect("a newer name for the id replaces it",
+               relaunched.data(relaunched.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County North");
+    }
+}
+
 void
 test_reacquisition_merge_updates_in_place(void) {
     resetStorage();
@@ -2934,6 +2969,7 @@ main(int argc, char** argv) {
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
     test_target_ids_read_as_their_names();
+    test_target_names_outlive_their_session();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();

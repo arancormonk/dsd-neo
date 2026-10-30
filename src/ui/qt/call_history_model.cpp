@@ -373,10 +373,8 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
     switch (role) {
         case UidRole: return row.uid;
         // A trunk-scan target's id is the app's uid for its entry: shown as the entry's name (setChannelNames()).
-        case NameRole:
-            return !row.channel.isEmpty() && row.name == row.channel ? m_channelNames.value(row.channel, row.name)
-                                                                     : row.name;
-        case ChannelRole: return m_channelNames.value(row.channel, row.channel);
+        case NameRole: return !row.channel.isEmpty() && row.name == row.channel ? channelDisplayName(row) : row.name;
+        case ChannelRole: return channelDisplayName(row);
         case RecordingsRole:
             return m_recordings != nullptr && !row.fragments.isEmpty()
                        ? m_recordings->recordingsForFragments(row.fragments)
@@ -551,7 +549,9 @@ CallHistoryModel::changeSession(const QString& label, const QString& uid, bool b
 
 void
 CallHistoryModel::setChannelNames(const QVariantMap& names) {
-    QHash<QString, QString> next;
+    // Added to the names given before, never in place of them: another session's names leave the rows an earlier one
+    // logged named.
+    QHash<QString, QString> next = m_channelNames;
     for (auto it = names.constBegin(); it != names.constEnd(); ++it) {
         const QString name = it.value().toString();
         if (!it.key().isEmpty() && !name.isEmpty()) {
@@ -564,9 +564,34 @@ CallHistoryModel::setChannelNames(const QVariantMap& names) {
     // A display name only: rows keep the target id they were heard on, which tells two targets of one name apart
     // (rows_mergeable()) and outlives a rename.
     m_channelNames = next;
+    bool named = false;
+    for (Row& row : m_rows) {
+        named = nameChannel(row) || named;
+    }
+    if (named) {
+        scheduleSave();
+    }
     if (!m_rows.isEmpty()) {
         Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {NameRole, ChannelRole});
     }
+}
+
+bool
+CallHistoryModel::nameChannel(Row& row) const {
+    if (row.channel.isEmpty() || !row.channelName.isEmpty()) {
+        return false;
+    }
+    const auto it = m_channelNames.constFind(row.channel);
+    if (it == m_channelNames.constEnd()) {
+        return false;
+    }
+    row.channelName = it.value();
+    return true;
+}
+
+QString
+CallHistoryModel::channelDisplayName(const Row& row) const {
+    return m_channelNames.value(row.channel, row.channelName.isEmpty() ? row.channel : row.channelName);
 }
 
 void
@@ -1327,6 +1352,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     const bool wholeLog = again || isUpdate;
     const int merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
     if (merged >= 0) {
+        (void)nameChannel(m_rows[merged]);
         const QModelIndex idx = index(merged);
         Q_EMIT dataChanged(idx, idx, mergeRoles);
         // A merge can only pull the absorbing row's start earlier, which may
@@ -1360,6 +1386,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     }
     Row logged = row;
     adoptNewRow(logged);
+    (void)nameChannel(logged);
     beginInsertRows(QModelIndex(), pos, pos);
     m_rows.insert(pos, logged);
     endInsertRows();
@@ -1701,6 +1728,7 @@ row_from_json(const QJsonObject& obj) {
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
     row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
+    row.channelName = obj.value(QLatin1String("channelName")).toString();
     row.service = obj.value(QLatin1String("service")).toString();
     row.analog = obj.value(QLatin1String("analog")).toBool();
     row.receiveKind = obj.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
@@ -1774,6 +1802,9 @@ row_to_json(const CallHistoryModel::Row& row) {
     }
     if (!row.channel.isEmpty()) {
         obj.insert(QLatin1String("channel"), row.channel);
+    }
+    if (!row.channelName.isEmpty()) {
+        obj.insert(QLatin1String("channelName"), row.channelName);
     }
     if (!row.service.isEmpty()) {
         obj.insert(QLatin1String("service"), row.service);
