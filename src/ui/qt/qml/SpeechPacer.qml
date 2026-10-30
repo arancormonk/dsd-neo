@@ -61,6 +61,11 @@ Timer {
     function stepped() {
         if (!shown)
             return;
+        // A step's inputs can change in several notifications (a hop's target,
+        // frequency and sync; a call's slot, talkgroup and source): a step that
+        // comes before the last one is heard is part of it, and is heard with it.
+        if (running && interval === 1)
+            return;
         if (floor.running) {
             stepPending = true;
             return;

@@ -449,6 +449,31 @@ Item {
             tryVerify(function () { return nameOf(hero) === "waiting for a call…"; }, floor + 200, nameOf(hero));
         }
 
+        // A step whose inputs arrive in several notifications (a hop: the target, its frequency and its sync each
+        // change on their own) is heard once, with all of them, and the readings moving after it wait for the period:
+        // the floor holds back a later step, not the rest of this one.
+        function test_f2_a_step_in_parts_is_heard_once() {
+            var floor = 300;
+            Ui.Navigation.speechPeriodMs = appPeriod;
+            Ui.Navigation.speechStepFloorMs = floor;
+            wait(floor + 100);
+            var strip = item(monitor, "signalStrip");
+            testContext.startAccessibilityCount();
+            testContext.publishTarget({scanTargetId: "target-2", scanTargetOrdinal: 2, centerFreqHz: 852012500,
+                syncLabel: "P25p2"});
+            var start = Date.now();
+            for (var i = 1; i <= 40; ++i) {
+                set({snrDb: 9 + i * 0.25});
+                wait(15);
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            verify(elapsed >= 2 * floor, "the readings moved for " + elapsed + " ms, past two floors");
+            compare(raised(counts, "NameChanged", "signalStrip"), 1, "one hop, one rename: " + JSON.stringify(counts.chains));
+            verify(nameOf(strip).indexOf("852.01") >= 0, "the hop is heard with its frequency: " + nameOf(strip));
+        }
+
         // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.
         function test_g_hidden_monitor_stays_silent() {
             Ui.Navigation.speechPeriodMs = 30;
