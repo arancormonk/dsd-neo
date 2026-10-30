@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/tuner_owner.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -894,10 +895,12 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
     s_backend_rigctl_moved = 0;
     /* Every backend below carries the frequency as uint32_t; one past it (possible where long is 64-bit) would wrap to
        an unrelated channel, so the tune fails instead. The callers have already refused freq <= 0. */
-    if ((long long)freq > (long long)UINT32_MAX) {
+#if LONG_MAX > UINT32_MAX
+    if (freq > (long)UINT32_MAX) {
         DSD_FPRINTF(stderr, "Trunk tune to %ld Hz refused: past the tuner limit of 4294967295 Hz.\n", freq);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+#endif
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         if (!dsd_engine_tune_rigctl(opts, state, freq)) {

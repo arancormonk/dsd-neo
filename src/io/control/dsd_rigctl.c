@@ -361,9 +361,15 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
  */
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
-    if (freq <= 0 || (long long)freq > (long long)UINT32_MAX) {
+    if (freq <= 0) {
         return false;
     }
+#if LONG_MAX > UINT32_MAX
+    /* Only a 64-bit long reaches past the uint32_t frequency (a 32-bit one cannot, and the test would always fail). */
+    if (freq > (long)UINT32_MAX) {
+        return false;
+    }
+#endif
     return rigctl_set_freq_hz(sockfd, (uint32_t)freq);
 }
 

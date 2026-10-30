@@ -97,6 +97,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <errno.h>
+#include <limits.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -3326,9 +3327,11 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     } else {
         /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. The trunk frequency is a long;
            one the tuner path cannot carry is refused as io_control_set_freq() refuses 0. */
-        result = (freq > 0 && (long long)freq <= (long long)UINT32_MAX)
-                     ? io_control_set_freq(opts, state, (uint32_t)freq)
-                     : -1;
+        int carried = freq > 0;
+#if LONG_MAX > UINT32_MAX
+        carried = carried && freq <= (long)UINT32_MAX; /* only a 64-bit long reaches past it */
+#endif
+        result = carried ? io_control_set_freq(opts, state, (uint32_t)freq) : -1;
         if (result != RTL_STREAM_TUNE_DEFERRED) {
             /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
             dsd_engine_manual_tune_supersede(state);
