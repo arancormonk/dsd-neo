@@ -1218,6 +1218,8 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->needs_commit = 0;
     scan->tuned = 0;
     scan->committed_row = -1;
+    /* The pause runs its own carrier boundary (the entry's tune) or forget (in place): no move stays owed. */
+    scan->left_carrier = 0;
     scan->staged_has_values = 0;
     DSD_MEMSET(&scan->staged_values, 0, sizeof(scan->staged_values));
     dsd_scan_key_change_clear(&scan->keys);
