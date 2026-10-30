@@ -217,12 +217,11 @@ showed.
 - **Skip** suppresses this frequency for the current pass.
 - **Avoid this session** lasts until the session ends. Session avoids are listed
   under **Avoided this session**, and **Stop avoiding** lifts one for the following
-  measurements; a frequency already visited in the current pass returns with the
-  next pass. A history row's avoid
-  works the same way, and leaves the frequency at once if the search is
-  visiting it. **Avoid permanently** also saves it for future searches;
-  removing a permanent avoid during a search lifts it from the running session
-  too. With no search running, a row's permanent avoid only saves it.
+  measurements; a frequency already visited in the current pass returns with the next
+  pass. A history row's avoid works the same way, and leaves the frequency at once if
+  the search is visiting it. **Avoid permanently** also saves it for future searches;
+  removing a permanent avoid during a search lifts it from the running session too.
+  With no search running, a row's permanent avoid only saves it.
 - Each list holds 1,024 frequencies. A full list is said on the screen: **The
   avoid list is full** for this session's list and **The permanent avoid list is
   full** for the permanent one, and nothing changes, not even a skip. A
@@ -555,7 +554,8 @@ refusals, that status-only refreshes leave history untouched (it is copied only 
 revision moves), session avoids, the aggregate 100,000-channel check before a start
 is submitted, and that a start the engine rejects with no search left owns nothing
 and is retired when the decoder session ends, so a recreated frontend never restores
-the search screen over a later ordinary session. A rejected restart of a paused
+the search screen over a later ordinary session (a path Qt 6.11.2 never takes; see
+`android/README.md` "Known limits"). A rejected restart of a paused
 search keeps that search's phase, session and ownership; only its message changes.
 A Resume keeps the paused search's session, while a start after Stop takes a new one
 even before the screen's status tick has seen the Stop.
@@ -569,10 +569,10 @@ just ahead of opening command admission) stays armed and goes in once, when
 initialization is reported or at a later status tick, whichever comes first; a session
 that stops, fails or ends before then takes the arm with it, so the next ordinary
 session starts no search. A screen reopened over a running search after recreation
-takes its receiver (USB, Airspy or rtl_tcp server) from the session's options
-snapshot, whether that snapshot arrives before or after the screen, offers that
-receiver's gain controls in a paused range edit, and keeps it through Stop and a
-restart.
+(a path Qt 6.11.2 never takes; see `android/README.md` "Known limits") takes its
+receiver (USB, Airspy or rtl_tcp server) from the session's options snapshot, whether
+that snapshot arrives before or after the screen, offers that receiver's gain
+controls in a paused range edit, and keeps it through Stop and a restart.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.

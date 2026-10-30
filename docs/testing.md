@@ -2569,13 +2569,14 @@ maintainer follow-up: record a transmitter with a known code in both polarities 
 ### Qt frontend and QML screen tests
 
 The `UI_QT_*` cases register only under `-DDSD_ENABLE_QT_UI=ON`. Most of them
-link `Qt6::Core` alone and run anywhere Qt 6 is installed. `UI_QT_QML_CALL_LISTS`
-and `UI_QT_QML_A11Y_CHURN` (CTest label `qml`) are the exception: they drive the
-real `.qml` screens through Qt Quick Test, so they also need the **QuickTest**
-module — both its CMake package and its QML plugin, which Debian and Ubuntu package
-separately as `qml6-module-qttest`. Both are probed, and the tests are left
-unregistered with a configure-time `STATUS` message when either is missing, rather
-than failing the whole project's configure step.
+link `Qt6::Core` alone and run anywhere Qt 6 is installed. The `UI_QT_QML_*` cases,
+all but `UI_QT_QML_GC_POLICY`, are the exception: they run the `dsd-neo_test_ui_qt_qml`
+binary, which drives the real `.qml` screens through Qt Quick Test, so they also
+need the **QuickTest** module — both its CMake package and its QML plugin, which
+Debian and Ubuntu package separately as `qml6-module-qttest`. Both are probed, and
+those tests are left unregistered with a configure-time `STATUS` message when either
+is missing, rather than failing the whole project's configure step. Two of them,
+`UI_QT_QML_CALL_LISTS` and `UI_QT_QML_A11Y_CHURN`, carry the CTest label `qml`.
 
 ```sh
 cmake --preset dev-debug -DDSD_ENABLE_QT_UI=ON

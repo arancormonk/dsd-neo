@@ -1501,11 +1501,11 @@ module behind it, so androiddeployqt has nothing extra to package.
   call is on air. This is the first thing to measure in the battery soak below.
 - **Screen readers: TalkBack only, and only from launch** (#782). Qt's accessibility
   bridge, through which an accessibility service reads the app's screens and acts on
-  its controls, is on only when TalkBack's explore-by-touch was on when the app
-  opened (see "Navigation, accessibility and replay" for why):
-  - Switch Access, Voice Access and Select to Speak, and TalkBack with explore-by-touch
-    off, get no labels or named actions from the app. Voice Access's "Show grid" and
-    Switch Access's point scanning still work.
+  its controls, is on only when a screen reader's explore-by-touch (TalkBack's) was
+  on when the app opened (see "Navigation, accessibility and replay" for why):
+  - Unless the bridge is on, Switch Access, Voice Access and Select to Speak, and
+    TalkBack with explore-by-touch off, get no labels or named actions from the app.
+    Voice Access's "Show grid" and Switch Access's point scanning still work.
   - UI automation that reads the accessibility tree sees no app content unless a
     screen reader was on at launch.
   - Turning TalkBack on while the app runs shows a notice, "Reopen DSD-neo to use
@@ -1647,12 +1647,11 @@ exit: … EXIT_SELF status 0 … (activity: second instance in a running process
 The reason and the status are Android's; the summary names the Qt of the build that
 wrote it and says nothing about cleanup. Android 10 keeps no summary.
 
-Each exit is logged once: a launch skips the ones
-an earlier launch logged (their time and pid are kept in
-`noBackupFilesDir/exit-facts-logged`, written only once the write that carried
-the lines and a sync of the host store both succeeded, whichever flush ran them,
-so a launch that dies first or a store that failed does not lose them), so the host
-store does not fill with the same history. Each new
+Each exit is logged once: a launch skips the ones an earlier launch logged (their
+time and pid are kept in `noBackupFilesDir/exit-facts-logged`, written only once
+the write that carried the lines and a sync of the host store both succeeded,
+whichever flush ran them, so a launch that dies first or a store that failed does
+not lose them), so the host store does not fill with the same history. Each new
 segment starts again with the current `process:` and `session starting:` lines.
 The screen, Copy and Share keep the previous run's and this run's `process:` and
 `session starting:` lines at the top, however many records the 2000-row limit
@@ -1783,13 +1782,14 @@ accessibility: bridge off at launch (touch exploration off; accessibility on, 2 
 accessibility: bridge on at launch (touch exploration on; accessibility on, 1 service bound)
 ```
 
-- `; restart notice pending` follows when touch exploration was on but accessibility
-  was not enabled yet, so Qt left the bridge off and the notice is owed.
+- `; restart notice pending` follows when touch exploration was on but Qt left the
+  bridge off, so the notice is owed: accessibility was not enabled yet, or the app
+  could not set Qt's variable and a value left over from elsewhere keeps it off.
 - `; not frozen, so Qt follows later changes` follows when the app could not set
-  Qt's variable: the record before it says `accessibility: setting
-  QT_ANDROID_DISABLE_ACCESSIBILITY failed (errno N); …`. Qt then turns the bridge on
-  and off with any accessibility service, as it did before #782, and the edges below
-  read `…; the bridge is not frozen, so Qt follows it`.
+  Qt's variable and no value was left over: the record before it says
+  `accessibility: setting QT_ANDROID_DISABLE_ACCESSIBILITY failed (errno N); …`. Qt
+  then turns the bridge on and off with any accessibility service, as before #782,
+  and the edges below read `…; the bridge is not frozen, so Qt follows it`.
 
 Later changes are recorded as they happen: `accessibility: touch exploration turned
 on; the bridge stays off until the app restarts` (TalkBack turned on after launch),
@@ -1937,15 +1937,15 @@ construction is also covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
 A screen reader reaches them through Qt's accessibility bridge, which the app turns
-on only when TalkBack's explore-by-touch is on at launch (#782). No other
-accessibility service gets app content: Switch Access, Voice Access, Select to
-Speak, and apps that bind a service for other reasons, such as remote-control or
-call-recording apps. Qt 6.11.2 turns the bridge on for any of them, and each item
-it shows or hides then costs Android's main thread a task that makes 8 blocking
-round trips to Qt's thread. A scan hopping between targets raised dozens a second,
-so the main thread fell more than a minute behind: the dim, Stop and Start waited,
-and Android reported the app not responding. What that costs those services' users
-is under "Known limits".
+on only when a screen reader's explore-by-touch (TalkBack's) is on at launch (#782).
+Unless the bridge is already on, no other accessibility service gets app content:
+Switch Access, Voice Access, Select to Speak, and apps that bind a service for other
+reasons, such as remote-control or call-recording apps. Qt 6.11.2 turns the bridge on
+for any of them, and each item it shows or hides then costs Android's main thread a
+task that makes 8 blocking round trips to Qt's thread. A scan hopping between targets
+raised dozens a second, so the main thread fell more than a minute behind: the dim,
+Stop and Start waited, and Android reported the app not responding. What that costs
+those services' users is under "Known limits".
 Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
 The app's effective theme controls system-bar icons. Expanded windows use a
 navigation rail; short Monitor windows keep frequent controls above Stop.
