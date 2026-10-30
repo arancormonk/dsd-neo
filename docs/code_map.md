@@ -9330,17 +9330,22 @@ Qt Quick frontend (`src/ui/qt`):
   are hidden in their places and `Accessible.ignored`. Hero and strip headlines (issue #773, `Util.callHeadline()`): a
   talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
   `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
-  (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside the
-  strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
+  (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside
+  the strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
   and the ENC and EMERGENCY tags, so at phone width it can yield (decided limit; the headline still names the other
-  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
-  `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever
-  it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). The painted
-  hero headline (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name
-  the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a
-  private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio
-  (below). Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
-  (`test_slot_kind_and_labels()`). `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
+  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
+  alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
+  headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
+  (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name the radio:
+  **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a private call,
+  and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio (below).
+  Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
+  (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
+  scan rotation that has visited a two-slot carrier (`rotationReservesStrip`, latched by handlers on
+  `scanRotationActive` and `twoSlotCarrier`, cleared when the rotation ends or the decoder's `running` changes) the host
+  stays, blank, on single-slot targets, so the hops never move Hold, Avoid and Next, the list or the tier (issue #782).
+  Only the panel follows the carrier, and `stripHeight` reads the same `stripPlaceHeld` the host shows. `twoSlotCarrier`
+  mirrors `dsd_state::tdma_carrier`, the decoder's
   own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
   bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
   RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,
@@ -9357,7 +9362,8 @@ Qt Quick frontend (`src/ui/qt`):
   cutting its label short. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
   `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
-  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`, `tst_monitor_layout_budget.qml` `test_two_slot_*`),
+  `UI_QT_QML_A11Y_CHURN` (`test_d_two_slot_hops_leave_the_monitor_still`).
 - Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
   (`monitorLiveStrip`: the second-slot strip, then the scan controls, each only when the session has them), one
   `ListView` (`recentCallsList`), the call actions and Stop. The list is the only scrolling surface: its header

@@ -141,6 +141,7 @@ Item {
             m("uiMessage", "");
             m("siteLine", "");
             m("tetraCodecText", "");
+            m("siteProtocol", "");
             testContext.setPrefs("monitorDetailsExpanded", false);
             Ui.Theme.resetFontScale();
             item("monitorReceiverSheet").visible = false;
@@ -377,6 +378,115 @@ Item {
                 compare(hero.mapToItem(tc.monitor, 0, 0).y, heroY);
                 compare(tc.list.mapToItem(tc.monitor, 0, 0).y, listTop);
             }
+        }
+
+        // Issue #782: a scan rotation that mixes two-slot DMR with single-slot
+        // NXDN and P25 targets. Once it has visited a two-slot carrier the slot
+        // strip's place stays reserved, so the hops move nothing: not the tier,
+        // not the header, not the list, and not Hold, Avoid or Next, which sit
+        // under the strip. Only the slot's own content follows the carrier.
+        function hopTo(i) {
+            var protocol = ["DMR", "NXDN", "P25"][i % 3];
+            testContext.publishTarget({twoSlotCarrier: protocol === "DMR", siteProtocol: protocol, scanTargetOrdinal: (i % 3) + 1});
+        }
+        function sceneY(name) {
+            return item(name).mapToItem(null, 0, 0).y;
+        }
+        function test_two_slot_hops_never_move_the_screen_data() {
+            return [{tag: "phone", width: 360, height: 690, scale: 1},
+                    {tag: "tester", width: 411, height: 914, scale: 1},
+                    {tag: "large", width: 411, height: 780, scale: 1.6},
+                    {tag: "landscape", width: 640, height: 360, scale: 1}];
+        }
+        function test_two_slot_hops_never_move_the_screen(data) {
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setStrip(false, true);
+            settle();
+            hopTo(0);
+            settle();
+            tc.list.positionViewAtBeginning();
+            settle();
+            var buttons = ["scanHoldButton", "scanAvoidButton", "scanNextButton"];
+            var held = {tier: tc.monitor.tier, wide: tc.monitor.wideHeaderActions, strip: tc.monitor.stripHeight, listY: tc.list.y, listHeight: tc.list.height};
+            var scene = buttons.map(function (name) { return item(name).mapToItem(null, 0, 0); });
+            var label = item("otherSlotLabel");
+            for (var i = 1; i <= 12; ++i) {
+                hopTo(i);
+                settle();
+                var at = "hop " + i + " (" + ["DMR", "NXDN", "P25"][i % 3] + ")";
+                compare(tc.monitor.tier, held.tier, at + ": tier");
+                compare(tc.monitor.wideHeaderActions, held.wide, at + ": header actions");
+                compare(tc.monitor.stripHeight, held.strip, at + ": strip budget");
+                compare(tc.list.y, held.listY, at + ": list top");
+                compare(tc.list.height, held.listHeight, at + ": list height");
+                for (var b = 0; b < buttons.length; ++b) {
+                    var now = item(buttons[b]).mapToItem(null, 0, 0);
+                    compare(now.x, scene[b].x, at + ": " + buttons[b] + " x");
+                    compare(now.y, scene[b].y, at + ": " + buttons[b] + " y");
+                }
+                // The slot's truth: "SLOT 2 · idle" on a two-slot carrier and
+                // nothing on a single-slot one.
+                if (i % 3 === 0) {
+                    verify(label.visible, at + ": the idle slot shows");
+                    compare(label.text, "SLOT 2 · idle");
+                } else {
+                    verify(!item("otherSlotPanel").visible, at + ": no slot on a single-slot carrier");
+                    verify(!label.visible, at + ": no slot label on a single-slot carrier");
+                }
+            }
+        }
+        // A second call on the other slot shows whatever the carrier is known to
+        // be, in the same reserved place.
+        function test_two_slot_hops_show_an_active_other_slot() {
+            setStrip(false, true);
+            hopTo(0);
+            settle();
+            var holdY = sceneY("scanHoldButton");
+            hopTo(1);
+            setCall(2, 2);
+            setCall(1, 2);
+            settle();
+            verify(item("otherSlotPanel").visible, "an active second call shows on a single-slot carrier");
+            verify(item("otherSlotSkip").visible);
+            compare(item("otherSlotLabel").text, "SLOT 2");
+            compare(sceneY("scanHoldButton"), holdY);
+            m("slot2CallState", 0);
+            settle();
+            verify(!item("otherSlotPanel").visible, "the strip goes with the call on a single-slot carrier");
+            compare(sceneY("scanHoldButton"), holdY);
+        }
+        // The reservation lasts for the rotation: once it ends, or before a
+        // rotation has seen a two-slot carrier, the strip follows the carrier.
+        function test_two_slot_reservation_ends_with_the_rotation() {
+            setStrip(false, true);
+            settle();
+            hopTo(1);
+            settle();
+            var unreserved = tc.monitor.stripHeight;
+            compare(unreserved, item("scanControlsRow").height, "no strip before a two-slot carrier");
+            hopTo(0);
+            hopTo(2);
+            settle();
+            var reserved = tc.monitor.stripHeight;
+            verify(reserved > unreserved, "a single-slot hop keeps the place after a two-slot one");
+            m("scanRotationActive", false);
+            settle();
+            compare(tc.monitor.stripHeight, 0, "no rotation, no single-slot strip");
+            m("scanRotationActive", true);
+            settle();
+            compare(tc.monitor.stripHeight, unreserved, "a new rotation starts unreserved");
+            hopTo(0);
+            settle();
+            compare(tc.monitor.stripHeight, reserved);
+            hopTo(1);
+            settle();
+            compare(tc.monitor.stripHeight, reserved);
+            testContext.setHostRunning(false);
+            testContext.setHostRunning(true);
+            settle();
+            compare(tc.monitor.stripHeight, unreserved, "a new session starts unreserved");
         }
 
         // An empty summary keeps its line: the disclosure's height, which the

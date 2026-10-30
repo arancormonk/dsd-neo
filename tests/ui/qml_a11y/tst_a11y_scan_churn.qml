@@ -242,6 +242,38 @@ Item {
             keys.visible = false;
         }
 
+        // A rotation that mixes two-slot DMR with single-slot NXDN and P25 keeps the monitor's layout still once it
+        // has visited a two-slot carrier: the slot strip's place stays reserved, so the scan buttons and the call
+        // list never move, and no geometry change reaches an accessibility client on a hop. The slot label itself
+        // comes and goes with the carrier, which is the slot's truth, and is the one thing allowed to show or hide.
+        function test_d_two_slot_hops_leave_the_monitor_still() {
+            var monitor = findChild(app, "monitorScreen");
+            verify(monitor !== null && monitor.visible, "the monitor is on screen");
+            var label = findChild(monitor, "otherSlotLabel");
+            var still = ["scanHoldButton", "scanAvoidButton", "scanNextButton", "recentCallsList"].map(function (name) {
+                var found = findChild(monitor, name);
+                verify(found !== null && found.visible, name + " must be on screen");
+                return found;
+            });
+            // init() published reading(0), a DMR target, so the rotation has already visited a two-slot carrier.
+            verify(label.visible, "the strip shows on the two-slot carrier");
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= hops; ++i) {
+                testContext.publishTarget(reading(i));
+                compare(label.visible, i % 3 === 0, "hop " + i + ": the slot label follows the carrier");
+            }
+            var counts = testContext.accessibilityCount();
+            for (var item of still)
+                compare(testContext.accessibilityCountWithin(item, "LocationChanged"), 0, item.objectName + ": "
+                        + JSON.stringify(counts.chains));
+            var shown = showHide(app.contentItem) - showHide(label);
+            compare(shown, 0, "only the slot label shows or hides: " + churn(counts));
+            // The label hides on every hop away from DMR (Qt reports its return as a creation, which Android does not
+            // forward), and never more than once per carrier change.
+            var changes = 2 * Math.floor(hops / 3);
+            verify(showHide(label) >= changes / 2 && showHide(label) <= changes, churn(counts));
+        }
+
         // The control for case B: hops that pass through the defaults first, as every hop did before the fix, flood
         // the closed sheets the root fix quietens. So case B cannot pass because the hops stopped reaching these
         // sheets. It guards the screens against a publication that passes through the defaults; whether production

@@ -85,6 +85,31 @@ Item {
     // calls coming and going never move the screen below it, and shown for an active second call whatever the
     // carrier is known to be. With no call it stands for slot 2; with slot 2 leading, for slot 1.
     readonly property bool stripVisible: metrics.twoSlotCarrier || otherActive
+    // A scan rotation that mixes two-slot and single-slot carriers (issue #782): once it has visited a two-slot one,
+    // the strip's place stays reserved for the rest of the rotation, empty on a single-slot carrier, so the hops never
+    // move the scan buttons under it, the list or the tier. Set by the handlers below, never by a binding on itself;
+    // the rotation ending and a new session clear it.
+    property bool rotationReservesStrip: false
+    readonly property bool stripRotating: metrics.scanRotationActive
+    readonly property bool stripTwoSlot: metrics.twoSlotCarrier
+    function noteStripReserve() {
+        if (!stripRotating)
+            rotationReservesStrip = false;
+        else if (stripTwoSlot)
+            rotationReservesStrip = true;
+    }
+    onStripRotatingChanged: noteStripReserve()
+    onStripTwoSlotChanged: noteStripReserve()
+    Component.onCompleted: noteStripReserve()
+    Connections {
+        target: decoderHost
+        function onRunningChanged() {
+            screen.rotationReservesStrip = false;
+            screen.noteStripReserve();
+        }
+    }
+    // The strip's place in the layout: what the budget measures and what the scene shows, from this one value.
+    readonly property bool stripPlaceHeld: stripVisible || rotationReservesStrip
     readonly property bool stripIdle: !otherActive
     readonly property int stripSlot: heroSlot === 2 ? 1 : 2
     readonly property string otherName: otherSlot === 1 ? metrics.slot1CallName : otherSlot === 2 ? metrics.slot2CallName : ""
@@ -212,7 +237,9 @@ Item {
     //   5  even 4 leaves less than one row: only Stop stays put and everything
     //      else scrolls with the calls, so every control stays reachable.
     // Only the size, the fonts and which live-strip parts the session shows feed
-    // it, never call content, so traffic never moves the screen.
+    // it, never call content, so traffic never moves the screen. A scan's hops
+    // between two-slot and single-slot carriers do not move it either: the
+    // rotation keeps the slot strip's place (rotationReservesStrip).
     readonly property int tier: {
         var two = 2 * callRowHeight;
         for (var t = 0; t <= 4; ++t) {
@@ -242,8 +269,8 @@ Item {
     readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
     readonly property real stripHeight: {
         var parts = [];
-        if (stripVisible)
-            parts.push(otherSlotPanel.height);
+        if (stripPlaceHeld)
+            parts.push(otherSlotHost.height);
         if (metrics.scanRotationActive || screen.scanPaused)
             parts.push(scanControls.height);
         return columnHeight(parts);
@@ -929,110 +956,122 @@ Item {
         // The concurrent TDMA call on the non-hero slot: identity plus its own
         // call controls, so a second conversation is never invisible or untouchable.
         // On a two-slot carrier the strip holds its place while that slot is idle.
-        UiPanel {
-            id: otherSlotPanel
+        // The host holds the place itself: while it is shown the scan controls
+        // below never move, and during a rotation that has visited a two-slot
+        // carrier it stays, blank, on a single-slot one (issue #782). A plain
+        // Item, so holding the place says nothing to an accessibility client;
+        // only the panel inside comes and goes with the slot.
+        Item {
+            id: otherSlotHost
+            objectName: "otherSlotHost"
             width: parent.width
-            objectName: "otherSlotPanel"
-            visible: screen.stripVisible
             height: 56
+            visible: screen.stripPlaceHeld
 
-            MicroLabel {
-                id: otherSlotLabel
-                objectName: "otherSlotLabel"
-                anchors.left: parent.left
-                anchors.leftMargin: Theme.cardPadding
-                anchors.verticalCenter: parent.verticalCenter
-                text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
-            }
+            UiPanel {
+                id: otherSlotPanel
+                anchors.fill: parent
+                objectName: "otherSlotPanel"
+                visible: screen.stripVisible
 
-            Text {
-                id: otherIdentityText
-                objectName: "otherSlotIdentity"
-                visible: !screen.stripIdle
-                anchors.left: otherSlotLabel.right
-                anchors.leftMargin: 10
-                anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                text: screen.otherIdentity
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-                elide: Text.ElideRight
-            }
+                MicroLabel {
+                    id: otherSlotLabel
+                    objectName: "otherSlotLabel"
+                    anchors.left: parent.left
+                    anchors.leftMargin: Theme.cardPadding
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+                }
 
-            // The call's name outranks its tag on this narrow line: the tag shows only
-            // where the whole identity still fits beside it and the ENC and EMERGENCY
-            // tags, which keep their places. Measured from the identity's natural
-            // width and the siblings' fixed edges, so no width binding loops.
-            PrivateTag {
-                id: otherPrivateTag
-                objectName: "otherPrivateTag"
-                readonly property real room: otherSkip.x - 10 - (otherEncTag.visible ? otherEncTag.width + 10 : 0) - (otherEmergencyTag.visible ? otherEmergencyTag.width + 10 : 0) - (otherSlotLabel.x + otherSlotLabel.width + 10)
-                visible: !screen.stripIdle && screen.otherPrivate && otherIdentityText.implicitWidth + 10 + implicitWidth <= room
-                anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                Text {
+                    id: otherIdentityText
+                    objectName: "otherSlotIdentity"
+                    visible: !screen.stripIdle
+                    anchors.left: otherSlotLabel.right
+                    anchors.leftMargin: 10
+                    anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: screen.otherIdentity
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(14)
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                    elide: Text.ElideRight
+                }
 
-            EmergencyTag {
-                id: otherEmergencyTag
-                objectName: "otherEmergencyTag"
-                visible: !screen.stripIdle && screen.otherEmergency
-                anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                // The call's name outranks its tag on this narrow line: the tag shows only
+                // where the whole identity still fits beside it and the ENC and EMERGENCY
+                // tags, which keep their places. Measured from the identity's natural
+                // width and the siblings' fixed edges, so no width binding loops.
+                PrivateTag {
+                    id: otherPrivateTag
+                    objectName: "otherPrivateTag"
+                    readonly property real room: otherSkip.x - 10 - (otherEncTag.visible ? otherEncTag.width + 10 : 0) - (otherEmergencyTag.visible ? otherEmergencyTag.width + 10 : 0) - (otherSlotLabel.x + otherSlotLabel.width + 10)
+                    visible: !screen.stripIdle && screen.otherPrivate && otherIdentityText.implicitWidth + 10 + implicitWidth <= room
+                    anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-            EncTag {
-                id: otherEncTag
-                visible: !screen.stripIdle && screen.otherEnc
-                anchors.right: otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                EmergencyTag {
+                    id: otherEmergencyTag
+                    objectName: "otherEmergencyTag"
+                    visible: !screen.stripIdle && screen.otherEmergency
+                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-            TextMetrics {
-                id: otherSkipMetrics
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(15)
-                font.weight: Font.DemiBold
-                text: otherSkip.text
-            }
+                EncTag {
+                    id: otherEncTag
+                    visible: !screen.stripIdle && screen.otherEnc
+                    anchors.right: otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-            OutlineButton {
-                id: otherSkip
-                objectName: "otherSlotSkip"
-                anchors.right: otherMore.left
-                anchors.rightMargin: 4
-                anchors.verticalCenter: parent.verticalCenter
-                // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
-                width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
-                maximumLineCount: 1
-                implicitHeight: 48
-                height: 48
-                text: qsTr("Skip")
-                accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
-                // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
-                visible: !screen.stripIdle
-                enabled: decoderHost.running
-                onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
-            }
+                TextMetrics {
+                    id: otherSkipMetrics
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(15)
+                    font.weight: Font.DemiBold
+                    text: otherSkip.text
+                }
 
-            IconButton {
-                id: otherMore
-                objectName: "otherSlotMore"
-                anchors.right: parent.right
-                anchors.rightMargin: 4
-                anchors.verticalCenter: parent.verticalCenter
-                width: 48
-                height: 48
-                icon: "more"
-                accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
-                visible: !screen.stripIdle
-                enabled: decoderHost.running
-                onClicked: otherSlotMenu.openForOtherSlot()
+                OutlineButton {
+                    id: otherSkip
+                    objectName: "otherSlotSkip"
+                    anchors.right: otherMore.left
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
+                    width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
+                    maximumLineCount: 1
+                    implicitHeight: 48
+                    height: 48
+                    text: qsTr("Skip")
+                    accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                    // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
+                    visible: !screen.stripIdle
+                    enabled: decoderHost.running
+                    onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
+                }
+
+                IconButton {
+                    id: otherMore
+                    objectName: "otherSlotMore"
+                    anchors.right: parent.right
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 48
+                    height: 48
+                    icon: "more"
+                    accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    visible: !screen.stripIdle
+                    enabled: decoderHost.running
+                    onClicked: otherSlotMenu.openForOtherSlot()
+                }
             }
         }
 
