@@ -135,6 +135,7 @@ qt_add_resources(
         qml/LevelMeter.qml
         qml/LogoMark.qml
         qml/MicroLabel.qml
+        qml/ReadableText.qml
         qml/ModalSheet.qml
         qml/ActionMenu.qml
         qml/MonitorScreen.qml

@@ -767,3 +767,33 @@ function deleteFailuresText(count, reason) {
                            : qsTr("%1 recordings couldn't be deleted.").arg(countText(count))
     return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
 }
+
+// Issue #782: the words a group of plain Text items shows, for the one
+// accessible node that reads them (a reading's label and value, a strip of
+// readings). Each visible child's text in order, the parts of a nested row
+// joined by a space and the group's children by ", ". A child that names
+// itself (a button, with its accessibleName) is read on its own and adds
+// nothing here, nor do dots and other items without text. Read from a
+// binding, it follows each child's visibility and text.
+function shownText(item) {
+    return shownParts(item, ", ")
+}
+
+function shownParts(item, sep) {
+    var parts = []
+    var kids = item ? item.children : []
+    for (var i = 0; i < kids.length; ++i) {
+        var kid = kids[i]
+        if (!kid.visible || kid.accessibleName !== undefined)
+            continue
+        if (kid.textFormat !== undefined && kid.text !== undefined) {
+            if (String(kid.text).length > 0)
+                parts.push(String(kid.text))
+        } else {
+            var inner = shownParts(kid, " ")
+            if (inner.length > 0)
+                parts.push(inner)
+        }
+    }
+    return parts.join(sep)
+}
