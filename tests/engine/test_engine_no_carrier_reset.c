@@ -943,6 +943,17 @@ static int g_guard_busy_once = 0;
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __real_p25_sm_tick_guard_try_enter(void);
 int __wrap_p25_sm_tick_guard_try_enter(void);
+void __real_p25_sm_tick_guard_enter(void);
+void __wrap_p25_sm_tick_guard_enter(void);
+
+/* Every blocking take of the guard, counted. */
+static int g_guard_enters = 0;
+
+void
+__wrap_p25_sm_tick_guard_enter(void) {
+    g_guard_enters++;
+    __real_p25_sm_tick_guard_enter();
+}
 
 int
 __wrap_p25_sm_tick_guard_try_enter(void) {
@@ -2456,7 +2467,11 @@ test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing(void)
     (void)dsd_engine_channel_scan_pause(opts, state, 1);
     const uint32_t carrier_seq = state->carrier_seq;
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    const int guard_enters = g_guard_enters;
     rc |= expect_true("in-place-landing-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    /* Gate review: the scan no longer owns the tuner, so trunking may (t), with the watchdog ticking: the landing's
+       boundary holds the P25 SM tick guard, as a tune's does, and lets it go. */
+    rc |= expect_true("in-place-landing-guarded", g_guard_enters == guard_enters + 1 && !p25_tick_guard_is_held());
     rc |=
         expect_true("in-place-landing-commits-nothing", state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL
                                                             && opts->scanner_mode == 0 && state->lcn_scan_paused == 1);

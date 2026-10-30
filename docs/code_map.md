@@ -6851,7 +6851,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   input switch can run beside the watchdog's ticks, so the boundary holds the P25 SM tick guard from its first
   inspection of the state machines through its last step, taking it when the caller does not hold it (`guard_held`
   must be exact: the guard is not re-entrant); a scan step and a replay retune run where no recovery tick runs,
-  inspect no state machine and take none. Its order is fixed:
+  inspect no state machine and take none. An untyped `-Y` step that lands after its scan left the tuner is a tune's
+  boundary: trunking may own the tuner by then. Its order is fixed:
   1. The voice channel a trunking state machine followed, if one is held, is released while its calls are still active
      (`carrier_boundary_release_followed()`): the P25 or DMR state machine comes to rest on its control channel without
      tuning, as trunk scan hands a carrier back (the P25 release drains the Phase 2 playout: each queued frame plays

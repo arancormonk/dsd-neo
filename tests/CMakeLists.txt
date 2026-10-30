@@ -6882,6 +6882,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_last_applied_freq"
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=processFrame"
+            "-Wl,--wrap=p25_sm_tick_guard_enter"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
             ${LIBS}

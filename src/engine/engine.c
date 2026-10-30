@@ -1571,12 +1571,14 @@ untyped_settled_row_is_current(const dsd_opts* opts, const dsd_state* state, con
 
 /* A settled step whose row is no longer the current scan's (dsd_engine_scan_untyped_poll()). A landing still moved the
    receiver, to a carrier no row or pause boundary has seen (a pause in place forgot only the carrier it left): the
-   boundary runs for the move, so nothing decoded on the old carrier carries over. A resume whose own row it was
-   (issue #671: its session, its list) can no longer land, so the scan goes back to paused. */
+   boundary runs for the move, so nothing decoded on the old carrier carries over. It is a tune's boundary, under the
+   P25 SM tick guard: the scan left the tuner, which trunking may have taken since (`t`), its recovery ticks running.
+   A resume whose own row it was (issue #671: its session, its list) can no longer land, so the scan goes back to
+   paused. The engine loop's poll holds no guard. */
 static void
 untyped_settle_stale_row(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_settled* settled, int polled) {
     if (polled == DSD_MANUAL_TUNE_LANDED) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
     }
     if (state->lcn_scan_resume_pending && !dsd_channel_modes_present(state)
         && settled->scan_session == state->lcn_scan_session) {
