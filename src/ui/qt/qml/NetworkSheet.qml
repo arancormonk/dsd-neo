@@ -99,9 +99,10 @@ ModalSheet {
                         required property string line
                         width: parent.width
                         text: line
-                        opacity: index < sectionRows.shown ? 1 : 0
+                        // A row being removed has index -1 for an instant: it stays hidden and unnamed.
+                        opacity: index >= 0 && index < sectionRows.shown ? 1 : 0
                         Accessible.ignored: !navigationAllowed || !visible || sectionRows.live === 0
-                        Accessible.name: navigationAllowed && visible && index < sectionRows.live ? text : ""
+                        Accessible.name: navigationAllowed && visible && index >= 0 && index < sectionRows.live ? text : ""
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         font.family: Theme.mono

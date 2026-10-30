@@ -557,6 +557,8 @@ Item {
             // A removed row has left the sheet when it hides, so it is counted by type, not within the sheet.
             compare(counts.types.ObjectHide || 0, 2, "each departed row hides as it goes: " + JSON.stringify(counts.chains));
             compare(counts.types.ObjectShow || 0, 0, JSON.stringify(counts.chains));
+            // Unnamed once as it leaves, and not named again as it goes: a row TalkBack is on would read it out.
+            compare(counts.types.NameChanged || 0, 2, "one rename a departed row: " + JSON.stringify(counts.chains));
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];
@@ -633,12 +635,10 @@ Item {
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
-            // Two rows go on each hop to the six-neighbour target and come back on the next.
-            var changed = 2 * hops;
-            var shows = testContext.accessibilityCountWithin(sheet, "ObjectShow");
-            var hides = testContext.accessibilityCountWithin(sheet, "ObjectHide");
-            verify(shows <= changed / 2 && hides <= changed / 2, shows + " shows and " + hides + " hides for " + hops
-                   + " hops: " + JSON.stringify(counts.chains));
+            // Two rows go on each hop to the six-neighbour target and come back on the next. A removed row has left
+            // the sheet when it hides, so shows and hides are counted by type.
+            compare(counts.types.ObjectHide || 0, 2 * hops / 2, "two hides a shrink: " + JSON.stringify(counts.chains));
+            compare(counts.types.ObjectShow || 0, 2 * hops / 2, "two shows a grow: " + JSON.stringify(counts.chains));
             rows = neighbourRows(sheet);
             compare(rows.length, targets[0].length);
             verify(rows[3] === row, "the row a listener is on stays across the hops");
@@ -738,11 +738,16 @@ Item {
             var text = second.children[0];
             var said = text.text;
             verify(said.indexOf("Slot 2") === 0, said);
+            testContext.startAccessibilityCount();
             testContext.publishTarget({decryptionSlots: slots(1)});
             // Before the event loop runs again.
             verify(!second.visible, "the row of the slot that left is hidden at once");
             compare(text.text, said, "and does not read an empty slot");
             tryCompare(rows, "count", 1);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            // Its text and its button hide once, as it hides; it is not shown again as it goes.
+            compare(counts.types.ObjectHide || 0, 2, JSON.stringify(counts.chains));
             Ui.Navigation.modals = [];
         }
 

@@ -240,8 +240,9 @@ ModalSheet {
             id: slotRow
             required property int index
             // A row past the end of a shrinking list goes at the end of the turn;
-            // until then it is hidden, and keeps reading the slot it last read.
-            visible: slotRow.index < slotRows.shown
+            // until then it is hidden, and keeps reading the slot it last read. Its
+            // index is -1 for an instant as it goes, and it stays hidden then too.
+            visible: slotRow.index >= 0 && slotRow.index < slotRows.shown
             // The slot last read, kept where a binding does not follow it.
             readonly property var read: ({})
             onSlotDataChanged: read.slot = slotData
