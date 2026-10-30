@@ -386,7 +386,7 @@ Item {
 
                 spacing: 6
 
-                Text {
+                ReadableText {
                     objectName: "spectrumCenterReadout"
                     // Never elided: this is the frequency the radio is on, and a
                     // readout that drops a digit is worse than one that is tight.
@@ -429,7 +429,7 @@ Item {
             border.width: 1
             border.color: screen.viewOnly ? Theme.encBorder : screen.sweeping ? Theme.cyan : Theme.panelBorder
 
-            Text {
+            ReadableText {
                 id: statusLabel
 
                 anchors.centerIn: parent
@@ -498,8 +498,17 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 2
 
+                // One item for a screen reader (issue #782): the sync, SNR, offset
+                // and talkgroup as shown, read where it is reached. Its readings
+                // rename it as they move, which Android speaks only while it is
+                // focused; the line's own place never moves with them.
                 Row {
                     id: statusLine
+
+                    Accessible.role: Accessible.StaticText
+                    readonly property bool navigationAllowed: Navigation.allows(statusLine)
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.name: Accessible.ignored ? "" : Util.shownText(statusLine)
 
                     // Wider than the line, the talkgroup gives way first, then
                     // the offset; the sync and SNR are what the strip is for.
@@ -752,7 +761,7 @@ Item {
                 viewSpanHz: spectrum.viewSpanHz
             }
 
-            Text {
+            ReadableText {
                 anchors.centerIn: waterfall
                 visible: !spectrum.hasData
                 text: qsTr("Waiting for signal data…")
@@ -928,6 +937,8 @@ Item {
                             activeFocusOnTab: Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Start or stop frequency sweep")
+                            // The step it sweeps by, which its label shows.
+                            Accessible.description: sweepLabel.text
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
                             Keys.onSpacePressed: activate()
@@ -1225,7 +1236,7 @@ Item {
         // Where the way out would be, why there is none: a replay is a recording
         // of where the receiver went, and nothing here can move it. The engine's
         // own words, so this and a refused command never disagree.
-        Text {
+        ReadableText {
             id: replayReason
 
             objectName: "spectrumReplayReason"
@@ -1263,7 +1274,7 @@ Item {
             border.width: 1
             border.color: Theme.panelBorder
 
-            Text {
+            ReadableText {
                 id: toastLabel
 
                 anchors.centerIn: parent
@@ -1430,7 +1441,8 @@ Item {
 
         objectName: "spectrumExploreConfirm"
 
-        Text {
+        ReadableText {
+            heading: true
             width: parent.width
             text: qsTr("Explore from here?")
             font.family: Theme.sans
@@ -1443,7 +1455,7 @@ Item {
         // Names what stops, and — the part people actually worry about —
         // what does not. A scan pauses rather than stops (issue #671), and
         // Resume scan is the way back.
-        Text {
+        ReadableText {
             objectName: "spectrumExploreConfirmText"
             width: parent.width
             text: metrics.scanKind === 2 ? qsTr("This pauses the scan. Resume scan picks it up again; the scan list itself is unchanged.") : metrics.scanKind === 1 ? qsTr("This pauses stepping through the channel list. Resume scan picks it up again; the saved system itself is unchanged.") : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")

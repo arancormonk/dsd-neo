@@ -448,7 +448,8 @@ Item {
                 anchors.top: parent.top
                 spacing: 3
 
-                Text {
+                ReadableText {
+                    heading: true
                     width: parent.width
                     objectName: "monitorHeaderTitle"
                     text: screen.systemName
@@ -459,7 +460,7 @@ Item {
                     elide: Text.ElideRight
                 }
 
-                Text {
+                ReadableText {
                     width: parent.width
                     objectName: "scanTargetHeader"
                     text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
@@ -476,7 +477,7 @@ Item {
                 // decimal place -- so a reader moving between the two surfaces reads
                 // the same line. Which budgets appear at all was decided in
                 // app-control; a zero here means "the view withheld it".
-                Text {
+                ReadableText {
                     width: parent.width
                     objectName: "scanTimingRow"
                     // Kept for the whole rotation, blank between stays (#718): the view
@@ -701,6 +702,17 @@ Item {
             width: parent.width
             height: screen.heroCompact ? screen.heroCompactHeight : screen.heroFullHeight
             readonly property int padding: screen.heroCompact ? 12 : 14
+            // The call it captions as one item for a screen reader (issue #782):
+            // the name the canvas draws, then its subline (ids, tags, algorithm,
+            // channel), or what it is waiting for. The duration reads on its
+            // own, so the seconds counting do not rename this.
+            Accessible.role: Accessible.StaticText
+            readonly property bool navigationAllowed: Navigation.allows(hero)
+            Accessible.ignored: !navigationAllowed || !visible
+            Accessible.name: Accessible.ignored ? "" : screen.heroSlot === 0 ? heroWaitingText.text
+                : [screen.heroHeadline, Util.shownText(heroSubline)].filter(function (part) {
+                    return part.length > 0;
+                }).join(", ")
 
             // Faint diagonal cyan→magenta wash over the panel.
             Rectangle {
@@ -775,6 +787,7 @@ Item {
                     }
 
                     Text {
+                        id: heroWaitingText
                         objectName: "heroWaiting"
                         visible: screen.heroSlot === 0
                         width: parent.width
@@ -789,7 +802,7 @@ Item {
                         color: Theme.textSubdued
                     }
 
-                    Text {
+                    ReadableText {
                         id: heroCompactDuration
                         objectName: "heroCompactDuration"
                         anchors.right: parent.right
@@ -927,7 +940,7 @@ Item {
                 active: screen.heroActive
             }
 
-            Text {
+            ReadableText {
                 objectName: "heroDuration"
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
@@ -985,10 +998,14 @@ Item {
                     text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
                 }
 
-                Text {
+                ReadableText {
                     id: otherIdentityText
                     objectName: "otherSlotIdentity"
                     visible: !screen.stripIdle
+                    // With its tags, which sit beside it (issue #782).
+                    Accessible.name: Accessible.ignored ? "" : [text, otherEmergencyTag.visible ? Util.shownText(otherEmergencyTag) : "", otherEncTag.visible ? Util.shownText(otherEncTag) : ""].filter(function (part) {
+                        return part.length > 0;
+                    }).join(", ")
                     anchors.left: otherSlotLabel.right
                     anchors.leftMargin: 10
                     anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
@@ -1259,7 +1276,7 @@ Item {
             width: recentList.width
             height: recentList.count === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
 
-            Text {
+            ReadableText {
                 id: emptyText
                 anchors.centerIn: parent
                 width: parent.width - 2 * Theme.cardPadding
@@ -1441,7 +1458,7 @@ Item {
         // The engine's answer to the last command ("Output: Muted", "Output:
         // open failed") — without it a tap that failed inside the engine reads
         // as a button that did nothing.
-        Text {
+        ReadableText {
             width: parent.width
             visible: metrics.uiMessage.length > 0
             text: metrics.uiMessage
@@ -1451,6 +1468,12 @@ Item {
             elide: Text.ElideRight
         }
 
+        // Each group of readings below (a label and its value, a strip of
+        // them) is one item for a screen reader, named by the words it shows
+        // (issue #782); its buttons name themselves. A reading that moves
+        // renames its group, which Android speaks only while that group is
+        // focused; the labels and values inside stay plain, so a value whose
+        // width changes moves nothing a screen reader is told about.
         Column {
             id: detailsColumn
             objectName: "monitorDetails"
@@ -1536,6 +1559,11 @@ Item {
             // them, as in the design — separator glyphs would strand at a line head.
             Flow {
                 objectName: "signalStrip"
+                id: signalStripGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(signalStripGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(signalStripGroup)
                 width: parent.width
                 visible: metrics.radioInput
                 spacing: 10
@@ -1659,6 +1687,11 @@ Item {
             // Decode quality also applies to PCM, network and file sources.
             Flow {
                 objectName: "decodeQualityRow"
+                id: decodeQualityRowGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(decodeQualityRowGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(decodeQualityRowGroup)
                 width: parent.width
                 visible: metrics.qualityValid
                 spacing: 10
@@ -1711,6 +1744,11 @@ Item {
             Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorTetra"
+                id: monitorTetraGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorTetraGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraGroup)
 
                 width: parent.width
                 spacing: 5
@@ -1755,6 +1793,11 @@ Item {
             // encryption is on the rows around it.
             Flow {
                 objectName: "monitorTetraSecurity"
+                id: monitorTetraSecurityGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorTetraSecurityGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraSecurityGroup)
 
                 width: parent.width
                 spacing: 5
@@ -1784,6 +1827,11 @@ Item {
             // reading moves under its label rather than off the body.
             Flow {
                 objectName: "monitorTetraChannels"
+                id: monitorTetraChannelsGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorTetraChannelsGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraChannelsGroup)
 
                 width: parent.width
                 spacing: 5
@@ -1855,6 +1903,11 @@ Item {
 
             Flow {
                 objectName: "monitorTetraMmStatus"
+                id: monitorTetraMmStatusGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorTetraMmStatusGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraMmStatusGroup)
 
                 width: parent.width
                 spacing: 5
@@ -1882,6 +1935,11 @@ Item {
 
             Flow {
                 objectName: "monitorTetraCodec"
+                id: monitorTetraCodecGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorTetraCodecGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraCodecGroup)
 
                 width: parent.width
                 spacing: 5
@@ -1924,6 +1982,11 @@ Item {
             Row {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "encLockoutRow"
+                id: encLockoutRowGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(encLockoutRowGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(encLockoutRowGroup)
 
                 spacing: 5
                 visible: metrics.encLockoutCount > 0
@@ -1961,6 +2024,11 @@ Item {
             Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorRxTone"
+                id: monitorRxToneGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorRxToneGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorRxToneGroup)
 
                 width: parent.width
                 spacing: 5
@@ -2003,6 +2071,11 @@ Item {
             Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorToneFilter"
+                id: monitorToneFilterGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorToneFilterGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorToneFilterGroup)
 
                 width: parent.width
                 spacing: 5
@@ -2072,7 +2145,7 @@ Item {
                     onClicked: serviceNamesSheet.openEditor()
                 }
             }
-            Text {
+            ReadableText {
                 objectName: "monitorReceiveStatus"
                 width: parent.width
                 text: metrics.receiveStatus || ""
@@ -2092,6 +2165,11 @@ Item {
             Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorSquelch"
+                id: monitorSquelchGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorSquelchGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorSquelchGroup)
 
                 width: parent.width
                 spacing: 5
@@ -2138,6 +2216,11 @@ Item {
             Flow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorPassband"
+                id: monitorPassbandGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(monitorPassbandGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorPassbandGroup)
 
                 width: parent.width
                 spacing: 5
@@ -2183,6 +2266,11 @@ Item {
             Row {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "scanAvoidRow"
+                id: scanAvoidRowGroup
+                Accessible.role: Accessible.StaticText
+                readonly property bool navigationAllowed: Navigation.allows(scanAvoidRowGroup)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.name: Accessible.ignored ? "" : Util.shownText(scanAvoidRowGroup)
 
                 spacing: 8
                 visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0
