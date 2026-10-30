@@ -279,9 +279,9 @@ CallHistoryTap::slotWalk(int slot, const dsd_app_history_tap_meta& meta) {
     walk.seen = &m_context.seen;
     walk.session = m_context.session;
     walk.sessionLabel = m_context.sessionLabel;
-    // As refresh() attributes: unknown options cannot establish identity.
-    const bool singleSystem = meta.opts_published != 0 && meta.scanner_mode == 0 && meta.trunk_scan_enabled == 0;
-    walk.systemUid = singleSystem ? m_context.sessionUid : QString();
+    // As refresh() attributes: unknown options cannot establish identity, and which rows carry it is each row's own
+    // tuner-owner stamp (row_from_item(), issue #671), not the scan flags when the tap reads the ring.
+    walk.systemUid = meta.opts_published != 0 ? m_context.sessionUid : QString();
     walk.cleared = clear.active && (!clear.pending || m_clearBound[slot]);
     walk.clearedThrough = clear.pushSeq[slot];
     return walk;

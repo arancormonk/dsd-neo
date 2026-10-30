@@ -3055,13 +3055,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     published history rings for a thread that keeps reading while the frontend's polling thread is paused (the Qt
     app's background History capture). `dsd_app_history_tap_copy()` copies one slot's `g_pub` ring into the caller's
     buffer when its `(instance, commit_rev)` differs from the caller's cursor (a cursor that has read nothing copies;
-    a staged-row render alone does not), and fills the options History attribution reads (`scanner_mode`,
-    `trunk_scan_enabled`, and whether options were published) from the published options. The options are read under
-    `ui_opts_snapshot.c`'s lock, then the ring under `ui_snapshot.c`'s `g_mu`, never nested: one memcpy each, no
-    allocation and no I/O under either, and neither touches the single consumer's buffers or sequences. A ring is
-    3.75 MB per slot: one copy holds `g_mu` about 60 us (the publisher's own copy of a changed slot takes as long), a
-    read that finds nothing new 0.06 us (`-O2`, x86-64). Tests: `APP_CONTROL_HISTORY_TAP` (cursor rules, options
-    fields, consumer independence, a publisher racing two taps and the consumer; run it under tsan too).
+    a staged-row render alone does not), and fills what History attribution reads from the published options (whether
+    any were published; which rows carry a saved system's identity is their own `operator_tuned`/`scan_member` stamp,
+    issue #671). The options are read under `ui_opts_snapshot.c`'s lock, then the ring under `ui_snapshot.c`'s `g_mu`,
+    never nested: one memcpy each, no allocation and no I/O under either, and neither touches the single consumer's
+    buffers or sequences. A ring is 3.75 MB per slot: one copy holds `g_mu` about 60 us (the publisher's own copy of a
+    changed slot takes as long), a read that finds nothing new 0.06 us (`-O2`, x86-64). Tests: `APP_CONTROL_HISTORY_TAP`
+    (cursor rules, options fields, consumer independence, a publisher racing two taps and the consumer; run it under
+    tsan too).
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.

@@ -1010,6 +1010,46 @@ test_session_fields_change_together_while_hidden(void) {
            row_attributed(model, 34002U, newSession, exploring, QString()));
 }
 
+/* The tap attributes each row by its own tuner-owner stamp (issue #671), as the GUI's refresh() does, never by the scan
+ * flags in force when it reads the ring: a plain call heard before a scan started keeps the saved system's UID even
+ * when the tap reads it under the scan, a call heard under the scan gains none, and a call heard while the operator
+ * held the tuner is Exploring. */
+void
+test_tap_attributes_by_row_stamp(void) {
+    resetStorage();
+    const QString label = QStringLiteral("Saved system");
+    const QString uid = QStringLiteral("saved-system-uid");
+    CallHistoryModel model;
+    start_tap(model);
+    model.beginSessionOn(label, uid);
+    const qint64 session = model.session();
+    Decoder decoder;
+    gui_ingest(model);
+
+    set_app_state(Qt::ApplicationHidden);
+    expect("row stamp: the tap runs while hidden", model.backgroundCaptureRunningForTest());
+    decoder.commit(0, 35000U, 99U, 1754980000);
+    // A scan starts (a saved system's extra arguments) before the tap reads the ring.
+    decoder.opts->scanner_mode = 1;
+    dsd_app_telemetry_publish_opts_snapshot(decoder.opts.get());
+    decoder.commit(0, 35001U, 99U, 1754980060);
+    decoder.state->event_history_s[0].Event_History_Items[1].scan_member = 1U;
+    decoder.commit(0, 35002U, 99U, 1754980120);
+    decoder.state->event_history_s[0].Event_History_Items[1].operator_tuned = 1U;
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+
+    expect("row stamp: every call is in History once", model.count() == 3);
+    expect("row stamp: a call heard before the scan keeps the saved system's identity",
+           row_attributed(model, 35000U, session, label, uid));
+    expect("row stamp: a call heard under the scan gains no saved-system UID",
+           row_attributed(model, 35001U, session, label, QString()));
+    expect("row stamp: a call heard while the operator held the tuner is Exploring",
+           row_attributed(model, 35002U, session, QStringLiteral("Exploring"), QString()));
+}
+
 } // namespace
 
 int
@@ -1048,6 +1088,7 @@ main(int argc, char** argv) {
     test_failed_spill_read_keeps_the_spill();
     test_session_change_while_hidden();
     test_session_fields_change_together_while_hidden();
+    test_tap_attributes_by_row_stamp();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

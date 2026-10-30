@@ -3192,6 +3192,8 @@ test_lock_and_protocol_helpers(void) {
 
 static void
 test_canonical_p25_slot_and_recent_activity(void) {
+    /* One zeroed options block for every render below: a compound literal per call is a frame-sized copy each. */
+    static dsd_opts no_opts;
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);
     state->synctype = DSD_SYNC_P25P2_POS;
@@ -3216,7 +3218,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     crypto.observed_m = 1.1;
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
 
-    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    ui_slot_view slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.canonical_p25 == 1);
     assert(slot.burst == 21);
     assert(slot.target == 1201);
@@ -3224,7 +3226,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     reset_printw_capture();
     ui_slot_render_flags flags = {0};
     ui_render_slot_header_line(state, &slot, &flags);
-    ui_render_slot_vxtra_line(&(dsd_opts){0}, state, &slot, &flags);
+    ui_render_slot_vxtra_line(&no_opts, state, &slot, &flags);
     assert_capture_contains("TGT: [    1201]");
     assert_capture_contains("SRC: [       0]");
     assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
@@ -3260,11 +3262,11 @@ test_canonical_p25_slot_and_recent_activity(void) {
     state->p2_cc_verified = 0U;
 
     state->dmrburstR = 21;
-    ui_slot_view idle_companion = ui_build_slot_view(&(dsd_opts){0}, state, 1);
+    ui_slot_view idle_companion = ui_build_slot_view(&no_opts, state, 1);
     assert(idle_companion.canonical_p25 == 0);
     assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
     reset_printw_capture();
-    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &idle_companion);
+    ui_render_p25_dmr_slot_block(&no_opts, state, &idle_companion);
     assert_capture_contains("TGT: [        ] SRC: [        ]");
     assert(strstr(g_printw_capture, "9999") == NULL);
     assert(strstr(g_printw_capture, "8888") == NULL);
@@ -3279,11 +3281,11 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert(dsd_recent_activity_publish(state, 0U, &old_activity, "old TG: 100; ", now_ms - 4000U) == 1);
     assert(dsd_recent_activity_publish(state, 1U, &fresh_activity, "fresh TG: 200; ", now_ms - 1000U) == 1);
     reset_printw_capture();
-    ui_render_active_channel_list(&(dsd_opts){0}, state, 31U);
+    ui_render_active_channel_list(&no_opts, state, 31U);
     assert(strstr(g_printw_capture, "old") == NULL);
     assert_capture_contains("fresh TG: 200");
     reset_printw_capture();
-    ui_render_p25_dmr_active_channels_line(&(dsd_opts){0}, state);
+    ui_render_p25_dmr_active_channels_line(&no_opts, state);
     assert_capture_contains("|        | fresh TG: 200");
     assert(strstr(g_printw_capture, "RECENT") == NULL);
 
@@ -3293,16 +3295,16 @@ test_canonical_p25_slot_and_recent_activity(void) {
     data_observation.policy_target_id = 2202U;
     data_observation.observed_m = 1.5;
     assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.canonical_p25 == 1);
     assert(slot.burst == 6);
     assert(strcmp(slot.call_banner, " Data") == 0);
 
     assert(dsd_call_state_end(state, 0U, 2.0) == 1);
-    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
     reset_printw_capture();
-    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    ui_render_p25_dmr_slot_block(&no_opts, state, &slot);
     assert_capture_contains("TGT: [        ] SRC: [        ]");
     assert(strstr(g_printw_capture, "1201") == NULL);
 
@@ -3310,11 +3312,11 @@ test_canonical_p25_slot_and_recent_activity(void) {
     state->payload_algid = 0x84;
     state->payload_keyid = 0x2468;
     state->payload_miP = 0x1122334455667788ULL;
-    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.canonical_p25 == 0);
     assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
     reset_printw_capture();
-    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    ui_render_p25_dmr_slot_block(&no_opts, state, &slot);
     assert_capture_contains("HDU");
     assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
 
@@ -3338,12 +3340,12 @@ test_canonical_p25_slot_and_recent_activity(void) {
     observation.frequency_hz = 0;
     observation.observed_m = 3.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.canonical_p25 == 0);
     assert(slot.target == 4321);
     assert(slot.source == 8765);
     reset_printw_capture();
-    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    ui_render_p25_dmr_slot_block(&no_opts, state, &slot);
     assert_capture_contains("TGT: [    4321]");
     assert_capture_contains("SRC: [    8765]");
     dsd_state_ext_free_all(state);
