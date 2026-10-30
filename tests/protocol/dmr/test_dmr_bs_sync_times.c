@@ -1212,6 +1212,38 @@ test_bs_one_tact_disagreement_keeps_alternation(void) {
     assert(g_mbe_slots[6] == 0U);
 }
 
+/* A bootstrap that could not read burst A's CACH back (dsd_state_sync_readback_invalid()) names no slot, so the loop
+   has none to alternate from: its first burst takes the slot its own TACT names, not the one alternation from a stale
+   currentslot (a slot of before the carrier was lost) would give it. Here the stale slot is 1's, the next burst's TACT
+   names slot 1 (index 0), and alternation from the stale slot would put it on slot 2. */
+static void
+test_bs_loop_after_an_unread_burst_a_takes_the_tact_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0; /* stale */
+    state.dmr_color_code = 16;
+    load_three_burst_stream(1, 0, 1);
+    /* Each of the loop's bursts opens its slot's superframe (burst A), so its frames decode on the slot it is given. */
+    set_sync_dibits(144U, DMR_BS_VOICE_SYNC);
+    set_sync_dibits(288U, DMR_BS_VOICE_SYNC);
+    for (size_t i = 0; i < 90U; i++) {
+        g_bootstrap_payload[i] = g_dibits[i];
+    }
+    g_dibit_index = 90U;
+    state.dmr_payload_p = g_bootstrap_payload + 90U;
+    g_any_voice_open = 1;
+    dsd_state_note_sync_readback(&state, 60);
+
+    dmrBSBootstrap(&opts, &state);
+
+    assert(g_process_mbe_calls >= 6U);
+    assert(g_mbe_slots[0] == 0U);
+    assert(g_mbe_slots[3] == 1U);
+}
+
 /* Two TACTs in a row against alternation say the alternation started wrong (the bootstrap's own TACT was miscorrected):
    it takes the TACT's slot from the second of them, so a wrong start costs one burst (issue #729). */
 static void
@@ -1372,6 +1404,7 @@ main(void) {
     test_bs_burst_split_by_a_carrier_boundary_is_dropped();
     test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped();
     test_bs_bootstrap_decodes_nothing_it_did_not_read_back();
+    test_bs_loop_after_an_unread_burst_a_takes_the_tact_slot();
     test_bs_burst_cut_by_an_input_interruption_is_dropped();
     test_bs_bootstrap_cut_by_an_input_interruption_is_dropped();
     test_bs_loop_end_discards_the_mix_media();
