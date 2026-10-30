@@ -2705,10 +2705,16 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   label), which the walk checks; one without is text with nothing to read. `test_1` is the positive control, and
   `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
   messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
-- **Paced names.** `tst_a11y_paced_names.qml` drives the Monitor's and Spectrum's moving readings at 4 Hz for 10 s
-  (real time): each node renames at most three times and ends on the value on screen within the 5 s period, while the
-  text on screen follows every tick; a lost lock, a new scan target, a sync change and a call ending rename at once.
-  The harness cannot focus a node as TalkBack does, so every node is held to what a focused one needs.
+- **Paced names.** `tst_a11y_paced_names.qml` checks that the app's period is 5 s, then sets
+  `Navigation.speechPeriodMs` to 100 ms and updates each moving reading 40 times a few milliseconds apart (as 4 Hz for
+  10 s is 40 updates over two 5 s periods): the Monitor's and Spectrum's readings, a recording's position, Signal
+  Search's lines and the squelch readouts. Each node renames at least once, at most once a period over the measured
+  time and once more, and at most a quarter as often as it is updated, then ends on the value on screen, while the text
+  on screen follows every update. The steps run at a 2 s period: a lost lock, a new scan target, a sync change, a call
+  ending, play, pause, a seek, the end of a part, a new hit, the squelch gate and a new squelch setting each rename
+  within 100 ms. The harness cannot focus a node as TalkBack does, so every node is held to what a focused one needs.
+  Other QML tests that read a paced name shorten the period in `initTestCase()` and restore it in
+  `cleanupTestCase()`, since the files of one run share the singleton.
   `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
   a hop and one hidden group per protocol change.
 

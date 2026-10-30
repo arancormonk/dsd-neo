@@ -10926,8 +10926,19 @@ the reading appearing or disappearing). The text on screen stays live, and nothi
 reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
 `ReadableText` named that way (`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set.
 Paced: the Monitor's reading groups, scan timing line, call durations and "Signal & site" description (steps:
-`MonitorScreen.speechStep`), the Spectrum status line and readout, the recordings export progress, and SiteSheet's
-field groups (renamed once a rebuild is over, not once per row). A part whose state only its colour shows gives its
+`MonitorScreen.speechStep`; the squelch group adds the gate), the Spectrum status line and readout, the recordings
+export progress text and bar value, SiteSheet's field groups (renamed once a rebuild is over, not once per row), a
+recording's position (the time's name, the seek bar's description and value; steps: play, pause, stop, the end of the
+part, a seek once the host reports where it landed), Signal Search's status line, live level and call detail (steps:
+`SignalSearchScreen.speechStep`, a new hit or a state change), and the squelch readouts and status lines in the Radio
+and Squelch sheets (steps: the gate opening or closing, `MetricsModel::squelchGateOpen`, or the setting changing).
+A step is applied 1 ms after it, once all its bindings have settled, so a step that moves several readings renames
+once. `Navigation.speechPeriodMs` is the period (5000); only tests change it. Names that change only on a user action
+(a drag, a nudge, a choice), on a step itself (a new target, carrier, call, hit or identity), or no faster than every
+few seconds are not paced: the coarse tuning rail, the site row and Spectrum identity, the hero and other-slot call,
+the scan target header, call and history rows, receiver pills, the radio gain and width values, the search's
+frequency, identification and saved names, the diagnostics lines (read only while paused).
+A part whose state only its colour shows gives its
 words as `spokenText` (the strip's LOCK: "Carrier lock" / "No carrier lock"). Readings sit inside a group whose own
 place does not move, so a value whose width changes moves no accessible node (a LocationChanged becomes a main-thread
 task). The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
