@@ -451,7 +451,8 @@ Item {
         }
 
         // Issue #782: a list emptied and filled again in one turn (a publisher that clears first) keeps every row:
-        // nothing shows, hides or is renamed.
+        // nothing shows, hides or is renamed. Filled again a turn later, the rows are kept too, out of the tree in
+        // between, and only the "(none announced)" line comes and goes.
         function test_open_network_sheet_clear_and_refill() {
             var sheet = networkLoader.item;
             var listed = neighbours(8, 0, 3);
@@ -472,6 +473,19 @@ Item {
             testContext.stopAccessibilityCount();
             compare(showHide(sheet), 0, JSON.stringify(counts.chains));
             compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
+            compare(neighbourRows(sheet), rows, "the same rows");
+            testContext.startAccessibilityCount();
+            for (cycle = 1; cycle <= 10; ++cycle) {
+                fakeNet.neighbours = [];
+                wait(20);
+                compare(neighbourRows(sheet).length, 0, "an empty list shows no row");
+                verify(!testContext.accessibleNode(rows[3]).inTree, "nor reads one");
+                fakeNet.neighbours = listed;
+                wait(20);
+            }
+            counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            verify(showHide(sheet) <= 10, "one \"(none announced)\" line a cycle: " + JSON.stringify(counts.chains));
             compare(neighbourRows(sheet), rows, "the same rows");
             for (var r of rows)
                 compare(testContext.accessibleNode(r).name, r.text);
@@ -522,6 +536,64 @@ Item {
             sheet.visible = false;
             Ui.Navigation.modals = [];
             testContext.hopNetwork([]);
+        }
+
+        // Issue #782: a scan list that mixes a P25 system with DMR or analog targets, the Network sheet open on the
+        // P25 one. A hop to a target with no P25 network leaves the rows out of the tree and out of sight, and the hop
+        // back brings the same rows back, so a hop costs the "(none announced)" line and the sheet's layout, the same
+        // for 30 neighbours as for 8, and no row shows, hides or is renamed. No P25 row is shown on the other targets.
+        function mixedHops(sites) {
+            var sheet = liveNetworkLoader.item;
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            testContext.hopNetwork(sites);
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, sites.length);
+            var list = rows[0].parent;
+            testContext.startAccessibilityCount();
+            var hops = 10;
+            for (var hop = 1; hop <= hops; ++hop) {
+                testContext.hopNetwork(hop % 2 ? [] : sites);
+                wait(20);
+                if (hop % 2) {
+                    compare(neighbourRows(sheet).length, 0, "no P25 row on the other target");
+                    for (var held of rows)
+                        verify(!testContext.accessibleNode(held).inTree, "nor is one read");
+                    compare(textsIn(sheet, "(none announced)"), 4);
+                }
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var forwarded = 0;
+            for (var type of ["ObjectShow", "ObjectHide", "NameChanged", "DescriptionChanged", "LocationChanged"]) {
+                compare(testContext.accessibilityCountWithin(list, type), 0, type + " from the rows: "
+                        + JSON.stringify(counts.chains));
+                forwarded += testContext.accessibilityCountWithin(sheet, type);
+            }
+            verify(showHide(sheet) <= hops, showHide(sheet) + " shows and hides for " + hops + " hops: "
+                   + JSON.stringify(counts.chains));
+            compare(neighbourRows(sheet), rows, "the same rows come back");
+            for (var r of rows)
+                compare(testContext.accessibleNode(r).name, r.text);
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            testContext.hopNetwork([]);
+            return forwarded;
+        }
+        function textsIn(item, text) {
+            var found = item.text === text && item.visible ? 1 : 0;
+            for (var k = 0; k < item.children.length; ++k)
+                found += textsIn(item.children[k], text);
+            return found;
+        }
+        function test_open_network_sheet_on_mixed_hops() {
+            var eight = mixedHops([0, 1, 2, 3, 4, 5, 6, 7]);
+            var thirty = [];
+            for (var site = 0; site < 30; ++site)
+                thirty.push(site);
+            compare(mixedHops(thirty), eight, "a hop costs the same whatever the number of rows");
         }
 
         // Issue #782: the open key sheet keeps a row per slot while the count holds; each call publishes a new list,

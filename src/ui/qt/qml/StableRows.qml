@@ -14,8 +14,11 @@ import QtQuick
 // - an entry that arrives takes the row of one that left, renamed, else a new
 //   row; a row is added or removed only when the count changes;
 // - rows are added and renamed at once, and let go at the end of the turn, so
-//   a list emptied and filled again in one turn keeps its rows. `live` is the
-//   rows holding an entry.
+//   a list emptied and filled again in one turn keeps its rows;
+// - with `holdWhenEmpty`, an empty list keeps the rows as they are, and `live`
+//   (the rows holding an entry) is 0: the view leaves them out of the tree and
+//   out of sight, which raises nothing a screen reader is sent, and the next
+//   list reuses them.
 ListModel {
     id: rows
     property var entries: []
@@ -25,6 +28,7 @@ ListModel {
     property var lineOf: function (entry, index) {
         return "";
     }
+    property bool holdWhenEmpty: false
     property int live: 0
     onEntriesChanged: sync()
     Component.onCompleted: sync()
@@ -83,6 +87,10 @@ ListModel {
     // The rows past the end of the list as it is at the end of the turn.
     function trim() {
         var n = entries ? entries.length : 0;
+        if (n === 0 && holdWhenEmpty) {
+            live = 0;
+            return;
+        }
         if (count > n)
             remove(n, count - n);
         live = n;

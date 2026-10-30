@@ -60,26 +60,43 @@ ModalSheet {
             // moves with it, and no row is renamed for it. A row is renamed only
             // when its own entry's words change, or a new entry takes the row of
             // one that left.
-            Repeater {
-                model: StableRows {
-                    id: sectionRows
-                    entries: section.rows
-                    keyOf: function (row) {
-                        return sheet.entryKey(section.index, row);
+            //
+            // A target with none of these entries (a hop to a DMR or analog
+            // target, or a P25 site that lists none) keeps the rows, left out of
+            // the tree and out of sight, rather than removing them: removed or
+            // hidden, every row would raise a hide, and again a show on the way
+            // back. Leaving the tree raises only ObjectDestroyed, which Android's
+            // bridge does not send on.
+            Column {
+                width: parent.width
+                spacing: 8
+                height: sectionRows.live > 0 ? implicitHeight : 0
+                opacity: sectionRows.live > 0 ? 1 : 0
+                Repeater {
+                    model: StableRows {
+                        id: sectionRows
+                        entries: section.rows
+                        holdWhenEmpty: true
+                        keyOf: function (row) {
+                            return sheet.entryKey(section.index, row);
+                        }
+                        lineOf: function (row) {
+                            return sheet.rowText(section.index, row);
+                        }
                     }
-                    lineOf: function (row) {
-                        return sheet.rowText(section.index, row);
+                    ReadableText {
+                        required property string line
+                        width: parent.width
+                        text: line
+                        Accessible.ignored: !navigationAllowed || !visible || sectionRows.live === 0
+                        // Held while the section is empty: renaming it then would raise an event per row.
+                        Accessible.name: navigationAllowed && visible ? text : ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(12)
+                        color: Theme.textPrimary
                     }
-                }
-                ReadableText {
-                    required property string line
-                    width: parent.width
-                    text: line
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(12)
-                    color: Theme.textPrimary
                 }
             }
         }
