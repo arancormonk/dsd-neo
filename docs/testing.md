@@ -2680,19 +2680,19 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   closed by walking the tree, and asserts that steady ticks, scan hops and target name changes raise no show or hide
   under the closed sheets, that two-slot hops leave the Monitor still, and that calls raise nothing under the hidden
   Home and History screens. Its case C is the control: hops published through the defaults, the shape before #782, must
-  still flood the session menu and the radio and squelch sheets, so case B cannot pass because the hops stopped
-  reaching them. `tst_a11y_closed_sheets.qml` covers the closed KeySheet and SiteSheet; `tst_a11y_talkgroups.qml` the
-  hidden Talkgroups screen across two targets' tables, reopening at the reader's place, and an edit keeping the version
-  it opened with. A part known to churn whose fix has not landed goes in the scan churn file's `pendingFix` list
-  (sheet, part, how to find it, the fix): it is held as an expected failure, and the fix turns that into an unexpected
-  pass, which fails until the entry is removed. Its cases F to H run the event loop between hops and
-  ticks, so the pacer's renames 1 ms after a step and once a period are counted. F opens the Monitor's details with
-  the step floor off: each hop renames a changed reading group once (the signal strip once a hop) and nothing shows,
-  hides or moves, and nothing under the closed sheets renames. F2 hops between a digital and an analog target and pins
-  the hides that content which differs causes (one each per change of the decode quality group, the received tone, the
-  tone filter and its Edit button). G moves the readings 40 times at a 100 ms period: the strip renames at most once a
-  period and once more, and catches up. H holds the closed sheets and the screens hidden under the monitor to no event
-  at all over time, at a 30 ms period with readings moving and hops.
+  still flood the session menu and the radio and squelch sheets, so case B cannot pass because the hops stopped reaching
+  them. `tst_a11y_closed_sheets.qml` covers the closed KeySheet and SiteSheet; `tst_a11y_talkgroups.qml` the hidden
+  Talkgroups screen across two targets' tables, reopening at the reader's place, an edit keeping the version it opened
+  with, and a card's listening switch saying each of the card's lines once. A part known to churn whose fix has not
+  landed goes in the scan churn file's `pendingFix` list (sheet, part, how to find it, the fix): it is held as an
+  expected failure, and the fix turns that into an unexpected pass, which fails until the entry is removed. Its cases F
+  to H run the event loop between hops and ticks, so the pacer's renames 1 ms after a step and once a period are
+  counted. F opens the Monitor's details with the step floor off: each hop renames a changed reading group once (the
+  signal strip once a hop) and nothing shows, hides or moves, and nothing under the closed sheets renames. F2 hops
+  between a digital and an analog target and pins the hides that content which differs causes (one each per change of
+  the decode quality group, the received tone, the tone filter and its Edit button). G moves the readings 40 times at a
+  100 ms period: the strip renames at most once a period and once more, and catches up. H holds the closed sheets and
+  the screens hidden under the monitor to no event at all over time, at a 30 ms period with readings moving and hops.
 - **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
   "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
   under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not
@@ -2708,7 +2708,9 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   through the node a touch on its words lands on, `testContext.accessibleNodeAt()`, which must have no child) and read
   the Monitor's lock state. Text no node reads must be in the
   file's one `allowlist` with a reason: an entry with `readBy` names the item that reads it instead (a field reads its
-  label), which the walk checks; one without is text with nothing to read. `test_1` is the positive control, and
+  label), which the walk checks; one with `when` applies only where its check holds (the talkgroup card's "Listening"
+  line, which the switch's checked state says); one without either is text with nothing to read. `test_1` is the
+  positive control, and
   `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
   messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
 - **Paced names.** `tst_a11y_paced_names.qml` checks that the app's period is 5 s, then sets
@@ -2722,11 +2724,19 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   Other QML tests that read a paced name shorten the period in `initTestCase()` and restore it in
   `cleanupTestCase()`, since the files of one run share the singleton.
   Case F flips the lock and a decode-quality reading 40 times at a 200 ms floor: the strip, the hero and the summary
-  row rename at most once a floor and once more, and end on the last state. Case G holds a hidden monitor to silence
-  at a 30 ms period. `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one
-  rename per field group a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the
+  row rename at most once a floor and once more, and end on the last state. Case F2 publishes one hop, whose keys
+  change in separate notifications, at a 300 ms floor and the app's 5 s period, then moves the SNR for two floors: the
+  strip renames once. Case C2 has the host leave a seek unapplied and playback stop, then plays past where the seek
+  asked to land: no rename until the period. Case G holds a hidden monitor to silence at a 30 ms period.
+  `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field
+  group a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the
   open Network sheet 10 refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename),
-  then one changed entry (one rename) and one new entry (one row added); `test_open_key_sheet_keeps_its_slot_rows`
+  then one changed entry (one rename, at a 100 ms period) and one new entry (one row added);
+  `test_open_network_sheet_reorders_at_the_pace` moves one neighbour to the top 16 times, 100 ms apart, at a 500 ms
+  period: the row a listener is on renames at most once a period and once more, and ends on what it shows;
+  `test_open_network_sheet_on_hops` publishes 10 hops between an eight- and a six-neighbour target to the app's own
+  P25NetworkModel as UiController does (`testContext.hopNetwork()`): two rows hide or show a hop, the row at index 3
+  stays the same item, and each row ends on the new target's entry; `test_open_key_sheet_keeps_its_slot_rows`
   publishes new slot lists to the open key sheet (no show or hide).
 
 The Android side, which no host test reaches, is checked by hand on an emulator: "Qt upgrade checks" in

@@ -10908,13 +10908,14 @@ that carries meaning reaches a screen reader one of these ways:
 - A group: one accessible parent named by what its plain `Text` children show, `Util.shownText(item)` (each visible
   child's text; a child with its own `accessibleName` is read on its own and adds nothing). For a label and its value
   or a strip of live readings: the Monitor's hero and reading groups, the Spectrum status line, SiteSheet's field
-  groups (whose rows are rebuilt on each change and stay plain), a talkgroup card.
+  groups (whose rows are rebuilt on each change and stay plain).
 - The control it belongs to: a field reads its label as its name and its unit, placeholder example and helper line as
   its description (`PlexTextField`, `PlexInput`, the Airspy fields); Qt withholds a password field's name
   (`QQuickAccessibleAttached::name()` is empty while `passwordEdit`), so `PlexTextField` leads its description with the
-  label there. A switch reads its title and rule (ToggleRow, the wizard's Trunking), a `CallRow` its meta line, tags and
-  time in its description, a choice row its lines in its description. Such a sibling-read `Text` says so with
-  `Accessible.ignored: true` and a comment.
+  label there. A switch reads its title and rule (ToggleRow, the wizard's Trunking), a talkgroup card's listening
+  switch the talkgroup in its name, whether it is listened to in its state and the card's other lines (rank, tags, an
+  avoid) in its description, a `CallRow` its meta line, tags and time in its description, a choice row its lines in
+  its description. Such a sibling-read `Text` says so with `Accessible.ignored: true` and a comment.
 - Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
 
 A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node
@@ -10932,8 +10933,12 @@ rebuild is over, not once per row), a recording's position (the time's name and 
 play, pause, stop, the end of the part, a seek once the host reports a position near where it was asked to land),
 Signal Search's status line, live level and call detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state
 change), and the squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate opening or
-closing, `MetricsModel::squelchGateOpen`, or the setting changing). A step is heard 1 ms after it, once all its
-bindings have settled, so a step that moves several readings renames once; and steps have a floor: a step input that
+closing, `MetricsModel::squelchGateOpen`, or the setting changing), and the Network sheet's rows (one pacer per
+section, each row named from its snapshot by index; step: an entry arriving or leaving, so an entry heard again, which
+moves to the top of its most-recent-first section, renames the rows it shifts only at the pace). A step is heard 1 ms
+after it, once all its bindings have settled, so a step that moves several readings, or whose inputs change in several
+notifications (a hop's target, frequency and sync; a call's slot, talkgroup and source), renames once: a step that
+comes while that 1 ms is pending is part of it. Steps have a floor: a step input that
 flaps (a marginal lock, a gate, a reading coming and going) is heard at most once a floor (1 s), the last state at the
 end of it. `Navigation.speechPeriodMs` (5000) and `Navigation.speechStepFloorMs` (1000) are the period and the floor;
 only tests change them. A pacer runs only while its node is shown and the navigation gate allows it. Names that
@@ -10951,16 +10956,19 @@ accessible node (a LocationChanged becomes a main-thread task). A list handed ov
 Repeater through `qml/StableRows.qml`, a row per entry added or removed only when the count changes, each row reading
 its entry by index in place (the Network sheet, the key sheet's slots): a refresh that changes nothing shown rebuilds
 nothing, and P25NetworkModel keeps the engine's last-seen times, which order its rows but are not shown, out of them.
+A scan hop publishes the new target's network in one replacement (`P25NetworkModel::replaceForTarget()`, cleared
+instead while the sheet is closed or the session is not live), never an empty list first, so an open sheet keeps the
+rows both targets list: only the rows past the shorter list's end show or hide.
 The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
 
 `UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
 details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
-SiteSheet (`tst_a11y_closed_sheets.qml`) and a hidden Talkgroups screen across two targets' tables
-(`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no node reads,
-against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their pace.
-How the harness works and how to add a case: `docs/testing.md`
-"Accessibility event counts".
+SiteSheet and the open Network sheet across refreshes, reorders and hops (`tst_a11y_closed_sheets.qml`), and a hidden
+Talkgroups screen across two targets' tables (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen
+and sheet for visible text no node reads, against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml`
+holds moving readings to their pace. How the harness works and how to add a case: `docs/testing.md` "Accessibility event
+counts".
 
 #### Qt scan-list start path
 
