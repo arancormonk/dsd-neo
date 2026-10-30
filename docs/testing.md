@@ -2685,7 +2685,21 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   hidden Talkgroups screen across two targets' tables, reopening at the reader's place, and an edit keeping the version
   it opened with. A part known to churn whose fix has not landed goes in the scan churn file's `pendingFix` list
   (sheet, part, how to find it, the fix): it is held as an expected failure, and the fix turns that into an unexpected
-  pass, which fails until the entry is removed.
+  pass, which fails until the entry is removed. Its cases F and G open the Monitor's details: hops rename the reading
+  groups and nothing else (no show, hide or move, nothing renamed under the closed sheets), and readings that change
+  value and width every tick rename only the signal strip.
+- **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
+  "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
+  under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not
+  all in the name, description and value of one accessible node on its own ancestor chain that is in the tree, the walk
+  the Android bridge makes; wordless text is skipped. `nodeCarries(item, text)` makes the same check against one item.
+  Each screen and sheet the harness builds on its own is checked as it opens, then with every item's `visible` forced
+  on, so text only some state shows is checked too; there each sheet nested inside is checked on its own as the top
+  layer. `test_4_monitor_in_a_call` adds a two-slot call with the details open. Text no node reads must be in the
+  file's one `allowlist` with a reason: an entry with `readBy` names the item that reads it instead (a field reads its
+  label), which the walk checks; one without is text with nothing to read. `test_1` is the positive control, and
+  `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
+  messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
 
 The Android side, which no host test reaches, is checked by hand on an emulator: "Qt upgrade checks" in
 `docs/code_map.md`.

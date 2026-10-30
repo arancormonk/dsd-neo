@@ -10898,11 +10898,39 @@ item view refills its delegates even while invisible, so:
   setters notify only on a real change; a list that churns has a source to fix (one publication per target change,
   under UI, Qt) or a hidden view to detach.
 
+Text a screen reader reaches (issue #782). In Qt 6.11.2 a plain QML `Text` has no accessible interface (only a
+Controls `Label` names itself), so the Android bridge makes no node for it and TalkBack never reads it. Every `Text`
+that carries meaning reaches a screen reader one of these ways:
+
+- `qml/ReadableText.qml`: static text named by its own words (`heading: true` for a screen, sheet or section title).
+  It leaves the tree while hidden or behind the top layer, as `MicroLabel` does, and holds an empty name there, so a
+  value that changes under a closed sheet renames nothing. Plain text only; a styled text sets its own name.
+- A group: one accessible parent named by what its plain `Text` children show, `Util.shownText(item)` (each visible
+  child's text; a child with its own `accessibleName` is read on its own and adds nothing). For a label and its value
+  or a strip of live readings: the Monitor's hero and reading groups, the Spectrum status line, SiteSheet's field
+  groups (whose rows are rebuilt on each change and stay plain), a talkgroup card.
+- The control it belongs to: a field reads its label as its name and its unit, placeholder example and helper line as
+  its description (`PlexTextField`, `PlexInput`, the Airspy fields); Qt withholds a password field's name
+  (`QQuickAccessibleAttached::name()` is empty while `passwordEdit`), so `PlexTextField` leads its description with the
+  label there. A switch reads its title and rule (ToggleRow, the wizard's Trunking), a `CallRow` its meta line, tags and
+  time in its description, a choice row its lines in its description. Such a sibling-read `Text` says so with
+  `Accessible.ignored: true` and a comment.
+- Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
+
+A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node
+TalkBack has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an
+announcement; the Qt side still makes one JNI call per rename while TalkBack runs. So a reading renames its node at
+most once per change of the poll (250 ms), and readings sit inside a group whose own place does not move, so a value
+whose width changes moves no accessible node (a LocationChanged becomes a main-thread task). The Diagnostics log's
+lines are read only while Pause holds it: each refresh rebuilds the rows.
+
 `UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
-(`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops and calls against `Main.qml`
-(`tst_a11y_scan_churn.qml`), closed KeySheet and SiteSheet (`tst_a11y_closed_sheets.qml`) and a hidden Talkgroups
-screen across two targets' tables (`tst_a11y_talkgroups.qml`). How the harness works and how to add a case:
-`docs/testing.md` "Accessibility event counts".
+(`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
+details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
+SiteSheet (`tst_a11y_closed_sheets.qml`) and a hidden Talkgroups screen across two targets' tables
+(`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no node reads,
+against one allowlist with a reason per entry. How the harness works and how to add a case: `docs/testing.md`
+"Accessibility event counts".
 
 #### Qt scan-list start path
 
