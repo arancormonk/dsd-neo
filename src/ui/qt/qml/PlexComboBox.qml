@@ -22,6 +22,14 @@ ComboBox {
     implicitHeight: Math.max(Theme.minimumTouchSize, contentItem.implicitHeight + topPadding + bottomPadding)
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
+    // A choice given a name of its own ("Profile application scope") is read
+    // by that name alone; the description adds what it is set to. Unnamed, Qt
+    // names it by that value already, and the description stays empty. Which
+    // one it is is settled once: Qt renames an unnamed choice only after its
+    // value has changed, so comparing the two live would flicker.
+    property bool ownAccessibleName: false
+    Accessible.description: ownAccessibleName ? displayText : ""
+    Component.onCompleted: ownAccessibleName = Accessible.name.length > 0 && Accessible.name !== displayText
     leftPadding: 14
     rightPadding: 38
     contentItem: Text {

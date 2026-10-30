@@ -2681,6 +2681,38 @@ class Setup : public QObject {
         return QAccessible::isActive();
     }
 
+    /**
+     * @brief Issue #782: how the accessibility tree presents @p item, as a platform bridge reads it.
+     *
+     * `exists` is whether the item has an accessible interface. `inTree` is whether it can be reached from the top:
+     * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
+     * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
+     * and `value` are the interface's texts; `invisible` is its state flag.
+     */
+    Q_INVOKABLE QVariantMap
+    accessibleNode(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        if (iface == nullptr || !iface->isValid()) {
+            return {{QStringLiteral("exists"), false}, {QStringLiteral("inTree"), false}};
+        }
+        bool inTree = true;
+        QAccessibleInterface* child = iface;
+        for (QAccessibleInterface* parent = child->parent(); parent != nullptr; parent = parent->parent()) {
+            if (parent->indexOfChild(child) < 0) {
+                inTree = false;
+                break;
+            }
+            child = parent;
+        }
+        return {{QStringLiteral("exists"), true},
+                {QStringLiteral("inTree"), inTree},
+                {QStringLiteral("role"), static_cast<int>(iface->role())},
+                {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("description"), iface->text(QAccessible::Description)},
+                {QStringLiteral("value"), iface->text(QAccessible::Value)},
+                {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)}};
+    }
+
     /** @brief Issue #782: count accessibility events from now on, forgetting earlier counts. */
     Q_INVOKABLE void
     startAccessibilityCount() {

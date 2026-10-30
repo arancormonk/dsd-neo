@@ -279,6 +279,9 @@ ModalSheet {
         width: parent.width
         visible: sheet.materialProfile.outdated === true
         text: qsTr("The saved profile has changed since it was loaded. Apply the saved profile to use its current revision.")
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !visible
         color: Theme.alert
         wrapMode: Text.Wrap
         font.pixelSize: Theme.fontSize(13)
@@ -309,24 +312,35 @@ ModalSheet {
     }
     // Where the target scope applies: the target the sheet opened on, which
     // Apply addresses, not the scan's current one. One line, elided.
+    // A plain Text is not in the accessibility tree; these lines name
+    // themselves so a screen reader reaches them, and leave it while hidden.
     Text {
         objectName: "keySheetTargetName"
         width: parent.width
         visible: scopeChoice.visible && sheet.profileScope === 1 && sheet.openedTargetName.length > 0
         text: qsTr("Applies to %1").arg(sheet.openedTargetName)
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !visible
         textFormat: Text.PlainText
         elide: Text.ElideRight
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSecondary
     }
+    // Read where it is reached, and with Apply below it, never announced on
+    // its own: it appears mid-scan, and Apply is where it matters.
     Text {
+        id: targetLeftNote
         objectName: "keySheetTargetLeft"
         width: parent.width
         // It promises no target to come: the scan may have stopped. The second
         // sentence is the decoder's own refusal advice.
         visible: sheet.profileScope === 1 && sheet.targetLeft
         text: sheet.openedTargetName.length ? qsTr("The scan has left %1. Reopen the editor before applying.").arg(sheet.openedTargetName) : qsTr("The scan target changed. Reopen the editor before applying.")
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !visible
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -338,6 +352,7 @@ ModalSheet {
         visible: sheet.selectedProfileUid.length > 0
         enabled: sheet.sessionRunning && !applyFlow.pending
         text: sheet.profileScope === 1 ? qsTr("Apply profile to this target") : qsTr("Apply profile to session defaults")
+        Accessible.description: targetLeftNote.visible ? targetLeftNote.text : ""
         onClicked: {
             if (typeof decryptionProfiles !== "undefined" && decryptionProfiles.get(sheet.selectedProfileUid).mode === "vendor") {
                 sheet.notice = qsTr("Vendor keystream profiles require Stop and a new standalone session.");
@@ -377,6 +392,9 @@ ModalSheet {
         objectName: "directOverrideNote"
         width: parent.width
         text: qsTr("A direct override is for this session only and is cleared when you stop. It changes session defaults; an explicit scan profile stays effective until rotation restores them. Keys and listening policy are separate; excluded talkgroups remain blocked.")
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !visible
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
@@ -398,6 +416,9 @@ ModalSheet {
         width: parent.width
         visible: text.length > 0
         text: sheet.notice
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !visible
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
