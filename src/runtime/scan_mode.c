@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1161,7 +1162,8 @@ dsd_scan_mode_row_options(const dsd_state* state) {
 
 int
 dsd_scan_mode_rigctl_request_is_session(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->trunk_scan_enabled == 1) {
+    /* A paused trunk scan left its scopes: a manual request is the session's (issue #671). */
+    if (!opts || dsd_trunk_scan_owns_tuner(opts, state)) {
         return 0;
     }
     if (!state) {

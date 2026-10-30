@@ -54,7 +54,9 @@ p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const
         if (freq == 0) {
             continue;
         }
-        if (state->p25_cc_freq != 0 && freq == state->p25_cc_freq) {
+        // An operator-imported list owns row 0; the learned CC stays in p25_cc_freq and the neighbor records.
+        if (state->p25_cc_freq != 0 && freq == state->p25_cc_freq
+            && !dsd_state_trunk_lcn_user_list_present(opts, state)) {
             state->trunk_lcn_freq[0] = freq;
             if (state->lcn_freq_count < 1) {
                 state->lcn_freq_count = 1;

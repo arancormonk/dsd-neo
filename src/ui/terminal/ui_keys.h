@@ -28,16 +28,19 @@ extern "C" {
 #define UI_KEY_WIDE_CHAR 0x7FFF0001
 
 /**
- * Non-zero when @p ch submits: Enter as '\n' or '\r', KEY_ENTER, or PDCurses keypad Enter (PADENTER).
+ * Non-zero when @p ch submits: Enter as '\n' or '\r', KEY_ENTER, or PDCurses keypad Enter (PADENTER) or Shift+keypad
+ * Enter (SHF_PADENTER).
  *
  * PDCurses reports keypad Enter as PADENTER and never KEY_ENTER; ncurses reports it as '\n' or KEY_ENTER and has
- * no PADENTER. The Shift, Ctrl and Alt keypad Enter codes stay unbound, like modified main Enter.
+ * no PADENTER. Shift+Enter on the main screen opens the frequency entry (issue #671), so inside a prompt, help, a
+ * chooser or the menu it submits like Enter, as Shift+main Enter (Enter with the Shift modifier) already does. The
+ * Ctrl and Alt keypad Enter codes stay unbound.
  */
 static inline int
 ui_key_is_enter(int ch) {
     return ch == '\n' || ch == '\r' || ch == KEY_ENTER
 #ifdef PADENTER
-           || ch == PADENTER
+           || ch == PADENTER || ch == SHF_PADENTER
 #endif
         ;
 }

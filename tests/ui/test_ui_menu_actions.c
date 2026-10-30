@@ -31,6 +31,7 @@
 #include <math.h>
 #include <sndfile.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,7 @@
 #include "menu_callbacks.h"
 #include "menu_env.h"
 #include "menu_internal.h"
+#include "menu_labels.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
 
@@ -104,6 +106,12 @@ static dsd_audio_device g_audio_inputs[2];
 static dsd_audio_device g_audio_outputs[2];
 static dsd_app_config_metadata_payload g_config_metadata;
 static int g_config_metadata_calls;
+static char g_help[256];
+static int g_help_calls;
+/* The frequency row's predicate lives in menu_labels.c (UI_MENU_LABELS pins it); here the '=' opener's branch on it,
+   and which options it is asked about. */
+static int g_freq_offered = 1;
+static const dsd_opts* g_freq_offered_opts;
 
 static void
 reset_capture(void) {
@@ -127,6 +135,10 @@ reset_capture(void) {
     DSD_MEMSET(g_audio_outputs, 0, sizeof g_audio_outputs);
     DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
     g_config_metadata_calls = 0;
+    DSD_MEMSET(g_help, 0, sizeof g_help);
+    g_help_calls = 0;
+    g_freq_offered = 1;
+    g_freq_offered_opts = NULL;
 }
 
 static void
@@ -445,6 +457,18 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
     g_prompt.int_cb = NULL;
     g_prompt.double_cb = NULL;
     g_prompt.calls++;
+}
+
+void
+ui_help_open(const char* help) {
+    DSD_SNPRINTF(g_help, sizeof g_help, "%s", help ? help : "");
+    g_help_calls++;
+}
+
+bool
+freq_entry_offered(const dsd_opts* opts) {
+    g_freq_offered_opts = opts;
+    return g_freq_offered != 0;
 }
 
 /* menu_actions.c routes the import items through the CSV picker; with no imports
@@ -1564,7 +1588,7 @@ test_additional_prompt_and_toggle_actions(void) {
        wrapped negative), with room past the parser's limit so a cut paste is refused rather than shortened. */
     reset_capture();
     opts.rtlsdr_center_freq = 2400000000U;
-    rtl_set_freq(&ctx);
+    act_set_freq(&ctx);
     rc |= expect_str("rtl freq prompt title", g_prompt.title, "Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)");
     rc |= expect_int("rtl freq prompt is empty", g_prompt.prefill_null, 1);
     rc |= expect_int("rtl freq prompt cap", (int)g_prompt.cap, 34);
@@ -1577,6 +1601,47 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_str("rtl freq reopen keeps the text", g_prompt.prefill, "146,52");
     rc |= expect_int("rtl freq reopen cap", (int)g_prompt.cap, 34);
     rc |= expect_int("rtl freq reopen callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
+
+    /* '=' (issue #671) opens the same empty prompt where the row is offered, deciding on the published options, never
+       the live ones the menu's key handling passes. */
+    reset_capture();
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    act_freq_key(&ctx);
+    rc |= expect_int("freq key asks about the published options", g_freq_offered_opts == published_opts, 1);
+    rc |= expect_str("freq key prompt title", g_prompt.title, "Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)");
+    rc |= expect_int("freq key prompt is empty", g_prompt.prefill_null, 1);
+    rc |= expect_int("freq key prompt callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
+    rc |= expect_int("freq key prompt user", g_prompt.user == (void*)&ctx, 1);
+    rc |= expect_int("freq key opens no help", g_help_calls, 0);
+    /* Where it is not offered, one line of help says why, and no prompt opens to be refused afterwards. */
+    reset_capture();
+    g_freq_offered = 0;
+    act_freq_key(&ctx);
+    rc |= expect_int("freq key not offered opens no prompt", g_prompt.calls, 0);
+    rc |= expect_int("freq key not offered opens help", g_help_calls, 1);
+    rc |= expect_str("freq key not offered reason", g_help,
+                     "Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).");
+    reset_capture();
+    g_freq_offered = 0;
+    const int published_in_type = published_opts->audio_in_type;
+    published_opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(published_opts->audio_in_dev, sizeof published_opts->audio_in_dev, "%s", "iqreplay:capture.iq.json");
+    act_freq_key(&ctx);
+    rc |= expect_int("freq key replay opens no prompt", g_prompt.calls, 0);
+    rc |= expect_str("freq key replay reason", g_help, "An I/Q replay cannot retune: it plays the tuning it recorded.");
+    published_opts->audio_in_dev[0] = '\0';
+    published_opts->audio_in_type = published_in_type;
+    /* Before the decoder's first publication the context's options stand in. */
+    reset_capture();
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    act_freq_key(&ctx);
+    rc |= expect_int("freq key before a publication asks about the context", g_freq_offered_opts == &opts, 1);
+    rc |= expect_int("freq key before a publication opens the prompt", g_prompt.calls, 1);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     opts.rtlsdr_center_freq = 0U;
 
     /* The squelch row has to be able to express "off". The prompt offered

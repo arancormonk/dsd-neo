@@ -491,6 +491,45 @@ test_feed(void) {
     assert(strstr(g_line, "\"names\":\"--nac-name \\\"293=Fire\\\"\"") != NULL);
     DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
 
+    /* Issue #671 (D12): status carries the scan state every frontend shows: none, a -Y list running, paused, and a
+       trunk scan paused, with its target count. */
+    static const struct {
+        int scanner_mode;
+        int trunk_scan;
+        uint8_t lcn_paused;
+        uint8_t trunk_paused;
+        const char* want;
+    } k_scan[] = {
+        {0, 0, 0U, 0U, "\"scan\":{\"kind\":\"none\",\"state\":\"off\",\"targets\":0}"},
+        {1, 0, 0U, 0U, "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3}"},
+        {0, 0, 1U, 0U, "\"scan\":{\"kind\":\"channel\",\"state\":\"paused\",\"targets\":3}"},
+        {0, 1, 0U, 1U, "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":2}"},
+    };
+
+    state->lcn_freq_count = 3;
+    state->trunk_scan_target_count = 2U;
+    for (size_t i = 0; i < sizeof k_scan / sizeof k_scan[0]; i++) {
+        opts->scanner_mode = k_scan[i].scanner_mode;
+        opts->trunk_scan_enabled = k_scan[i].trunk_scan;
+        state->lcn_scan_paused = k_scan[i].lcn_paused;
+        state->trunk_scan_paused = k_scan[i].trunk_paused;
+        int scan_seen = 0;
+        for (int attempt = 0; attempt < 30 && !scan_seen; attempt++) {
+            dsd_telemetry_publish_both_and_redraw(opts, state);
+            scan_seen = await_line(c, "status", k_scan[i].want, 100U);
+        }
+        if (!scan_seen) {
+            DSD_FPRINTF(stderr, "status never carried %s\n", k_scan[i].want);
+        }
+        assert(scan_seen);
+    }
+    opts->scanner_mode = 0;
+    opts->trunk_scan_enabled = 0;
+    state->lcn_scan_paused = 0U;
+    state->trunk_scan_paused = 0U;
+    state->lcn_freq_count = 0;
+    state->trunk_scan_target_count = 0U;
+
     /* A row enriched in place after it was sent -- here the older of two, as a late alias lands on a call a newer
        notice already followed -- is sent again, marked as an update, under the same identity. */
     commit_event(state, "Notice", 10U);

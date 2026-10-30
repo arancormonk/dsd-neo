@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -30,6 +31,8 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/tuner_owner.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -116,6 +119,14 @@ dsd_engine_p25_hunt_in_flight(void) {
     return in_flight;
 }
 
+/* Whether the current or last sync is a DMR, NXDN or EDACS one. */
+static int
+dsd_engine_sync_is_dmr_nxdn_or_edacs(const dsd_state* state) {
+    return DSD_SYNC_IS_DMR(state->synctype) || DSD_SYNC_IS_DMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->synctype)
+           || DSD_SYNC_IS_NXDN(state->lastsynctype) || DSD_SYNC_IS_EDACS(state->synctype)
+           || DSD_SYNC_IS_EDACS(state->lastsynctype);
+}
+
 static int
 dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_engine_trunk_scan_active_is_p25_class(state)) {
@@ -123,8 +134,8 @@ dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     }
     // Under trunk scan the coordinator knows the parked target's protocol, and that beats sync
     // history: a target that has not synced yet reads as P25 by synctype alone, because
-    // DSD_SYNC_P25P1_POS is 0.
-    if (dsd_engine_trunk_scan_target_count(state) > 0) {
+    // DSD_SYNC_P25P1_POS is 0. A paused scan parks no target: the session's own evidence decides.
+    if (dsd_trunk_scan_owns_tuner(opts, state) && dsd_engine_trunk_scan_target_count(state) > 0) {
         return 0;
     }
     if (DSD_SYNC_IS_TETRA(state->synctype) || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
@@ -137,9 +148,7 @@ dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (state->rf_mod == 2) {
         return 0;
     }
-    if (DSD_SYNC_IS_DMR(state->synctype) || DSD_SYNC_IS_DMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->synctype)
-        || DSD_SYNC_IS_NXDN(state->lastsynctype) || DSD_SYNC_IS_EDACS(state->synctype)
-        || DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+    if (dsd_engine_sync_is_dmr_nxdn_or_edacs(state)) {
         return 0;
     }
     return 1;
@@ -322,7 +331,8 @@ static rtl_stream_retune_gain_profile
 dsd_engine_trunk_scan_gain_profile(const dsd_opts* opts, const dsd_state* state) {
     rtl_stream_retune_gain_profile profile;
     DSD_MEMSET(&profile, 0, sizeof(profile));
-    if (!opts || !state || opts->trunk_scan_enabled != 1 || dsd_engine_trunk_scan_target_count(state) == 0) {
+    /* A paused scan sets no gain per retune: the configured gain is in force, as outside a scan (issue #671). */
+    if (!dsd_trunk_scan_owns_tuner(opts, state) || dsd_engine_trunk_scan_target_count(state) == 0) {
         return profile;
     }
 
@@ -850,6 +860,10 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
     }
     const int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
                                     : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+    if (rc != RTL_STREAM_TUNE_DEFERRED) {
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        dsd_engine_manual_tune_supersede(state);
+    }
     if (rc == RTL_STREAM_TUNE_OK) {
         uint32_t applied = 0U;
         opts->rtlsdr_center_freq =
@@ -865,6 +879,12 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
         opts->rtlsdr_center_freq = (uint32_t)freq;
         return DSD_TRUNK_TUNE_RESULT_PENDING;
     }
+    /* The receiver stays where the controller last applied: a target a timed-out tune cached, which this request may
+       have coalesced over, was never reached (issue #671). */
+    uint32_t applied = 0U;
+    if (rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) {
+        opts->rtlsdr_center_freq = applied;
+    }
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 #endif
@@ -875,10 +895,12 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
     s_backend_rigctl_moved = 0;
     /* Every backend below carries the frequency as uint32_t; one past it (possible where long is 64-bit) would wrap to
        an unrelated channel, so the tune fails instead. The callers have already refused freq <= 0. */
-    if ((long long)freq > (long long)UINT32_MAX) {
+#if LONG_MAX > UINT32_MAX
+    if (freq > (long)UINT32_MAX) {
         DSD_FPRINTF(stderr, "Trunk tune to %ld Hz refused: past the tuner limit of 4294967295 Hz.\n", freq);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+#endif
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         if (!dsd_engine_tune_rigctl(opts, state, freq)) {
@@ -886,6 +908,7 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         }
         s_backend_rigctl_moved = 1;
         opts->rtlsdr_center_freq = (uint32_t)freq;
+        opts->rigctl_sent_freq_hz = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
             rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);

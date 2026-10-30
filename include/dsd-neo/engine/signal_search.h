@@ -18,6 +18,11 @@ extern "C" {
 typedef void (*dsd_signal_search_publish_fn)(const dsd_signal_search_status*, const dsd_signal_search_hit*, void*);
 int dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
                                    dsd_signal_search_publish_fn observer, void* user, char* error, size_t capacity);
+/** Whether dsd_engine_signal_search_start() would refuse @p config now, by the checks it makes before it changes
+ * anything: 0 when it would go on, -1 (the reason in @p error) when it would refuse. Changes nothing. A caller that must
+ * act only for a start that goes on (issue #671: taking back a -Y resume) asks first. */
+int dsd_engine_signal_search_start_refused(const dsd_opts* opts, const dsd_state* state,
+                                           const dsd_signal_search_config* config, char* error, size_t capacity);
 int dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* action);
 /** Whether @p action is valid for the running search now, without acting on it: 0 with the frequency it acts on (the
  * current hit's, or frequency_hz for UNAVOID and AVOID_FREQUENCY), -1 for a stale session or hit. */

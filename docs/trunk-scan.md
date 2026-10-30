@@ -230,6 +230,11 @@ target's decoder. Target gain, trunking state, and learned P25 modulation retain
 The restored frontend rate and slicer levels follow the saved hunt profile, including a global AUTO preset captured
 on a rate other than 4800 symbols/s. Modulation controls display the saved configuration while a target is active.
 
+A save records the configured trunking setting (`[trunking] enabled`), not the one the parked target's type runs. A
+config loaded while the scan runs cannot change its `[trunk_scan]` target list or dwell and hold defaults, nor add a
+global `[trunking] chan_csv` or `p25_bandplan_csv`: those keep the values the scan started with and take effect at the
+next start.
+
 For unlocked RTL P25 targets, the first unproductive 4800-symbol/s dwell tries CQPSK before the hunt moves to Phase 2.
 Each Phase 1 demodulator gets 1125 ms of unproductive symbol input; CQPSK starts at 1125 ms and Phase 2 at 2250 ms,
 both within the default 3000 ms target dwell. Shorter custom dwells can still end before a trial; use an explicit
@@ -373,6 +378,23 @@ During scanning:
   to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune and the
   receiver fell back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out of the
   rotation.
+- **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
+  frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`. `y` (and the
+  API's `scanner_toggle`) pauses it where it is without tuning, and so do Qt/Android **Explore from here** and the API's
+  `tuner_release`. A pause ends the parked target's calls under its name, saves the target as a hop away would, and puts
+  back the configured decoder, modulation and gain with trunking off; the receiver stays on your frequency (`Applied:
+  frequency -> 154.000000 MHz; scan paused`). A tune that is refused or deferred changes nothing, and the scan keeps
+  running. While paused the Trunk Scan row reads `| Trunk Scan: PAUSED (y resumes)` with no target or Scan Timing row,
+  nothing rotates, and calls heard are the operator's (Qt/Android history files them under **Exploring**). Another
+  frequency entry, a spectrum tap or a drag only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused: resume it
+  first`, and `t` stays refused as during the scan (`Trunk scan: each target sets its own trunking`). A per-target edit
+  made while paused waits for that target's next visit.
+- **Resuming.** `y`, Qt/Android **Resume scan** or the API's `scan_resume` resumes on the target the scan left, with a
+  fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were. A resume whose
+  retune is refused, or whose target cannot be set up again, leaves the scan paused and says why. A trunk scan cannot be
+  stopped while the decoder runs, so a paused one, with everything it learned and every session edit, lasts until the
+  decoder stops. A save made while it is paused still writes `[trunk_scan] enabled = true` and the configured
+  `[trunking] enabled`, so the next start runs the scan from its first target.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks and `DSD_NEO_CQPSK` for that
   target only, including when the front end comes back from an analog target to it. DMR and NXDN targets always run the
   FSK discriminator, `DSD_NEO_CQPSK=1` or not.
@@ -410,7 +432,8 @@ During scanning:
   the target's type does not take. A width the front end or the peer then refuses, and a gain whose restart fails, put
   that setting back alone (an edit of another setting made since stays), the configured defaults untouched; a failed
   restart starts the input again without an I/Q capture, which would write over its recording. Every later visit keeps
-  the edit, it ends with the scan, and nothing is written to the target file or saved by Config->Save.
+  the edit, a pause keeps it too, it ends with the scan, and nothing is written to the target file or saved by
+  Config->Save.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
   The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start
@@ -479,6 +502,8 @@ Expected log messages include:
 Trunk scan target 'county-p25' at 851012500 Hz
 Trunk scan enabled with 6 targets
 Trunk scan target 'city-dmr' retune failed; cooling down briefly
+NOTICE: Trunk scan paused at target 'county-p25'
+NOTICE: Trunk scan resumed at target 'county-p25'
 ```
 
 ## Troubleshooting
@@ -860,7 +885,9 @@ surface. Recency and `lastStartedKind=scan`/`lastStartedUid` are written only on
 Monitor displays `SCANNING · <id> (n/m)` and `HOLD`. Existing Hold/Avoid/Next/Clear
 controls operate on these targets: Hold scan, Avoid and Next sit in the live strip under the hero (Hold scan
 shows a hold as checked), and the avoided count with its Clear is in the "Signal & site" readings. Target identity clears with the other live
-metrics on lifecycle transitions.
+metrics on lifecycle transitions. While the scan is paused (see [Runtime Behavior](#runtime-behavior)) the header reads
+`SCAN PAUSED · 3 targets`, **Resume scan** takes the place of Hold scan, Avoid and Next, and Spectrum tunes as
+Explore does until the resume.
 
 Generated CSVs can contain direct keys and are owner-readable/writable only. They
 are internal session inputs, not exports; removing a list removes its generated

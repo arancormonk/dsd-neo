@@ -70,7 +70,14 @@ decoding without it, as it does for the RTL UDP retune control.
   frontends use, and are applied on the decoder thread. A response of
   `"status":"queued"` means the queue admitted the command, not that the decoder
   accepted it: the decoder can still refuse it when it is applied, which it
-  reports in the notice line (`status.message`).
+  reports in the notice line (`status.message`). A command that needs the P25
+  state machine (for example `scanner_toggle`, `scan_resume`, `tuner_release`,
+  `rtl_set_freq` and `config_apply`) waits for the frame or watchdog step it is
+  working on rather than run beside it.
+* A publication that meets a P25 watchdog step is put off, never dropped, and
+  goes out at the next decoder pass with the state as it is then. On a silent
+  UDP or RTL input that comes shortly after the step ends; on a connected TCP
+  or stdin input that has gone quiet it waits for the next sample or command.
 * Without the terminal frontend (no `--frontend terminal`), the CLI
   opens the shared frontend runtime for the API: the command session, and the
   20 Hz snapshot publish the terminal frontend also runs.
@@ -306,6 +313,13 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.
+* `scan`: `{kind, state, targets}`, the scan the session has, as every frontend
+  shows it. `kind` is `none`, `channel` (the `-Y` conventional scan) or `trunk`
+  (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
+  operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
+  scan's target count or the `-Y` list's row count (`0` with no scan). A `-Y`
+  resume still waiting for its row's tune reads `paused`. `null` until the
+  decoder has published its options.
 * `tg_policy`: `{context, generation}` of the talkgroup list. The list-editing
   commands must quote both; an edit naming an older list is refused.
 * `decryption`: `{target_id, tune_generation, key_epoch}`, the context a
@@ -415,6 +429,7 @@ field, and the decoder refuses the rest when it applies the command.
 | `scan_hold_toggle` | – |
 | `scan_avoid` | – |
 | `scan_avoid_clear` | – |
+| `scan_resume` | – |
 | `quit` | – |
 | `force_priv_toggle` | – |
 | `force_rc4_toggle` | – |
@@ -634,6 +649,43 @@ field, and the decoder refuses the rest when it applies the command.
   are accepted; unknown keys are ignored, as in a file. See
   [docs/config-system.md](config-system.md) for the keys.
 
+  Settings that only a restart puts in place keep their running values: the
+  frontend, `[trunk_scan] enabled`, `[trunking] chan_csv` (the channel map is
+  imported at startup only), an Airspy input chosen over a non-radio input, and
+  while a trunk scan runs its target list and its dwell and hold defaults.
+  `status.message` names them (`Config applied; restart to use the new channel
+  map`), after any other message the apply left. The applied values wait for
+  the next start: every save, the exit autosave included, writes them, so the
+  restart runs them. A later config that names the running value again takes
+  one back, and a channel-map import or clear sets the map at once. An apply
+  that fails (an output reconfigure, say) is reported as failed even when it
+  also needs a restart.
+
+  A config whose next start startup would refuse (a global `chan_csv` or
+  `p25_bandplan_csv`, or `scanner = true` with trunking off, beside an enabled
+  trunk scan, or a trunk scan without `targets_csv`) is refused whole before
+  anything changes, with the rule in `status.message` (`Config not applied:
+  trunking.chan_csv cannot be combined with trunk_scan.enabled`); a rule the
+  session's save already breaks refuses only a config that breaks another.
+  While a trunk scan waits for the next start, `scanner_toggle` will not start
+  the scanner (`Scanner not started: ...`), and channel-map and band-plan
+  imports are refused the same way. A config whose input does not start is
+  rolled back and, like a refused one, leaves nothing waiting for the next
+  start. A value waiting for the next start, an earlier config's or this
+  config's own, that would then break those rules beside what the session keeps
+  (the scanner, a paused `-Y` scan, a band plan) is dropped, and
+  `status.message` says so (`...; the trunk scan waiting for a restart is
+  dropped`).
+
+  Under a trunk scan, running or paused, `[trunking] enabled = true` is the
+  setting the scan puts back at shutdown and a save writes, not the parked
+  target's; `enabled = false` leaves that setting as it was, as it leaves
+  trunking on in any session (only `scanner = true` takes the tuner from
+  trunking, and that is refused beside a trunk scan). Over a paused `-Y` scan, a
+  config without `[trunking]` keeps the pause; trunking on or `scanner = false`
+  stops it; `scanner = true` resumes it. A config whose input does not start
+  keeps the pause.
+
   ```json
   {"cmd":"config_apply","params":{"sections":{
      "mode":{"decode":"p25p1"},
@@ -659,6 +711,36 @@ field, and the decoder refuses the rest when it applies the command.
   I/Q radio nor a symbol capture, are refused, and `status.message` says why;
   TETRA at a DSP rate that is not a multiple of 18 kHz from 36 to 144 kHz is
   kept, with a message naming the fix (`rtl_set_bw` 72 on an RTL-SDR).
+* **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
+  terminal's frequency entry does. It is refused during an I/Q replay and for
+  `0`. With single-system P25 trunking on and no scan it selects that control
+  channel. Otherwise, once the tune is accepted (applied, or still pending on
+  the tuner), a running `-Y` scan or trunk scan pauses: the scan keeps its list,
+  cursor, avoids and session edits, the receiver stays on `value` with the
+  configured decoder, and `status.message` ends in `; scan paused`. A refused or
+  deferred tune changes nothing and says why. An entry while a scan is paused
+  only tunes; the scan stays paused.
+* **`tuner_release`**: hands the tuner to the operator. Trunking (`-T`) stops; a
+  running `-Y` scan or trunk scan pauses where it is (`Automatic tuning
+  paused`). A scan already paused stays paused. A trunk scan that cannot pause
+  keeps trunking and fails the command (`Trunk scan active: pause
+  unavailable`).
+* **`scanner_toggle`**: the terminal's `y`. A paused scan resumes; a running
+  trunk scan pauses where it is (it cannot be stopped at runtime); a running
+  `-Y` scan stops, and with none running `-Y` starts. A `-Y` resume still
+  waiting for its row's tune is left alone.
+* **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
+  scan on the row it would have stepped to next, a trunk scan on the target it
+  left, with fresh timers. A running scan is left as it is (`Not paused: the
+  scan is running`), and with nothing paused nothing starts. A resume that
+  finds no row to tune, or whose tune is refused, leaves the scan paused and
+  says why.
+* **`manual_tune`**: a spectrum tap. It is refused while trunking, a running
+  `-Y` scan or a running trunk scan owns the tuner (`status.message` says
+  which); a paused scan does not refuse it, and it leaves the scan paused. A
+  `-Y` resume still waiting on its row's tune does not refuse it either: the tap
+  takes the receiver back, the scan stays paused (the toast ends `; scan
+  paused`), and the row's tune commits nothing when it lands.
 * Key words (`key_rc4des_set`, `key_hytera_set`, `key_aes_set`) are 64-bit:
   send them as `"0x..."` strings.
 

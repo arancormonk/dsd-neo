@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/key_set.h>
@@ -64,6 +66,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -77,13 +80,13 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
-#include <limits.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdbool.h>
@@ -108,14 +111,21 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/engine/manual_tune.h"
 #include "dsd-neo/runtime/config.h"
+#include "manual_tune_pending.h"
+#include "scan_step_untyped.h"
 #include "services.h"
 #include "test_support.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 static int g_io_control_tune_calls = 0;
-static long int g_io_control_tune_freq = 0;
+static int g_manual_tune_supersedes = 0;
+static int g_legacy_cache_forgets = 0;
+static uint32_t g_io_control_tune_freq = 0U;
+/* Calls that dropped the frame-sync modulation votes from outside the frame-sync object (issue #671). */
+static int g_mod_state_resets = 0;
 /* The frequency the stub reports the controller applied on success; 0 applies the request (issue #670). */
 static uint32_t g_io_control_applied_freq = 0U;
 static dsd_trunk_tune_result g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -182,6 +192,9 @@ static int g_rigctl_fake_bw = 0;
 static int g_rigctl_fake_known = 1;      /* whether the client knows what the peer runs */
 static int g_rigctl_fake_last_kind = -1; /* the last request sent */
 static int g_rigctl_fake_last_bw = -1;
+/* Armed apart from the passband fake: a frequency the peer takes (issue #671), and the last one sent. */
+static int g_rigctl_fake_freq_armed = 0;
+static long int g_rigctl_fake_freq = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -189,6 +202,8 @@ bool __real_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __real_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
+bool __real_SetFreq(dsd_socket_t sockfd, long int freq);
+bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
 int __real_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __wrap_svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, int port);
 int __real_svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int port);
@@ -197,7 +212,14 @@ int __real_openAudioInput(dsd_opts* opts);
 int __wrap_openAudioInput(dsd_opts* opts);
 int __real_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
-int __wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq);
+void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __real_dsd_engine_legacy_tune_caches_forget(void);
+void __wrap_dsd_engine_legacy_tune_caches_forget(void);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id);
+void __real_dsd_frame_sync_reset_mod_state(void);
+void __wrap_dsd_frame_sync_reset_mod_state(void);
 #ifdef USE_RADIO
 int __real_rtl_stream_set_bias_tee(int on);
 int __wrap_rtl_stream_set_bias_tee(int on);
@@ -335,18 +357,46 @@ __wrap_rtl_stream_set_bias_tee(int on) {
 #endif
 
 int
-__wrap_io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
     (void)state;
+    if (out_pending_id) {
+        *out_pending_id = 0U;
+    }
     g_io_control_tune_calls++;
-    g_io_control_tune_freq = freq;
+    g_io_control_tune_freq = freq_hz;
     /* As the real one: a success caches the frequency the controller applied, which a coalesced request can make
        another than this one, and an accepted (timed-out) request caches its own target. */
     if (opts != NULL && g_io_control_tune_result == RTL_STREAM_TUNE_OK) {
-        opts->rtlsdr_center_freq = g_io_control_applied_freq != 0U ? g_io_control_applied_freq : (uint32_t)freq;
+        opts->rtlsdr_center_freq = g_io_control_applied_freq != 0U ? g_io_control_applied_freq : freq_hz;
     } else if (opts != NULL && g_io_control_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
-        opts->rtlsdr_center_freq = (uint32_t)freq;
+        opts->rtlsdr_center_freq = freq_hz;
     }
     return g_io_control_tune_result;
+}
+
+/* A pending manual tune superseded by a tune app-control makes itself (issue #671): counted, and superseded for real.
+   Only calls from outside the manual-tune object reach the wrap, so svc_rtl_tune()'s note is not counted. */
+void
+__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
+    g_manual_tune_supersedes++;
+    __real_dsd_engine_manual_tune_supersede(state);
+}
+
+/* The engine's legacy tune caches forgotten by a tune app-control makes without a carrier boundary (issue #671):
+   counted, and forgotten for real. Only calls from outside the engine object reach the wrap, so a boundary's own forget
+   is not counted. */
+void
+__wrap_dsd_engine_legacy_tune_caches_forget(void) {
+    g_legacy_cache_forgets++;
+    __real_dsd_engine_legacy_tune_caches_forget();
+}
+
+/* The frame-sync modulation votes dropped (issue #671): counted, and dropped for real. Only calls from outside the
+   frame-sync object reach the wrap, so an acquisition reset's own drop is not counted. */
+void
+__wrap_dsd_frame_sync_reset_mod_state(void) {
+    g_mod_state_resets++;
+    __real_dsd_frame_sync_reset_mod_state();
 }
 
 /* A DMR data burst the decode gate let through (issue #575): counted, and handled for real unless a test armed the
@@ -435,6 +485,15 @@ __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
     return rigctl_fake_request(kind, bandwidth);
 }
 
+bool
+__wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
+    if (!g_rigctl_fake_freq_armed) {
+        return __real_SetFreq(sockfd, freq);
+    }
+    g_rigctl_fake_freq = freq;
+    return true;
+}
+
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 
 /* Arm the fake rigctl peer on socket 5 of @p opts (UDP audio input): it runs @p kind at @p bandwidth, as the client
@@ -479,8 +538,11 @@ static void
 reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
-    g_io_control_tune_freq = 0;
+    g_io_control_tune_freq = 0U;
     g_io_control_applied_freq = 0U;
+    g_mod_state_resets = 0;
+    g_manual_tune_supersedes = 0;
+    g_legacy_cache_forgets = 0;
 }
 
 static void
@@ -1568,32 +1630,67 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 851500000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted RTL frequency timeout drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("accepted RTL frequency timeout reports pending",
-                      strstr(state.ui_msg, "Accepted: RTL frequency -> 851.500000 MHz (pending)") != NULL);
+                      strstr(state.ui_msg, "Accepted: frequency -> 851.500000 MHz (pending)") != NULL);
     rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
+    /* A new channel (issue #671): the modulation votes the old one cast go with it, pending included. */
+    rc |= expect_int("accepted RTL frequency timeout drops the modulation votes", g_mod_state_resets, 1);
     /* A success names the frequency the controller applied, which a coalesced request can make another than the one
        asked for (issue #670). */
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U);
     rc |= expect_int("applied RTL frequency drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("applied RTL frequency toast", state.ui_msg, "Applied: RTL frequency -> 851.012500 MHz");
+    rc |= expect_str("applied RTL frequency toast", state.ui_msg, "Applied: frequency -> 851.012500 MHz");
+    rc |= expect_int("applied RTL frequency drops the modulation votes", g_mod_state_resets, 1);
     g_io_control_applied_freq = 851500000U;
     post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U);
     rc |= expect_int("coalesced RTL frequency drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("coalesced RTL frequency names the applied one", state.ui_msg,
-                     "Applied: RTL frequency -> 851.500000 MHz");
+                     "Applied: frequency -> 851.500000 MHz");
+    /* A failed tune leaves the receiver where it was, and the votes it cast with it. */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_FAILED);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851025000U);
+    rc |= expect_int("failed RTL frequency drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("failed RTL frequency toast", state.ui_msg, "Failed: frequency -> 851.025000 MHz");
+    rc |= expect_int("failed RTL frequency keeps the modulation votes", g_mod_state_resets, 0);
+    /* Past 2147.483647 MHz, which a 32-bit long cannot hold, the entry reaches the tuner as it was asked for. */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 2400000000U);
+    rc |= expect_int("RTL frequency past LONG_MAX drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("RTL frequency past LONG_MAX reaches the tuner", g_io_control_tune_freq == 2400000000U);
+    rc |= expect_str("RTL frequency past LONG_MAX toast", state.ui_msg, "Applied: frequency -> 2400.000000 MHz");
+    /* An untyped -Y list pauses for the entry, which its next step can no longer undo (issue #671, B1): it keeps its
+       cursor for a resume, and the hold goes. */
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     opts.scanner_mode = 1;
+    state.lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(&state, 1) = 852375000;
+    state.lcn_freq_roll = 1;
+    state.lcn_scan_hold = 1;
     post_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U);
     rc |= expect_int("legacy scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("legacy manual tune preserves scanner", opts.scanner_mode, 1);
+    rc |= expect_int("legacy manual tune pauses the scanner",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1
+                         && state.lcn_freq_roll == 1 && state.lcn_scan_hold == 0,
+                     1);
+    rc |= expect_str("legacy manual tune says the scan paused", state.ui_msg,
+                     "Accepted: frequency -> 852.000000 MHz (pending); scan paused");
+    rc |= expect_int("legacy manual tune drops the modulation votes", g_mod_state_resets, 1);
+    /* A typed list pauses too: its row's scope goes, and the hold with it (B3). */
+    (void)svc_leave_channel_scan(&opts, &state);
+    opts.scanner_mode = 1;
+    state.lcn_scan_hold = 1;
     rc |= expect_int("typed metadata for manual tune", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
     rc |= expect_int("typed mode before manual tune", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
     post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U);
     rc |= expect_int("typed scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("typed manual tune releases scanner", opts.scanner_mode, 0);
+    rc |= expect_int("typed manual tune pauses the scanner",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_hold == 0
+                         && state.lcn_freq_roll == 1,
+                     1);
     rc |= expect_int("typed manual tune releases mode", dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
-    rc |= expect_str("manual tune explains scanner exit", state.ui_msg,
-                     "Accepted: RTL frequency -> 853.000000 MHz (pending) (scanner stopped)");
+    rc |= expect_str("manual tune says the scan paused", state.ui_msg,
+                     "Accepted: frequency -> 853.000000 MHz (pending); scan paused");
     freeState(&state);
 #endif
 
@@ -1753,6 +1850,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("deferred channel cycle raw tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_int("deferred channel cycle keeps a pending manual tune", g_manual_tune_supersedes, 0);
+    rc |= expect_int("deferred channel cycle keeps the legacy tune caches", g_legacy_cache_forgets, 0);
     rc |= expect_true("deferred channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("deferred channel cycle CC tune calls", g_cc_tune_calls, 0);
     rc |= expect_int("deferred channel cycle keeps roll", state.lcn_freq_roll, 0);
@@ -1776,6 +1875,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
     rc |= expect_int("accepted channel cycle uses raw tune", g_io_control_tune_calls, 1);
+    rc |= expect_int("accepted channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
+    rc |= expect_int("accepted channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
     rc |= expect_true("accepted channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("accepted channel cycle skips CC tune", g_cc_tune_calls, 0);
     rc |= expect_int("accepted channel cycle keeps SPS", state.samplesPerSymbol, 8);
@@ -2488,6 +2589,37 @@ test_retune_commands_clear_received_tone(void) {
 }
 #endif
 
+/* Final review, Minor 5: trunk scan with a coordinator published (targets counted) whose pause fails, as one naming no
+   target to leave would: the release keeps trunking, since clearing it under the coordinator strands a target in a
+   followed call (B5), and says why. It used to fall through to the plain release, clearing trunking under the flag and
+   toasting "Automatic tuning stopped". */
+static int
+test_tuner_release_keeps_trunking_when_a_trunk_scan_cannot_pause(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_enable = 1;
+    state.trunk_scan_target_count = 2U; /* no coordinator behind it: dsd_engine_trunk_scan_pause_ex_locked() fails */
+    state.ui_msg[0] = '\0';
+    int rc = expect_int("release over an unpausable trunk scan queued",
+                        dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release over an unpausable trunk scan drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release over an unpausable trunk scan keeps trunking", opts.trunk_enable, 1);
+    rc |= expect_str("release over an unpausable trunk scan says why", state.ui_msg,
+                     "Trunk scan active: pause unavailable");
+    rc |= expect_int("release over an unpausable trunk scan fails", dsd_app_command_test_last_failed(), 1);
+    /* With no coordinator published, the flag alone holds nothing: the release clears trunking as before. */
+    state.trunk_scan_target_count = 0U;
+    rc |= expect_int("release with the flag alone queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release with the flag alone drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release with the flag alone clears trunking", opts.trunk_enable, 0);
+    opts.trunk_scan_enabled = 0;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Releasing the tuner is how a frontend says "stop moving this on your own"
  * without knowing which of the two owners is active — so it has to be an
@@ -2651,12 +2783,13 @@ test_replay_refuses_tunes_and_release(void) {
 
 #ifdef USE_RADIO
 /* A manual tune's payload is range-checked as the frequency entry's is: refused before the tuner is touched, with the
- * reason toasted. These cases need no io_control stub, so they run on every radio build. */
+ * reason toasted. These cases need no io_control stub, so they run on every radio build; where the stub is linked the
+ * accepted ones also show what reached it. */
 static int
 expect_manual_tune_payload_refused(const char* tag, dsd_opts* opts, dsd_state* state, uint32_t hz, const char* toast) {
     int rc = 0;
     state->ui_msg[0] = '\0';
-    const long int center = opts->rtlsdr_center_freq;
+    const uint32_t center = opts->rtlsdr_center_freq;
     rc |= expect_int(tag, dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int(tag, dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_contains(tag, state->ui_msg, toast);
@@ -2676,17 +2809,26 @@ test_manual_tune_payload_range(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 0;
     rc |= expect_manual_tune_payload_refused("manual tune of 0", &opts, &state, 0U, "Invalid frequency");
-#if LONG_MAX < UINT32_MAX // Windows: a payload past what long holds. Not run on a 64-bit long host.
-    rc |= expect_manual_tune_payload_refused("manual tune past LONG_MAX", &opts, &state, (uint32_t)LONG_MAX + 1U,
-                                             "Above 2147.483647 MHz, this build's limit");
-    state.ui_msg[0] = '\0';
-    rc |= expect_int("RTL set freq past LONG_MAX queued",
-                     dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, (uint32_t)LONG_MAX + 1U),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("RTL set freq past LONG_MAX drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |=
-        expect_contains("RTL set freq past LONG_MAX toast", state.ui_msg, "Above 2147.483647 MHz, this build's limit");
+    /* Past what a 32-bit long holds (issue #671): no build refuses the payload, which reaches the tuner. Whether the
+       tune then succeeds depends on the build's tuner stub; the toast names the frequency asked for either way. */
+    const uint32_t past_long = (uint32_t)INT32_MAX + 1U;
+    const int cmds[] = {DSD_APP_CMD_MANUAL_TUNE, DSD_APP_CMD_RTL_SET_FREQ};
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        const char* tag =
+            cmds[i] == DSD_APP_CMD_MANUAL_TUNE ? "manual tune past LONG_MAX" : "RTL set freq past LONG_MAX";
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
 #endif
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(tag, dsd_app_command_set_u32(cmds[i], past_long), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_contains(tag, state.ui_msg, "2147.483648 MHz");
+        rc |= expect_true(tag, strstr(state.ui_msg, "Above") == NULL);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+        rc |= expect_int(tag, g_io_control_tune_calls, 1);
+        rc |= expect_true(tag, g_io_control_tune_freq == past_long);
+#endif
+    }
     freeState(&state);
     return rc;
 }
@@ -7521,12 +7663,12 @@ test_radio_control_unavailable_toasts(void) {
     g_control_unavailable = 0;
     rc |= expect_true("tune failing otherwise queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_str("tune failing otherwise toast", state->ui_msg, "Failed: RTL frequency -> 851.012500 MHz");
+    rc |= expect_str("tune failing otherwise toast", state->ui_msg, "Failed: frequency -> 851.012500 MHz");
     /* A deferred tune (auto-PPM training, a full schedule) says so, and the command fails (issue #670). */
     g_io_control_tune_result = RTL_STREAM_TUNE_DEFERRED;
     rc |= expect_true("deferred tune queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851012500U) > 0);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_str("deferred tune toast", state->ui_msg, "Deferred; retry: RTL frequency -> 851.012500 MHz");
+    rc |= expect_str("deferred tune toast", state->ui_msg, "Deferred; retry: frequency -> 851.012500 MHz");
     rc |= expect_int("deferred tune is a failed command", dsd_app_command_test_last_failed(), 1);
     g_io_control_tune_result = RTL_STREAM_TUNE_OK;
 
@@ -8292,6 +8434,10 @@ test_skip_commands(uint8_t slot) {
     return rc;
 }
 
+/* Issue #671 (N2): the restart lines logged (record_restart_log()), and the last. */
+static int g_restart_log_lines;
+static char g_restart_log[256];
+
 static int
 test_config_keeps_trunk_scan_lifecycle(void) {
     /* The coordinator is installed at startup only, so a live config may not flip the flag
@@ -8307,12 +8453,153 @@ test_config_keeps_trunk_scan_lifecycle(void) {
         cfg.has_trunk_scan = 1;
         cfg.trunk_scan_enabled = !installed;
         cfg.trunk_scan_idle_dwell_ms = 4321;
+        if (!installed) {
+            /* A trunk scan the next start can run names its list. */
+            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        }
         rc |= expect_true("trunk-scan lifecycle config queued", dsd_app_command_apply_config(&cfg) > 0);
         rc |= expect_int("trunk-scan lifecycle config drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("live config keeps the coordinator flag", opts.trunk_scan_enabled, installed);
-        rc |= expect_int("live config still applies trunk-scan tuning", opts.trunk_scan_idle_dwell_ms, 4321);
+        rc |= expect_int("a changed coordinator flag needs a restart", dsd_app_command_test_last_restart_required(), 1);
+        /* With a coordinator the config's dwell is the running list's too. */
+        rc |= expect_str("a changed coordinator flag says so", state.ui_msg,
+                         installed ? "Config applied; restart to use the new trunk scan setting, trunk scan list"
+                                   : "Config applied; restart to use the new trunk scan setting");
+        /* Without a coordinator nothing runs the list's defaults, so the config's stand for the next save; a running
+           coordinator resolved its own at startup (issue #671). */
+        rc |= expect_int("live config applies trunk-scan tuning only without a coordinator",
+                         opts.trunk_scan_idle_dwell_ms, installed ? 100 : 4321);
         freeState(&state);
     }
+    return rc;
+}
+
+/* Issue #671 (B8): a running coordinator loaded its target list and resolved the list's dwell and hold defaults at
+   startup. A config that changes any of them leaves the session on what it runs, keeps the new ones for the next start,
+   and reports that a restart is needed; one that names the same values applies as before. A global channel map or band
+   plan, which no trunk scan starts with, is refused (test_config_refuses_what_the_next_start_refuses()). */
+static int
+test_config_keeps_the_running_trunk_scan_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    static const struct {
+        const char* what;
+        const char* targets;
+        int dwell_ms;
+        int hold_ms;
+        const char* chan_csv;
+        const char* bandplan_csv;
+        int restart;
+        const char* waits; /* what the restart toast names */
+    } cases[] = {
+        {"another list", "other-targets.csv", 3000, 1200, "", "", 1, "trunk scan list"},
+        {"another idle dwell", "targets.csv", 4321, 1200, "", "", 1, "trunk scan list"},
+        {"another activity hold", "targets.csv", 3000, 2500, "", "", 1, "trunk scan list"},
+        {"list, dwell", "other-targets.csv", 4321, 1200, "", "", 1, "trunk scan list"},
+        {"the running list", "targets.csv", 3000, 1200, "", "", 0, NULL},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+        opts.trunk_scan_idle_dwell_ms = 3000;
+        opts.trunk_scan_activity_hold_ms = 1200;
+        dsdneoUserConfig cfg = {0};
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", cases[i].targets);
+        cfg.trunk_scan_idle_dwell_ms = cases[i].dwell_ms;
+        cfg.trunk_scan_activity_hold_ms = cases[i].hold_ms;
+        cfg.has_trunking = 1;
+        DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", cases[i].chan_csv);
+        DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", cases[i].bandplan_csv);
+        rc |= expect_true("trunk-scan list config queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_int("trunk-scan list config drained", dsd_app_drain_cmds(&opts, &state), 1);
+        int bad = expect_str("the running list stays", opts.trunk_scan_targets_csv, "targets.csv");
+        bad |= expect_int("the running idle dwell stays", opts.trunk_scan_idle_dwell_ms, 3000);
+        bad |= expect_int("the running activity hold stays", opts.trunk_scan_activity_hold_ms, 1200);
+        bad |= expect_str("no global channel map", opts.chan_in_file, "");
+        bad |= expect_str("no global band plan", opts.p25_bandplan_in_file, "");
+        bad |= expect_int("restart needed", dsd_app_command_test_last_restart_required(), cases[i].restart);
+        char toast[128] = "";
+        if (cases[i].waits) {
+            DSD_SNPRINTF(toast, sizeof toast, "Config applied; restart to use the new %s", cases[i].waits);
+        }
+        bad |= expect_str("restart toast", state.ui_msg, toast);
+        bad |= expect_int("not failed", dsd_app_command_test_last_failed(), 0);
+        if (bad) {
+            DSD_FPRINTF(stderr, "  config with %s\n", cases[i].what);
+            rc = 1;
+        }
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* Issue #671: every config apply that needs a restart says so on the status line every frontend shows, naming what
+   waits for it: a frontend change and an Airspy input chosen over a non-radio input, beside the trunk-scan causes the
+   two tests above cover. One that needs none says nothing of a restart. */
+static int
+test_config_restart_required_says_what_waits(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    init_test_context(&opts, &state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    dsdneoUserConfig cfg = {0};
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    rc |= expect_true("frontend config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("frontend config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("frontend kept", opts.frontend_kind, DSD_FRONTEND_NONE);
+    rc |= expect_int("frontend needs a restart", dsd_app_command_test_last_restart_required(), 1);
+    rc |= expect_str("frontend toast", state.ui_msg, "Config applied; restart to use the new frontend");
+    rc |= expect_str("frontend: the log says what waits", g_restart_log,
+                     "Config applied; restart to use the new frontend.\n");
+    freeState(&state);
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* Round 5: an output reconfigure that fails fails the apply, restart or not; the restart note stays beside it. The
+       failing output is the wrapped one, so this step runs where GNU ld --wrap is linked. */
+    init_test_context(&opts, &state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    g_reconfigure_output_fails = 1;
+    rc |= expect_true("frontend, reconfigure fails: queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("frontend, reconfigure fails: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_reconfigure_output_fails = 0;
+    rc |= expect_int("frontend, reconfigure fails: failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("frontend, reconfigure fails: not reported as restart-required",
+                     dsd_app_command_test_last_restart_required(), 0);
+    rc |= expect_str("frontend, reconfigure fails: toast", state.ui_msg,
+                     "Failed: audio output reconfigure; restart to use the new frontend");
+    freeState(&state);
+#endif
+
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    dsd_airspy_config_defaults(&cfg.airspy);
+    rc |= expect_true("airspy config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("airspy config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("airspy needs a restart", dsd_app_command_test_last_restart_required(), 1);
+    rc |= expect_str("airspy toast", state.ui_msg, "Config applied; restart to use the new Airspy input");
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    rc |= expect_true("same frontend config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("same frontend config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("same frontend: no restart", dsd_app_command_test_last_restart_required(), 0);
+    rc |= expect_int("same frontend: no restart toast", strstr(state.ui_msg, "restart") == NULL, 1);
+    freeState(&state);
     return rc;
 }
 
@@ -8658,10 +8945,27 @@ __wrap_rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out) {
     return 0;
 }
 
+/* The stream session (rtl_stream_session_generation(), issue #671), which a stop ends as the real one does, and the
+   ledger request a stop fails with it (0: none), as the real one fails the retune it had queued. */
+static uint32_t g_fake_session_generation;
+static uint64_t g_fake_stop_fails_request;
+
+uint32_t __wrap_rtl_stream_session_generation(void);
+
+uint32_t
+__wrap_rtl_stream_session_generation(void) {
+    return g_fake_session_generation;
+}
+
 /* A restart stops and destroys the running context, which the tests fake with a pointer to their own storage. */
 int
 __wrap_rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
+    g_fake_session_generation++;
+    if (g_fake_stop_fails_request != 0U) {
+        dsd_trunk_tuning_request_publish(g_fake_stop_fails_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        g_fake_stop_fails_request = 0U;
+    }
     return 0;
 }
 
@@ -8714,6 +9018,7 @@ static const dsd_opts* g_guard_probe_opts;
 static guard_probe_input g_guard_probe_left;
 static int g_guard_probe_unguarded;
 static int g_guard_probe_holds;
+static int g_guard_probe_publish_holds;
 /* A watchdog retune that completed just before the command took the guard (0: none): the next entry after it is armed
    moves the options' frequency here, as dsd_engine_tune_rtl() writes it while the watchdog holds the guard, which it
    left just before. A command that read the frequency outside the guard read the one from before the retune. */
@@ -8745,7 +9050,7 @@ guard_probe_check(const dsd_opts* opts) {
 static void
 guard_probe_arm(const dsd_opts* opts) {
     guard_probe_take(opts, &g_guard_probe_left);
-    g_guard_probe_unguarded = g_guard_probe_holds = 0;
+    g_guard_probe_unguarded = g_guard_probe_holds = g_guard_probe_publish_holds = 0;
     g_guard_probe_opts = opts;
 }
 
@@ -8767,16 +9072,64 @@ guard_probe_arm_with_retune(dsd_opts* opts, uint32_t freq_hz) {
     g_guard_probe_retune_hz = freq_hz;
 }
 
+/* The drain publishes the options and state snapshots after each command, each under a hold of its own taken by a try
+   (the watchdog writes what they copy under the guard, and a publication never waits for it): the probe checks the
+   input at those entries like any other, and counts them apart from the command's holds. */
+static int g_guard_probe_publishing;
+void __real_dsd_app_telemetry_publish_snapshot(const dsd_state* state);
+void __real_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
+void __wrap_dsd_app_telemetry_publish_snapshot(const dsd_state* state);
+void __wrap_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
+
+void
+__wrap_dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
+    ++g_guard_probe_publishing;
+    __real_dsd_app_telemetry_publish_snapshot(state);
+    --g_guard_probe_publishing;
+}
+
+void
+__wrap_dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
+    ++g_guard_probe_publishing;
+    __real_dsd_app_telemetry_publish_opts_snapshot(opts);
+    --g_guard_probe_publishing;
+}
+
 void __real_p25_sm_tick_guard_enter(void);
+int __real_p25_sm_tick_guard_try_enter(void);
 void __real_p25_sm_tick_guard_leave(void);
 void __wrap_p25_sm_tick_guard_enter(void);
+int __wrap_p25_sm_tick_guard_try_enter(void);
 void __wrap_p25_sm_tick_guard_leave(void);
+
+int
+__wrap_p25_sm_tick_guard_try_enter(void) {
+    const int entered = __real_p25_sm_tick_guard_try_enter();
+    if (entered && g_guard_probe_opts && g_guard_probe_publishing) {
+        ++g_guard_probe_publish_holds;
+        guard_probe_check(g_guard_probe_opts);
+    }
+    return entered;
+}
+
+/* A blocking enter by the thread that already holds the guard: the real guard is not re-entrant, so that enter would
+   spin for good. Counted and stepped over instead, so the case fails rather than hangs; main() asserts none. */
+static int g_guard_reentries;
 
 void
 __wrap_p25_sm_tick_guard_enter(void) {
+    if (p25_sm_tick_guard_held_by_caller()) {
+        ++g_guard_reentries;
+        DSD_FPRINTF(stderr, "p25_sm_tick_guard_enter() re-entered by its holder\n");
+        return;
+    }
     __real_p25_sm_tick_guard_enter();
     if (g_guard_probe_opts) {
-        ++g_guard_probe_holds;
+        if (g_guard_probe_publishing) {
+            ++g_guard_probe_publish_holds;
+        } else {
+            ++g_guard_probe_holds;
+        }
         guard_probe_check(g_guard_probe_opts);
     }
     if (g_guard_probe_retune_opts && g_guard_probe_retune_hz != 0U) {
@@ -8792,6 +9145,26 @@ __wrap_p25_sm_tick_guard_leave(void) {
         guard_probe_take(g_guard_probe_opts, &g_guard_probe_left);
     }
     __real_p25_sm_tick_guard_leave();
+}
+
+/* A scan row's tagged RTL tune (issue #671): the real controller unless a case scripts the answer (an
+   rtl_stream_tune_result), keeping the ledger ID it was tagged with so the case can complete it later. */
+static int g_rtl_tune_tagged_scripted;
+static int g_rtl_tune_tagged_answer;
+static uint64_t g_rtl_tune_tagged_id;
+static int g_rtl_tune_tagged_guarded; /* the scripted tune ran under the P25 SM tick guard its caller held */
+
+int __real_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
+int __wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
+
+int
+__wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
+    if (!g_rtl_tune_tagged_scripted) {
+        return __real_rtl_stream_tune_tagged(ctx, center_freq_hz, request_id);
+    }
+    g_rtl_tune_tagged_id = request_id;
+    g_rtl_tune_tagged_guarded = p25_sm_tick_guard_held_by_caller();
+    return g_rtl_tune_tagged_answer;
 }
 
 /* The rate a radio row told the RTL output rescale the symbol timing is in (issue #634); -1 when none was noted. */
@@ -9306,6 +9679,22 @@ test_squelch_setting_command(void) {
     rc |= expect_true("noise on AM refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
     rc |=
         expect_str("noise on AM toast", state.ui_msg, "Refused: the noise squelch needs an FM channel; AM takes auto");
+    /* Issue #671: a trunk scan running its targets takes the noise default for their rows (an AM target runs it as
+       auto); paused, the AM monitor runs on its own and refuses it as with no scan. */
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_paused = 1U;
+    rc |= expect_true("noise on AM, scan paused, queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
+    rc |= expect_int("noise on AM, scan paused, drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("noise on AM, scan paused, refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_str("noise on AM, scan paused, toast", state.ui_msg,
+                     "Refused: the noise squelch needs an FM channel; AM takes auto");
+    state.trunk_scan_paused = 0U;
+    rc |= expect_true("noise on AM, scan running, queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
+    rc |= expect_int("noise on AM, scan running, drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("noise on AM, scan running, applied",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 10);
+    opts.trunk_scan_enabled = 0;
+    dsd_squelch_setting_store(&opts, &level40);
     opts.analog_only = 0;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -9377,24 +9766,27 @@ test_squelch_commands_edit_the_configured_default(void) {
     rc |= expect_squelch_db("airspy edit keeps the default", configured_squelch(&state), -70.0);
     rc |= expect_squelch_db("airspy edit demod level", g_cmd_squelch_pushed, -60.0);
 
-    /* Enabling an input does not rewrite the squelch either: the stream it opens starts on the
-     * row's level, the one in force, and the default stays put. The Airspy enable rewrites the
-     * device spec first, so it gets its own step. */
+    /* Enabling an input under the row neither rewrites the squelch nor runs at all: a scan in force refuses Input >
+     * Switch source, the radio rows as the PCM rows (issue #671, as #634), so nothing opens and the row's level and the
+     * default stay put. The Airspy enable rewrites the device spec first, so it gets its own step. */
     g_config_rtl_creates = 0;
+    state.ui_msg[0] = '\0';
     rc |= expect_true("airspy enable input queued", post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT) > 0);
     rc |= expect_int("airspy enable input drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("airspy enable input selects the Airspy", opts.audio_in_dev, "airspy");
-    rc |= expect_true("airspy enable input opened a stream", g_config_rtl_creates >= 1);
-    rc |= expect_squelch_db("airspy enable input opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_str("airspy enable input refused under the row", state.ui_msg, "Unsupported: stop the scan first");
+    rc |= expect_str("airspy enable input keeps the device", opts.audio_in_dev, "airspy");
+    rc |= expect_int("airspy enable input opened nothing", g_config_rtl_creates, 0);
     rc |= expect_squelch_db("airspy enable input keeps the row", opts.rtl_squelch_level, -60.0);
     rc |= expect_squelch_db("airspy enable input keeps the default", configured_squelch(&state), -70.0);
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851375000:22:0:24:-70:2");
     g_config_rtl_creates = 0;
+    state.ui_msg[0] = '\0';
     rc |= expect_true("enable input queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT) > 0);
     rc |= expect_int("enable input drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("enable input opened a stream", g_config_rtl_creates >= 1);
-    rc |= expect_squelch_db("enable input opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_str("enable input refused under the row", state.ui_msg, "Unsupported: stop the scan first");
+    rc |= expect_int("enable input opened nothing", g_config_rtl_creates, 0);
+    rc |= expect_squelch_db("enable input keeps the row", opts.rtl_squelch_level, -60.0);
     rc |= expect_squelch_db("enable input keeps the default", configured_squelch(&state), -70.0);
 
     /* CONFIG_APPLY pushes its own default while suspended; the row's level comes back after. */
@@ -10376,6 +10768,14 @@ record_rigctl_log(dsd_neo_log_level_t level, const char* text) {
     }
 }
 
+static void
+record_restart_log(const char* text) {
+    if (text && strstr(text, "restart to use the new")) {
+        g_restart_log_lines++;
+        DSD_SNPRINTF(g_restart_log, sizeof g_restart_log, "%s", text);
+    }
+}
+
 /* The run's one log tap, installed first thing in main(): a tap is never replaced. It keeps the I/Q capture lines the
    RTL cases read and the rigctl peer warnings. */
 static void
@@ -10386,6 +10786,7 @@ record_test_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
 #endif
     record_rigctl_log(level, text);
+    record_restart_log(text);
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -14404,6 +14805,21 @@ test_config_reopen_with_no_stream_reports_the_failed_start(void) {
                      "Config applied; no input running: the rtl_tcp input did not start (see log)");
     rc |= expect_int("no stream rtl_tcp fails: tried once", g_config_rtl_creates, 1);
     rc |= expect_str("no stream rtl_tcp fails: config's host kept", opts.rtltcp_hostname, "192.0.2.7");
+    /* Issue #671 (B2): applied with no input running, it still says, and logs, what waits for a restart. */
+    reset_rx_family_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.8");
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = opts.frontend_kind == DSD_FRONTEND_NONE ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE;
+    const int restart_lines = g_restart_log_lines;
+    rc |= submit_config(&opts, &state, &cfg, "no stream rtl_tcp fails, frontend changed");
+    rc |= expect_str("no stream rtl_tcp fails, frontend changed: toast", state.ui_msg,
+                     "Config applied; no input running: the rtl_tcp input did not start (see log); restart to use the "
+                     "new frontend");
+    rc |= expect_int("no stream rtl_tcp fails, frontend changed: logged", g_restart_log_lines, restart_lines + 1);
+    opts.next_start.pending = 0U;
+    cfg.frontend_kind_is_set = 0;
 
     /* An Airspy with no stream, and a config with a new sample rate, whose start fails. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
@@ -15424,6 +15840,644 @@ test_scan_leave_record_goes_with_its_stream(void) {
         rc |= expect_str(label, state.ui_msg, "Applied: RTL stream restarted");
         finish_scan_row_on_analog(&opts, &state);
     }
+    return rc;
+}
+
+/*
+ * Issue #671: a -Y pause asks the front end back onto the configured monitor as a stop does, so a refusal of that
+ * return is reported and reconciled as the stop's is (issue #578), and the pause stands. A resume whose DMR row's tune
+ * is refused (no stream behind the radio context) undoes what it began the same way, and so does one whose row's tune
+ * timed out and then failed in the engine loop's pass: the engine pauses again through the pause app-control installed
+ * for the session. Both commands run under the tick guard the guarded scanner commands hold, so
+ * nothing under them takes it again.
+ */
+static int
+test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                     DSD_SCAN_MODE_NXDN48, NULL, "pause");
+    state.lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    rc |= expect_int("pause: dmr row", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    g_fake_analog_req_max_hz = 13200;
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    guard_probe_arm(&opts);
+#endif
+    /* Held as the guarded scanner commands hold it: nothing under the pause takes it again (it is not re-entrant). */
+    p25_sm_tick_guard_enter();
+    rc |= expect_int("pause: return refused at once", svc_pause_channel_scan(&opts, &state, 0), -1);
+    p25_sm_tick_guard_leave();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= expect_int("pause: the caller's hold only", g_guard_probe_holds, 1);
+#endif
+    rc |= expect_int("pause: paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1,
+                     1);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("pause: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("pause: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    rc |= expect_int("pause: still paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+
+    /* The front end takes the default the reconcile asked for; the configured width is set back to 16 kHz. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    const int requests = g_analog_req_calls;
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    const int holds = g_guard_probe_holds;
+#endif
+    p25_sm_tick_guard_enter();
+    rc |= expect_int("resume: refused", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_REFUSED);
+    p25_sm_tick_guard_leave();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= expect_int("resume: the caller's hold only", g_guard_probe_holds, holds + 1);
+#endif
+    rc |= expect_int("resume: still paused",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
+    rc |= expect_int("resume: the undo asked for the monitor", g_analog_req_calls > requests, 1);
+    /* The front end settles what the failed tune queued before the undo's refused request. */
+    demod_thread_lands(0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("resume: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("resume: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    guard_probe_disarm();
+
+    /* The row's tune times out, and fails in the engine loop's next pass. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    g_rtl_tune_tagged_scripted = 1;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_TIMEOUT;
+    p25_sm_tick_guard_enter();
+    rc |= expect_int("late: resume pending", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_PENDING);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_tagged_scripted = 0;
+    rc |= expect_int("late: still paused", state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 1, 1);
+    dsd_trunk_tuning_request_publish(g_rtl_tune_tagged_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(&opts, &state);
+    rc |= expect_int("late: paused again",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
+    demod_thread_lands(0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("late: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("late: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+#endif
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+#if defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
+static void seed_running_list(dsd_opts* opts, dsd_state* state);
+static int drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label);
+
+/* What takes the receiver from a -Y resume still waiting on its row (issue #671), each through the command queue. */
+enum { PENDING_TAKEN_BY_TAP = 0, PENDING_TAKEN_BY_SEARCH = 1, PENDING_TAKEN_BY_REOPEN = 2 };
+
+static const char*
+pending_taker_name(int taker) {
+    return taker == PENDING_TAKEN_BY_TAP ? "tap" : (taker == PENDING_TAKEN_BY_SEARCH ? "search" : "reopen");
+}
+
+/* A spectrum tap, a Signal search start (refused here: no live SDR, so it takes nothing), or an explicit stream
+   restart, drained as the decoder drains them. */
+static int
+drain_pending_taker(dsd_opts* opts, dsd_state* state, int taker, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = 0;
+    if (taker == PENDING_TAKEN_BY_TAP) {
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        rc |= expect_int(label, dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 862000000U),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+    } else if (taker == PENDING_TAKEN_BY_SEARCH) {
+        dsd_signal_search_config config;
+        DSD_MEMSET(&config, 0, sizeof config);
+        config.session_id = 9U;
+        rc |= expect_int(label, dsd_app_signal_search_start(&config), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    } else {
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        rc |= expect_int(label, post_empty(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    }
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    if (taker == PENDING_TAKEN_BY_REOPEN) {
+        rc |= expect_str(label, state->ui_msg, "Applied: RTL stream restarted");
+        rc |= expect_int(label, g_config_rtl_creates == 1 && state->rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx, 1);
+    }
+    return rc;
+}
+
+/* Final review, Minor 2: a stop of a typed list already paused (a config apply with the scanner off, an import, an
+   input switch) leaves the manual session it stops: the call heard on the operator's frequency goes on, and nothing is
+   asked of the monitor, which the pause already put back. The list state the pause kept goes. Before, the kept list
+   read as a scan in force, so the stop ended that call and asked the configured monitor again. */
+static int
+expect_stop_leaves_the_manual_session(const char* label, dsd_opts* opts, dsd_state* state) {
+    const dsd_call_observation heard = {.protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+    int rc = expect_int(label, dsd_call_state_observe(state, &heard, DSD_CALL_BOUNDARY_BEGIN), 1);
+    rc |= expect_int(label, dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN) != NULL, 1);
+    const int requests = g_analog_req_calls;
+    (void)svc_leave_channel_scan(opts, state);
+    dsd_call_snapshot call;
+    rc |= expect_int(label, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int(label, g_analog_req_calls, requests);
+    rc |= expect_int(label,
+                     state->lcn_scan_paused == 0 && state->lcn_scan_resume_pending == 0
+                         && dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN) == NULL,
+                     1);
+    return rc;
+}
+
+/* The scan is paused again, nothing pending, the tuner the operator's, and the row's late landing commits nothing. */
+static int
+expect_pending_resume_settled_paused(const char* label, const dsd_opts* opts, const dsd_state* state) {
+    return expect_int(label,
+                      opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0
+                          && state->operator_tuned == 1,
+                      1);
+}
+
+/*
+ * Issue #671 (final review, Important 1): a -Y resume whose row tune timed out leaves scanner_mode 0 while it waits,
+ * and every tune of the receiver meanwhile, or a stream reopen, takes the row from it. A spectrum tap and a Signal
+ * search start that goes on take the resume back through the frequency entry's pause (a refused start takes nothing,
+ * final re-review C1); a reopen drops the row's tune, and the
+ * engine loop's poll settles the resume. Either way the scan is paused again, and the row's late landing commits
+ * nothing. On the branch before the fix an untyped list stayed "resuming" for good (the tap superseded the row's
+ * record, a reopen dropped it, and nothing settled the resume), and a typed one committed its row, published as
+ * running, while the receiver sat on the tap's frequency.
+ */
+static int
+test_pending_resume_taken_back(int typed, int taker) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    char label[64];
+    DSD_SNPRINTF(label, sizeof label, "%s pending resume, %s", typed ? "typed" : "untyped", pending_taker_name(taker));
+    int rc = 0;
+    if (typed) {
+        rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 0,
+                                      DSD_SCAN_MODE_NXDN48, NULL, label);
+        state.lcn_freq_count = 1;
+        *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+        rc |= expect_int(label, dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    } else {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        seed_running_list(&opts, &state);
+    }
+    rc |= expect_int(label, svc_pause_channel_scan(&opts, &state, 1) >= 0 && state.lcn_scan_paused == 1, 1);
+    /* The resume's row tune times out: the row waits on it, scanner_mode 0. */
+    g_rtl_tune_tagged_scripted = 1;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_TIMEOUT;
+    p25_sm_tick_guard_enter();
+    rc |= expect_int(label, svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_PENDING);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_tagged_scripted = 0;
+    const uint64_t row_request = g_rtl_tune_tagged_id;
+    rc |= expect_int(label, opts.scanner_mode == 0 && state.lcn_scan_resume_pending == 1 && row_request != 0U, 1);
+
+    if (taker == PENDING_TAKEN_BY_REOPEN && typed) {
+        g_fake_stop_fails_request = row_request; /* the ledger request the stop fails, as the real stop does */
+    }
+    rc |= drain_pending_taker(&opts, &state, taker, label);
+    if (taker == PENDING_TAKEN_BY_TAP) {
+        rc |= expect_str(label, state.ui_msg, "Applied: tuned -> 862.000000 MHz; scan paused");
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+    } else if (taker == PENDING_TAKEN_BY_SEARCH) {
+        /* A refused start changes nothing (final re-review, C1): the resume still waits on its row. */
+        rc |= expect_int(label, opts.scanner_mode == 0 && state.lcn_scan_resume_pending == 1, 1);
+    } else {
+        /* The reopen dropped the row's tune; the engine loop's next pass settles the resume. */
+        if (typed) {
+            (void)dsd_engine_channel_scan_pending(&opts, &state);
+        } else {
+            rc |= expect_int(label, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_DROPPED);
+        }
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+        char want[96];
+        /* A typed row's ledger request is failed by the stop; an untyped row's tune is dropped unanswered, and the
+           reopened stream starts on the frequency it asked for (final re-review, Minor 2). */
+        if (typed) {
+            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: tune to %s MHz failed", "851.375000");
+        } else {
+            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: the resume to %s MHz was interrupted", "853.375000");
+        }
+        rc |= expect_str(label, state.ui_msg, want);
+    }
+
+    /* The row's tune lands late: after a taker nothing commits and the scan stays paused; after a refused search the
+       resume it left waiting runs. */
+    if (typed) {
+        dsd_trunk_tuning_request_publish(row_request, DSD_TRUNK_TUNE_RESULT_OK);
+        (void)dsd_engine_channel_scan_pending(&opts, &state);
+        if (taker != PENDING_TAKEN_BY_SEARCH) {
+            rc |= expect_int(label, dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+        }
+    } else {
+        dsd_engine_manual_tune_completion(row_request, RTL_STREAM_TUNE_OK);
+        (void)dsd_engine_scan_untyped_poll(&opts, &state);
+        (void)dsd_engine_scan_untyped_poll(&opts, &state);
+    }
+    if (taker == PENDING_TAKEN_BY_SEARCH) {
+        rc |= expect_int(label,
+                         opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                             && state.operator_tuned == 0,
+                         1);
+        opts.scanner_mode = 0;
+    } else {
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+        rc |= expect_int(label, state.lcn_freq_roll == (typed ? 0 : 2), 1);
+        if (typed) {
+            rc |= expect_stop_leaves_the_manual_session(label, &opts, &state);
+        }
+    }
+    g_fake_stop_fails_request = 0U;
+    reset_config_rtl_wrap();
+    if (typed) {
+        finish_scan_row_on_analog(&opts, &state);
+    } else {
+        (void)svc_leave_channel_scan(&opts, &state);
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* SCAN_RESUME through the drain, as `y` or Resume scan submits it, and the toast it leaves. */
+static int
+drain_scan_resume(dsd_opts* opts, dsd_state* state, const char* toast, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, dsd_app_command_action(DSD_APP_CMD_SCAN_RESUME), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str(label, state->ui_msg, toast);
+    return rc;
+}
+
+/*
+ * Final review, Minor 8: a typed -Y resume under the real, non-reentrant P25 SM tick guard. SCAN_RESUME is a guarded
+ * command, so the drain holds the guard through the row's whole start: its scope, its ledger tune with the RTL wait,
+ * its keys and, when the tune lands at once, its commit. Nothing under it may take the guard again (a re-entry would
+ * spin for good; the guard wrap counts one instead). Here the row lands at once, is refused, and times out, whose
+ * landing the engine loop's pass then commits outside the guard.
+ */
+static int
+test_typed_resume_under_the_real_tick_guard(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    const char* label = "typed resume under the guard";
+    int rc = init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 0,
+                                     DSD_SCAN_MODE_NXDN48, NULL, label);
+    state.lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    rc |= expect_int(label, dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    const int reentries = g_guard_reentries;
+
+    static const struct {
+        int answer;
+        const char* toast;
+        const char* stage;
+    } k_legs[] = {
+        {RTL_STREAM_TUNE_OK, "Scan resumed", "lands at once"},
+        {RTL_STREAM_TUNE_FAILED, "Scan stays paused: tune to 851.375000 MHz failed", "refused"},
+        {RTL_STREAM_TUNE_TIMEOUT, "Resuming scan: waiting for the tune", "pending"},
+    };
+
+    for (size_t i = 0; i < sizeof k_legs / sizeof k_legs[0]; i++) {
+        char stage[96];
+        DSD_SNPRINTF(stage, sizeof stage, "%s: %s", label, k_legs[i].stage);
+        if (!state.lcn_scan_paused) {
+            rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, stage);
+        }
+        rc |= expect_int(stage, opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+        g_rtl_tune_tagged_scripted = 1;
+        g_rtl_tune_tagged_answer = k_legs[i].answer;
+        g_rtl_tune_tagged_guarded = 0;
+        rc |= drain_scan_resume(&opts, &state, k_legs[i].toast, stage);
+        g_rtl_tune_tagged_scripted = 0;
+        rc |= expect_int(stage, g_rtl_tune_tagged_guarded, 1); /* the row's tune ran under the drain's hold */
+        rc |= expect_int(stage, g_guard_reentries, reentries);
+        rc |= expect_int(stage, p25_sm_tick_guard_held_by_caller(), 0);
+        if (k_legs[i].answer == RTL_STREAM_TUNE_FAILED) {
+            rc |= expect_int(stage, opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+            continue;
+        }
+        if (k_legs[i].answer == RTL_STREAM_TUNE_TIMEOUT) {
+            rc |= expect_int(stage, opts.scanner_mode == 0 && state.lcn_scan_resume_pending == 1, 1);
+            dsd_trunk_tuning_request_publish(g_rtl_tune_tagged_id, DSD_TRUNK_TUNE_RESULT_OK);
+            (void)dsd_engine_channel_scan_pending(&opts, &state);
+        }
+        rc |= expect_int(stage,
+                         opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                             && dsd_scan_mode_active(&state) == DSD_SCAN_MODE_DMR,
+                         1);
+    }
+    (void)svc_leave_channel_scan(&opts, &state);
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+static int
+test_pending_resume_taken_back_by_tap_search_and_reopen(void) {
+    int rc = 0;
+    for (int typed = 0; typed <= 1; typed++) {
+        for (int taker = PENDING_TAKEN_BY_TAP; taker <= PENDING_TAKEN_BY_REOPEN; taker++) {
+            rc |= test_pending_resume_taken_back(typed, taker);
+        }
+    }
+    return rc;
+}
+#endif
+
+/*
+ * Issue #671: a stream restart while a -Y scan is paused (an rtl_tcp reconnect's reopen alike). A frequency entry
+ * pauses the scan off a typed NXDN48 row, whose channel profile held the front end off the monitor; the restart opens
+ * on the configured NFM 16 kHz monitor, not the row's profile, and the pause survives it with its list and cursor.
+ */
+static int
+test_restart_while_a_list_is_paused_opens_on_the_configured_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 16000,
+                                     DSD_SCAN_MODE_NXDN48, NULL, "paused restart");
+    state.lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    rc |= expect_int("paused restart: nxdn row", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_NXDN48), 0);
+    state.lcn_freq_roll = 1;
+    g_fake_request_rate_hz = 24000;
+    g_fake_demod_rate_hz = 24000;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("paused restart: entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("paused restart: entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("paused restart: paused", state.lcn_scan_paused == 1 && opts.scanner_mode == 0, 1);
+    g_config_rtl_open_ok = 1;
+    rc |= expect_int("paused restart: queued", dsd_app_command_action(DSD_APP_CMD_RTL_RESTART),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("paused restart: drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("paused restart: toast", state.ui_msg, "Applied: RTL stream restarted");
+    rc |= expect_int("paused restart: opened on the configured monitor",
+                     g_config_rtl_create_analog_only == 1 && g_config_rtl_create_kind == DSD_ANALOG_DEMOD_FM
+                         && g_config_rtl_create_width_hz == 16000 && g_config_rtl_create_freq == 852000000L,
+                     1);
+    stream_reopens(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("paused restart: the pause survives",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && state.lcn_freq_roll == 1
+                         && dsd_scan_mode_active(&state) == DSD_SCAN_MODE_INHERIT,
+                     1);
+    g_config_rtl_open_ok = 0;
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+/* Pause the running trunk scan in place with `y` and drain, as the decoder does. */
+static int
+trunk_scan_y(dsd_opts* opts, dsd_state* state, const char* label) {
+    int rc = expect_int(label, dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #671: a trunk-scan pause leaves the target's scopes, which asks the front end back onto the configured monitor
+ * as a -Y stop does (issue #578), so a refusal of that return is reconciled the same way and the pause stands. An -fA
+ * session on an RTL-SDR with NFM 16 kHz configured scans an nfm-conventional target that runs its own 12.5 kHz, on a
+ * 16 kHz rate that cannot filter 16 kHz:
+ *  - a frequency entry pauses the scan; the return, refused at once, puts the decoder on the NFM default, with the
+ *    toast;
+ *  - `y` pauses a resumed scan in place, and the return refused where it lands is reconciled with what the front end
+ *    kept;
+ *  - a return a later request (CQPSK on) superseded is left to that request: nothing put back, nothing toasted;
+ *  - a stream restart after a pause opens on the configured monitor, which nothing then reconciles, and the pause
+ *    survives it (the review's rtl_tcp reconnect case: the reopened stream takes the configured, not the target's,
+ *    profile).
+ */
+static int
+test_trunk_scan_pause_returns_to_the_monitor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    opts.trunk_scan_enabled = 1;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = gain_scan_tune_to_cc_ok});
+    /* The conventional target's park, landing at once. */
+    g_rtl_tune_tagged_scripted = 1;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_OK;
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    rc |= expect_true("trunk monitor dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_trunk_monitor") != NULL);
+    rc |= expect_int("trunk monitor csv", dsd_test_path_join(csv, sizeof csv, dir, "targets.csv"), 0);
+    static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                                    "fire,nfm-conventional,154430000,,3000,,,--nfm-bandwidth-hz 12500\n";
+    rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    char err[256] = {0};
+    rc |= expect_int("trunk monitor: scan init", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err), 0);
+    rc |= expect_int("trunk monitor: the target's width", opts.analog_nfm_bandwidth_hz, 12500);
+    dsd_rtl_stream_metrics_hooks_set(&g_scan_leave_hooks);
+    demod_thread_lands(0);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_demod_rate_hz = 16000;
+    g_fake_request_rate_hz = 16000;
+    g_fake_analog_req_max_hz = 13200;
+
+    /* The entry's pause: the return to NFM 16 kHz is refused at once. */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 155000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("entry paused", state.trunk_scan_paused == 1 && opts.trunk_enable == 0, 1);
+    /* The same drain settles the refusal: the return to 16 kHz, then the NFM default the decoder falls back on. */
+    rc |= expect_last_monitor_request("entry: back on the NFM default, asked for", 2, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_int("entry: back on the NFM default", opts.analog_nfm_bandwidth_hz, 0);
+    rc |= expect_toast("entry: refusal toast", &state,
+                       "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
+    rc |= expect_int("entry: still paused", state.trunk_scan_paused, 1);
+
+    /* Resumed, then paused in place by `y`: the return is queued and refused where it lands, keeping 12.5 kHz. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    g_fake_analog_req_max_hz = 0;
+    rc |= trunk_scan_y(&opts, &state, "y resume");
+    rc |= expect_int("y resume runs the target's width",
+                     state.trunk_scan_paused == 0 && opts.analog_nfm_bandwidth_hz == 12500, 1);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= trunk_scan_y(&opts, &state, "y pause");
+    rc |= expect_int("y pause", state.trunk_scan_paused, 1);
+    rc |= expect_int("y pause asked for the configured monitor",
+                     g_analog_req_kind == DSD_ANALOG_DEMOD_FM && g_analog_req_width_hz == 16000, 1);
+    demod_thread_refuses_analog_keeping(1, 12500);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_toast("y pause: refusal toast", &state, "Refused: NFM 16 kHz");
+    rc |= expect_int("y pause: the decoder follows what the front end kept", opts.analog_nfm_bandwidth_hz, 12500);
+    rc |= expect_int("y pause: still paused", state.trunk_scan_paused, 1);
+
+    /* A later request (CQPSK on) supersedes the next pause's return: left to it. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    rc |= trunk_scan_y(&opts, &state, "y resume again");
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= trunk_scan_y(&opts, &state, "y pause again");
+    const int requests = g_analog_req_calls;
+    submit_cqpsk_toggle();
+    rc |= expect_int("superseded: toggled", dsd_app_drain_cmds(&opts, &state), 1);
+    g_fake_cqpsk = 1;
+    demod_thread_refuses_leave_keeping(1, 0, DSD_ANALOG_DEMOD_FM, 12500);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("superseded: nothing asked", g_analog_req_calls, requests);
+    rc |= expect_int("superseded: the configured width stays", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_str("superseded: nothing toasted", state.ui_msg, "");
+    rc |= expect_int("superseded: still paused", state.trunk_scan_paused, 1);
+    g_fake_cqpsk = 0;
+    submit_cqpsk_toggle();
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+
+    /* A stream restart while a pause's return is still queued: the record goes with the old stream, and the new one
+       opens on the configured NFM monitor, not the target's 12.5 kHz. */
+    rc |= trunk_scan_y(&opts, &state, "y resume before restart");
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= trunk_scan_y(&opts, &state, "y pause before restart");
+    rc |= expect_last_monitor_request("y pause before restart: the return queued", g_analog_req_calls,
+                                      DSD_ANALOG_DEMOD_FM, 16000);
+    g_fake_request_rate_hz = 24000;
+    g_config_rtl_open_ok = 1;
+    rc |= expect_int("restart queued", dsd_app_command_action(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("restart drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("restart toast", state.ui_msg, "Applied: RTL stream restarted");
+    rc |= expect_int("restart opened on the configured monitor",
+                     g_config_rtl_create_analog_only == 1 && g_config_rtl_create_kind == DSD_ANALOG_DEMOD_FM
+                         && g_config_rtl_create_width_hz == 16000,
+                     1);
+    stream_reopens(0);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("restart: nothing reconciled", state.ui_msg, "Applied: RTL stream restarted");
+    rc |= expect_int("restart: the configured width stays", opts.analog_nfm_bandwidth_hz, 16000);
+    rc |= expect_int("restart: the pause survives", state.trunk_scan_paused == 1 && opts.trunk_scan_enabled == 1, 1);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    g_rtl_tune_tagged_scripted = 0;
+    (void)remove(csv);
+    (void)dsd_test_rmdir(dir);
+    g_config_rtl_open_ok = 0;
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+/*
+ * Issue #671: the target a trunk scan pauses at ran a tuner gain of its own (10, the configured gain is 22). A retune
+ * carries no gain outside a running scan, so the pause reopens the stream on the configured gain, on the entry's
+ * frequency; the pause stands. A target without its own gain reopens nothing.
+ */
+static int
+test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out_type = 9;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851000000:22:0:48:0:2");
+    opts.rtl_gain_value = 22;
+    opts.trunk_scan_enabled = 1;
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 0;
+    state.rtl_ctx = (RtlSdrContext*)g_config_rtl_ctx;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = gain_scan_tune_to_cc_ok});
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    int rc = expect_true("pause gain dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_pause_gain") != NULL);
+    rc |= expect_int("pause gain csv path", dsd_test_path_join(csv, sizeof csv, dir, "targets.csv"), 0);
+    static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n"
+                                    "own,p25-trunk,851000000,,3000,,own gain,10\n"
+                                    "inherit,dmr-trunk,452000000,,3000,,inherits\n";
+    rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", csv);
+    char err[256] = {0};
+    rc |= expect_int("pause gain init", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err), 0);
+    rc |= expect_int("parked on its own gain", opts.rtl_gain_value, 10);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    g_config_rtl_creates = 0;
+    g_config_rtl_create_gain = -1;
+    rc |=
+        expect_int("gain entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("gain entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("gain entry toast", state.ui_msg, "Applied: frequency -> 853.000000 MHz; scan paused");
+    rc |= expect_int("gain entry: the configured gain in force", opts.rtl_gain_value, 22);
+    rc |= expect_int("gain entry: the stream reopened on it, on the entry",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_gain == 22
+                         && g_config_rtl_create_freq == 853000000L && state.rtl_ctx != NULL,
+                     1);
+    rc |= expect_int("gain entry: still paused", state.trunk_scan_paused, 1);
+
+    /* A reopen that fails: the input starts again through the recovery path, on the configured gain, and the pause
+       stands. */
+    rc |= trunk_scan_y(&opts, &state, "gain resume before a failed reopen");
+    rc |= expect_int("own gain before a failed reopen", opts.rtl_gain_value == 10 && state.trunk_scan_paused == 0, 1);
+    g_config_rtl_creates = 0;
+    g_config_rtl_fail_starts = 1;
+    rc |= trunk_scan_y(&opts, &state, "pause with a failed reopen");
+    g_config_rtl_fail_starts = 0;
+    rc |= expect_int("failed reopen: started again on the configured gain",
+                     g_config_rtl_creates == 2 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("failed reopen: still paused, configured gain",
+                     state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
+
+    /* A resume whose retune is refused may have put the target's gain on the device first: the pause stands, and the
+       stream reopens on the configured gain, as at a pause (gate review). */
+    rc |= expect_int("paused entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("paused entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_config_rtl_creates = 0;
+    g_config_rtl_create_gain = -1;
+    const dsd_trunk_tune_result cc_result = g_cc_tune_result;
+    const int cc_calls = g_cc_tune_calls;
+    g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    rc |= trunk_scan_y(&opts, &state, "refused gain resume");
+    g_cc_tune_result = cc_result;
+    rc |= expect_int("refused resume: the retune was refused", g_cc_tune_calls, cc_calls + 1);
+    rc |= expect_int("refused resume: still paused, configured gain",
+                     state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
+    rc |= expect_int("refused resume: the stream reopened on the configured gain",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
+
+    /* Resumed onto "own", advanced to "inherit" (the configured gain), paused again: nothing to reopen. */
+    rc |= trunk_scan_y(&opts, &state, "gain resume");
+    rc |= expect_int("gain resume: own gain again", opts.rtl_gain_value == 10 && state.trunk_scan_paused == 0, 1);
+    rc |= expect_int("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    g_config_rtl_creates = 0;
+    rc |= trunk_scan_y(&opts, &state, "inherit pause");
+    rc |= expect_int("inherit pause: no reopen", g_config_rtl_creates == 0 && state.trunk_scan_paused == 1, 1);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    (void)remove(csv);
+    (void)dsd_test_rmdir(dir);
+    g_config_rtl_open_ok = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
     return rc;
 }
 
@@ -18731,10 +19785,10 @@ test_config_apply_holds_an_am_row_width_to_a_reopen(void) {
 #ifdef DSD_NEO_TEST_RTL_WRAP
 /*
  * Issue #526: Input > Switch source > RTL-SDR opens the device at the RTL DSP bandwidth, and a scan with am rows or
- * targets without a width of their own runs the configured AM width there whenever one comes on air. So the configured
- * AM width is held to that rate beside the preset's own width -- on a digital session and on -fA alike -- and a switch
- * whose rate cannot filter it is refused before the running input is torn down. The AM default (6 kHz) fits a 12 kHz
- * DSP bandwidth; a scanner that is not running holds nothing.
+ * targets without a width of their own runs the configured AM width there whenever one comes on air. A running scanner
+ * now refuses the switch outright (issue #671, as the PCM rows refuse it, #634), whatever its widths: the AM width that
+ * does not fit and the AM default that does are refused alike, before the running input is torn down. A scanner that
+ * is not running holds nothing, so the same list opens.
  */
 static int
 rtl_enable_input_am_case(int analog_session) {
@@ -18759,13 +19813,16 @@ rtl_enable_input_am_case(int analog_session) {
     rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int(tag, opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int(tag, g_config_rtl_creates, 0);
-    rc |= expect_int(tag, strncmp(state.ui_msg, "Refused: AM 10 kHz does not fit the 12 kHz DSP rate", 51) == 0, 1);
+    rc |= expect_str(tag, state.ui_msg, "Unsupported: stop the scan first");
 
-    /* The AM default fits the same bandwidth. */
+    /* The AM default fits the same bandwidth, and is refused the same: the scan runs. */
     opts.analog_am_bandwidth_hz = 0;
+    state.ui_msg[0] = '\0';
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int(tag, g_config_rtl_creates, 1);
+    rc |= expect_int(tag, opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_int(tag, g_config_rtl_creates, 0);
+    rc |= expect_str(tag, state.ui_msg, "Unsupported: stop the scan first");
 
     /* Without the scanner the am row runs nothing. */
     opts.audio_in_type = AUDIO_IN_PULSE;
@@ -19027,6 +20084,88 @@ test_channel_map_import_names_rows_the_dsp_rate_skips(void) {
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/*
+ * Issue #671: Input > Switch source > RTL-SDR (or Airspy) is an input switch like the PCM rows: a scan running refuses
+ * it as it refuses them (#634: a running -Y list with rows, a trunk scan's coordinator), with the same reason, and
+ * nothing changes; before, the radio rows switched under a running -Y list and carried it over to the radio. One that
+ * runs ends a paused -Y scan, whose timing and rows were the input left's; one refused before it changes anything, or
+ * whose start fails and puts the input that ran back, keeps the pause.
+ */
+static int
+test_rtl_row_switch_ends_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    reset_config_rtl_wrap();
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "voice.wav");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtl:0:851.0125M:22:0:12");
+    state.lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(&state, 1) = 852375000;
+    state.lcn_freq_roll = 1;
+
+    /* A scan running refuses both radio rows, though the device would open. */
+    g_config_rtl_open_ok = 1;
+    static const int k_rows[] = {DSD_APP_CMD_RTL_ENABLE_INPUT, DSD_APP_CMD_AIRSPY_ENABLE_INPUT};
+    for (int owner = 0; owner < 2; owner++) {
+        for (size_t row = 0; row < sizeof k_rows / sizeof k_rows[0]; row++) {
+            const char* label = owner == 0 ? "radio row under a running -Y list" : "radio row under a trunk scan";
+            opts.scanner_mode = owner == 0 ? 1 : 0;
+            opts.trunk_scan_enabled = owner == 1 ? 1 : 0;
+            state.trunk_scan_target_count = owner == 1 ? 2U : 0U;
+            g_config_rtl_creates = 0;
+            state.ui_msg[0] = '\0';
+            (void)post_empty(k_rows[row]);
+            rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_str(label, state.ui_msg, "Unsupported: stop the scan first");
+            rc |= expect_int(label, g_config_rtl_creates == 0 && opts.audio_in_type == AUDIO_IN_WAV, 1);
+            rc |= expect_str(label, opts.audio_in_dev, "voice.wav");
+            rc |= expect_int(label, opts.scanner_mode, owner == 0 ? 1 : 0);
+        }
+    }
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0U;
+    g_config_rtl_open_ok = 0;
+    state.lcn_scan_paused = 1U;
+    state.operator_tuned = 1U;
+
+    /* Refused before anything changes: a width the 12 kHz DSP bandwidth cannot filter. */
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.analog_nfm_bandwidth_hz = 16000;
+    opts.rtl_dsp_bw_khz = 12;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("refused rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("refused rtl row toast", state.ui_msg, "Refused: NFM 16 kHz");
+    rc |= expect_int("refused rtl row keeps the pause", state.lcn_scan_paused == 1 && state.lcn_freq_roll == 1, 1);
+    opts.analog_only = 0;
+    opts.analog_nfm_bandwidth_hz = 0;
+
+    /* The start fails: the input that ran is put back, and the pause with it. */
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("failed rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("failed rtl row failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_int("failed rtl row keeps the pause", state.lcn_scan_paused, 1);
+
+    /* The switch runs: the pause ends. */
+    g_config_rtl_fail_starts = 0;
+    (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    rc |= expect_int("rtl row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("rtl row runs", opts.audio_in_type == AUDIO_IN_RTL && state.rtl_ctx != NULL, 1);
+    rc |= expect_int("rtl row ends the pause", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
+
+    g_config_rtl_open_ok = 0;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
 /*
  * Issue #634: a switch to a PCM input keeps the radio spec it replaced, and Input > Switch source > RTL-SDR goes back to
  * it: the rtl_tcp server or SoapySDR device the session ran, not a USB RTL-SDR the PCM name would make of it. The
@@ -19297,8 +20436,9 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("digital: not held", g_config_rtl_creates, 1);
 
-    /* Issue #526: the switch is unscoped, so the stream it opens starts on the settings in force, an nfm scan row's
-       own width among them, which the configured digital session does not use: that width is held to the rate too. */
+    /* Issue #526 held an nfm scan row's own width to the rate, the stream the switch opens starting on the settings in
+       force. A scan row in force now refuses the switch outright (issue #671, as the PCM rows refuse it, #634): the row
+       whose width does not fit the 24 kHz DSP rate and the same row at 48 kHz are refused alike, and nothing opens. */
     opts.audio_in_type = AUDIO_IN_PULSE;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.analog_nfm_bandwidth_hz = 0;
@@ -19314,14 +20454,14 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("row width to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("row width to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int("row width to rtl: nothing opened", g_config_rtl_creates, 0);
-    rc |= expect_toast(
-        "row width to rtl toast", &state,
-        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
-    /* The same row at a 48 kHz DSP bandwidth opens. */
+    rc |= expect_str("row width to rtl toast", state.ui_msg, "Unsupported: stop the scan first");
     opts.rtl_dsp_bw_khz = 48;
+    state.ui_msg[0] = '\0';
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int("row width to rtl at 48 kHz: opened", g_config_rtl_creates, 1);
+    rc |= expect_int("row width to rtl at 48 kHz: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_int("row width to rtl at 48 kHz: nothing opened", g_config_rtl_creates, 0);
+    rc |= expect_str("row width to rtl at 48 kHz: toast", state.ui_msg, "Unsupported: stop the scan first");
     dsd_scan_mode_leave(&opts, &state);
     opts.analog_only = 0;
 
@@ -19475,6 +20615,8 @@ test_input_switch_holds_the_watchdog_guard(void) {
     rc |=
         expect_int("guarded rtl_tcp to airspy: the watchdog's retune stands", (int)opts.rtlsdr_center_freq, 851387500);
     rc |= expect_int("guarded rtl_tcp to airspy: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("guarded rtl_tcp to airspy: the options and the state published under holds of their own",
+                     g_guard_probe_publish_holds, 2);
     rc |= expect_int("guarded rtl_tcp to airspy: no write outside the guard", g_guard_probe_unguarded, 0);
 
     /* A running Airspy switched to an RTL-SDR that does not open. */
@@ -19490,6 +20632,8 @@ test_input_switch_holds_the_watchdog_guard(void) {
     guard_probe_disarm();
     rc |= expect_str("guarded airspy to rtl: Airspy put back", opts.audio_in_dev, "airspy");
     rc |= expect_int("guarded airspy to rtl: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("guarded airspy to rtl: the options and the state published under holds of their own",
+                     g_guard_probe_publish_holds, 2);
     rc |= expect_int("guarded airspy to rtl: no write outside the guard", g_guard_probe_unguarded, 0);
 
     /* A switch that works rewrites the input under the guard as well. */
@@ -19675,6 +20819,8 @@ test_dsp_bandwidth_change_that_fails_keeps_the_running_input(void) {
     rc |= expect_str("airspy bw 12: still the Airspy", opts.audio_in_dev, "airspy");
     rc |= expect_toast("airspy bw 12 toast", &state, "Refused: NFM 25 kHz does not fit the 19.531 kHz DSP rate");
     rc |= expect_int("airspy bw 12: one hold", g_guard_probe_holds, 1);
+    rc |= expect_int("airspy bw 12: the options and the state published under holds of their own",
+                     g_guard_probe_publish_holds, 2);
     rc |= expect_int("airspy bw 12: no write outside the guard", g_guard_probe_unguarded, 0);
 
     /* A DMR session on an RTL-SDR at 48 kHz recording I/Q, whose device does not open at 24 kHz. */
@@ -20011,6 +21157,26 @@ expect_row_republished(const char* label, const dsd_state* state, int cqpsk, int
     return rc;
 }
 
+static int
+input_switch_command(int command) {
+    return command == DSD_APP_CMD_AIRSPY_ENABLE_INPUT || command == DSD_APP_CMD_RTL_ENABLE_INPUT;
+}
+
+/* Input > Switch source refused under a scan row (issue #671, as the PCM rows are, #634): the reason on the status
+   line, and nothing changed: no stream opened, the input that ran (@p dev) and the tone received on it
+   (@p generation) kept, the row still on air with nothing asked of the front end. */
+static int
+expect_switch_refused_under_the_row(const char* label, const dsd_opts* opts, const dsd_state* state, const char* dev,
+                                    uint32_t generation) {
+    int rc = expect_str(label, state->ui_msg, "Unsupported: stop the scan first");
+    rc |= expect_int(label, g_config_rtl_creates == 0 && g_config_rtl_starts == 0 && state->rtl_ctx != NULL, 1);
+    rc |= expect_str(label, opts->audio_in_dev, dev);
+    rc |= expect_received_tone_kept(label, state, generation);
+    rc |= expect_int(label, dsd_scan_mode_active(state) != DSD_SCAN_MODE_INHERIT, 1);
+    rc |= expect_int(label, g_demod_req_calls == 0 && g_analog_req_calls == 0, 1);
+    return rc;
+}
+
 /*
  * Issue #578: Input > Switch source, a DSP bandwidth change and an Airspy setting leave a scan row's scope in force, so
  * a stream they start opens on the row's settings, but with the CQPSK state an open picks, which DSD_NEO_CQPSK decides
@@ -20021,7 +21187,7 @@ expect_row_republished(const char* label, const dsd_state* state, int cqpsk, int
  * resume asks it of a stream it started, and timed for the rate that stream runs it at: a C4FM row at the 24 kHz the
  * CQPSK open delivers (5 samples per 4800 Bd symbol), a CQPSK row at the 24 kHz demod rate its timing loop runs at, not
  * the 48 kHz of the FSK output (10). Nothing is reset as for a new input. With no scan row the rollback asks nothing,
- * as before.
+ * as before. Input > Switch source itself is now refused under the row (issue #671): its legs show the refusal.
  */
 static int
 test_rollback_restart_republishes_the_scan_row(void) {
@@ -20062,15 +21228,18 @@ test_rollback_restart_republishes_the_scan_row(void) {
         g_config_rtl_fail_starts = 1; /* the new device, bandwidth or rate does not start */
         const uint32_t generation = state.analog_rx.generation;
         rc |= submit_stream_restart(&opts, &state, legs[i].command, 12, label);
+        if (input_switch_command(legs[i].command)) {
+            /* A scan row in force refuses Input > Switch source (issue #671, as #634): nothing to roll back. */
+            rc |= expect_switch_refused_under_the_row(label, &opts, &state, legs[i].dev, generation);
+            finish_row_restart_session(&opts, &state);
+            continue;
+        }
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
         rc |= expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_starts == 2 && state.rtl_ctx != NULL, 1);
         rc |= expect_str(label, g_config_rtl_create_dev, legs[i].dev);
         rc |= expect_str(label, opts.audio_in_dev, legs[i].dev);
         rc |= expect_int(label, opts.rtl_dsp_bw_khz, 24);
         rc |= expect_str(label, state.ui_msg, legs[i].toast);
-        if (legs[i].command == DSD_APP_CMD_AIRSPY_ENABLE_INPUT || legs[i].command == DSD_APP_CMD_RTL_ENABLE_INPUT) {
-            rc |= expect_received_tone_kept(label, &state, generation);
-        }
         if (legs[i].row) {
             rc |= expect_row_republished(label, &state, legs[i].row_cqpsk, 5);
         } else {
@@ -20084,7 +21253,8 @@ test_rollback_restart_republishes_the_scan_row(void) {
 /*
  * Issue #578: the same rollback under an analog row. The restart opens on the row's monitor, as the stream it replaced
  * ran it (the options in force are the row's), and the row's profile asked of it is that monitor: an nfm row's own
- * 12.5 kHz, an am row's own 20 kHz, and no symbol profile.
+ * 12.5 kHz, an am row's own 20 kHz, and no symbol profile. A DSP bandwidth change that does not start rolls back;
+ * Input > Switch source, which used to roll back the same way, is refused under the row first (issue #671).
  */
 static int
 test_rollback_restart_republishes_an_analog_scan_row(void) {
@@ -20109,13 +21279,15 @@ test_rollback_restart_republishes_an_analog_scan_row(void) {
         g_config_rtl_fail_starts = 1;
         const uint32_t generation = state.analog_rx.generation;
         rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, label);
+        rc |= expect_switch_refused_under_the_row(label, &opts, &state, "rtl:0:851.375M:0:0:24", generation);
+        rc |= submit_dsp_bandwidth(&opts, &state, 48, label);
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
         rc |= expect_restarted_on(label, &opts, &state, "rtl:0:851.375M:0:0:24");
+        rc |= expect_int(label, opts.rtl_dsp_bw_khz, 24);
         rc |= expect_int(label,
                          g_config_rtl_create_analog_only == 1 && g_config_rtl_create_kind == kind
                              && g_config_rtl_create_width_hz == width_hz,
                          1);
-        rc |= expect_received_tone_kept(label, &state, generation);
         rc |= expect_int(label, dsd_scan_mode_active(&state) == (am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM), 1);
         rc |= expect_last_monitor_request(label, 1, kind, width_hz);
         rc |= expect_int(label, g_demod_req_calls, 0);
@@ -20130,7 +21302,7 @@ test_rollback_restart_republishes_an_analog_scan_row(void) {
  * DSD_NEO_CQPSK=1 a P25 C4FM row runs the FSK discriminator on the new Airspy, the RTL-SDR switched back to, the RTL-SDR
  * reopened at a 48 kHz DSP bandwidth (10 samples per symbol at the 48 kHz CQPSK output), the Airspy reopened at a new
  * sample rate, and the RTL-SDR an explicit restart, a gain or a device index reopens. With no scan row a restart asks
- * nothing, as before.
+ * nothing, as before. Input > Switch source is now refused under the row (issue #671): its legs show the refusal.
  */
 static int
 test_restart_under_a_scan_row_republishes_the_row(void) {
@@ -20162,7 +21334,14 @@ test_restart_under_a_scan_row_republishes_the_row(void) {
         DSD_SNPRINTF(label, sizeof label, "%s that starts, c4fm row, DSD_NEO_CQPSK=1", legs[i].label);
         init_row_restart_session(&opts, &state, (RtlSdrContext*)fake_ctx, legs[i].dev, legs[i].row, 0, 1);
         g_fake_output_rate_hz = (unsigned int)legs[i].khz * 1000U; /* the new CQPSK stream's output */
+        const uint32_t generation = state.analog_rx.generation;
         rc |= submit_stream_restart(&opts, &state, legs[i].command, legs[i].khz, label);
+        if (input_switch_command(legs[i].command)) {
+            /* A scan row in force refuses Input > Switch source (issue #671, as #634). */
+            rc |= expect_switch_refused_under_the_row(label, &opts, &state, legs[i].dev, generation);
+            finish_row_restart_session(&opts, &state);
+            continue;
+        }
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
         rc |= expect_int(label, g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
         rc |= expect_str(label, opts.audio_in_dev, legs[i].dev_after);
@@ -20606,6 +21785,1606 @@ test_scan_row_edit_commands_without_a_scan(void) {
     return rc;
 }
 
+/* Issue #671: the -Y pause and resume services. A pause keeps the list and its cursor, drops the hold and hands the
+   tuner to the operator. A resume with no row to go to, or whose row's tune is refused (audio input with no rigctl
+   peer tunes nothing), leaves the scan paused and says why. A stop ends a pause, and a resume still waiting on its row,
+   while the tuner stays the operator's. */
+static int
+test_channel_scan_pause_services(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.use_rigctl = 0;
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(&state, 1) = 852375000;
+    state.lcn_freq_roll = 1;
+    state.lcn_scan_hold = 1;
+    int rc = expect_int("pause: nothing asked of a monitor", svc_pause_channel_scan(&opts, &state, 1), 0);
+    rc |= expect_int("pause: paused with the cursor kept",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1
+                         && state.lcn_scan_hold == 0 && state.lcn_freq_roll == 1,
+                     1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 1);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("resume: no row", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_NO_ROW);
+    rc |= expect_str("resume: no row says why", state.ui_msg, "Scan stays paused: no scan channel to resume on");
+    rc |= expect_int("resume: no row stays paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 0);
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 1U, 0);
+    rc |= expect_int("resume: refused", svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_REFUSED);
+    rc |= expect_str("resume: refused says why", state.ui_msg, "Scan stays paused: tune to 852.375000 MHz failed");
+    rc |= expect_int("resume: refused stays paused",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 1 && state.lcn_freq_roll == 1,
+                     1);
+    state.lcn_scan_resume_pending = 1U; /* as a resume still waiting on its row */
+    (void)svc_leave_channel_scan(&opts, &state);
+    rc |= expect_int("stop: ends the pause, the tuner stays the operator's",
+                     state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0 && state.operator_tuned == 1, 1);
+    freeState(&state);
+    return rc;
+}
+
+/* Post the action @p id and drain it. */
+static int
+drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label) {
+    int rc = expect_int(label, dsd_app_command_action(id), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* An untyped -Y list of three rows on audio input, scanning from row 2 with an operator hold. */
+static void
+seed_running_list(dsd_opts* opts, dsd_state* state) {
+    opts->scanner_mode = 1;
+    state->lcn_freq_count = 3;
+    *dsd_state_trunk_lcn_slot(state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(state, 1) = 852375000;
+    *dsd_state_trunk_lcn_slot(state, 2) = 853375000;
+    state->lcn_freq_roll = 2;
+    state->lcn_scan_hold = 1;
+    state->lcn_scan_paused = 0U;
+    state->lcn_scan_resume_pending = 0U;
+    state->operator_tuned = 0U;
+}
+
+/* A -Y list of three rows paused by a tuner release, cursor on row 2 (seed_running_list()). */
+static int
+pause_seeded_list(dsd_opts* opts, dsd_state* state, const char* label) {
+    seed_running_list(opts, state);
+    int rc = drain_action(opts, state, DSD_APP_CMD_TUNER_RELEASE, label);
+    rc |= expect_int(label, opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_freq_roll == 2, 1);
+    return rc;
+}
+
+/* Apply @p cfg and drain it, with the status line cleared first. */
+static int
+drain_config(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* label) {
+    int rc = expect_true(label, dsd_app_command_apply_config(cfg) > 0);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #671 (F11): a config applied over a paused -Y scan settles the scan last, as the controls do. Without
+ * [trunking] it keeps the pause (cursor and list untouched). Trunking on stops it and trunks; the scanner off stops
+ * it, and a save then writes the scanner off; the scanner on resumes it (here the row's tune is refused on audio input,
+ * so it stays paused and says why). A config apply never imports a channel map, so another chan_csv waits for a
+ * restart: the path the session loaded stays, the pause is left to the owner rules alone, and the restart cause stays
+ * on the status line beside the resume's own reason. On main the staged scanner and trunking flags were written over
+ * the pause: the scanner on left a scan both running and paused with no row installed, and trunking on or the scanner
+ * off left the pause set.
+ */
+static int
+test_config_settles_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+
+    rc |= pause_seeded_list(&opts, &state, "paused before a config without [trunking]");
+    dsdneoUserConfig cfg = {0};
+    cfg.has_logging = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config without [trunking]");
+    rc |= expect_int("no [trunking]: the pause stays",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && opts.trunk_enable == 0
+                         && state.lcn_freq_roll == 2 && state.lcn_freq_count == 3 && state.operator_tuned == 1,
+                     1);
+
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config trunking on");
+    rc |= expect_int("trunking on stops the paused scan and trunks",
+                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && opts.trunk_enable == 1, 1);
+    opts.trunk_enable = 0;
+
+    rc |= pause_seeded_list(&opts, &state, "paused before scanner off");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config scanner off");
+    rc |= expect_int("scanner off stops the paused scan",
+                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && opts.trunk_enable == 0, 1);
+    static dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("scanner off: a save after the stop writes the scanner off", saved.trunk_scanner, 0);
+
+    rc |= pause_seeded_list(&opts, &state, "paused before scanner on");
+    const uint32_t session = state.lcn_scan_session;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config scanner on");
+    rc |= expect_int("scanner on asked for a resume", state.lcn_scan_session != session, 1);
+    rc |= expect_str("scanner on: the resume says why it stays paused", state.ui_msg,
+                     "Scan stays paused: tune to 853.375000 MHz failed");
+    rc |= expect_int("scanner on: paused, never running and paused at once",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && state.lcn_freq_roll == 2, 1);
+
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+    rc |= drain_config(&opts, &state, &cfg, "config scanner on, another map");
+    rc |= expect_str("another map: the loaded map stays", opts.chan_in_file, "loaded_map.csv");
+    rc |= expect_int("another map: restart needed", dsd_app_command_test_last_restart_required(), 1);
+    rc |= expect_str("another map: the resume's reason and the restart cause", state.ui_msg,
+                     "Scan stays paused: tune to 853.375000 MHz failed; restart to use the new channel map");
+    rc |= expect_int("another map: still paused where it was",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && state.lcn_freq_roll == 2, 1);
+
+    opts.chan_in_file[0] = '\0';
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671: a config apply never imports a channel map (only startup does), so in any session another chan_csv
+ * leaves the path the session loaded and says a restart is needed: with no scan, and under a running -Y scan, which
+ * keeps running. On main the new path was taken silently while the decoder kept the old rows, and the next save wrote
+ * a map the session never ran.
+ */
+static int
+test_config_channel_map_waits_for_a_restart(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int scanning = 0; scanning <= 1; scanning++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_WAV;
+        if (scanning) {
+            seed_running_list(&opts, &state);
+        }
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        dsdneoUserConfig cfg = {0};
+        cfg.has_trunking = 1;
+        cfg.trunk_scanner = scanning;
+        DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+        rc |= drain_config(&opts, &state, &cfg, scanning ? "map under -Y" : "map with no scan");
+        int bad = expect_str("the loaded map stays", opts.chan_in_file, "loaded_map.csv");
+        bad |= expect_int("restart needed", dsd_app_command_test_last_restart_required(), 1);
+        bad |= expect_str("restart toast", state.ui_msg, "Config applied; restart to use the new channel map");
+        bad |= expect_int("the scan is as it was", opts.scanner_mode == scanning && state.lcn_scan_paused == 0, 1);
+        if (bad) {
+            DSD_FPRINTF(stderr, "  %s\n", scanning ? "under a running -Y scan" : "with no scan");
+            rc = 1;
+        }
+        /* The same path again needs nothing. */
+        DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "loaded_map.csv");
+        rc |= drain_config(&opts, &state, &cfg, "same map");
+        rc |= expect_int("same map: no restart", dsd_app_command_test_last_restart_required(), 0);
+        opts.scanner_mode = 0;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* Apply @p cfg and save what the session would write now (dsd_snapshot_opts_to_user_config()) into @p saved. */
+static int
+apply_then_save(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, dsdneoUserConfig* saved,
+                const char* label) {
+    int rc = drain_config(opts, state, cfg, label);
+    DSD_MEMSET(saved, 0, sizeof *saved);
+    dsd_snapshot_opts_to_user_config(opts, state, saved);
+    return rc;
+}
+
+/*
+ * Issue #671 (N1): a config apply that names a setting only a restart puts in place keeps the running one in force and
+ * keeps the applied one for the next start: every save writes it, so the restart the toast asks for runs it. A later
+ * apply naming the running value again takes it back, and so does a channel-map import or clear, which set the map
+ * now. An Airspy chosen over audio input is kept in the input device a save writes. On main (after the restart
+ * notices) every save wrote the running value back, the file a Config > Load had just pointed the autosave at
+ * included, so the restart ran the old settings. The trunk-scan band plan is refused (B1, below).
+ */
+static int
+test_config_restart_settings_wait_for_the_next_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+
+    /* The frontend. */
+    init_test_context(&opts, &state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: frontend");
+    rc |= expect_int("frontend: the running one stays", opts.frontend_kind, DSD_FRONTEND_NONE);
+    rc |= expect_int("frontend: a save writes the applied one", saved.frontend_kind == DSD_FRONTEND_TERMINAL, 1);
+    cfg.frontend_kind = DSD_FRONTEND_NONE;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: frontend back");
+    rc |= expect_int("frontend back: no restart", dsd_app_command_test_last_restart_required(), 0);
+    rc |= expect_int("frontend back: a save writes the running one", saved.frontend_kind == DSD_FRONTEND_NONE, 1);
+    freeState(&state);
+
+    /* Trunk scan turned on with none running. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    cfg.trunk_scan_idle_dwell_ms = 3000;
+    cfg.trunk_scan_activity_hold_ms = 1200;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan on");
+    rc |= expect_int("trunk scan on: none runs", opts.trunk_scan_enabled, 0);
+    rc |= expect_int("trunk scan on: a save writes it", saved.trunk_scan_enabled, 1);
+    rc |= expect_str("trunk scan on: with its list", saved.trunk_scan_targets_csv, "targets.csv");
+    freeState(&state);
+
+    /* Under a coordinator: the list, its dwell and hold defaults, and the band plan. */
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "other-targets.csv");
+    cfg.trunk_scan_idle_dwell_ms = 4321;
+    cfg.trunk_scan_activity_hold_ms = 2500;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list");
+    rc |= expect_int("trunk scan list: the running one stays",
+                     strcmp(opts.trunk_scan_targets_csv, "targets.csv") == 0 && opts.trunk_scan_idle_dwell_ms == 3000
+                         && opts.trunk_scan_activity_hold_ms == 1200 && opts.p25_bandplan_in_file[0] == '\0',
+                     1);
+    rc |= expect_str("trunk scan list: a save writes the list", saved.trunk_scan_targets_csv, "other-targets.csv");
+    rc |= expect_int("trunk scan list: and its defaults",
+                     saved.trunk_scan_idle_dwell_ms == 4321 && saved.trunk_scan_activity_hold_ms == 2500, 1);
+    /* The running values named again take every one back. */
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    cfg.trunk_scan_idle_dwell_ms = 3000;
+    cfg.trunk_scan_activity_hold_ms = 1200;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: trunk scan list back");
+    rc |=
+        expect_str("trunk scan list back: a save writes the running list", saved.trunk_scan_targets_csv, "targets.csv");
+    rc |= expect_int("trunk scan list back: and its defaults",
+                     saved.trunk_scan_idle_dwell_ms == 3000 && saved.trunk_scan_activity_hold_ms == 1200, 1);
+    freeState(&state);
+
+    /* The channel map, with no scan: an apply without [trunking] keeps it waiting, the running map named again takes
+       it back, and a clear sets the map now. */
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: map");
+    rc |= expect_str("map: the running one stays", opts.chan_in_file, "loaded_map.csv");
+    rc |= expect_str("map: a save writes the applied one", saved.trunk_chan_csv, "another_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_logging = 1;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: no [trunking]");
+    rc |= expect_str("no [trunking]: the map still waits", saved.trunk_chan_csv, "another_map.csv");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "loaded_map.csv");
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: map back");
+    rc |= expect_str("map back: a save writes the running one", saved.trunk_chan_csv, "loaded_map.csv");
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "another_map.csv");
+    rc |= drain_config(&opts, &state, &cfg, "next start: map again");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "next start: map cleared");
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_str("map cleared: a save writes no map", saved.trunk_chan_csv, "");
+    freeState(&state);
+
+    /* An Airspy chosen over audio input: the input runs on, and a save writes the Airspy. */
+    init_test_context(&opts, &state);
+    const int input_type = opts.audio_in_type;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    dsd_airspy_config_defaults(&cfg.airspy);
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "next start: airspy");
+    rc |= expect_int("airspy: the running input stays", opts.audio_in_type, input_type);
+    rc |=
+        expect_int("airspy: a save writes the Airspy", saved.has_input && saved.input_source == DSDCFG_INPUT_AIRSPY, 1);
+    freeState(&state);
+    return rc;
+}
+
+/* Apply @p cfg, which must be refused before anything changes, with @p why in the toast; the save afterwards writes
+   what it wrote before (@p before). */
+static int
+expect_refused_for_the_next_start(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                                  const dsdneoUserConfig* before, const char* why, const char* label) {
+    static dsdneoUserConfig saved;
+    int rc = apply_then_save(opts, state, cfg, &saved, label);
+    char toast[128];
+    DSD_SNPRINTF(toast, sizeof toast, "Config not applied: %s", why);
+    int bad = expect_str("refused for the next start: toast", state->ui_msg, toast);
+    bad |= expect_int("refused for the next start: failed", dsd_app_command_test_last_failed(), 1);
+    bad |= expect_int("refused for the next start: nothing waits", (int)opts->next_start.pending, 0);
+    bad |= expect_int("refused for the next start: the save is as it was",
+                      saved.trunk_scan_enabled == before->trunk_scan_enabled
+                          && strcmp(saved.trunk_chan_csv, before->trunk_chan_csv) == 0
+                          && strcmp(saved.trunk_p25_bandplan_csv, before->trunk_p25_bandplan_csv) == 0
+                          && strcmp(saved.trunk_scan_targets_csv, before->trunk_scan_targets_csv) == 0
+                          && saved.trunk_scan_idle_dwell_ms == before->trunk_scan_idle_dwell_ms,
+                      1);
+    if (bad) {
+        DSD_FPRINTF(stderr, "  %s\n", label);
+    }
+    return rc | bad;
+}
+
+/*
+ * Issue #671 (B1): what a config leaves for the next start is held to startup's own rules (the composed-config check
+ * --validate-config runs: no global channel map or P25 band plan beside a trunk scan, and a list for it). A config
+ * whose next start those rules would refuse is refused whole, with their reason, before anything changes: a band plan
+ * or a channel map under a running trunk scan, and a trunk scan turned on over the global map or band plan a session
+ * runs, a file valid on its own loaded as terminal Config > Load loads it included. Before this, each was kept for the
+ * next start, so the save wrote a config the next start refused.
+ */
+static int
+test_config_refuses_what_the_next_start_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig before;
+    static const char k_map_why[] = "trunking.chan_csv cannot be combined with trunk_scan.enabled";
+    static const char k_plan_why[] = "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled";
+    int rc = 0;
+
+    /* Under a running trunk scan: a band plan, then a channel map. */
+    for (int map = 0; map <= 1; map++) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", "targets.csv");
+        opts.trunk_scan_idle_dwell_ms = 3000;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        cfg.trunk_scan_idle_dwell_ms = 4321; /* would wait for the next start, but the whole config is refused */
+        cfg.has_trunking = 1;
+        if (map) {
+            DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "chan.csv");
+        } else {
+            DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+        }
+        rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, map ? k_map_why : k_plan_why,
+                                                map ? "trunk scan: a channel map" : "trunk scan: a band plan");
+        rc |= expect_int("trunk scan refusal: the running dwell stays", opts.trunk_scan_idle_dwell_ms, 3000);
+        freeState(&state);
+    }
+
+    /* A trunk scan turned on over a session's global map, then over its band plan. */
+    for (int map = 0; map <= 1; map++) {
+        init_test_context(&opts, &state);
+        if (map) {
+            DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        } else {
+            DSD_SNPRINTF(opts.p25_bandplan_in_file, sizeof opts.p25_bandplan_in_file, "%s", "plan.csv");
+        }
+        dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, map ? k_map_why : k_plan_why,
+                                                map ? "trunk scan on over a global map" : "trunk scan on over a plan");
+        freeState(&state);
+    }
+
+    /* A trunk scan without its list. */
+    init_test_context(&opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before,
+                                            "targets_csv is required when trunk_scan.enabled is true",
+                                            "trunk scan on without a list");
+    freeState(&state);
+
+    /* Terminal Config > Load of a trunk-scan file valid on its own, over a session running a global map. */
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    rc |= expect_true("refused load dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_refused_load") != NULL);
+    rc |= expect_int("refused load path", dsd_test_path_join(path, sizeof path, dir, "trunkscan.ini"), 0);
+    static const char k_ini[] = "[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n";
+    rc |= write_file_bytes(path, k_ini, sizeof k_ini - 1U);
+    dsdcfg_diagnostics_t diags;
+    dsdcfg_diags_init(&diags);
+    rc |= expect_int("refused load: the file is valid on its own",
+                     dsd_user_config_validate(path, &diags) == 0 && diags.error_count == 0, 1);
+    dsdcfg_diags_free(&diags);
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    rc |= expect_int("refused load: file loads", dsd_user_config_load(path, &cfg), 0);
+    rc |= expect_refused_for_the_next_start(&opts, &state, &cfg, &before, k_map_why, "Config > Load of a trunk scan");
+    freeState(&state);
+    (void)remove(path);
+    (void)dsd_test_rmdir(dir);
+
+    /* A trunk scan turned on over a session with no global map or plan is kept for the next start. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    static dsdneoUserConfig saved;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan on, nothing global");
+    rc |= expect_int("trunk scan on, nothing global: waits", saved.trunk_scan_enabled, 1);
+    rc |= expect_int("trunk scan on, nothing global: restart", dsd_app_command_test_last_restart_required(), 1);
+    freeState(&state);
+
+    /* Round 4: the -Y scanner beside a trunk scan, which startup refuses as well. A config that names both (trunking
+       off), and a trunk scan turned on in a session running -Y, whose save writes the scanner on. */
+    static const char k_scanner_why[] = "trunking.scanner cannot be combined with trunk_scan.enabled";
+    for (int session_scans = 0; session_scans <= 1; session_scans++) {
+        init_test_context(&opts, &state);
+        opts.scanner_mode = session_scans;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &before);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        if (!session_scans) {
+            cfg.has_trunking = 1;
+            cfg.trunk_scanner = 1;
+        }
+        rc |=
+            expect_refused_for_the_next_start(&opts, &state, &cfg, &before, k_scanner_why,
+                                              session_scans ? "trunk scan on under -Y" : "trunk scan and the scanner");
+        rc |= expect_int("scanner refusal: the scanner is as it was", opts.scanner_mode, session_scans);
+        opts.scanner_mode = 0;
+        freeState(&state);
+    }
+    /* Round 5: over a trunking session the scanner on turns trunking off, as staging does: a config naming the scanner
+       (trunking off) and a trunk scan is refused there too, and so is the scanner alone beside a trunk scan already
+       waiting. Before this the check judged trunking still on and passed both. */
+    for (int waiting = 0; waiting <= 1; waiting++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = 1;
+        if (waiting) {
+            opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+            opts.next_start.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+                         "targets.csv");
+        }
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        cfg.trunk_scanner = 1;
+        if (!waiting) {
+            cfg.has_trunk_scan = 1;
+            cfg.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        }
+        rc |= drain_config(&opts, &state, &cfg,
+                           waiting ? "trunking session: scanner, trunk scan waiting"
+                                   : "trunking session: scanner and trunk scan");
+        rc |=
+            expect_str(waiting ? "trunking session, trunk scan waiting: the scanner is refused"
+                               : "trunking session: the scanner and a trunk scan are refused",
+                       state.ui_msg, "Config not applied: trunking.scanner cannot be combined with trunk_scan.enabled");
+        rc |=
+            expect_int("trunking session: the owner is as it was", opts.trunk_enable == 1 && opts.scanner_mode == 0, 1);
+        opts.trunk_enable = 0;
+        opts.scanner_mode = 0;
+        freeState(&state);
+    }
+
+    /* Trunking on wins over the scanner, at startup as in staging: that config's trunk scan waits. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    cfg.trunk_scanner = 1;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan, trunking and the scanner");
+    rc |= expect_int("trunking wins over the scanner: the trunk scan waits",
+                     saved.trunk_scan_enabled == 1 && saved.trunk_scanner == 0 && saved.trunk_enabled == 1, 1);
+    opts.trunk_enable = 0;
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671 (round 4): a config is held only to the rules it would newly break. A session whose save already breaks
+ * one (a global channel map beside a trunk scan waiting for the next start) still takes a config that leaves that rule
+ * as it is or fixes it, but not one that breaks another: a band plan, or the scanner, beside that trunk scan. Before
+ * this, such a session took any config, the second conflict included.
+ */
+static int
+test_config_judges_only_what_it_breaks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+    for (int step = 0; step < 4; step++) {
+        init_test_context(&opts, &state);
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+        opts.next_start.trunk_scan_enabled = 1;
+        DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+                     "targets.csv");
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        if (step == 0) {
+            DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+            rc |= drain_config(&opts, &state, &cfg, "already broken: a band plan");
+            rc |=
+                expect_str("already broken: a band plan is refused", state.ui_msg,
+                           "Config not applied: trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled");
+            rc |= expect_str("already broken: no band plan", opts.p25_bandplan_in_file, "");
+        } else if (step == 1) {
+            cfg.trunk_scanner = 1;
+            rc |= drain_config(&opts, &state, &cfg, "already broken: the scanner");
+            rc |= expect_str("already broken: the scanner is refused", state.ui_msg,
+                             "Config not applied: trunking.scanner cannot be combined with trunk_scan.enabled");
+            rc |= expect_int("already broken: no scanner", opts.scanner_mode, 0);
+        } else if (step == 2) {
+            /* The same rule left as it is: another map, which waits for the next start like any map. */
+            DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "other_map.csv");
+            rc |= apply_then_save(&opts, &state, &cfg, &saved, "already broken: another map");
+            rc |= expect_int("already broken: another map applies", dsd_app_command_test_last_failed(), 0);
+            rc |= expect_str("already broken: another map waits", saved.trunk_chan_csv, "other_map.csv");
+        } else {
+            /* The rule fixed: the trunk scan turned off. */
+            cfg.has_trunking = 0;
+            cfg.has_trunk_scan = 1;
+            rc |= apply_then_save(&opts, &state, &cfg, &saved, "already broken: trunk scan off");
+            rc |= expect_int("already broken: trunk scan off applies", dsd_app_command_test_last_failed(), 0);
+            rc |= expect_int("already broken: trunk scan off is saved", saved.trunk_scan_enabled, 0);
+        }
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* A channel map, the same file read as a P25 band plan, and a RadioReference import that starts the scanner: none may
+   make the save a waiting trunk scan cannot start with. */
+static const char k_next_start_map[] = "channel,frequency_hz,name,mode,options\n1,461000000,one,dmr,\n";
+static const char k_next_start_plan[] =
+    "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n0,851006250,6250,1,-45000000,12500,,\n";
+
+/*
+ * Issue #671 (round 4): the frontends' own changes are held to the same rules as a config, once a config has left a
+ * trunk scan for the next start. A channel-map import, a P25 band-plan import, the scanner toggle and a RadioReference
+ * import that starts the scanner or brings a channel map are each refused with the rule they would break, and change
+ * nothing; clearing the map breaks none and still runs. Before this each was refused only under a running trunk scan,
+ * so the save wrote a config the next start refused.
+ */
+static int
+test_menu_refuses_what_the_next_start_refuses(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    char dir[DSD_TEST_PATH_MAX];
+    char map_path[DSD_TEST_PATH_MAX];
+    char plan_path[DSD_TEST_PATH_MAX];
+    int rc = expect_true("menu next start dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_menu_next_start") != NULL);
+    rc |= expect_int("menu next start map", dsd_test_path_join(map_path, sizeof map_path, dir, "map.csv"), 0);
+    rc |= expect_int("menu next start plan", dsd_test_path_join(plan_path, sizeof plan_path, dir, "plan.csv"), 0);
+    rc |= write_file_bytes(map_path, k_next_start_map, sizeof k_next_start_map - 1U);
+    rc |= write_file_bytes(plan_path, k_next_start_plan, sizeof k_next_start_plan - 1U);
+
+    init_decode_mode_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    rc |= drain_config(&opts, &state, &cfg, "menu next start: trunk scan waits");
+    rc |= expect_int("menu next start: the trunk scan waits",
+                     opts.trunk_scan_enabled == 0 && (opts.next_start.pending & DSD_NEXT_START_TRUNK_SCAN) != 0U, 1);
+
+    (void)post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map_path);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("menu next start: map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("menu next start: map import refused", state.ui_msg,
+                     "Channel map not imported: trunking.chan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("menu next start: no map", opts.chan_in_file[0] == '\0' && state.lcn_freq_count == 0, 1);
+
+    (void)post_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, plan_path);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("menu next start: plan import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_str("menu next start: plan import refused", state.ui_msg,
+                   "P25 band plan not imported: trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("menu next start: no plan",
+                     opts.p25_bandplan_in_file[0] == '\0' && state.p25_bandplan_row_count == 0, 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "menu next start: scanner toggle");
+    rc |= expect_str("menu next start: scanner refused", state.ui_msg,
+                     "Scanner not started: trunking.scanner cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("menu next start: no scanner", opts.scanner_mode, 0);
+
+    for (int with_map = 0; with_map <= 1; with_map++) {
+        dsd_app_rr_apply_payload p;
+        DSD_MEMSET(&p, 0, sizeof p);
+        p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+        p.scanner = with_map ? 0U : 1U;
+        p.has_chan = with_map ? 1U : 0U;
+        DSD_SNPRINTF(p.chan_path, sizeof p.chan_path, "%s", with_map ? map_path : "");
+        rc |= expect_int("menu next start: rr queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        state.ui_msg[0] = '\0';
+        rc |= expect_int("menu next start: rr drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_str(with_map ? "menu next start: rr map refused" : "menu next start: rr scanner refused",
+                         state.ui_msg,
+                         with_map ? "Failed: RR import -> trunking.chan_csv cannot be combined with trunk_scan.enabled"
+                                  : "Failed: RR import -> trunking.scanner cannot be combined with trunk_scan.enabled");
+        rc |= expect_int("menu next start: rr changed nothing", opts.scanner_mode == 0 && opts.chan_in_file[0] == '\0',
+                         1);
+    }
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "menu next start: map clear");
+    rc |= expect_str("menu next start: a clear still runs", state.ui_msg, "Applied: Channel map cleared");
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("menu next start: the save starts",
+                     dsd_user_config_check_trunk_scan_startable(&saved, NULL, NULL, 0) == 0 && saved.trunk_scan_enabled,
+                     1);
+    freeState(&state);
+    (void)remove(map_path);
+    (void)remove(plan_path);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+/* Load @p cfg as terminal Config > Load (@p autosave_enabled 1, the file's @p path) or a profile load (0, the file the
+   profile came from) does, and drain it. */
+static int
+drain_config_load(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int autosave_enabled, const char* path,
+                  const char* label) {
+    static dsd_app_config_load_payload load;
+    DSD_MEMSET(&load, 0, sizeof load);
+    load.config = *cfg;
+    load.autosave.autosave_enabled = autosave_enabled;
+    DSD_SNPRINTF(load.autosave.path, sizeof load.autosave.path, "%s", path);
+    DSD_SNPRINTF(load.profile, sizeof load.profile, "%s", autosave_enabled ? "" : "mobile");
+    int rc = expect_true(label, dsd_app_command_load_config(&load) > 0);
+    state->ui_msg[0] = '\0';
+    state->ui_msg_expire = 0;
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* Whether the file at @p path holds exactly @p n bytes @p want. */
+static int
+file_holds(const char* path, const char* want, size_t n) {
+    FILE* f = dsd_fopen_existing_regular_file(path, "rb");
+    if (!f) {
+        return 0;
+    }
+    char got[512];
+    const size_t read = fread(got, 1U, sizeof got, f);
+    (void)fclose(f);
+    return read == n && memcmp(got, want, n) == 0;
+}
+
+/*
+ * Issue #671 (N1): terminal Config > Load points the autosave at the file it loads, then applies it. A map in that file
+ * waits for the next start, and the exit autosave writes it back into the file, so the restart runs it. On main the
+ * exit autosave wrote the running map into the file just loaded.
+ */
+static int
+test_config_load_then_exit_keeps_the_file(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    int rc = expect_true("load then exit dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_load_exit") != NULL);
+    rc |= expect_int("load then exit path", dsd_test_path_join(path, sizeof path, dir, "loaded.ini"), 0);
+    static const char k_ini[] = "[trunking]\nchan_csv = \"file_map.csv\"\n";
+    rc |= write_file_bytes(path, k_ini, sizeof k_ini - 1U);
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_NULL;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    rc |= expect_int("load then exit: file loads", dsd_user_config_load(path, &cfg), 0);
+    rc |= drain_config_load(&opts, &state, &cfg, 1, path, "load then exit");
+    rc |= expect_str("load then exit: the running map stays", opts.chan_in_file, "loaded_map.csv");
+    rc |= expect_int("load then exit: the autosave follows the file",
+                     state.config_autosave_enabled == 1 && strcmp(state.config_autosave_path, path) == 0, 1);
+    dsd_engine_cleanup(&opts, &state);
+    dsd_exitflag_store(0);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    rc |= expect_int("load then exit: autosave reloads", dsd_user_config_load(path, &cfg), 0);
+    rc |= expect_str("load then exit: the file keeps its map", cfg.trunk_chan_csv, "file_map.csv");
+    (void)remove(path);
+    (void)dsd_test_rmdir(dir);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671 (round 4): a Config > Load or profile load the decoder refuses leaves the autosave where it was. The
+ * session's autosave target and its on/off stay, and the exit autosave writes the session's config there, never into
+ * the file the operator tried to load. Before this the load pointed the autosave at that file first, and the exit
+ * autosave replaced the file with the session's config (a refused profile load turned the autosave off instead).
+ */
+static int
+test_refused_load_keeps_the_autosave(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    char dir[DSD_TEST_PATH_MAX];
+    char session_path[DSD_TEST_PATH_MAX];
+    char loaded_path[DSD_TEST_PATH_MAX];
+    int rc = expect_true("refused load dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_refused_autosave") != NULL);
+    rc |= expect_int("refused load session", dsd_test_path_join(session_path, sizeof session_path, dir, "session.ini"),
+                     0);
+    rc |= expect_int("refused load file", dsd_test_path_join(loaded_path, sizeof loaded_path, dir, "trunkscan.ini"), 0);
+    static const char k_ini[] = "[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n";
+    for (int profile = 0; profile <= 1; profile++) {
+        const char* label = profile ? "refused profile load" : "refused Config > Load";
+        rc |= write_file_bytes(loaded_path, k_ini, sizeof k_ini - 1U);
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_NULL;
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "loaded_map.csv");
+        state.config_autosave_enabled = 1;
+        DSD_SNPRINTF(state.config_autosave_path, sizeof state.config_autosave_path, "%s", session_path);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        rc |= expect_int(label, dsd_user_config_load(loaded_path, &cfg), 0);
+        rc |= drain_config_load(&opts, &state, &cfg, profile ? 0 : 1, loaded_path, label);
+        rc |= expect_str("refused load: the decoder says why", state.ui_msg,
+                         "Config not applied: trunking.chan_csv cannot be combined with trunk_scan.enabled");
+        rc |= expect_int("refused load: the autosave stays on", state.config_autosave_enabled, 1);
+        rc |= expect_str("refused load: the autosave target stays", state.config_autosave_path, session_path);
+        dsd_engine_cleanup(&opts, &state);
+        dsd_exitflag_store(0);
+        rc |= expect_int("refused load: the loaded file is untouched",
+                         file_holds(loaded_path, k_ini, sizeof k_ini - 1U), 1);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        rc |= expect_int("refused load: the session saved to its own target", dsd_user_config_load(session_path, &cfg),
+                         0);
+        rc |= expect_str("refused load: the session's map", cfg.trunk_chan_csv, "loaded_map.csv");
+        freeState(&state);
+        (void)remove(session_path);
+    }
+
+    /* A load that applies takes the autosave it brings, and the decoder says what loaded. */
+    for (int profile = 0; profile <= 1; profile++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_NULL;
+        state.config_autosave_enabled = 1;
+        DSD_SNPRINTF(state.config_autosave_path, sizeof state.config_autosave_path, "%s", session_path);
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        rc |= drain_config_load(&opts, &state, &cfg, profile ? 0 : 1, loaded_path, "applied load");
+        char want[sizeof state.ui_msg];
+        DSD_SNPRINTF(want, sizeof want, "Config loaded from %s", loaded_path);
+        rc |= expect_str("applied load: the decoder says so", state.ui_msg, profile ? "Profile loaded: mobile" : want);
+        rc |= expect_int("applied load: the autosave it brings", state.config_autosave_enabled, profile ? 0 : 1);
+        rc |= expect_str("applied load: the autosave target", state.config_autosave_path, loaded_path);
+        freeState(&state);
+    }
+    (void)remove(loaded_path);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Issue #671: the scanner on resumes a paused -Y scan whose row's tune lands (a rigctl peer that takes it): the scan
+ * runs again from the row after its cursor, no longer paused, and the tuner is the scan's again.
+ */
+static int
+test_config_resumes_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+    g_rigctl_fake_freq_armed = 1;
+    int rc = pause_seeded_list(&opts, &state, "paused before a landing resume");
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    rc |= drain_config(&opts, &state, &cfg, "config scanner on, the row lands");
+    rc |= expect_int("landing resume: running again",
+                     opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 0,
+                     1);
+    rc |= expect_int("landing resume: on the row after the cursor", g_rigctl_fake_freq == 853375000L, 1);
+    rc |= expect_int("landing resume: the cursor moved past it", state.lcn_freq_roll, 3);
+    g_rigctl_fake_freq_armed = 0;
+    disarm_rigctl_fake(&opts);
+    opts.scanner_mode = 0;
+    freeState(&state);
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
+/* Issue #671: the frequency entry's tune leg, through the queue's portable seam (dsd_app_command_test_set_tune_leg()),
+   so these cases run on every toolchain: it answers g_seam_tune_result and caches what an accepted tune asked for, as
+   io_control_set_freq() does. */
+static int g_seam_tune_result = RTL_STREAM_TUNE_OK;
+static int g_seam_tune_calls;
+static uint32_t g_seam_tune_hz;
+/* Whether the P25 SM tick guard was held when the leg ran (-1 before it runs). */
+static int g_seam_tune_guarded = -1;
+
+static int
+seam_tune_leg(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    (void)state;
+    g_seam_tune_calls++;
+    g_seam_tune_hz = hz;
+    g_seam_tune_guarded = p25_sm_tick_guard_held_by_caller();
+    if (g_seam_tune_result == RTL_STREAM_TUNE_OK || g_seam_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+        opts->rtlsdr_center_freq = hz;
+    }
+    return g_seam_tune_result;
+}
+
+static void
+arm_seam_tune(int result) {
+    g_seam_tune_result = result;
+    g_seam_tune_calls = 0;
+    g_seam_tune_hz = 0U;
+    g_seam_tune_guarded = -1;
+    dsd_app_command_test_set_tune_leg(seam_tune_leg);
+}
+
+/* Post a frequency entry of @p hz and drain it, as the decoder does. */
+static int
+drain_entry(dsd_opts* opts, dsd_state* state, uint32_t hz, const char* label) {
+    int rc = expect_int(label, post_u32(DSD_APP_CMD_RTL_SET_FREQ, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->ui_msg[0] = '\0';
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/*
+ * Issue #671 (B1, B3): an accepted frequency entry wins over a running -Y scan, untyped or typed: the scan pauses,
+ * keeping its list and cursor and dropping the operator hold, and the receiver stays on the entry with the configured
+ * decoder; the command's scoped leave keeps the pause. A second entry only tunes. A refused or deferred tune changes
+ * nothing. A resume still waiting on its row's tune is taken back. On main the untyped scan stayed on (its next step
+ * undid the entry) and the typed stop kept the hold, which `y` then restarted on a frequency not in the list.
+ */
+static int
+test_frequency_entry_pauses_a_running_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    seed_running_list(&opts, &state);
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    const int carrier_before = (int)state.carrier_seq;
+    int rc = drain_entry(&opts, &state, 860000000U, "untyped entry");
+    rc |= expect_int("untyped entry tuned once, unguarded",
+                     g_seam_tune_calls == 1 && g_seam_tune_hz == 860000000U && g_seam_tune_guarded == 0, 1);
+    rc |= expect_str("untyped entry toast", state.ui_msg, "Applied: frequency -> 860.000000 MHz; scan paused");
+    rc |= expect_int("untyped entry paused the scan (B1)",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1, 1);
+    rc |= expect_int("untyped entry keeps the cursor and drops the hold",
+                     state.lcn_freq_roll == 2 && state.lcn_scan_hold == 0 && state.lcn_freq_count == 3, 1);
+    rc |= expect_int("untyped entry ran the carrier boundary", (int)state.carrier_seq != carrier_before, 1);
+    rc |= expect_int("the receiver stays on the entry", (int)opts.rtlsdr_center_freq, 860000000);
+
+    /* A second entry while paused only tunes. */
+    rc |= drain_entry(&opts, &state, 861000000U, "second entry");
+    rc |= expect_str("second entry toast", state.ui_msg, "Applied: frequency -> 861.000000 MHz");
+    rc |= expect_int("second entry: still paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+
+    /* A refused or deferred tune changes nothing, the running scan included. */
+    (void)svc_leave_channel_scan(&opts, &state);
+    for (int i = 0; i < 2; i++) {
+        const int result = i == 0 ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_DEFERRED;
+        seed_running_list(&opts, &state);
+        arm_seam_tune(result);
+        rc |= drain_entry(&opts, &state, 862000000U, "refused entry");
+        rc |=
+            expect_str("refused entry toast", state.ui_msg,
+                       i == 0 ? "Failed: frequency -> 862.000000 MHz" : "Deferred; retry: frequency -> 862.000000 MHz");
+        rc |= expect_int("refused entry keeps the scan running",
+                         opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_hold == 1, 1);
+        rc |= expect_int("refused entry failed the command", dsd_app_command_test_last_failed(), 1);
+    }
+
+    /* Pending: the scan pauses as for an applied tune. */
+    arm_seam_tune(RTL_STREAM_TUNE_TIMEOUT);
+    rc |= drain_entry(&opts, &state, 863000000U, "pending entry");
+    rc |=
+        expect_str("pending entry toast", state.ui_msg, "Accepted: frequency -> 863.000000 MHz (pending); scan paused");
+    rc |= expect_int("pending entry paused the scan", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+
+    /* A typed list: the row's scope goes, and with it the hold (B3); the cursor stays. */
+    (void)svc_leave_channel_scan(&opts, &state);
+    seed_running_list(&opts, &state);
+    rc |= expect_int("typed row", dsd_channel_mode_set(&state, 2, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("typed row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    rc |= drain_entry(&opts, &state, 864000000U, "typed entry");
+    rc |= expect_str("typed entry toast", state.ui_msg, "Applied: frequency -> 864.000000 MHz; scan paused");
+    rc |= expect_int("typed entry paused the scan",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1, 1);
+    rc |= expect_int("typed entry left the row's scope", dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+    rc |= expect_int("typed entry drops the hold (B3)", state.lcn_scan_hold, 0);
+    rc |= expect_int("typed entry keeps the cursor", state.lcn_freq_roll, 2);
+
+    /* A resume still waiting on its row's tune: the entry takes it back, and the scan stays paused. */
+    state.lcn_scan_resume_pending = 1U;
+    rc |= drain_entry(&opts, &state, 865000000U, "entry over a pending resume");
+    rc |= expect_str("entry over a pending resume toast", state.ui_msg,
+                     "Applied: frequency -> 865.000000 MHz; scan paused");
+    rc |= expect_int("entry over a pending resume stays paused",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.lcn_scan_resume_pending == 0, 1);
+
+    /* The trunk-scan flag with no coordinator behind it: the entry tunes, and pauses nothing it could name. */
+    (void)svc_leave_channel_scan(&opts, &state);
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    rc |= drain_entry(&opts, &state, 866000000U, "entry with no coordinator");
+    rc |= expect_str("entry with no coordinator toast", state.ui_msg, "Applied: frequency -> 866.000000 MHz");
+    opts.trunk_scan_enabled = 0;
+
+    dsd_app_command_test_set_tune_leg(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671: the operator moved the receiver off its session, so the calls heard from here on are filed as the
+ * operator's (Exploring in Qt's history), not the session's. Every accepted manual tune says so -- the frequency entry
+ * (terminal `=`, the menu row, the API's rtl_set_freq, Qt's Go to), applied or pending, and the tap-to-tune -- while a
+ * refused, deferred or failed one does not, and neither does a tuner release with nothing to release: Explore from a
+ * conventional system is only a promise to move, and the calls before the first tune are still the system's. A
+ * release of trunking does. Only a resume or a new session clears it (the P25 control-channel selection is in
+ * APP_P25_CC_SELECTION). On main only a release of trunking or a scan pause set it.
+ */
+static int
+test_manual_tunes_mark_the_operator(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    static const struct {
+        int result;
+        int marks;
+        const char* tag;
+    } entries[] = {
+        {RTL_STREAM_TUNE_OK, 1, "applied entry"},
+        {RTL_STREAM_TUNE_TIMEOUT, 1, "pending entry"},
+        {RTL_STREAM_TUNE_FAILED, 0, "failed entry"},
+        {RTL_STREAM_TUNE_DEFERRED, 0, "deferred entry"},
+    };
+
+    for (size_t i = 0; i < sizeof entries / sizeof entries[0]; i++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_WAV;
+        arm_seam_tune(entries[i].result);
+        rc |= drain_entry(&opts, &state, 860000000U, entries[i].tag);
+        rc |= expect_int(entries[i].tag, state.operator_tuned, entries[i].marks);
+        freeState(&state);
+    }
+    dsd_app_command_test_set_tune_leg(NULL);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("an invalid entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 0U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("an invalid entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("an invalid entry moves nothing", state.operator_tuned, 0);
+    freeState(&state);
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* The tap's tune result is the wrapped io/control stub's, so the taps run where GNU ld --wrap is linked. */
+    static const struct {
+        int result;
+        int trunking;
+        int marks;
+        const char* tag;
+    } taps[] = {
+        {RTL_STREAM_TUNE_OK, 0, 1, "applied tap"},
+        {RTL_STREAM_TUNE_TIMEOUT, 0, 1, "pending tap"},
+        {RTL_STREAM_TUNE_FAILED, 0, 0, "failed tap"},
+        {RTL_STREAM_TUNE_OK, 1, 0, "tap refused under trunking"},
+    };
+
+    for (size_t i = 0; i < sizeof taps / sizeof taps[0]; i++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = taps[i].trunking;
+        reset_io_control_tune_stub(taps[i].result);
+        rc |= expect_int(taps[i].tag, post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(taps[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(taps[i].tag, state.operator_tuned, taps[i].marks);
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+#endif
+
+    /* A release with nothing to release moves nothing; a release of trunking hands the operator the tuner. */
+    init_test_context(&opts, &state);
+    rc |= expect_int("release with no owner queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release with no owner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release with no owner marks nothing", state.operator_tuned, 0);
+    opts.trunk_enable = 1;
+    rc |= expect_int("release of trunking queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release of trunking drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release of trunking marks the operator", state.operator_tuned, 1);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671: what a paused -Y scan does with the other controls (spec table 3.4). Hold, avoid, clear avoids and next
+ * are refused until it resumes; a tap-to-tune is not; a tuner release pauses a running scan and leaves a paused one;
+ * `y` and DSD_APP_CMD_SCAN_RESUME resume it (here onto a row audio input cannot tune, so it stays paused and says why);
+ * trunking switched off keeps the pause; trunking switched on, a channel map imported or cleared, and an input switch
+ * that runs stop it, while a refused import or switch keeps it.
+ */
+static int
+test_paused_list_controls_and_stops(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_paused_list") != 0) {
+        return expect_true("paused list temp directory", 0);
+    }
+    static const char k_map[] = "channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n";
+    rc |= write_file_bytes("paused_map.csv", k_map, strlen(k_map));
+    rc |= write_pcm16_wav("paused.wav", 48000U, 8U);
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+
+    /* A tuner release pauses the running scan in place. */
+    seed_running_list(&opts, &state);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release");
+    rc |= expect_str("release toast", state.ui_msg, "Automatic tuning paused");
+    rc |= expect_int("release paused the scan",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1
+                         && state.lcn_freq_roll == 2 && state.lcn_scan_hold == 0,
+                     1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "second release");
+    rc |= expect_str("second release toast", state.ui_msg, "Automatic tuning paused");
+    rc |= expect_int("second release: still paused", state.lcn_scan_paused, 1);
+
+    /* The scan controls wait for the resume, the hold and the avoids as they were. */
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 1);
+    static const int k_controls[] = {DSD_APP_CMD_SCAN_HOLD_TOGGLE, DSD_APP_CMD_SCAN_AVOID, DSD_APP_CMD_SCAN_AVOID_CLEAR,
+                                     DSD_APP_CMD_CHANNEL_CYCLE};
+    for (size_t i = 0; i < sizeof k_controls / sizeof k_controls[0]; i++) {
+        rc |= drain_action(&opts, &state, k_controls[i], "control while paused");
+        rc |= expect_str("control while paused toast", state.ui_msg, "Scan paused: resume it first");
+        rc |= expect_int("control while paused failed", dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int("control while paused changes nothing",
+                         state.lcn_scan_hold == 0 && state.lcn_avoid_count == 1 && state.lcn_freq_roll == 2
+                             && state.lcn_scan_paused == 1,
+                         1);
+    }
+    (void)dsd_state_trunk_lcn_avoid_set(&state, 0U, 0);
+
+    /* A tap-to-tune is the operator's: no scan refuses it (audio input has no tuner to take it). */
+    rc |= expect_int("tap queued", post_u32(DSD_APP_CMD_MANUAL_TUNE, 866000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tap not refused by the paused scan", strstr(state.ui_msg, "tap-to-tune disabled") == NULL, 1);
+
+    /* `y` and SCAN_RESUME resume; the row's tune is refused here, so the scan stays paused and says why. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y resume");
+    rc |= expect_str("y resume toast", state.ui_msg, "Scan stays paused: tune to 853.375000 MHz failed");
+    rc |= expect_int("y resume: still paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "scan resume");
+    rc |= expect_str("scan resume toast", state.ui_msg, "Scan stays paused: tune to 853.375000 MHz failed");
+    rc |= expect_int("scan resume failed", dsd_app_command_test_last_failed(), 1);
+
+    /* Trunking off keeps the pause; on, it ends it. */
+    rc |= expect_int("trunk off queued", post_i32(DSD_APP_CMD_TRUNK_SET, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk off keeps the pause", state.lcn_scan_paused, 1);
+    rc |= expect_int("trunk on queued", post_i32(DSD_APP_CMD_TRUNK_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk on drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk on stops the scan", state.lcn_scan_paused == 0 && opts.trunk_enable == 1, 1);
+    opts.trunk_enable = 0;
+
+    /* A channel map that does not import keeps the pause; one that does, or a clear, stops the scan. */
+    seed_running_list(&opts, &state);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release again");
+    (void)post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "missing_map.csv");
+    rc |= expect_int("refused import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refused import keeps the pause", state.lcn_scan_paused == 1 && state.lcn_freq_count == 3, 1);
+    (void)post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "paused_map.csv");
+    rc |= expect_int("import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("import stops the scan",
+                     state.lcn_scan_paused == 0 && opts.scanner_mode == 0 && state.lcn_freq_count == 2, 1);
+    seed_running_list(&opts, &state);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release before clear");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, "clear");
+    rc |= expect_int("clear stops the scan", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
+
+    /* A RadioReference import refused before it changes anything keeps the pause; one it adopts stops the scan. */
+    seed_running_list(&opts, &state);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release before rr");
+    dsd_app_rr_apply_payload rr;
+    DSD_MEMSET(&rr, 0, sizeof rr);
+    rr.decode_mode = (int32_t)DSDCFG_MODE_UNSET;
+    rc |= expect_int("refused rr queued", dsd_app_command_set_rr_apply(&rr), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refused rr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("refused rr toast", state.ui_msg, "Failed: RR import -> decode mode");
+    rc |= expect_int("refused rr keeps the pause", state.lcn_scan_paused == 1 && state.lcn_freq_count == 3, 1);
+    rr.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+    rc |= expect_int("rr queued", dsd_app_command_set_rr_apply(&rr), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("rr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("rr applied", state.ui_msg, "Applied: RR import");
+    rc |= expect_int("rr stops the scan", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
+
+    /* An input switch that fails keeps the pause; one that runs stops the scan. */
+    seed_running_list(&opts, &state);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release before switch");
+    (void)post_string(DSD_APP_CMD_INPUT_WAV_SET, "missing.wav");
+    rc |= expect_int("failed switch drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("failed switch keeps the pause", state.lcn_scan_paused, 1);
+    (void)post_string(DSD_APP_CMD_INPUT_WAV_SET, "paused.wav");
+    rc |= expect_int("switch drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("switch ran", state.ui_msg, "Applied: ");
+    rc |= expect_int("switch stops the scan", state.lcn_scan_paused == 0 && opts.scanner_mode == 0, 1);
+
+    closeAudioInDevice(&opts);
+    freeState(&state);
+    (void)remove("paused_map.csv");
+    (void)remove("paused.wav");
+    rc |= expect_int("paused list temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
+    return rc;
+}
+
+/* A trunk-scan target's park, landing at once. */
+static dsd_trunk_tune_result
+pause_scan_tune_to_cc_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)ted_sps;
+    (void)request_id;
+    if (state) {
+        state->trunk_cc_freq = freq;
+    }
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* A running trunk scan of two trunked targets tuned through a rigctl peer (none connected: the parks land through the
+   tuning hook), parked on target "a" (P25). */
+static int
+init_running_trunk_scan(dsd_opts* opts, dsd_state* state, const char* dir, char* csv, size_t csv_size) {
+    init_decode_mode_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->trunk_scan_enabled = 1;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = pause_scan_tune_to_cc_ok});
+    int rc = expect_int("trunk pause csv path", dsd_test_path_join(csv, csv_size, dir, "targets.csv"), 0);
+    static const char k_targets[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                    "a,p25-trunk,851000000,,3000,,\n"
+                                    "b,dmr-trunk,452000000,,3000,,\n";
+    rc |= write_file_bytes(csv, k_targets, sizeof k_targets - 1U);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", csv);
+    char err[256] = {0};
+    const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+    if (init_rc != 0) {
+        DSD_FPRINTF(stderr, "trunk pause scan init: %s\n", err);
+    }
+    rc |= expect_int("trunk pause scan init", init_rc, 0);
+    rc |= expect_int("parked on a, trunking", strcmp(state->trunk_scan_active_id, "a") == 0 && opts->trunk_enable == 1,
+                     1);
+    return rc;
+}
+
+static void
+finish_trunk_scan(dsd_opts* opts, dsd_state* state, const char* csv) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_app_command_test_set_tune_leg(NULL);
+    opts->use_rigctl = 0;
+    (void)remove(csv);
+    freeState(state);
+}
+
+/*
+ * Issue #671: a frequency entry over a running trunk scan pauses it (the tune and the pause in one hold of the P25 SM
+ * tick guard, before the P25 control-channel selection a parked trunked target would otherwise get), and the scan
+ * keeps its coordinator for a resume. While paused: a second entry only tunes; hold, avoid, clear avoids and next are
+ * refused with no target named (no "Avoiding target" toast); a tap-to-tune is allowed; trunking cannot be switched
+ * either way (B5: each target sets its own, running or paused); a tuner release leaves the pause. `y` and
+ * DSD_APP_CMD_SCAN_RESUME resume it on the target it left; `y` and a release pause a running one in place; a resume
+ * of a running scan is refused; a refused entry leaves the scan running. On main the entry was refused under trunk
+ * scan, and `t` cleared trunking under the coordinator (B5).
+ */
+static int
+test_trunk_scan_pauses_for_an_entry_and_resumes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    int rc = expect_true("trunk pause dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_trunk_pause") != NULL);
+    rc |= init_running_trunk_scan(&opts, &state, dir, csv, sizeof csv);
+
+    /* Running: trunking is the targets'. */
+    rc |= expect_int("trunk off queued", post_i32(DSD_APP_CMD_TRUNK_SET, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("trunk off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("trunk off refused (B5)", state.ui_msg, "Trunk scan: each target sets its own trunking");
+    rc |= expect_int("trunk off keeps the target's trunking", opts.trunk_enable, 1);
+
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    rc |= drain_entry(&opts, &state, 860000000U, "trunk entry");
+    rc |= expect_int("trunk entry tuned once under the guard",
+                     g_seam_tune_calls == 1 && g_seam_tune_hz == 860000000U && g_seam_tune_guarded == 1, 1);
+    rc |= expect_str("trunk entry toast", state.ui_msg, "Applied: frequency -> 860.000000 MHz; scan paused");
+    rc |= expect_int("trunk entry paused the scan",
+                     state.trunk_scan_paused == 1 && opts.trunk_scan_enabled == 1 && state.operator_tuned == 1, 1);
+    rc |= expect_int("trunk entry: trunking off, no target named, no control channel selected",
+                     opts.trunk_enable == 0 && state.trunk_scan_active_id[0] == '\0' && state.p25_cc_freq != 860000000L,
+                     1);
+    rc |= expect_int("trunk entry: the guard is free again", p25_sm_tick_guard_held_by_caller(), 0);
+
+    rc |= drain_entry(&opts, &state, 861000000U, "trunk second entry");
+    rc |= expect_str("trunk second entry toast", state.ui_msg, "Applied: frequency -> 861.000000 MHz");
+    rc |= expect_int("trunk second entry: a plain tune", g_seam_tune_guarded == 0 && state.trunk_scan_paused == 1, 1);
+
+    static const int k_controls[] = {DSD_APP_CMD_SCAN_HOLD_TOGGLE, DSD_APP_CMD_SCAN_AVOID, DSD_APP_CMD_SCAN_AVOID_CLEAR,
+                                     DSD_APP_CMD_CHANNEL_CYCLE};
+    const uint8_t hold_before = state.trunk_scan_hold;
+    for (size_t i = 0; i < sizeof k_controls / sizeof k_controls[0]; i++) {
+        rc |= drain_action(&opts, &state, k_controls[i], "trunk control while paused");
+        rc |= expect_str("trunk control while paused toast", state.ui_msg, "Scan paused: resume it first");
+        rc |= expect_int("trunk control while paused failed", dsd_app_command_test_last_failed(), 1);
+        rc |= expect_int("trunk control while paused changes nothing",
+                         state.trunk_scan_hold == hold_before && state.trunk_scan_avoided_count == 0U
+                             && state.trunk_scan_paused == 1,
+                         1);
+    }
+
+    rc |= expect_int("trunk tap queued", post_u32(DSD_APP_CMD_MANUAL_TUNE, 862000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("trunk tap drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk tap allowed while paused", strstr(state.ui_msg, "tap-to-tune disabled") == NULL, 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TRUNK_TOGGLE, "t while paused");
+    rc |= expect_str("t while paused refused (B5)", state.ui_msg, "Trunk scan: each target sets its own trunking");
+    rc |= expect_int("t while paused leaves trunking off", opts.trunk_enable == 0 && state.trunk_scan_paused == 1, 1);
+    rc |= expect_int("trunk on queued", post_i32(DSD_APP_CMD_TRUNK_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk on drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk on while paused refused (B5)", opts.trunk_enable == 0 && state.trunk_scan_paused == 1, 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release while paused");
+    rc |= expect_str("release while paused toast", state.ui_msg, "Automatic tuning paused");
+    rc |= expect_int("release while paused: still paused", state.trunk_scan_paused, 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y resume");
+    rc |= expect_str("y resume toast", state.ui_msg, "Trunk scan resumed");
+    rc |= expect_int("y resumed the target left",
+                     state.trunk_scan_paused == 0 && state.operator_tuned == 0 && opts.trunk_enable == 1
+                         && strcmp(state.trunk_scan_active_id, "a") == 0,
+                     1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "resume while running");
+    rc |= expect_str("resume while running toast", state.ui_msg, "Not paused: the scan is running");
+    rc |= expect_int("resume while running failed", dsd_app_command_test_last_failed(), 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y pause");
+    rc |= expect_str("y pause toast", state.ui_msg, "Trunk scan paused");
+    rc |= expect_int("y paused in place", state.trunk_scan_paused == 1 && opts.trunk_enable == 0, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "scan resume");
+    rc |= expect_str("scan resume toast", state.ui_msg, "Trunk scan resumed");
+    rc |= expect_int("scan resume runs", state.trunk_scan_paused, 0);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "release while running");
+    rc |= expect_str("release while running toast", state.ui_msg, "Automatic tuning paused");
+    rc |= expect_int("release paused in place",
+                     state.trunk_scan_paused == 1 && opts.trunk_enable == 0 && state.operator_tuned == 1, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "resume after release");
+    rc |= expect_int("resume after release runs", state.trunk_scan_paused == 0 && opts.trunk_enable == 1, 1);
+
+    arm_seam_tune(RTL_STREAM_TUNE_FAILED);
+    rc |= drain_entry(&opts, &state, 863000000U, "refused trunk entry");
+    rc |= expect_str("refused trunk entry toast", state.ui_msg, "Failed: frequency -> 863.000000 MHz");
+    rc |= expect_int(
+        "refused trunk entry leaves the scan running",
+        state.trunk_scan_paused == 0 && opts.trunk_enable == 1 && strcmp(state.trunk_scan_active_id, "a") == 0, 1);
+
+    finish_trunk_scan(&opts, &state, csv);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+/*
+ * Issue #671 (B6, F11): [trunking] enabled = true applied under a trunk scan is the configured setting the coordinator
+ * puts back at shutdown and a save writes, never the live flag: a paused scan stays untrunked on the operator's
+ * frequency, and a running one keeps the parked target's. The pause survives the apply. On main the live flag was
+ * set, so the paused scan's manual frequency was followed as a trunked system and the save wrote the target's value.
+ */
+static int
+test_config_trunking_under_a_trunk_scan_is_the_configured_setting(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    int rc = expect_true("trunk config dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_trunk_config") != NULL);
+    rc |= init_running_trunk_scan(&opts, &state, dir, csv, sizeof csv);
+    rc |= expect_int("configured trunking starts off", state.trunk_scan_configured_trunk_enable, 0);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "trunk config: release");
+    rc |= expect_int("trunk config: paused", state.trunk_scan_paused == 1 && opts.trunk_enable == 0, 1);
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_enabled = 1;
+    rc |= drain_config(&opts, &state, &cfg, "trunk config: trunking on while paused");
+    rc |= expect_int("trunking on while paused: the live flag stays off, the pause stays",
+                     opts.trunk_enable == 0 && state.trunk_scan_paused == 1 && opts.scanner_mode == 0, 1);
+    rc |= expect_int("trunking on while paused: the configured setting", state.trunk_scan_configured_trunk_enable, 1);
+    rc |= expect_int("trunking on while paused: no restart", dsd_app_command_test_last_restart_required(), 0);
+    static dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |=
+        expect_int("trunking on while paused: the save writes it", saved.trunk_scan_enabled && saved.trunk_enabled, 1);
+
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "trunk config: resume");
+    rc |= expect_int("trunk config: running on a, trunked by its type",
+                     state.trunk_scan_paused == 0 && opts.trunk_enable == 1, 1);
+    rc |= drain_config(&opts, &state, &cfg, "trunk config: trunking on while running");
+    rc |= expect_int(
+        "trunking on while running: the target keeps its own",
+        opts.trunk_enable == 1 && state.trunk_scan_paused == 0 && strcmp(state.trunk_scan_active_id, "a") == 0, 1);
+
+    finish_trunk_scan(&opts, &state, csv);
+    rc |= expect_int("trunk config: shutdown puts back the configured setting", opts.trunk_enable, 1);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/*
+ * Issue #671: a config whose input does not come up is rolled back to the input that ran, and a -Y scan the operator
+ * paused stays paused, whatever its [trunking] asked: the session is back where the operator paused it. On main the
+ * staged scanner flag stayed written over the pause.
+ */
+static int
+test_config_failed_reopen_keeps_a_paused_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    opts.rtltcp_enabled = 1;
+    DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "127.0.0.1");
+    opts.rtltcp_portno = 1234;
+    seed_running_list(&opts, &state);
+    opts.scanner_mode = 0;
+    state.lcn_scan_hold = 0U;
+    state.lcn_scan_paused = 1U;
+    state.operator_tuned = 1U;
+    reset_rx_family_wrap();
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTLTCP;
+    DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
+    cfg.rtltcp_port = 1234;
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    /* A frontend change that would need a restart, in a config that is rolled back: nothing is logged as applied. */
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = opts.frontend_kind == DSD_FRONTEND_NONE ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE;
+    const int restart_lines = g_restart_log_lines;
+    rc |= submit_config(&opts, &state, &cfg, "paused list: config whose input fails");
+    rc |= expect_int("paused list: a rolled-back config logs no restart", g_restart_log_lines, restart_lines);
+    /* Round 4 (ruling): "Config not applied" leaves nothing for the next start either; the frontend change is gone. */
+    rc |= expect_int("paused list: a rolled-back config leaves nothing waiting", (int)opts.next_start.pending, 0);
+    rc |= expect_int("paused list: config failed", dsd_app_command_test_last_failed(), 1);
+    rc |= expect_str("paused list: rollback toast", state.ui_msg,
+                     "Config not applied: the rtl_tcp input did not start (see log)");
+    rc |= expect_int("paused list: back on the running host", strcmp(opts.rtltcp_hostname, "127.0.0.1") == 0, 1);
+    rc |= expect_int("paused list: still paused, cursor kept",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0 && opts.trunk_enable == 0
+                         && state.lcn_freq_roll == 2 && state.lcn_freq_count == 3,
+                     1);
+
+    /* The same config with the scanner off: the pause stays too. */
+    reset_rx_family_wrap();
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_fail_starts = 1;
+    cfg.trunk_scanner = 0;
+    /* And a trunk scan turned on with it: the check passes it (the config's scanner is off), but the rollback keeps the
+       pause, which a save writes as the scanner on. Nothing waits, so the save still starts. */
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    rc |= submit_config(&opts, &state, &cfg, "paused list: scanner off, input fails");
+    rc |= expect_int("paused list: scanner off, input fails: still paused",
+                     state.lcn_scan_paused == 1 && opts.scanner_mode == 0, 1);
+    rc |= expect_int("paused list: trunk scan, input fails: nothing waits", (int)opts.next_start.pending, 0);
+    static dsdneoUserConfig saved;
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    char why[256];
+    rc |= expect_int("paused list: trunk scan, input fails: the save starts",
+                     dsd_user_config_check_trunk_scan_startable(&saved, NULL, why, sizeof why), 0);
+    rc |= expect_int("paused list: trunk scan, input fails: the save keeps the paused scan, no trunk scan",
+                     saved.trunk_scanner == 1 && saved.trunk_scan_enabled == 0, 1);
+
+    reset_config_rtl_wrap();
+    reset_rx_family_wrap();
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+/* The save the session writes now passes startup's trunk-scan rules, and no trunk scan waits for the next start. */
+static int
+expect_save_starts_without_the_waiting_trunk_scan(const dsd_opts* opts, const dsd_state* state, const char* label) {
+    static dsdneoUserConfig saved;
+    DSD_MEMSET(&saved, 0, sizeof saved);
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    char why[256];
+    int rc = expect_int(label, dsd_user_config_check_trunk_scan_startable(&saved, NULL, why, sizeof why), 0);
+    rc |=
+        expect_int(label, (opts->next_start.pending & DSD_NEXT_START_TRUNK_SCAN) == 0U && !saved.trunk_scan_enabled, 1);
+    rc |= expect_contains(label, state->ui_msg, "; the trunk scan waiting for a restart is dropped");
+    if (rc) {
+        DSD_FPRINTF(stderr, "  %s (%s)\n", label, why);
+    }
+    return rc;
+}
+
+/*
+ * Issue #671 (round 5): whatever a config apply leaves, the save still starts. "Config not applied" puts back what was
+ * waiting for the next start, but a rolled-back config keeps the rest of it (its tuner owner, a band plan off a
+ * coordinator): a trunk scan an earlier config left waiting would come back beside the scanner or band plan this one
+ * installed, which startup refuses. That waiting trunk scan is dropped, and the status line and log say so. The same
+ * for a config kept with no input running over a paused -Y scan, whose pause stays (a save writes the scanner on)
+ * while its trunk scan would wait. Before this the save wrote both.
+ */
+static int
+test_config_leaves_a_save_that_starts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    static dsdneoUserConfig cfg;
+    int rc = 0;
+    for (int shape = 0; shape < 3; shape++) {
+        init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+        opts.rtltcp_enabled = 1;
+        DSD_SNPRINTF(opts.rtltcp_hostname, sizeof opts.rtltcp_hostname, "%s", "127.0.0.1");
+        opts.rtltcp_portno = 1234;
+        reset_rx_family_wrap();
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        g_config_rtl_fail_starts = 1;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_input = 1;
+        cfg.input_source = DSDCFG_INPUT_RTLTCP;
+        DSD_SNPRINTF(cfg.rtltcp_host, sizeof cfg.rtltcp_host, "%s", "192.0.2.7");
+        cfg.rtltcp_port = 1234;
+        cfg.has_trunking = 1;
+        cfg.has_trunk_scan = 1;
+        static const char* const k_labels[] = {
+            "rolled back: the scanner beside a waiting trunk scan",
+            "rolled back: a band plan beside a waiting trunk scan",
+            "kept with no input: a paused scan beside its trunk scan",
+        };
+        const char* label = k_labels[shape];
+        if (shape < 2) {
+            /* An earlier config's trunk scan waits; this one turns it off and installs the scanner or a band plan, and
+               its input fails and is rolled back. */
+            opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
+            opts.next_start.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+                         "targets.csv");
+            cfg.trunk_scan_enabled = 0;
+            if (shape == 0) {
+                cfg.trunk_scanner = 1;
+            } else {
+                DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+            }
+        } else {
+            /* A paused -Y scan with no stream running: the config (scanner off, a trunk scan on) is kept, but its input
+               does not start, so the pause stays. */
+            seed_running_list(&opts, &state);
+            opts.scanner_mode = 0;
+            state.lcn_scan_paused = 1U;
+            state.operator_tuned = 1U;
+            state.rtl_ctx = NULL;
+            cfg.trunk_scan_enabled = 1;
+            DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+        }
+        rc |= submit_config(&opts, &state, &cfg, label);
+        rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
+        rc |= expect_save_starts_without_the_waiting_trunk_scan(&opts, &state, label);
+        if (shape == 0) {
+            rc |= expect_int("rolled back: the scanner stays installed", opts.scanner_mode, 1);
+        } else if (shape == 1) {
+            rc |= expect_str("rolled back: the band plan stays", opts.p25_bandplan_in_file, "plan.csv");
+        } else {
+            rc |= expect_int("kept with no input: still paused", state.lcn_scan_paused, 1);
+        }
+        opts.scanner_mode = 0;
+        reset_config_rtl_wrap();
+        reset_rx_family_wrap();
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+#endif
+#endif
+
+/* Gate review: the Input row and `=` offer the frequency entry wherever a rigctl peer is live, a radio-off build
+   included, so the entry's command runs on every build: it tunes the peer and pauses a running -Y list. Before, the
+   radio-off build compiled the command's handler out and the entry did nothing. */
+static int g_rigctl_entry_calls;
+static uint32_t g_rigctl_entry_hz;
+
+static int
+rigctl_entry_leg(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    (void)state;
+    g_rigctl_entry_calls++;
+    g_rigctl_entry_hz = hz;
+    opts->rtlsdr_center_freq = hz; /* as io_control_set_freq() caches what the peer took */
+    return 0;
+}
+
+static int
+test_frequency_entry_reaches_a_rigctl_peer_on_every_build(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.use_rigctl = 1;
+    seed_running_list(&opts, &state);
+    g_rigctl_entry_calls = 0;
+    g_rigctl_entry_hz = 0U;
+    dsd_app_command_test_set_tune_leg(rigctl_entry_leg);
+    int rc = expect_int("rigctl entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 146520000U),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("rigctl entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("rigctl entry tunes the peer", g_rigctl_entry_calls == 1 && g_rigctl_entry_hz == 146520000U, 1);
+    rc |= expect_int("rigctl entry pauses the running list",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1, 1);
+    rc |= expect_str("rigctl entry says so", state.ui_msg, "Applied: frequency -> 146.520000 MHz; scan paused");
+    dsd_app_command_test_set_tune_leg(NULL);
+    (void)svc_leave_channel_scan(&opts, &state);
+    opts.use_rigctl = 0;
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -20615,6 +23394,30 @@ main(void) {
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
+    rc |= test_channel_scan_pause_services();
+#ifdef USE_RADIO
+    rc |= test_frequency_entry_pauses_a_running_list();
+    rc |= test_manual_tunes_mark_the_operator();
+    rc |= test_paused_list_controls_and_stops();
+    rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();
+    rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();
+#endif
+    rc |= test_config_settles_a_paused_list();
+    rc |= test_frequency_entry_reaches_a_rigctl_peer_on_every_build();
+    rc |= test_config_channel_map_waits_for_a_restart();
+    rc |= test_config_restart_settings_wait_for_the_next_start();
+    rc |= test_config_load_then_exit_keeps_the_file();
+    rc |= test_config_refuses_what_the_next_start_refuses();
+    rc |= test_config_judges_only_what_it_breaks();
+    rc |= test_menu_refuses_what_the_next_start_refuses();
+    rc |= test_refused_load_keeps_the_autosave();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_config_resumes_a_paused_list();
+#endif
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_config_failed_reopen_keeps_a_paused_list();
+    rc |= test_config_leaves_a_save_that_starts();
+#endif
 #if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) && defined(USE_RADIO)
     rc |= test_radio_control_unavailable_toasts();
 #endif
@@ -20627,6 +23430,8 @@ main(void) {
 #endif
     rc |= test_config_refuses_scanner_under_trunk_scan();
     rc |= test_config_keeps_trunk_scan_lifecycle();
+    rc |= test_config_keeps_the_running_trunk_scan_list();
+    rc |= test_config_restart_required_says_what_waits();
     rc |= test_nfm_bandwidth_set_on_pcm_input();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_am_width_asks_the_rigctl_peer();
@@ -20736,6 +23541,14 @@ main(void) {
     rc |= test_scan_leave_left_to_later_on_analog_keeps_an_armed_switch();
     rc |= test_scan_leave_retired_by_a_row_keeps_an_armed_switch();
     rc |= test_scan_leave_record_goes_with_its_stream();
+    rc |= test_scan_pause_and_refused_resume_return_to_the_monitor();
+#if defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
+    rc |= test_pending_resume_taken_back_by_tap_search_and_reopen();
+    rc |= test_typed_resume_under_the_real_tick_guard();
+#endif
+    rc |= test_trunk_scan_pause_returns_to_the_monitor();
+    rc |= test_restart_while_a_list_is_paused_opens_on_the_configured_profile();
+    rc |= test_trunk_scan_pause_reopens_for_the_configured_gain();
     rc |= test_refused_leave_at_once_reads_the_am_default_it_asked_for();
     rc |= test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds();
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
@@ -20767,6 +23580,7 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_rtl_enable_input_holds_the_nfm_width();
     rc |= test_rtl_row_returns_to_the_radio_a_switch_left();
+    rc |= test_rtl_row_switch_ends_a_paused_list();
     rc |= test_rtl_row_closes_the_pcm_input_it_replaced();
     rc |= test_input_switch_that_fails_keeps_the_running_input();
     rc |= test_input_switch_holds_the_watchdog_guard();
@@ -20872,6 +23686,7 @@ main(void) {
     rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
+    rc |= test_tuner_release_keeps_trunking_when_a_trunk_scan_cannot_pause();
     rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
     rc |= test_replay_refuses_channel_cycle_and_return_cc();
@@ -20893,6 +23708,9 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= expect_int("every case reaching the sink helpers plays to the null output", g_ensure_off_null_calls, 0);
+#endif
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= expect_int("no case re-entered the P25 SM tick guard", g_guard_reentries, 0);
 #endif
     dsd_socket_cleanup();
     if (rc == 0) {

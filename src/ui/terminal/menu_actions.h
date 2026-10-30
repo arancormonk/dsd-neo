@@ -195,6 +195,11 @@ struct UiCtx;
    goes to cb_rtl_freq_text(), which reopens it here with the text kept after a refusal. Built without USE_RADIO too,
    so that callback links in every build. */
 void ui_open_freq_prompt(struct UiCtx* c, const char* prefill);
+/* Input > Frequency...: the prompt, empty. On a radio input, or on any input but a replay with a rigctl peer. */
+void act_set_freq(void* v);
+/* The '=' key's opener for the prompt-only overlay (issue #671): the prompt where the row is offered, judged on the
+   published options snapshot, else one line of help saying why this input cannot be tuned. */
+void act_freq_key(void* v);
 
 // ---- RTL-SDR actions (USE_RADIO only) ----
 #ifdef USE_RADIO
@@ -213,7 +218,6 @@ void airspy_set_mixer_agc(void* v);
 void airspy_set_bias_tee(void* v);
 void rtl_restart(void* v);
 void rtl_set_dev(void* v);
-void rtl_set_freq(void* v);
 void rtl_set_gain(void* v);
 void rtl_set_ppm(void* v);
 void rtl_set_bw(void* v);

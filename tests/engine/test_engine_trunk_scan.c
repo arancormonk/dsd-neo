@@ -54,6 +54,7 @@
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -62,6 +63,7 @@
 #include <string.h>
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
+#include "scan_step_untyped.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -140,6 +142,35 @@ dsd_engine_scan_retune_attaches_family(const dsd_opts* opts, const dsd_state* st
     return 0;
 }
 
+/* Issue #671: the steps a trunk-scan pause or resume ran, in order, while a test records them: "abandon" (a state
+ * machine's release), "release" (the shared call-state release), "leave" (the scope leave's rigctl restore, its last
+ * step), "forget" (the carrier's decoding forgotten). What the scope leave saw when it ran is kept beside it. */
+static int g_pause_log_on;
+static char g_pause_log[256];
+static int g_pause_leave_saw_paused = -1;
+static int g_pause_leave_saw_unnamed = -1;
+static long g_pause_leave_saw_lcn0 = -1;
+static uint64_t g_pause_leave_saw_map_seq;
+
+static void
+pause_log(const char* step) {
+    if (!g_pause_log_on) {
+        return;
+    }
+    const size_t used = strlen(g_pause_log);
+    DSD_SNPRINTF(g_pause_log + used, sizeof g_pause_log - used, "%s%s", used ? "," : "", step);
+}
+
+static void
+pause_log_start(void) {
+    g_pause_log[0] = '\0';
+    g_pause_log_on = 1;
+    g_pause_leave_saw_paused = -1;
+    g_pause_leave_saw_unnamed = -1;
+    g_pause_leave_saw_lcn0 = -1;
+    g_pause_leave_saw_map_seq = 0U;
+}
+
 /* The rigctl peer's restore once the scan leaves its targets (trunk_tuning.c, issue #526): counted, with the analog
  * demodulator and the session family the settings in force then ask the peer for. */
 static int g_rigctl_restores;
@@ -148,10 +179,16 @@ static int g_rigctl_restore_demod = -1;
 
 void
 dsd_engine_scan_rigctl_restore(const dsd_opts* opts, const dsd_state* state) {
-    (void)state;
     g_rigctl_restores++;
     g_rigctl_restore_analog_only = opts ? opts->analog_only : -1;
     g_rigctl_restore_demod = opts ? opts->analog_demod : -1;
+    if (g_pause_log_on && state) {
+        g_pause_leave_saw_paused = state->trunk_scan_paused;
+        g_pause_leave_saw_unnamed = state->trunk_scan_active_id[0] == '\0';
+        g_pause_leave_saw_lcn0 = state->trunk_lcn_freq[0];
+        g_pause_leave_saw_map_seq = state->trunk_chan_map_seq;
+    }
+    pause_log("leave");
 }
 
 static int g_dmr_tick_calls = 0;
@@ -368,6 +405,7 @@ p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
     (void)opts;
     (void)state;
     (void)reason;
+    pause_log("abandon");
     if (!ctx) {
         return;
     }
@@ -383,9 +421,13 @@ dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
     (void)opts;
     (void)state;
     (void)reason;
+    pause_log("abandon");
     if (!ctx) {
         return;
     }
+    /* As the real release does (dmr_sm_release_without_cc()): the machine forgets the control-channel request it was
+       waiting on, so whoever owed it something has to have taken it first (issue #671). */
+    ctx->cc_tune_request_id = 0U;
     ctx->state = DMR_SM_ON_CC;
     ctx->vc_freq_hz = 0;
     ctx->slots[0].voice_active = 0;
@@ -400,6 +442,7 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    pause_log("release");
     const double ended_m = dsd_decode_now_mono_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
@@ -6846,9 +6889,14 @@ test_init_failure_restores_saved_trunk_opts(void) {
     if (make_temp_dir(dir, sizeof dir) != 0) {
         return 1;
     }
+    /* The target's own modulation is in force when its channel map fails to import, so the rollback has the
+       configured modulation to put back as well as the trunking flags. */
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
     if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
         || write_text_file(chan_path, "channel,frequency\n1,851012500\n") != 0
-        || write_targets_file(dir, "dmr,dmr-trunk,452000000,chan.csv,250,,\n", target_path, sizeof target_path) != 0) {
+        || write_targets_file_with_header(dir, header, "dmr,dmr-trunk,452000000,chan.csv,250,,,gfsk\n", target_path,
+                                          sizeof target_path)
+               != 0) {
         cleanup_paths(dir, NULL, chan_path);
         return 1;
     }
@@ -6858,6 +6906,10 @@ test_init_failure_restores_saved_trunk_opts(void) {
     reset_scan_opts_state(&opts, &state);
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     g_csv_import_result = -1;
@@ -6875,12 +6927,172 @@ test_init_failure_restores_saved_trunk_opts(void) {
                     opts.trunk_is_tuned);
         test_rc = 1;
     }
+    if (opts.mod_cli_lock != 1 || opts.mod_c4fm != 0 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
+        DSD_FPRINTF(stderr, "scan init failure did not restore modulation lock=%d c4fm=%d qpsk=%d gfsk=%d\n",
+                    opts.mod_cli_lock, opts.mod_c4fm, opts.mod_qpsk, opts.mod_gfsk);
+        test_rc = 1;
+    }
     if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
         DSD_FPRINTF(stderr, "failed scan init attached a coordinator\n");
         test_rc = 1;
     }
 
     cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+/* Issue #671 (B6): each target's type sets the live trunking flag while it is parked, so a save made then writes the
+   trunking setting the session runs outside the scan, which the coordinator publishes, not the parked target's. */
+static int
+test_save_writes_configured_trunking_under_scan(void) {
+    static const struct {
+        const char* type;
+        const char* row;
+        int configured;
+        int parked;
+    } cases[] = {
+        {"p25-trunk", "p25,p25-trunk,851000000,,250,,\n", 0, 1},
+        {"dmr-conventional", "dmr,dmr-conventional,452000000,,250,,\n", 1, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        if (make_runtime_targets(cases[i].row, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+            return 1;
+        }
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_scan_opts_state(&opts, &state);
+        opts.trunk_enable = cases[i].configured;
+        DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        static dsdneoUserConfig cfg;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+        if (rc != 0 || opts.trunk_enable != cases[i].parked
+            || state.trunk_scan_configured_trunk_enable != (uint8_t)cases[i].configured
+            || cfg.trunk_enabled != cases[i].configured) {
+            DSD_FPRINTF(stderr,
+                        "save under trunk scan (%s): rc=%d live=%d published=%u saved=%d, want live=%d saved=%d\n",
+                        cases[i].type, rc, opts.trunk_enable, (unsigned)state.trunk_scan_configured_trunk_enable,
+                        cfg.trunk_enabled, cases[i].parked, cases[i].configured);
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        if (opts.trunk_enable != cases[i].configured || state.trunk_scan_configured_trunk_enable != 0U) {
+            DSD_FPRINTF(stderr, "shutdown (%s): trunk_enable=%d published=%u, want %d and cleared\n", cases[i].type,
+                        opts.trunk_enable, (unsigned)state.trunk_scan_configured_trunk_enable, cases[i].configured);
+            test_rc = 1;
+        }
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+    }
+    return test_rc;
+}
+
+/* The configured trunking setting a scan restores at shutdown can be edited while it runs: the edit is published for
+   the save and kept for shutdown, and never reaches the parked target's live flag. */
+static int
+test_set_configured_trunk_enable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_set_configured_trunk_enable(&state, 1) != -1
+        || state.trunk_scan_configured_trunk_enable != 0U) {
+        DSD_FPRINTF(stderr, "configured trunking set without a scan\n");
+        test_rc = 1;
+    }
+
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("dmr,dmr-conventional,452000000,,250,,\n", target_path, sizeof target_path, dir,
+                             sizeof dir)
+        != 0) {
+        return 1;
+    }
+    opts.trunk_enable = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "configured trunking scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const int set_rc = dsd_engine_trunk_scan_set_configured_trunk_enable(&state, 1);
+    static dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+    if (set_rc != 0 || state.trunk_scan_configured_trunk_enable != 1U || opts.trunk_enable != 0
+        || cfg.trunk_enabled != 1) {
+        DSD_FPRINTF(stderr, "configured trunking edit rc=%d published=%u live=%d saved=%d\n", set_rc,
+                    (unsigned)state.trunk_scan_configured_trunk_enable, opts.trunk_enable, cfg.trunk_enabled);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.trunk_enable != 1) {
+        DSD_FPRINTF(stderr, "shutdown did not restore the edited trunking setting: %d\n", opts.trunk_enable);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #671 (B7): a modulation change made during the scan is the configured modulation (app-control runs it inside
+   the scope's suspend/resume bracket, which recaptures the configured settings). Shutdown keeps it, so the exit autosave
+   writes it, rather than putting back the modulation the scan started with. */
+static int
+test_shutdown_keeps_modulation_changed_during_scan(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("p25,p25-trunk,851000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.mod_cli_lock = 0;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "modulation scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    /* What DSD_APP_CMD_MOD_SET does for CQPSK under a scan row. */
+    if (dsd_scan_mode_suspend(&opts, &state) != 1) {
+        DSD_FPRINTF(stderr, "modulation edit found no scan scope to suspend\n");
+        test_rc = 1;
+    }
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    (void)dsd_scan_mode_resume(&opts, &state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    static dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+    if (opts.mod_cli_lock != 1 || opts.mod_c4fm != 0 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0 || !cfg.has_demod
+        || cfg.demod_path != DSDCFG_DEMOD_QPSK) {
+        DSD_FPRINTF(
+            stderr,
+            "shutdown lost the modulation changed during the scan lock=%d c4fm=%d qpsk=%d gfsk=%d saved=%d/%d\n",
+            opts.mod_cli_lock, opts.mod_c4fm, opts.mod_qpsk, opts.mod_gfsk, cfg.has_demod, (int)cfg.demod_path);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
@@ -14023,6 +14235,764 @@ test_target_edit_survives_decryption_apply(void) {
     return test_rc;
 }
 
+/* --- Issue #671: pausing and resuming a trunk scan. --- */
+
+typedef struct {
+    int enter_calls;
+    int blocking_enters;
+    int leave_calls;
+} guard_counters;
+
+static guard_counters
+guard_counters_now(void) {
+    guard_counters c = {g_p25_tick_guard_enter_calls, g_p25_tick_guard_blocking_enters, g_p25_tick_guard_leave_calls};
+    return c;
+}
+
+/* The caller of a `_locked` entry point holds the P25 SM tick guard, which is not re-entrant: nothing inside may take
+   it, wait for it or leave it. */
+static int
+expect_guard_untouched(const char* stage, guard_counters before) {
+    const guard_counters now = guard_counters_now();
+    if (now.enter_calls != before.enter_calls || now.blocking_enters != before.blocking_enters
+        || now.leave_calls != before.leave_calls) {
+        DSD_FPRINTF(stderr, "%s touched the tick guard: try %d->%d, enter %d->%d, leave %d->%d\n", stage,
+                    before.enter_calls, now.enter_calls, before.blocking_enters, now.blocking_enters,
+                    before.leave_calls, now.leave_calls);
+        return 1;
+    }
+    return 0;
+}
+
+/* The paused publication: no target named, no row, no timing, no target gain; the list's size, the configured gain and
+   trunking and the hold kept. */
+static int
+expect_paused_publication(const dsd_state* state, const char* stage, unsigned count, int gain, unsigned trunk_enable,
+                          unsigned hold) {
+    if (state->trunk_scan_paused != 1U || state->operator_tuned != 1U || dsd_engine_trunk_scan_paused(state) != 1
+        || state->trunk_scan_active_id[0] != '\0' || state->trunk_scan_active_ordinal != 0U
+        || state->trunk_scan_target_count != count || state->trunk_scan_configured_gain != gain
+        || state->trunk_scan_configured_trunk_enable != trunk_enable || state->trunk_scan_hold != hold
+        || state->trunk_scan_gain_override != 0U || state->trunk_scan_active_avoided != 0U
+        || state->scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE || state->scan_row_session != 0U
+        || state->scan_row_index != -1 || state->scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE) {
+        DSD_FPRINTF(stderr,
+                    "paused publication after %s: paused=%u operator=%u id='%s' ordinal=%u count=%u gain=%d trunk=%u "
+                    "hold=%u override=%u row=%u/%u/%d timing=%u\n",
+                    stage, (unsigned)state->trunk_scan_paused, (unsigned)state->operator_tuned,
+                    state->trunk_scan_active_id, (unsigned)state->trunk_scan_active_ordinal,
+                    (unsigned)state->trunk_scan_target_count, (int)state->trunk_scan_configured_gain,
+                    (unsigned)state->trunk_scan_configured_trunk_enable, (unsigned)state->trunk_scan_hold,
+                    (unsigned)state->trunk_scan_gain_override, (unsigned)state->scan_row_scanner,
+                    (unsigned)state->scan_row_session, (int)state->scan_row_index, (unsigned)state->scan_timing.reason);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_text(const char* stage, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: \"%s\", want \"%s\"\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* A two-target scan whose first target is keyed: @p keys_path receives the key file. */
+static int
+pause_keyed_scan_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* keys_path,
+                      size_t keys_sz, char* target_path, size_t path_sz) {
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n";
+    if (make_temp_dir(dir, dir_sz) != 0 || dsd_test_path_join(keys_path, keys_sz, dir, "hexkeys.csv") != 0
+        || write_text_file(keys_path, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0
+        || write_targets_file_with_header(dir, header, body, target_path, path_sz) != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    state->rkey_array[3] = 111ULL;
+    state->rkey_array_loaded[3] = 1U;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "pause scan init failed err=%s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+static const char k_pause_keyed_body[] = "a,p25-trunk,851000000,,250,,keyed,hexkeys.csv\n"
+                                         "b,dmr-conventional,461000000,,250,,plain,\n";
+
+/* A pause for an accepted manual tune (spec 3.3): the target's call ends and commits under its own name, keys and
+   policy (the release); the target is saved idle; the pause is published and an empty state replaces the target's
+   before the scopes are left (the leave already sees it); then the configured decoder, gain, trunking and keys. No
+   carrier forget: the caller's TUNE boundary runs it. Nothing takes the tick guard the caller holds. */
+static int
+test_pause_for_a_tune_tears_down_in_order(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    int test_rc = 0;
+    if (opts.trunk_enable != 1 || state.rkey_array[9] != 999ULL || state.scan_row_scanner == 0U) {
+        DSD_FPRINTF(stderr, "pause: target a not parked with its keys and trunking\n");
+        test_rc = 1;
+    }
+    state.p2_wacn = k_sys_a_wacn;
+    test_rc |= seed_active_call_row(&state, 101U, 202U, 0.5);
+    const uint64_t map_seq_before = state.trunk_chan_map_seq;
+    const int ends_before = g_explicit_call_ends;
+    const int forgets_before = g_forget_carrier_decoding_calls;
+    g_release_seen_target[0] = '\0';
+    const guard_counters guard = guard_counters_now();
+
+    trunk_scan_test_set_now(1.0);
+    pause_log_start();
+    dsd_trunk_scan_leave_report report;
+    report.monitor_request = -9;
+    report.restart_gain = -9;
+    const int rc = dsd_engine_trunk_scan_pause_ex_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report);
+    g_pause_log_on = 0;
+    test_rc |= expect_control_rc("pause for a tune", rc, 0);
+    test_rc |= expect_text("pause order", g_pause_log, "abandon,release,leave");
+    if (g_pause_leave_saw_paused != 1 || g_pause_leave_saw_unnamed != 1 || g_pause_leave_saw_lcn0 != 0
+        || g_pause_leave_saw_map_seq <= map_seq_before) {
+        DSD_FPRINTF(stderr,
+                    "scope leave ran before the paused publication or the empty state: paused=%d unnamed=%d "
+                    "lcn0=%ld map_seq=%llu (was %llu)\n",
+                    g_pause_leave_saw_paused, g_pause_leave_saw_unnamed, g_pause_leave_saw_lcn0,
+                    (unsigned long long)g_pause_leave_saw_map_seq, (unsigned long long)map_seq_before);
+        test_rc = 1;
+    }
+    if (g_explicit_call_ends != ends_before + 1 || strcmp(g_release_seen_target, "a") != 0) {
+        DSD_FPRINTF(stderr, "pause ended %d calls under '%s', want 1 under 'a'\n", g_explicit_call_ends - ends_before,
+                    g_release_seen_target);
+        test_rc = 1;
+    }
+    test_rc |= expect_no_active_call_row(&state, "pause");
+    test_rc |= expect_vc_mirrors_clear(&state, "pause");
+    if (g_forget_carrier_decoding_calls != forgets_before) {
+        DSD_FPRINTF(stderr, "a pause for a tune forgot the carrier itself (the caller's boundary does)\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_paused_publication(&state, "pause", 2U, 0, 0U, 0U);
+    if (opts.trunk_enable != 0 || opts.trunk_is_tuned != 0 || state.p2_wacn != 0ULL || state.rkey_array[9] != 0ULL
+        || state.rkey_array[3] != 111ULL || dsd_scan_mode_configured_view(&state) != NULL
+        || dsd_trunk_scan_hook_p25_ctx() != NULL || report.restart_gain != 0 || report.monitor_request != 0) {
+        DSD_FPRINTF(stderr,
+                    "pause left the target in place: trunk=%d tuned=%d wacn=%llx key9=%llu key3=%llu scope=%d "
+                    "p25ctx=%d restart=%d monitor=%d\n",
+                    opts.trunk_enable, opts.trunk_is_tuned, state.p2_wacn, (unsigned long long)state.rkey_array[9],
+                    (unsigned long long)state.rkey_array[3], dsd_scan_mode_configured_view(&state) != NULL,
+                    dsd_trunk_scan_hook_p25_ctx() != NULL, report.restart_gain, report.monitor_request);
+        test_rc = 1;
+    }
+    test_rc |= expect_guard_untouched("pause", guard);
+
+    /* Already paused: nothing more happens. */
+    pause_log_start();
+    test_rc |= expect_control_rc("second pause",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE), 0);
+    g_pause_log_on = 0;
+    test_rc |= expect_text("second pause", g_pause_log, "");
+    test_rc |= expect_guard_untouched("second pause", guard);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != -1
+        || dsd_engine_trunk_scan_resume_locked(&opts, &state) != -1 || dsd_engine_trunk_scan_paused(&state) != 0
+        || state.trunk_scan_paused != 0U) {
+        DSD_FPRINTF(stderr, "pause or resume without a coordinator did not answer unavailable\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+/* A pause in place (`y`, a tuner release) has no TUNE boundary after it: it forgets the carrier's decoding itself,
+   after the scopes are left. A target that ran its own tuner gain leaves it on the device: the report asks the caller
+   to reopen the stream for the configured gain, now in force. */
+static int
+test_pause_in_place_forgets_the_carrier(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n";
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(header,
+                        "strong,dmr-trunk,452000000,,250,,strong,10\n"
+                        "default,dmr-conventional,461000000,,250,,default\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = 0;
+    if (opts.rtl_gain_value != 10 || state.trunk_scan_gain_override != 1U) {
+        DSD_FPRINTF(stderr, "in place: target gain not in force (%d)\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    const int forgets_before = g_forget_carrier_decoding_calls;
+    const guard_counters guard = guard_counters_now();
+    pause_log_start();
+    dsd_trunk_scan_leave_report report;
+    const int rc = dsd_engine_trunk_scan_pause_ex_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE, &report);
+    g_pause_log_on = 0;
+    test_rc |= expect_control_rc("pause in place", rc, 0);
+    test_rc |= expect_text("pause in place order", g_pause_log, "abandon,release,leave,forget");
+    if (g_forget_carrier_decoding_calls != forgets_before + 1 || opts.rtl_gain_value != 0 || report.restart_gain != 1
+        || state.trunk_scan_gain_override != 0U) {
+        DSD_FPRINTF(stderr, "in place: forgets=%d gain=%d restart=%d override=%u\n",
+                    g_forget_carrier_decoding_calls - forgets_before, opts.rtl_gain_value, report.restart_gain,
+                    (unsigned)state.trunk_scan_gain_override);
+        test_rc = 1;
+    }
+    test_rc |= expect_paused_publication(&state, "pause in place", 2U, 0, 0U, 0U);
+    test_rc |= expect_guard_untouched("pause in place", guard);
+    /* The target left keeps its own gain for its next visit, so a gain edit now is the configured one, in force. */
+    if (dsd_engine_trunk_scan_set_configured_gain(&opts, &state, 30) != 1 || opts.rtl_gain_value != 30
+        || state.trunk_scan_gain_override != 0U) {
+        DSD_FPRINTF(stderr, "in place: a gain edit while paused was not in force (%d)\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* F2: every request in flight for the target left is let go of, never completed. The DMR machine's own request is
+   taken before its release forgets it. Frames wait only for the backend's answer: once each request is answered as
+   failed, nothing keeps the manual session's frames back. */
+static int
+test_pause_lets_go_of_requests_in_flight(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_trunk_tuning_requests_reset();
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (scan_visit_init(NULL, "a,dmr-trunk,452000000,,250,,\nb,dmr-conventional,461000000,,250,,\n", 0, &opts, &state,
+                        dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    int test_rc = 0;
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    dmr_sm_ctx_t* dmr = (dmr_sm_ctx_t*)dsd_trunk_scan_hook_dmr_ctx();
+    const uint64_t recovery = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(recovery);
+    if (park == 0U || !dmr || recovery == 0U) {
+        DSD_FPRINTF(stderr, "requests in flight: park=%llu dmr=%d\n", (unsigned long long)park, dmr != NULL);
+        test_rc = 1;
+    } else {
+        dmr->cc_tune_request_id = recovery;
+    }
+
+    test_rc |= expect_control_rc("pause on a pending park",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    /* Still the backend's: frames wait for its answer. */
+    if (dsd_trunk_tuning_pending_request() == 0U
+        || dsd_trunk_tuning_request_status(park, NULL) != DSD_TRUNK_TUNE_RESULT_PENDING) {
+        DSD_FPRINTF(stderr, "a pause completed a request the backend had not answered\n");
+        test_rc = 1;
+    }
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_trunk_tuning_request_publish(recovery, DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (dsd_trunk_tuning_pending_request() != 0U || !dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation())) {
+        DSD_FPRINTF(stderr, "a failure of a request the pause let go of still withholds frames (unresolved %llu)\n",
+                    (unsigned long long)dsd_trunk_tuning_pending_request());
+        test_rc = 1;
+    }
+    /* Nothing owns them any more: a tick resolves nothing and retunes nothing. */
+    const int tunes = g_counting_tune_to_cc_calls;
+    trunk_scan_test_set_now(5.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_counting_tune_to_cc_calls != tunes || dsd_engine_trunk_scan_active_index(&state) != 0U) {
+        DSD_FPRINTF(stderr, "a paused scan retuned after its request failed\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_trunk_tuning_requests_reset();
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* While paused nothing the coordinator owns acts for the receiver (spec 3.3 "While paused"): no tick, yield or timing;
+   no state machine, channel map or class answers; no conventional hold, live decryption or control; edits are stored
+   for the next visit; the configured gain is in force; the export still carries the paused target's tables; the
+   session in force answers whether tones are heard (B26). The resume brings the target back as it was saved, with
+   fresh clocks, the hold and the stored edit. */
+static int
+test_paused_scan_gates_every_consumer(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\nb,dmr-conventional,461000000,,250,,\n", target_path,
+                             sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    /* The configured session is the analog FM monitor: it hears tones, which no target here does (B26). */
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts.rtl_gain_value = 20;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "gates: init failed err=%s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    if (dsd_engine_scan_hears_tones(&opts, &state) != 0 || dsd_engine_trunk_scan_active_is_p25_class(&state) != 1
+        || dsd_trunk_scan_owns_tuner(&opts, &state) != 1
+        || dsd_scan_mode_rigctl_request_is_session(&opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "gates: the running scan answered for the configured session\n");
+        test_rc = 1;
+    }
+    /* Rotate to b and back, so a's revisit is a target the test can tell apart, then hold it. */
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "gates: back on a", 0U);
+    test_rc |= expect_control_rc("gates: hold",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    const uint32_t session = state.scan_row_session;
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_a_sysid;
+    seed_iden_entry(&state.p25_iden_fdma[1], 170201250, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+
+    trunk_scan_test_set_now(1.0);
+    const guard_counters guard = guard_counters_now();
+    test_rc |= expect_control_rc("gates: pause",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE), 0);
+    test_rc |= expect_guard_untouched("gates: pause", guard);
+    test_rc |= expect_paused_publication(&state, "gates: pause", 2U, 20, 0U, 1U);
+
+    /* No tick, yield, timing or retune. */
+    const int tunes = g_counting_tune_to_cc_calls;
+    trunk_scan_test_set_now(50.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_counting_tune_to_cc_calls != tunes || dsd_engine_trunk_scan_active_index(&state) != 0U
+        || dsd_engine_trunk_scan_visit_expired(&opts, &state) != 0
+        || dsd_engine_trunk_scan_receive_expired(&opts, &state) != 0
+        || state.scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE) {
+        DSD_FPRINTF(stderr, "gates: the paused scan ticked, yielded or published timing\n");
+        test_rc = 1;
+    }
+    /* The parked target's hooks and classes answer nothing. */
+    int cqpsk = -1;
+    if (dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL
+        || dsd_trunk_scan_hook_active_chan_csv(&state) != NULL
+        || dsd_engine_trunk_scan_active_gfsk_symbol_rate(&state) != 0
+        || dsd_engine_trunk_scan_active_is_p25_class(&state) != 0
+        || dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk) != 0 || cqpsk != -1) {
+        DSD_FPRINTF(stderr, "gates: a paused target still answered for the receiver\n");
+        test_rc = 1;
+    }
+    /* B26: the session in force answers. The running predicate goes dark, so a manual rigctl request is the
+       session's. */
+    if (dsd_engine_scan_hears_tones(&opts, &state) != 1) {
+        DSD_FPRINTF(stderr, "gates: a paused scan hid the configured FM monitor's tones\n");
+        test_rc = 1;
+    }
+    if (dsd_trunk_scan_owns_tuner(&opts, &state) != 0 || opts.trunk_scan_enabled != 1
+        || dsd_scan_mode_rigctl_request_is_session(&opts, &state) != 1) {
+        DSD_FPRINTF(stderr, "gates: the paused scan still owns the tuner\n");
+        test_rc = 1;
+    }
+    /* Controls refused, the hold kept. */
+    static const int ops[] = {
+        DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE,
+        DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE,
+        DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR,
+        DSD_TRUNK_SCAN_CONTROL_ADVANCE,
+    };
+    for (size_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        test_rc |= expect_control_rc("gates: control while paused", dsd_trunk_scan_hook_control(&opts, &state, ops[i]),
+                                     DSD_TRUNK_SCAN_CONTROL_PAUSED);
+    }
+    test_rc |= expect_paused_publication(&state, "gates: controls", 2U, 20, 0U, 1U);
+    /* Live decryption names a target that is not on air. */
+    dsd_key_set keys;
+    DSD_MEMSET(&keys, 0, sizeof keys);
+    dsd_dmr_key_map map;
+    DSD_MEMSET(&map, 0, sizeof map);
+    test_rc |= expect_control_rc(
+        "gates: decryption",
+        dsd_trunk_scan_hook_decryption_apply(&opts, &state, "a", dsd_trunk_tuning_generation(), 0U, &keys, &map, 0),
+        DSD_TRUNK_KEY_STALE);
+    /* The configured gain is in force. */
+    if (dsd_engine_trunk_scan_set_configured_gain(&opts, &state, 30) != 1 || opts.rtl_gain_value != 30
+        || state.trunk_scan_configured_gain != 30) {
+        DSD_FPRINTF(stderr, "gates: a gain edit while paused did not take effect\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_paused_publication(&state, "gates: gain", 2U, 30, 0U, 1U);
+    /* An edit of the target left waits for its next visit. */
+    const double squelch_before = opts.rtl_squelch_level;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -45;
+    test_rc |= expect_edit_rc("gates: edit while paused",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "a", DSD_SCAN_ROW_FIELD_SQUELCH,
+                                                                DSD_SCAN_ROW_EDIT_SET, &value, NULL),
+                              DSD_SCAN_ROW_EDIT_STORED);
+    if (fabs(opts.rtl_squelch_level - squelch_before) > 1e-12) {
+        DSD_FPRINTF(stderr, "gates: an edit while paused reached the receiver\n");
+        test_rc = 1;
+    }
+    /* The export carries the paused target's tables, which are no longer live. */
+    static p25_bandplan_row_t rows[8];
+    if (state.p25_iden_fdma[1].populated != 0
+        || dsd_engine_trunk_scan_append_p25_idens(&state, rows, 0, (int)(sizeof rows / sizeof rows[0])) != 1
+        || rows[0].entry.wacn != k_sys_a_wacn) {
+        DSD_FPRINTF(stderr, "gates: the export lost the paused target's IDENs\n");
+        test_rc = 1;
+    }
+
+    /* The resume: a again, as saved, with the stored edit, the hold, and fresh clocks. */
+    trunk_scan_test_set_now(60.0);
+    const guard_counters resume_guard = guard_counters_now();
+    test_rc |= expect_control_rc("gates: resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    test_rc |= expect_guard_untouched("gates: resume", resume_guard);
+    test_rc |= expect_published_target(&state, "gates: resume", "a", 1U, 2U);
+    if (state.trunk_scan_paused != 0U || state.operator_tuned != 0U || dsd_engine_trunk_scan_paused(&state) != 0
+        || state.trunk_scan_hold != 1U || state.p2_wacn != k_sys_a_wacn || opts.trunk_enable != 1
+        || !target_squelch_level_is(opts.rtl_squelch_level, -45) || dsd_trunk_scan_hook_p25_ctx() == NULL
+        || dsd_engine_scan_hears_tones(&opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "gates: resume did not bring a back: paused=%u operator=%u hold=%u wacn=%llx trunk=%d\n",
+                    (unsigned)state.trunk_scan_paused, (unsigned)state.operator_tuned, (unsigned)state.trunk_scan_hold,
+                    state.p2_wacn, opts.trunk_enable);
+        test_rc = 1;
+    }
+    /* Released, the hold grants a full dwell from the release, then rotation goes on. */
+    test_rc |= expect_control_rc("gates: release the hold",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(60.1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(60.2);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "gates: dwell from the release", 0U);
+    trunk_scan_test_set_now(60.36);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "gates: rotation after the resume", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Conventional traffic decoded on the manual frequency while paused holds nothing: a resumed target would otherwise
+   be kept past its dwell by a call it never carried. */
+static int
+test_paused_scan_holds_nothing_for_manual_traffic(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, "a,dmr-conventional,461000000,,250,5000,\nb,dmr-conventional,462000000,,250,5000,\n", 0,
+                        &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = expect_control_rc("hold: pause",
+                                    dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 100U, 200U, 0, 0, 0);
+    test_rc |= expect_control_rc("hold: resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    trunk_scan_test_set_now(2.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "hold: a held by the manual session's traffic", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Resume (spec 3.3): the manual session's calls end first, under no target's name; a park still in flight is the
+   resume pending, which a second resume leaves alone (no second tune, no second end); once it lands the scan runs. */
+static int
+test_resume_ends_manual_calls_and_waits_for_its_park(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, "a,dmr-conventional,461000000,,250,,\nb,dmr-conventional,462000000,,250,,\n", 0, &opts,
+                        &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = expect_control_rc("pending: pause",
+                                    dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    test_rc |= seed_active_call_row(&state, 7U, 8U, 1.0);
+    g_end_calls_seen_target[0] = 'x';
+    g_end_calls_seen_target[1] = '\0';
+    const int end_runs = g_end_calls_runs;
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(2.0);
+    const guard_counters guard = guard_counters_now();
+    test_rc |= expect_control_rc("pending: resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), 1);
+    const uint64_t park = g_scan_tune_pending_request;
+    if (g_end_calls_runs != end_runs + 1 || g_end_calls_seen_target[0] != '\0' || park == 0U) {
+        DSD_FPRINTF(stderr, "pending: resume ended %d call passes under '%s', park %llu\n", g_end_calls_runs - end_runs,
+                    g_end_calls_seen_target, (unsigned long long)park);
+        test_rc = 1;
+    }
+    test_rc |= expect_no_active_call_row(&state, "pending: resume");
+    test_rc |= expect_published_target(&state, "pending: resume", "a", 1U, 2U);
+    /* The second `y` while the park is in flight. */
+    test_rc |= expect_control_rc("pending: second resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), 1);
+    g_scan_tune_to_freq_pending = 0;
+    if (g_end_calls_runs != end_runs + 1 || g_scan_tune_pending_request != park) {
+        DSD_FPRINTF(stderr, "pending: a second resume ended calls or tuned again\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_guard_untouched("pending: resumes", guard);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(2.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_control_rc("pending: landed", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    trunk_scan_test_set_now(2.36);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "pending: rotation after the landing", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* F1: a resume whose retune is refused leaves a coherent pause: the manual session's state and identity back, no
+   scope, the configured keys and trunking, the paused publication, and a toast; ticks and edits act as paused; the
+   next resume tries again at once. */
+static int
+test_refused_resume_stays_paused(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    const uint32_t session = state.scan_row_session;
+    int test_rc = expect_control_rc("refused: pause",
+                                    dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    /* What the manual session learns while paused. */
+    state.p2_wacn = 0x12345ULL;
+    state.rx_id.p25_wacn = 0x4242U;
+    state.ui_msg[0] = '\0';
+    g_counting_tune_to_cc_failures_remaining = 1;
+    trunk_scan_test_set_now(3.0);
+    const guard_counters guard = guard_counters_now();
+    dsd_trunk_scan_leave_report report;
+    test_rc |= expect_control_rc("refused: resume", dsd_engine_trunk_scan_resume_ex_locked(&opts, &state, &report), -3);
+    test_rc |= expect_guard_untouched("refused: resume", guard);
+    test_rc |= expect_paused_publication(&state, "refused: resume", 2U, 0, 0U, 0U);
+    if (state.p2_wacn != 0x12345ULL || state.rx_id.p25_wacn != 0x4242U || opts.trunk_enable != 0
+        || state.rkey_array[9] != 0ULL || state.rkey_array[3] != 111ULL || dsd_scan_mode_configured_view(&state) != NULL
+        || dsd_trunk_scan_hook_p25_ctx() != NULL || report.monitor_request != 0 || report.restart_gain != 0) {
+        DSD_FPRINTF(stderr, "refused: not a coherent pause wacn=%llx rx=%u trunk=%d key9=%llu scope=%d\n",
+                    state.p2_wacn, (unsigned)state.rx_id.p25_wacn, opts.trunk_enable,
+                    (unsigned long long)state.rkey_array[9], dsd_scan_mode_configured_view(&state) != NULL);
+        test_rc = 1;
+    }
+    test_rc |= expect_text("refused: toast", state.ui_msg, "Scan stays paused: tune to 851.000000 MHz failed");
+    /* Ticks stay dark; an edit is stored. */
+    const int tunes = g_counting_tune_to_cc_calls;
+    trunk_scan_test_set_now(30.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_counting_tune_to_cc_calls != tunes) {
+        DSD_FPRINTF(stderr, "refused: a tick retuned the paused scan\n");
+        test_rc = 1;
+    }
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -50;
+    test_rc |= expect_edit_rc("refused: edit",
+                              dsd_engine_trunk_scan_edit_target(&opts, &state, session, "a", DSD_SCAN_ROW_FIELD_SQUELCH,
+                                                                DSD_SCAN_ROW_EDIT_SET, &value, NULL),
+                              DSD_SCAN_ROW_EDIT_STORED);
+    /* No cooldown left behind: the next resume parks at once. */
+    test_rc |= expect_control_rc("refused: resume again", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    test_rc |= expect_published_target(&state, "refused: resume again", "a", 1U, 2U);
+    if (state.rkey_array[9] != 999ULL || opts.trunk_enable != 1 || state.trunk_scan_paused != 0U
+        || !target_squelch_level_is(opts.rtl_squelch_level, -50)) {
+        DSD_FPRINTF(stderr, "refused: the next resume did not park a with its keys and edit\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+/* F1: a resume whose preparation fails (no memory for the target's keys) drops the scopes it began and stays paused,
+   nothing tuned; the next resume parks. */
+static int
+test_resume_preparation_failure_stays_paused(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    int test_rc = expect_control_rc("prepare: pause",
+                                    dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    const int tunes = g_counting_tune_to_cc_calls;
+    state.ui_msg[0] = '\0';
+    const guard_counters guard = guard_counters_now();
+    dsd_key_set_test_alloc_fail_after(0);
+    const int rc = dsd_engine_trunk_scan_resume_locked(&opts, &state);
+    dsd_key_set_test_alloc_fail_after(-1);
+    test_rc |= expect_control_rc("prepare: resume", rc, -2);
+    test_rc |= expect_guard_untouched("prepare: resume", guard);
+    test_rc |= expect_paused_publication(&state, "prepare: resume", 2U, 0, 0U, 0U);
+    if (g_counting_tune_to_cc_calls != tunes || dsd_scan_mode_configured_view(&state) != NULL || opts.trunk_enable != 0
+        || state.rkey_array[9] != 0ULL) {
+        DSD_FPRINTF(stderr, "prepare: the failed resume tuned or left a scope behind\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_text("prepare: toast", state.ui_msg,
+                           "Scan stays paused: scan channel 851.000000 MHz could not be set up");
+    trunk_scan_test_set_now(30.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_counting_tune_to_cc_calls != tunes) {
+        DSD_FPRINTF(stderr, "prepare: a tick retuned the paused scan\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_control_rc("prepare: resume again", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    test_rc |= expect_published_target(&state, "prepare: resume again", "a", 1U, 2U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+/* Shutdown right after a pause, with no tick between (B7, D7): no live state is saved into the target (the manual
+   session's NXDN ledger never reaches its summary), the configured modulation, gain and trunking come back, and a save
+   still records the scan as configured. */
+static int
+test_shutdown_after_a_pause_saves_no_manual_state(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n1,461012500\n") != 0
+        || write_targets_file(dir, "a,nxdn-trunk,461000000,chan.csv,250,,\nb,dmr-conventional,462000000,,250,,\n",
+                              target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_enable = 1;
+    opts.rtl_gain_value = 25;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
+    opts.mod_cli_lock = 0;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "shutdown after pause: init failed err=%s\n", err);
+        cleanup_paths(dir, target_path, chan_path);
+        return 1;
+    }
+    /* A modulation change made while the target ran is the configured one (what DSD_APP_CMD_MOD_SET does under a
+       scope): the pause keeps it, never the modulation the scan started with (B7). */
+    (void)dsd_scan_mode_suspend(&opts, &state);
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    (void)dsd_scan_mode_resume(&opts, &state);
+    test_rc |= expect_control_rc("shutdown after pause: pause",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    if (opts.trunk_enable != 0 || opts.mod_cli_lock != 1 || opts.mod_c4fm != 0 || opts.mod_qpsk != 1
+        || opts.mod_gfsk != 0) {
+        DSD_FPRINTF(stderr, "pause put back the scan-start options: trunk=%d lock=%d c4fm=%d qpsk=%d gfsk=%d\n",
+                    opts.trunk_enable, opts.mod_cli_lock, opts.mod_c4fm, opts.mod_qpsk, opts.mod_gfsk);
+        test_rc = 1;
+    }
+    /* The manual session's own missing channel. */
+    (void)nxdn_trunk_diag_note_missing_channel(&state, 9);
+    static dsdneoUserConfig cfg;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+    if (!cfg.trunk_scan_enabled || cfg.trunk_enabled != 1 || cfg.rtl_gain != 25) {
+        DSD_FPRINTF(stderr, "save while paused: scan=%d trunking=%d gain=%d\n", cfg.trunk_scan_enabled,
+                    cfg.trunk_enabled, cfg.rtl_gain);
+        test_rc = 1;
+    }
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanpauseexit") != 0) {
+        cleanup_paths(dir, target_path, chan_path);
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    if (dsd_test_capture_stderr_read(&cap, log, sizeof log) != 0) {
+        DSD_FPRINTF(stderr, "shutdown after pause: stderr read failed\n");
+        test_rc = 1;
+    } else if (strstr(log, "missing frequency mapping") != NULL) {
+        DSD_FPRINTF(stderr, "shutdown saved the manual session into the paused target:\n%s\n", log);
+        test_rc = 1;
+    }
+    dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
+    if (opts.mod_cli_lock != 1 || opts.mod_c4fm != 0 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0
+        || opts.rtl_gain_value != 25 || opts.trunk_enable != 1 || opts.trunk_scan_enabled != 1
+        || !cfg.trunk_scan_enabled || state.trunk_scan_paused != 0U) {
+        DSD_FPRINTF(stderr, "shutdown after pause: lock=%d c4fm=%d qpsk=%d gfsk=%d gain=%d trunk=%d paused=%u\n",
+                    opts.mod_cli_lock, opts.mod_c4fm, opts.mod_qpsk, opts.mod_gfsk, opts.rtl_gain_value,
+                    opts.trunk_enable, (unsigned)state.trunk_scan_paused);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -14138,6 +15108,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_switch_forgets_the_received_identity);
     rc |= run_with_default_tune_hook(test_target_switch_and_rollback_reset_dmr_ras);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
+    rc |= run_with_default_tune_hook(test_save_writes_configured_trunking_under_scan);
+    rc |= run_with_default_tune_hook(test_set_configured_trunk_enable);
+    rc |= run_with_default_tune_hook(test_shutdown_keeps_modulation_changed_during_scan);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_iq_replay_input);
@@ -14220,6 +15193,16 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_edit_width_and_tone);
     rc |= run_with_default_tune_hook(test_target_edit_waits_for_its_retune);
     rc |= run_with_default_tune_hook(test_target_edit_survives_decryption_apply);
+    /* Issue #671: pause and resume */
+    rc |= run_with_default_tune_hook(test_pause_for_a_tune_tears_down_in_order);
+    rc |= run_with_default_tune_hook(test_pause_in_place_forgets_the_carrier);
+    rc |= run_with_default_tune_hook(test_pause_lets_go_of_requests_in_flight);
+    rc |= run_with_default_tune_hook(test_paused_scan_gates_every_consumer);
+    rc |= run_with_default_tune_hook(test_paused_scan_holds_nothing_for_manual_traffic);
+    rc |= run_with_default_tune_hook(test_resume_ends_manual_calls_and_waits_for_its_park);
+    rc |= run_with_default_tune_hook(test_refused_resume_stays_paused);
+    rc |= run_with_default_tune_hook(test_resume_preparation_failure_stays_paused);
+    rc |= run_with_default_tune_hook(test_shutdown_after_a_pause_saves_no_manual_state);
     return rc;
 }
 
@@ -14245,12 +15228,27 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)guard_held;
 }
 
+/* The -Y resume's untyped pieces (engine.c, issue #671), which no trunk-scan case reaches: ENGINE_NO_CARRIER_RESET
+   drives them. */
+int
+dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    (void)now;
+    return DSD_UNTYPED_STEP_FAILED;
+}
+
+void
+dsd_engine_legacy_tune_caches_forget(void) {}
+
 /* What the decoders gathered on a carrier, which a target switch forgets (issue #575): counted, with a stand-in
    assembly the real function drops (an NXDN SACCH superframe's part). */
 void
 dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     g_forget_carrier_decoding_calls++;
+    pause_log("forget");
     state->nxdn_part_of_frame = 0;
     state->dmr_le_vendor[0] = DMR_LE_VENDOR_NONE;
     state->dmr_le_vendor[1] = DMR_LE_VENDOR_NONE;

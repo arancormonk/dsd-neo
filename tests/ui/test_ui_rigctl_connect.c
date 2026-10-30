@@ -136,6 +136,7 @@ seed_opts(dsd_opts* opts, const char* host, int port, dsd_socket_t fd, int live)
     opts->rigctlportno = port;
     opts->rigctl_sockfd = fd;
     opts->use_rigctl = live;
+    opts->rigctl_sent_freq_hz = live ? 851012500U : 0U;
 }
 
 static void
@@ -144,6 +145,8 @@ expect_reconnected(const dsd_opts* opts, const char* host, int port, dsd_socket_
     assert(opts->rigctlportno == port);
     assert(opts->rigctl_sockfd == fd);
     assert(opts->use_rigctl == 1);
+    /* The new connection was sent no frequency yet (issue #671): the peer may have restarted, or be another. */
+    assert(opts->rigctl_sent_freq_hz == 0U);
 }
 
 /* The same host and port: the new socket takes the peer's record before the old one is closed. The connect runs
@@ -235,7 +238,12 @@ test_failed_reconnect_keeps_the_live_connection(void) {
     assert(svc_rigctl_connect(&opts, &g_state, "bad.example", 4533) == -1);
     assert(strcmp(g_calls, "C") == 0);
     assert(strcmp(g_connect_host, "bad.example") == 0 && g_connect_port == 4533);
-    expect_reconnected(&opts, "localhost", 4532, (dsd_socket_t)41);
+    assert(strcmp(opts.rigctlhostname, "localhost") == 0);
+    assert(opts.rigctlportno == 4532);
+    assert(opts.rigctl_sockfd == (dsd_socket_t)41);
+    assert(opts.use_rigctl == 1);
+    /* The connection in use, and what it was last sent, stay. */
+    assert(opts.rigctl_sent_freq_hz == 851012500U);
 }
 
 /* Without a live connection a failed connect records the endpoint for the next attempt and leaves rigctl off. */
@@ -244,6 +252,7 @@ test_failed_first_connection_records_the_endpoint(void) {
     static dsd_opts opts;
     reset_fakes();
     seed_opts(&opts, "old.example", 4000, DSD_INVALID_SOCKET, 0);
+    opts.rigctl_sent_freq_hz = 851012500U; /* sent on a connection since dropped */
     g_connect_result = DSD_INVALID_SOCKET;
     assert(svc_rigctl_connect(&opts, &g_state, "rig.local", 4532) == -1);
     assert(strcmp(g_calls, "CGg") == 0);
@@ -251,6 +260,7 @@ test_failed_first_connection_records_the_endpoint(void) {
     assert(opts.rigctlportno == 4532);
     assert(opts.rigctl_sockfd == DSD_INVALID_SOCKET);
     assert(opts.use_rigctl == 0);
+    assert(opts.rigctl_sent_freq_hz == 0U);
 
     reset_fakes();
     assert(svc_rigctl_connect(&opts, &g_state, "localhost", 0) == -1);

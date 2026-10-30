@@ -40,6 +40,8 @@ static uint64_t g_consume_eh_seq[2] = {0};
 static uint64_t g_pub_eh_source_revision[2] = {0};
 static const Event_History_I* g_pub_eh_source = NULL;
 static int g_pub_eh_present = 0;
+/* A publication the P25 SM tick guard put off (dsd_app_telemetry_snapshot_pending()). */
+static atomic_int g_pub_pending = 0;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
@@ -149,6 +151,17 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(scan_row_scope_seq) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..scan_row_scope_seq must ride the vertex_ks_count..ui_msg range");
+/* The -Y pause flags and operator_tuned (issue #671) sit beside the scan hold, inside that range: every frontend's scan
+ * state reads them. */
+_Static_assert(
+    offsetof(dsd_state, lcn_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
+        && UI_SNAPSHOT_FIELD_END(lcn_scan_resume_pending) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
+        && offsetof(dsd_state, operator_tuned) >= offsetof(dsd_state, trunk_scan_active_id)
+        && UI_SNAPSHOT_FIELD_END(operator_tuned) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+    "lcn_scan_paused, lcn_scan_resume_pending and operator_tuned must ride the vertex_ks_count..ui_msg range");
+_Static_assert(offsetof(dsd_state, trunk_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_paused) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+               "trunk_scan_paused must ride the vertex_ks_count..ui_msg range");
 /* Voice-gated scan memory and the per-visit cap bookkeeping beside it ride the same range so the
  * status line sees the phase and the Scan Timing row sees the cap. */
 _Static_assert(offsetof(dsd_state, scan_voice_gate_arrive_m) >= offsetof(dsd_state, vertex_ks_count)
@@ -178,7 +191,7 @@ _Static_assert(offsetof(dsd_state, tetra_pub) >= offsetof(dsd_state, vertex_ks_c
 _Static_assert(offsetof(dsd_state, rx_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(rx_id) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "rx_id must ride the vertex_ks_count..ui_msg range");
-/* The P25 watchdog's retunes write it under the tick guard; the publication copies without the guard. */
+/* Decoder bookkeeping the P25 watchdog's retunes write, which no frontend renders: it stays out of the copy. */
 _Static_assert(offsetof(dsd_state, rx_id_trunk_tune_pending) >= UI_SNAPSHOT_FIELD_END(ui_msg),
                "rx_id_trunk_tune_pending must stay outside every snapshot copy range");
 
@@ -321,11 +334,8 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
 }
 #endif
 
-void
-dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
-    if (!state) {
-        return;
-    }
+static void
+ui_snapshot_publish(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, state);
@@ -361,6 +371,30 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
        JNI poll. */
     dsd_app_notification_publish_state(state);
     dsd_app_telemetry_notify_state(state);
+}
+
+void
+dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* The P25 watchdog's tick writes the decoder state (calls, tuned frequencies, site tables, CC candidates) under the
+       tick guard on its own thread, so every read of the live state here -- the copy, the notification and the
+       observers -- holds it too, or a frontend renders a half-written tick. A tick in progress puts the publication off
+       rather than stall the decoder for the rest of it (an RTL tune, a rigctl round trip): the next publish retries. */
+    const dsd_app_publish_guard guard = dsd_app_publish_guard_try();
+    if (guard == DSD_APP_PUBLISH_GUARD_BUSY) {
+        atomic_store(&g_pub_pending, 1);
+        return;
+    }
+    atomic_store(&g_pub_pending, 0);
+    ui_snapshot_publish(state);
+    dsd_app_publish_guard_leave(guard);
+}
+
+int
+dsd_app_telemetry_snapshot_pending(void) {
+    return atomic_load(&g_pub_pending);
 }
 
 const dsd_state*

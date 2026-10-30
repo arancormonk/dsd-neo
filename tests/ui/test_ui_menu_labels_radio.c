@@ -299,7 +299,6 @@ test_radio_tuning_labels(void) {
     opts.rtlsdr_ppm_error = -3;
     opts.rtl_dsp_bw_khz = 48;
     opts.rtl_volume_multiplier = 2;
-    rc |= expect_str("rtl frequency", lbl_rtl_freq(&ctx, b, sizeof(b)), "Frequency... [769.768750 MHz]");
     rc |= expect_str("rtl gain agc", lbl_rtl_gain(&ctx, b, sizeof(b)), "Gain... [AGC]");
     opts.rtl_gain_value = 28;
     rc |= expect_str("rtl gain set", lbl_rtl_gain(&ctx, b, sizeof(b)), "Gain... [28]");
@@ -308,20 +307,7 @@ test_radio_tuning_labels(void) {
        #621). */
     rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "DSP bandwidth... [48 kHz]");
     rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
-    /* The row reads the tuned frequency every frontend shows (issue #670): during an I/Q replay the capture's centre,
-       which follows its recorded retunes, not the opening centre rtlsdr_center_freq keeps. */
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
-    opts.rtlsdr_center_freq = 851012500U;
-    opts.iq_replay_center_freq = 851500000U;
-    rc |= expect_str("rtl frequency replay centre", lbl_rtl_freq(&ctx, b, sizeof(b)), "Frequency... [851.500000 MHz]");
-    opts.iq_replay_center_freq = 0U;
-    /* Nothing tuned to show: no number and no unit. */
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    rc |= expect_str("rtl frequency off a radio input", lbl_rtl_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtlsdr_center_freq = 0U;
-    rc |= expect_str("rtl frequency none tuned", lbl_rtl_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
-    rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [-]");
+    /* The frequency row moved to Input in every build (issue #671); UI_MENU_LABELS pins its label. */
 
     return rc;
 }

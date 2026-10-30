@@ -292,7 +292,8 @@ test_scanning_rows_never_gain_hold_identity(void) {
             // A saved system can carry -Y or --trunk-scan in extra arguments.
             model.setSessionLabel("Saved source");
             model.setSessionUid("saved-source");
-            ring.commit(0, 1001, 2001, when, when + 4);
+            // Heard under the running scan: the decoder stamps the row a scan member (issue #671).
+            ring.commit(0, 1001, 2001, when, when + 4)->scan_member = 1U;
             model.refresh(ring.state, opts.get());
             expect("effective scanning excludes row identity even without a channel label",
                    model.count() == 1
@@ -321,6 +322,54 @@ test_scanning_rows_never_gain_hold_identity(void) {
                restored.count() == 4
                    && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
     }
+}
+
+/* Issue #671: who held the tuner is the row's own stamp, frozen by the decoder at the call's first render, never the
+ * session label or scan flags at the moment the UI happens to ingest the row. A call heard while the operator held the
+ * tuner (a paused scan, a tuner release) is Exploring with no saved-system identity, whatever the session is called and
+ * however late the row is read; a call begun before the release keeps the session's identity though the release ended
+ * it; a call heard under a running scan never gains the saved-system UID, even when the scan stopped before the UI read
+ * the row (N11); and a call heard before a scan started keeps it, though the scan runs when the row is read. */
+void
+test_tuner_owner_stamps_set_row_identity(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    const time_t when = 1754501000;
+    {
+        CallHistoryModel model;
+        model.setSessionLabel("Saved site");
+        model.setSessionUid("saved-site");
+        ring.commit(0, 1001, 2001, when, when + 4)->operator_tuned = 1U;
+        model.refresh(ring.state, opts.get());
+        expect("a call heard while the operator held the tuner is Exploring",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SystemNameRole) == "Exploring"
+                   && model.data(model.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 1002, 2002, when + 10, when + 14);
+        model.refresh(ring.state, opts.get());
+        expect("a call the release ended but did not begin keeps the session's identity",
+               model.count() == 2 && model.data(model.index(0), CallHistoryModel::SystemNameRole) == "Saved site"
+                   && model.data(model.index(0), CallHistoryModel::SystemUidRole) == "saved-site");
+        ring.commit(0, 1003, 2003, when + 20, when + 24)->scan_member = 1U;
+        model.refresh(ring.state, opts.get());
+        expect("a call heard under a scan that stopped before the read gains no UID (N11)",
+               model.count() == 3 && model.data(model.index(0), CallHistoryModel::SystemNameRole) == "Saved site"
+                   && model.data(model.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 1004, 2004, when + 30, when + 34);
+        opts->scanner_mode = 1;
+        model.refresh(ring.state, opts.get());
+        expect("a call heard before the scan started keeps the UID while the scan runs",
+               model.count() == 4 && model.data(model.index(0), CallHistoryModel::SystemUidRole) == "saved-site");
+        opts->scanner_mode = 0;
+        /* Rows the UI never read before it went away: a relaunched model ingests them with the identity they carry. */
+        ring.commit(0, 1005, 2005, when + 40, when + 44)->operator_tuned = 1U;
+    }
+    CallHistoryModel relaunched;
+    relaunched.refresh(ring.state, opts.get());
+    expect("an unread operator-tuned row keeps its identity across a relaunch",
+           relaunched.count() == 5
+               && relaunched.data(relaunched.index(0), CallHistoryModel::SystemNameRole) == "Exploring"
+               && relaunched.data(relaunched.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
 }
 
 void
@@ -519,6 +568,82 @@ test_channel_label_is_its_own_role(void) {
     ring.commit(0, 4001, 100, when + 20, when + 22, "", "", "PD Tac");
     model.refresh(ring.state);
     expect("a different channel keeps the same talkgroup on its own row", model.count() == 3);
+}
+
+/* Issue #671: a trunk-scan target's channel label is the app's uid for its entry. A call with no name of its own is
+ * named by its channel, so the row shows the entry's name in its place, in the title and the channel role alike; a
+ * channel the names do not cover shows as it is. */
+void
+test_target_ids_read_as_their_names(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    model.setSessionLabel(QStringLiteral("County Scan"));
+    model.setChannelNames(QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County")}});
+    const time_t when = 1754500300;
+    ring.commit(0, 5001, 100, when, when + 3, "", "", "96e4230d-7220-4a76");
+    model.refresh(ring.state);
+    expect("a target id reads as its name",
+           model.count() == 1 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Benton County"
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County");
+
+    ring.commit(0, 5002, 101, when + 10, when + 12, "", "Fire Ops", "96e4230d-7220-4a76");
+    model.refresh(ring.state);
+    expect("a named talkgroup keeps its name, its channel the entry's",
+           model.count() == 2 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Fire Ops"
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County");
+
+    ring.commit(0, 5003, 102, when + 20, when + 22, "", "", "Dispatch");
+    model.refresh(ring.state);
+    expect("a channel the names do not cover shows as it is",
+           model.count() == 3 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Dispatch");
+
+    /* Two targets of one name are still two channels: the same talkgroup and unit heard on each, close together, stay
+       two rows (the name is for display; the row keeps the id it was heard on). */
+    model.setChannelNames(QVariantMap{{QStringLiteral("target-a"), QStringLiteral("Dispatch")},
+                                      {QStringLiteral("target-b"), QStringLiteral("Dispatch")}});
+    ring.commit(0, 5004, 103, when + 30, when + 32, "", "", "target-a");
+    ring.commit(0, 5004, 103, when + 33, when + 35, "", "", "target-b");
+    model.refresh(ring.state);
+    expect("two targets of one name stay two rows", model.count() == 5);
+    expect("both read the shared name",
+           model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Dispatch"
+               && model.data(model.index(1), CallHistoryModel::ChannelRole).toString() == "Dispatch");
+}
+
+/* Gate review: another session's names come in for a scan list or a saved system started next. The rows an earlier
+ * session logged keep their target's name, and match a search for it, instead of reverting to the id; and a row keeps
+ * the name it was logged with across a relaunch that names nothing. A newer name for the same id still replaces it. */
+void
+test_target_names_outlive_their_session(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754500400;
+    {
+        CallHistoryModel model;
+        model.setChannelNames(QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County")}});
+        ring.commit(0, 5101, 100, when, when + 3, "", "", "96e4230d-7220-4a76");
+        model.refresh(ring.state);
+        model.setChannelNames(QVariantMap{{QStringLiteral("0b1f-other-list"), QStringLiteral("Marion County")}});
+        expect("an earlier session's row keeps its target's name",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Benton County"
+                   && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County");
+        CallHistoryFilterModel filter;
+        filter.setSourceModel(&model);
+        filter.setFilterText(QStringLiteral("benton"));
+        expect("a search still finds it by name", filter.rowCount() == 1);
+    } // destructor flushes the stores
+    {
+        CallHistoryModel relaunched;
+        expect("a relaunch that names nothing keeps the logged name",
+               relaunched.count() == 1
+                   && relaunched.data(relaunched.index(0), CallHistoryModel::NameRole).toString() == "Benton County");
+        relaunched.setChannelNames(
+            QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County North")}});
+        expect("a newer name for the id replaces it",
+               relaunched.data(relaunched.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County North");
+    }
 }
 
 void
@@ -2832,6 +2957,7 @@ main(int argc, char** argv) {
 
     test_system_identity_persistence();
     test_scanning_rows_never_gain_hold_identity();
+    test_tuner_owner_stamps_set_row_identity();
     test_source_labels_survive_merge_and_relaunch();
     test_source_label_is_independent_of_refresh_timing();
     test_source_label_provenance_survives_merged_span_and_relaunch();
@@ -2842,6 +2968,8 @@ main(int argc, char** argv) {
     test_labelled_notice_name_drops_its_own_channel_prefix();
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
+    test_target_ids_read_as_their_names();
+    test_target_names_outlive_their_session();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();

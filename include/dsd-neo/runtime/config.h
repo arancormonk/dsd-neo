@@ -965,6 +965,21 @@ int dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char*
  */
 int dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags);
 
+/**
+ * @brief Whether a composed config passes the trunk-scan rules startup refuses to start without (issue #671).
+ *
+ * The same rules dsd_user_config_validate() reports on a composed file: a trunk scan names its targets_csv, and no
+ * global channel map, global P25 band plan or -Y scanner (trunking off) sits beside it. For a config a session would
+ * save, such as the one a runtime config apply or a frontend's change leaves for the next start.
+ *
+ * @param before NULL to judge every rule; otherwise only a rule @p cfg breaks and @p before does not refuses it, so a
+ *               change that keeps or fixes a rule the config already broke passes.
+ * @param why [out] The first refusing rule's reason, as the validation reports it (may be NULL).
+ * @return 0 when the config passes; -1 otherwise.
+ */
+int dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
+                                               size_t why_size);
+
 #ifdef __cplusplus
 }
 #endif

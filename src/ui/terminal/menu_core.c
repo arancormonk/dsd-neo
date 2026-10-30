@@ -40,6 +40,9 @@ static int g_overlay_open = 0;
 static UiMenuFrame g_stack[8];
 static int g_depth = 0;
 static UiCtx g_ctx;
+/* 1 while the overlay was opened for one modal alone (ui_menu_open_modal_async()): its frame is empty, and the overlay
+   goes when the last modal does. */
+static int g_modal_only = 0;
 
 static UiCtx*
 ui_menu_stable_ctx(dsd_opts* opts, dsd_state* state) {
@@ -187,6 +190,20 @@ ui_overlay_close_all(void) {
     }
     g_depth = 0;
     g_overlay_open = 0;
+    g_modal_only = 0;
+}
+
+/* A prompt-only overlay has nothing under its modal: once no prompt, help, chooser or RadioReference panel is open, it
+   closes rather than leaving an empty frame on screen. */
+static void
+ui_menu_close_if_modal_done(void) {
+    if (!g_modal_only || !g_overlay_open) {
+        return;
+    }
+    if (ui_prompt_active() || ui_help_active() || ui_chooser_active() || rr_panel_active()) {
+        return;
+    }
+    ui_overlay_close_all();
 }
 
 static void
@@ -413,6 +430,7 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     }
     g_overlay_open = 1;
     g_depth = 1;
+    g_modal_only = 0;
     DSD_MEMSET(g_stack, 0, sizeof(g_stack));
     g_stack[0].items = items;
     g_stack[0].n = n;
@@ -420,6 +438,21 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     g_stack[0].top = 0;
     g_stack[0].title = "Main Menu";
     ui_overlay_layout(&g_stack[0], ctx);
+}
+
+/* No "No default config" hint: nothing shows a menu toast here, and the entry is not the menu. */
+void
+ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state, nc_action_fn open_modal) {
+    if (!open_modal) {
+        return;
+    }
+    UiCtx* ctx = ui_menu_stable_ctx(opts, state);
+    g_overlay_open = 1;
+    g_depth = 1;
+    g_modal_only = 1;
+    DSD_MEMSET(g_stack, 0, sizeof(g_stack));
+    open_modal(ctx);
+    ui_menu_close_if_modal_done();
 }
 
 int
@@ -435,6 +468,7 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
     }
     int modal_rc = ui_menu_modal_handle_key(ch);
     if (modal_rc >= 0) {
+        ui_menu_close_if_modal_done();
         return modal_rc;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];
@@ -472,10 +506,17 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
 void
 ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     const UiCtx* ctx = ui_menu_stable_ctx(opts, state);
+    /* A modal closed outside the key handling never leaves a prompt-only overlay's empty frame to draw. */
+    ui_menu_close_if_modal_done();
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }
     rr_panel_tick(opts, state);
+    /* The RR panel's tick can end it: a modal-only overlay that held nothing else closes now, not after an empty frame. */
+    ui_menu_close_if_modal_done();
+    if (!g_overlay_open || g_depth <= 0) {
+        return;
+    }
     // Render Prompt overlay (highest priority) - delegate to menu_prompts.c
     if (ui_prompt_active()) {
         ui_prompt_render();

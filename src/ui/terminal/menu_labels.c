@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -32,6 +33,7 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -95,28 +97,39 @@ trunk_enabled(const void* ctx) {
         return false;
     }
     /* A conventional --trunk-scan target parks with trunk_enable off, but Next channel still
-       has somewhere to go: the next target. */
-    return c->opts->trunk_enable == 1 || c->opts->scanner_mode == 1 || c->opts->trunk_scan_enabled == 1;
+       has somewhere to go: the next target. A paused one has none until it resumes (issue #671). */
+    return c->opts->trunk_enable == 1 || c->opts->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(c->opts, c->state);
 }
 
-/* Hold and avoid act on a rotation: the -Y scan list or the --trunk-scan target list. Plain
-   -T follows one system and has nothing to hold or avoid at channel scope. */
+/* Hold and avoid act on a rotation: the -Y scan list or the --trunk-scan target list, while it runs. Plain
+   -T follows one system and has nothing to hold or avoid at channel scope, and a paused scan refuses them (issue
+   #671). */
 bool
 scan_rotation_active(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;
-    if (!c || !c->opts) {
+    dsd_app_scan_state_view view;
+    if (!c || dsd_app_scan_state_view_get(c->opts, c->state, &view) != 0) {
         return false;
     }
-    return c->opts->scanner_mode == 1 || c->opts->trunk_scan_enabled == 1;
+    return view.running != 0;
 }
 
-/* The frequency row tunes the receiver by hand, which --trunk-scan and an I/Q replay refuse: the scan coordinator owns
-   the tuner and would undo a manual tune at the next dwell, and a replay plays the tuning its capture recorded. The row
-   is hidden there rather than opening a prompt whose answer is refused. */
+/* The frequency entry tunes a radio input, or a connected rigctl peer from any input (issue #671); a running or paused
+   scan pauses for it. An I/Q replay refuses every manual tune: it plays the tuning its capture recorded. A live peer,
+   not rigctl configured: a dropped peer's tune would fail. Hidden elsewhere rather than opening a prompt whose answer
+   is refused. */
 bool
-rtl_freq_offered(const void* ctx) {
+freq_entry_offered(const dsd_opts* opts) {
+    if (!opts || dsd_opts_input_is_iq_replay(opts)) {
+        return false;
+    }
+    return dsd_opts_input_is_radio(opts) || dsd_opts_rigctl_live(opts);
+}
+
+bool
+input_freq_offered(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;
-    return !(c && c->opts && (c->opts->trunk_scan_enabled == 1 || dsd_opts_input_is_iq_replay(c->opts)));
+    return c && freq_entry_offered(c->opts);
 }
 
 bool
@@ -466,10 +479,42 @@ lbl_trunk(const void* v, char* b, size_t n) {
     return b;
 }
 
+/* The y row (issue #671): under --trunk-scan, which y pauses and resumes and cannot stop, the trunk scan's state; else
+   -Y's, paused included (a resume waiting on its row's tune is still paused). */
 const char*
 lbl_scan(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Conventional scanning [%s]", onoff(c->opts->scanner_mode));
+    dsd_app_scan_state_view view;
+    if (!c || dsd_app_scan_state_view_get(c->opts, c->state, &view) != 0) {
+        DSD_MEMSET(&view, 0, sizeof view);
+    }
+    if (view.kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK) {
+        DSD_SNPRINTF(b, n, "Trunk scan [%s]", view.paused ? "Paused" : "Running");
+    } else if (view.paused) {
+        DSD_SNPRINTF(b, n, "Conventional scanning [Paused]");
+    } else {
+        DSD_SNPRINTF(b, n, "Conventional scanning [%s]", onoff(view.running));
+    }
+    return b;
+}
+
+/* The frequency the row would retune (issue #671): on a radio input the tuned one every frontend shows
+   (dsd_opts_tuned_freq_hz(): a replay's capture centre), on audio input with a rigctl peer the one last sent to the
+   peer, never the startup centre rtlsdr_center_freq holds before any tune. */
+const char*
+lbl_input_freq(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    const dsd_opts* opts = c ? c->opts : NULL;
+    uint32_t hz = dsd_opts_tuned_freq_hz(opts);
+    if (opts && !dsd_opts_input_is_radio(opts)) {
+        hz = dsd_opts_rigctl_live(opts) ? opts->rigctl_sent_freq_hz : 0U;
+    }
+    char mhz[16];
+    if (hz == 0U || dsd_freq_hz_mhz_text(hz, mhz, sizeof mhz) < 0) {
+        DSD_SNPRINTF(b, n, "Frequency... [-]");
+        return b;
+    }
+    DSD_SNPRINTF(b, n, "Frequency... [%s MHz]", mhz);
     return b;
 }
 
@@ -1479,20 +1524,6 @@ lbl_tcp_waitall(const void* v, char* b, size_t n) {
 // ---- RTL-SDR and DSP labels (USE_RADIO only) ----
 
 #ifdef USE_RADIO
-
-/* The tuned frequency every frontend shows (dsd_opts_tuned_freq_hz(): a replay's capture centre, 0 off a radio). */
-const char*
-lbl_rtl_freq(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    const uint32_t hz = c ? dsd_opts_tuned_freq_hz(c->opts) : 0U;
-    char mhz[16];
-    if (hz == 0U || dsd_freq_hz_mhz_text(hz, mhz, sizeof mhz) < 0) {
-        DSD_SNPRINTF(b, n, "Frequency... [-]");
-        return b;
-    }
-    DSD_SNPRINTF(b, n, "Frequency... [%s MHz]", mhz);
-    return b;
-}
 
 const char*
 lbl_rtl_gain(const void* v, char* b, size_t n) {

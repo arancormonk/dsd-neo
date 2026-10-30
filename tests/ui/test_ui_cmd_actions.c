@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <math.h>
 #include <stdint.h>
@@ -130,6 +131,59 @@ void
 svc_disable_event_log(dsd_opts* opts) {
     (void)opts;
     g_disable_event_log_calls++;
+}
+
+/* The trunk-scan pause and resume services (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real ones
+   over the coordinator): a coordinator stand-in with targets while state->trunk_scan_target_count is non-zero, paused
+   and resumed through the flags the real one publishes. A resume answers g_trunk_resume_rc (0 running, 1 running with
+   the park in flight, -3 refused and still paused). */
+static int g_trunk_pause_calls;
+static int g_trunk_resume_calls;
+static int g_trunk_resume_rc;
+static int g_trunk_pause_fails; /* a coordinator whose pause fails: it names no target to leave */
+
+int
+svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_trunk_pause_calls++;
+    if (state->trunk_scan_target_count == 0U || g_trunk_pause_fails) {
+        return -1;
+    }
+    state->trunk_scan_paused = 1U;
+    state->operator_tuned = 1U;
+    return 0;
+}
+
+int
+svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_trunk_resume_calls++;
+    if (g_trunk_resume_rc == 0 || g_trunk_resume_rc == 1) {
+        state->trunk_scan_paused = 0U;
+        state->operator_tuned = 0U;
+    }
+    return g_trunk_resume_rc;
+}
+
+/* The next-start check (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one): passes unless
+   g_next_start_why is set, and records the save the change leaves from an empty one. */
+static const char* g_next_start_why;
+static int g_next_start_calls;
+static dsdneoUserConfig g_next_start_save;
+
+int
+svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
+                     char* why, size_t why_size) {
+    (void)opts;
+    (void)state;
+    g_next_start_calls++;
+    DSD_MEMSET(&g_next_start_save, 0, sizeof g_next_start_save);
+    change(&g_next_start_save, ctx);
+    if (!g_next_start_why) {
+        return 0;
+    }
+    DSD_SNPRINTF(why, why_size, "%s", g_next_start_why);
+    return -1;
 }
 
 int
@@ -717,12 +771,189 @@ test_logging_actions(void) {
     return rc;
 }
 
+/* Issue #671: `y` and DSD_APP_CMD_SCAN_RESUME. A running trunk scan pauses where it is and resumes on `y`; a paused or
+   resume-pending -Y scan resumes (a second `y` while its tune is pending changes nothing); a running -Y scan still
+   stops and a stopped one starts, the tuner going back to the scan. SCAN_RESUME resumes only a paused scan. */
+static int
+test_scanner_toggle_pauses_and_resumes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    struct dsd_app_command y = {0};
+    y.id = DSD_APP_CMD_SCANNER_TOGGLE;
+    struct dsd_app_command resume = {0};
+    resume.id = DSD_APP_CMD_SCAN_RESUME;
+
+    /* Trunk scan: y pauses the running scan in place, then resumes it. */
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 2U;
+    g_trunk_pause_calls = g_trunk_resume_calls = 0;
+    g_trunk_resume_rc = 0;
+    rc |= expect_int("y pauses a running trunk scan", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("trunk scan paused", g_trunk_pause_calls == 1 && state.trunk_scan_paused == 1U);
+    rc |= expect_true("trunk scan paused toast", strcmp(state.ui_msg, "Trunk scan paused") == 0);
+    rc |= expect_int("y resumes the paused trunk scan", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("trunk scan resumed", g_trunk_resume_calls == 1 && state.trunk_scan_paused == 0U);
+    rc |= expect_true("trunk scan resumed toast", strcmp(state.ui_msg, "Trunk scan resumed") == 0);
+    /* A resume whose park is still in flight runs: the same answer. */
+    state.trunk_scan_paused = 1U;
+    g_trunk_resume_rc = 1;
+    rc |= expect_int("pending park resume", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 1);
+    rc |= expect_true("pending park resume toast", strcmp(state.ui_msg, "Trunk scan resumed") == 0);
+    /* A refused resume says why itself (the coordinator's toast) and fails the command. */
+    state.trunk_scan_paused = 1U;
+    g_trunk_resume_rc = -3;
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("refused trunk resume", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
+    rc |= expect_true("refused trunk resume stays paused", state.trunk_scan_paused == 1U && state.ui_msg[0] == '\0');
+    state.trunk_scan_paused = 0U;
+    rc |= expect_int("resume of a running trunk scan", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
+    rc |= expect_true("running trunk scan toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
+    /* Final review, Minor 5: a coordinator whose pause fails is still a trunk scan, and `y` says so; it used to toast
+       the conventional scanner, which `y` never asked for here. */
+    g_trunk_pause_fails = 1;
+    rc |=
+        expect_int("y over a coordinator that cannot pause", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
+    rc |= expect_true("coordinator that cannot pause toast",
+                      strcmp(state.ui_msg, "Trunk scan active: pause unavailable") == 0);
+    rc |= expect_true("coordinator that cannot pause changes nothing",
+                      state.trunk_scan_paused == 0U && opts.scanner_mode == 0);
+    g_trunk_pause_fails = 0;
+    /* No coordinator behind the flag: the toggle is refused as before. */
+    state.trunk_scan_target_count = 0U;
+    rc |= expect_int("y with no coordinator", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
+    rc |= expect_true("no coordinator toast",
+                      strcmp(state.ui_msg, "Trunk scan active: conventional scanner unavailable") == 0);
+    rc |= expect_int("no -Y under trunk scan", opts.scanner_mode, 0);
+    opts.trunk_scan_enabled = 0;
+
+    /* -Y: a resume still waiting on its tune answers again without another resume. */
+    state.lcn_scan_paused = 1U;
+    state.lcn_scan_resume_pending = 1U;
+    rc |= expect_int("y while a resume is pending", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("pending toast", strcmp(state.ui_msg, "Resuming scan: waiting for the tune") == 0);
+    rc |= expect_true("still pending", state.lcn_scan_resume_pending == 1U && opts.scanner_mode == 0);
+    /* A paused list resumes through the engine (here, the stubs' list has no row: the scan stays paused). */
+    state.lcn_scan_resume_pending = 0U;
+    rc |= expect_int("y on a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
+    rc |= expect_true("no row: still paused", state.lcn_scan_paused == 1U && opts.scanner_mode == 0);
+
+    /* Not paused: y starts the scanner and stops it. The tuner stays the operator's in the record: only a resume, or a
+       new session, clears that (issue #671 ruling). */
+    state.lcn_scan_paused = 0U;
+    state.operator_tuned = 1U;
+    rc |= expect_int("resume with nothing paused", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
+    rc |= expect_true("nothing paused toast", strcmp(state.ui_msg, "Not scanning: no paused scan to resume") == 0);
+    rc |= expect_int("y starts", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("started; operator_tuned kept", opts.scanner_mode == 1 && state.operator_tuned == 1U);
+    rc |= expect_int("resume of a running list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
+    rc |= expect_true("running list toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
+    rc |= expect_int("y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_int("stopped", opts.scanner_mode, 0);
+    return rc;
+}
+
+/* Issue #671 (B5): trunking is not the operator's to switch while a trunk-scan coordinator exists, running or paused;
+   each target sets its own. A paused -Y scan ends when trunking takes the tuner, and stays paused when it is switched
+   off. */
+static int
+test_trunking_under_a_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int paused = 0; paused <= 1; paused++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.trunk_scan_enabled = 1;
+        state.trunk_scan_target_count = 2U;
+        opts.trunk_enable = paused ? 0 : 1;
+        state.trunk_scan_paused = (uint8_t)paused;
+        const int before = opts.trunk_enable;
+        struct dsd_app_command cmd = {0};
+        cmd.id = DSD_APP_CMD_TRUNK_TOGGLE;
+        rc |= expect_int("t refused under trunk scan", dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd), 2);
+        rc |= expect_int("t leaves trunking", opts.trunk_enable, before);
+        rc |=
+            expect_true("t refusal toast", strcmp(state.ui_msg, "Trunk scan: each target sets its own trunking") == 0);
+        for (int32_t on = 0; on <= 1; on++) {
+            cmd = cmd_i32(DSD_APP_CMD_TRUNK_SET, on);
+            state.ui_msg[0] = '\0';
+            rc |= expect_int("trunk set refused under trunk scan",
+                             dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd), 2);
+            rc |= expect_int("trunk set leaves trunking", opts.trunk_enable, before);
+            rc |= expect_true("trunk set refusal toast",
+                              strcmp(state.ui_msg, "Trunk scan: each target sets its own trunking") == 0);
+        }
+    }
+
+    /* The flag with no coordinator behind it (none was set up): trunking is the operator's to switch. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_scan_enabled = 1;
+    struct dsd_app_command t = {0};
+    t.id = DSD_APP_CMD_TRUNK_TOGGLE;
+    rc |= expect_int("t with no coordinator", dispatch_one(dsd_app_actions_trunk, &opts, &state, &t), 1);
+    rc |= expect_int("t with no coordinator switches trunking", opts.trunk_enable, 1);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.lcn_scan_paused = 1U;
+    state.operator_tuned = 1U;
+    struct dsd_app_command cmd = cmd_i32(DSD_APP_CMD_TRUNK_SET, 0);
+    rc |= expect_int("trunk off under a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd), 1);
+    rc |= expect_true("trunk off keeps the pause", state.lcn_scan_paused == 1U && opts.trunk_enable == 0);
+    cmd = cmd_i32(DSD_APP_CMD_TRUNK_SET, 1);
+    rc |= expect_int("trunk on under a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd), 1);
+    /* The calls followed from here belong to the system explored, not a scan's saved name: operator_tuned stays. */
+    rc |= expect_true("trunk on ends the pause; operator_tuned kept",
+                      state.lcn_scan_paused == 0U && opts.trunk_enable == 1 && state.operator_tuned == 1U);
+    return rc;
+}
+
+/* Issue #671 (round 4): a -Y start the next start would refuse (a trunk scan a config left waiting) is refused with the
+   rule, the scanner left off and trunking as it was; a stop is never asked. */
+static int
+test_scanner_start_held_to_the_next_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    struct dsd_app_command y = {0};
+    y.id = DSD_APP_CMD_SCANNER_TOGGLE;
+    opts.trunk_enable = 1;
+    g_next_start_calls = 0;
+    g_next_start_why =
+        "trunking.scanner cannot be combined with trunk_scan.enabled; the -Y scanner and a trunk scan both "
+        "own the tuner";
+    rc |= expect_int("next start: y refused", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
+    rc |= expect_true("next start: the rule on the status line",
+                      strcmp(state.ui_msg, "Scanner not started: trunking.scanner cannot be combined with "
+                                           "trunk_scan.enabled")
+                          == 0);
+    rc |= expect_true("next start: nothing changed", opts.scanner_mode == 0 && opts.trunk_enable == 1);
+    rc |= expect_true("next start: the save asked about runs the scanner, trunking off",
+                      g_next_start_calls == 1 && g_next_start_save.trunk_scanner == 1
+                          && g_next_start_save.trunk_enabled == 0);
+    g_next_start_why = NULL;
+    rc |= expect_int("next start: y starts", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("next start: scanning", opts.scanner_mode == 1 && opts.trunk_enable == 0);
+    rc |= expect_int("next start: y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("next start: a stop asks nothing", g_next_start_calls == 2 && opts.scanner_mode == 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_audio_actions();
     rc |= test_trunk_actions();
     rc |= test_trunk_ownership_guard();
+    rc |= test_scanner_toggle_pauses_and_resumes();
+    rc |= test_scanner_start_held_to_the_next_start();
+    rc |= test_trunking_under_a_scan();
     rc |= test_radio_actions();
     rc |= test_logging_actions();
     if (rc == 0) {

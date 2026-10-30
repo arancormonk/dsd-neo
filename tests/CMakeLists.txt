@@ -1105,6 +1105,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_row_view.h
   CXX
 )
+# Issue #671: which scan the session has, running or paused.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_state_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_STATE_VIEW
+  dsd-neo/app_control/scan_state_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_state_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_STATE_VIEW_CXX
+  dsd-neo/app_control/scan_state_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_rx_tone_view
   HEADERS_PUBLIC_APP_CONTROL_RX_TONE_VIEW
@@ -2674,9 +2687,11 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
         ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
@@ -2711,6 +2726,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
@@ -3148,6 +3164,18 @@ add_test(
     COMMAND dsd-neo_test_app_control_scan_row_view
 )
 
+# Issue #671: the scan-state view every frontend and the API feed read.
+add_executable(
+    dsd-neo_test_app_scan_state_view
+    ui/test_app_scan_state_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_scan_state_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(NAME APP_SCAN_STATE_VIEW COMMAND dsd-neo_test_app_scan_state_view)
+
 # Issue #518: DSD_APP_CMD_SCAN_ROW_EDIT's follow-ups and rollbacks, over stubbed engine and receiver services.
 add_executable(
     dsd-neo_test_app_control_scan_row_edit
@@ -3284,6 +3312,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
@@ -4166,6 +4195,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -4887,10 +4917,13 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
     dsd-neo_test_app_control_snapshot_event_history
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_event_history
@@ -4935,6 +4968,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
     dsd-neo_test_app_control_history_tap
@@ -4968,10 +5002,14 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
     dsd-neo_test_app_control_opts_snapshot
@@ -5416,6 +5454,32 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_STREAM_NOTICE_INIT_FAILURE
     COMMAND dsd-neo_test_runtime_stream_notice_init_failure
+)
+
+# The -Y pause hook table's lock failing to initialise (issue #671): nothing locked, nothing installed or read.
+add_executable(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    runtime/test_runtime_channel_scan_hooks_init_failure.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/channel_scan_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    PRIVATE
+        dsd_mutex_init=dsd_test_channel_scan_mutex_init
+        dsd_mutex_lock=dsd_test_channel_scan_mutex_lock
+        dsd_mutex_unlock=dsd_test_channel_scan_mutex_unlock
+)
+target_link_libraries(
+    dsd-neo_test_runtime_channel_scan_hooks_init_failure
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_CHANNEL_SCAN_HOOKS_INIT_FAILURE
+    COMMAND dsd-neo_test_runtime_channel_scan_hooks_init_failure
 )
 
 add_executable(
@@ -6780,7 +6844,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_no_carrier_reset
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -6815,7 +6879,12 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
+            "-Wl,--wrap=rtl_stream_get_last_applied_freq"
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=processFrame"
+            "-Wl,--wrap=p25_sm_tick_guard_enter"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
+            "-Wl,--wrap=dsd_engine_manual_tune_supersede"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -7387,6 +7456,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_label.c
+    # A refused resume leaves a manual rigctl request the session's (issue #671).
+    ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
@@ -7488,11 +7559,13 @@ target_link_libraries(
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
+# The command queue is built in with its test hooks, for the drain's count of its waits for the guard.
 add_executable(
     dsd-neo_test_engine_dmr_cc_recovery
     engine/test_engine_dmr_cc_recovery.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_include_directories(
     dsd-neo_test_engine_dmr_cc_recovery
@@ -7509,6 +7582,48 @@ target_link_libraries(
 add_test(
     NAME ENGINE_DMR_CC_RECOVERY
     COMMAND dsd-neo_test_engine_dmr_cc_recovery
+)
+
+# A trunk scan paused and resumed (issue #671) through the real P25/DMR state machines, carrier boundary, tuning ledger
+# and P25 SM tick guard, driven by the app-control services and commands; only the tuner is simulated. The command
+# queue is built in with its test hooks, for the drain's count of its waits for the guard.
+add_executable(
+    dsd-neo_test_engine_trunk_scan_pause
+    engine/test_engine_trunk_scan_pause.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
+)
+target_include_directories(
+    dsd-neo_test_engine_trunk_scan_pause
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/engine ${PROJECT_SOURCE_DIR}/src/core/util
+)
+target_compile_definitions(
+    dsd-neo_test_engine_trunk_scan_pause
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+target_link_libraries(
+    dsd-neo_test_engine_trunk_scan_pause
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_TRUNK_SCAN_PAUSE
+    COMMAND dsd-neo_test_engine_trunk_scan_pause
+)
+
+# A snapshot publication a P25 watchdog tick put off reaches the frontends while the input is silent: the hunt's sliced
+# UDP wait leaves for it once the tick has left the guard, and the control pump publishes it (issue #671).
+add_executable(
+    dsd-neo_test_engine_silent_input_publish
+    engine/test_engine_silent_input_publish.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_silent_input_publish
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_SILENT_INPUT_PUBLISH
+    COMMAND dsd-neo_test_engine_silent_input_publish
 )
 
 # Per-target squelch overrides (issue #521) observed through the production frame-sync power
@@ -7547,7 +7662,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_channel_scan_squelch_gate
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_compile_definitions(
     dsd-neo_test_engine_channel_scan_squelch_gate
@@ -7998,7 +8113,10 @@ target_compile_definitions(
 )
 target_include_directories(
     dsd-neo_test_app_command_queue
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/engine
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
@@ -8025,7 +8143,10 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
-            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=io_control_set_freq_tagged"
+            "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
+            "LINKER:--wrap=dsd_engine_manual_tune_supersede"
+            "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
             "LINKER:--wrap=dmr_data_burst_handler"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"
@@ -8039,6 +8160,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
             "LINKER:--wrap=SetScanRowModulation"
             "LINKER:--wrap=SetModulationKind"
+            "LINKER:--wrap=SetFreq"
     )
 endif()
 # The receiver's refusals (issue #518 D6) reach the command toasts through the stream; radio builds only.
@@ -8098,7 +8220,12 @@ if(
             "LINKER:--wrap=rtl_stream_replay_replan_check_request"
             "LINKER:--wrap=rtl_stream_replay_checkpoint"
             "LINKER:--wrap=p25_sm_tick_guard_enter"
+            "LINKER:--wrap=p25_sm_tick_guard_try_enter"
             "LINKER:--wrap=p25_sm_tick_guard_leave"
+            "LINKER:--wrap=dsd_app_telemetry_publish_snapshot"
+            "LINKER:--wrap=dsd_app_telemetry_publish_opts_snapshot"
+            "LINKER:--wrap=rtl_stream_tune_tagged"
+            "LINKER:--wrap=rtl_stream_session_generation"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -8191,7 +8318,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_options(
         dsd-neo_test_app_control_rr_apply
         PRIVATE
-            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=io_control_set_freq_tagged"
+            "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
@@ -8924,6 +9052,21 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(NAME P25_SEARCH_SITE_NOTES COMMAND dsd-neo_test_p25_search_site_notes)
+
+# An imported channel list keeps row 0 when a valid network status names the control channel
+add_executable(
+    dsd-neo_test_p25_user_list_seed
+    protocol/p25/test_p25_user_list_seed.c
+)
+target_include_directories(
+    dsd-neo_test_p25_user_list_seed
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_user_list_seed
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_USER_LIST_SEED COMMAND dsd-neo_test_p25_user_list_seed)
 
 # P25 P1 MBT negative clamps (invalid CHAN-T)
 add_executable(
@@ -14552,6 +14695,53 @@ if(DSD_HAS_RADIO)
         NAME IO_RTL_RETUNE_PREPARE
         COMMAND dsd-neo_test_io_rtl_retune_prepare
     )
+
+    # A manual tune whose RTL wait timed out, followed to its late completion through the real controller stood in for
+    # without a device (issue #671). The orchestrator's started-stream check is stepped over by renaming
+    # rtl_stream_tune_tagged() to the test's stand-in tune in the sources compiled here.
+    add_executable(
+        dsd-neo_test_engine_manual_tune_pending
+        engine/test_engine_manual_tune_pending.c
+        ${PROJECT_SOURCE_DIR}/src/engine/manual_tune_pending.c
+        ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning_hooks_install.c
+        ${PROJECT_SOURCE_DIR}/src/io/control/dsd_rigctl.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_manual_tune_pending
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_manual_tune_pending
+        PRIVATE rtl_stream_tune_tagged=test_rtl_stream_tune_tagged
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_manual_tune_pending
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_platform
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_engine_manual_tune_pending
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    if(WIN32)
+        target_link_libraries(
+            dsd-neo_test_engine_manual_tune_pending
+            PRIVATE ws2_32
+        )
+    endif()
+    add_test(
+        NAME ENGINE_MANUAL_TUNE_PENDING
+        COMMAND dsd-neo_test_engine_manual_tune_pending
+    )
+    set_tests_properties(ENGINE_MANUAL_TUNE_PENDING PROPERTIES TIMEOUT 60)
 
     add_executable(
         dsd-neo_test_io_rtl_control_edges
@@ -20370,7 +20560,7 @@ if(
             "LINKER:--wrap=rtl_stream_airspy_controls"
             "LINKER:--wrap=rtl_stream_airspy_info"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
-            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
     )
     add_test(

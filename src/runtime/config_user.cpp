@@ -2085,11 +2085,28 @@ snapshot_demod_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCo
     }
 }
 
+/* Under --trunk-scan each target's type sets the live flag while it is parked; the save writes the setting the session
+   runs outside the scan, which the coordinator publishes (issue #671). */
+static int
+snapshot_trunk_enabled(const dsd_opts* opts, const dsd_state* state) {
+    const bool trunk_scan_running =
+        state != nullptr && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U;
+    const int trunk_enable = trunk_scan_running ? state->trunk_scan_configured_trunk_enable : opts->trunk_enable;
+    return (trunk_enable != 0) ? 1 : 0;
+}
+
+/* A -Y scan the operator paused is still the session's scan: the next launch runs it (issue #671). A stopped one saves
+   off. */
+static int
+snapshot_trunk_scanner(const dsd_opts* opts, const dsd_state* state) {
+    return (opts->scanner_mode != 0 || (state != nullptr && state->lcn_scan_paused != 0U)) ? 1 : 0;
+}
+
 static void
 snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_trunking = 1;
-    cfg->trunk_enabled = (opts->trunk_enable) ? 1 : 0;
+    cfg->trunk_enabled = snapshot_trunk_enabled(opts, state);
     DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", opts->chan_in_file);
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s",
@@ -2105,7 +2122,7 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
     cfg->trunk_tune_data_calls = (configured ? configured->trunk_tune_data_calls : opts->trunk_tune_data_calls) != 0;
     cfg->trunk_tune_enc_calls = (configured ? configured->trunk_tune_enc_calls : opts->trunk_tune_enc_calls) != 0;
-    cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
+    cfg->trunk_scanner = snapshot_trunk_scanner(opts, state);
     cfg->trunk_p25_prefer_candidates =
         (configured ? configured->p25_prefer_candidates : opts->p25_prefer_candidates) != 0;
     cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
@@ -2207,6 +2224,36 @@ snapshot_analog_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserC
     dsd_scan_mode_configured_receive(opts, state, &cfg->receive);
 }
 
+/* What a config apply left for the next start (dsd_opts_next_start, issue #671): the session runs the values above,
+   but a save writes these, so the restart the apply asked for runs them. */
+static void
+snapshot_next_start_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    const dsd_opts_next_start* next = &opts->next_start;
+    if ((next->pending & DSD_NEXT_START_FRONTEND) != 0U) {
+        cfg->frontend_kind = next->frontend_kind;
+        cfg->frontend_kind_is_set = 1;
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN) != 0U) {
+        cfg->trunk_scan_enabled = (next->trunk_scan_enabled != 0) ? 1 : 0;
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) != 0U) {
+        DSD_SNPRINTF(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, "%s",
+                     next->trunk_scan_targets_csv);
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL) != 0U) {
+        cfg->trunk_scan_idle_dwell_ms = next->trunk_scan_idle_dwell_ms;
+    }
+    if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD) != 0U) {
+        cfg->trunk_scan_activity_hold_ms = next->trunk_scan_activity_hold_ms;
+    }
+    if ((next->pending & DSD_NEXT_START_CHANNEL_MAP) != 0U) {
+        DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", next->chan_in_file);
+    }
+    if ((next->pending & DSD_NEXT_START_BAND_PLAN) != 0U) {
+        DSD_SNPRINTF(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, "%s", next->p25_bandplan_in_file);
+    }
+}
+
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     if (!opts || !state || !cfg) {
@@ -2226,6 +2273,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_recording_config(opts, cfg);
     snapshot_dsp_config(cfg);
     snapshot_analog_config(opts, state, cfg);
+    snapshot_next_start_config(opts, cfg);
 }
 
 // Template generation ---------------------------------------------------------

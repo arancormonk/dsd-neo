@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 
 #ifdef DSD_NEO_TEST_HOOKS
 #include <stdint.h>
@@ -26,6 +27,35 @@ extern "C" {
 void dsd_app_install_telemetry_hooks(void);
 void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
 void dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
+
+/* Whether a publication found the P25 SM tick guard busy and was put off (1), until the next publish of the same
+ * snapshot: the drain retries it at its start (dsd_app_drain_cmds()), and the frame-sync hunt publishes every 50 ms. */
+int dsd_app_telemetry_snapshot_pending(void);
+int dsd_app_telemetry_opts_snapshot_pending(void);
+
+/* How a publication stands with the P25 SM tick guard: the watchdog's tick writes what it copies under that guard.
+ * Publishing never waits for a tick: a publisher already under the guard (a frame dispatch) uses that hold, since the
+ * guard is not re-entrant; otherwise it tries once, and a busy guard puts the publication off. */
+typedef enum {
+    DSD_APP_PUBLISH_GUARD_BUSY = 0,
+    DSD_APP_PUBLISH_GUARD_HELD,
+    DSD_APP_PUBLISH_GUARD_TAKEN,
+} dsd_app_publish_guard;
+
+static inline dsd_app_publish_guard
+dsd_app_publish_guard_try(void) {
+    if (p25_sm_tick_guard_held_by_caller()) {
+        return DSD_APP_PUBLISH_GUARD_HELD;
+    }
+    return p25_sm_tick_guard_try_enter() ? DSD_APP_PUBLISH_GUARD_TAKEN : DSD_APP_PUBLISH_GUARD_BUSY;
+}
+
+static inline void
+dsd_app_publish_guard_leave(dsd_app_publish_guard guard) {
+    if (guard == DSD_APP_PUBLISH_GUARD_TAKEN) {
+        p25_sm_tick_guard_leave();
+    }
+}
 
 /* Telemetry observer dispatch (<dsd-neo/app_control/telemetry_observers.h>), called by the two publishers above on
  * the decode thread after they release their own locks. */

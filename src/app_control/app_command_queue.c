@@ -52,9 +52,11 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -93,6 +95,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <errno.h>
 #include <limits.h>
 #include <sndfile.h>
@@ -102,17 +105,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
 #include "recording_view_internal.h"
 #include "scan_row_edit.h"
 #include "services.h"
+#include "snapshot_internal.h"
 
 #define DSD_APP_CMD_Q_CAP 128
 
 _Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct dsd_app_command*)0)->data),
                "dsd_app_command payload too small for dsdneoUserConfig");
+_Static_assert(sizeof(dsd_app_config_load_payload) <= sizeof(((struct dsd_app_command*)0)->data),
+               "dsd_app_command payload too small for dsd_app_config_load_payload");
 _Static_assert(sizeof(dsd_app_rr_apply_payload) <= sizeof(((struct dsd_app_command*)0)->data),
                "dsd_app_command payload too small for dsd_app_rr_apply_payload");
 _Static_assert((int)DSD_APP_TG_ROW_EXACT == (int)DSD_TG_POLICY_ROW_EXACT
@@ -498,6 +505,16 @@ ui_input_left(dsd_opts* opts, dsd_state* state) {
     dsd_engine_decode_clock_leave_replay(opts, state);
 }
 
+/* An input switch that ran ends a paused -Y scan, as a stop would: its timing and rows were the input left's. A switch
+   refused, or rolled back to the input that ran, keeps it (issue #671). The caller holds the P25 SM tick guard. */
+static void
+ui_input_switch_ends_paused_scan(dsd_opts* opts, dsd_state* state) {
+    if (state->lcn_scan_paused) {
+        (void)svc_leave_channel_scan(opts, state);
+        dsd_scan_keys_leave(state);
+    }
+}
+
 /* The audio input changed: the old one is left (ui_input_left()), then the output follows the
    new input's policy. */
 static int
@@ -544,6 +561,7 @@ ui_cmd_finish_input_switch(dsd_opts* opts, dsd_state* state, int rc, const char*
     switch (rc) {
         case DSD_AUDIO_INPUT_SWITCHED:
             dsd_engine_note_input_replaced(state);
+            ui_input_switch_ends_paused_scan(opts, state);
             if (ui_input_switched(opts, state) != 0) {
                 return UI_CMD_APPLY_FAILED;
             }
@@ -579,7 +597,6 @@ ui_cmd_apply_status_from_service_rc(int rc) {
     return UI_CMD_APPLY_FAILED;
 }
 
-#ifdef USE_RADIO
 static int
 ui_cmd_apply_status_from_tune_rc(int rc) {
     if (rc == RTL_STREAM_TUNE_TIMEOUT) {
@@ -590,7 +607,6 @@ ui_cmd_apply_status_from_tune_rc(int rc) {
     }
     return ui_cmd_apply_status_from_service_rc(rc);
 }
-#endif
 
 struct UiVisibilityToggleSpec {
     int cmd_id;
@@ -1365,10 +1381,17 @@ ui_restore_settings_keeping_row_policy(dsd_opts* opts, dsd_state* state, dsd_sca
 
 /* Whether a scoped command that found the conventional scanner on (@p was_scanner) leaves the scan scope rather than
    resume it (apply_cmd_leave_scanner_scope()): the scanner is off once the command has run, and no trunk scan owns the
-   tuner. The row the scope holds then never runs again, and the session goes back to its configured settings. */
+   tuner. The row the scope holds then never runs again, and the session goes back to its configured settings. A
+   command that paused the scan (a frequency entry, a tuner release) already left the row, and a leave now would end
+   the pause the scan waits in for a resume (issue #671). */
 static int
-ui_cmd_leaves_scanner_scope(const dsd_opts* opts, int was_scanner) {
-    return was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1;
+ui_cmd_leaves_scanner_scope_with(const dsd_opts* opts, const dsd_state* state, int was_scanner, int scanner_mode) {
+    return was_scanner && scanner_mode != 1 && opts->trunk_scan_enabled != 1 && !(state && state->lcn_scan_paused);
+}
+
+static int
+ui_cmd_leaves_scanner_scope(const dsd_opts* opts, const dsd_state* state, int was_scanner) {
+    return ui_cmd_leaves_scanner_scope_with(opts, state, was_scanner, opts->scanner_mode);
 }
 
 /* End every slot's call now and commit it (dsd_event_sync_slot()), its last render reading the carrier it was heard
@@ -1415,7 +1438,19 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
     ui_rxid_guard_leave(taken);
 }
 
+/* The operator moved the receiver off its session (issue #671): an accepted frequency entry or tap-to-tune, never a P25
+   control-channel selection, which keeps the session. Calls heard from here on are stamped with it at their first
+   render (dsd_events.c), which may run under the P25 SM tick guard, so it is written under it; only a resume or a new
+   session clears it. */
+static void
+ui_mark_operator_tuned(dsd_state* state) {
+    const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
+    state->operator_tuned = 1U;
+    ui_rxid_guard_leave(taken);
+}
+
 #ifdef USE_RADIO
+
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
    fits the toast; the log says it either way. */
@@ -1593,12 +1628,15 @@ ui_cfg_restore_mode_extras(dsd_opts* opts, dsd_state* state, const ui_cfg_mode_e
    the input a start reads, the configured receive settings, and the rest of what [mode] sets that the decoder reads.
    Taken once the config has passed its checks, before it is applied: under a scan row, while the scope is suspended,
    so the receive settings are the configured ones. @c was_scanner says whether the conventional scanner ran then,
-   which, with what the config leaves, decides whether the scope resumes (ui_cmd_leaves_scanner_scope()). */
+   which, with @c scanner_after, the scanner setting the config leaves (decided at the end of the apply, so the live
+   flag still says what runs while the input is reopened: cfg_take_scan_owner()), decides whether the scope resumes
+   (ui_cmd_leaves_scanner_scope()). */
 typedef struct {
     ui_radio_input input;
     dsd_scan_settings receive;
     ui_cfg_mode_extras mode;
     int was_scanner;
+    int scanner_after;
 } ui_cfg_rollback;
 
 static void
@@ -1608,18 +1646,21 @@ ui_cfg_capture_rollback(const dsd_opts* opts, const dsd_state* state, ui_cfg_rol
     dsd_scan_settings_capture(opts, state, &out->receive);
     ui_cfg_capture_mode_extras(opts, state, &out->mode);
     out->was_scanner = opts->scanner_mode == 1;
+    out->scanner_after = opts->scanner_mode;
 }
 
 /* The analog monitor the scan row on air runs once its suspended scope resumes (issue #578): the kind an nfm or am row
    runs, or the configured one a row that declares no mode inherits on an analog session, with the width of that kind
    in force then, the row's own (--nfm-bandwidth-hz, --am-bandwidth-hz) or else the configured one, which @p opts holds
    while the scope is suspended. Returns 0, with no kind or width, when no row's scope is suspended, when the command
-   leaves that scope rather than resume it (a config that turns off the conventional scanner @p was_scanner says ran:
+   leaves that scope rather than resume it (a config that turns off the conventional scanner @p before says ran:
    ui_cmd_leaves_scanner_scope()), or when the row runs no monitor (a digital row, or one on a digital session: the
    resume asks the front end for a symbol profile, which takes no width). */
 static int
-ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, int was_scanner, int* kind, int* width_hz) {
-    if (!dsd_scan_mode_updating(state) || ui_cmd_leaves_scanner_scope(opts, was_scanner)) {
+ui_scan_row_resumed_monitor(const dsd_opts* opts, const dsd_state* state, const ui_cfg_rollback* before, int* kind,
+                            int* width_hz) {
+    if (!dsd_scan_mode_updating(state)
+        || ui_cmd_leaves_scanner_scope_with(opts, state, before->was_scanner, before->scanner_after)) {
         return 0;
     }
     const dsd_scan_mode mode = dsd_scan_mode_row(state);
@@ -1669,7 +1710,7 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     if (rc == 0) {
         int kind = DSD_ANALOG_DEMOD_FM;
         int width_hz = 0;
-        if (!ui_scan_row_resumed_monitor(opts, state, before->was_scanner, &kind, &width_hz)
+        if (!ui_scan_row_resumed_monitor(opts, state, before, &kind, &width_hz)
             || svc_check_started_stream_analog(opts, kind, width_hz, why, sizeof why) == 0) {
             return 0;
         }
@@ -1786,10 +1827,12 @@ ui_radio_row_took_over(dsd_opts* opts, dsd_state* state, int pcm_timing_rate_hz)
    input and its start, and, when the start fails, on through putting back the input that ran and starting it again
    (issue #578): nothing the watchdog reads is read or written outside it, as a config apply's reopen holds it
    throughout. A copy taken before the guard could miss a retune the watchdog completed in between, which putting it
-   back would undo while the trunking state follows the retune. */
+   back would undo while the trunking state follows the retune. A scan in force refuses the switch, as the PCM rows
+   refuse it (ui_input_switch_refused(), issue #634): a running -Y scan, or a trunk scan's coordinator, paused or not.
+   A paused -Y scan does not: a switch that runs stops it (ui_input_switch_ends_paused_scan()). */
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (opts && state && ui_input_mode_refused(opts, state)) {
+    if (opts && state && ui_input_switch_refused(opts, state)) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
@@ -1814,6 +1857,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
     } else if (rc == 0) {
         ui_radio_row_took_over(opts, state, pcm_timing_rate_hz);
+        ui_input_switch_ends_paused_scan(opts, state);
         /* The output follows the new input under the guard too: the watchdog may flush audio into the stream a
            reconfigure closes (issue #634). */
         output_failed = ui_input_switched(opts, state) != 0;
@@ -1885,7 +1929,9 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd
     }
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
+#endif /* USE_RADIO */
 
+/* The frequency entry, on every build: a radio-off build tunes a rigctl peer with it (issue #671). */
 static int cc_has_active_p25_context(const dsd_opts* opts, const dsd_state* state);
 
 static int
@@ -1918,42 +1964,90 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
 
 static int
 ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    /* The selection stores a long trunk frequency and refuses one past the trunk ceiling; refused here first, a
+       frequency past what a 32-bit long holds never reaches that conversion (issue #671). */
+    if (hz > (uint32_t)DSD_TRUNK_FREQ_MAX_HZ) {
+        ui_set_toast(state, 4, "Above 2147.483647 MHz, the trunking limit");
+        return UI_CMD_APPLY_FAILED;
+    }
     const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
     /* The selection stores and tunes this frequency as it is, so it names the one selected whatever the result. */
     char mhz[16];
     (void)ui_toast_mhz(hz, mhz, sizeof mhz);
     if (dsd_trunk_tune_result_is_ok(result)) {
+        /* A new channel (issue #671): the selection dropped the modulation votes; the tone heard on the old one goes
+           as the frequency entry's other branch drops it. */
+        dsd_analog_rx_reset(state);
         ui_user_move_forgets_identity(state, g_apply_cmd_guard_held); /* the selection ended the calls left */
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
-    }
-    if (hz > (uint32_t)DSD_TRUNK_FREQ_MAX_HZ) { /* the selection refuses a control channel past the trunk ceiling */
-        ui_set_toast(state, 4, "Above 2147.483647 MHz, the trunking limit");
-        return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 4, "%s: P25 control channel -> %s MHz",
                  result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "Deferred; retry" : "Failed", mhz);
     return UI_CMD_APPLY_FAILED;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+/* A test's stand-in for the frequency entry's tune leg (dsd_app_command_test_set_tune_leg()): portable, where a
+   link-time wrap of the io/control tune is not. */
+static svc_tune_leg_fn g_test_tune_leg;
+
+void
+dsd_app_command_test_set_tune_leg(int (*tune_leg)(dsd_opts* opts, dsd_state* state, uint32_t hz)) {
+    g_test_tune_leg = tune_leg;
+}
+#endif
+
+/* The frequency entry's tune, without the carrier boundary its caller runs (svc_rtl_tune_only()). */
 static int
-ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result) {
-    if ((result != 0 && result != RTL_STREAM_TUNE_TIMEOUT) || opts->scanner_mode != 1
-        || !dsd_channel_modes_present(state)) {
+ui_cmd_tune_leg(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_test_tune_leg) {
+        return g_test_tune_leg(opts, state, hz);
+    }
+#endif
+    return svc_rtl_tune_only(opts, state, hz);
+}
+
+/* An accepted frequency entry pauses a running -Y scan, typed or untyped, and takes back a resume still waiting on its
+   row (issue #671): the tune came first, so the row's calls ended under its label and keys, and the pause keeps the
+   list, cursor, avoids and session edits for a resume. A spectrum tap and a Signal search start take back a pending
+   resume the same way. Under the P25 SM tick guard, which none of these (not guarded commands) holds, so it is taken
+   here. Returns 1 when it paused the scan. */
+static int
+ui_cmd_pause_channel_scan_after_tune(dsd_opts* opts, dsd_state* state) {
+    if (!dsd_channel_scan_owns_tuner(opts, state)) {
         return 0;
     }
     p25_sm_tick_guard_enter();
-    (void)svc_leave_channel_scan(opts, state);
-    dsd_scan_keys_leave(state);
-    opts->scanner_mode = 0;
-    state->lcn_freq_roll = 0;
+    (void)svc_pause_channel_scan(opts, state, 0);
     p25_sm_tick_guard_leave();
     return 1;
 }
 
-/* A frequency payload the tuner cannot take, toasted: 0, and on a build whose long is 32 bits one past what it holds.
-   Returns 1 with the command status in *status when the payload is refused. */
+/* A Signal search start over a -Y resume still waiting on its row (issue #671): the search takes the receiver from it,
+   as a frequency entry does, and the scan stays paused. Before the start, which captures the settings the search puts
+   back when it stops, so a typed row's staged tune and scopes never become them. A running -Y scan refuses the search
+   instead (dsd_engine_signal_search_start()), so only a pending resume is taken back, and only for a start that goes
+   on: one the engine refuses changes nothing. */
+#ifdef USE_RADIO
+static void
+ui_cmd_search_takes_back_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (c->id != DSD_APP_CMD_SIGNAL_SEARCH_START || !state || !state->lcn_scan_resume_pending
+        || c->n != sizeof(dsd_signal_search_config)) {
+        return;
+    }
+    dsd_signal_search_config config;
+    DSD_MEMCPY(&config, c->data, sizeof(config));
+    if (dsd_engine_signal_search_start_refused(opts, state, &config, NULL, 0U) == 0) {
+        (void)ui_cmd_pause_channel_scan_after_tune(opts, state);
+    }
+}
+#endif
+
+/* A frequency payload the tuner cannot take, toasted: 0. Every other uint32_t reaches the tuner as it is, on every
+   build (issue #671). Returns 1 with the command status in *status when the payload is refused. */
 static int
 ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
     if (v == 0) {
@@ -1961,33 +2055,24 @@ ui_cmd_freq_payload_refused(dsd_state* state, uint32_t v, int* status) {
         *status = UI_CMD_APPLY_INVALID_PAYLOAD;
         return 1;
     }
-#if LONG_MAX < UINT32_MAX
-    if (v > (uint32_t)LONG_MAX) {
-        ui_set_toast(state, 3, "Above 2147.483647 MHz, this build's limit");
-        *status = UI_CMD_APPLY_INVALID_PAYLOAD;
-        return 1;
-    }
-#endif
     return 0;
 }
 
-/* The frequency entry's refusals, each toasted: a replay, a trunk scan owning the tuner, a frequency out of range.
-   Returns 1 with the command status in *status when the entry is refused. */
+/* The frequency entry's refusals, each toasted: a replay, a frequency out of range. A scan never refuses it: an
+   accepted entry pauses the scan (issue #671). Returns 1 with the command status in *status when the entry is
+   refused. */
 static int
 ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, int* status) {
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         *status = UI_CMD_APPLY_FAILED;
         return 1;
     }
-    if (opts->trunk_scan_enabled) {
-        ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
-        *status = UI_CMD_APPLY_FAILED;
-        return 1;
-    }
     return ui_cmd_freq_payload_refused(state, v, status);
 }
 
-/* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
+#ifdef USE_RADIO
+/* The toast a radio command's refusal leaves when the radio stream is unavailable (svc_radio_control_unavailable_text()).
+   A build without radio support has no stream to be unavailable: a rigctl peer's refusal is the plain failure. */
 static int
 ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
     const char* unavailable = svc_radio_control_unavailable_text(rc);
@@ -1997,27 +2082,71 @@ ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
     ui_set_toast(state, 4, "Failed: %s", unavailable);
     return 1;
 }
+#endif
 
 /* A success names @p applied, the frequency the controller applied (a coalesced request can land on another than
    @p v); a pending, deferred or failed tune names the one asked for. */
 static void
-ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int stop_scanner) {
+ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int scan_paused) {
     char mhz[16];
     if (rc == 0) {
-        ui_set_toast(state, 3, "Applied: RTL frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
-                     stop_scanner ? " (scanner stopped)" : "");
+        ui_set_toast(state, 3, "Applied: frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
+                     scan_paused ? "; scan paused" : "");
     } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-        ui_set_toast(state, 3, "Accepted: RTL frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
-                     stop_scanner ? " (scanner stopped)" : "");
+        ui_set_toast(state, 3, "Accepted: frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
+                     scan_paused ? "; scan paused" : "");
     } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
-        ui_set_toast(state, 4, "Deferred; retry: RTL frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
+        ui_set_toast(state, 4, "Deferred; retry: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-    } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
-        ui_set_toast(state, 4, "Failed: RTL frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
+    } else {
+#ifdef USE_RADIO
+        if (ui_cmd_radio_unavailable_toast(state, rc)) {
+            return;
+        }
+#endif
+        ui_set_toast(state, 4, "Failed: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     }
 }
 
+/* The entry's tune: over a running trunk scan, the tune and the scan's pause as one guarded step
+   (svc_pause_trunk_scan_for_tune()); otherwise the tune, its carrier boundary, and a running -Y scan's pause. Every
+   accepted entry is a new channel: the modulation votes the old one cast go with it (issue #671; a typed scan's pause
+   drops them again with its acquisition reset), and the tone heard on it goes now, not when the analog tap next
+   notices the stream moved (issue #522). Returns the tune's result, with *scan_paused set when the entry paused a
+   scan. */
+static int
+ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan_paused) {
+    int rc;
+    *scan_paused = 0;
+    const int over_trunk_scan = dsd_trunk_scan_owns_tuner(opts, state);
+    int trunk_scan_paused = 0;
+    if (over_trunk_scan) {
+        rc = svc_pause_trunk_scan_for_tune(opts, state, v, ui_cmd_tune_leg, &trunk_scan_paused);
+    } else {
+        rc = ui_cmd_tune_leg(opts, state, v);
+    }
+    if (rc != 0 && rc != RTL_STREAM_TUNE_TIMEOUT) {
+        return rc;
+    }
+    if (over_trunk_scan) {
+        *scan_paused = trunk_scan_paused;
+    } else {
+        /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575). */
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    }
+    dsd_frame_sync_reset_mod_state();
+    dsd_analog_rx_reset(state);
+    if (!over_trunk_scan) {
+        *scan_paused = ui_cmd_pause_channel_scan_after_tune(opts, state);
+    }
+    ui_mark_operator_tuned(state);
+    return rc;
+}
+
+/* A frequency the operator entered: it wins over a running -Y scan or trunk scan, which pauses until `y` or
+   DSD_APP_CMD_SCAN_RESUME resumes it, and over nothing else. A paused scan stays paused: a second entry only tunes.
+   Under -T it selects a P25 control channel (#476). A tune refused or deferred changes nothing, the scan included. */
 static int
 ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t v = 0;
@@ -2027,24 +2156,20 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         if (ui_cmd_rtl_set_freq_refused(opts, state, v, &refused_status)) {
             return refused_status;
         }
-        if (manual_frequency_selects_p25_cc(opts, state)) {
+        /* A trunked target parked by a running trunk scan has trunking on: the scan's branch comes first. */
+        if (!dsd_trunk_scan_owns_tuner(opts, state) && manual_frequency_selects_p25_cc(opts, state)) {
             return ui_cmd_handle_p25_cc_selection(opts, state, v);
         }
-        int rc = svc_rtl_set_freq(opts, state, v);
+        int scan_paused = 0;
+        const int rc = ui_cmd_rtl_set_freq_tune(opts, state, v, &scan_paused);
         const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
         result = ui_cmd_apply_status_from_tune_rc(rc);
-        if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
-            /* A new channel: the tone heard on the old one goes now, not when the analog tap
-               next notices the stream moved (issue #522). The tune itself ran the carrier boundary
-               (svc_rtl_set_freq(), issue #575). */
-            dsd_analog_rx_reset(state);
-        }
-        const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
-        ui_cmd_rtl_set_freq_toast(state, rc, v, applied, stop_scanner);
+        ui_cmd_rtl_set_freq_toast(state, rc, v, applied, scan_paused);
     }
     return result;
 }
 
+#ifdef USE_RADIO
 /* Defined further down with the manual-tuning helpers; tap-to-tune needs the
  * same call-state teardown the manual return-to-CC path uses. */
 static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc);
@@ -2077,7 +2202,9 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
      * channel; conventional scanner mode steps the channel map on its own once
      * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
      * tap accepted under it would be silently undone seconds later — worse than
-     * a refusal, because the toast would have claimed it worked. */
+     * a refusal, because the toast would have claimed it worked. A -Y resume
+     * still waiting on its row runs nothing yet: the tap takes it back, as a
+     * frequency entry does, and the scan stays paused (issue #671). */
     if (opts->trunk_enable) {
         ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
         return UI_CMD_APPLY_FAILED;
@@ -2089,8 +2216,9 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     /* The third owner, and the one a release cannot clear (see apply_tuner_release):
      * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
      * its own, so a tap accepted under it is undone within a dwell -- and it is the
-     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. */
-    if (opts->trunk_scan_enabled) {
+     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. A paused scan
+     * owns nothing: the operator holds the tuner (issue #671). */
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
         ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
         return UI_CMD_APPLY_FAILED;
     }
@@ -2106,12 +2234,18 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
         dsd_analog_rx_reset(state); // the tune itself ran the carrier boundary (svc_rtl_set_freq(), issue #575)
+        /* A resume's row still in flight then commits nothing: the pause moved the scan session. */
+        const int scan_paused = ui_cmd_pause_channel_scan_after_tune(opts, state);
         reset_call_tracking(opts, state, 1);
+        ui_mark_operator_tuned(state); // after the calls the tap ended, which began under the session
+
+        const char* paused_note = scan_paused ? "; scan paused" : "";
         if (rc == 0) {
             /* The frequency the controller applied, as the frequency entry's toast names it. */
-            ui_set_toast(state, 3, "Applied: tuned -> %s MHz", ui_toast_mhz(applied, mhz, sizeof mhz));
+            ui_set_toast(state, 3, "Applied: tuned -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz), paused_note);
         } else {
-            ui_set_toast(state, 3, "Accepted: tuned -> %s MHz (pending)", ui_toast_mhz(v, mhz, sizeof mhz));
+            ui_set_toast(state, 3, "Accepted: tuned -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
+                         paused_note);
         }
     } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
         ui_set_toast(state, 4, "Deferred; retry: tune -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
@@ -2450,7 +2584,7 @@ ui_cmd_handle_hangtime_set(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     double s = 0.0;
     if (state && ui_cmd_parse_double_payload(c, &s)) {
         svc_set_hangtime(opts, s);
-        if (opts->trunk_scan_enabled != 1) {
+        if (!dsd_trunk_scan_owns_tuner(opts, state)) {
             // A followed DMR call's hangtime is the machine's (trunk-scan targets keep their own).
             dmr_sm_note_hangtime(dmr_sm_get_ctx(), opts);
         }
@@ -2825,7 +2959,7 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
                 ui_set_toast(state, 5, "Imported; %s", skipped);
             } else if (rc == 0) {
                 ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
-            } else {
+            } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
                 ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
             }
         }
@@ -2843,7 +2977,7 @@ ui_cmd_handle_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
                 ui_set_toast(state, 3, "Applied: P25 band plan imported -> %s", path);
-            } else {
+            } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
                 ui_set_toast(state, 4, "Failed: P25 band plan import -> %s", path);
             }
         }
@@ -3037,6 +3171,20 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+#ifndef USE_RADIO
+/* Without a radio backend the frequency entry still tunes a rigctl peer (issue #671), as the Input row offers. */
+static int
+apply_cmd_io_and_import_freq_entry(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
+    };
+    if (!opts || !c) {
+        return 0;
+    }
+    return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
+}
+#endif
+
 static int
 apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     /* Each group returns nonzero once it handled the command. */
@@ -3046,6 +3194,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 #ifdef USE_RADIO
         apply_cmd_io_and_import_rtl_a,          apply_cmd_io_and_import_rtl_b,
         apply_cmd_io_and_import_rtl_c,          apply_cmd_io_and_import_rtl_d,
+#else
+        apply_cmd_io_and_import_freq_entry,
 #endif
         apply_cmd_io_and_import_squelch,        apply_cmd_io_and_import_runtime_a,
         apply_cmd_io_and_import_pulse_io,       apply_cmd_io_and_import_lrrp_and_p2,
@@ -3175,13 +3325,25 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
         result = (int)tune_result;
         accepted = dsd_trunk_tune_result_is_ok(tune_result);
     } else {
-        /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. */
-        result = io_control_set_freq(opts, state, freq);
+        /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. The trunk frequency is a long;
+           one the tuner path cannot carry is refused as io_control_set_freq() refuses 0. */
+        int carried = freq > 0;
+#if LONG_MAX > UINT32_MAX
+        carried = carried && freq <= (long)UINT32_MAX; /* only a 64-bit long reaches past it */
+#endif
+        result = carried ? io_control_set_freq(opts, state, (uint32_t)freq) : -1;
+        if (result != RTL_STREAM_TUNE_DEFERRED) {
+            /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+            dsd_engine_manual_tune_supersede(state);
+        }
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
         if (accepted) {
             /* This leg has no correlated tune request to await, so an accepted
              * timeout (issued, not yet confirmed) is reported as complete. */
             tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+            /* It moves the receiver without the engine's legacy legs, and runs no carrier boundary to tell them
+               (issue #671). */
+            dsd_engine_legacy_tune_caches_forget();
         }
     }
     if (out_result) {
@@ -3260,7 +3422,7 @@ hand_dmr_sm_over(dsd_opts* opts, dsd_state* state, int only_followed, long cc_fr
     if (only_followed && dmr_sm_get_state(dmr) != DMR_SM_TUNED) {
         return;
     }
-    if (opts->trunk_scan_enabled == 1) {
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
         /* The parked target's own context, which the coordinator restarts at each visit: an accepted return to its
            control channel restarts acquisition there, as the target's own release would. */
         // A park the coordinator still tracks keeps its request and deadline: the acquisition it starts follows.
@@ -4216,6 +4378,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_SCAN_HOLD_TOGGLE,
     DSD_APP_CMD_SCAN_AVOID,
     DSD_APP_CMD_SCAN_AVOID_CLEAR,
+    DSD_APP_CMD_SCAN_RESUME,
     DSD_APP_CMD_PAYLOAD_TOGGLE,
     DSD_APP_CMD_P25_GA_TOGGLE,
     DSD_APP_CMD_LPF_TOGGLE,
@@ -4484,6 +4647,12 @@ int
 dsd_app_command_apply_config(const dsdneoUserConfig* config) {
     return config ? dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, config, sizeof *config)
                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
+dsd_app_command_load_config(const dsd_app_config_load_payload* payload) {
+    return payload ? dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, payload, sizeof *payload)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
 }
 
 int
@@ -4968,11 +5137,26 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* A release with nothing to do: the tuner is already the operator's, nothing owns it, and a scan pause stands. */
+static int
+tuner_release_finds_pause(const dsd_opts* opts, const dsd_state* state) {
+    return !dsd_trunk_scan_owns_tuner(opts, state) && opts->trunk_enable != 1
+           && !dsd_channel_scan_owns_tuner(opts, state)
+           && (state->lcn_scan_paused || dsd_engine_trunk_scan_paused(state));
+}
+
 /**
- * @brief Hand the tuner back to the operator: trunking and scanner mode both off.
+ * @brief Hand the tuner back to the operator: trunking off, and a running scan paused.
  *
  * Idempotent. A frontend only learns that *something* owns the tuner, not which,
  * so TRUNK_TOGGLE/SCANNER_TOGGLE cannot express "off" from there without guessing.
+ *
+ * A running -Y scan or trunk scan pauses where it is, no tune following (issue #671): it keeps its list, cursor,
+ * avoids and session edits (a trunk scan its coordinator, targets and hold) for `y` or DSD_APP_CMD_SCAN_RESUME, and the
+ * pause forgets what the carrier's decoders gathered under the scan's policy. Until then nothing retunes on its own:
+ * a trunk scan cannot be released any other way, since clearing trunking under its coordinator would strand a target
+ * in a followed call (B5). A scan already paused is left as it is. Every release of an owner hands the tuner to the
+ * operator (dsd_state::operator_tuned).
  *
  * The call-state teardown is not optional and is not left to a following
  * MANUAL_TUNE: a release is frequently the whole request -- look around from
@@ -4984,14 +5168,11 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
  * No dsd_frame_sync_reset_mod_state() here: nothing retuned, so the modulation
  * votes still describe the signal actually being received.
  *
- * opts->trunk_scan_enabled is a third tuner owner (see
- * engine_trunk_tuning_owner_active()) and is deliberately untouched: it owns live
- * scan hooks that clearing a flag would not tear down, and it is only reachable
- * from a frontend that passes --trunk-scan.
- *
  * Refused during an I/Q replay (issue #575): it hands the tuner over to manual
  * tunes, which a replay refuses, so it would only stop the decoder following the
  * capture's trunking while the capture's recorded retunes went on.
+ *
+ * Apply-guarded: the caller holds the P25 SM tick guard, which nothing here takes again.
  */
 static int
 apply_tuner_release(dsd_opts* opts, dsd_state* state) {
@@ -5001,15 +5182,37 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
-    opts->trunk_enable = 0;
-    opts->scanner_mode = 0;
-    // Leaving -Y hands the foreground keyring back to the globals.
-    if (opts->trunk_scan_enabled != 1) {
-        (void)svc_leave_channel_scan(opts, state);
-        dsd_scan_keys_leave(state);
+    if (tuner_release_finds_pause(opts, state)) {
+        ui_set_toast(state, 3, "Automatic tuning paused");
+        return UI_CMD_APPLY_COMPLETED;
     }
+    int paused = 0;
+    if (dsd_trunk_scan_owns_tuner(opts, state)) {
+        paused = svc_pause_trunk_scan_in_place(opts, state) == 0;
+        if (!paused && state->trunk_scan_target_count > 0U) {
+            /* A coordinator that cannot pause (it names no target to leave) still holds the tuner: trunking stays,
+               since clearing it under the coordinator would strand a target in a followed call (B5). */
+            ui_set_toast(state, 3, "Trunk scan active: pause unavailable");
+            return UI_CMD_APPLY_FAILED;
+        }
+    } else if (dsd_channel_scan_owns_tuner(opts, state)) {
+        (void)svc_pause_channel_scan(opts, state, 1);
+        paused = 1;
+    }
+    if (!paused) {
+        if (opts->trunk_enable == 1) {
+            state->operator_tuned = 1U;
+        }
+        opts->scanner_mode = 0;
+        // Leaving -Y hands the foreground keyring back to the globals.
+        if (opts->trunk_scan_enabled != 1) {
+            (void)svc_leave_channel_scan(opts, state);
+            dsd_scan_keys_leave(state);
+        }
+    }
+    opts->trunk_enable = 0;
     reset_call_tracking(opts, state, 1);
-    ui_set_toast(state, 3, "Automatic tuning stopped");
+    ui_set_toast(state, 3, paused ? "Automatic tuning paused" : "Automatic tuning stopped");
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -5434,7 +5637,7 @@ ui_resume_scope_and_publish(dsd_opts* opts, dsd_state* state, int* out_changed, 
     int configured_before_hz = -1;
     if (*out_changed) {
         reset_call_tracking(opts, state, 1);
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         const int width_before = ui_analog_width_before(before, opts->analog_demod);
         if (width_before >= 0 && dsd_opts_analog_width_hz(opts) != width_before) {
             configured_before_hz = width_before;
@@ -5591,7 +5794,7 @@ ui_revert_analog_entry(dsd_opts* opts, dsd_state* state, int width_hz, const svc
         } else {
             (void)svc_publish_symbol_profile(opts, state, profile);
         }
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
     if (reverted) {
@@ -5966,7 +6169,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */
     if (!dsd_scan_mode_updating(state)) {
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
     /* After the outgoing calls ended and froze their identity. */
@@ -5988,6 +6191,16 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     return decode_mode_apply_value(opts, state, mode);
 }
 
+/* The save an import leaves (svc_check_next_start()): the tuner owner it sets (rr_apply_tuner_owner()) and the channel
+   map it imports or clears (rr_apply_files()). */
+static void
+rr_apply_next_start(dsdneoUserConfig* save, const void* ctx) {
+    const dsd_app_rr_apply_payload* p = (const dsd_app_rr_apply_payload*)ctx;
+    save->trunk_enabled = p->trunking ? 1 : 0;
+    save->trunk_scanner = (!p->trunking && p->scanner) ? 1 : 0;
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", p->has_chan ? p->chan_path : "");
+}
+
 /**
  * @brief Everything that can refuse a RadioReference apply before it mutates anything.
  *
@@ -6002,6 +6215,14 @@ rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_appl
     // is what keeps a half-applied import off a live session.
     if (opts->trunk_scan_enabled == 1) {
         ui_set_toast(state, 4, "Failed: RR import -> trunk scan owns the channel map");
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* Nor may it leave a save a trunk scan waiting for the next start cannot start with (issue #671). */
+    char why[256];
+    if (svc_check_next_start(opts, state, rr_apply_next_start, p, why, sizeof why) != 0) {
+        LOG_WARN("RR import not applied: %s.\n", why);
+        why[strcspn(why, ";")] = '\0';
+        ui_set_toast(state, 4, "Failed: RR import -> %s", why);
         return UI_CMD_APPLY_FAILED;
     }
     /* <=, not <: DSDCFG_MODE_UNSET is 0 and is not a preset, so letting it through
@@ -6115,26 +6336,11 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
    returning -1 when neither owns the tuner. 0 is applied and
    RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
    cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
-   about and which must not fail the whole apply. */
+   about and which must not fail the whole apply. It takes the payload's
+   uint32_t as it is on every build (issue #671), so only 0 is no frequency. */
 static int
 rr_apply_tune_frequency_fits(const dsd_app_rr_apply_payload* p) {
-    if (p->tune_hz == 0U) {
-        return 0;
-    }
-    /* io_control_set_freq() takes a long, which is 32-bit signed under the
-       win-msvc-* presets while the payload carries a full uint32_t (and
-       rr_generate.c accepts sites up to 6 GHz). Casting a value above LONG_MAX
-       there would hand the tuner a NEGATIVE frequency, so the retune is skipped
-       instead - the same outcome as a session that cannot retune at all, which
-       the import preview already warns about. Guarded by the preprocessor because
-       where long is 64-bit the test is provably false and -Werror=type-limits
-       rejects it. */
-#if LONG_MAX < UINT32_MAX
-    if (p->tune_hz > (uint32_t)LONG_MAX) {
-        return 0;
-    }
-#endif
-    return 1;
+    return p->tune_hz != 0U;
 }
 
 /* Whether the import moves the receiver to its system's channel: it carries a frequency the tuner takes, and the
@@ -6145,9 +6351,10 @@ rr_apply_moves_the_receiver(const dsd_opts* opts, const dsd_app_rr_apply_payload
 }
 
 static void
-rr_apply_tune(dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p) {
-    if (rr_apply_tune_frequency_fits(p)) {
-        (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
+rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    if (rr_apply_tune_frequency_fits(p) && io_control_set_freq(opts, state, p->tune_hz) != RTL_STREAM_TUNE_DEFERRED) {
+        /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). */
+        dsd_engine_manual_tune_supersede(state);
     }
 }
 
@@ -6171,7 +6378,7 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;
     if (!dsd_scan_mode_updating(state)) {
-        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
         reset_call_tracking(opts, state, 1);
     }
 }
@@ -7134,18 +7341,27 @@ apply_manual_scan_avoid_clear(dsd_state* state) {
     ui_set_toast(state, 3, "Cleared %d scan avoid%s", cleared, cleared == 1 ? "" : "s");
 }
 
-static void
+/* A scan control (hold, avoid, clear avoids, next) asked of a paused scan, -Y or trunk scan (issue #671): the scan has
+   no channel on air to act on until it resumes. The hold and the avoids stay as they were. */
+static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
+
+/* Returns the command's status: failed for a paused scan's refusal (issue #671), completed otherwise. */
+static int
 apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     char target_id[sizeof(state->trunk_scan_active_id)];
     DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
     const int rc = dsd_trunk_scan_hook_control(opts, state, op);
     if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
         ui_set_toast(state, 3, "Trunk scan busy; try again");
-        return;
+        return UI_CMD_APPLY_COMPLETED;
     }
     if (rc == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE) {
         ui_set_toast(state, 3, "Trunk scan is not running");
-        return;
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (rc == DSD_TRUNK_SCAN_CONTROL_PAUSED) {
+        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
+        return UI_CMD_APPLY_FAILED;
     }
     switch (op) {
         case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE:
@@ -7173,6 +7389,7 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
             break;
         default: break;
     }
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
@@ -7188,8 +7405,11 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         return 1;
     }
     if (opts->trunk_scan_enabled == 1) {
-        apply_trunk_scan_control(opts, state, op);
-        return 1;
+        return apply_trunk_scan_control(opts, state, op);
+    }
+    if (state->lcn_scan_paused) {
+        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
+        return UI_CMD_APPLY_FAILED;
     }
     if (opts->scanner_mode != 1) {
         ui_set_toast(state, 3, "Not scanning: hold/avoid need -Y or --trunk-scan");
@@ -7220,8 +7440,12 @@ apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     // LCN list here would retune under the coordinator's feet and be snapshotted as if
     // the target had moved itself.
     if (opts->trunk_scan_enabled == 1) {
-        apply_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
-        return 1;
+        return apply_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    }
+    /* A paused -Y list's next row is the resume's to choose: a step now would tune a row with no scan running it. */
+    if (state->lcn_scan_paused) {
+        ui_set_toast(state, 3, "%s", k_scan_paused_refusal);
+        return UI_CMD_APPLY_FAILED;
     }
     if (scan_control_tuner_present(opts)) {
         return apply_manual_channel_cycle(opts, state);
@@ -7862,6 +8086,67 @@ cfg_check_receive_family(const dsd_opts* opts, dsd_state* state, const dsdneoUse
     return UI_CMD_APPLY_FAILED;
 }
 
+/* What a save would write once the config (@p ctx) is applied, in @p next (the save as it stands,
+   svc_check_next_start()): the fields of the trunk-scan rules a config names replace those the session would save, as
+   staging, the next-start hold (cfg_restore_lifecycle_owned()) and the owner settle (cfg_settle_scan_owner()) leave
+   them. A path is named only when the config sets one. A [trunking] names the tuner owner. */
+static void
+cfg_overlay_trunk_scan_fields(dsdneoUserConfig* next, const void* ctx) {
+    const dsdneoUserConfig* cfg = (const dsdneoUserConfig*)ctx;
+    if (cfg->has_trunk_scan) {
+        next->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
+        if (cfg->trunk_scan_targets_csv[0]) {
+            DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s",
+                         cfg->trunk_scan_targets_csv);
+        }
+    }
+    if (!cfg->has_trunking) {
+        return;
+    }
+    if (cfg->trunk_chan_csv[0]) {
+        DSD_SNPRINTF(next->trunk_chan_csv, sizeof next->trunk_chan_csv, "%s", cfg->trunk_chan_csv);
+    }
+    if (cfg->trunk_p25_bandplan_csv[0]) {
+        DSD_SNPRINTF(next->trunk_p25_bandplan_csv, sizeof next->trunk_p25_bandplan_csv, "%s",
+                     cfg->trunk_p25_bandplan_csv);
+    }
+    /* As staging (apply_trunking_config()) and the owner settle leave them: trunking on wins; else the scanner on runs
+       with trunking off; else the scanner is off and trunking stays as it is. */
+    if (cfg->trunk_enabled) {
+        next->trunk_enabled = 1;
+        next->trunk_scanner = 0;
+    } else if (cfg->trunk_scanner) {
+        next->trunk_enabled = 0;
+        next->trunk_scanner = 1;
+    } else {
+        next->trunk_scanner = 0;
+    }
+}
+
+/*
+ * What a config apply leaves for the next start is saved (dsd_opts::next_start), so it must be a config the next start
+ * runs (issue #671): one that would newly break a rule startup refuses a trunk scan by (a global channel map, P25 band
+ * plan or -Y scanner beside it, or no target list; dsd_user_config_check_trunk_scan_startable(), the rules
+ * --validate-config applies) is refused whole, before anything changes, with the rule's reason. A rule the session's
+ * own save breaks already is the session's: a config that keeps it as it is, or fixes it, applies
+ * (svc_check_next_start()).
+ */
+static int
+cfg_check_next_start(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg->has_trunk_scan && !cfg->has_trunking) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    char why[256];
+    if (svc_check_next_start(opts, state, cfg_overlay_trunk_scan_fields, cfg, why, sizeof why) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    LOG_WARN("Config not applied: %s.\n", why);
+    /* The rule, without its advice, fits the status line; the log has both. */
+    why[strcspn(why, ";")] = '\0';
+    ui_set_toast(state, 5, "Config not applied: %s", why);
+    return UI_CMD_APPLY_FAILED;
+}
+
 static int
 cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     if (!cfg_airspy_settings_valid(cfg)) {
@@ -7876,6 +8161,10 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     if (cfg->has_trunking && cfg->trunk_scanner && !cfg->trunk_enabled && opts->trunk_scan_enabled == 1) {
         ui_set_toast(state, 3, "Trunk scan active: conventional scanner unavailable");
         return UI_CMD_APPLY_FAILED;
+    }
+    const int next_start_rc = cfg_check_next_start(opts, state, cfg);
+    if (next_start_rc != UI_CMD_APPLY_COMPLETED) {
+        return next_start_rc;
     }
     if (!cfg->has_trunking || !cfg->trunk_group_csv[0]) {
         return UI_CMD_APPLY_COMPLETED;
@@ -7894,6 +8183,70 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* The settings whose lifecycle startup owns (cfg_restore_lifecycle_owned()), as the session ran them before a config
+   was staged over them. */
+typedef struct {
+    dsd_frontend_kind frontend_kind;
+    int trunk_scan_enabled;
+    int trunk_scan_idle_dwell_ms;
+    int trunk_scan_activity_hold_ms;
+    char trunk_scan_targets_csv[sizeof(((dsd_opts*)0)->trunk_scan_targets_csv)];
+    char chan_in_file[sizeof(((dsd_opts*)0)->chan_in_file)];
+    char p25_bandplan_in_file[sizeof(((dsd_opts*)0)->p25_bandplan_in_file)];
+} cfg_lifecycle_owned;
+
+static void
+cfg_capture_lifecycle_owned(const dsd_opts* opts, cfg_lifecycle_owned* out) {
+    out->frontend_kind = opts->frontend_kind;
+    out->trunk_scan_enabled = opts->trunk_scan_enabled;
+    out->trunk_scan_idle_dwell_ms = opts->trunk_scan_idle_dwell_ms;
+    out->trunk_scan_activity_hold_ms = opts->trunk_scan_activity_hold_ms;
+    DSD_SNPRINTF(out->trunk_scan_targets_csv, sizeof out->trunk_scan_targets_csv, "%s", opts->trunk_scan_targets_csv);
+    DSD_SNPRINTF(out->chan_in_file, sizeof out->chan_in_file, "%s", opts->chan_in_file);
+    DSD_SNPRINTF(out->p25_bandplan_in_file, sizeof out->p25_bandplan_in_file, "%s", opts->p25_bandplan_in_file);
+}
+
+/* What a config apply asked to change that only a restart puts in place (cfg_restore_lifecycle_owned(),
+   cfg_note_restart_required()). */
+enum {
+    CFG_RESTART_FRONTEND = 1 << 0,
+    CFG_RESTART_TRUNK_SCAN = 1 << 1,
+    CFG_RESTART_TRUNK_SCAN_LIST = 1 << 2,
+    CFG_RESTART_CHANNEL_MAP = 1 << 3,
+    CFG_RESTART_BAND_PLAN = 1 << 4,
+    CFG_RESTART_AIRSPY_INPUT = 1 << 5,
+};
+
+/* Put the path @p before back into @p live (@p size bytes), the running one, and keep the one the config set as @p next
+   for the next start (bit @p bit of @p pending): every save writes it (dsd_opts_next_start). A config that names the
+   running path again (@p named) drops what was waiting. Nonzero when the config had changed it. */
+static int
+cfg_defer_path(char* live, size_t size, const char* before, int named, uint32_t* pending, uint32_t bit, char* next) {
+    const int changed = strcmp(live, before) != 0;
+    if (changed) {
+        DSD_SNPRINTF(next, size, "%s", live);
+        *pending |= bit;
+    } else if (named) {
+        *pending &= ~bit;
+    }
+    DSD_SNPRINTF(live, size, "%s", before);
+    return changed;
+}
+
+/* The same for a number. */
+static int
+cfg_defer_int(int* live, int before, int named, uint32_t* pending, uint32_t bit, int* next) {
+    const int changed = *live != before;
+    if (changed) {
+        *next = *live;
+        *pending |= bit;
+    } else if (named) {
+        *pending &= ~bit;
+    }
+    *live = before;
+    return changed;
+}
+
 /*
  * Settings whose lifecycle startup owns. The frontend kind belongs to startup and
  * ui_start/ui_stop: runtime config/profile loads may carry persisted frontend
@@ -7901,17 +8254,177 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
  * UI thread has a chance to shut it down. The trunk-scan coordinator is likewise
  * only installed at startup, and its flag must keep saying whether one is
  * installed: the scanner-exclusivity refusals and P25 recovery admission read it
- * (#554). Both are put back after the config is applied; nonzero means the config
- * asked to change one of them, which the caller reports as restart-required.
+ * (#554). The channel map is imported at startup only (a config apply copies its
+ * path and nothing more), so another path would have the next save write a map the
+ * session never ran while the decoder keeps the rows it loaded (issue #671). A running
+ * coordinator also loaded its target list and resolved the list's dwell and hold
+ * defaults at startup, and refused the global band plan then (each target names its
+ * own), so under it those are the coordinator's too. All of them are put back after
+ * the config is applied, and what the config set instead waits for the next start
+ * (dsd_opts::next_start): every save writes it, so the restart the toast asks for runs
+ * it. The CFG_RESTART_* mask returned names those the config asked to change, which
+ * the caller reports as restart-required.
  */
 static int
-cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_frontend_kind old_frontend_kind,
-                            int old_trunk_scan_enabled) {
-    opts->frontend_kind = old_frontend_kind;
-    opts->trunk_scan_enabled = old_trunk_scan_enabled;
-    const int frontend_changed = cfg->frontend_kind_is_set && cfg->frontend_kind != old_frontend_kind;
-    const int trunk_scan_changed = cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != old_trunk_scan_enabled;
-    return frontend_changed || trunk_scan_changed;
+cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, const cfg_lifecycle_owned* before) {
+    dsd_opts_next_start* next = &opts->next_start;
+    int changed = 0;
+    /* Staging sets the frontend only with the section that carries it; the config names it either way. */
+    int frontend = cfg->frontend_kind_is_set ? (int)cfg->frontend_kind : (int)before->frontend_kind;
+    int next_frontend = (int)next->frontend_kind;
+    if (cfg_defer_int(&frontend, (int)before->frontend_kind, cfg->frontend_kind_is_set, &next->pending,
+                      DSD_NEXT_START_FRONTEND, &next_frontend)) {
+        changed |= CFG_RESTART_FRONTEND;
+    }
+    opts->frontend_kind = (dsd_frontend_kind)frontend;
+    next->frontend_kind = (dsd_frontend_kind)next_frontend;
+    if (cfg_defer_int(&opts->trunk_scan_enabled, before->trunk_scan_enabled, cfg->has_trunk_scan, &next->pending,
+                      DSD_NEXT_START_TRUNK_SCAN, &next->trunk_scan_enabled)) {
+        changed |= CFG_RESTART_TRUNK_SCAN;
+    }
+    if (cfg_defer_path(opts->chan_in_file, sizeof opts->chan_in_file, before->chan_in_file,
+                       cfg->has_trunking && cfg->trunk_chan_csv[0], &next->pending, DSD_NEXT_START_CHANNEL_MAP,
+                       next->chan_in_file)) {
+        changed |= CFG_RESTART_CHANNEL_MAP;
+    }
+    if (before->trunk_scan_enabled == 1) {
+        int list_changed =
+            cfg_defer_path(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv,
+                           before->trunk_scan_targets_csv, cfg->has_trunk_scan && cfg->trunk_scan_targets_csv[0],
+                           &next->pending, DSD_NEXT_START_TRUNK_SCAN_TARGETS, next->trunk_scan_targets_csv);
+        list_changed |=
+            cfg_defer_int(&opts->trunk_scan_idle_dwell_ms, before->trunk_scan_idle_dwell_ms, cfg->has_trunk_scan,
+                          &next->pending, DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL, &next->trunk_scan_idle_dwell_ms);
+        list_changed |=
+            cfg_defer_int(&opts->trunk_scan_activity_hold_ms, before->trunk_scan_activity_hold_ms, cfg->has_trunk_scan,
+                          &next->pending, DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD, &next->trunk_scan_activity_hold_ms);
+        changed |= list_changed ? CFG_RESTART_TRUNK_SCAN_LIST : 0;
+        if (cfg_defer_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, before->p25_bandplan_in_file,
+                           cfg->has_trunking && cfg->trunk_p25_bandplan_csv[0], &next->pending,
+                           DSD_NEXT_START_BAND_PLAN, next->p25_bandplan_in_file)) {
+            changed |= CFG_RESTART_BAND_PLAN;
+        }
+    }
+    return changed;
+}
+
+/*
+ * Say which settings of an applied config wait for a restart (@p causes, a CFG_RESTART_* mask), on the status line
+ * every frontend shows: "Config applied; restart to use the new trunk scan list". Set before the rest
+ * of the apply runs, so a rollback's toast replaces it (that apply fails); one that applies after all keeps it beside
+ * whatever else it said (cfg_keep_restart_note()). The names go to @p names (@p size bytes), "" with no cause.
+ */
+static void
+cfg_note_restart_required(dsd_state* state, int causes, char* names, size_t size) {
+    static const struct {
+        int cause;
+        const char* name;
+    } k_names[] = {
+        {CFG_RESTART_FRONTEND, "frontend"},
+        {CFG_RESTART_TRUNK_SCAN, "trunk scan setting"},
+        {CFG_RESTART_TRUNK_SCAN_LIST, "trunk scan list"},
+        {CFG_RESTART_CHANNEL_MAP, "channel map"},
+        {CFG_RESTART_BAND_PLAN, "band plan"},
+        {CFG_RESTART_AIRSPY_INPUT, "Airspy input"},
+    };
+
+    names[0] = '\0';
+    size_t used = 0U;
+    for (size_t i = 0; i < sizeof k_names / sizeof k_names[0]; i++) {
+        if ((causes & k_names[i].cause) == 0 || used >= size) {
+            continue;
+        }
+        const int n = DSD_SNPRINTF(names + used, size - used, "%s%s", used ? ", " : "", k_names[i].name);
+        used += n > 0 ? (size_t)n : 0U;
+    }
+    if (used > 0U) {
+        ui_set_toast(state, 5, "Config applied; restart to use the new %s", names);
+    }
+}
+
+/*
+ * A config apply that needs a restart and applied: the log says what waits. When something it ran said something else
+ * on the status line after the restart note (a resume that stays paused, a refused width), both are kept, the restart
+ * cause last; when both do not fit, the other message stays and points at the log, which has the restart cause.
+ */
+static void
+cfg_keep_restart_note(dsd_state* state, const char* names) {
+    /* Logged here, where the apply is known to have applied (a rollback returns before), and before any toast that
+       points at the log. */
+    LOG_INFO("Config applied; restart to use the new %s.\n", names);
+    char note[sizeof state->ui_msg];
+    DSD_SNPRINTF(note, sizeof note, "Config applied; restart to use the new %s", names);
+    if (strcmp(state->ui_msg, note) == 0) {
+        return;
+    }
+    char other[sizeof state->ui_msg];
+    DSD_SNPRINTF(other, sizeof other, "%s", state->ui_msg);
+    if (strlen(other) + strlen("; restart to use the new ") + strlen(names) < sizeof state->ui_msg) {
+        ui_set_toast(state, 5, "%s; restart to use the new %s", other, names);
+    } else {
+        ui_set_toast(state, 5, "%s; restart needed (see log)", other);
+    }
+}
+
+/* Who owns the tuner, as dsd_opts::trunk_enable and scanner_mode say (issue #671, F11). */
+typedef struct {
+    int trunk_enable;
+    int scanner_mode;
+} cfg_scan_owner;
+
+/* Staging a [trunking] section writes the tuner owner it names into the live options. That owner is decided last
+   (cfg_settle_scan_owner()), once the input and receive profile are reconciled, so nothing in between reads an owner
+   half applied: a paused -Y scan flagged running with no row installed, or trunking on over a paused trunk scan's
+   manual frequency. Returns the staged owner and puts @p before back. */
+static cfg_scan_owner
+cfg_take_scan_owner(dsd_opts* opts, const cfg_scan_owner* before) {
+    const cfg_scan_owner staged = {opts->trunk_enable, opts->scanner_mode};
+    opts->trunk_enable = before->trunk_enable;
+    opts->scanner_mode = before->scanner_mode;
+    return staged;
+}
+
+/* Under a trunk scan each target's type sets the live trunking flag while it is parked, so [trunking] enabled = true
+   is the setting the coordinator puts back at shutdown and a save writes (B6), never the live flag: a paused scan
+   stays untrunked on the operator's frequency. A false one leaves it, as staging leaves the live flag outside a scan.
+   A coordinator is installed at startup only, so the flag says whether one runs. */
+static void
+cfg_store_configured_trunking(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (opts->trunk_scan_enabled == 1 && cfg->has_trunking && cfg->trunk_enabled) {
+        (void)dsd_engine_trunk_scan_set_configured_trunk_enable(state, 1);
+    }
+}
+
+/*
+ * The last step of a config apply (F11): the tuner owner the config names (@p owner, cfg_take_scan_owner()) takes the
+ * tuner. A trunk scan keeps it whatever the config says: the live flags stay as the coordinator set them. A -Y scan the
+ * operator paused (issue #671) follows the rules a frontend's controls follow: a config without [trunking] keeps the
+ * pause, and so does one whose input did not come up (@p applied 0: the session is back on the input it paused on);
+ * trunking on or the scanner off stop it, and the owner the config names takes over; the scanner on resumes it, which
+ * stays paused, with the reason on the status line, when no row can be tuned. Another channel map changes none of
+ * this: it waits for a restart (cfg_restore_lifecycle_owned()). Otherwise the config's owner is the
+ * session's: a running -Y scan the config turned off leaves its scope once the command has run
+ * (ui_cmd_leaves_scanner_scope()). The caller holds the P25 SM tick guard (a guarded command).
+ */
+static void
+cfg_settle_scan_owner(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const cfg_scan_owner* owner,
+                      const cfg_lifecycle_owned* before, int applied) {
+    if (before->trunk_scan_enabled == 1) {
+        return;
+    }
+    if (state->lcn_scan_paused) {
+        if (!cfg->has_trunking || !applied) {
+            return;
+        }
+        if (owner->scanner_mode == 1) {
+            (void)svc_resume_channel_scan(opts, state);
+            return;
+        }
+        (void)svc_leave_channel_scan(opts, state);
+        dsd_scan_keys_leave(state);
+    }
+    opts->trunk_enable = owner->trunk_enable;
+    opts->scanner_mode = owner->scanner_mode;
 }
 
 /*
@@ -8110,12 +8623,24 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
     return 0;
 }
 
+/* The result of a config that stays applied. A failed output reconfigure, a width the front end refused after the
+   check, or a recording file that did not open (@p failed_rc nonzero) leaves the config applied, and fails it: a
+   failure is reported as one, with what waits for a restart beside it. */
 static int
-ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (!state || c->n < sizeof(dsdneoUserConfig)) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
+cfg_apply_kept_result(dsd_state* state, int restart_causes, const char* restart_names, int failed_rc) {
+    if (restart_causes != 0) {
+        cfg_keep_restart_note(state, restart_names);
     }
+    if (failed_rc != 0) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    return (restart_causes != 0) ? UI_CMD_APPLY_RESTART_REQUIRED : UI_CMD_APPLY_COMPLETED;
+}
 
+/* Apply the config @p c carries; @p kept is set when the config stays applied, the outcomes a "Config applied" toast (or
+   none) reports: a "Config not applied: ..." refusal or rollback leaves it 0. */
+static int
+cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int* kept) {
     dsdneoUserConfig cfg;
     char old_audio_in_dev[sizeof opts->audio_in_dev];
     char old_audio_out_dev[sizeof opts->audio_out_dev];
@@ -8128,8 +8653,6 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_samples_per_symbol = state->samplesPerSymbol;
     int old_symbol_center = state->symbolCenter;
     int old_jitter = state->jitter;
-    dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
-    const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
     const cfg_rx_profile old_rx = cfg_rx_profile_of(opts);
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
@@ -8144,6 +8667,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
         return prepare_rc;
     }
+    cfg_lifecycle_owned lifecycle_before;
+    cfg_capture_lifecycle_owned(opts, &lifecycle_before);
+    const cfg_scan_owner owner_before = {opts->trunk_enable, opts->scanner_mode};
     ui_stage_analog_entry(opts, state);
 #ifdef USE_RADIO
     ui_cfg_rollback rollback;
@@ -8163,8 +8689,19 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
        the layout the decoder writes. */
     opts->pulse_digi_out_channels = old_audio_channels;
     opts->pulse_digi_rate_out = old_audio_rate;
-    const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, old_frontend_kind, old_trunk_scan_enabled);
+    /* One ordered transaction (issue #671, F11): the owner the config names is taken out, the lifecycle-owned settings
+       go back, trunking under a trunk scan becomes its configured setting, the input and receive profile are
+       reconciled, and the owner takes the tuner last. */
+    const cfg_scan_owner owner = cfg_take_scan_owner(opts, &owner_before);
+    int restart_causes = cfg_restore_lifecycle_owned(opts, &cfg, &lifecycle_before);
+    if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
+        restart_causes |= CFG_RESTART_AIRSPY_INPUT;
+    }
+    char restart_names[96];
+    cfg_note_restart_required(state, restart_causes, restart_names, sizeof restart_names);
+    cfg_store_configured_trunking(opts, state, &cfg);
 #ifdef USE_RADIO
+    rollback.scanner_after = owner.scanner_mode;
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
        running before it there is nothing to put back, and no stream to publish to. */
@@ -8186,17 +8723,168 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     cfg_commit_mode(opts, state, &cfg, old_edacs_session);
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
+    cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, radio_rc == 0);
     if (radio_rc != 0) {
+        /* With no input running before it there was none to put back: the config stays applied, and what it left for
+           the next start with it (ui_cfg_settle_reopen()), so the toast and the log still say so. */
+        if (!rollback.input.running && restart_causes != 0) {
+            cfg_keep_restart_note(state, restart_names);
+        }
+        *kept = !rollback.input.running;
         return UI_CMD_APPLY_FAILED;
     }
+#else
+    cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, 1);
 #endif
-    if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
-        return UI_CMD_APPLY_RESTART_REQUIRED;
+    *kept = 1;
+    return cfg_apply_kept_result(state, restart_causes, restart_names, reconfigure_rc | recording_rc);
+}
+
+/*
+ * A loaded file's apply (dsd_app_config_load_payload, issue #671): the autosave it brings is adopted only once the config
+ * stays applied, decided here on the decoder thread, so a load the decoder refuses or rolls back leaves the autosave
+ * where it was and the exit autosave never writes the session into the file that did not load. The status line then
+ * says what loaded, unless the apply said something of its own.
+ */
+static void
+cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, const char* msg_before,
+                          time_t msg_expire_before) {
+    /* The fields after the config, read field by field: the payload bytes carry no alignment. */
+    dsd_app_config_metadata_payload autosave;
+    char profile[sizeof(((dsd_app_config_load_payload*)0)->profile)];
+    DSD_MEMCPY(&autosave, c->data + offsetof(dsd_app_config_load_payload, autosave), sizeof autosave);
+    DSD_MEMCPY(profile, c->data + offsetof(dsd_app_config_load_payload, profile), sizeof profile);
+    autosave.path[sizeof autosave.path - 1] = '\0';
+    profile[sizeof profile - 1] = '\0';
+    state->config_autosave_enabled = autosave.autosave_enabled ? 1 : 0;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", autosave.path);
+    if (state->ui_msg_expire != msg_expire_before || strcmp(state->ui_msg, msg_before) != 0) {
+        return;
     }
-    if (restart_required) {
-        return UI_CMD_APPLY_RESTART_REQUIRED;
+    if (profile[0] != '\0') {
+        ui_set_toast(state, 3, "Profile loaded: %s", profile);
+    } else {
+        ui_set_toast(state, 3, "Config loaded from %s", autosave.path);
     }
-    return (reconfigure_rc == 0 && recording_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+}
+
+/* What a waiting value is, as the status line names it. */
+static const char*
+cfg_next_start_name(uint32_t bit) {
+    switch (bit) {
+        case DSD_NEXT_START_TRUNK_SCAN: return "trunk scan";
+        case DSD_NEXT_START_CHANNEL_MAP: return "channel map";
+        case DSD_NEXT_START_BAND_PLAN: return "band plan";
+        default: return "trunk scan list";
+    }
+}
+
+/* Say a waiting value was dropped: after the apply's own message, without a restart note it may no longer be true
+   (the log has that note), or briefly when the line has no room. */
+static void
+cfg_note_dropped_next_start(dsd_state* state, uint32_t bit) {
+    char base[sizeof state->ui_msg];
+    DSD_SNPRINTF(base, sizeof base, "%s", state->ui_msg);
+    char* restart = strstr(base, "; restart");
+    if (restart) {
+        *restart = '\0';
+    }
+    const char* name = cfg_next_start_name(bit);
+    if (strlen(base) + strlen("; the  waiting for a restart is dropped") + strlen(name) < sizeof state->ui_msg) {
+        ui_set_toast(state, 5, "%s%sthe %s waiting for a restart is dropped", base, base[0] ? "; " : "", name);
+    } else {
+        ui_set_toast(state, 5, "%s; waiting %s dropped (see log)", base, name);
+    }
+}
+
+/*
+ * Whatever a config apply leaves, the save still starts (issue #671): what a rolled-back config puts back for the next
+ * start meets the rest of that config, which stays (its tuner owner, a band plan off a coordinator), and a config kept
+ * with no input running leaves a paused -Y scan paused, which a save writes as the scanner on. A rule the save now
+ * newly breaks against @p before (the save before the apply) is closed by dropping the waiting values it combines,
+ * the trunk-scan flag first, each logged once and named on the status line.
+ */
+static void
+cfg_keep_next_start_startable(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* before,
+                              dsdneoUserConfig* after) {
+    static const uint32_t k_drop_order[] = {
+        DSD_NEXT_START_TRUNK_SCAN,
+        DSD_NEXT_START_CHANNEL_MAP,
+        DSD_NEXT_START_BAND_PLAN,
+        DSD_NEXT_START_TRUNK_SCAN_TARGETS,
+    };
+    char why[256];
+    dsd_snapshot_opts_to_user_config(opts, state, after);
+    if (dsd_user_config_check_trunk_scan_startable(after, before, why, sizeof why) == 0) {
+        return;
+    }
+    uint32_t first_dropped = 0U;
+    for (size_t i = 0; i < sizeof k_drop_order / sizeof k_drop_order[0]; i++) {
+        const uint32_t bit = k_drop_order[i];
+        if ((opts->next_start.pending & bit) == 0U) {
+            continue;
+        }
+        opts->next_start.pending &= ~bit;
+        LOG_WARN("Config: the %s waiting for a restart is dropped: the next start would refuse it (%s).\n",
+                 cfg_next_start_name(bit), why);
+        if (first_dropped == 0U) {
+            first_dropped = bit;
+        }
+        dsd_snapshot_opts_to_user_config(opts, state, after);
+        if (dsd_user_config_check_trunk_scan_startable(after, before, why, sizeof why) == 0) {
+            break;
+        }
+    }
+    if (first_dropped != 0U) {
+        cfg_note_dropped_next_start(state, first_dropped);
+    }
+}
+
+static int
+ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || c->n < sizeof(dsdneoUserConfig)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    char msg_before[sizeof state->ui_msg];
+    DSD_SNPRINTF(msg_before, sizeof msg_before, "%s", state->ui_msg);
+    const time_t msg_expire_before = state->ui_msg_expire;
+    /* "Config not applied" leaves nothing for the next start either: a refusal has staged nothing, and a rollback puts
+       back what it had left waiting (issue #671), so no save writes a config the session did not take. */
+    dsd_opts_next_start* next_before = (dsd_opts_next_start*)malloc(sizeof *next_before);
+    if (!next_before) {
+        ui_set_toast(state, 5, "Config not applied: out of memory");
+        return UI_CMD_APPLY_FAILED;
+    }
+    DSD_MEMCPY(next_before, &opts->next_start, sizeof *next_before);
+    /* Only a config naming [trunking] or [trunk_scan] moves what the trunk-scan rules read. */
+    int has_trunking = 0;
+    int has_trunk_scan = 0;
+    DSD_MEMCPY(&has_trunking, c->data + offsetof(dsdneoUserConfig, has_trunking), sizeof has_trunking);
+    DSD_MEMCPY(&has_trunk_scan, c->data + offsetof(dsdneoUserConfig, has_trunk_scan), sizeof has_trunk_scan);
+    dsdneoUserConfig* saves = NULL;
+    if (has_trunking || has_trunk_scan) {
+        saves = (dsdneoUserConfig*)calloc(2, sizeof *saves);
+        if (!saves) {
+            free(next_before);
+            ui_set_toast(state, 5, "Config not applied: out of memory");
+            return UI_CMD_APPLY_FAILED;
+        }
+        dsd_snapshot_opts_to_user_config(opts, state, &saves[0]);
+    }
+    int kept = 0;
+    const int rc = cfg_apply(opts, state, c, &kept);
+    if (!kept) {
+        DSD_MEMCPY(&opts->next_start, next_before, sizeof opts->next_start);
+    }
+    if (saves) {
+        cfg_keep_next_start_startable(opts, state, &saves[0], &saves[1]);
+        free(saves);
+    }
+    if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
+        cfg_adopt_loaded_autosave(state, c, msg_before, msg_expire_before);
+    }
+    free(next_before);
+    return rc;
 }
 
 static int
@@ -8239,6 +8927,9 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         }
         return UI_CMD_APPLY_UNSUPPORTED;
     }
+#ifdef USE_RADIO // a Signal search needs a radio build
+    ui_cmd_search_takes_back_scan_resume(opts, state, c);
+#endif
     int r = ui_cmd_dispatch_available(opts, state, c);
     if (r) {
         return r;
@@ -8359,6 +9050,7 @@ command_writes_policy_store(const struct dsd_app_command* c) {
         DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR,
         DSD_APP_CMD_TUNER_RELEASE,
         DSD_APP_CMD_SCANNER_TOGGLE,
+        DSD_APP_CMD_SCAN_RESUME, /* the resume ends the manual session's calls and installs the scan's policy */
         DSD_APP_CMD_TG_LISTEN_SET,
         DSD_APP_CMD_TG_LISTEN_SET_ALL,
         DSD_APP_CMD_TG_ROW_SET,
@@ -8704,7 +9396,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
     }
-    if (ui_cmd_leaves_scanner_scope(opts, was_scanner)) {
+    if (ui_cmd_leaves_scanner_scope(opts, state, was_scanner)) {
         apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
     if (!scoped && stream != UI_SCOPE_STREAM_KEPT) {
@@ -9136,10 +9828,37 @@ ui_show_stream_notice(dsd_state* state) {
     }
 }
 
+/* Ask the frontends to redraw once what the drain published has landed. A publication a watchdog tick put off asks at
+   the retry that lands it instead, so the request is never spent on the snapshot from before it. */
+static void
+ui_request_redraw_if_published(void) {
+    if (!dsd_app_telemetry_opts_snapshot_pending() && !dsd_app_telemetry_snapshot_pending()) {
+        dsd_telemetry_request_redraw();
+    }
+}
+
+/* A publication a watchdog tick put off (snapshot_internal.h) goes out at the next drain, which the decode loop runs
+   every pass: a flag read while none is waiting. */
+static void
+ui_publish_deferred_snapshots(const dsd_opts* opts, const dsd_state* state) {
+    const int opts_pending = dsd_app_telemetry_opts_snapshot_pending();
+    const int state_pending = dsd_app_telemetry_snapshot_pending();
+    if (opts_pending) {
+        dsd_telemetry_publish_opts_snapshot(opts);
+    }
+    if (state_pending) {
+        dsd_telemetry_publish_snapshot(state);
+    }
+    if (opts_pending || state_pending) {
+        ui_request_redraw_if_published();
+    }
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
+    ui_publish_deferred_snapshots(opts, state);
     ui_show_stream_notice(state);
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between
@@ -9196,6 +9915,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         if (state) {
             dsd_telemetry_publish_snapshot(state);
         }
+        ui_request_redraw_if_published();
         n_applied++;
     }
     return n_applied;
@@ -9215,6 +9935,11 @@ dsd_app_command_test_last_failed(void) {
 int
 dsd_app_command_test_last_invalid_payload(void) {
     return g_test_last_result == UI_CMD_APPLY_INVALID_PAYLOAD;
+}
+
+int
+dsd_app_command_test_last_restart_required(void) {
+    return g_test_last_result == UI_CMD_APPLY_RESTART_REQUIRED;
 }
 
 static int

@@ -11,6 +11,8 @@
  *    (SoapySDR or Airspy only), so the handler is compiled with USE_RADIO alone.
  *  - Enter and keypad Enter (PDCurses PADENTER) open the menu unless the M17
  *    encoder is active.
+ *  - '=' opens the frequency entry alone over the main screen, and so do PDCurses
+ *    Shift+Enter and Shift+keypad Enter (issue #671).
  */
 
 #include <assert.h>
@@ -23,12 +25,14 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/ui/keymap.h>
+#include <dsd-neo/ui/menu_core.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "menu_actions.h"
 #include "ui_keys.h"
 
 #ifdef USE_RTLSDR
@@ -79,6 +83,9 @@ static int g_menu_open = 0;
 static int g_menu_handle_key_calls = 0;
 static int g_menu_last_key = ERR;
 static int g_menu_open_async_calls = 0;
+static int g_modal_open_calls = 0;
+static nc_action_fn g_modal_opener = NULL;
+static unsigned long g_key_modifiers = 0UL;
 
 static int
 capture_command(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
@@ -174,6 +181,27 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-intern
     g_menu_open_async_calls++;
 }
 
+void
+ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state,
+                         nc_action_fn open_modal) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    g_modal_open_calls++;
+    g_modal_opener = open_modal;
+}
+
+/* The frequency entry's opener: the handler only hands it to the prompt-only overlay. */
+void
+act_freq_key(void* v) { // NOLINT(misc-use-internal-linkage)
+    (void)v;
+}
+
+/* PDCurses reports the modifiers held with the key getch() returned last (tests/ui/curses.h). */
+unsigned long
+PDC_get_key_modifiers(void) { // NOLINT(misc-use-internal-linkage)
+    return g_key_modifiers;
+}
+
 WINDOW* stdscr = NULL;
 
 /* The handler drains an escape sequence through the terminal's key read; no key is waiting here. */
@@ -192,6 +220,9 @@ cap_reset(void) {
     g_menu_handle_key_calls = 0;
     g_menu_last_key = ERR;
     g_menu_open_async_calls = 0;
+    g_modal_open_calls = 0;
+    g_modal_opener = NULL;
+    g_key_modifiers = 0UL;
 }
 
 static uint32_t
@@ -401,6 +432,71 @@ main(void) {
     assert(dsd_terminal_handle_input(opts, state, PADENTER) == 1);
     assert(g_menu_open_async_calls == 0);
     assert(g_cap.calls == 0);
+
+    /* '=' opens the frequency entry over the main screen, prompt only, and posts nothing itself (issue #671). The M17
+       encoder does not gate it: Enter is inert there only because the encoder's own keys take it. */
+    for (int encoder = 0; encoder <= 1; encoder++) {
+        cap_reset();
+        opts->m17encoder = encoder;
+        assert(dsd_terminal_handle_input(opts, state, DSD_KEY_TUNE) == 1);
+        assert(g_modal_open_calls == 1);
+        assert(g_modal_opener == act_freq_key);
+        assert(g_menu_open_async_calls == 0);
+        assert(g_cap.calls == 0);
+    }
+    opts->m17encoder = 0;
+
+    /* With the overlay open, '=' is the overlay's key (a prompt types it), never a second entry. */
+    cap_reset();
+    g_menu_open = 1;
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_TUNE) == 1);
+    assert(g_menu_handle_key_calls == 1);
+    assert(g_menu_last_key == DSD_KEY_TUNE);
+    assert(g_modal_open_calls == 0);
+
+    /* Windows (PDCurses): Shift+Enter arrives as Enter with the Shift modifier, and opens the entry as '=' does; plain
+       Enter still opens the menu. */
+    cap_reset();
+    g_key_modifiers = PDC_KEY_MODIFIER_SHIFT;
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_ENTER) == 1);
+    assert(g_modal_open_calls == 1);
+    assert(g_modal_opener == act_freq_key);
+    assert(g_menu_open_async_calls == 0);
+    assert(g_cap.calls == 0);
+
+    cap_reset();
+    g_key_modifiers = PDC_KEY_MODIFIER_SHIFT;
+    assert(dsd_terminal_handle_input(opts, state, '\r') == 1);
+    assert(g_modal_open_calls == 1);
+    assert(g_menu_open_async_calls == 0);
+
+    /* Shift+keypad Enter has its own code; plain keypad Enter is Enter. */
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, SHF_PADENTER) == 1);
+    assert(g_modal_open_calls == 1);
+    assert(g_modal_opener == act_freq_key);
+    assert(g_menu_open_async_calls == 0);
+
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, PADENTER) == 1);
+    assert(g_modal_open_calls == 0);
+    assert(g_menu_open_async_calls == 1);
+
+    /* Shift held with another key is that key: only Enter takes the alias. */
+    cap_reset();
+    g_key_modifiers = PDC_KEY_MODIFIER_SHIFT;
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_MUTE_LOWER) == 1);
+    assert(g_modal_open_calls == 0);
+    assert(g_cap.id == DSD_APP_CMD_TOGGLE_MUTE);
+
+    /* Under the M17 encoder Shift+Enter still opens the entry: plain Enter is the only key the encoder leaves inert. */
+    cap_reset();
+    opts->m17encoder = 1;
+    g_key_modifiers = PDC_KEY_MODIFIER_SHIFT;
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_ENTER) == 1);
+    assert(g_modal_open_calls == 1);
+    assert(g_menu_open_async_calls == 0);
+    opts->m17encoder = 0;
 
     /* Event-history toggle key is repurposed for M17 TX while encoder mode is active. */
     cap_reset();

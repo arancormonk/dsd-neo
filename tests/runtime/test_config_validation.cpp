@@ -758,6 +758,51 @@ test_trunk_scan_rejects_global_channel_map(void) {
     return result;
 }
 
+/*
+ * Issue #671 (round 4): startup refuses a trunk scan beside the -Y scanner ("Trunk scan cannot be combined with
+ * conventional -Y scanner mode"), so the composed check does too, for the file and for a profile that inherits the
+ * scanner. Trunking on wins over the scanner, at startup as in the loader, so that combination stays valid.
+ */
+static int
+test_trunk_scan_rejects_scanner(void) {
+    static const char* const scanner = "[trunking]\n"
+                                       "enabled = false\n"
+                                       "scanner = true\n"
+                                       "\n"
+                                       "[trunk_scan]\n"
+                                       "enabled = true\n"
+                                       "targets_csv = \"/tmp/targets.csv\"\n";
+    static const char* const inherited = "[trunking]\n"
+                                         "scanner = true\n"
+                                         "\n"
+                                         "[profile.scan]\n"
+                                         "trunk_scan.enabled = true\n"
+                                         "trunk_scan.targets_csv = \"/tmp/targets.csv\"\n";
+    static const char* const trunking_wins = "[trunking]\n"
+                                             "enabled = true\n"
+                                             "scanner = true\n"
+                                             "\n"
+                                             "[trunk_scan]\n"
+                                             "enabled = true\n"
+                                             "targets_csv = \"/tmp/targets.csv\"\n";
+    static const char k_text[] = "trunking.scanner cannot be combined with trunk_scan.enabled";
+    int result = 0;
+    int rc = 0;
+    if (validate_ini_has_error(scanner, "trunking", "scanner", k_text, &rc) != 1 || rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: trunk_scan with trunking.scanner should cause error\n");
+        result = 1;
+    }
+    if (validate_ini_has_error(inherited, "profile.scan", "trunking.scanner", k_text, &rc) != 1 || rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: profile trunk_scan with inherited trunking.scanner should cause error\n");
+        result = 1;
+    }
+    if (validate_ini_has_error(trunking_wins, "", "", NULL, &rc) != 0 || rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: trunk_scan with trunking on and the scanner should validate\n");
+        result = 1;
+    }
+    return result;
+}
+
 static int
 test_trunk_scan_include_composed_targets_csv_is_valid(void) {
     static const char* inc = "[trunk_scan]\n"
@@ -2222,6 +2267,7 @@ main(void) {
     rc |= test_include_cycle_and_depth_validation();
     rc |= test_trunk_scan_enabled_requires_targets_csv();
     rc |= test_trunk_scan_rejects_global_channel_map();
+    rc |= test_trunk_scan_rejects_scanner();
     rc |= test_trunk_scan_include_composed_targets_csv_is_valid();
     rc |= test_profile_trunk_scan_rejects_inherited_channel_map();
     rc |= test_trunk_scan_rejects_global_p25_bandplan();

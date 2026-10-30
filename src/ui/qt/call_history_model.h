@@ -195,6 +195,18 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
     Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
 
+    /**
+     * @brief Names for the scan channels a call can be heard on: a trunk-scan target's id (the app writes each entry's
+     * uid) to the name the operator gave it. A call with no name of its own is named by its channel, and an id is not
+     * a name a person recognises (issue #671).
+     *
+     * The names add to the ones given before, a newer name for an id replacing the older: an id is one entry's for
+     * good, and rows logged under an earlier session keep showing its name after another session starts. Each row also
+     * keeps the name its channel had when it was logged, persisted with it, for an id no later call names. An id
+     * named nowhere shows as it is.
+     */
+    Q_INVOKABLE void setChannelNames(const QVariantMap& names);
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
@@ -256,8 +268,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * (insert/change/remove), never a model reset — a reset would destroy every
      * delegate and the reader's scroll position per ingest.
      *
-     * Options must accompany the snapshot to attribute hold-eligible rows.
-     * Scanning enabled through extra arguments also excludes that attribution.
+     * Options must accompany the snapshot to attribute hold-eligible rows. Which
+     * rows are eligible is each row's own stamp (issue #671): a call heard under a
+     * running scan, including one enabled through extra arguments, never is, and a
+     * call heard while the operator held the tuner is filed as Exploring.
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
 
@@ -404,6 +418,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * system: the system is the saved entry the session runs, and stays so
          * for every row of that session. */
         QString channel;
+        /* The channel's display name when the row was logged or first named (setChannelNames()), for a channel no
+           names given since cover. Persisted; older rows read empty. */
+        QString channelName;
         QString service;
         /* A conventional analog (NFM) transmission (issue #637): its name is only a label (the channel, "NFM" or a
            tone's service name), never its destination. Persisted; older rows read false. */
@@ -639,6 +656,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief Give a row about to be logged its uid, and index its fragments. */
     void adoptNewRow(Row& row);
+    /** @brief Give @p row its channel's display name, if it has none yet and one is known. Returns true when named. */
+    bool nameChannel(Row& row) const;
+    /** @brief The display name of @p row's channel: the newest given, else the one it was logged with, else the id. */
+    QString channelDisplayName(const Row& row) const;
     /** @brief Add @p fragments to @p existing, and index them to it. */
     void unionFragments(Row& existing, const QStringList& fragments);
     void rebuildFragmentIndex();
@@ -711,6 +732,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     QHash<QString, SeenState> m_seen;
     QString m_sessionLabel;
     QString m_sessionUid;
+    QHash<QString, QString> m_channelNames;
     qint64 m_session = 0;
     /* Persisted so the still-populated ring cannot resurrect cleared rows after an
      * Activity restart. */

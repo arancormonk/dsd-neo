@@ -49,6 +49,7 @@ enum {
 };
 
 enum {
+    DSD_TRUNK_SCAN_CONTROL_PAUSED = -4,      /**< The scan is paused (issue #671): nothing to hold, avoid or advance */
     DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
     DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
     DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, or nothing to do */

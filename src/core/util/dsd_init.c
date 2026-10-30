@@ -351,6 +351,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     // rigctl options
     opts->use_rigctl = 0;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->rigctl_sent_freq_hz = 0U;
     opts->rigctlportno = 4532; //TCP Port Number; GQRX - 7356; SDR++ - 4532
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "localhost");
 
@@ -1073,13 +1074,18 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_active_ordinal = 0;
     state->trunk_scan_target_count = 0;
     state->lcn_scan_hold = 0;
+    state->lcn_scan_paused = 0;
+    state->lcn_scan_resume_pending = 0;
+    state->operator_tuned = 0;
     state->lcn_avoid_count = 0;
     state->trunk_scan_hold = 0;
+    state->trunk_scan_paused = 0;
     state->trunk_scan_active_avoided = 0;
     state->trunk_scan_avoided_count = 0;
     state->trunk_scan_configured_gain = 0;
     state->trunk_scan_gain_override = 0;
     state->trunk_scan_configured_autogain = 0;
+    state->trunk_scan_configured_trunk_enable = 0;
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
@@ -1111,6 +1117,27 @@ init_state_p25_voice_channel_freqs(dsd_state* state) {
     state->p25_vc_freq[1] = 0;
     DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
     DSD_MEMSET(state->p25_conventional_grant_target, 0, sizeof(state->p25_conventional_grant_target));
+}
+
+static void
+init_state_edacs_defaults(dsd_state* state) {
+    //edacs - may need to make these user configurable instead for stability on non-ea systems
+    state->ea_mode = -1;   //init on -1, 0 is standard, 1 is ea
+    state->esk_mask = 0x0; //esk mask value
+    state->edacs_site_id = 0;
+    state->edacs_sys_id = 0;
+    state->edacs_area_code = 0;
+    state->edacs_lcn_count = 0;
+    state->edacs_cc_lcn = 0;
+    state->edacs_tuned_lcn = -1;
+    state->edacs_a_bits = 4;   //  Agency Significant Bits
+    state->edacs_f_bits = 4;   //   Fleet Significant Bits
+    state->edacs_s_bits = 3;   //Subfleet Significant Bits
+    state->edacs_a_shift = 7;  //Calculated Shift for A Bits
+    state->edacs_f_shift = 3;  //Calculated Shift for F Bits
+    state->edacs_a_mask = 0xF; //Calculated Mask for A Bits
+    state->edacs_f_mask = 0xF; //Calculated Mask for F Bits
+    state->edacs_s_mask = 0x7; //Calculated Mask for S Bits
 }
 
 static void
@@ -1175,23 +1202,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     init_state_p25_patch_defaults(state);
     dsd_enc_lockout_init(state);
 
-    //edacs - may need to make these user configurable instead for stability on non-ea systems
-    state->ea_mode = -1;   //init on -1, 0 is standard, 1 is ea
-    state->esk_mask = 0x0; //esk mask value
-    state->edacs_site_id = 0;
-    state->edacs_sys_id = 0;
-    state->edacs_area_code = 0;
-    state->edacs_lcn_count = 0;
-    state->edacs_cc_lcn = 0;
-    state->edacs_tuned_lcn = -1;
-    state->edacs_a_bits = 4;   //  Agency Significant Bits
-    state->edacs_f_bits = 4;   //   Fleet Significant Bits
-    state->edacs_s_bits = 3;   //Subfleet Significant Bits
-    state->edacs_a_shift = 7;  //Calculated Shift for A Bits
-    state->edacs_f_shift = 3;  //Calculated Shift for F Bits
-    state->edacs_a_mask = 0xF; //Calculated Mask for A Bits
-    state->edacs_f_mask = 0xF; //Calculated Mask for F Bits
-    state->edacs_s_mask = 0x7; //Calculated Mask for S Bits
+    init_state_edacs_defaults(state);
 
     //trunking
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
@@ -1206,6 +1217,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->trunk_chan_map_seq = 0;
     state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
     state->lcn_freq_roll = 0;  //needs reset if sync is found?
+    state->lcn_scan_session = 0U;
     /* last_cc_sync_time, last_vc_sync_time and last_t3_tune_time, on the list the engine's replay rebase shares. */
     dsd_state_rebase_decode_timestamps(NULL, state);
     state->rtl_fsk_reacquire_last_sync_time = 0;

@@ -254,6 +254,40 @@ config location is used:
 If the default file does not exist, it will be created when settings are saved
 (DSD-neo autosaves on exit whenever config loading is enabled).
 
+A config loaded into a running session (terminal Config > Load, Qt, the API `config_apply`) cannot change what only
+startup sets: the frontend, `[trunk_scan] enabled`, `[trunking] chan_csv`, an Airspy input chosen over audio input, and
+under a running trunk scan its `targets_csv`, `idle_dwell_ms` and `activity_hold_ms`. The session keeps running the
+values it started with, the status line says a restart is needed, and every save (the exit autosave included) writes
+the loaded values, so the next start runs them.
+
+A config whose next start the trunk-scan rules below would refuse (a global `chan_csv` or `p25_bandplan_csv`, or the
+`-Y` scanner with trunking off, beside an enabled trunk scan, or a trunk scan without `targets_csv`) is not applied at
+all, and the status line gives the rule; a rule the session's own save already breaks does not refuse a config that
+keeps it or fixes it. The same rules refuse a channel-map or P25 band-plan import, the `-Y` scanner toggle and a
+RadioReference import while a trunk scan waits for the next start. A config whose new input does not start is rolled
+back to the input that ran, and like a refused one ("Config not applied") it leaves nothing waiting for the next start.
+A value waiting for the next start, an earlier config's or this config's own, that would then sit beside something the
+session keeps (the scanner, a paused `-Y` scan, a band plan) in a way the next start refuses is dropped, and the status
+line and log say so. Two startup refusals are not checked here, because the saved config alone cannot tell: a trunk
+scan needs an RTL-family input or rigctl tuning (`-U`, which no config key holds), and `frontend = terminal` needs a
+build with the terminal UI.
+
+Terminal Config > Load points the autosave at the file it loads, and a profile load turns the autosave off, only once
+the config is applied; a load that is not applied leaves the autosave as it was, so exit never writes the session into
+that file.
+
+A frequency entry, a tuner release (Qt/Android **Explore from here**, the API's `tuner_release`) and `y` under a trunk
+scan pause a scan instead of stopping it (issue #671; see `docs/cli.md` and `docs/trunk-scan.md`). A save made while a
+scan is paused writes the scan as configured, so the next start runs it from the beginning: `[trunking] scanner = true`
+for a paused `-Y` scan, and for a paused trunk scan `[trunk_scan] enabled = true` with the configured trunking setting
+(`[trunking] enabled`), not the one a parked target ran. A `-Y` scan stopped with `y` saves `scanner = false`. A config
+loaded over a paused `-Y` scan settles it last: without a `[trunking]` section the pause stays, trunking on (`enabled =
+true`) or `scanner = false` stops the scan, `scanner = true` resumes it, and a config whose input does not start keeps
+the pause. Under a trunk scan, running or paused, a loaded `[trunking] enabled = true` becomes the configured setting,
+which the scan puts back at shutdown and a save writes. A loaded `enabled = false` leaves that setting as it was, as it
+leaves trunking on in any other session: only `[trunking] scanner = true` takes the tuner from trunking, and that is
+refused beside a trunk scan.
+
 Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
 flatten the profile overlay back into the base file and remove profile sections.
 
@@ -342,7 +376,7 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable trunking | `false` |
-| `chan_csv` | PATH | Channel map CSV | (empty) |
+| `chan_csv` | PATH | Channel map CSV, imported at startup; a config applied to a running session keeps the map it loaded, says a restart is needed, and saves the new path for the next start | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
 | `src_csv` | PATH | Source ID list CSV (`--src-csv`; names, optional radio policy columns; loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
@@ -352,7 +386,7 @@ small subset is exposed as config keys for convenience (for example
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
 | `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Lock out** actions to the configured global groups file; `false` keeps temporary avoids in memory and labels the Qt/Android button **Avoid TG**. **Skip** is unaffected | `true` |
-| `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
+| `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel. A save writes `true` for a scan the operator paused, so the next launch runs it | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
@@ -797,12 +831,17 @@ When `[trunk_scan] enabled = true`:
 - `targets_csv` is required and must use the target format in `docs/csv-formats.md`.
 - Global `[trunking] chan_csv` and `[trunking] p25_bandplan_csv` are rejected; each trunk target must name its own
   `chan_csv` / `p25_bandplan_csv` if it needs a channel map or a band plan.
+- `[trunking] scanner = true` is rejected unless `[trunking] enabled = true` (trunking wins over the scanner): the `-Y`
+  scanner and a trunk scan both own the tuner.
 - The group policy remains global, so `[trunking] group_csv`, `allow_list`, and tune controls apply uniformly across all
   scan targets.
 - `[trunking] src_csv` is also global and allowed under trunk scan (`--src-csv` on the CLI). It is not swapped
   with scan rows; the source-label fallback uses whichever group policy table is active.
 - One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
 - Runtime still needs a retuning path, either RTL-family input opened by DSD-neo or rigctl tuning. IQ replay is rejected.
+- While a trunk scan runs, a loaded config leaves `[trunk_scan]` (`enabled`, `targets_csv`, `idle_dwell_ms`,
+  `activity_hold_ms`) and the global `[trunking] chan_csv` / `p25_bandplan_csv` as the scan started with them; a change
+  to any of them takes effect at the next start.
 - Full user workflow, examples, and troubleshooting: `docs/trunk-scan.md`.
 
 Example:
@@ -830,7 +869,8 @@ activity_hold_ms = 1200
 Config/CLI interaction:
 
 - `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`.
-- `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled.
+- `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled, and the same for
+  `[trunking] p25_bandplan_csv` and for `[trunking] scanner = true` with trunking off.
 - `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`. Config loading is range-free
   by design, so such a value loads, but the decoder treats anything below `1000` as disabled; use `0` to disable the
   per-visit cap or `1000..3600000` to set one. The CLI switch rejects `1..999` outright.

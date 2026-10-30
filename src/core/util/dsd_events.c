@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -109,6 +110,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         /* Never judged: exports as before (issue #773 D7). */
         event_struct->Event_History_Items[i].stream_blocked = 0U;
+        event_struct->Event_History_Items[i].operator_tuned = 0;
+        event_struct->Event_History_Items[i].scan_member = 0;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].freq_hz = 0;
         event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
@@ -186,6 +189,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
+        event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
+        event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
         event_struct->Event_History_Items[i].access_code_kind =
@@ -966,6 +971,8 @@ watchdog_event_merge_channel_label(Event_History* retained, const Event_History*
     }
     DSD_SNPRINTF(retained->channel_label, sizeof(retained->channel_label), "%s", staged->channel_label);
     retained->channel_label_resolved = 1U;
+    retained->operator_tuned = staged->operator_tuned;
+    retained->scan_member = staged->scan_member;
 }
 
 // The frequency and access code the transmission was heard with fill in only when the first
@@ -1392,6 +1399,8 @@ typedef struct {
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
     char service_label[DSD_SERVICE_LABEL_SIZE];
     uint8_t channel_label_resolved;
+    uint8_t operator_tuned;
+    uint8_t scan_member;
     uint16_t svc_opts;
     uint8_t subtype;
     uint8_t crc_invalid;
@@ -1867,6 +1876,16 @@ watchdog_event_current_load_labels(const dsd_opts* opts, const dsd_state* state,
 // own the row from reusing another call's answer; such a render resolves the label live, as a data
 // notice does.
 //
+// Who held the tuner right now: the operator (state->operator_tuned) and whether a scan was
+// running (-Y on, or a trunk scan that owns the tuner). Read once, with the label, so the pair
+// describes the call's first render and not whichever session ends it.
+static void
+watchdog_event_stamp_tuner_owner(const dsd_opts* opts, const dsd_state* state, uint8_t* operator_tuned,
+                                 uint8_t* scan_member) {
+    *operator_tuned = (state != NULL && state->operator_tuned != 0U) ? 1U : 0U;
+    *scan_member = (opts != NULL && (opts->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(opts, state))) ? 1U : 0U;
+}
+
 // The verdict is carried by its own flag rather than inferred from a non-empty label, because an
 // unnamed scan-list row resolves to an empty label and that is an answer too: a -Y list with only
 // some rows named is the ordinary case, and keying on emptiness would leave those epochs asking
@@ -1879,10 +1898,13 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
     if (staged_is_own && staged != NULL && staged->channel_label_resolved != 0U) {
         DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", staged->channel_label);
         ctx->channel_label_resolved = 1U;
+        ctx->operator_tuned = staged->operator_tuned;
+        ctx->scan_member = staged->scan_member;
         return;
     }
     (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
     ctx->channel_label_resolved = 1U;
+    watchdog_event_stamp_tuner_owner(opts, state, &ctx->operator_tuned, &ctx->scan_member);
 }
 
 // The frequency the call was heard on and the access code it was heard with, resolved per render
@@ -2020,6 +2042,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(item->s_mode, sizeof(item->s_mode), "%s", ctx->s_mode);
     DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", ctx->channel_label);
     item->channel_label_resolved = ctx->channel_label_resolved;
+    item->operator_tuned = ctx->operator_tuned;
+    item->scan_member = ctx->scan_member;
     (void)state;
     (void)slot;
 }
@@ -2474,6 +2498,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", item->channel_label);
     DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", item->service_label);
     ctx->channel_label_resolved = item->channel_label_resolved;
+    ctx->operator_tuned = item->operator_tuned;
+    ctx->scan_member = item->scan_member;
     ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
     ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
 }
@@ -3536,6 +3562,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // question is answered either way, empty label included, so the row says so.
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->channel_label_resolved = 1U;
+    watchdog_event_stamp_tuner_owner(opts, state, &item->operator_tuned, &item->scan_member);
     // Live for the same reason: the notice's own frequency when the PDU named one, else the tuned
     // frequency, and the carrier's access code. Neither is taken playing back files, where the
     // decoder state describes no carrier (see watchdog_event_current_load_tuning()).

@@ -28,6 +28,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
@@ -770,6 +771,53 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
 }
 
 int
+svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
+                     char* why, size_t why_size) {
+    if (why && why_size > 0U) {
+        why[0] = '\0';
+    }
+    if (!opts || !state || !change) {
+        return -1;
+    }
+    /* Two saves (a few tens of KB each) on the heap, once per change that can touch the trunk-scan rules. */
+    dsdneoUserConfig* before = (dsdneoUserConfig*)calloc(2, sizeof *before);
+    if (!before) {
+        if (why && why_size > 0U) {
+            DSD_SNPRINTF(why, why_size, "%s", "out of memory");
+        }
+        return -1;
+    }
+    dsdneoUserConfig* after = before + 1;
+    dsd_snapshot_opts_to_user_config(opts, state, before);
+    DSD_MEMCPY(after, before, sizeof *after);
+    change(after, ctx);
+    const int rc = dsd_user_config_check_trunk_scan_startable(after, before, why, why_size);
+    free(before);
+    return rc;
+}
+
+/* An import the next start would refuse (svc_check_next_start()): the rule, without its advice, fits the status line
+   ("Channel map not imported: <rule>"); the log has both. */
+static int
+svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) {
+    LOG_WARN("%s not imported: %s.\n", what, why);
+    why[strcspn(why, ";")] = '\0';
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s not imported: %s", what, why);
+    state->ui_msg_expire = dsd_realtime_time() + 5;
+    return SVC_REFUSED_FOR_NEXT_START;
+}
+
+static void
+svc_next_start_channel_map(dsdneoUserConfig* save, const void* ctx) {
+    DSD_SNPRINTF(save->trunk_chan_csv, sizeof save->trunk_chan_csv, "%s", (const char*)ctx);
+}
+
+static void
+svc_next_start_p25_bandplan(dsdneoUserConfig* save, const void* ctx) {
+    DSD_SNPRINTF(save->trunk_p25_bandplan_csv, sizeof save->trunk_p25_bandplan_csv, "%s", (const char*)ctx);
+}
+
+int
 svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
@@ -778,6 +826,11 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // maps per target, and adopting a global one here would wipe the target's.
     if (opts->trunk_scan_enabled == 1) {
         return -1;
+    }
+    /* Nor beside a trunk scan a config left for the next start: the save would write both, which startup refuses. */
+    char why[256];
+    if (svc_check_next_start(opts, state, svc_next_start_channel_map, path, why, sizeof why) != 0) {
+        return svc_refuse_import_for_next_start(state, "Channel map", why);
     }
     char old_path[sizeof(opts->chan_in_file)];
     DSD_MEMCPY(old_path, opts->chan_in_file, sizeof(old_path));
@@ -800,11 +853,8 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // that would replace the live map with zeros; refuse instead, which is what
     // the additive import used to do by doing nothing.
     const int mapped_any = (imported->trunk_chan_map_used_count > 0);
-    int adopt_rc = -1;
-    if (import_rc == 0 && mapped_any) {
-        adopt_rc = chan_map_adopt(opts, state, imported);
-    }
-    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+    const int adopted = (import_rc == 0 && mapped_any && chan_map_adopt(opts, state, imported) == 0);
+    if (adopted) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
         /* The adopted rows over the configured policies of the live state, not the scratch state's view of a row the
            scan may be running now (issue #637). */
@@ -815,7 +865,9 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     dsd_state_ext_free_all(imported);
     dsd_state_trunk_lcn_free(imported);
     free(imported);
-    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+    if (adopted) {
+        /* The map runs now, and a save writes it, not one a config left for the next start (issue #671). */
+        opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
         return 0;
     }
     DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
@@ -834,6 +886,10 @@ svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path) {
         LOG_WARN("P25 band plan import refused under trunk scan; set p25_bandplan_csv on the target instead.\n");
         return -1;
     }
+    char why[256];
+    if (svc_check_next_start(opts, state, svc_next_start_p25_bandplan, path, why, sizeof why) != 0) {
+        return svc_refuse_import_for_next_start(state, "P25 band plan", why);
+    }
     // Dry run before touching the live plan: the importer replaces the stored
     // rows wholesale, so a file that opens but carries no usable row (a
     // talkgroup list, a header-only file) would otherwise empty it.
@@ -846,6 +902,8 @@ svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path) {
         return -1;
     }
     DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", path);
+    /* The plan runs now, and a save writes it, as svc_check_next_start() judged (issue #671). */
+    opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_BAND_PLAN;
     // Announcements parked for want of an IDEN can resolve against the seeded tables now.
     p25_resolve_pending_announcements(opts, state);
     return 0;
@@ -870,6 +928,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->chan_in_file[0] = '\0';
+    opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof state->trunk_chan_map);
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
     state->trunk_chan_map_used_count = 0;
@@ -1705,23 +1764,9 @@ svc_check_input_analog_width_at(const dsd_opts* opts, const dsd_state* state, in
     int kind = DSD_ANALOG_DEMOD_FM;
     int configured_hz = 0;
     (void)svc_configured_analog_width(opts, state, &kind, &configured_hz);
-    if (!svc_input_width_fits(kind, configured_hz, rate_hz, why, why_size)) {
-        return -1;
-    }
-    for (int row_kind = DSD_ANALOG_DEMOD_FM; row_kind <= DSD_ANALOG_DEMOD_AM; row_kind++) {
-        if (svc_scan_width_beside_preset(opts, state, kind, row_kind)
-            && !svc_input_width_fits(row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), rate_hz,
-                                     why, why_size)) {
-            return -1;
-        }
-    }
-    /* The switch is unscoped, so the stream it opens starts on the settings in force: while a scan row runs the analog
-       family with another width (an nfm or am row's own, issue #526), that width is held as well. */
-    const int in_force_hz = dsd_opts_analog_width_hz(opts);
-    if (!dsd_opts_is_analog_family(opts) || (in_force_hz == configured_hz && opts->analog_demod == kind)) {
-        return 0;
-    }
-    return svc_input_width_fits(opts->analog_demod, in_force_hz, rate_hz, why, why_size) ? 0 : -1;
+    /* Only the configured width: the radio rows refuse a switch while a scan is in force (ui_input_switch_refused(),
+       issue #671), so no scan row's width, and no row width in force, meets a switch. */
+    return svc_input_width_fits(kind, configured_hz, rate_hz, why, why_size) ? 0 : -1;
 }
 
 void
@@ -2275,32 +2320,6 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     return 0;
 }
 
-/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. An accepted one
-   (applied or pending) puts the receiver on another carrier, which can sync before any no-carrier pass: the carrier
-   boundary runs at this success point (issue #575). @p guard_held says whether the caller holds the P25 SM tick
-   guard. */
-static int
-svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
-    if (!opts) {
-        return -1;
-    }
-    const int rc = io_control_set_freq(opts, state, (long int)hz);
-    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
-    }
-    return rc;
-}
-
-int
-svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-    return svc_rtl_tune(opts, state, hz, 0);
-}
-
-int
-svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-    return svc_rtl_tune(opts, state, hz, 1);
-}
-
 int
 svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
@@ -2581,6 +2600,128 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
 }
 #endif
 
+/* The frequency entry's tune, on every build: a radio-off build tunes a rigctl peer with it (issue #671). */
+/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
+   the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
+   late failure putting the cached frequency back (issue #671). */
+int
+svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    if (!opts) {
+        return -1;
+    }
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
+    uint64_t pending_id = 0U;
+    const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
+    if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
+        dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
+    }
+    return rc;
+}
+
+/* svc_rtl_tune_only(), and its carrier boundary: an accepted tune (applied or pending) puts the receiver on another
+   carrier, which can sync before any no-carrier pass, so the boundary runs at this success point (issue #575).
+   @p guard_held says whether the caller holds the P25 SM tick guard. */
+static int
+svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
+    if (!opts) {
+        return -1;
+    }
+    const int rc = svc_rtl_tune_only(opts, state, hz);
+    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
+    }
+    return rc;
+}
+
+int
+svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    return svc_rtl_tune(opts, state, hz, 0);
+}
+
+int
+svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    return svc_rtl_tune(opts, state, hz, 1);
+}
+
+/* Defined with the trunk-scan pause services below, which build without radio support too. */
+static void svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report);
+
+int
+svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg,
+                              int* out_paused) {
+    if (out_paused) {
+        *out_paused = 0;
+    }
+    if (!opts || !state) {
+        return -1;
+    }
+    /* One hold from the tune to the boundary: no watchdog tick sees the scan's target with the receiver moved. */
+    p25_sm_tick_guard_enter();
+    const int rc = (tune_leg ? tune_leg : svc_rtl_tune_only)(opts, state, hz);
+    if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* The target's calls end under its name before the boundary, which then forgets the carrier left. */
+        dsd_trunk_scan_leave_report report;
+        const int paused = svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report) == 0;
+        if (out_paused) {
+            *out_paused = paused;
+        }
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_trunk_scan_settle_gain(opts, state, &report);
+    }
+    p25_sm_tick_guard_leave();
+    return rc;
+}
+
+/* The target a trunk scan paused at ran a tuner gain of its own (@p report): a retune carries no gain profile outside a
+   running scan, so the device keeps it until the stream reopens, which it does here on the configured gain the pause
+   put back (issue #671). A reopen that fails starts the input that ran again through the recovery path, as a target's
+   gain edit does (scan_row_edit_restart_gain()). The caller holds the P25 SM tick guard. A trunk scan also runs with
+   only a rigctl peer to tune, so the pause and resume services build without radio support too. */
+static void
+svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report) {
+#ifdef USE_RADIO
+    if (!report->restart_gain) {
+        return;
+    }
+    opts->rtl_needs_restart = 1;
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    dsd_input_failure failure_before;
+    dsd_input_failure_get(&failure_before);
+    const int stream_stopped = state->rtl_ctx != NULL;
+    if (svc_rtl_restart_locked(opts, state) != 0) {
+        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, &failure_before, NULL);
+    }
+#else
+    (void)opts;
+    (void)state;
+    (void)report;
+#endif
+}
+
+int
+svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    dsd_trunk_scan_leave_report report;
+    const int rc = svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE, &report);
+    svc_trunk_scan_settle_gain(opts, state, &report);
+    return rc;
+}
+
+int
+svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    dsd_trunk_scan_leave_report report;
+    const int rc = svc_trunk_scan_resume_and_record(opts, state, &report);
+    svc_trunk_scan_settle_gain(opts, state, &report);
+    return rc;
+}
+
 /* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */
 int
 svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
@@ -2614,7 +2755,7 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
     if (!dsd_squelch_setting_level_finite(setting)) {
         return -1;
     }
-    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts)) {
+    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts, state)) {
         return SVC_SQL_NOISE_NEEDS_FM;
     }
     /* The auto squelch learns a floor from the channel power DSD-neo's own receiver measures; audio input has none, so

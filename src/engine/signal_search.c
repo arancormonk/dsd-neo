@@ -17,6 +17,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -313,6 +314,8 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
         search_error(c, "The receiver refused the tune");
         return -1;
     }
+    /* The search now decides where the receiver goes, not a manual tune still pending (issue #671). */
+    dsd_engine_manual_tune_supersede(state);
     c->status.phase = DSD_SEARCH_TUNING;
     /* A refusal (a full avoid list) belonged to the detection being left; the next one starts clean. */
     if (visit) {
@@ -411,6 +414,22 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
 }
 
 #endif
+
+int
+dsd_engine_signal_search_start_refused(const dsd_opts* opts, const dsd_state* state,
+                                       const dsd_signal_search_config* config, char* error, size_t capacity) {
+#ifndef USE_RADIO
+    (void)opts;
+    (void)state;
+    (void)config;
+    if (error && capacity) {
+        DSD_SNPRINTF(error, capacity, "%s", "Signal search needs a radio-enabled build");
+    }
+    return -1;
+#else
+    return search_validate_start(opts, state, config, error, capacity) ? -1 : 0;
+#endif
+}
 
 int
 dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,

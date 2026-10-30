@@ -194,8 +194,18 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool clearScanAvoids() const;
     /** @brief Step to the next channel now (next trunk-scan target under --trunk-scan). */
     Q_INVOKABLE bool nextChannel() const;
+    /**
+     * @brief Resume a scan the operator paused (issue #671): the -Y list from its kept cursor, or the trunk scan on
+     * the target it left. The engine refuses a running scan or none with a message in MetricsModel::uiMessage.
+     */
+    Q_INVOKABLE bool resumeScan() const;
 
-    /** @brief Retune the radio front end. */
+    /**
+     * @brief Tune the radio front end to a frequency the operator entered (the spectrum's Go to).
+     *
+     * The override tune: it wins over a running -Y scan or trunk scan, which pauses until resumeScan(), and a paused
+     * scan stays paused (issue #671). Nothing else that owns the tuner gives way to it.
+     */
     Q_INVOKABLE bool tuneHz(unsigned int hz) const;
     Q_INVOKABLE bool setAirspy(const QString& key, const QString& value) const;
 
@@ -210,12 +220,14 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool manualTuneHz(unsigned int hz) const;
 
     /**
-     * @brief Stop trunking and scanner mode from moving the tuner.
+     * @brief Stop trunking from moving the tuner, and pause a running scan.
      *
      * Idempotent, and deliberately not a toggle: a view only learns that
      * something owns the tuner, never which of the two, so it cannot safely
      * flip either flag on its own. Also tears down the follow state the trunker
      * left behind, so the decoder can acquire whatever it is pointed at next.
+     * A -Y scan or trunk scan pauses rather than stops (issue #671), keeping
+     * what resumeScan() picks up again.
      */
     Q_INVOKABLE bool releaseTuner() const;
 

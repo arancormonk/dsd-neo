@@ -9,6 +9,7 @@
  *  - Down should skip disabled items
  *  - Home/End/PageUp/PageDown should move predictably across visible items
  *  - Left should back out of submenus and close the root overlay
+ *  - the prompt-only overlay ('=', issue #671) lives exactly as long as its modal
  */
 
 #include <assert.h>
@@ -55,6 +56,17 @@ static int g_rr_panel_active = 0;
 static int g_rr_panel_key_calls = 0;
 static int g_rr_panel_render_calls = 0;
 static int g_rr_panel_close_calls = 0;
+/* 1: the prompt stub closes on the key it handles, as submit, cancel and Esc do. */
+static int g_prompt_closes_on_key = 0;
+/* 1: the prompt stub closes on the key it handles and its callback opens a follow-up prompt (a refusal reopening the
+   prompt with the reason), all within that key. */
+static int g_prompt_reopens_on_key = 0;
+static int g_prompt_reopen_calls = 0;
+/* 1: the RR panel stub ends in its next tick (an import that finished), as the panel can on its own. */
+static int g_rr_panel_ends_on_tick = 0;
+static int g_draw_menu_calls = 0; /* frames the tick set out to draw */
+static int g_modal_opener_calls = 0;
+static UiCtx* g_modal_opener_ctx = NULL;
 
 static void
 capture_action(const char* id) {
@@ -108,6 +120,36 @@ static bool
 item_disabled(const void* ctx) {
     (void)ctx;
     return false;
+}
+
+void ui_help_open(const char* help); // NOLINT(misc-use-internal-linkage) (stubbed below)
+
+/* Openers for the prompt-only overlay: one opens a prompt, one opens help, one opens nothing (an allocation failure). */
+static void
+open_prompt_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    g_prompt_active = 1;
+}
+
+static void
+open_help_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    ui_help_open("one-line reason");
+}
+
+static void
+open_rr_panel_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    g_rr_panel_active = 1;
+}
+
+static void
+open_nothing_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
 }
 
 static const NcMenuItem SUB_ITEMS[] = {
@@ -242,6 +284,13 @@ int
 ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     g_prompt_key_calls++;
+    if (g_prompt_closes_on_key || g_prompt_reopens_on_key) {
+        g_prompt_active = 0;
+    }
+    if (g_prompt_reopens_on_key) {
+        g_prompt_reopen_calls++;
+        g_prompt_active = 1;
+    }
     return 1;
 }
 
@@ -312,6 +361,9 @@ void
 rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
+    if (g_rr_panel_ends_on_tick) {
+        g_rr_panel_active = 0;
+    }
 }
 
 void
@@ -415,9 +467,11 @@ ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
     f->x = 0;
 }
 
+/* Only a frame being drawn gets here (ui_menu_tick()); the stubbed window stays NULL, so ui_draw_menu() never runs. */
 void
 ui_overlay_ensure_window(UiMenuFrame* f) {
     (void)f;
+    g_draw_menu_calls++;
 }
 
 void
@@ -477,6 +531,10 @@ main(void) {
     /* Keypad Enter on a Windows terminal activates like Enter (B13). */
     reset_capture();
     assert(ui_menu_handle_key(PADENTER, opts, state) == 1);
+    assert_last_action("root2");
+    /* Shift+keypad Enter, the main screen's alias of '=', is Enter inside the menu (issue #671). */
+    reset_capture();
+    assert(ui_menu_handle_key(SHF_PADENTER, opts, state) == 1);
     assert_last_action("root2");
 #endif
 
@@ -668,6 +726,112 @@ main(void) {
     assert(ui_menu_handle_key('\r', opts, state) == 1);
     assert_last_action("kind0");
 
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* The prompt-only overlay ('=', issue #671): the opener runs at once with the stable context, keys go to its
+       prompt, no frame is drawn under it, and it closes in the same call that closes the prompt. */
+    g_fixture = 0;
+    reset_capture();
+    reset_modal_capture();
+    g_draw_menu_calls = 0;
+    g_modal_opener_calls = 0;
+    g_modal_opener_ctx = NULL;
+    ui_menu_open_modal_async(opts, state, open_prompt_modal);
+    assert(g_modal_opener_calls == 1);
+    assert(g_modal_opener_ctx != NULL);
+    assert(g_modal_opener_ctx->opts == opts && g_modal_opener_ctx->state == state);
+    assert(ui_menu_is_open() == 1);
+    ui_menu_tick(opts, state);
+    assert(g_prompt_render_calls == 1);
+    assert(g_draw_menu_calls == 0);
+    /* A key the prompt keeps (typing) leaves it open; the menu's own keys never reach a frame. */
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(g_prompt_key_calls == 1);
+    assert(ui_menu_is_open() == 1);
+    assert(g_action_calls == 0);
+    /* Submit, cancel or Esc closes the prompt, and the overlay with it, in that same call. */
+    g_prompt_closes_on_key = 1;
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert(g_prompt_active == 0);
+    assert(ui_menu_is_open() == 0);
+    assert(g_action_calls == 0);
+    ui_menu_tick(opts, state);
+    assert(g_draw_menu_calls == 0);
+    g_prompt_closes_on_key = 0;
+
+    /* A callback that opens a follow-up modal (a refusal reopening the prompt) keeps the overlay: the key closes the
+       prompt and its callback opens another before the key returns, and the next tick draws that prompt alone. */
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_prompt_modal);
+    g_prompt_reopens_on_key = 1;
+    g_prompt_reopen_calls = 0;
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    g_prompt_reopens_on_key = 0;
+    assert(g_prompt_reopen_calls == 1 && g_prompt_active == 1);
+    assert(ui_menu_is_open() == 1);
+    g_prompt_render_calls = 0;
+    ui_menu_tick(opts, state);
+    assert(g_prompt_render_calls == 1);
+    assert(g_draw_menu_calls == 0);
+    /* A prompt closed from elsewhere is noticed at the next tick, before anything is drawn. */
+    g_prompt_active = 0;
+    ui_menu_tick(opts, state);
+    assert(ui_menu_is_open() == 0);
+    assert(g_draw_menu_calls == 0);
+
+    /* Help (the reason '=' cannot tune here) lives the same way. */
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_help_modal);
+    assert(g_help_open_calls == 1);
+    assert(strcmp(g_last_help, "one-line reason") == 0);
+    assert(ui_menu_is_open() == 1);
+    ui_menu_tick(opts, state);
+    assert(g_help_render_calls == 1);
+    assert(g_draw_menu_calls == 0);
+    g_help_active = 0; /* the help stub's close key */
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* Final review, Minor 7: a modal-only overlay whose RR panel ends in its own tick closes in that tick, before the
+       frame it held nothing else for would be drawn. */
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_rr_panel_modal);
+    assert(ui_menu_is_open() == 1);
+    ui_menu_tick(opts, state);
+    assert(g_rr_panel_render_calls == 1 && g_draw_menu_calls == 0);
+    g_rr_panel_ends_on_tick = 1;
+    ui_menu_tick(opts, state);
+    g_rr_panel_ends_on_tick = 0;
+    assert(ui_menu_is_open() == 0);
+    assert(g_draw_menu_calls == 0);
+    assert(g_rr_panel_render_calls == 1);
+
+    /* An opener that opens nothing leaves no overlay behind, and no empty frame is ever drawn. */
+    reset_modal_capture();
+    g_modal_opener_calls = 0;
+    ui_menu_open_modal_async(opts, state, open_nothing_modal);
+    assert(g_modal_opener_calls == 1);
+    assert(ui_menu_is_open() == 0);
+    ui_menu_tick(opts, state);
+    assert(g_draw_menu_calls == 0);
+
+    /* The full menu opened after a prompt-only one is an ordinary menu: closing its own prompt keeps it open. */
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_prompt_modal);
+    g_prompt_closes_on_key = 1;
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    g_prompt_active = 1;
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    assert(g_prompt_active == 0);
+    assert(ui_menu_is_open() == 1);
+    ui_menu_tick(opts, state);
+    assert(g_draw_menu_calls == 1);
+    g_prompt_closes_on_key = 0;
     assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
 

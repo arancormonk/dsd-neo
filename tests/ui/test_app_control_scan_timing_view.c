@@ -529,6 +529,11 @@ test_inactive_without_a_scanner(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    /* ... while it runs: a paused trunk scan runs no timer, whatever a publication read across the pause says
+       (issue #671). */
+    state->trunk_scan_paused = 1U;
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 0);
+    assert(view.active == 0U);
 
     free(state);
 }

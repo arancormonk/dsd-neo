@@ -10,11 +10,14 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "../command_dispatch.h"
 #include "../services.h"
 
@@ -24,10 +27,35 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* An action handler's results, as the command drain reads them (UI_CMD_APPLY_COMPLETED, UI_CMD_APPLY_FAILED). */
+enum { TRUNK_ACTION_DONE = 1, TRUNK_ACTION_REFUSED = 2 };
+
+static void
+trunk_action_toast(dsd_state* state, int seconds, const char* text) {
+    if (state) {
+        DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", text);
+        state->ui_msg_expire = dsd_realtime_time() + seconds;
+    }
+}
+
+/* A trunk scan sets trunking per target, and its coordinator keeps the tuner whether running or paused: trunking
+   turned off under it would leave a target following a call with no recovery, and turned on would follow a paused
+   scan's manual frequency as a trunked target (issue #671, B5). A coordinator publishes its targets, paused or not. */
+static int
+trunk_refused_under_trunk_scan(const dsd_opts* opts, dsd_state* state) {
+    if (opts->trunk_scan_enabled != 1 || !state || state->trunk_scan_target_count == 0U) {
+        return 0;
+    }
+    trunk_action_toast(state, 3, "Trunk scan: each target sets its own trunking");
+    return 1;
+}
+
 static void
 trunk_enable_on(dsd_opts* opts, dsd_state* state) {
     /* Leave the conventional row and transfer tuner ownership as one guarded
-     * step: watchdog admission also observes scanner_mode (#554). */
+     * step: watchdog admission also observes scanner_mode (#554). A paused -Y
+     * scan ends here as a running one does (issue #671). A trunk-scan target's
+     * scope is never this command's to leave. */
     p25_sm_tick_guard_enter();
     opts->trunk_enable = 1;
     if (opts->trunk_scan_enabled != 1) {
@@ -41,12 +69,15 @@ trunk_enable_on(dsd_opts* opts, dsd_state* state) {
 static int
 ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
+    if (trunk_refused_under_trunk_scan(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
+    }
     if (opts->trunk_enable == 1) {
         opts->trunk_enable = 0;
     } else {
         trunk_enable_on(opts, state);
     }
-    return 1;
+    return TRUNK_ACTION_DONE;
 }
 
 static int
@@ -62,7 +93,10 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
          * command they were never meant to see and finally report it as an unknown
          * id rather than a bad payload. ui_handle_mod_set() answers the same
          * condition the same way. */
-        return 1;
+        return TRUNK_ACTION_DONE;
+    }
+    if (trunk_refused_under_trunk_scan(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
     }
     DSD_MEMCPY(&want, c->data, sizeof(int32_t));
     const int on = (want != 0) ? 1 : 0;
@@ -71,28 +105,131 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     } else {
         opts->trunk_enable = 0;
     }
-    return 1;
+    return TRUNK_ACTION_DONE;
+}
+
+/* Resume the paused -Y scan (issue #671). A resume already waiting on its row's tune changes nothing: a second request
+   neither tunes again nor ends a call. */
+static int
+scan_resume_channel(dsd_opts* opts, dsd_state* state) {
+    if (state->lcn_scan_resume_pending) {
+        trunk_action_toast(state, 3, "Resuming scan: waiting for the tune");
+        return TRUNK_ACTION_DONE;
+    }
+    /* NO_ROW and REFUSED leave the scan paused, the reason on the status line. */
+    switch (svc_resume_channel_scan(opts, state)) {
+        case DSD_SCAN_RESUME_LANDED: trunk_action_toast(state, 3, "Scan resumed"); return TRUNK_ACTION_DONE;
+        case DSD_SCAN_RESUME_PENDING:
+            trunk_action_toast(state, 3, "Resuming scan: waiting for the tune");
+            return TRUNK_ACTION_DONE;
+        default: return TRUNK_ACTION_REFUSED;
+    }
+}
+
+/* Resume the paused trunk scan on the target it left (issue #671). A park still in flight is running already: the
+   target's tune lands as any target's does. A refused retune or failed preparation leaves it paused, with the reason
+   on the status line. */
+static int
+scan_resume_trunk(dsd_opts* opts, dsd_state* state) {
+    const int rc = svc_resume_trunk_scan(opts, state);
+    if (rc == 0 || rc == 1) {
+        trunk_action_toast(state, 3, "Trunk scan resumed");
+        return TRUNK_ACTION_DONE;
+    }
+    if (rc == -1) {
+        trunk_action_toast(state, 3, "Trunk scan is not running");
+    }
+    return TRUNK_ACTION_REFUSED;
 }
 
 static int
+trunk_scan_is_paused(const dsd_opts* opts, const dsd_state* state) {
+    return opts->trunk_scan_enabled == 1 && state->trunk_scan_paused;
+}
+
+/* The save a -Y start leaves (svc_check_next_start()): the scanner on, trunking off. */
+static void
+scanner_on_next_start(dsdneoUserConfig* save, const void* ctx) {
+    (void)ctx;
+    save->trunk_scanner = 1;
+    save->trunk_enabled = 0;
+}
+
+/* A -Y start beside a trunk scan a config left for the next start would make the save one startup refuses (issue
+   #671): refused, the rule on the status line, the scanner left off. */
+static int
+scanner_start_refused_for_next_start(const dsd_opts* opts, dsd_state* state) {
+    char why[256];
+    if (svc_check_next_start(opts, state, scanner_on_next_start, NULL, why, sizeof why) == 0) {
+        return 0;
+    }
+    why[strcspn(why, ";")] = '\0';
+    char text[sizeof state->ui_msg];
+    DSD_SNPRINTF(text, sizeof text, "Scanner not started: %s", why);
+    trunk_action_toast(state, 5, text);
+    return 1;
+}
+
+/* `y`: a paused scan resumes; a running trunk scan pauses where it is (it has no stop at runtime); a running -Y scan
+   stops, and a stopped one starts (issue #671). A pending trunk-scan resume is running: `y` pauses it again. */
+static int
 ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
+    if (!state) {
+        return TRUNK_ACTION_DONE;
+    }
     if (opts->trunk_scan_enabled == 1) {
-        if (state) {
-            DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s",
-                         "Trunk scan active: conventional scanner unavailable");
-            state->ui_msg_expire = dsd_realtime_time() + 3;
+        if (trunk_scan_is_paused(opts, state)) {
+            return scan_resume_trunk(opts, state);
         }
-        return 1;
+        if (svc_pause_trunk_scan_in_place(opts, state) != 0) {
+            /* With a coordinator the pause itself failed (it names no target to leave); without one, trunk scan is
+               only configured, which rules out the conventional scanner `y` would start. */
+            trunk_action_toast(state, 3,
+                               state->trunk_scan_target_count > 0U
+                                   ? "Trunk scan active: pause unavailable"
+                                   : "Trunk scan active: conventional scanner unavailable");
+            return TRUNK_ACTION_REFUSED;
+        }
+        trunk_action_toast(state, 3, "Trunk scan paused");
+        return TRUNK_ACTION_DONE;
+    }
+    if (state->lcn_scan_paused || state->lcn_scan_resume_pending) {
+        return scan_resume_channel(opts, state);
     }
     const int was_scanner = opts->scanner_mode ? 1 : 0;
+    if (!was_scanner && scanner_start_refused_for_next_start(opts, state)) {
+        return TRUNK_ACTION_REFUSED;
+    }
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
-    if (was_scanner && opts->trunk_scan_enabled != 1) {
+    if (was_scanner) {
         (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
     }
-    return 1;
+    return TRUNK_ACTION_DONE;
+}
+
+/* DSD_APP_CMD_SCAN_RESUME: resume whichever scan is paused (issue #671), and only that: a running scan is left as it
+   is, and with no scan paused nothing starts. */
+static int
+ui_handle_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (!state) {
+        return TRUNK_ACTION_DONE;
+    }
+    if (trunk_scan_is_paused(opts, state)) {
+        return scan_resume_trunk(opts, state);
+    }
+    if (state->lcn_scan_paused || state->lcn_scan_resume_pending) {
+        return scan_resume_channel(opts, state);
+    }
+    if (opts->trunk_scan_enabled == 1 || opts->scanner_mode == 1) {
+        trunk_action_toast(state, 3, "Not paused: the scan is running");
+        return TRUNK_ACTION_REFUSED;
+    }
+    trunk_action_toast(state, 3, "Not scanning: no paused scan to resume");
+    return TRUNK_ACTION_REFUSED;
 }
 
 static int
@@ -177,6 +314,7 @@ const struct dsd_app_command_reg dsd_app_actions_trunk[] = {
     {DSD_APP_CMD_TRUNK_TOGGLE, ui_handle_trunk_toggle},
     {DSD_APP_CMD_TRUNK_SET, ui_handle_trunk_set},
     {DSD_APP_CMD_SCANNER_TOGGLE, ui_handle_scanner_toggle},
+    {DSD_APP_CMD_SCAN_RESUME, ui_handle_scan_resume},
     {DSD_APP_CMD_TRUNK_GROUP_TOGGLE, ui_handle_trunk_group_toggle},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, ui_handle_tg_hold_toggle},
     {DSD_APP_CMD_TRUNK_WLIST_TOGGLE, ui_handle_trunk_wlist_toggle},

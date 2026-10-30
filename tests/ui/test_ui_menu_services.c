@@ -32,7 +32,9 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -115,6 +117,33 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     if (level == LOG_LEVEL_INFO && format && strstr(format, "IQ replay restarted mid-run") != NULL) {
         g_replay_restart_notices++;
     }
+}
+
+/* The save and the trunk-scan start rules svc_check_next_start() holds an import to (runtime; APP_COMMAND_QUEUE runs
+   the real ones): the save is empty, plus the change; it passes unless g_next_start_why is set, and records the paths
+   the change leaves. */
+static const char* g_next_start_why;
+static char g_next_start_chan_csv[1024];
+static char g_next_start_plan_csv[1024];
+
+void
+dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    (void)opts;
+    (void)state;
+    DSD_MEMSET(cfg, 0, sizeof *cfg);
+}
+
+int
+dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const dsdneoUserConfig* before, char* why,
+                                           size_t why_size) {
+    (void)before;
+    DSD_SNPRINTF(g_next_start_chan_csv, sizeof g_next_start_chan_csv, "%s", cfg->trunk_chan_csv);
+    DSD_SNPRINTF(g_next_start_plan_csv, sizeof g_next_start_plan_csv, "%s", cfg->trunk_p25_bandplan_csv);
+    if (!g_next_start_why) {
+        return 0;
+    }
+    DSD_SNPRINTF(why, why_size, "%s", g_next_start_why);
+    return -1;
 }
 
 FILE*
@@ -517,13 +546,44 @@ udp_socket_connectA(dsd_opts* opts, dsd_state* state) {
 }
 
 static int g_io_control_set_freq_result = -1;
+/* The ID a timed-out tune hands back (issue #671). */
+static uint64_t g_io_control_pending_id = 0U;
 
 int
-io_control_set_freq(dsd_opts* opts, const dsd_state* state, long int freq) {
-    (void)opts;
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
     (void)state;
-    (void)freq;
+    if (out_pending_id) {
+        *out_pending_id = g_io_control_set_freq_result == RTL_STREAM_TUNE_TIMEOUT ? g_io_control_pending_id : 0U;
+    }
+    /* As the real one: an applied or accepted tune caches its target. */
+    if (opts
+        && (g_io_control_set_freq_result == RTL_STREAM_TUNE_OK
+            || g_io_control_set_freq_result == RTL_STREAM_TUNE_TIMEOUT)) {
+        opts->rtlsdr_center_freq = freq_hz;
+    }
     return g_io_control_set_freq_result;
+}
+
+/* The pending manual tune svc_rtl_tune() notes (issue #671), recorded. */
+static int g_note_pending_calls = 0;
+static int g_note_pending_kind = 0;
+static uint64_t g_note_pending_id = 0U;
+static uint32_t g_note_pending_requested_hz = 0U;
+static uint32_t g_note_pending_prior_hz = 0U;
+static int g_note_pending_row = 0;
+
+void
+dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
+                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t map_seq) {
+    (void)state;
+    (void)scan_session;
+    (void)map_seq;
+    g_note_pending_calls++;
+    g_note_pending_kind = (int)kind;
+    g_note_pending_id = id;
+    g_note_pending_requested_hz = requested_hz;
+    g_note_pending_prior_hz = prior_applied_hz;
+    g_note_pending_row = row;
 }
 
 /* The engine's carrier boundary and the stream-start source note (issue #575), recorded: these services call them at
@@ -848,6 +908,18 @@ svc_publish_analog_bandwidth(const dsd_opts* opts, const dsd_state* state, int k
 int
 svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
     return dsd_engine_channel_scan_leave(opts, state);
+}
+
+/* Nor its record of a trunk-scan pause or resume (issue #671): the engine's, as the stubs run them. */
+int
+svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                dsd_trunk_scan_leave_report* out) {
+    return dsd_engine_trunk_scan_pause_ex_locked(opts, state, kind, out);
+}
+
+int
+svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
+    return dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
 }
 
 static int
@@ -1280,6 +1352,49 @@ test_rtl_restart_quiesces_p25_retunes(void) {
     rc |= expect_int("start failure clears replacement context", state.rtl_ctx == NULL, 1);
 
     reset_rtl_restart_stubs();
+    return rc;
+}
+
+/* Issue #671: a frequency entry's tune that timed out is noted with the ID it handed back, the frequency asked for and
+   the centre cached before the tune; any other result that reached the tuner notes nothing pending (ID 0), which
+   supersedes an older record; a deferred tune never reached it and leaves the record alone. */
+static int
+test_tune_notes_a_timed_out_tune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+    g_io_control_pending_id = UINT64_C(0x8000000000000005);
+
+    g_note_pending_calls = 0;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_int("pending tune", svc_rtl_set_freq(&opts, &state, 853000000U), RTL_STREAM_TUNE_TIMEOUT);
+    rc |= expect_int("a pending tune is noted", g_note_pending_calls, 1);
+    rc |= expect_int("as an entry", g_note_pending_kind, DSD_MANUAL_TUNE_ENTRY);
+    rc |= expect_int("under the ID it handed back", g_note_pending_id == g_io_control_pending_id, 1);
+    rc |= expect_int("naming the frequency asked for", g_note_pending_requested_hz == 853000000U, 1);
+    rc |= expect_int("and the centre before the tune", g_note_pending_prior_hz == 851000000U, 1);
+    rc |= expect_int("with no row", g_note_pending_row, -1);
+
+    const int done[] = {RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_FAILED};
+    for (size_t i = 0; i < sizeof done / sizeof done[0]; i++) {
+        g_note_pending_calls = 0;
+        g_note_pending_id = UINT64_MAX;
+        g_io_control_set_freq_result = done[i];
+        (void)svc_rtl_set_freq(&opts, &state, 855000000U);
+        rc |= expect_int("a tune that reached the tuner supersedes", g_note_pending_calls, 1);
+        rc |= expect_int("with nothing pending", g_note_pending_id == 0U, 1);
+    }
+
+    g_note_pending_calls = 0;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_DEFERRED;
+    rc |= expect_int("deferred tune", svc_rtl_set_freq(&opts, &state, 857000000U), RTL_STREAM_TUNE_DEFERRED);
+    rc |= expect_int("a deferred tune leaves the record", g_note_pending_calls, 0);
+    g_io_control_set_freq_result = -1;
+    g_io_control_pending_id = 0U;
     return rc;
 }
 
@@ -2323,6 +2438,18 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("trunk-scan import preserves chan", (int)state.trunk_chan_map[201], 860000000);
     opts.trunk_scan_enabled = 0;
 
+    // Nor beside a trunk scan a config left for the next start (issue #671): the save would write both, which startup
+    // refuses. Refused with the rule on the status line, before anything is read.
+    g_next_start_why = "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values";
+    rc |= expect_int("next-start import refused", svc_import_channel_map(&opts, &state, "scan.csv"),
+                     SVC_REFUSED_FOR_NEXT_START);
+    rc |= expect_str("next-start check asked about the map", g_next_start_chan_csv, "scan.csv");
+    rc |= expect_str("next-start refusal toast", state.ui_msg,
+                     "Channel map not imported: trunking.chan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("next-start refusal preserves chan", (int)state.trunk_chan_map[201], 860000000);
+    rc |= expect_str("next-start refusal keeps path", opts.chan_in_file, "b.csv");
+    g_next_start_why = NULL;
+
     // dmr_lcn_trust is provenance for the map, not a separate table: a stale
     // "learned on the CC" byte would authorize an off-CC tune to a frequency
     // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
@@ -2550,6 +2677,18 @@ test_p25_bandplan_import_and_export_services(void) {
     rc |= expect_int("trunk scan refusal skips the importer", g_bandplan_import_calls, 0);
     rc |= expect_str("trunk scan refusal records no path", opts.p25_bandplan_in_file, "");
     opts.trunk_scan_enabled = 0;
+    // And beside a trunk scan a config left for the next start (issue #671).
+    g_next_start_why = "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled; use per-target "
+                       "p25_bandplan_csv values";
+    rc |= expect_int("bandplan import refused for the next start", svc_import_p25_bandplan(&opts, &state, "plan.csv"),
+                     SVC_REFUSED_FOR_NEXT_START);
+    rc |= expect_str("next-start check asked about the plan", g_next_start_plan_csv, "plan.csv");
+    rc |=
+        expect_str("next-start plan refusal toast", state.ui_msg,
+                   "P25 band plan not imported: trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled");
+    rc |= expect_int("next-start refusal skips the dry run", g_bandplan_validate_calls, 0);
+    rc |= expect_str("next-start refusal records no path", opts.p25_bandplan_in_file, "");
+    g_next_start_why = NULL;
 
     // Dry run gate: a file that opens but yields no usable row must not touch the live plan.
     g_bandplan_validate_accepted = 0U;
@@ -2574,7 +2713,9 @@ test_p25_bandplan_import_and_export_services(void) {
 
     // Success: imported into the live state, path recorded, pending announcements re-resolved.
     g_bandplan_import_result = 0;
+    opts.next_start.pending = DSD_NEXT_START_BAND_PLAN; // a plan a config left waiting: the import sets one now
     rc |= expect_int("bandplan import ok", svc_import_p25_bandplan(&opts, &state, "plan.csv"), 0);
+    rc |= expect_int("bandplan import drops a waiting plan", (int)opts.next_start.pending, 0);
     rc |= expect_int("bandplan import loaded the live state", state.p25_bandplan_row_count, 1);
     rc |= expect_str("bandplan import path recorded", opts.p25_bandplan_in_file, "plan.csv");
     rc |= expect_int("bandplan import resolves pending announcements", g_bandplan_resolve_calls, 1);
@@ -2964,6 +3105,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_tune_and_start_run_the_carrier_boundary();
+    rc |= test_tune_notes_a_timed_out_tune();
     rc |= test_locked_restarts();
     rc |= test_replay_restart_notice();
     rc |= test_stop_clears_the_replay_centre();

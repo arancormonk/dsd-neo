@@ -534,9 +534,35 @@ test_level_finite(void) {
     assert(!dsd_squelch_setting_level_finite(NULL));
 }
 
+/* The AM monitor on its own refuses a NOISE setting; a scan running AM rows runs it as AUTO there. A paused trunk scan
+   runs no row: its manual AM session is on its own (issue #671). */
+static void
+test_noise_has_no_fm(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.analog_only = 1;
+    opts.analog_demod = DSD_ANALOG_DEMOD_AM;
+    assert(dsd_squelch_noise_has_no_fm(&opts, &state) == 1);
+    assert(dsd_squelch_noise_has_no_fm(&opts, NULL) == 1);
+    opts.scanner_mode = 1;
+    assert(dsd_squelch_noise_has_no_fm(&opts, &state) == 0);
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    assert(dsd_squelch_noise_has_no_fm(&opts, &state) == 0);
+    assert(dsd_squelch_noise_has_no_fm(&opts, NULL) == 0);
+    state.trunk_scan_paused = 1U;
+    assert(dsd_squelch_noise_has_no_fm(&opts, &state) == 1);
+    opts.analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_squelch_noise_has_no_fm(&opts, &state) == 0);
+    assert(dsd_squelch_noise_has_no_fm(NULL, &state) == 0);
+}
+
 int
 main(void) {
     test_grammar();
+    test_noise_has_no_fm();
     test_level_finite();
     test_opts_store_and_spec_field();
     test_gate_helpers();

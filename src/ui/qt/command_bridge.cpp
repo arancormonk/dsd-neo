@@ -457,6 +457,12 @@ CommandBridge::nextChannel() const {
 }
 
 bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::resumeScan() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_SCAN_RESUME));
+}
+
+bool
 CommandBridge::tuneHz(unsigned int hz) const {
     return accepted(dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, static_cast<uint32_t>(hz)));
 }

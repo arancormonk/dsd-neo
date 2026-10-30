@@ -20,14 +20,15 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/input_failure.h>
-#include <stdint.h>
 #endif
 
 #ifdef __cplusplus
@@ -237,8 +238,37 @@ int svc_set_pulse_input(dsd_opts* opts, dsd_state* state, const char* device);
 /** @brief Configure UDP audio output endpoint and enable it. */
 int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int port);
 
+/**
+ * The save the session would write after a change: @p save holds the one it would write now
+ * (dsd_snapshot_opts_to_user_config(), the values a config left for the next start included), which the callback edits
+ * as the change would leave it. @p ctx is the caller's.
+ */
+typedef void (*svc_next_start_change_fn)(dsdneoUserConfig* save, const void* ctx);
+
+/**
+ * @brief Whether a change keeps the next start one that starts (issue #671).
+ *
+ * Every save writes what the session runs and what a config left for the next start, so a change must not make that
+ * save one startup refuses: the save @p change leaves is held to dsd_user_config_check_trunk_scan_startable(), and only
+ * a rule the change newly breaks refuses it (a rule the session's own save breaks already, kept or fixed, does not).
+ * Asked before the change touches anything. A config apply, a channel-map or P25 band-plan import, the scanner toggle
+ * and a RadioReference import each ask it.
+ *
+ * @return 0 when the change may go ahead; -1 when it may not, with the rule's reason in @p why.
+ */
+int svc_check_next_start(const dsd_opts* opts, const dsd_state* state, svc_next_start_change_fn change, const void* ctx,
+                         char* why, size_t why_size);
+
+/** An import refused by svc_check_next_start(): the reason is on the status line. */
+enum { SVC_REFUSED_FOR_NEXT_START = -3 };
+
 // Trunking & control helpers
-/** @brief Import a channel map CSV into runtime state. */
+/**
+ * @brief Import a channel map CSV into runtime state.
+ *
+ * Refused under trunk scan, and when a trunk scan waits for the next start (svc_check_next_start(): returns
+ * SVC_REFUSED_FOR_NEXT_START, with the rule on the status line).
+ */
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /**
  * @brief Hold the loaded channel map's analog (nfm or am) rows to the DSP rate they would run at (issue #526), as an
@@ -274,10 +304,12 @@ int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
  *
  * Dry-runs the file first and refuses one that yields no usable row, so a
  * mispicked CSV cannot replace the stored plan. Refused under trunk scan, where
- * band plans come per target (p25_bandplan_csv). On success the path is
+ * band plans come per target (p25_bandplan_csv), and when a trunk scan waits for
+ * the next start (svc_check_next_start()). On success the path is
  * recorded in opts->p25_bandplan_in_file and pending P25 announcements are
  * re-resolved against the newly seeded tables.
- * @return 0 on success, -1 otherwise.
+ * @return 0 on success, SVC_REFUSED_FOR_NEXT_START when the next start would refuse the plan (the rule is on the
+ *         status line), -1 otherwise.
  */
 int svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path);
 /**
@@ -653,8 +685,100 @@ void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, 
  * Decoder thread only.
  *
  * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
+ *
+ * A stop ends a paused -Y scan too (issue #671): it clears dsd_state::lcn_scan_paused and a resume still pending, and
+ * leaves dsd_state::operator_tuned alone, since the tuner stays with the operator. A paused list was already left, so
+ * the manual session it stops goes on: no call ends and the monitor is asked for nothing.
  */
 int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Pause the running -Y scan (dsd_engine_channel_scan_pause(), issue #671) from a command, and keep what became
+ * of its return to the configured monitor for the command drain, as svc_leave_channel_scan() keeps a leave's (issue
+ * #578).
+ *
+ * @p in_place 1 when no tune follows (a tuner release), so the carrier's decoding is forgotten; 0 after an accepted
+ * tune, whose carrier boundary already forgot it. The scan keeps its list, cursor, avoids and session edits, and waits
+ * for svc_resume_channel_scan(). Decoder thread only; safe under the P25 SM tick guard its caller holds.
+ *
+ * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
+ */
+int svc_pause_channel_scan(dsd_opts* opts, dsd_state* state, int in_place);
+
+/**
+ * @brief Resume the paused -Y scan (dsd_engine_channel_scan_resume(), issue #671) from a command.
+ *
+ * A resume that finds no row (NO_ROW) or whose row is refused (REFUSED) leaves the scan paused, with the reason on the
+ * status line; the undo of a refused typed row's attempt goes through svc_pause_channel_scan(), installed as the
+ * engine's pause hook, which records its return to the monitor (issue #578), whether the refusal comes now or late. A
+ * resume still pending answers PENDING and does nothing more. Decoder thread only; safe under the P25 SM tick guard the
+ * guarded scanner commands hold.
+ *
+ * @return A DSD_SCAN_RESUME_* result.
+ */
+int svc_resume_channel_scan(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief dsd_engine_trunk_scan_pause_ex_locked() with its return to the configured monitor (@p out->monitor_request,
+ * @p out not NULL) recorded for the command drain as svc_leave_channel_scan() records a -Y stop's (issue #578).
+ *
+ * Only the record: the caller holds the P25 SM tick guard and settles @p out->restart_gain (svc_pause_trunk_scan_*).
+ */
+int svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                    dsd_trunk_scan_leave_report* out);
+/** @brief dsd_engine_trunk_scan_resume_ex_locked(), a refused retune's return to the monitor recorded as a pause's. */
+int svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out);
+
+/** @brief Tune receiver frequency (Hz), RTL or a rigctl peer, on every build; caller owns trunking and call bookkeeping. */
+/* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the
+   _locked form is for a caller that holds the P25 SM tick guard. */
+int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
+int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
+/* The tune alone, the io/control leg of svc_rtl_set_freq() with its pending manual-tune record (issue #671), for a
+   caller that runs the carrier boundary itself once something else (a scan's pause) has run after the tune. */
+int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
+/** The tune leg of a frequency entry (svc_rtl_tune_only()'s shape): an RTL_STREAM_TUNE_* result or a refusal. */
+typedef int (*svc_tune_leg_fn)(dsd_opts* opts, dsd_state* state, uint32_t hz);
+
+/**
+ * @brief Tune to a frequency the operator entered over a running trunk scan, and pause the scan once the tune is
+ * accepted (issue #671).
+ *
+ * Takes the P25 SM tick guard (the frequency entry is not a guarded command) for the whole step: the tune through
+ * @p tune_leg (NULL: svc_rtl_tune_only()); then, when it was applied or is pending, the pause
+ * (dsd_engine_trunk_scan_pause_ex_locked(), DSD_TRUNK_SCAN_PAUSE_TUNE) with its return to the configured monitor
+ * recorded for the command drain as a -Y stop's is (issue #578), the TUNE carrier boundary, and, when the target left
+ * ran a tuner gain of its own, a stream restart on the configured gain. A tune that is refused or deferred leaves the
+ * scan running, untouched. Decoder thread only; radio builds (the frequency entry is a radio build's command).
+ *
+ * @param out_paused May be NULL. Set to 1 when the scan paused, else 0 (no coordinator behind the flag included).
+ * @return The tune leg's result.
+ */
+int svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg,
+                                  int* out_paused);
+
+/**
+ * @brief Pause the running trunk scan where it is, no tune following (`y`, a tuner release; issue #671).
+ *
+ * dsd_engine_trunk_scan_pause_ex_locked() with DSD_TRUNK_SCAN_PAUSE_IN_PLACE, its return to the configured monitor
+ * recorded as a -Y stop's is (issue #578), and a stream restart on the configured gain when the target left ran its
+ * own. The caller holds the P25 SM tick guard. Decoder thread only.
+ *
+ * @return 0 when the scan is paused (or already was), -1 when no trunk scan runs.
+ */
+int svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Resume the paused trunk scan on the target it left (dsd_engine_trunk_scan_resume_ex_locked(), issue #671).
+ *
+ * A resume whose retune is refused leaves the scan paused; its return to the configured monitor is recorded as a
+ * pause's is, and the stream reopens on the configured gain when the target runs its own, as at a pause. The caller
+ * holds the P25 SM tick guard. Decoder thread only.
+ *
+ * @return As dsd_engine_trunk_scan_resume_ex_locked(): 0 running, 1 running with the park in flight, -1 no trunk scan,
+ * -2 preparation failed, -3 retune refused (both failures leave the scan paused, with the reason on the status line).
+ */
+int svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief How many radio streams app-control has started (svc_rtl_restart_locked()), from 0; always 0 without radio
@@ -793,12 +917,8 @@ int svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state);
  * Asked before the switch rewrites the input and tears down the running stream. The configured analog preset's
  * explicit width, or the AM default (as RTL_SET_BW holds them, a typed digital scan row included), must fit the rate the
  * RTL DSP bandwidth (rtl_dsp_bw_khz) gives the device the switch opens (svc_rtl_row_destination()): an RTL-SDR from an
- * Airspy spec or "rtl", rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the
- * settings in force: while an analog scan row runs the analog family (issue #526), the width in force there, the row's
- * own width or, on a session whose preset runs another kind, the configured width of the row's kind, must fit that rate
- * as well. On such a session the configured width of a kind is held while the scan has an analog row or target of that
- * kind without a width of its own to visit (dsd_engine_scan_runs_configured_nfm_width(), _am_width()), whichever row is
- * on air. A SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start holds only
+ * Airspy spec or "rtl", rtl_tcp from an rtl_tcp spec. The switch is refused while a scan is in force
+ * (ui_input_switch_refused(), issue #671), so no scan row's width meets it. A SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start holds only
  * the width it opens on to, the one in force (under a digital scan row, none). The unset NFM default is never
  * refused. An explicit width, or the AM default, is refused, whatever the rate, while DSD_NEO_CHANNEL_LPF=0 turns the
  * channel filter off. A rate refusal's reason names the width, the rate, the widest width it filters and the DSP
@@ -818,11 +938,9 @@ void svc_rtl_row_destination(const dsd_opts* opts, char* out, size_t out_size);
  * Asked before the switch rewrites the input and tears down the running one. The Airspy delivers a rate its sample rate
  * and the DSP bandwidth set, which its start holds the width it opens on to, so only the rules every rate shares apply
  * here: an explicit width, or the AM default, is refused while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The
- * widths held are the ones svc_check_rtl_input_analog_width() holds: the configured analog preset's, the configured
- * width of a kind the scan runs beside it, and the width in force under an analog scan row. The unset NFM default is
- * never refused. The switch is unscoped, so its start opens on the settings in force and checks only the width in force
- * against the delivered rate: under a scan row that runs a digital protocol, none, and a configured width that rate
- * cannot filter is left to the scan (its leave's refused return to the monitor, and the analog rows that run it).
+ * width held is the one svc_check_rtl_input_analog_width() holds, the configured analog preset's (the switch is refused
+ * while a scan is in force, issue #671). The unset NFM default is never refused. Its start checks the width it opens on
+ * against the delivered rate.
  *
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
@@ -1000,11 +1118,6 @@ int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_a
                                    const svc_airspy_tuning* previous_tuning);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
-/** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */
-/* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the
-   _locked form is for a caller that holds the P25 SM tick guard. */
-int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
-int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**

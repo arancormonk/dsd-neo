@@ -29,7 +29,6 @@
 #include <dsd-neo/app_control/access_code_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/crc_provenance.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
@@ -373,6 +372,9 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
     const Row& row = m_rows.at(index.row());
     switch (role) {
         case UidRole: return row.uid;
+        // A trunk-scan target's id is the app's uid for its entry: shown as the entry's name (setChannelNames()).
+        case NameRole: return !row.channel.isEmpty() && row.name == row.channel ? channelDisplayName(row) : row.name;
+        case ChannelRole: return channelDisplayName(row);
         case RecordingsRole:
             return m_recordings != nullptr && !row.fragments.isEmpty()
                        ? m_recordings->recordingsForFragments(row.fragments)
@@ -543,6 +545,53 @@ CallHistoryModel::changeSession(const QString& label, const QString& uid, bool b
     if (begin) {
         Q_EMIT sessionChanged();
     }
+}
+
+void
+CallHistoryModel::setChannelNames(const QVariantMap& names) {
+    // Added to the names given before, never in place of them: another session's names leave the rows an earlier one
+    // logged named.
+    QHash<QString, QString> next = m_channelNames;
+    for (auto it = names.constBegin(); it != names.constEnd(); ++it) {
+        const QString name = it.value().toString();
+        if (!it.key().isEmpty() && !name.isEmpty()) {
+            next.insert(it.key(), name);
+        }
+    }
+    if (next == m_channelNames) {
+        return;
+    }
+    // A display name only: rows keep the target id they were heard on, which tells two targets of one name apart
+    // (rows_mergeable()) and outlives a rename.
+    m_channelNames = next;
+    bool named = false;
+    for (Row& row : m_rows) {
+        named = nameChannel(row) || named;
+    }
+    if (named) {
+        scheduleSave();
+    }
+    if (!m_rows.isEmpty()) {
+        Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {NameRole, ChannelRole});
+    }
+}
+
+bool
+CallHistoryModel::nameChannel(Row& row) const {
+    if (row.channel.isEmpty() || !row.channelName.isEmpty()) {
+        return false;
+    }
+    const auto it = m_channelNames.constFind(row.channel);
+    if (it == m_channelNames.constEnd()) {
+        return false;
+    }
+    row.channelName = it.value();
+    return true;
+}
+
+QString
+CallHistoryModel::channelDisplayName(const Row& row) const {
+    return m_channelNames.value(row.channel, row.channelName.isEmpty() ? row.channel : row.channelName);
 }
 
 void
@@ -794,10 +843,20 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
      * the system filter keeps listing what the Home screen lists. The scan channel
      * the row was heard on (a -Y row name or a trunk-scan target id) rides its own
      * role: the row's meta line shows it, search matches it, and a talkgroup heard
-     * on two channels stays two rows. */
-    row.systemName = sessionLabel;
-    // Retained scan rows remain ineligible even if rotation has since stopped.
-    row.systemUid = item->channel_label[0] == '\0' ? systemUid : QString();
+     * on two channels stays two rows.
+     *
+     * Who held the tuner is the row's own stamp, frozen at the call's first render (issue #671), never the session
+     * label or scan flags when the UI reads the row: a call heard while the operator held the receiver (a paused scan,
+     * a tuner release) is Exploring with no saved-system identity, and a call heard under a running scan never gains
+     * the saved system's UID, even once the scan has stopped. A call the release ended but did not begin keeps the
+     * session's identity. */
+    if (item->operator_tuned != 0U) {
+        row.systemName = CallHistoryModel::tr("Exploring");
+    } else {
+        row.systemName = sessionLabel;
+        // A scan-labelled row was heard under a scan whichever flag says so.
+        row.systemUid = item->scan_member == 0U && item->channel_label[0] == '\0' ? systemUid : QString();
+    }
     row.channel = QString::fromUtf8(item->channel_label);
     row.service = QString::fromUtf8(item->service_label);
     row.analog = item->systype == DSD_SYNC_ANALOG;
@@ -1293,6 +1352,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     const bool wholeLog = again || isUpdate;
     const int merged = tryMerge(row, wholeLog ? static_cast<int>(m_rows.size()) : kMergeScanRows);
     if (merged >= 0) {
+        (void)nameChannel(m_rows[merged]);
         const QModelIndex idx = index(merged);
         Q_EMIT dataChanged(idx, idx, mergeRoles);
         // A merge can only pull the absorbing row's start earlier, which may
@@ -1326,6 +1386,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     }
     Row logged = row;
     adoptNewRow(logged);
+    (void)nameChannel(logged);
     beginInsertRows(QModelIndex(), pos, pos);
     m_rows.insert(pos, logged);
     endInsertRows();
@@ -1501,10 +1562,10 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     m_ringRead = true;
     settleClear(pushSeq, ring);
 
-    // The effective options cover scans started from a saved system's extra
-    // arguments as well as the list UI. Unknown options cannot establish identity.
-    const bool singleSystem = opts_snapshot && !opts_snapshot->scanner_mode && !opts_snapshot->trunk_scan_enabled;
-    const QList<FreshRow> fresh = collectFresh(snapshot, scan, singleSystem ? m_sessionUid : QString());
+    // Whether a row may carry the saved system's UID is its own stamp (row_from_item()), which covers scans started
+    // from a saved system's extra arguments as well as the list UI. A snapshot read without its options cannot
+    // establish identity.
+    const QList<FreshRow> fresh = collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString());
 
     if (fresh.isEmpty()) {
         return;
@@ -1667,6 +1728,7 @@ row_from_json(const QJsonObject& obj) {
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
     row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
+    row.channelName = obj.value(QLatin1String("channelName")).toString();
     row.service = obj.value(QLatin1String("service")).toString();
     row.analog = obj.value(QLatin1String("analog")).toBool();
     row.receiveKind = obj.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
@@ -1740,6 +1802,9 @@ row_to_json(const CallHistoryModel::Row& row) {
     }
     if (!row.channel.isEmpty()) {
         obj.insert(QLatin1String("channel"), row.channel);
+    }
+    if (!row.channelName.isEmpty()) {
+        obj.insert(QLatin1String("channelName"), row.channelName);
     }
     if (!row.service.isEmpty()) {
         obj.insert(QLatin1String("service"), row.service);

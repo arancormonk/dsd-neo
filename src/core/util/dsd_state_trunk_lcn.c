@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -429,7 +430,8 @@ dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* sta
     if (opts && opts->chan_in_file[0] != '\0') {
         return 1;
     }
-    if (!opts || !state || opts->trunk_scan_enabled != 1) {
+    /* A parked target's own map; a paused scan's manual session imports none (issue #671). */
+    if (!opts || !state || !dsd_trunk_scan_owns_tuner(opts, state)) {
         return 0;
     }
     return (state->lcn_freq_count > 1) ? 1 : 0;

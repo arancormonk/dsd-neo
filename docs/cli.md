@@ -1811,9 +1811,9 @@ is delayed.
   [Live per-channel edits](trunk-scan.md#runtime-behavior).
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
   row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
-  `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving `-Y`
-  (scanner toggle, trunk set, tuner release) hands the foreground keyring back to the global keys. A row may not mix
-  direct and file sources.
+  `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving or
+  pausing `-Y` (scanner toggle, trunk set, tuner release, a frequency entry) hands the foreground keyring back to the
+  global keys. A row may not mix direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) and clear all avoids; see
   `docs/ui-terminal.md`.
@@ -1856,9 +1856,27 @@ is delayed.
   remain unchanged. The open audio sink retains its rate/channel count while logical DMR slot decoding may change.
   Global mode and modulation commands update the saved configuration, and exiting scanning restores it. Blank-mode rows
   retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning releases the row's
-  decoder and keys. A manual frequency setting exits a typed scan and reports that in its status message; legacy untyped
-  scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders, while automatic
-  scanning continues to park on them for the configured dwell.
+  decoder and keys. Manual `L` skips zero-frequency placeholders, while automatic scanning continues to park on them for
+  the configured dwell.
+  Pausing for a manual tune (issue #671): a frequency you enter wins over the scan, typed list or untyped, and pauses it
+  rather than ending it. That is the terminal's frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**
+  and the API's `rtl_set_freq`; a tuner release (Qt/Android **Explore from here**, the API's `tuner_release`) pauses the
+  scan the same way without a tune. Once the tune is accepted (applied, or still pending on the tuner) the row on air's
+  calls end under its name and keys, the configured decoder, receive settings and keys come back, and the receiver stays
+  on your frequency (`Applied: frequency -> 154.000000 MHz; scan paused`); a refused or deferred tune changes nothing.
+  With a rigctl peer under a typed row, the peer takes your frequency with the row's mode and passband, and the pause
+  then puts the configured ones back. The list, its place, the avoids and live per-channel edits (not a `Y` hold) wait
+  for `y` (Qt/Android **Resume scan**, the API's `scan_resume`), which carries on with the row the scan would have
+  stepped to next (`Scan resumed`, or `Resuming scan: waiting for the tune` until that row's tune lands; calls heard
+  meanwhile stay the operator's). A resume with no row to tune, or whose tune fails, leaves the scan paused and says
+  why. While a resume waits on its row, a frequency entry or a spectrum tap takes the receiver back and the scan stays
+  paused (`; scan paused`), and so does a Signal search start that goes on (it says nothing of the scan; one refused
+  leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying `Scan stays paused: the
+  resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused, another entry or a spectrum tap only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused:
+  resume it first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference
+  import that replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
+  row reads `[Paused]`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
@@ -1996,7 +2014,7 @@ is delayed.
     - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — minimum time between two preemptions (default `1000`)
     - Rules and per-protocol support: [Priority and preemption](csv-formats.md#priority-and-preemption)
 
-During single-system P25 trunking, **Input > RTL-SDR > Frequency** selects a new control channel and keeps trunk
+During single-system P25 trunking, **Input > Frequency...** (or `=`) selects a new control channel and keeps trunk
 following enabled. This also works in mixed `-ft` mode when P25 is active, including after sync loss on a learned
 P25 control channel. An accepted tune ends current calls and relearns the NAC and site, while preserving explicit
 identity/modulation overrides, same-network band plans (including `--p25-bandplan`), channel mappings, groups, and keys.
@@ -2004,7 +2022,8 @@ Subsequent calls return to the newly selected channel.
 A failed or deferred request leaves the previous channel and calls intact; retry a deferred request. Pending tunes
 receive the configured CC acquisition grace after hardware completion. If completion fails, hunting retries the
 selected channel. Old site candidates are discarded; disk candidates require a freshly learned site and its own
-cache file. Direct frequency changes are disabled during `--trunk-scan`, whose target list controls tuning.
+cache file. Under `--trunk-scan` a frequency entry selects no control channel: it pauses the scan on the frequency
+entered (see [Runtime Behavior](trunk-scan.md#runtime-behavior)), and `y` resumes it.
 
 ### Startup control-channel hunt
 

@@ -64,6 +64,7 @@
 
 #include "scan_analog_internal.h"
 #include "scan_owner.h"
+#include "scan_step_untyped.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -323,6 +324,13 @@ typedef struct {
      * Airspy, whose gain the retune profiles do not set). */
     uint32_t session;
     int gain_editable;
+    /* The operator paused the scan (issue #671): no target is on air, and nothing the coordinator owns ticks, tunes,
+       yields, holds or answers for the receiver until a resume re-parks coord->active, the target it left
+       (dsd_engine_trunk_scan_pause_locked()). Mirrored in dsd_state::trunk_scan_paused for the running predicate. */
+    int paused;
+    /* The empty decoder state a pause puts over the live one, so the manual session starts from no target's tables:
+       storage of its own, never scratch_snapshot, which holds a resume's rollback (F1). */
+    dsd_trunk_scan_snapshot empty_snapshot;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -2131,10 +2139,11 @@ trunk_scan_target_gain(const dsd_trunk_scan_target_runtime* rt, int* db) {
 }
 
 /* Whether the parked target runs a tuner gain of its own, which a configured gain does not reach while it is on
-   air. */
+   air. A paused scan has none on air: the configured gain is in force. */
 static int
 trunk_scan_active_target_sets_gain(const dsd_trunk_scan_coord* coord) {
-    return coord && coord->active < coord->count && trunk_scan_target_gain(&coord->targets[coord->active], NULL);
+    return coord && !coord->paused && coord->active < coord->count
+           && trunk_scan_target_gain(&coord->targets[coord->active], NULL);
 }
 
 /* Whether the input runs a tuner gain the scan sets per target (the retune gain profile): an RTL-family input other
@@ -2156,11 +2165,13 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_active_ordinal = 0U;
     state->trunk_scan_target_count = 0U;
     state->trunk_scan_hold = 0U;
+    state->trunk_scan_paused = 0U;
     state->trunk_scan_active_avoided = 0U;
     state->trunk_scan_avoided_count = 0U;
     state->trunk_scan_configured_gain = 0;
     state->trunk_scan_gain_override = 0U;
     state->trunk_scan_configured_autogain = 0U;
+    state->trunk_scan_configured_trunk_enable = 0U;
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
@@ -2179,27 +2190,61 @@ trunk_scan_avoided_count(const dsd_trunk_scan_coord* coord) {
     return avoided;
 }
 
+/* What the coordinator publishes whether or not a target is on air: the list's size and avoids, the operator hold, and
+   the configured gain, autogain and trunking a save writes and a resume runs. */
+static void
+trunk_scan_publish_configured(dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    const size_t avoided = trunk_scan_avoided_count(coord);
+    state->trunk_scan_target_count = (uint16_t)(coord->count > UINT16_MAX ? UINT16_MAX : coord->count);
+    state->trunk_scan_hold = coord->hold_active ? 1U : 0U;
+    state->trunk_scan_avoided_count = (uint16_t)(avoided > UINT16_MAX ? UINT16_MAX : avoided);
+    state->trunk_scan_configured_gain = (int16_t)coord->configured_rtl_gain_value;
+    state->trunk_scan_configured_autogain = coord->configured_tuner_autogain_on ? 1U : 0U;
+    state->trunk_scan_configured_trunk_enable = coord->saved_trunk_enable ? 1U : 0U;
+}
+
+/* A paused scan (issue #671) names no target: no id, ordinal or scan row (the "this channel" editors see none), no
+   timing, and no target gain over the configured one. What it keeps for a resume and a save stays published. */
+static void
+trunk_scan_publish_paused(dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    trunk_scan_publish_configured(state, coord);
+    state->trunk_scan_paused = 1U;
+    state->trunk_scan_active_id[0] = '\0';
+    state->trunk_scan_active_ordinal = 0U;
+    state->trunk_scan_active_avoided = 0U;
+    state->trunk_scan_gain_override = 0U;
+    state->scan_row_session = 0U;
+    state->scan_row_index = -1;
+    state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
+    state->scan_row_editable = 0U;
+    state->scan_row_edited = 0U;
+    state->scan_row_listed = 0U;
+    dsd_scan_timing_clear(state);
+}
+
 /* Publish which target the receiver is parked on, for the frontends that label the channel
  * being heard. Written on the decoder thread beside every other dsd_state field, so it
- * reaches the UI through the snapshot rather than through the coordinator. */
+ * reaches the UI through the snapshot rather than through the coordinator. A paused scan
+ * publishes its paused form instead, so every caller that edits the coordinator republishes
+ * it as it stands. */
 static void
 trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* coord) {
     if (!state || !coord || coord->active >= coord->count) {
         trunk_scan_clear_published_target(state);
         return;
     }
+    if (coord->paused) {
+        trunk_scan_publish_paused(state, coord);
+        return;
+    }
     const size_t ordinal = coord->active + 1U;
     DSD_SNPRINTF(state->trunk_scan_active_id, sizeof state->trunk_scan_active_id, "%s",
                  coord->targets[coord->active].target.id);
     state->trunk_scan_active_ordinal = (uint16_t)(ordinal > UINT16_MAX ? UINT16_MAX : ordinal);
-    state->trunk_scan_target_count = (uint16_t)(coord->count > UINT16_MAX ? UINT16_MAX : coord->count);
-    const size_t avoided = trunk_scan_avoided_count(coord);
-    state->trunk_scan_hold = coord->hold_active ? 1U : 0U;
+    trunk_scan_publish_configured(state, coord);
+    state->trunk_scan_paused = 0U;
     state->trunk_scan_active_avoided = coord->targets[coord->active].avoided ? 1U : 0U;
-    state->trunk_scan_avoided_count = (uint16_t)(avoided > UINT16_MAX ? UINT16_MAX : avoided);
-    state->trunk_scan_configured_gain = (int16_t)coord->configured_rtl_gain_value;
     state->trunk_scan_gain_override = trunk_scan_active_target_sets_gain(coord) ? 1U : 0U;
-    state->trunk_scan_configured_autogain = coord->configured_tuner_autogain_on ? 1U : 0U;
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     const dsd_scan_option_values* listed = rt->profile ? &rt->profile->values : &rt->target.row_options;
     state->scan_row_session = coord->session;
@@ -3311,14 +3356,39 @@ trunk_scan_service_hold(const dsd_opts* opts, const dsd_state* state, dsd_trunk_
     return 1;
 }
 
+/* What the end of a scan puts back beside the scope leave: the configured gain and the trunking flags. The leave
+   restores the configured modulation, which a modulation change made during the scan recaptured
+   (dsd_scan_mode_resume()), so the modulation the scan started with is not put back over it (issue #671). */
+static void
+trunk_scan_restore_saved_trunk_gain_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord) {
+    if (!opts || !coord) {
+        return;
+    }
+    opts->rtl_gain_value = coord->configured_rtl_gain_value;
+    opts->trunk_enable = coord->saved_trunk_enable;
+    opts->trunk_is_tuned = coord->saved_trunk_is_tuned;
+}
+
+/* A failed init puts back everything it captured, the modulation too: nothing can have changed it since. */
 static void
 trunk_scan_restore_saved_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord) {
     if (!opts || !coord) {
         return;
     }
     trunk_scan_restore_saved_mod_gain_opts(opts, coord);
-    opts->trunk_enable = coord->saved_trunk_enable;
-    opts->trunk_is_tuned = coord->saved_trunk_is_tuned;
+    trunk_scan_restore_saved_trunk_gain_opts(opts, coord);
+}
+
+/* The modulation the session runs outside the scan. A resume takes it again (issue #671): the paused session ran the
+   configured modulation, and a change made then is the configured one. */
+static void
+trunk_scan_capture_saved_mod_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts) {
+    coord->saved_mod_c4fm = opts->mod_c4fm;
+    coord->saved_mod_qpsk = opts->mod_qpsk;
+    coord->saved_mod_gfsk = opts->mod_gfsk;
+    coord->saved_mod_p25p2_c4fm = opts->mod_p25p2_c4fm;
+    coord->saved_mod_p25p2_profile_lock = opts->mod_p25p2_profile_lock;
+    coord->saved_mod_cli_lock = opts->mod_cli_lock;
 }
 
 static void
@@ -3328,12 +3398,7 @@ trunk_scan_capture_saved_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts)
     }
     coord->saved_trunk_enable = opts->trunk_enable;
     coord->saved_trunk_is_tuned = opts->trunk_is_tuned;
-    coord->saved_mod_c4fm = opts->mod_c4fm;
-    coord->saved_mod_qpsk = opts->mod_qpsk;
-    coord->saved_mod_gfsk = opts->mod_gfsk;
-    coord->saved_mod_p25p2_c4fm = opts->mod_p25p2_c4fm;
-    coord->saved_mod_p25p2_profile_lock = opts->mod_p25p2_profile_lock;
-    coord->saved_mod_cli_lock = opts->mod_cli_lock;
+    trunk_scan_capture_saved_mod_opts(coord, opts);
     coord->configured_rtl_gain_value = opts->rtl_gain_value;
 #ifdef USE_RADIO
     coord->configured_tuner_autogain_on = rtl_stream_get_tuner_autogain() ? 1 : 0;
@@ -3744,7 +3809,8 @@ trunk_scan_visit_expired(const dsd_opts* opts, const dsd_state* state, const dsd
 int
 dsd_engine_trunk_scan_visit_expired(const dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!opts || !state || !coord || coord->active >= coord->count) {
+    /* A paused scan has no visit: nothing to expire, and no timing to publish. */
+    if (!opts || !state || !coord || coord->paused || coord->active >= coord->count) {
         return 0;
     }
     const double now_m = trunk_scan_now_m();
@@ -3881,7 +3947,7 @@ trunk_scan_service_tone_rejection(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
 int
 dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!opts || !state || !coord || coord->active >= coord->count) {
+    if (!opts || !state || !coord || coord->paused || coord->active >= coord->count) {
         return 0;
     }
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -3973,7 +4039,8 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
 void
 dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!opts || !state || !coord || coord->count == 0) {
+    /* A paused scan rotates nothing and publishes nothing until a resume. */
+    if (!opts || !state || !coord || coord->count == 0 || coord->paused) {
         return;
     }
     if (!p25_sm_tick_guard_try_enter()) {
@@ -4070,6 +4137,11 @@ dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
         return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
+    }
+    /* Every control acts on the target on air, and a paused scan has none: a resume comes first. The hold and the
+       avoids stay as they are. */
+    if (coord->paused) {
+        return DSD_TRUNK_SCAN_CONTROL_PAUSED;
     }
     int rc;
     switch (op) {
@@ -4170,6 +4242,10 @@ trunk_scan_apply_decryption(dsd_opts* opts, dsd_state* state, const char* target
     if (!opts || !state || !coord || coord->active >= coord->count || !keys || !map) {
         return DSD_TRUNK_KEY_UNAVAILABLE;
     }
+    /* The target a live change named is not on air while the scan is paused. */
+    if (coord->paused) {
+        return DSD_TRUNK_KEY_STALE;
+    }
     const dsd_trunk_scan_target_type type = coord->targets[coord->active].target.type;
     /* An analog target decrypts nothing: no material, map or forcing applies to it. */
     if (trunk_scan_type_is_analog(type)
@@ -4188,9 +4264,11 @@ trunk_scan_apply_decryption(dsd_opts* opts, dsd_state* state, const char* target
     return result;
 }
 
+/* The parked target's state machines, which a paused scan has none of: the global ones answer for the manual session.
+   Read under the P25 SM tick guard (the watchdog), which a pause and a resume hold. */
 void*
 dsd_engine_trunk_scan_active_p25_ctx(void) {
-    if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0) {
+    if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0 || g_trunk_scan_coord->paused) {
         return NULL;
     }
     dsd_trunk_scan_target_runtime* rt = &g_trunk_scan_coord->targets[g_trunk_scan_coord->active];
@@ -4203,7 +4281,7 @@ dsd_engine_trunk_scan_active_p25_ctx(void) {
 const char*
 dsd_engine_trunk_scan_active_chan_csv(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
-    if (!coord || coord->active >= coord->count) {
+    if (!coord || coord->paused || coord->active >= coord->count) {
         return NULL;
     }
     const char* chan_csv = coord->targets[coord->active].target.chan_csv;
@@ -4212,7 +4290,7 @@ dsd_engine_trunk_scan_active_chan_csv(const dsd_state* state) {
 
 void*
 dsd_engine_trunk_scan_active_dmr_ctx(void) {
-    if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0) {
+    if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0 || g_trunk_scan_coord->paused) {
         return NULL;
     }
     dsd_trunk_scan_target_runtime* rt = &g_trunk_scan_coord->targets[g_trunk_scan_coord->active];
@@ -4262,7 +4340,8 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
         return;
     }
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!opts || !state || !coord || coord->count == 0) {
+    /* A paused scan's target is not on air: the manual session's traffic holds nothing. */
+    if (!opts || !state || !coord || coord->count == 0 || coord->paused) {
         return;
     }
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -4337,6 +4416,9 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
     free(coord->scratch_snapshot.chan_map_chan);
     free(coord->scratch_snapshot.chan_map_freq);
+    free(coord->empty_snapshot.trunk_lcn_freq_ext);
+    free(coord->empty_snapshot.chan_map_chan);
+    free(coord->empty_snapshot.chan_map_freq);
     free(coord->targets);
     free(coord);
 }
@@ -4423,6 +4505,46 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
     return coord;
 }
 
+// Each target carries its own missing-channel ledger and channel map, so the exit summary the
+// engine logs once for a single system becomes one line per target with a channel map here.
+static void
+trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
+    if (!coord || coord->count == 0) {
+        return;
+    }
+    /* A paused scan saved its target as it paused: the live state is the manual session's, never a target's. */
+    if (!coord->paused && coord->active < coord->count) {
+        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
+            continue;
+        }
+        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, trunk_scan_snapshot_chan_lookup,
+                                        &rt->snapshot);
+    }
+}
+
+/* Detach the attached coordinator @p coord and release it. @p failed_init: an init that attached it and then failed,
+   whose rollback puts back the scan-start modulation as well (trunk_scan_restore_saved_opts()). */
+static void
+trunk_scan_detach(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int failed_init) {
+    trunk_scan_log_nxdn_diag_summaries(coord, state);
+    dsd_engine_channel_scan_leave(opts, state);
+    if (failed_init) {
+        trunk_scan_restore_saved_opts(opts, coord);
+    } else {
+        trunk_scan_restore_saved_trunk_gain_opts(opts, coord);
+    }
+    dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
+    dsd_scan_keys_leave(state);
+    trunk_scan_uninstall_runtime_hooks(coord);
+    trunk_scan_clear_published_target(state);
+    (void)dsd_engine_scan_own(state, 0, NULL, NULL);
+}
+
 /* Undo a partially-attached init: restore the global opts the coordinator
  * captured, release the coordinator and its snapshots, and drop the target
  * list's owned storage. */
@@ -4478,7 +4600,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     trunk_scan_install_runtime_hooks(coord);
     const int switch_rc = trunk_scan_switch_to(opts, state, coord, 0, 0);
     if (switch_rc == TRUNK_SCAN_PREPARE_FAILED) {
-        dsd_engine_trunk_scan_shutdown(opts, state);
+        trunk_scan_detach(opts, state, coord, 1);
         scan_set_error(err, err_sz, "unable to prepare initial trunk scan key/policy scope");
         return -1;
     }
@@ -4489,41 +4611,220 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     return 0;
 }
 
-// Each target carries its own missing-channel ledger and channel map, so the exit summary the
-// engine logs once for a single system becomes one line per target with a channel map here.
-static void
-trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
-    if (!coord || coord->count == 0) {
-        return;
-    }
-    if (coord->active < coord->count) {
-        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
-    }
-    for (size_t i = 0; i < coord->count; i++) {
-        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
-        if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
-            continue;
-        }
-        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, trunk_scan_snapshot_chan_lookup,
-                                        &rt->snapshot);
-    }
-}
-
 void
 dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!coord) {
         return;
     }
-    trunk_scan_log_nxdn_diag_summaries(coord, state);
-    dsd_engine_channel_scan_leave(opts, state);
-    trunk_scan_restore_saved_opts(opts, coord);
+    trunk_scan_detach(opts, state, coord, 0);
+}
+
+/* The requests in flight for the target a pause leaves (issue #671 F2): the coordinator's park, and a newer recovery
+   request either state machine made since (trunk_scan_reconcile_p25_retune_recovery()). Captured before the target's
+   release, which forgets the DMR machine's (dmr_sm_abandon_carrier()). */
+typedef struct {
+    uint64_t park;
+    uint64_t p25;
+    uint64_t dmr;
+} trunk_scan_pause_requests;
+
+static void
+trunk_scan_capture_pause_requests(const dsd_trunk_scan_target_runtime* rt, trunk_scan_pause_requests* out) {
+    out->park = rt->tune_pending ? rt->tune_request_id : 0U;
+    out->p25 = rt->p25_ctx.cc_tune_pending ? rt->p25_ctx.cc_tune_request_id : 0U;
+    out->dmr = rt->dmr_ctx.cc_tune_request_id;
+}
+
+/* Let go of every request captured, completing none: nothing of the target's waits on them any more, so a failure has
+   nothing to roll back and cannot keep the manual session's frames withheld, while one still in flight keeps the frame
+   gate closed until the backend answers it, as any tune does (dsd_trunk_tuning_request_disown()). The handles go with
+   them: a resume's park replaces them, and nothing reads them while the scan is paused. */
+static void
+trunk_scan_disown_pause_requests(dsd_trunk_scan_target_runtime* rt, const trunk_scan_pause_requests* requests) {
+    const uint64_t ids[] = {requests->park, requests->p25, requests->dmr};
+    for (size_t i = 0; i < sizeof ids / sizeof ids[0]; i++) {
+        if (ids[i] != 0U) {
+            dsd_trunk_tuning_request_disown(ids[i]);
+        }
+    }
+    rt->tune_request_id = 0U;
+    rt->tune_pending = 0;
+    rt->p25_ctx.cc_tune_request_id = 0U;
+    rt->p25_ctx.cc_tune_pending = 0;
+    rt->dmr_ctx.cc_tune_request_id = 0U;
+}
+
+/* A paused target runs no visit: its clocks start again at the resume's park (trunk_scan_switch_to()). */
+static void
+trunk_scan_clear_target_clocks(dsd_trunk_scan_target_runtime* rt) {
+    rt->visit_since_m = -1.0;
+    rt->visit_rearm_pending = 0;
+    rt->idle_since_m = -1.0;
+    rt->retry_until_m = 0.0;
+    rt->retry_released_park = 0;
+    rt->last_allowed_activity_m = 0.0;
+}
+
+/* What the coordinator puts back for the session in force once its scopes are left, the paused session's and a
+   refused resume's alike: the configured gain (never the scan-start modulation, B7: the scope leave puts the configured
+   one back), trunking off (the configured trunking is the coordinator's, for the save and shutdown: a parked trunked
+   target's own would route a frequency entry to the P25 control-channel selection), and the target's keys, talkgroup
+   policy and key map. */
+static void
+trunk_scan_leave_target_opts(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    opts->rtl_gain_value = coord->configured_rtl_gain_value;
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 0;
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);
     dsd_scan_keys_leave(state);
-    trunk_scan_uninstall_runtime_hooks(coord);
-    trunk_scan_clear_published_target(state);
-    (void)dsd_engine_scan_own(state, 0, NULL, NULL);
+}
+
+int
+dsd_engine_trunk_scan_pause_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind,
+                                      dsd_trunk_scan_leave_report* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+    }
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->active >= coord->count) {
+        return -1;
+    }
+    if (coord->paused) {
+        return 0;
+    }
+    /* A watchdog tune's notice still pending belongs to the target left, as at a target switch. */
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    trunk_scan_pause_requests requests;
+    trunk_scan_capture_pause_requests(rt, &requests);
+    /* A target's own gain stays on the device until the stream reopens: only the caller can reopen it. */
+    int target_gain_db = 0;
+    const int restart_gain =
+        trunk_scan_target_gain(rt, &target_gain_db) && target_gain_db != coord->configured_rtl_gain_value;
+    /* The forced advance's release (#507): a Phase 2 superframe in progress is delivered while its call and audio gates
+       exist, the state machines come to rest without tuning, and the calls end and commit under the target still
+       published, with its keys and policy. */
+    trunk_scan_release_active_carrier(opts, state, rt);
+    trunk_scan_disown_pause_requests(rt, &requests);
+    /* Idle by construction: a resume cannot restore a call that ended here. */
+    trunk_scan_save_target_snapshot(coord, state, rt);
+    coord->paused = 1;
+    coord->forced_visit_release = 0;
+    trunk_scan_clear_target_clocks(rt);
+    state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    state->operator_tuned = 1U;
+    /* Published before the scopes are left, so everything the leave reads already sees the scan paused (the running
+       predicate). */
+    trunk_scan_publish_active_target(state, coord);
+    /* The manual session starts from no target's tables (channel map, IDENs and band plan, control channel and its
+       candidates, lockout and NXDN ledgers, call context). Before the scope leave: the empty state writes the symbol
+       timing a fresh target starts from, and the leave puts the configured timing back over it. */
+    trunk_scan_seed_empty_snapshot(&coord->empty_snapshot, opts, state);
+    trunk_scan_restore_snapshot(state, &coord->empty_snapshot);
+    state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
+    const int monitor_request = dsd_engine_channel_scan_leave(opts, state);
+    trunk_scan_leave_target_opts(opts, state, coord);
+    if (kind == DSD_TRUNK_SCAN_PAUSE_IN_PLACE) {
+        /* No tune follows, so no carrier boundary forgets what the decoders gathered under the target's policy. */
+        dsd_engine_scan_forget_carrier(opts, state);
+    }
+    if (out) {
+        out->monitor_request = monitor_request;
+        out->restart_gain = restart_gain;
+    }
+    LOG_INFO("NOTICE: Trunk scan paused at target '%s'\n", rt->target.id);
+    return 0;
+}
+
+int
+dsd_engine_trunk_scan_pause_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_pause_kind kind) {
+    return dsd_engine_trunk_scan_pause_ex_locked(opts, state, kind, NULL);
+}
+
+/* A resume that did not park (F1): the scan is paused again at once, internally and as published, so no tick or hook
+   acts on the target the attempt began, then what the attempt began goes. A refused retune had installed the target:
+   the manual session's state and received identity come back first (they write the timing and modulation the scope
+   leave then replaces), then the target's options, keys, policy and maps leave, and the scope leave's front-end request
+   comes last. Returns the scope leave's monitor request. */
+static int
+trunk_scan_resume_rollback(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int prepare_failed) {
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    coord->paused = 1;
+    trunk_scan_publish_active_target(state, coord);
+    trunk_scan_clear_target_clocks(rt);
+    int monitor_request = 0;
+    if (prepare_failed) {
+        /* Nothing was installed: only the scopes the preparation began, around the session as it was, go. */
+        dsd_scan_mode_leave(opts, state);
+        dsd_scan_groups_leave(state);
+    } else {
+        trunk_scan_restore_snapshot(state, &coord->scratch_snapshot);
+        state->rx_id = coord->rollback_rx_id;
+        state->rx_id_trunk_tune_pending = 0U;
+        /* No snapshot keeps the RAS evidence the switch reset: none until the carrier proves it again. */
+        dmr_ras_reset(state);
+        trunk_scan_leave_target_opts(opts, state, coord);
+        monitor_request = dsd_engine_channel_scan_leave(opts, state);
+    }
+    trunk_scan_publish_active_target(state, coord);
+    return monitor_request;
+}
+
+int
+dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+    }
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->active >= coord->count) {
+        return -1;
+    }
+    if (!coord->paused) {
+        /* Running: a park still in flight is the resume pending, which a second request leaves as it is. */
+        return coord->targets[coord->active].tune_pending ? 1 : 0;
+    }
+    /* The manual session's calls end first, while no target is published: they commit under no target's name. The
+       switch below restores the target's state over them. */
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
+    trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
+    coord->rollback_rx_id = state->rx_id;
+    trunk_scan_capture_saved_mod_opts(coord, opts);
+    coord->paused = 0;
+    /* The target saved at the pause, re-parked as a revisit: scopes begun again around the session as it is now, its
+       keys, policy, options and trunking installed, fresh visit and acquisition clocks. The operator hold stays. */
+    const int rc = trunk_scan_switch_to(opts, state, coord, coord->active, 0);
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rc == 0) {
+        state->operator_tuned = 0U;
+        LOG_INFO("NOTICE: Trunk scan resumed at target '%s'\n", rt->target.id);
+        return rt->tune_pending ? 1 : 0;
+    }
+    const int prepare_failed = rc == TRUNK_SCAN_PREPARE_FAILED;
+    const int monitor_request = trunk_scan_resume_rollback(opts, state, coord, prepare_failed);
+    if (out) {
+        out->monitor_request = monitor_request;
+        /* A refused retune may have put the target's own gain on the device before the refusal (a receive profile
+           refused at the rate it landed on): it stays there until the stream reopens, as at a pause. */
+        int target_gain_db = 0;
+        out->restart_gain = !prepare_failed && trunk_scan_target_gain(rt, &target_gain_db)
+                            && target_gain_db != coord->configured_rtl_gain_value;
+    }
+    dsd_engine_scan_toast_resume_failed(state, (long)rt->target.frequency_hz,
+                                        prepare_failed ? DSD_SCAN_RESUME_FAILED_SETUP : DSD_SCAN_RESUME_FAILED_TUNE);
+    return prepare_failed ? -2 : -3;
+}
+
+int
+dsd_engine_trunk_scan_resume_locked(dsd_opts* opts, dsd_state* state) {
+    return dsd_engine_trunk_scan_resume_ex_locked(opts, state, NULL);
+}
+
+int
+dsd_engine_trunk_scan_paused(const dsd_state* state) {
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
+    return coord && coord->paused ? 1 : 0;
 }
 
 #ifdef DSD_TRUNK_SCAN_TEST_CLOCK
@@ -4611,10 +4912,11 @@ dsd_engine_scan_hears_tones(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
-    if (coord) {
+    /* A paused scan's targets are not on air: the configured session is (issue #671). */
+    if (coord && !coord->paused) {
         return trunk_scan_targets_hear_tones(coord);
     }
-    if (opts->trunk_scan_enabled == 1) {
+    if (!coord && opts->trunk_scan_enabled == 1) {
         return 1;
     }
     return dsd_channel_modes_conventional_hear_tones(opts, state);
@@ -4627,8 +4929,8 @@ dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandpl
         return count;
     }
     for (size_t i = 0; i < coord->count; i++) {
-        if (i == coord->active) {
-            continue; /* live in state: the caller collects those */
+        if (i == coord->active && !coord->paused) {
+            continue; /* live in state: the caller collects those; a paused target's are in its snapshot */
         }
         const dsd_trunk_scan_snapshot* snapshot = &coord->targets[i].snapshot;
         count = dsd_p25_bandplan_append_tables(rows, count, cap, snapshot->p25_iden_fdma, snapshot->p25_iden_tdma);
@@ -4642,7 +4944,7 @@ dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state) {
         return 0;
     }
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
-    if (!coord || coord->active >= coord->count) {
+    if (!coord || coord->paused || coord->active >= coord->count) {
         return 0;
     }
     return trunk_scan_type_gfsk_symbol_rate(coord->targets[coord->active].target.type);
@@ -4654,7 +4956,7 @@ dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
         return 0;
     }
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
-    if (!coord || coord->active >= coord->count) {
+    if (!coord || coord->paused || coord->active >= coord->count) {
         return 0;
     }
     return trunk_scan_type_is_p25_class(coord->targets[coord->active].target.type);
@@ -4666,7 +4968,7 @@ dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_
         return 0;
     }
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
-    if (!coord || coord->active >= coord->count) {
+    if (!coord || coord->paused || coord->active >= coord->count) {
         return 0;
     }
     const dsd_trunk_scan_target* target = &coord->targets[coord->active].target;
@@ -4732,6 +5034,17 @@ dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_state* s
     return opts->rtl_gain_value > 0 ? 0 : 1;
 }
 
+int
+dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!coord) {
+        return -1;
+    }
+    coord->saved_trunk_enable = enabled ? 1 : 0;
+    state->trunk_scan_configured_trunk_enable = (uint8_t)coord->saved_trunk_enable;
+    return 0;
+}
+
 /* The target @p target_id of the scan session @p session names, or -1 when this coordinator is another session or has
    no such target. */
 static int
@@ -4755,7 +5068,8 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
                         const dsd_scan_row_edit* next, dsd_scan_row_edit_result* out) {
     dsd_trunk_scan_target_runtime* rt = &coord->targets[index];
     out->previous = rt->edit;
-    if (index != coord->active) {
+    /* A paused scan has no target on air: the edit, or its rollback, waits for the target's next visit. */
+    if (index != coord->active || coord->paused) {
         rt->edit = *next;
         dsd_scan_option_values stored;
         out->options = *trunk_scan_target_values(rt, &stored);
@@ -4866,7 +5180,7 @@ dsd_engine_trunk_scan_edit_target(dsd_opts* opts, dsd_state* state, uint32_t ses
     }
     /* The parked target's retune is still in flight: it lands the width it queued, and only the request this call's
        caller makes can be put back if the front end refuses it, so a width or a gain waits for the landing. */
-    if ((size_t)index == coord->active && rt->tune_pending
+    if ((size_t)index == coord->active && !coord->paused && rt->tune_pending
         && (field & (DSD_SCAN_ROW_FIELD_WIDTH | DSD_SCAN_ROW_FIELD_GAIN))) {
         return DSD_SCAN_ROW_EDIT_BUSY;
     }

@@ -196,6 +196,10 @@ test_predicates(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     rc |= expect_int("trunk predicate trunk scan", trunk_enabled(&ctx), 1);
+    /* A paused trunk scan refuses Next channel (issue #671): the row goes with the rotation. */
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("trunk predicate paused trunk scan", trunk_enabled(&ctx), 0);
+    state.trunk_scan_paused = 0;
     opts.trunk_scan_enabled = 0;
 
     /* Hold and avoid rows need a rotation to act on: -Y or --trunk-scan, not plain -T. */
@@ -209,23 +213,54 @@ test_predicates(void) {
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     rc |= expect_int("scan rotation trunk scan", scan_rotation_active(&ctx), 1);
+    /* A paused scan has no rotation on air: hold, avoid and clear avoids are refused there (issue #671). */
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("scan rotation paused trunk scan", scan_rotation_active(&ctx), 0);
+    state.trunk_scan_paused = 0;
     opts.trunk_scan_enabled = 0;
+    state.lcn_scan_paused = 1;
+    rc |= expect_int("scan rotation paused -Y", scan_rotation_active(&ctx), 0);
+    state.lcn_scan_paused = 0;
 
-    /* The frequency row is hidden while --trunk-scan owns the tuner, which refuses a manual tune; -Y and plain
-       sessions keep it. */
-    rc |= expect_int("frequency row null ctx", rtl_freq_offered(NULL), 1);
-    rc |= expect_int("frequency row plain session", rtl_freq_offered(&ctx), 1);
+    /* The frequency row (Input, issue #671) is offered where a tune can land: a radio input, or any input but a
+       replay with a live rigctl peer. A scan no longer hides it: an accepted tune pauses the scan. */
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    rc |= expect_int("frequency row null ctx", input_freq_offered(NULL), 0);
+    rc |= expect_int("frequency row null options", freq_entry_offered(NULL), 0);
+    rc |= expect_int("frequency row on a radio input", input_freq_offered(&ctx), 1);
     opts.scanner_mode = 1;
-    rc |= expect_int("frequency row under -Y", rtl_freq_offered(&ctx), 1);
+    rc |= expect_int("frequency row under -Y", input_freq_offered(&ctx), 1);
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
-    rc |= expect_int("frequency row hidden under trunk scan", rtl_freq_offered(&ctx), 0);
+    rc |= expect_int("frequency row under trunk scan", input_freq_offered(&ctx), 1);
+    state.trunk_scan_paused = 1;
+    rc |= expect_int("frequency row under a paused trunk scan", input_freq_offered(&ctx), 1);
+    state.trunk_scan_paused = 0;
     opts.trunk_scan_enabled = 0;
-    /* An I/Q replay plays the tuning its capture recorded and refuses every manual tune (issue #670). */
+    /* An I/Q replay plays the tuning its capture recorded and refuses every manual tune (issue #670), a rigctl peer's
+       included. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
-    rc |= expect_int("frequency row hidden during an I/Q replay", rtl_freq_offered(&ctx), 0);
+    rc |= expect_int("frequency row hidden during an I/Q replay", input_freq_offered(&ctx), 0);
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    rc |= expect_int("frequency row hidden during an I/Q replay with rigctl", input_freq_offered(&ctx), 0);
+    opts.use_rigctl = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
     opts.audio_in_dev[0] = '\0';
-    rc |= expect_int("frequency row back on a live radio", rtl_freq_offered(&ctx), 1);
+    rc |= expect_int("frequency row back on a live radio", input_freq_offered(&ctx), 1);
+    /* Audio input tunes only through a connected rigctl peer: in every build, the radio pipeline or not. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_int("frequency row hidden on audio input", input_freq_offered(&ctx), 0);
+    opts.use_rigctl = 1;
+    rc |= expect_int("frequency row hidden with a dropped rigctl peer", input_freq_offered(&ctx), 0);
+    opts.rigctl_sockfd = (dsd_socket_t)0; /* socket 0 is a socket */
+    rc |= expect_int("frequency row on audio input with a rigctl peer", input_freq_offered(&ctx), 1);
+    opts.audio_in_type = AUDIO_IN_TCP;
+    rc |= expect_int("frequency row on tcp audio with a rigctl peer", input_freq_offered(&ctx), 1);
+    opts.use_rigctl = 0;
+    rc |= expect_int("frequency row hidden with rigctl off", input_freq_offered(&ctx), 0);
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts.audio_in_type = AUDIO_IN_RTL;
 
     rc |= expect_int("provoice predicate null ctx", provoice_active(NULL), 0);
     rc |= expect_int("provoice predicate off", provoice_active(&ctx), 0);
@@ -385,6 +420,24 @@ test_trunking_labels(void) {
     rc |= expect_str("trunk on", lbl_trunk(&ctx, b, sizeof(b)), "Trunking [On]");
     opts.scanner_mode = 0;
     rc |= expect_str("scanner off", lbl_scan(&ctx, b, sizeof(b)), "Conventional scanning [Off]");
+    /* The y row reads the shared scan state (issue #671): -Y on, paused (a resume waiting on its row's tune included),
+       and under --trunk-scan, which y pauses and resumes rather than stops, the trunk scan's own state. */
+    opts.scanner_mode = 1;
+    rc |= expect_str("scanner on", lbl_scan(&ctx, b, sizeof(b)), "Conventional scanning [On]");
+    opts.scanner_mode = 0;
+    state.lcn_scan_paused = 1;
+    rc |= expect_str("scanner paused", lbl_scan(&ctx, b, sizeof(b)), "Conventional scanning [Paused]");
+    state.lcn_scan_resume_pending = 1;
+    rc |= expect_str("scanner resume pending", lbl_scan(&ctx, b, sizeof(b)), "Conventional scanning [Paused]");
+    state.lcn_scan_paused = 0;
+    state.lcn_scan_resume_pending = 0;
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_str("trunk scan running", lbl_scan(&ctx, b, sizeof(b)), "Trunk scan [Running]");
+    state.trunk_scan_paused = 1;
+    rc |= expect_str("trunk scan paused", lbl_scan(&ctx, b, sizeof(b)), "Trunk scan [Paused]");
+    state.trunk_scan_paused = 0;
+    opts.trunk_scan_enabled = 0;
+    rc |= expect_str("scanner null ctx", lbl_scan(NULL, b, sizeof(b)), "Conventional scanning [Off]");
 
     /* The hold and avoid labels read whichever scanner is running. */
     rc |= expect_str("scan hold null ctx", lbl_scan_hold(NULL, b, sizeof(b)), "Scan hold [Off]");
@@ -1071,12 +1124,58 @@ test_radioreference_labels_and_predicates(void) {
     return rc;
 }
 
+/* The Input > Frequency... row (issue #671): in every build, the tuned frequency on a radio input, and on audio input
+   with a rigctl peer the frequency last sent to the peer, never the made-up startup centre. */
+static int
+test_input_freq_label(void) {
+    int rc = 0;
+    char b[160];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 769768750U;
+    rc |= expect_str("frequency", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [769.768750 MHz]");
+    /* The tuned frequency every frontend shows (issue #670): during an I/Q replay the capture's centre, which follows
+       its recorded retunes, not the opening centre rtlsdr_center_freq keeps. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "iqreplay:capture.iq.json");
+    opts.rtlsdr_center_freq = 851012500U;
+    opts.iq_replay_center_freq = 851500000U;
+    rc |= expect_str("frequency replay centre", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [851.500000 MHz]");
+    opts.iq_replay_center_freq = 0U;
+    opts.audio_in_dev[0] = '\0';
+    /* Nothing tuned to show: no number and no unit. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    rc |= expect_str("frequency off a radio input", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 0U;
+    rc |= expect_str("frequency none tuned", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
+    rc |= expect_str("frequency null ctx", lbl_input_freq(NULL, b, sizeof(b)), "Frequency... [-]");
+
+    /* Audio input with a rigctl peer: the 850 MHz centre initOpts() makes up is no frequency the peer was sent. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.rtlsdr_center_freq = 850000000U;
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = (dsd_socket_t)5;
+    rc |= expect_str("rigctl frequency nothing sent", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
+    opts.rigctl_sent_freq_hz = 146520000U;
+    rc |= expect_str("rigctl frequency last sent", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [146.520000 MHz]");
+    /* A dropped peer was sent nothing this row can tune again. */
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    rc |= expect_str("rigctl frequency dropped peer", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_predicates();
     rc |= test_decoder_labels();
     rc |= test_trunking_labels();
+    rc |= test_input_freq_label();
     rc |= test_encryption_labels();
     rc |= test_input_and_audio_labels();
     rc |= test_input_width_labels();

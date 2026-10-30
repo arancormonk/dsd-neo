@@ -2824,8 +2824,17 @@ test_encoder_silent_udp_gives_way_to_a_queued_command(void) {
         rc = 1;
     }
     g_silent_spurious_first = 0;
-    g_silent_pending = 0;
     dsd_runtime_set_controls_pending(NULL);
+    /* A frontend publication a P25 watchdog tick put off gives the block up the same way, with nothing queued: the
+       decoder's pump publishes it, and the encoder reads the block again. */
+    dsd_runtime_set_publish_pending(fake_controls_pending);
+    g_silent_waits = 0;
+    if (m17_encoder_read_block(&opts, &state, &in, out, 160U) != 2) {
+        DSD_FPRINTF(stderr, "silent udp: the block was not given up for the put-off publication\n");
+        rc = 1;
+    }
+    dsd_runtime_set_publish_pending(NULL);
+    g_silent_pending = 0;
     dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
     return rc;
 }

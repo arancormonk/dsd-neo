@@ -105,8 +105,6 @@ test_before_any_publish(Event_History_I* out) {
     assert(out->Event_History_Items[1].source_id == 0xDEADU);
     assert(cursor.read == 0);
     assert(meta.opts_published == 0);
-    assert(meta.scanner_mode == 0);
-    assert(meta.trunk_scan_enabled == 0);
 
     assert(dsd_app_history_tap_copy(-1, out, &cursor, &meta) == -1);
     assert(dsd_app_history_tap_copy(2, out, &cursor, &meta) == -1);
@@ -218,7 +216,8 @@ test_independent_of_the_consumer(dsd_state* state, Event_History_I* out) {
     assert_consumer_copies(2U, 0U);
 }
 
-/* The options fields follow the published options, on a copy and without one, and leave the consumer's copy alone. */
+/* The meta follows the published options, on a copy and without one, and leaves the consumer's copy alone. Which rows
+   carry a saved system's identity is each row's own stamp (issue #671), so the meta carries no scan flags. */
 static void
 test_meta(dsd_state* state, dsd_opts* opts, Event_History_I* out) {
     dsd_app_history_tap_cursor cursor;
@@ -230,21 +229,18 @@ test_meta(dsd_state* state, dsd_opts* opts, Event_History_I* out) {
     assert(consumer != NULL);
     assert(dsd_app_history_tap_copy(0, out, &cursor, &meta) == 1);
     assert(meta.opts_published == 1);
-    assert(meta.scanner_mode == 0);
-    assert(meta.trunk_scan_enabled == 0);
 
     publish_opts(opts, 1, 0);
+    DSD_MEMSET(&meta, 0, sizeof(meta));
     assert(dsd_app_history_tap_copy(0, out, &cursor, &meta) == 0);
-    assert(meta.scanner_mode == 1);
-    assert(meta.trunk_scan_enabled == 0);
+    assert(meta.opts_published == 1);
     assert(consumer->scanner_mode == 0);
 
     publish_opts(opts, 0, 1);
     commit(&state->event_history_s[0], 30U);
     dsd_app_telemetry_publish_snapshot(state);
     assert(dsd_app_history_tap_copy(0, out, &cursor, &meta) == 1);
-    assert(meta.scanner_mode == 0);
-    assert(meta.trunk_scan_enabled == 1);
+    assert(meta.opts_published == 1);
     assert(consumer->trunk_scan_enabled == 0);
     consumer = dsd_app_get_latest_opts_snapshot();
     assert(consumer->trunk_scan_enabled == 1);

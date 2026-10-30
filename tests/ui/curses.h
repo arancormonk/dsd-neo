@@ -9,20 +9,23 @@
 typedef struct WINDOW WINDOW;
 typedef int chtype;
 
-#define ERR           (-1)
-#define TRUE          1
-#define KEY_ENTER     343
-/* PDCurses keypad Enter (0x1cb there). Defined here so every platform runs the keypad Enter cases. */
-#define PADENTER      459
+#define ERR                    (-1)
+#define TRUE                   1
+#define KEY_ENTER              343
+/* PDCurses keypad Enter (0x1cb there) and Shift+keypad Enter (0x212), and its Shift modifier bit. Defined here so
+   every platform runs the keypad Enter and Shift+Enter cases. */
+#define PADENTER               459
+#define SHF_PADENTER           530
+#define PDC_KEY_MODIFIER_SHIFT 1
 
-#define COLOR_BLACK   0
-#define COLOR_RED     1
-#define COLOR_GREEN   2
-#define COLOR_YELLOW  3
-#define COLOR_BLUE    4
-#define COLOR_MAGENTA 5
-#define COLOR_CYAN    6
-#define COLOR_WHITE   7
+#define COLOR_BLACK            0
+#define COLOR_RED              1
+#define COLOR_GREEN            2
+#define COLOR_YELLOW           3
+#define COLOR_BLUE             4
+#define COLOR_MAGENTA          5
+#define COLOR_CYAN             6
+#define COLOR_WHITE            7
 
 extern WINDOW* stdscr;
 WINDOW* initscr(void);
@@ -39,6 +42,8 @@ int cbreak(void);
 int endwin(void);
 int set_escdelay(int size);
 int wgetch(WINDOW* win);
+/* PDCurses: the modifiers held with the key getch() returned last. A test that compiles code calling it defines it. */
+unsigned long PDC_get_key_modifiers(void);
 
 #define getch() wgetch(stdscr)
 

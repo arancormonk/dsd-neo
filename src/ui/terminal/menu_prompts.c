@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <float.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -373,6 +374,45 @@ ui_prompt_int_finish(void* u, const char* text) {
     free(pic);
 }
 
+/* [+-]?digits[.digits]([eE][+-]?digits)? with at least one mantissa digit. */
+static int
+ui_prompt_decimal_text_ok(const char* t) {
+    size_t i = 0;
+    size_t digits = 0;
+    if (t[i] == '+' || t[i] == '-') {
+        i++;
+    }
+    while (isdigit((unsigned char)t[i])) {
+        i++;
+        digits++;
+    }
+    if (t[i] == '.') {
+        i++;
+        while (isdigit((unsigned char)t[i])) {
+            i++;
+            digits++;
+        }
+    }
+    if (digits == 0) {
+        return 0;
+    }
+    if (t[i] == 'e' || t[i] == 'E') {
+        i++;
+        if (t[i] == '+' || t[i] == '-') {
+            i++;
+        }
+        size_t exp_digits = 0;
+        while (isdigit((unsigned char)t[i])) {
+            i++;
+            exp_digits++;
+        }
+        if (exp_digits == 0) {
+            return 0;
+        }
+    }
+    return t[i] == '\0';
+}
+
 static void
 ui_prompt_double_finish(void* u, const char* text) {
     PromptDblCtx* pdc = (PromptDblCtx*)u;
@@ -386,9 +426,10 @@ ui_prompt_double_finish(void* u, const char* text) {
         free(pdc);
         return;
     }
-    char* end = NULL;
-    double v = strtod(text, &end);
-    if (!end || *end != '\0') {
+    double v = 0.0;
+    /* The lexical gate comes first: strtod() also reads nan, inf and hex floats, and the release presets build with
+       fast-math, where a NaN comparison inside the range check cannot be trusted. */
+    if (!ui_prompt_decimal_text_ok(text) || dsd_parse_double_strict(text, -DBL_MAX, DBL_MAX, &v) != 0) {
         ui_statusf("Invalid numeric input");
         if (pdc->cb) {
             pdc->cb(pdc->user, 0, 0.0);

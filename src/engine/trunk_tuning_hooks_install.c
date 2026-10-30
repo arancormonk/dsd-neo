@@ -12,11 +12,18 @@
 #include <stdint.h>
 
 #include "engine_hooks_install.h"
+#include "manual_tune_pending.h"
 
 #ifdef USE_RADIO
+/* The one completion callback the controller has: a manual tune's ID (issue #671) goes to the manual-tune record, never
+   to the ledger, so no manual tune ever gates frame dispatch; every other ID is the ledger's. */
 static void
 dsd_engine_rtl_tune_completion(uint64_t request_id, rtl_stream_tune_result result, void* user_data) {
     (void)user_data;
+    if ((request_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U) {
+        dsd_engine_manual_tune_completion(request_id, (int)result);
+        return;
+    }
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     switch (result) {
         case RTL_STREAM_TUNE_OK: tune_result = DSD_TRUNK_TUNE_RESULT_OK; break;

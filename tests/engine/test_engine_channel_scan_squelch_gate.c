@@ -35,6 +35,7 @@
 #include <stdlib.h>
 
 #include "frame_sync_internal.h"
+#include "scan_step_untyped.h"
 
 static int g_pushes;
 static double g_pushed = -1.0;
@@ -78,6 +79,26 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)state;
     (void)kind;
     (void)guard_held;
+}
+
+/* The -Y pause and resume's pieces from engine.c (issue #671), which no case here reaches: stubbed, so engine.c stays
+   out of the early link as the boundary above keeps it. */
+void
+dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+dsd_engine_legacy_tune_caches_forget(void) {}
+
+int
+dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    (void)now;
+    return DSD_UNTYPED_STEP_FAILED;
 }
 
 /* The scanner's DSP-rate read beside the tune above (trunk_tuning.c): no rate, so no row width is checked. */

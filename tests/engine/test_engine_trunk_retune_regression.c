@@ -27,6 +27,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -592,6 +593,15 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
         apply_pending_retune_profile(center_freq_hz);
     }
     return g_rtl_tune_result;
+}
+
+/* Owner tunes supersede a manual tune still pending (issue #671). */
+static int g_manual_tune_supersedes;
+
+void
+dsd_engine_manual_tune_supersede(dsd_state* state) {
+    (void)state;
+    g_manual_tune_supersedes++;
 }
 
 int
@@ -1459,17 +1469,36 @@ test_backend_tune_updates_center_freq_cache(void) {
 
     opts->rtlsdr_center_freq = 111111100U;
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    int supersedes = g_manual_tune_supersedes;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->rtlsdr_center_freq == 111111100U);
+    assert(g_manual_tune_supersedes == supersedes + 1);
 
+    /* A deferred tune never reached the controller: a manual tune still pending keeps the receiver. */
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    supersedes = g_manual_tune_supersedes;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
     assert(opts->rtlsdr_center_freq == 111111100U);
+    assert(g_manual_tune_supersedes == supersedes);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, UINT64_C(0x10))
            == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(opts->rtlsdr_center_freq == 456318750U);
+    assert(g_manual_tune_supersedes == supersedes + 1);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A failure leaves the receiver where the controller last applied: the target a timed-out manual tune cached, which
+       this owner tune superseded (and may have coalesced over), goes (issue #671). */
+    opts->rtlsdr_center_freq = 456318750U;
+    g_rtl_last_applied_freq = 451000000U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 457000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (opts->rtlsdr_center_freq != 451000000U) {
+        DSD_FPRINTF(stderr, "owner tune failure: cached centre %u Hz (want 451000000 Hz)\n", opts->rtlsdr_center_freq);
+    }
+    assert(opts->rtlsdr_center_freq == 451000000U);
+    g_rtl_last_applied_freq = 0U;
     rtl_stream_clear_pending_retune_profile();
 
     opts->rtlsdr_center_freq = 111111100U;
@@ -1500,10 +1529,13 @@ test_backend_tune_updates_center_freq_cache(void) {
     g_setfreq_result = true;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts->rtlsdr_center_freq == 451000000U);
+    /* A trunking tune the peer accepted is the frequency last sent (issue #671), which the terminal's row shows. */
+    assert(opts->rigctl_sent_freq_hz == 451000000U);
     opts->rtlsdr_center_freq = 111111100U;
     g_setfreq_result = false;
-    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 461000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->rtlsdr_center_freq == 111111100U);
+    assert(opts->rigctl_sent_freq_hz == 451000000U);
     g_setfreq_result = true;
     free(state);
     free(opts);

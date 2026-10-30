@@ -152,9 +152,10 @@ Window {
         if (decoderHost.sessionActive || decoderHost.transitioning)
             return;
         if (!attemptedSource) {
-            // D2a: a recreated Activity has no verified link from the
-            // service's run to a saved system or scan list, so Reconnect only
-            // asks for that receiver again; the notice says to start it after.
+            // D2a: a recreated Activity names the running session (the
+            // acceptedStart pref pair) but holds no start to repeat, so
+            // Reconnect only asks for that receiver again; the notice says to
+            // start it after.
             if (receiverEnded)
                 decoderHost.requestLocalDeviceAccessForSource(receiverHealth.source);
             return;
@@ -463,7 +464,11 @@ Window {
         if (host && typeof host.setDarkAppearance === "function")
             host.setDarkAppearance(Theme.dark);
     }
-    Component.onCompleted: updateSystemBars()
+    Component.onCompleted: {
+        updateSystemBars();
+        adoptReattachedSession();
+        publishChannelNames();
+    }
     onActiveChanged: {
         if (active)
             updateSystemBars();
@@ -472,6 +477,16 @@ Window {
         target: Theme
         function onDarkChanged() {
             mainRoot.updateSystemBars();
+        }
+    }
+    // A list added or edited names its targets in History at once.
+    Connections {
+        target: scanLists
+        function onCountChanged() {
+            mainRoot.publishChannelNames();
+        }
+        function onDataChanged() {
+            mainRoot.publishChannelNames();
         }
     }
     Connections {
@@ -591,6 +606,14 @@ Window {
     readonly property string sessionSavedSystemUid: !mainRoot.exploring && !mainRoot.sessionScanList && mainRoot.sessionSystem
         && !mainRoot.sessionSystem.signalSearch ? (mainRoot.sessionSystem.uid || "") : ""
     property bool awaitingSessionInitialized: false
+    // What the session was started as ("scan", "explore" or "saved") and the UID
+    // that names it, decided when the host accepts the start. The
+    // post-initialization edge records these rather than the session as it
+    // stands then: an Explore taken while the session was still starting (issue
+    // #671) changes what it is now, not what was started, and a scan list
+    // recorded with no UID could never be resumed.
+    property string sessionStartKind: ""
+    property string sessionStartUid: ""
 
     property bool sessionReachedRunning: false
 
@@ -602,11 +625,11 @@ Window {
         // post-initialization edge, after file validation and tuner open.
         if (Qt.platform.os === "android" && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
             notificationExplanation.visible = true;
-        prefs.lastStartedKind = mainRoot.sessionScanList ? "scan" : mainRoot.exploring ? "explore" : "saved";
-        prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || "";
-        if (mainRoot.sessionScanList)
+        prefs.lastStartedKind = mainRoot.sessionStartKind;
+        prefs.lastStartedUid = mainRoot.sessionStartUid;
+        if (mainRoot.sessionStartKind === "scan")
             scanLists.touch(scanLists.rowForUid(prefs.lastStartedUid));
-        else if (!mainRoot.exploring)
+        else if (mainRoot.sessionStartKind === "saved")
             savedSystems.touch(savedSystems.rowForUid(prefs.lastStartedUid));
     }
     Connections {
@@ -634,6 +657,8 @@ Window {
 
                 if (!decoderHost.signalsSessionInitialized)
                     mainRoot.recordSessionInitialized();
+                mainRoot.adoptReattachedSession();
+                mainRoot.syncOperatorHold();
             } else if (decoderHost.sessionState === 0 && mainRoot.sessionReachedRunning) {
                 mainRoot.awaitingSessionInitialized = false;
             }
@@ -658,6 +683,137 @@ Window {
             if (mainRoot.exploring && metrics.centerFreqHz > 0)
                 mainRoot.lastExploreFreqMhz = Util.mhzValueText(metrics.centerFreqHz);
         }
+        function onControlChanged() {
+            mainRoot.syncOperatorHold();
+        }
+    }
+
+    // Issue #671: the operator holding the tuner -- a scan paused by Go to (or by
+    // a frequency entered anywhere else), an owner released by Explore from
+    // here, or any manual tune that moved the receiver off its session -- as the
+    // decoder reports it, never as a command was queued. The session map the
+    // monitor names gives way to "Exploring" while the hold lasts and comes back
+    // when a resume ends it, so a pause or a resume made from the API or the
+    // terminal names the session the same way. A scan list's session becomes an
+    // Explore one for the hold: the receiver is the operator's to tune by hand,
+    // tap and drag included, until Resume scan (and for good if the paused scan
+    // is then stopped). History needs none of this: each call carries who held
+    // the tuner when it began.
+    property bool operatorHolds: false
+    // The session's own map and saved row while the operator holds the tuner:
+    // what Resume scan returns to, and what names the targets once it has.
+    property var pausedScanSystem: null
+    property int pausedSessionRow: -1
+    // Issue #671: a trunk-scan target's id is the app's uid for its entry, and a
+    // call with no name of its own is named by the channel it was heard on. The
+    // names here are what the monitor and History show in place of those ids.
+    readonly property var scanChannelNames: mainRoot.channelNamesOf(mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem)
+    onScanChannelNamesChanged: mainRoot.publishChannelNames()
+    // An Explore asked for and not yet answered: the release is in the queue, or
+    // the options that say whether anything owned the tuner have not arrived.
+    property bool exploreRequested: false
+
+    // A recreated Activity finds a session it did not start (the service
+    // outlived the old one): it takes the identity of the start the host last
+    // accepted (the acceptedStart pref pair, written with the start, so a session
+    // recreated before its initialization edge is still itself), as a start in
+    // this UI would have set it. A scan list is still one -- its targets are
+    // named from the list, a pause hands the receiver to the operator with
+    // Resume scan; an Explore session is still free to tune; a saved system has
+    // its map and row back (its title, sites, Edit, the key sheet's system). A
+    // start in this UI sets the identity itself, and keeps it after the session
+    // ends: a late initialization edge still records it.
+    function adoptReattachedSession() {
+        if (decoderHost.sessionState !== 2 || mainRoot.sessionStartKind.length > 0 || mainRoot.pendingStart)
+            return;
+        mainRoot.sessionStartKind = prefs.acceptedStartKind || "";
+        mainRoot.sessionStartUid = prefs.acceptedStartUid || "";
+        if (mainRoot.sessionStartKind === "scan") {
+            mainRoot.sessionScanList = true;
+            var list = scanLists.getByUid(mainRoot.sessionStartUid);
+            if (list && list.uid)
+                mainRoot.sessionSystem = list;
+        } else if (mainRoot.sessionStartKind === "explore") {
+            mainRoot.exploring = true;
+            // Where it got to before the recreation is not known here.
+            mainRoot.exploreRemembered = false;
+        } else if (mainRoot.sessionStartKind === "saved" && mainRoot.sessionStartUid.length > 0) {
+            var sys = savedSystems.getByUid(mainRoot.sessionStartUid);
+            if (sys && sys.uid) {
+                mainRoot.sessionSystem = sys;
+                mainRoot.sessionRow = savedSystems.rowForUid(sys.uid);
+            }
+        }
+        mainRoot.syncOperatorHold();
+    }
+
+    // The receiver an Explore map stands on when the operator takes the tuner:
+    // the session map's, or with none (a session the UI could not name) the
+    // running input's own, so the pill and Save as system match the receiver
+    // rather than assume a USB one. Off a radio there is none to name.
+    function heldReceiver(map) {
+        if (map && map.sourceType)
+            return map;
+        return metrics.radioSource || {};
+    }
+
+    function forgetOperatorHold() {
+        mainRoot.operatorHolds = false;
+        mainRoot.pausedScanSystem = null;
+        mainRoot.pausedSessionRow = -1;
+        mainRoot.exploreRequested = false;
+    }
+
+    function syncOperatorHold() {
+        // The lifecycle's Running, which a reattached Activity finds as well as a start.
+        if (decoderHost.sessionState !== 2 || !metrics.optionsKnown)
+            return;
+        if (metrics.operatorTuned && !mainRoot.operatorHolds) {
+            mainRoot.operatorHolds = true;
+            mainRoot.pausedScanSystem = mainRoot.sessionSystem;
+            mainRoot.pausedSessionRow = mainRoot.sessionRow;
+            mainRoot.sessionRow = -1;
+            var held = mainRoot.heldReceiver(mainRoot.sessionSystem);
+            mainRoot.sessionSystem = mainRoot.exploreSystem(held.sourceType || "", held.host || "", held.port || 0, metrics.centerFreqHz > 0 ? Util.mhzValueText(metrics.centerFreqHz) : "");
+            if (mainRoot.sessionScanList) {
+                // Not Explore's to remember: the list is coming back.
+                mainRoot.exploring = true;
+                mainRoot.exploreRemembered = false;
+            }
+        } else if (!metrics.operatorTuned && mainRoot.operatorHolds) {
+            // Resumed: the scan has the tuner again, and the session is what it
+            // was started as.
+            mainRoot.sessionSystem = mainRoot.pausedScanSystem;
+            mainRoot.sessionRow = mainRoot.pausedSessionRow;
+            mainRoot.exploring = mainRoot.sessionStartKind === "explore";
+            mainRoot.exploreRemembered = true;
+            mainRoot.operatorHolds = false;
+            mainRoot.pausedScanSystem = null;
+            mainRoot.pausedSessionRow = -1;
+        }
+        if (!mainRoot.exploreRequested)
+            return;
+        if (mainRoot.operatorHolds) {
+            mainRoot.exploreRequested = false;
+        } else if (!metrics.tunerControlled && metrics.scanKind === 0) {
+            // Nothing owned the tuner, so the decoder has no hold to report.
+            mainRoot.exploreRequested = false;
+            mainRoot.exploreWithNoOwner();
+        }
+    }
+
+    // Explore from a session nothing was steering (a conventional saved system):
+    // the receiver has not moved yet, so the decoder has no hold to report, and
+    // the session detaches here. History is left alone: the calls heard until the
+    // first tune are still the system's, and that tune stamps the ones after it
+    // as the operator's.
+    function exploreWithNoOwner() {
+        var was = mainRoot.heldReceiver(mainRoot.sessionSystem);
+        mainRoot.sessionSystem = mainRoot.exploreSystem(was.sourceType || "", was.host || "", was.port || 0, mainRoot.lastExploreFreqMhz);
+        // Which also means the saved row is no longer this session's, so the
+        // session's edit action must not open -- and push CSVs into -- a system
+        // the session detached from.
+        mainRoot.sessionRow = -1;
     }
 
     // Suppresses a failure banner the user has read. Reset on the next start so a
@@ -748,6 +904,7 @@ Window {
                 prefs.exploreFreqMhz = mainRoot.lastExploreFreqMhz;
             mainRoot.exploring = false;
             mainRoot.exploreRemembered = true;
+            mainRoot.forgetOperatorHold();
             mainRoot.spectrumOpen = false;
             mainRoot.talkgroupsOpen = false;
             sessionRadio.visible = false;
@@ -806,8 +963,47 @@ Window {
             mainRoot.startWithMap(sys, row, false);
     }
 
+    // The name each entry of @a list goes by, by uid: as scanTargetLabel() names
+    // the target on air. A list from a targets file uses that file's own ids.
+    function channelNamesOf(list) {
+        var names = {};
+        if (!list || !list.entries || list.targetSource === "csv")
+            return names;
+        for (var i = 0; i < list.entries.length; ++i) {
+            var entry = list.entries[i];
+            if (!entry || !entry.uid)
+                continue;
+            if (entry.kind === "system")
+                names[entry.uid] = savedSystems.getByUid(entry.systemUid).name || qsTr("Saved system");
+            else
+                names[entry.uid] = entry.name || (entry.freqMhz ? entry.freqMhz + " MHz" : qsTr("Frequency"));
+        }
+        return names;
+    }
+    // History names a call heard under any scan list, not only the running
+    // session's: every saved list's targets, then the session's own (a list
+    // edited since it started keeps its names until it is started again).
+    function historyChannelNames() {
+        var names = {};
+        for (var i = 0; i < scanLists.count; ++i) {
+            var listNames = mainRoot.channelNamesOf(scanLists.get(i));
+            for (var uid in listNames)
+                names[uid] = listNames[uid];
+        }
+        var sessionNames = mainRoot.scanChannelNames;
+        for (var id in sessionNames)
+            names[id] = sessionNames[id];
+        return names;
+    }
+    function publishChannelNames() {
+        callHistory.setChannelNames(mainRoot.historyChannelNames());
+        metrics.setChannelNames(mainRoot.scanChannelNames);
+    }
+
     function scanTargetLabel() {
-        var list = mainRoot.sessionSystem;
+        // The session's own map while the operator holds the tuner, not the
+        // Explore one standing in for it.
+        var list = mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem;
         if (!list || !list.entries)
             list = prefs.lastStartedKind === "scan" ? scanLists.getByUid(prefs.lastStartedUid) : null;
         if (list && list.targetSource === "csv")
@@ -931,6 +1127,12 @@ Window {
         mainRoot.exploring = (row < 0) && !sys.signalSearch;
         mainRoot.sessionSystem = sys;
         mainRoot.sessionScanList = !!scan;
+        var startExploring = !scan && (row < 0) && !sys.signalSearch;
+        mainRoot.sessionStartKind = scan ? "scan" : startExploring ? "explore" : "saved";
+        mainRoot.sessionStartUid = startExploring ? "" : sys.uid || "";
+        prefs.acceptedStartKind = mainRoot.sessionStartKind;
+        prefs.acceptedStartUid = mainRoot.sessionStartUid;
+        mainRoot.forgetOperatorHold();
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
         mainRoot.awaitingSessionInitialized = true;
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2;
@@ -1338,16 +1540,26 @@ Window {
         SpectrumScreen {
             objectName: "spectrumScreen"
             exploring: mainRoot.exploring
+            scanList: mainRoot.sessionScanList
             sharedRadioSheet: sessionRadio
 
             onClosed: mainRoot.spectrumOpen = false
             onExploreFromHere: {
                 // The engine is the authority on who owns the tuner; this only
-                // asks. The pill follows the options snapshot, so it flips a poll
-                // later whether or not the request was honoured.
-                commands.releaseTuner();
+                // asks, and a request the queue turns away changes nothing. The
+                // session's identity follows the decoder's answer, not the ask
+                // (syncOperatorHold()): the release ends the call on air, and
+                // that call began under the system it was heard on.
+                if (!commands.releaseTuner())
+                    return;
+                // A scan pauses rather than ends (issue #671): its list stays
+                // this session's for Resume scan, and where the operator goes
+                // meanwhile is not where an Explore session got to.
+                var scan = metrics.scanKind !== 0;
                 mainRoot.exploring = true;
-                mainRoot.exploreRemembered = true;
+                mainRoot.exploreRemembered = !scan;
+                if (!scan && metrics.optionsKnown)
+                    mainRoot.sessionScanList = false;
                 // Seeded here rather than waiting for the next tuner reading: the
                 // session may never move again, and an empty value would leave the
                 // stop handler with nothing to remember this band by.
@@ -1358,19 +1570,10 @@ Window {
                 // the monitor header and the save-as-system wizard would all then
                 // carry as if it were one. Empty is what monitorMeta() already
                 // knows to leave out.
-                var exploreFreqMhz = metrics.centerFreqHz > 0 ? Util.mhzValueText(metrics.centerFreqHz) : "";
-                if (exploreFreqMhz.length > 0)
-                    mainRoot.lastExploreFreqMhz = exploreFreqMhz;
-                // The session is no longer the saved system it started as: its
-                // frequency is now whatever the user makes it, and the calls it
-                // logs from here on did not come from that system.
-                mainRoot.sessionSystem = mainRoot.exploreSystem(mainRoot.sessionSystem ? mainRoot.sessionSystem.sourceType : "usb", mainRoot.sessionSystem ? mainRoot.sessionSystem.host : "", mainRoot.sessionSystem ? mainRoot.sessionSystem.port : 0, exploreFreqMhz);
-                // Which also means the saved row is no longer this session's, so
-                // the session's edit action must not open — and push CSVs into —
-                // a system the session detached from.
-                mainRoot.sessionRow = -1;
-                uiController.flushHistory();
-                callHistory.setSessionSystem(qsTr("Exploring"), "");
+                if (metrics.centerFreqHz > 0)
+                    mainRoot.lastExploreFreqMhz = Util.mhzValueText(metrics.centerFreqHz);
+                mainRoot.exploreRequested = true;
+                mainRoot.syncOperatorHold();
             }
             onSaveAsSystem: function (freqHz) {
                 wizard.openForFound(mainRoot.sessionSystem, Util.mhzValueText(freqHz));

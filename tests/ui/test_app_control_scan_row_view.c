@@ -74,6 +74,11 @@ test_view_follows_the_published_row(dsd_opts* opts, dsd_state* state) {
     state->scan_row_scope_seq = opts->scan_row_scope_seq;
     assert(dsd_app_scan_row_view_get(opts, state, &view) == 0 && view.opts_match);
 
+    /* A paused trunk scan has no row on air (issue #671), whatever a publication read across the pause still says. */
+    state->trunk_scan_paused = 1U;
+    assert(dsd_app_scan_row_view_get(opts, state, &view) == 0 && !view.active);
+    state->trunk_scan_paused = 0U;
+
     /* The row belongs to the scanner running now: with trunk scan off it is not on air. */
     opts->trunk_scan_enabled = 0;
     assert(dsd_app_scan_row_view_get(opts, state, &view) == 0 && !view.active);

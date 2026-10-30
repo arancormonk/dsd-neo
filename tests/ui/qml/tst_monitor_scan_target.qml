@@ -50,6 +50,11 @@ Item {
             testContext.setMetric("scanVisitMs", 0);
             testContext.setMetric("scanVisitLive", false);
             testContext.setMetric("scanVisitRemainingDs", 0);
+            testContext.setMetric("scanRotationActive", false);
+            testContext.setMetric("scanKind", 0);
+            testContext.setMetric("scanPaused", false);
+            testContext.setMetric("scanResumable", false);
+            testContext.setMetric("scanEntryCount", 0);
         }
 
         // Readings that round to zero carry no minus sign (issue #669): toFixed keeps it.
@@ -78,6 +83,59 @@ Item {
             tryCompare(header, "text", "SCANNING · 2/3 · HOLD · Dispatch");
             cleanup();
             tryCompare(header, "text", "");
+        }
+
+        // Issue #671: a paused scan is named as one, apart from the rotation's
+        // HOLD and the timing row's "(paused)" dwell, with how much there is to
+        // go back to. It has no target on air, and no timing to show.
+        function test_paused_scan_header_data() {
+            return [{tag: "trunk scan", kind: 2, count: 3, resumable: true, header: "SCAN PAUSED · 3 targets"},
+                    {tag: "one target", kind: 2, count: 1, resumable: true, header: "SCAN PAUSED · 1 target"},
+                    {tag: "-Y list", kind: 1, count: 12, resumable: true, header: "SCAN PAUSED · 12 channels"},
+                    {tag: "one channel", kind: 1, count: 1, resumable: true, header: "SCAN PAUSED · 1 channel"},
+                    {tag: "resume pending", kind: 1, count: 12, resumable: false, header: "RESUMING SCAN · 12 channels"},
+                    {tag: "no size", kind: 2, count: 0, resumable: true, header: "SCAN PAUSED"}];
+        }
+        function test_paused_scan_header(data) {
+            var header = findChild(screen, "scanTargetHeader");
+            var timing = findChild(screen, "scanTimingRow");
+            screen.scanTargetName = "Dispatch";
+            testContext.setMetric("scanKind", data.kind);
+            testContext.setMetric("scanTargetCount", data.kind === 2 ? data.count : 0);
+            testContext.setMetric("scanEntryCount", data.count);
+            testContext.setMetric("scanResumable", data.resumable);
+            testContext.setMetric("scanPaused", true);
+            tryCompare(header, "text", data.header);
+            verify(!timing.visible, "a paused scan kept its timing row");
+            testContext.setMetric("scanPaused", false);
+            testContext.setMetric("scanRotationActive", true);
+            testContext.setMetric("scanTargetOrdinal", 2);
+            if (data.kind === 2 && data.count > 0)
+                tryCompare(header, "text", "SCANNING · 2/" + data.count + " · Dispatch");
+        }
+
+        // The count is what the paused line is for: on a narrow phone at large
+        // text the noun goes before the number does, and nothing is elided.
+        function test_paused_header_keeps_its_count() {
+            var header = findChild(screen, "scanTargetHeader");
+            testContext.setMetric("scanKind", 1);
+            testContext.setMetric("scanEntryCount", 12);
+            testContext.setMetric("scanResumable", true);
+            testContext.setMetric("scanPaused", true);
+            tryCompare(header, "text", "SCAN PAUSED · 12 channels");
+            // A 412 dp phone at 1.6x, where the whole line was elided inside its noun.
+            root.width = 412;
+            Ui.Theme.fontScale = 1.6;
+            tryCompare(header, "text", "SCAN PAUSED · 12");
+            verify(!header.truncated, "the count was elided");
+            // Narrower still, the count goes whole and the state stays.
+            root.width = 360;
+            tryCompare(header, "text", "SCAN PAUSED");
+            verify(!header.truncated, "the state was elided");
+            Ui.Theme.resetFontScale();
+            root.width = 420;
+            tryCompare(header, "text", "SCAN PAUSED · 12 channels");
+            verify(!header.truncated);
         }
 
         // Issue #575: the tuned frequency is the signal strip's first reading in

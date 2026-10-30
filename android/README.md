@@ -933,9 +933,9 @@ the same system, scan list or Explore session; the RTL-SDR's open resets it firs
 With Signal search open, its screen says to plug the receiver back in and start
 the search again. **Dismiss** clears the notice and cancels a Reconnect still
 waiting. After the Activity is recreated (for example after Android reclaimed
-it in the background) the app cannot prove which saved system the service was
-running, so Reconnect there only asks for access and the notice ends "…tap
-Reconnect, then start it again."
+it in the background) the app names the running session again but holds no
+start to repeat, so Reconnect there only asks for access and the notice ends
+"…tap Reconnect, then start it again."
 
 A stop you ask for first wins: Stop and then an unplug while the session winds
 down shows no notice; an unplug and then Stop now keeps it. The receiver's own
@@ -955,9 +955,12 @@ Connect asks for, the last requested kind before the kind on the bus, so after a
 RTL-SDR request with only an Airspy plugged in it reads `NO RTL-SDR` and Retry
 answers "No RTL-SDR attached" until an Airspy system is started; **Dismiss** hides
 the notice for that Activity only, as it does any failure, so a recreated Activity
-shows a dismissed (but not acknowledged) notice again; a healthy session
-reattached after a recreation shows LIVE with no receiver sheet (LOST still shows
-if it ends).
+shows a dismissed (but not acknowledged) notice again. A healthy session
+reattached after a recreation is named as it was started (its saved system, scan
+list or Explore session). A saved system's or scan list's receiver pill opens the
+receiver sheet as before; an Explore session's pill shows LIVE with no sheet until
+you have tuned somewhere, before or after the recreation. LOST still shows if the
+session ends.
 
 ### What a failed start says
 
@@ -1867,6 +1870,22 @@ The Spectrum view is view-only during an I/Q replay: the replay plays the tuning
 capture recorded, so tapping, stepping, **Go to** and **Explore from here** are not
 offered, and the view says **An I/Q replay cannot retune.**
 
+A typed frequency wins over a scan; a tap or a drag does not. While a scan list runs,
+its Spectrum view stays **VIEW ONLY** for taps and drags, but **Go to** is offered and
+says that tuning pauses the scan; **Tune** pauses it and the receiver stays on the
+frequency until you resume. Once paused, the scan list's Spectrum view works as
+Explore does (tap, drag, step and **Go to** all tune, and the scan stays paused) until
+**Resume scan**, and for the rest of the session if the paused scan is stopped. A saved
+system that scans its channel list stays view-only until **Explore from here**, whose
+confirmation says it pauses the scan rather than ending it; paused, it still takes
+**Go to**. While a scan is paused, Spectrum and Monitor offer **Resume scan**: a channel
+list carries on from the channel it stopped on, a scan list returns to the target it
+left. Monitor's header reads **SCAN PAUSED · 3 targets** (or **channels**) instead of
+the scan position, the session is named **Exploring** until the resume, and **Resume
+scan** takes the place of **Hold scan**, **Avoid** and **Next**. A pause made from the
+terminal or the API shows the same way. If trunking or anything else takes the tuner
+while **Go to** is open, the sheet closes and says why.
+
 The line under the Spectrum view's sync and SNR names the system on the carrier
 being decoded, from the same received identity as the Monitor's site row: the
 access code first (**CC 1 · Rest LSN 3**, **NAC 293 · SYS 348 · RFSS 3 · SITE 21
@@ -1901,6 +1920,12 @@ the effective session settings to arrive after startup. Rows heard during
 those sessions or saved before system identities were recorded remain ineligible,
 even after starting a single saved system. A running session can still release an
 existing hold, including from a different system's row with the same talkgroup ID.
+Calls heard after you tune by hand (**Go to**, a tap or drag, or a frequency entered at
+the terminal or the API) or after **Explore from here** takes the tuner from a scan or
+trunking are filed under **Exploring**, however late History reads them; the call the
+tune or release cut off keeps the system it began on, and so do calls heard after an
+**Explore from here** that has not tuned anywhere yet. While you hold the tuner,
+History offers no **Hold TG**, even for calls heard before.
 
 The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
 menu with **Hold TG** (**Hold radio** on a private call) and **Avoid TG**/**Lock out** (off on a
@@ -1958,8 +1983,11 @@ Validate checks a draft without saving. Save validates first; Save draft retains
 
 USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only
-after engine initialization. Monitor shows the active target ID, ordinal/count
-and hold state. System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
+after engine initialization; an **Explore from here** taken while the list is
+still starting does not change what is recorded. Monitor shows the active target ID,
+ordinal/count and hold state, or **SCAN PAUSED** with **Resume scan** while paused.
+System source-alias paths that the list replaces are not validated or opened; the
+list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 

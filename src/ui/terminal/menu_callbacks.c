@@ -252,6 +252,21 @@ ui_submit_config_metadata(int autosave_enabled, const char* path) {
     (void)dsd_app_command_set_config_metadata(&payload);
 }
 
+/* A loaded file's apply (dsd_app_config_load_payload): the autosave it brings (@p autosave_enabled, @p path) is adopted
+   by the decoder only once the config stays applied, so a refused load leaves the autosave where it was. Heap: the
+   config is tens of KB. */
+static dsd_app_config_load_payload*
+ui_new_config_load(int autosave_enabled, const char* path, const char* profile) {
+    dsd_app_config_load_payload* load = (dsd_app_config_load_payload*)calloc(1, sizeof *load);
+    if (!load) {
+        return NULL;
+    }
+    load->autosave.autosave_enabled = autosave_enabled ? 1 : 0;
+    DSD_SNPRINTF(load->autosave.path, sizeof load->autosave.path, "%s", path ? path : "");
+    DSD_SNPRINTF(load->profile, sizeof load->profile, "%s", profile ? profile : "");
+    return load;
+}
+
 void
 cb_config_load(void* v, const char* path) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
@@ -263,16 +278,19 @@ cb_config_load(void* v, const char* path) {
         return;
     }
 
-    dsdneoUserConfig cfg;
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    if (dsd_user_config_load(path, &cfg) != 0) {
+    dsd_app_config_load_payload* load = ui_new_config_load(1, path, "");
+    if (!load) {
         ui_statusf("Failed to load config from %s", path);
         return;
     }
-
-    ui_submit_config_metadata(1, path);
-    (void)dsd_app_command_apply_config(&cfg);
-    ui_statusf("Config loaded from %s", path);
+    if (dsd_user_config_load(path, &load->config) != 0) {
+        ui_statusf("Failed to load config from %s", path);
+        free(load);
+        return;
+    }
+    /* The decoder says whether it loaded: "Config loaded from ..." or "Config not applied: ...". */
+    (void)dsd_app_command_load_config(load);
+    free(load);
 }
 
 static void
@@ -299,15 +317,14 @@ chooser_done_config_profile(void* u, int sel) {
 
     if (sel >= 0 && sel < pctx->n && pctx->names && pctx->names[sel] && pctx->path[0] != '\0') {
         const char* profile = pctx->names[sel];
-        dsdneoUserConfig cfg;
-        DSD_MEMSET(&cfg, 0, sizeof cfg);
-        if (dsd_user_config_load_profile(pctx->path, profile, &cfg) != 0) {
+        dsd_app_config_load_payload* load = ui_new_config_load(0, pctx->path, profile);
+        if (!load || dsd_user_config_load_profile(pctx->path, profile, &load->config) != 0) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
         } else {
-            ui_submit_config_metadata(0, pctx->path);
-            (void)dsd_app_command_apply_config(&cfg);
-            ui_statusf("Profile loaded: %s", profile);
+            /* The decoder says whether it loaded: "Profile loaded: ..." or "Config not applied: ...". */
+            (void)dsd_app_command_load_config(load);
         }
+        free(load);
     }
 
     config_profile_free_context(pctx);
@@ -526,8 +543,10 @@ cb_key_basic(void* v, int ok, int val) {
     if (!c) {
         return;
     }
-    if (ok) {
-        unsigned long long vdec = val;
+    if (ok && val < 0) {
+        ui_statusf("Basic privacy key must be 0..255");
+    } else if (ok) {
+        unsigned long long vdec = (unsigned long long)val;
         if (vdec > 255ULL) {
             vdec = 255ULL;
         }
@@ -542,8 +561,10 @@ cb_key_scrambler(void* v, int ok, int val) {
     if (!c) {
         return;
     }
-    if (ok) {
-        unsigned long long vdec = val;
+    if (ok && val < 0) {
+        ui_statusf("Scrambler key must be 0..32767");
+    } else if (ok) {
+        unsigned long long vdec = (unsigned long long)val;
         if (vdec > 0x7FFFULL) {
             vdec = 0x7FFFULL;
         }

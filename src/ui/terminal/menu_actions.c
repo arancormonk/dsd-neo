@@ -50,6 +50,7 @@
 #include "menu_callbacks.h"
 #include "menu_env.h"
 #include "menu_internal.h"
+#include "menu_labels.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
 
@@ -1864,6 +1865,33 @@ ui_open_freq_prompt(UiCtx* c, const char* prefill) {
     ui_prompt_open_string_async(k_freq_prompt_title, prefill, UI_FREQ_PROMPT_CAP, cb_rtl_freq_text, c);
 }
 
+void
+act_set_freq(void* v) {
+    ui_open_freq_prompt((UiCtx*)v, NULL);
+}
+
+/* Kept by pointer while help is open. */
+static const char k_freq_key_needs_rigctl[] =
+    "Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).";
+static const char k_freq_key_replay[] = "An I/Q replay cannot retune: it plays the tuning it recorded.";
+
+/* The menu's key handling passes the decoder's live options; '=' decides on the published snapshot instead (the
+   context's options stand in before the decoder's first publication). Where the row would be hidden the reason opens,
+   rather than a prompt whose answer the command then refuses. */
+void
+act_freq_key(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    if (!opts) {
+        opts = c ? c->opts : NULL;
+    }
+    if (freq_entry_offered(opts)) {
+        ui_open_freq_prompt(c, NULL);
+        return;
+    }
+    ui_help_open((opts && dsd_opts_input_is_iq_replay(opts)) ? k_freq_key_replay : k_freq_key_needs_rigctl);
+}
+
 // ---- RTL-SDR actions ----
 
 #ifdef USE_RADIO
@@ -2000,11 +2028,6 @@ void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_int_async("Device index", c->opts->rtl_dev_index, cb_rtl_dev, c);
-}
-
-void
-rtl_set_freq(void* v) {
-    ui_open_freq_prompt((UiCtx*)v, NULL);
 }
 
 static void

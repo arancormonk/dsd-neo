@@ -409,6 +409,12 @@ typedef struct {
     // membership is current, else the call's policy target, else target_id (a private call: target_id); 0 while the
     // call has not been judged. Bookkeeping as stream_blocked is.
     uint32_t policy_target_id;
+    // Who held the tuner when this row's call was first rendered; frozen with channel_label, so a
+    // call a later release or resume ends keeps the identity it began with. operator_tuned: the
+    // operator held the receiver (a paused scan, a tuner release, a manual tune). scan_member: a scan was running,
+    // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
+    uint8_t operator_tuned;
+    uint8_t scan_member;
     uint32_t channel; // If this occurs on a trunking channel, which channel
     // Frequency in Hz the call was heard on, or 0 when unknown. The call's own frequency (a grant's
     // channel, the followed voice channel) whenever the call has one; otherwise the receiver's tuned
@@ -2194,7 +2200,11 @@ struct dsd_state {
     //trunking lcn freq list
     int lcn_freq_count;
     int lcn_freq_roll; //number we have 'rolled' to in search of the CC
-    int is_con_plus;   //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync
+    /* The -Y scan session (issue #671): it moves whenever a -Y scan ends (dsd_engine_channel_scan_leave(): a stop, a
+       list replacement, a trunk-scan start), pauses or resumes, so a row tune that timed out under one scan never
+       commits its row in the next, nor after a pause. */
+    uint32_t lcn_scan_session;
+    int is_con_plus; //con_plus flag for knowing its safe to skip payload channel after x seconds of no voice sync
 
     //new nxdn stuff
     int nxdn_part_of_frame;
@@ -2453,9 +2463,23 @@ struct dsd_state {
      * it and the scanner rotation reads it. lcn_avoid_count mirrors the avoid store for the
      * status line and is maintained by dsd_state_trunk_lcn_avoid_set()/_clear(). The
      * trunk_scan_* trio is written by the trunk-scan coordinator, which owns the truth. */
-    uint8_t lcn_scan_hold;             /**< 1 = -Y rotation paused on the row on air */
-    uint16_t lcn_avoid_count;          /**< Avoided -Y rows within lcn_freq_count */
-    uint8_t trunk_scan_hold;           /**< 1 = --trunk-scan dwell paused on the active target */
+    uint8_t lcn_scan_hold; /**< 1 = -Y rotation held on the row on air */
+    /* A -Y scan the operator paused (issue #671): its list, cursor, avoids and session edits are kept while
+     * scanner_mode is 0, so the receiver stays where the operator put it until a resume
+     * (dsd_engine_channel_scan_pause(), _resume()). lcn_scan_resume_pending: a resume's row tune timed out; until it
+     * lands the scan stays paused and no row is named. operator_tuned: the operator moved the receiver off its session
+     * (a scan pause, a tuner release of trunking, any accepted manual tune but a P25 control-channel selection); a
+     * resume and a new session clear it, a stop does not. */
+    uint8_t lcn_scan_paused;
+    uint8_t lcn_scan_resume_pending;
+    uint8_t operator_tuned;
+    uint16_t lcn_avoid_count; /**< Avoided -Y rows within lcn_freq_count */
+    uint8_t trunk_scan_hold;  /**< 1 = --trunk-scan dwell paused on the active target */
+    /* A --trunk-scan the operator paused (issue #671): the coordinator keeps its targets, snapshots, avoids, session
+     * edits and hold, but no target is on air and nothing it owns tunes or decodes, until a resume re-parks the target
+     * it left (dsd_engine_trunk_scan_pause_locked(), _resume_locked()). dsd_opts::trunk_scan_enabled stays 1 (the
+     * configured setting); dsd_trunk_scan_owns_tuner() is the running predicate. */
+    uint8_t trunk_scan_paused;
     uint8_t trunk_scan_active_avoided; /**< 1 = the parked target is itself avoided (fallback) */
     uint16_t trunk_scan_avoided_count; /**< Avoided --trunk-scan targets */
     /* The tuner gain a --trunk-scan target without its own rtl_gain runs, which the gain controls edit and a save
@@ -2464,6 +2488,10 @@ struct dsd_state {
     int16_t trunk_scan_configured_gain;     /**< dB in driver units; 0 = AGC */
     uint8_t trunk_scan_gain_override;       /**< 1 = the parked target runs its own rtl_gain */
     uint8_t trunk_scan_configured_autogain; /**< 1 = the configured tuner autogain is on */
+    /* The trunking setting (dsd_opts::trunk_enable) the session runs outside the scan, which each target's type
+     * overrides while it is parked and shutdown puts back; a save writes it. Written by the coordinator beside the
+     * configured gain. Valid while trunk_scan_target_count > 0. */
+    uint8_t trunk_scan_configured_trunk_enable; /**< 1 = trunking configured on */
     /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
      * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
      * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields

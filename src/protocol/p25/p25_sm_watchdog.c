@@ -64,6 +64,11 @@ p25_sm_tick_guard_held_by_caller(void) {
     return s_tick_guard_held_here;
 }
 
+int
+p25_sm_tick_guard_busy(void) {
+    return atomic_load(&g_p25_sm_tick_lock) != 0;
+}
+
 void
 p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {

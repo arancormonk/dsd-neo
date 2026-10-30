@@ -8,17 +8,22 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/dsp/analog_rx.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
+#include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../../src/platform/audio_stream_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -96,6 +101,129 @@ test_cleanup_forgets_received_tone(dsd_opts* opts, dsd_state* state) {
     rc |= expect_true("rx-tone-generation-moves-on-cleanup", state->analog_rx.generation != generation);
     rc |= expect_true("rx-tone-session-freed-by-cleanup",
                       dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) == NULL);
+    return rc;
+}
+
+/*
+ * Issue #671 (B25): the exit summary of NXDN channels missing from the channel map. A running trunk scan logs one per
+ * target from the targets' own ledgers as it shuts down, so the engine skips the live one; a paused scan's live ledger
+ * is the manual session's own, which no target holds, so the engine logs it.
+ */
+static void
+free_runtime_quietly(dsd_opts* opts, dsd_state* state) {
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+static int
+cleanup_logs_session_nxdn_summary(int paused, int* out_logged) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->trunk_scan_enabled = 1;
+    state->trunk_scan_paused = paused ? 1U : 0U;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "manual-session.csv");
+    (void)nxdn_trunk_diag_note_missing_channel(state, 9);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "cleanupnxdn") != 0) {
+        freeState(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    dsd_engine_cleanup(opts, state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    const int read_rc = dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    *out_logged = read_rc == 0 && strstr(log, "missing frequency mapping in chan_csv (manual-session.csv)") != NULL;
+    freeState(state);
+    free(state);
+    free(opts);
+    return read_rc != 0;
+}
+
+static int
+test_cleanup_nxdn_summary_under_trunk_scan(void) {
+    int rc = 0;
+    int logged = -1;
+    rc |= cleanup_logs_session_nxdn_summary(0, &logged);
+    rc |= expect_true("running-trunk-scan-leaves-the-summary-to-its-targets", logged == 0);
+    logged = -1;
+    rc |= cleanup_logs_session_nxdn_summary(1, &logged);
+    rc |= expect_true("paused-trunk-scan-logs-the-manual-session-summary", logged == 1);
+    return rc;
+}
+
+/*
+ * Issue #671 (D7, Review Focus): the exit autosave of a session whose -Y scan the operator paused, with no decoder tick
+ * between the pause and the shutdown. The scan is still the session's, so the save writes scanner = true and the next
+ * launch runs it; a running scan saves true and a stopped one false. @p how: 0 running, 1 paused, 2 stopped.
+ */
+static int
+cleanup_autosaves_scanner(int how, int* out_scanner) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_cleanup_autosave") == NULL
+        || dsd_test_path_join(path, sizeof path, dir, "autosave.ini") != 0) {
+        free_runtime_quietly(opts, state);
+        return 1;
+    }
+    opts->audio_out_type = 9;
+    opts->scanner_mode = 1;
+    state->lcn_freq_count = 3;
+    *dsd_state_trunk_lcn_slot(state, 0) = 851375000;
+    *dsd_state_trunk_lcn_slot(state, 1) = 852375000;
+    *dsd_state_trunk_lcn_slot(state, 2) = 853375000;
+    state->lcn_freq_roll = 2;
+    if (how == 1) {
+        /* What a tuner release runs; the engine's own shutdown leave keeps the pause. */
+        (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    } else if (how == 2) {
+        /* Paused, then stopped as svc_leave_channel_scan() stops it: the pause and a pending resume cleared, then the
+           engine's leave, which keeps neither. */
+        (void)dsd_engine_channel_scan_pause(opts, state, 1);
+        state->lcn_scan_paused = 0U;
+        state->lcn_scan_resume_pending = 0U;
+        (void)dsd_engine_channel_scan_leave(opts, state);
+    }
+    state->config_autosave_enabled = 1;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
+    dsd_engine_cleanup(opts, state);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    *out_scanner = load_rc == 0 ? cfg.trunk_scanner : -1;
+    const char* files[] = {"autosave.ini", NULL};
+    (void)dsd_test_remove_temp_dir(dir, files);
+    free_runtime_quietly(opts, state);
+    return load_rc != 0;
+}
+
+static int
+test_cleanup_autosaves_a_paused_scan(void) {
+    static const char* const k_tags[] = {
+        "running-scan-autosaves-scanner-on",
+        "paused-scan-autosaves-scanner-on",
+        "paused-then-stopped-scan-autosaves-scanner-off",
+    };
+    static const int k_want[] = {1, 1, 0};
+    int rc = 0;
+    for (int how = 0; how < 3; how++) {
+        int scanner = -1;
+        rc |= cleanup_autosaves_scanner(how, &scanner);
+        if (scanner != k_want[how]) {
+            DSD_FPRINTF(stderr, "%s: wrote %d, want %d\n", k_tags[how], scanner, k_want[how]);
+            rc |= 1;
+        }
+    }
     return rc;
 }
 
@@ -178,6 +306,12 @@ main(void) {
     }
     rc |= test_cleanup_forgets_received_tone(opts, state);
     free_test_runtime(opts, state);
+
+    // Test 5: the NXDN exit summary of a paused trunk scan's manual session (issue #671, B25).
+    rc |= test_cleanup_nxdn_summary_under_trunk_scan();
+
+    // Test 6: the exit autosave right after a -Y pause (issue #671, D7).
+    rc |= test_cleanup_autosaves_a_paused_scan();
 
     if (rc == 0) {
         printf("ENGINE_CLEANUP_AUDIO: OK\n");

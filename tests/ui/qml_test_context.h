@@ -644,13 +644,12 @@ class CommandRecorder : public QObject {
         return true;
     }
 
-    /* Accepted and discarded: nothing under test asserts on the settings-menu
-     * tune, only on the spectrum's manualTuneHz(). Counting it would be state no
-     * assertion can ever fail on. */
+    /* The override tune the spectrum's Go to sends (issue #671): counted apart from the taps' manualTuneHz(), so a
+     * case can tell which of the two a screen asked for. */
     Q_INVOKABLE bool
-    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    tuneHz(unsigned int hz) const {
-        (void)hz;
+    tuneHz(unsigned int hz) {
+        m_tune_hz_calls++;
+        m_last_tune_hz = hz;
         return true;
     }
 
@@ -881,6 +880,18 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     releaseTuner() {
         m_release_tuner_calls++;
+        return m_release_tuner_accepted;
+    }
+
+    /** @brief Whether releaseTuner() reports the command queued, so a case can refuse it. */
+    Q_INVOKABLE void
+    setReleaseTunerAccepted(bool accepted) {
+        m_release_tuner_accepted = accepted;
+    }
+
+    Q_INVOKABLE bool
+    resumeScan() {
+        m_resume_scan_calls++;
         return true;
     }
 
@@ -1069,6 +1080,10 @@ class CommandRecorder : public QObject {
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
         m_next_channel_calls = 0;
+        m_resume_scan_calls = 0;
+        m_tune_hz_calls = 0;
+        m_last_tune_hz = 0;
+        m_release_tuner_accepted = true;
         m_talkgroupEdit.clear();
         m_talkgroup_listen_calls = 0;
         m_last_talkgroup_id_start = 0.0;
@@ -1098,6 +1113,21 @@ class CommandRecorder : public QObject {
     int
     nextChannelCalls() const {
         return m_next_channel_calls;
+    }
+
+    int
+    resumeScanCalls() const {
+        return m_resume_scan_calls;
+    }
+
+    int
+    tuneHzCalls() const {
+        return m_tune_hz_calls;
+    }
+
+    double
+    lastTuneHz() const {
+        return static_cast<double>(m_last_tune_hz);
     }
 
     int
@@ -1328,6 +1358,10 @@ class CommandRecorder : public QObject {
     int m_scan_avoid_calls = 0;
     int m_scan_avoid_clear_calls = 0;
     int m_next_channel_calls = 0;
+    int m_resume_scan_calls = 0;
+    int m_tune_hz_calls = 0;
+    unsigned int m_last_tune_hz = 0;
+    bool m_release_tuner_accepted = true;
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
     bool m_radio_accepted = true;
@@ -1465,6 +1499,17 @@ class CallLogStore : public QAbstractListModel {
     setSessionSystem(const QString& label, const QString& uid) {
         setSessionLabel(label);
         setSessionUid(uid);
+    }
+
+    /** @brief The scan channels' names (CallHistoryModel::setChannelNames(), issue #671), kept for a case to read. */
+    Q_INVOKABLE void
+    setChannelNames(const QVariantMap& names) {
+        m_channelNames = names;
+    }
+
+    Q_INVOKABLE QVariantMap
+    channelNames() const {
+        return m_channelNames;
     }
 
     QStringList
@@ -1801,6 +1846,7 @@ class CallLogStore : public QAbstractListModel {
 
     QList<StoreRow> m_rows;
     QString m_systemName = QStringLiteral("Test Site");
+    QVariantMap m_channelNames;
     QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
     qint64 m_session = 0;
@@ -1833,6 +1879,12 @@ class ReadingMap : public QQmlPropertyMap {
     /* Main's failure card tells the host it was dismissed (#782); the readings have no attempt to give up. */
     Q_INVOKABLE void
     dismissFailure() {}
+
+    /* Issue #671: Main hands the metrics the scan channels' names; kept as the "channelNames" reading for a case. */
+    Q_INVOKABLE void
+    setChannelNames(const QVariantMap& names) {
+        insert(QStringLiteral("channelNames"), names);
+    }
 
     /* Issue #708: the call recording player, export and share, as the decoderHost map plays them. A play opens at
      * once (Preparing), pause and resume flip the state, a seek moves the position and a stop clears the path, as a
@@ -2268,6 +2320,32 @@ class Setup : public QObject {
     Q_INVOKABLE QString
     lastAllTalkgroupsTag() const {
         return m_commands != nullptr ? m_commands->lastAllTalkgroupsTag() : QString();
+    }
+
+    /**
+     * @brief Change several metrics readings and send one controlChanged, as one decoder snapshot reaches the real
+     * model (issue #671).
+     *
+     * What listens to the signal (Main's operator-hold sync) sees the owner and the scan change together. Bindings on
+     * the readings themselves still re-evaluate key by key as the property map takes each one, so a screen-level case
+     * whose binding must never see a state between two keys still orders its setters.
+     */
+    Q_INVOKABLE void
+    setMetrics(const QVariantMap& values) {
+        bool tuner = false;
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            m_metrics[it.key()] = it.value();
+            if (m_engine != nullptr) {
+                m_metric_readings->insert(it.key(), it.value());
+            }
+            tuner = tuner || it.key() == QStringLiteral("centerFreqHz");
+        }
+        if (m_engine != nullptr) {
+            if (tuner) {
+                Q_EMIT m_metric_readings->tunerChanged();
+            }
+            Q_EMIT m_metric_readings->controlChanged();
+        }
     }
 
     /**
@@ -2804,6 +2882,31 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->nextChannelCalls() : -1;
     }
 
+    /** @brief How many times the screens asked to resume a paused scan (issue #671). */
+    Q_INVOKABLE int
+    resumeScanCalls() const {
+        return (m_commands != nullptr) ? m_commands->resumeScanCalls() : -1;
+    }
+
+    /** @brief How many override tunes (Go to) the screens have asked for, and the last one's frequency. */
+    Q_INVOKABLE int
+    tuneHzCalls() const {
+        return (m_commands != nullptr) ? m_commands->tuneHzCalls() : -1;
+    }
+
+    Q_INVOKABLE double
+    lastTuneHz() const {
+        return (m_commands != nullptr) ? m_commands->lastTuneHz() : 0.0;
+    }
+
+    /** @brief Refuse (false) or admit the next tuner releases, as a full command queue would. */
+    Q_INVOKABLE void
+    setReleaseTunerAccepted(bool accepted) {
+        if (m_commands != nullptr) {
+            m_commands->setReleaseTunerAccepted(accepted);
+        }
+    }
+
     /** @brief The row on air the "this channel" editors capture, and the session edits they send (issue #518). */
     Q_INVOKABLE void
     setScanRowContext(const QVariantMap& context) {
@@ -3104,6 +3207,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("autoStartOnAttach")] = false;
         prefs[QStringLiteral("lastStartedKind")] = QString();
         prefs[QStringLiteral("lastStartedUid")] = QString();
+        prefs[QStringLiteral("acceptedStartKind")] = QString();
+        prefs[QStringLiteral("acceptedStartUid")] = QString();
         prefs[QStringLiteral("lastLat")] = 0.0;
         prefs[QStringLiteral("lastLon")] = 0.0;
         prefs[QStringLiteral("lastFixAt")] = 0;
@@ -3249,6 +3354,12 @@ class Setup : public QObject {
         metrics[QStringLiteral("tgPolicyContext")] = QStringLiteral("0");
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
+        // Issue #671: no scan, nothing paused, and the tuner never taken from an owner.
+        metrics[QStringLiteral("scanKind")] = 0;
+        metrics[QStringLiteral("scanPaused")] = false;
+        metrics[QStringLiteral("scanResumable")] = false;
+        metrics[QStringLiteral("scanEntryCount")] = 0;
+        metrics[QStringLiteral("operatorTuned")] = false;
         metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();

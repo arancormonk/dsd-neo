@@ -353,7 +353,7 @@ p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t
     if (accepted_cc) {
         const long neigh[1] = {ctx->state->p25_cc_freq};
         p25_cc_record_neighbor_frequencies(ctx->opts, ctx->state, neigh, 1);
-        if (seed_lcn0
+        if (seed_lcn0 && !dsd_state_trunk_lcn_user_list_present(ctx->opts, ctx->state)
             && (ctx->state->trunk_lcn_freq[0] == 0 || ctx->state->trunk_lcn_freq[0] != ctx->state->p25_cc_freq)) {
             ctx->state->trunk_lcn_freq[0] = ctx->state->p25_cc_freq;
         }

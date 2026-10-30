@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "menu_actions.h"
 #include "ui_keys.h"
 
 typedef struct {
@@ -187,6 +188,39 @@ ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c)
     return 1;
 }
 
+/* '=', and its Windows (PDCurses) aliases: Shift+keypad Enter has a code of its own, and Shift+Enter arrives as Enter
+   with the Shift modifier, which PDCurses reports for the key getch() returned last. ncurses has neither (a terminal
+   sends Shift+Enter as Enter, or as an escape sequence), so the aliases exist only where curses.h defines them. */
+static int
+ncurses_key_opens_tune(int c) {
+    if (c == DSD_KEY_TUNE) {
+        return 1;
+    }
+#ifdef PADENTER
+    if (c == SHF_PADENTER) {
+        return 1;
+    }
+#endif
+#if defined(PDC_KEY_MODIFIER_SHIFT)
+    if ((c == '\n' || c == '\r') && (PDC_get_key_modifiers() & PDC_KEY_MODIFIER_SHIFT) != 0) {
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+/* '=' opens the frequency entry alone over the main screen (issue #671); act_freq_key() decides from the published
+   snapshots whether this input can be tuned, and says why not where it cannot. Not gated on the M17 encoder, which
+   only takes plain Enter. */
+static int
+ncurses_handle_tune_key(dsd_opts* opts, dsd_state* state, int c) {
+    if (!ncurses_key_opens_tune(c)) {
+        return 0;
+    }
+    ui_menu_open_modal_async(opts, state, act_freq_key);
+    return 1;
+}
+
 static int DSD_ATTR_USED
 ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
@@ -229,6 +263,9 @@ dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
         return 1;
     }
     if (ncurses_handle_delta_keys(c)) {
+        return 1;
+    }
+    if (ncurses_handle_tune_key(opts, state, c)) {
         return 1;
     }
     if (ncurses_handle_encoder_and_lockout_keys(opts, state, c)) {

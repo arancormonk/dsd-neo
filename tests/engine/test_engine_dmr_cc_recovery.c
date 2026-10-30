@@ -5,6 +5,7 @@
  * only the tuner replaced. In particular, neither protocol SM is stubbed. */
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -41,6 +42,7 @@
 #include <string.h>
 #include <time.h>
 #include "../../src/app_control/commands_internal.h"
+#include "../../src/app_control/snapshot_internal.h"
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -647,6 +649,8 @@ static struct {
     int skip_started;
     atomic_int skip_finished;
     int skip_waited;
+    int skip_stalled;
+    int skip_wait_baseline; /* the drain's guard waits before the Skip was queued */
     int flushes;
     int blocked;
     int allowed;
@@ -700,10 +704,22 @@ resume_skip_flush(void* opaque) {
     (void)opaque;
     dsd_mutex_lock(&g_skip_flush.mutex);
     while (!g_skip_flush.skip_started) {
-        dsd_cond_wait(&g_skip_flush.condition, &g_skip_flush.mutex);
+        if (dsd_cond_timedwait(&g_skip_flush.condition, &g_skip_flush.mutex, 10000U) != 0) {
+            g_skip_flush.skip_stalled = 1; /* a fixture failure: released anyway, so the test fails rather than hangs */
+            break;
+        }
     }
     dsd_mutex_unlock(&g_skip_flush.mutex);
-    dsd_sleep_ms(30);
+    /* Until the drain counts the Skip's wait for the guard the tick holds: from then on the drain is blocked on it. */
+    const double deadline = dsd_realtime_mono_s() + 10.0;
+    while (!g_skip_flush.skip_stalled && dsd_app_command_test_policy_guard_waits() <= g_skip_flush.skip_wait_baseline
+           && !atomic_load(&g_skip_flush.skip_finished)) {
+        if (dsd_realtime_mono_s() >= deadline) {
+            g_skip_flush.skip_stalled = 1;
+            break;
+        }
+        dsd_thread_yield();
+    }
     g_skip_flush.skip_waited = !atomic_load(&g_skip_flush.skip_finished);
     release_barrier();
     DSD_THREAD_RETURN;
@@ -744,7 +760,7 @@ seed_skip_watchdog_call(void) {
     dsd_p25p2_playout_reset(&g_state, -1);
     dsd_p25p2_playout_stage(&g_opts, &g_state, 0, 0, 1U, NULL);
     g_skip_flush.pause_flush = g_skip_flush.entered = g_skip_flush.resume = 0;
-    g_skip_flush.skip_started = g_skip_flush.skip_waited = 0;
+    g_skip_flush.skip_started = g_skip_flush.skip_waited = g_skip_flush.skip_stalled = 0;
     g_skip_flush.flushes = g_skip_flush.blocked = g_skip_flush.allowed = g_skip_flush.failures =
         g_skip_flush.audio_blocks = 0;
     atomic_store(&g_skip_flush.skip_finished, 0);
@@ -782,6 +798,9 @@ watchdog_call_skip_phases(void) {
         }
         g_skip_flush.pause_flush = phase != 0;
         g_state.p25_sm_force_release = 1;
+        /* The frontends' view before the tick: trunking on. */
+        dsd_app_telemetry_publish_opts_snapshot(&g_opts);
+        dsd_app_telemetry_publish_snapshot(&g_state);
         p25_sm_watchdog_start(&g_opts, &g_state);
         dsd_mutex_lock(&g_skip_flush.mutex);
         while (!g_skip_flush.entered) {
@@ -796,8 +815,14 @@ watchdog_call_skip_phases(void) {
             rc |= expect(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0) > 0, "in-flight trunk off queued");
             rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 1 && !g_opts.trunk_enable,
                          "in-flight trunk off applied");
+            /* The drain does not wait out the tick that holds the guard: its publication is put off. */
+            const dsd_opts* published = dsd_app_get_latest_opts_snapshot();
+            rc |= expect(dsd_app_telemetry_opts_snapshot_pending() && dsd_app_telemetry_snapshot_pending() && published
+                             && published->trunk_enable == 1,
+                         "in-flight trunk off publication put off while the tick holds the guard");
         }
         if (phase == 2 && entered) {
+            g_skip_flush.skip_wait_baseline = dsd_app_command_test_policy_guard_waits();
             dsd_thread_t releaser;
             const int started = dsd_thread_create(&releaser, resume_skip_flush, NULL) == 0;
             rc |= expect(started, "flush barrier releaser started");
@@ -813,11 +838,21 @@ watchdog_call_skip_phases(void) {
             atomic_store(&g_skip_flush.skip_finished, 1);
             if (started) {
                 dsd_thread_join(releaser);
-                rc |= expect(g_skip_flush.skip_waited, "Skip waits for admitted tick even after trunking is disabled");
+                rc |= expect(g_skip_flush.skip_waited && !g_skip_flush.skip_stalled
+                                 && dsd_app_command_test_policy_guard_waits() == g_skip_flush.skip_wait_baseline + 1,
+                             "Skip waits for admitted tick even after trunking is disabled");
             }
         }
         release_barrier();
         p25_sm_watchdog_stop();
+        if (phase != 0 && entered) {
+            /* The next drain, with nothing queued, is the put-off publication's next opportunity. */
+            rc |= expect(dsd_app_drain_cmds(&g_opts, &g_state) == 0, "empty drain after the tick");
+            const dsd_opts* published = dsd_app_get_latest_opts_snapshot();
+            rc |= expect(!dsd_app_telemetry_opts_snapshot_pending() && !dsd_app_telemetry_snapshot_pending()
+                             && published && published->trunk_enable == 0,
+                         "the trunk-off reaches the frontends once the tick has left the guard");
+        }
         rc |= expect(g_skip_flush.flushes > 0 && !g_skip_flush.failures, "watchdog flush verdicts consistent");
         dsd_call_snapshot call;
         rc |= expect(dsd_call_state_get(&g_state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED,

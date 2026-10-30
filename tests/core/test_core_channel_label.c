@@ -115,6 +115,15 @@ test_trunk_scan_target_wins(void) {
     rc |= expect_true("short out still reports", dsd_channel_label_current(opts, st, small, sizeof(small)) == 1);
     rc |= expect_true("short out truncates", strcmp(small, "county-") == 0);
 
+    // A paused trunk scan names no target, even from an id a reader caught before the pause cleared it (issue #671).
+    st->trunk_scan_paused = 1U;
+    opts->scanner_mode = 0;
+    rc |= expect_true("paused trunk scan names no target", dsd_channel_label_current(opts, st, out, sizeof(out)) == 0);
+    rc |= expect_true("paused trunk scan has no source",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_NONE);
+    st->trunk_scan_paused = 0U;
+    opts->scanner_mode = 1;
+
     // Trunk scan on but nothing selected yet, and no -Y underneath it.
     opts->scanner_mode = 0;
     st->trunk_scan_active_id[0] = '\0';

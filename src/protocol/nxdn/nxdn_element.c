@@ -52,6 +52,7 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -2254,7 +2255,7 @@ nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
     // Tested by count, not by trunk_lcn_freq[0]: an imported map is positional, so an
     // unparseable row 1 deliberately stores 0 to keep LCN numbering, and reading slot 0
     // alone would mistake that whole list for "nothing imported".
-    if (opts->trunk_scan_enabled != 1) {
+    if (!dsd_trunk_scan_owns_tuner(opts, state)) {
         return state->lcn_freq_count > 0;
     }
 

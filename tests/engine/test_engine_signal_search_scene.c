@@ -23,6 +23,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -198,6 +199,11 @@ dsd_analog_rx_carrier_observed_now(const dsd_opts* opts, const dsd_state* state)
     (void)opts;
     (void)state;
     return 1;
+}
+
+void
+dsd_engine_manual_tune_supersede(dsd_state* state) {
+    (void)state;
 }
 
 void

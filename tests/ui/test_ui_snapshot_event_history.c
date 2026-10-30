@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/telemetry_observers.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
@@ -18,6 +19,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -30,6 +32,7 @@
 #include "../../src/app_control/snapshot_internal.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_tick_guard_stub.h"
 
 int
 dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
@@ -163,6 +166,61 @@ assert_cc_candidates(const dsd_state* snap) {
     assert(cc->cool_until[1] == 12.5);
     assert(cc->added == 2U);
     assert(cc->used == 3U);
+}
+
+static int g_observer_saw_guard = -1;
+
+static void
+observe_state(const dsd_state* state, void* user) {
+    (void)state;
+    (void)user;
+    g_observer_saw_guard = p25_sm_tick_guard_held_by_caller();
+}
+
+/* The P25 watchdog's tick writes the decoder state (calls, tuned frequencies, site tables, control-channel candidates)
+   under the tick guard on its own thread, so the publication reads the live state under it: taken for the publish and
+   left after, or, when the decoder thread already holds it (a frame dispatch), used as held, never entered again. */
+static void
+test_publish_holds_the_tick_guard(const dsd_state* state) {
+    static const dsd_app_telemetry_observer observer = {observe_state, NULL, NULL};
+    assert(dsd_app_telemetry_observer_add(&observer) == 0);
+
+    g_observer_saw_guard = -1;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(g_observer_saw_guard == 1);
+    assert(!p25_sm_tick_guard_held_by_caller());
+    assert(p25_sm_tick_guard_try_enter());
+
+    g_observer_saw_guard = -1;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(g_observer_saw_guard == 1);
+    assert(p25_sm_tick_guard_held_by_caller());
+    assert(dsd_test_p25_tick_guard_reentries() == 0);
+    p25_sm_tick_guard_leave();
+
+    assert(dsd_app_telemetry_observer_remove(&observer) == 0);
+}
+
+/* A watchdog tick in progress holds the guard: the publication does not wait for it (an RTL tune or a rigctl round trip
+   would stall the decoder), but is put off, and the next publish carries the state as it is then. */
+static void
+test_publish_puts_off_while_a_tick_holds_the_guard(dsd_state* state) {
+    state->trunk_cc_freq = 851000000L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_telemetry_snapshot_pending() == 0);
+    assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 851000000L);
+
+    assert(dsd_test_p25_tick_guard_hold_elsewhere());
+    state->trunk_cc_freq = 852000000L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_telemetry_snapshot_pending() == 1);
+    assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 851000000L);
+    assert(dsd_test_p25_tick_guard_release_elsewhere()); /* still held: the publish returned without waiting */
+
+    state->trunk_cc_freq = 853000000L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_telemetry_snapshot_pending() == 0);
+    assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 853000000L);
 }
 
 int
@@ -500,6 +558,9 @@ main(void) {
     snap = dsd_app_get_latest_snapshot();
     assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_INHERIT);
     free(opts);
+
+    test_publish_holds_the_tick_guard(state);
+    test_publish_puts_off_while_a_tick_holds_the_guard(state);
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

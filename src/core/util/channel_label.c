@@ -11,6 +11,7 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 
 #include <stddef.h>
 
@@ -26,7 +27,7 @@
 static const char*
 channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_label_source* source) {
     *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
-    if (opts->trunk_scan_enabled == 1 && state->trunk_scan_active_id[0] != '\0') {
+    if (dsd_trunk_scan_owns_tuner(opts, state) && state->trunk_scan_active_id[0] != '\0') {
         *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
         return state->trunk_scan_active_id;
     }

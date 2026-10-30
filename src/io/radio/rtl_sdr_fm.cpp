@@ -504,6 +504,14 @@ static std::atomic<int> g_retune_diag_blocks_remaining{0};
 static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
+/* Stream opens and stops (rtl_stream_session_generation(), issue #671). */
+static std::atomic<uint32_t> g_rtl_session_generation{0U};
+
+static void
+rtl_stream_advance_session_generation(void) {
+    (void)g_rtl_session_generation.fetch_add(1U, std::memory_order_acq_rel);
+}
+
 /* Gaps the stream had on the same carrier (issue #518 D5): a USB recovery or rtl_tcp reconnect
  * (rtl_stream_note_discontinuity()), or one a replayed capture recorded (rtl_replay_on_reset_event()). Process-wide and
  * value-only: it outlives the stream, and never goes back, so the decoder compares a count read on one stream with one
@@ -7415,16 +7423,23 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
  * @param target_freq_hz Desired center frequency in Hz.
  * @return Request ID completed after the queued retune, or zero when deferred.
  */
-static uint32_t
-schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz, uint64_t caller_token = 0U) {
-    if (!s) {
-        return 0U;
+/* Whether the live controller takes a manual retune from @p caller_token before its lock: never one a running Signal
+   search does not own, nor one before the controller thread runs. A stand-in controller takes every one. */
+static int
+manual_retune_admitted(const struct controller_state* s, uint64_t caller_token) {
+    if (s != &controller) {
+        return 1;
     }
     const uint64_t search_owner = rtl_signal_search_owner();
-    if (s == &controller && search_owner && caller_token != search_owner) {
-        return 0U;
+    if (search_owner && caller_token != search_owner) {
+        return 0;
     }
-    if (s == &controller && g_stream && !g_stream->controller_thread_started.load(std::memory_order_acquire)) {
+    return !(g_stream && !g_stream->controller_thread_started.load(std::memory_order_acquire));
+}
+
+static uint32_t
+schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz, uint64_t caller_token = 0U) {
+    if (!s || !manual_retune_admitted(s, caller_token)) {
         return 0U;
     }
     dsd_mutex_lock(&s->hop_m);
@@ -7434,10 +7449,17 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
     }
     uint32_t request_id = s->retune_request_id.load(std::memory_order_acquire);
     int pending = s->manual_retune_pending.load(std::memory_order_acquire);
-    if (pending && s->manual_retune_token != 0U && s->manual_retune_token != caller_token) {
+    /* A manual tune's tag asks only for its completion (issue #671): the request it queued is anyone's to coalesce
+       into, as an untagged one is. */
+    const uint64_t queued_owner =
+        (s->manual_retune_token & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U ? 0U : s->manual_retune_token;
+    if (pending && queued_owner != 0U && queued_owner != caller_token) {
         dsd_mutex_unlock(&s->hop_m);
         return 0U;
     }
+    /* A manual tune whose queued request this caller takes over never runs under its own tag: told so after the lock
+       (issue #671), or the decoder would wait on a completion that cannot come. */
+    const uint64_t displaced = pending && s->manual_retune_token != caller_token ? s->manual_retune_token : 0U;
     if (!pending) {
         request_id = s->retune_request_id.fetch_add(1, std::memory_order_acq_rel) + 1;
         s->manual_retune_pending.store(1, std::memory_order_release);
@@ -7449,6 +7471,9 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
     (void)rtl_stream_take_pending_retune_profile(&s->manual_retune_profile, request_id, target_freq_hz);
     dsd_cond_signal(&s->hop);
     dsd_mutex_unlock(&s->hop_m);
+    if ((displaced & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U) {
+        rtl_stream_publish_tune_completion(displaced, RTL_STREAM_TUNE_SUPERSEDED);
+    }
     return request_id;
 }
 
@@ -9162,6 +9187,7 @@ extern "C" int dsd_rtl_stream_soft_stop(void);
 extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
     dsd_rtl_stream_forget_start_refusal();
+    rtl_stream_advance_session_generation();
     if (!opts) {
         LOG_ERROR("RTL stream open: missing opts\n");
         return -1;
@@ -9251,6 +9277,8 @@ dsd_rtl_stream_soft_stop(void) {
     LOG_INFO("soft stopping...\n");
     ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();
+    /* Before the queued retune is failed below: its completion belongs to this session. */
+    rtl_stream_advance_session_generation();
     const int replay_stream = stream_is_replay_active();
     if (g_stream) {
         g_stream->replay_forced_stop.store(1, std::memory_order_release);
@@ -9680,7 +9708,8 @@ rtl_live_read_device_has_no_stream(void) {
 
 /* One empty poll of a live read on a device with no stream (issue #518 D4). Returns 1 when the read ends, with its
    result in @p *result: DSD_RTL_READ_NO_STREAM to a reader that asks for it, once a wait slice passed with no stream;
-   else DSD_RTL_READ_YIELD while a command is queued, which the decoder applies before it reads again. A stream that is
+   else DSD_RTL_READ_YIELD while a command is queued, which the decoder applies before it reads again, or while a
+   frontend publication a P25 watchdog tick put off waits for the decoder's next pass. A stream that is
    only delayed is still a stream, so its read waits for samples whatever is queued: a yield there would cut the frame
    being decoded for nothing. */
 static thread_local uint64_t g_read_no_stream_since_ms = 0U;
@@ -9705,7 +9734,7 @@ rtl_live_read_no_stream(rtl_live_read_idle* idle, int* result) {
         *result = DSD_RTL_READ_NO_STREAM;
         return 1;
     }
-    if (dsd_runtime_controls_pending()) {
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
         *result = DSD_RTL_READ_YIELD;
         return 1;
     }
@@ -10245,6 +10274,11 @@ rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_
 extern "C" uint32_t
 rtl_stream_output_generation(void) {
     return g_rtl_output_generation.load(std::memory_order_acquire);
+}
+
+extern "C" uint32_t
+rtl_stream_session_generation(void) {
+    return g_rtl_session_generation.load(std::memory_order_acquire);
 }
 
 extern "C" uint64_t
@@ -13227,6 +13261,87 @@ dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, 
     demod.rate_in = outer_rate_in;
     controller.last_applied_freq_hz.store(outer_applied_freq_hz, std::memory_order_release);
     return 0;
+}
+
+/* The manual-tune stand-in (issue #671): the process controller with no stream and no controller thread, so a tune
+ * waits out its synchronous deadline and times out, and the test lands the request later as the controller thread
+ * would. */
+static ControllerRetuneWork g_test_manual_tune_taken{};
+static int g_test_manual_tune_taken_valid = 0;
+
+extern "C" int
+rtl_stream_test_manual_tune_standin_begin(uint32_t applied_hz) {
+    if (g_stream) {
+        return -1;
+    }
+    controller_init(&controller);
+    controller.last_applied_freq_hz.store(applied_hz, std::memory_order_release);
+    g_test_manual_tune_taken_valid = 0;
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_manual_tune_standin_tune(dsd_opts* stream_opts, uint32_t frequency, uint64_t token) {
+    if (g_stream || !stream_opts) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
+    return rtl_stream_tune_impl(stream_opts, frequency, token);
+}
+
+extern "C" int
+rtl_stream_test_manual_tune_standin_queued(uint64_t* out_token) {
+    if (out_token == nullptr) {
+        return -1;
+    }
+    dsd_mutex_lock(&controller.hop_m);
+    const int pending = controller.manual_retune_pending.load(std::memory_order_acquire) != 0 ? 1 : 0;
+    *out_token = pending != 0 ? controller.manual_retune_token : 0U;
+    dsd_mutex_unlock(&controller.hop_m);
+    return pending;
+}
+
+extern "C" int
+rtl_stream_test_manual_tune_standin_take(uint64_t* out_token, uint32_t* out_freq_hz) {
+    if (!out_token || !out_freq_hz || g_test_manual_tune_taken_valid
+        || !controller.manual_retune_pending.load(std::memory_order_acquire)) {
+        return -1;
+    }
+    ControllerRetuneWork work = {};
+    if (!controller_wait_for_retune_work(&controller, &work) || !work.manual_pending) {
+        return -2;
+    }
+    g_test_manual_tune_taken = work;
+    g_test_manual_tune_taken_valid = 1;
+    *out_token = work.manual_token;
+    *out_freq_hz = work.manual_freq_hz;
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_manual_tune_standin_finish(int result, uint32_t applied_hz) {
+    if (!g_test_manual_tune_taken_valid) {
+        return -1;
+    }
+    g_test_manual_tune_taken_valid = 0;
+    controller.last_applied_freq_hz.store(applied_hz, std::memory_order_release);
+    controller_clear_retune_in_flight(&controller);
+    controller_finish_manual_retune(&controller, &g_test_manual_tune_taken, result, 0);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_manual_tune_standin_stop(void) {
+    rtl_stream_advance_session_generation();
+    const ControllerRetuneCancellation cancelled = controller_detach_queued_manual_retune(&controller);
+    controller_finish_cancelled_manual_retune(&controller, &cancelled);
+    return cancelled.pending ? 1 : 0;
+}
+
+extern "C" void
+rtl_stream_test_manual_tune_standin_end(void) {
+    g_test_manual_tune_taken_valid = 0;
+    controller.last_applied_freq_hz.store(0U, std::memory_order_release);
+    controller_cleanup(&controller);
 }
 
 extern "C" int

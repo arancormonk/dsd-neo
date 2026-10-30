@@ -21,6 +21,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cmath>
+#include <cstring>
 #include <dsd-neo/core/receive_types.h>
 #include <initializer_list>
 #include <stdint.h>
@@ -28,7 +29,9 @@
 #include <stdlib.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -1583,6 +1586,114 @@ test_scan_row() {
     freeState(&state);
 }
 
+/* Issue #671: a scan the operator paused owns nothing. The tuner gate, the rotation the scan controls act on and the
+ * target on air all read the app-control scan-state view, so a paused --trunk-scan (which keeps trunk_scan_enabled, its
+ * configured setting) offers the tuning a running one holds back, and the scan controls give way to a resume. */
+static void
+test_scan_state() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_gain_value = 30;
+    dsd_qt::MetricsModel model;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&] { ++controls; });
+
+    /* A running trunk scan on a target: it owns the tuner. */
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 3U;
+    state.trunk_scan_active_ordinal = 2U;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "dispatch");
+    state.trunk_scan_configured_gain = 20;
+    state.trunk_scan_gain_override = 1U;
+    model.refresh(&opts, &state);
+    expect("a running trunk scan owns the tuner", model.tunerControlled() && model.scanRotationActive());
+    expect("its target is on air", model.scanTargetId() == QStringLiteral("dispatch") && model.scanTargetOrdinal() == 2
+                                       && model.scanTargetCount() == 3);
+    expect("a target's own gain is flagged while it runs", model.tunerGainRowOverride());
+    expect("a running trunk scan is not paused", model.scanKind() == DSD_APP_SCAN_KIND_TRUNK && !model.scanPaused()
+                                                     && !model.scanResumable() && model.scanEntryCount() == 3
+                                                     && !model.operatorTuned());
+
+    /* Paused (the coordinator clears the target on air and keeps the list): nothing owns the tuner. */
+    state.trunk_scan_paused = 1U;
+    state.trunk_scan_active_id[0] = '\0';
+    state.trunk_scan_active_ordinal = 0U;
+    state.operator_tuned = 1U;
+    const int before = controls;
+    model.refresh(&opts, &state);
+    expect("a paused trunk scan holds no tuner", !model.tunerControlled());
+    expect("a paused trunk scan is no rotation for hold, avoid and next", !model.scanRotationActive());
+    expect("the pause is announced", controls == before + 1);
+    expect("no target on air while paused", model.scanTargetId().isEmpty() && model.scanTargetOrdinal() == 0);
+    expect("the list keeps its size", model.scanTargetCount() == 3);
+    expect("the gain buttons still edit the scan's configured gain", model.configuredTunerGainDb() == 20);
+    expect("no target overrides the gain while paused", !model.tunerGainRowOverride());
+    expect("the trunk scan reads paused and resumable", model.scanKind() == DSD_APP_SCAN_KIND_TRUNK
+                                                            && model.scanPaused() && model.scanResumable()
+                                                            && model.scanEntryCount() == 3);
+    expect("the operator holds the tuner", model.operatorTuned());
+    /* N6: the gain controls still edit the retained scan's configured gain and autogain while it is paused, and the
+     * target's override (still published from the target it left) names nothing: the label, the edit notice and the
+     * autogain label the terminal shows come from the same view the model reads. */
+    {
+        opts.rtl_gain_value = 20; // the pause restored the configured gain
+        state.trunk_scan_configured_autogain = 1U;
+        dsd_app_rtl_gain_view gain{};
+        expect("paused gain view", dsd_app_rtl_gain_view_get(&opts, &state, &gain) == 0);
+        char text[96];
+        (void)dsd_app_rtl_gain_view_label(&gain, text, sizeof text);
+        expect("paused gain label names no target", std::strcmp(text, "Gain... [20]") == 0);
+        (void)dsd_app_rtl_gain_view_edit_notice(&gain, text, sizeof text);
+        expect("paused gain notice names no target", std::strcmp(text, "Applied: RTL gain -> 20") == 0);
+        (void)dsd_app_rtl_autogain_view_label(&gain, 0, text, sizeof text);
+        expect("paused autogain label is the scan's configured one",
+               std::strcmp(text, "Tuner autogain [On] (suspended: gain 20)") == 0);
+        (void)dsd_app_rtl_autogain_view_edit_notice(&gain, text, sizeof text);
+        expect("paused autogain toggle notice",
+               std::strcmp(text, "Default tuner autogain -> On; manual gain 20 suspends it") == 0);
+        state.trunk_scan_configured_autogain = 0U;
+        opts.rtl_gain_value = 30;
+    }
+
+    /* A paused -Y list: scanner_mode 0 and lcn_scan_paused set. Its size is the list's rows. */
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_paused = 0U;
+    state.trunk_scan_target_count = 0U;
+    state.lcn_scan_paused = 1U;
+    state.lcn_freq_count = 5;
+    model.refresh(&opts, &state);
+    expect("a paused -Y list", model.scanKind() == DSD_APP_SCAN_KIND_CHANNEL && model.scanPaused()
+                                   && model.scanResumable() && model.scanEntryCount() == 5);
+    expect("a paused -Y list holds no tuner and runs no rotation",
+           !model.tunerControlled() && !model.scanRotationActive() && model.scanTargetCount() == 0);
+    /* A resume waiting on its row's tune: still paused, and nothing more to ask for. */
+    state.lcn_scan_resume_pending = 1U;
+    model.refresh(&opts, &state);
+    expect("a pending resume is paused but not resumable", model.scanPaused() && !model.scanResumable());
+    /* The resume lands. */
+    state.lcn_scan_resume_pending = 0U;
+    state.lcn_scan_paused = 0U;
+    state.operator_tuned = 0U;
+    opts.scanner_mode = 1;
+    model.refresh(&opts, &state);
+    expect("a running -Y list", model.scanKind() == DSD_APP_SCAN_KIND_CHANNEL && !model.scanPaused()
+                                    && model.tunerControlled() && model.scanRotationActive() && !model.operatorTuned());
+    /* A stop leaves the tuner with the operator: no scan, operator_tuned kept (Explore under -T reads the same). */
+    opts.scanner_mode = 0;
+    state.operator_tuned = 1U;
+    model.refresh(&opts, &state);
+    expect("no scan, the operator holds the tuner", model.scanKind() == DSD_APP_SCAN_KIND_NONE && !model.scanPaused()
+                                                        && model.operatorTuned() && model.scanEntryCount() == 0);
+    model.clear();
+    expect("a cleared model has no scan",
+           model.scanKind() == DSD_APP_SCAN_KIND_NONE && !model.scanPaused() && !model.operatorTuned());
+
+    freeState(&state);
+}
+
 /* DMR RAS and the Relaxed CRC policy, from the app-control views every frontend reads (dmr_ras_view.h,
  * crc_policy_view.h): the site sheet's RAS field and hint, and the Settings switch with its "this channel" line. Read
  * by property name, as QML reads them. */
@@ -1961,6 +2072,7 @@ main(int argc, char** argv) {
     test_tetra_rows();
     test_slot_kind_and_labels();
     test_scan_row();
+    test_scan_state();
     test_dmr_ras_and_crc_policy();
     test_rigctl_audio_passband();
     test_options_readiness();
@@ -2769,6 +2881,18 @@ main(int argc, char** argv) {
             expect("a nameless call is named by its channel", model.slot1CallName() == QStringLiteral("Fire Dispatch"));
             /* No talkgroup decoded: no talkgroup text, never "0" (issue #773). */
             expect("the talkgroup text stays empty", model.slot1TgText().isEmpty());
+
+            /* Issue #671: a trunk-scan target's id names the channel; the hero reads the entry's name instead. */
+            DSD_SNPRINTF(staged->channel_label, sizeof(staged->channel_label), "%s", "96e4230d-7220-4a76");
+            model.setChannelNames(QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County")}});
+            model.refresh(&opts, &state);
+            expect("a target id reads as its name in the hero",
+                   model.slot1CallName() == QStringLiteral("Benton County")
+                       && model.slot1Channel() == QStringLiteral("Benton County"));
+            model.setChannelNames(QVariantMap());
+            model.refresh(&opts, &state);
+            expect("without names the id shows as it is",
+                   model.slot1CallName() == QStringLiteral("96e4230d-7220-4a76"));
         }
     }
 

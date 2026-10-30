@@ -9,6 +9,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stddef.h>
 
 int
@@ -22,11 +23,12 @@ dsd_app_rtl_gain_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_
     }
     out->effective_gain = opts->rtl_gain_value;
     out->configured_gain = opts->rtl_gain_value;
-    /* The coordinator publishes the configured gain while a target list is loaded. */
+    /* The coordinator publishes the configured gain while a target list is loaded, paused or not: the gain controls
+       edit the retained coordinator's (issue #671). Only a target on air overrides it. */
     if (opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U) {
         out->scan_configured = 1U;
         out->configured_gain = state->trunk_scan_configured_gain;
-        out->row_override = state->trunk_scan_gain_override ? 1U : 0U;
+        out->row_override = state->trunk_scan_gain_override && dsd_trunk_scan_owns_tuner(opts, state) ? 1U : 0U;
         out->configured_autogain = state->trunk_scan_configured_autogain ? 1U : 0U;
     }
     return 0;

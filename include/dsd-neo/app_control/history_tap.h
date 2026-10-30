@@ -38,14 +38,12 @@ typedef struct {
 } dsd_app_history_tap_cursor;
 
 /**
- * @brief The published options History attribution reads, from the latest options snapshot (the frontend reads them
- * from that snapshot too). Options a saved system's extra arguments set are among them: they are parsed into the
- * options.
+ * @brief What History attribution reads from the latest options snapshot, as the frontend's refresh() does: whether
+ * options were published at all, since unknown options cannot establish a saved system's identity. Which rows carry it
+ * is each row's own stamp (Event_History::operator_tuned, scan_member; issue #671), never the scan flags at the read.
  */
 typedef struct {
-    int opts_published;     /**< 0 until the first options snapshot; the fields below are then 0 */
-    int scanner_mode;       /**< dsd_opts::scanner_mode */
-    int trunk_scan_enabled; /**< dsd_opts::trunk_scan_enabled */
+    int opts_published; /**< 0 until the first options snapshot */
 } dsd_app_history_tap_meta;
 
 /**

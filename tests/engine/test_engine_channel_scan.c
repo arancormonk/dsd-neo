@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -29,7 +30,9 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
@@ -44,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "scan_analog_internal.h"
+#include "scan_step_untyped.h"
 
 void dsd_key_set_test_alloc_fail_after(long count);
 
@@ -179,10 +183,18 @@ dsd_engine_scan_tune_moved(void) {
     return 0;
 }
 
+/* Whether slot 0's call was still open at the tune, and whether the scan ran as the tuner's owner then (issue #671:
+   a resume tunes its row as the running scan does, after the manual session's calls have ended). */
+static int tune_saw_open_call;
+static int tune_saw_scanner_mode = -1;
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
     assert(freq == 150000000);
     assert(opts->frame_nxdn48 == expected_nxdn);
+    dsd_call_snapshot open_call;
+    tune_saw_open_call = dsd_call_state_get(state, 0U, &open_call) > 0 && open_call.phase == DSD_CALL_PHASE_ACTIVE;
+    tune_saw_scanner_mode = opts->scanner_mode;
     tuned_analog_only = opts->analog_only;
     tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     tuned_analog_kind = opts->analog_demod;
@@ -204,6 +216,67 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
         dsd_trunk_tuning_request_complete(request, tune_result);
     }
     return tune_result;
+}
+
+/* The pause in place forgets the carrier's decoding (engine.c, received_identity.c, dmr_ras.c; issue #671): counted,
+   with what was still in force when it ran -- slot 0's call open, the row's key and its voice hold -- so a pause that
+   forgot before the calls ended, or after the configured keys and policy came back, shows up. */
+static int g_forget_carrier_calls;
+static int g_forget_carrier_saw_open_call;
+static unsigned long long g_forget_carrier_saw_r;
+static int g_forget_carrier_saw_hold_ms;
+static int g_rxid_resets;
+static int g_ras_resets;
+
+void
+dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
+    dsd_call_snapshot call;
+    g_forget_carrier_calls++;
+    g_forget_carrier_saw_open_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    g_forget_carrier_saw_r = state->R;
+    g_forget_carrier_saw_hold_ms = opts->scan_voice_hold_ms;
+}
+
+void
+dsd_rxid_reset(dsd_state* state) {
+    (void)state;
+    g_rxid_resets++;
+}
+
+void
+dmr_ras_reset(dsd_state* state) {
+    (void)state;
+    g_ras_resets++;
+}
+
+/* A resume forgets the legacy tune caches (trunk_tuning.c, B2): counted. */
+static int g_legacy_cache_forgets;
+
+void
+dsd_engine_legacy_tune_caches_forget(void) {
+    g_legacy_cache_forgets++;
+}
+
+/* The untyped step's entry (engine.c), which ENGINE_NO_CARRIER_RESET drives for real: here a scripted result, with the
+   row asked for and whether slot 0's call was still open when the row was tuned. An OK commits the row's cursor, as the
+   real one does. */
+static int g_untyped_enter_result = DSD_UNTYPED_STEP_OK;
+static int g_untyped_enter_calls;
+static int g_untyped_enter_row = -1;
+static int g_untyped_enter_saw_open_call;
+
+int
+dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now) {
+    (void)opts;
+    (void)now;
+    dsd_call_snapshot call;
+    g_untyped_enter_calls++;
+    g_untyped_enter_row = row;
+    g_untyped_enter_saw_open_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (g_untyped_enter_result == DSD_UNTYPED_STEP_OK) {
+        state->lcn_freq_roll = row + 1;
+    }
+    return g_untyped_enter_result;
 }
 
 /* The conventional NFM call's end (issue #637): when it ran, and whether slot 0's call was still open for it to close
@@ -2707,6 +2780,482 @@ test_leave_ends_the_nfm_call_before_its_row_commits(void) {
     free(opts);
 }
 
+/* --- Issue #671: pausing and resuming a -Y scan. --- */
+
+static void
+open_manual_call(dsd_state* state) {
+    dsd_call_observation observation = {.protocol = DSD_SYNC_ANALOG, .slot = 0, .kind = DSD_CALL_KIND_VOICE};
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
+static int
+slot0_call_open(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+/* No row is named for a call heard now. */
+static int
+no_row_named(const dsd_opts* opts, const dsd_state* state) {
+    char label[64];
+    return dsd_channel_label_current(opts, state, label, sizeof(label)) == 0;
+}
+
+/* A typed -Y list of three DMR rows on audio input, row 1 avoided: row 0 ("Mall") keyed and holding voice 4 s, row 2
+   ("Depot") plain, under a configured key of 999, a 2 s voice hold and a configured DCC allow list of 9. */
+static const unsigned long long k_row0_scalar = 0x123456789ULL;
+
+static void
+typed_pause_fixture(dsd_opts* opts, dsd_state* state) {
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->scan_voice_hold_ms = 2000;
+    assert(dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_DCC, 1, "9", "", "", NULL, 0) == 0);
+    state->samplesPerSymbol = 10;
+    state->R = 999;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+        assert(dsd_channel_mode_set(state, row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_HOLD;
+    profile->values.hold_ms = 4000;
+    assert(dsd_channel_profile_set(state, 0, profile) == 0);
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = k_row0_scalar;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &keys) == 0);
+    assert(dsd_state_trunk_lcn_name_set(state, 0, "Mall") == 0);
+    assert(dsd_state_trunk_lcn_name_set(state, 2, "Depot") == 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 1, 1) == 0);
+    expected_nxdn = 0;
+}
+
+static void
+typed_pause_fixture_free(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* A pause keeps what the scan is (its list, cursor, avoids and session edits, in its session) and drops the row it
+   had in flight or on air: the staged tune never commits, nothing gates the manual session's frames, the staged
+   options reach no rigctl request, and the configured decoder, keys and policy return. The calls end under the row on
+   air, the hold goes (B3). A resume then lands from the kept cursor, runs the session edits, and only then publishes
+   the scan. */
+static void
+test_pause_keeps_the_scan_and_drops_its_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_pause_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1 && state->R == k_row0_scalar && opts->scan_voice_hold_ms == 4000);
+    const uint32_t session = state->scan_row_session;
+    dsd_scan_row_edit_value value = {0};
+    assert(dsd_receive_edit_parse(&value.receive, DSD_RECEIVE_DCC, 1, "8", "", "", NULL, 0) == 0);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 2, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    const uint64_t staged = request;
+    assert(dsd_engine_channel_scan_waiting(state) && dsd_engine_scan_tuning_row_options(opts, state) != NULL);
+    open_manual_call(state);
+    state->lcn_scan_hold = 1;
+    const uint32_t scan_session = state->lcn_scan_session;
+    g_rigctl_restores = g_forget_carrier_calls = 0;
+    const int resets_before = reset_count;
+
+    assert(dsd_engine_channel_scan_pause(opts, state, 0) == 0);
+    assert(!slot0_call_open(state) && g_forget_carrier_calls == 0);
+    assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->operator_tuned == 1);
+    assert(state->lcn_scan_hold == 0 && state->lcn_scan_resume_pending == 0);
+    assert(state->lcn_scan_session == scan_session + 1U);
+    assert(!dsd_engine_channel_scan_waiting(state) && dsd_engine_scan_tuning_row_options(opts, state) == NULL);
+    assert(state->lcn_freq_roll == 1 && dsd_state_trunk_lcn_avoid_get(state, 1) && state->lcn_avoid_count == 1);
+    assert(state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_NONE && !dsd_scan_mode_configured_view(state));
+    assert(state->R == 999 && opts->scan_voice_hold_ms == 2000);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 9));
+    assert(g_rigctl_restores == 1 && g_rigctl_restore_row_options == 0);
+    assert(no_row_named(opts, state));
+    /* The manual session's frames pass. */
+    state->synctype = DSD_SYNC_P25P1_POS;
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 1 && state->synctype == DSD_SYNC_P25P1_POS);
+    /* The tune staged before the pause lands: nothing commits. */
+    dsd_trunk_tuning_request_publish(staged, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(state->lcn_freq_roll == 1 && reset_count == resets_before && opts->scanner_mode == 0);
+    /* Row edits wait for the resume; a second pause finds nothing to do. */
+    assert(dsd_engine_channel_scan_edit_row(opts, state, session, 2, DSD_SCAN_ROW_FIELD_DCC, DSD_SCAN_ROW_EDIT_SET,
+                                            &value, NULL)
+           == DSD_SCAN_ROW_EDIT_UNAVAILABLE);
+    assert(dsd_engine_channel_scan_pause(opts, state, 1) == 0);
+    assert(g_rigctl_restores == 1 && state->lcn_scan_session == scan_session + 1U && g_forget_carrier_calls == 0);
+
+    /* The resume: the manual call ends first, then the next row from the kept cursor (row 1 avoided: row 2) lands. */
+    open_manual_call(state);
+    opts->trunk_enable = 1;
+    g_legacy_cache_forgets = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
+    assert(tune_saw_open_call == 0 && tune_saw_scanner_mode == 1 && !slot0_call_open(state));
+    assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0 && state->operator_tuned == 0);
+    assert(state->lcn_scan_resume_pending == 0 && opts->trunk_enable == 0 && g_legacy_cache_forgets == 1);
+    assert(state->lcn_freq_roll == 3 && state->scan_row_index == 2 && state->scan_row_session == session);
+    assert((state->scan_row_edited & DSD_SCAN_ROW_FIELD_DCC) != 0U);
+    assert(dsd_receive_set_contains(&opts->receive.filters[DSD_RECEIVE_DCC].allow, 8));
+    char label[64];
+    assert(dsd_channel_label_current(opts, state, label, sizeof(label)) > 0 && strcmp(label, "Depot") == 0);
+    typed_pause_fixture_free(opts, state);
+}
+
+/* A pause no tune follows (a tuner release) forgets the carrier's decoding itself, after the calls end and while the
+   row's keys and policy are still in force; an untyped list, with no scope, still ends its calls (F3). */
+static void
+test_pause_in_place_forgets_the_carrier(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_pause_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    open_manual_call(state);
+    g_forget_carrier_calls = g_rxid_resets = g_ras_resets = 0;
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    assert(g_forget_carrier_calls == 1 && g_rxid_resets == 1 && g_ras_resets == 1);
+    assert(g_forget_carrier_saw_open_call == 0 && g_forget_carrier_saw_r == k_row0_scalar);
+    assert(g_forget_carrier_saw_hold_ms == 4000);
+    assert(state->R == 999 && opts->scan_voice_hold_ms == 2000 && state->lcn_scan_paused == 1);
+    typed_pause_fixture_free(opts, state);
+
+    /* Untyped: no modes, so no scope and no scan extension; the row's keys came from the list. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    state->R = 999;
+    state->lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(state, 0) = *dsd_state_trunk_lcn_slot(state, 1) = 150000000;
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = k_row0_scalar;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &keys) == 0);
+    assert(dsd_state_trunk_lcn_name_set(state, 0, "Mall") == 0);
+    (void)dsd_scan_row_keys_apply(state, 0);
+    state->lcn_freq_roll = 1;
+    assert(state->R == k_row0_scalar);
+    open_manual_call(state);
+    g_forget_carrier_calls = 0;
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    assert(!slot0_call_open(state) && g_forget_carrier_calls == 1 && g_forget_carrier_saw_r == k_row0_scalar);
+    assert(state->R == 999 && opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_freq_roll == 1);
+    assert(no_row_named(opts, state));
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/* N2, N9: a resume first finds a row to land on. With none it never starts: the manual session and its call go on,
+   and nothing names it. A row whose tune is refused leaves the scan paused too, with what the attempt began undone:
+   its scope (so a Signal search begins its own and a manual rigctl request is the session's), its staged options and
+   the cursor it moved. Its manual call ended first, and a new one on the manual frequency is named after no row. */
+static void
+test_resume_without_a_landing_stays_paused(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_pause_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 0, 1) == 0 && dsd_state_trunk_lcn_avoid_set(state, 2, 1) == 0);
+    open_manual_call(state);
+    const int tunes_before = tunes;
+    const uint32_t scan_session = state->lcn_scan_session;
+    g_legacy_cache_forgets = 0;
+    state->ui_msg[0] = '\0';
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_NO_ROW);
+    assert(strcmp(state->ui_msg, "Scan stays paused: no scan channel to resume on") == 0);
+    assert(slot0_call_open(state) && tunes == tunes_before && g_legacy_cache_forgets == 0);
+    assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->operator_tuned == 1);
+    assert(state->lcn_scan_resume_pending == 0 && state->lcn_scan_session == scan_session);
+    assert(no_row_named(opts, state));
+
+    assert(dsd_state_trunk_lcn_avoid_set(state, 0, 0) == 0 && dsd_state_trunk_lcn_avoid_set(state, 2, 0) == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    assert(tunes == tunes_before + 1 && tune_saw_open_call == 0 && tune_saw_scanner_mode == 1);
+    assert(strcmp(state->ui_msg, "Scan stays paused: tune to 150.000000 MHz failed") == 0);
+    assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->operator_tuned == 1);
+    assert(state->lcn_scan_resume_pending == 0 && state->lcn_freq_roll == 1);
+    assert(!dsd_engine_channel_scan_waiting(state) && dsd_engine_scan_tuning_row_options(opts, state) == NULL);
+    assert(!dsd_scan_mode_configured_view(state) && state->scan_row_scanner == (uint8_t)DSD_SCAN_ROW_SCANNER_NONE);
+    assert(state->R == 999 && opts->scan_voice_hold_ms == 2000 && opts->frame_dmr == 0);
+    assert(dsd_channel_modes_rigctl_request_is_session(opts, state) == 1);
+    open_manual_call(state);
+    assert(no_row_named(opts, state));
+    /* A Signal search's scope is its own: entered over the session's decoder, it leaves back to it. */
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0 && opts->frame_p25p1 == 1);
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->frame_p25p1 == 0 && opts->frame_dmr == 0 && opts->scan_voice_hold_ms == 2000);
+
+    /* Every refusal says why: a tune deferred behind another owner's, and a row whose keys could not be prepared, which
+       never reached its tune (no "tune failed" for a tune that did not fail). */
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    assert(strcmp(state->ui_msg, "Scan stays paused: tune to 150.000000 MHz deferred; retry") == 0);
+    assert(state->lcn_scan_paused == 1 && state->lcn_freq_roll == 1);
+    /* Row 0's keys gain a key-table entry, whose copy the row's preparation allocates. */
+    dsd_key_set entry_keys = {0};
+    entry_keys.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*entry_keys.entries));
+    assert(entry_keys.entries);
+    entry_keys.count = 1U;
+    entry_keys.present = 1;
+    entry_keys.entries[0].index = 9U;
+    entry_keys.entries[0].value = 999ULL;
+    entry_keys.entries[0].loaded = 1U;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &entry_keys) == 0);
+    state->lcn_freq_roll = 0;
+    const int tunes_before_setup = tunes;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_key_set_test_alloc_fail_after(0);
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    dsd_key_set_test_alloc_fail_after(-1);
+    assert(tunes == tunes_before_setup);
+    assert(strcmp(state->ui_msg, "Scan stays paused: scan channel 150.000000 MHz could not be set up") == 0);
+    assert(state->lcn_scan_paused == 1 && state->lcn_freq_roll == 0 && !dsd_scan_mode_configured_view(state));
+    typed_pause_fixture_free(opts, state);
+}
+
+/* N10: a resume whose row tune is outstanding waits, still paused and naming no row, until the row lands (then the
+   scan publishes) or fails (then it stays paused, with the reason). A second resume while it waits changes nothing:
+   no tune, no call ended. A pause meanwhile takes the resume back, and its row never commits. */
+static void
+test_resume_pending_waits_for_its_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_pause_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    open_manual_call(state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    const uint64_t resume_request = request;
+    assert(!slot0_call_open(state) && tune_saw_scanner_mode == 1);
+    assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 1);
+    assert(state->operator_tuned == 1 && state->lcn_freq_roll == 1 && no_row_named(opts, state));
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1 && opts->scanner_mode == 0);
+    open_manual_call(state);
+    const int tunes_before = tunes;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    assert(tunes == tunes_before && slot0_call_open(state) && state->lcn_scan_resume_pending == 1);
+    dsd_trunk_tuning_request_publish(resume_request, DSD_TRUNK_TUNE_RESULT_OK);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 0);
+    assert(!slot0_call_open(state));
+    assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0 && state->operator_tuned == 0);
+    assert(state->lcn_scan_resume_pending == 0 && state->lcn_freq_roll == 3 && state->scan_row_index == 2);
+    char label[64];
+    assert(dsd_channel_label_current(opts, state, label, sizeof(label)) > 0 && strcmp(label, "Depot") == 0);
+
+    /* Paused again, the next resume's row (row 0, wrapping) fails late: the scan stays paused, cursor kept. */
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    state->ui_msg[0] = '\0';
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(strcmp(state->ui_msg, "Scan stays paused: tune to 150.000000 MHz failed") == 0);
+    assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->operator_tuned == 1);
+    assert(state->lcn_scan_resume_pending == 0 && state->lcn_freq_roll == 3 && state->R == 999);
+    assert(!dsd_scan_mode_configured_view(state) && !dsd_engine_channel_scan_waiting(state));
+
+    /* A pause while the resume waits: the row's landing commits nothing. */
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    assert(state->lcn_scan_resume_pending == 0 && state->lcn_scan_paused == 1);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(opts->scanner_mode == 0 && state->lcn_freq_roll == 3 && state->R == 999);
+    typed_pause_fixture_free(opts, state);
+}
+
+/* An untyped list resumes through the untyped step's entry (ENGINE_NO_CARRIER_RESET drives the real one): the first
+   row from the kept cursor with a frequency, after the manual call ends; landed, pending or refused as it answers. */
+static void
+test_untyped_resume_results(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    state->lcn_freq_count = 3;
+    *dsd_state_trunk_lcn_slot(state, 0) = *dsd_state_trunk_lcn_slot(state, 2) = 150000000;
+    state->lcn_freq_roll = 1; /* row 1 is a placeholder: a resume skips it */
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    open_manual_call(state);
+    g_untyped_enter_calls = 0;
+    g_untyped_enter_result = DSD_UNTYPED_STEP_FAILED_MOVED;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    assert(g_untyped_enter_row == 2 && g_untyped_enter_saw_open_call == 0 && state->lcn_scan_paused == 1);
+    assert(state->lcn_scan_resume_pending == 0 && opts->scanner_mode == 0 && state->lcn_freq_roll == 1);
+    g_untyped_enter_result = DSD_UNTYPED_STEP_PENDING;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    assert(state->lcn_scan_resume_pending == 1 && opts->scanner_mode == 0 && state->lcn_scan_paused == 1);
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING && g_untyped_enter_calls == 2);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_untyped_enter_result = DSD_UNTYPED_STEP_OK;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
+    assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0 && state->operator_tuned == 0);
+    assert(state->lcn_freq_roll == 3 && state->lcn_scan_resume_pending == 0);
+    /* Not paused: nothing to resume. A running scan is left alone; a refusal says why. */
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && g_untyped_enter_calls == 3);
+    opts->scanner_mode = 0;
+    state->ui_msg[0] = '\0';
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED && g_untyped_enter_calls == 3);
+    assert(strcmp(state->ui_msg, "Not scanning: no paused scan to resume") == 0);
+    opts->trunk_scan_enabled = 1;
+    state->ui_msg[0] = '\0';
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED && g_untyped_enter_calls == 3);
+    assert(strcmp(state->ui_msg, "Trunk scan active: conventional scanner unavailable") == 0);
+    opts->trunk_scan_enabled = 0;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+/* The pause app-control installs, which records the return to the monitor (issue #578): called with what the engine
+   asks, and pausing as the engine does. */
+static int g_pause_hook_calls;
+static int g_pause_hook_in_place = -1;
+static int g_pause_hook_result;
+
+static int
+record_pause_hook(dsd_opts* opts, dsd_state* state, int in_place) {
+    g_pause_hook_calls++;
+    g_pause_hook_in_place = in_place;
+    g_pause_hook_result = dsd_engine_channel_scan_pause(opts, state, in_place);
+    return g_pause_hook_result;
+}
+
+/* A refused typed resume under an analog session on a radio input asks the front end back onto the configured analog
+   monitor, as a leave does, and does it through the pause app-control installs, which records that request for the
+   decoder (issue #578): at once, and when the row's tune fails late in the engine loop. */
+static void
+test_refused_resume_undoes_through_the_pause_hook(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    const dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = output_rate,
+        .apply_demod_profile = record_digital_restore,
+        .apply_analog_profile = record_analog_restore,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_channel_scan_pause_hook_set(record_pause_hook);
+    state->lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    expected_nxdn = 0;
+    opts->scanner_mode = 1;
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    reset_frontend_records();
+    g_pause_hook_calls = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_REFUSED);
+    assert(g_pause_hook_calls == 1 && g_pause_hook_in_place == 0 && g_pause_hook_result == 1);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_ANALOG
+           && analog_restore_width_hz == 12500);
+    assert(opts->analog_only == 1 && state->lcn_scan_paused == 1 && !dsd_scan_mode_configured_view(state));
+
+    /* Late: the row's tune is outstanding, then fails; the engine loop's pass undoes it through the same hook. */
+    reset_frontend_records();
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    assert(g_pause_hook_calls == 1 && state->lcn_scan_resume_pending == 1);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(g_pause_hook_calls == 2 && g_pause_hook_in_place == 0 && g_pause_hook_result == 1);
+    assert(analog_restore_calls == 1 && analog_restore_width_hz == 12500);
+    assert(state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0 && !dsd_scan_mode_configured_view(state));
+    dsd_channel_scan_pause_hook_set(NULL);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* A typed resume lands only on a row a step can land on (channel_scan_row_reachable()). A row the running scan skips
+   at every visit (here an nfm row whose own 20 kHz the 16 kHz DSP rate cannot filter) never blocks it: a resume that
+   failed on it would keep its cursor and try it again at every resume. With no other row there is nowhere to resume. */
+static void
+test_resume_skips_a_row_every_visit_skips(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+    (void)nfm_row_profile(state, 1, DSD_SCAN_OPT_BANDWIDTH, 20000, 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_scan_dsp_rate_hz = 16000;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    const int tunes_before = tunes;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
+    assert(tunes == tunes_before + 1 && state->lcn_freq_roll == 3 && state->scan_row_index == 2);
+
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 0, 1) == 0 && dsd_state_trunk_lcn_avoid_set(state, 2, 1) == 0);
+    state->lcn_freq_roll = 1;
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_NO_ROW);
+    assert(tunes == tunes_before + 1 && state->lcn_scan_paused == 1 && opts->scanner_mode == 0);
+    assert(strcmp(state->ui_msg, "Scan stays paused: no scan channel to resume on") == 0);
+    g_scan_dsp_rate_hz = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -2741,6 +3290,13 @@ main(void) {
     test_row_widths_on_audio_input();
     test_row_session_edits();
     test_receive_row_session_edits();
+    test_pause_keeps_the_scan_and_drops_its_row();
+    test_pause_in_place_forgets_the_carrier();
+    test_resume_without_a_landing_stays_paused();
+    test_resume_pending_waits_for_its_row();
+    test_untyped_resume_results();
+    test_refused_resume_undoes_through_the_pause_hook();
+    test_resume_skips_a_row_every_visit_skips();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

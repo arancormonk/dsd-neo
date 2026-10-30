@@ -1581,6 +1581,212 @@ test_snapshot_names_switched_inputs(void) {
     return rc;
 }
 
+/* Issue #671: under --trunk-scan the parked target's type sets the live trunking flag, so a save writes the configured
+   setting the coordinator publishes; with no target published (no scan, or before the first target), the live flag. */
+static int
+test_snapshot_trunking_reads_the_trunk_scan_configured_value(void) {
+    static const struct {
+        int scan_enabled;
+        uint16_t targets;
+        int live;
+        uint8_t configured;
+        int want;
+    } cases[] = {
+        {1, 2, 1, 0, 0},
+        {1, 2, 0, 1, 1},
+        {1, 0, 1, 0, 1},
+        {0, 2, 1, 0, 1},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        opts.trunk_scan_enabled = cases[i].scan_enabled;
+        opts.trunk_enable = cases[i].live;
+        state.trunk_scan_target_count = cases[i].targets;
+        state.trunk_scan_configured_trunk_enable = cases[i].configured;
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (snap.trunk_enabled != cases[i].want) {
+            DSD_FPRINTF(stderr, "trunking save case %zu: wrote %d, want %d\n", i, snap.trunk_enabled, cases[i].want);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/* Issue #671 (D7): a -Y scan the operator paused is still the session's scan, so a save writes scanner = true and the
+   next launch runs it; a resume still waiting on its row is paused too. A running scan saves true, a stopped one
+   false. A paused trunk scan saves as configured: trunk scan on, the configured trunking. */
+static int
+test_snapshot_scanner_saves_a_paused_scan(void) {
+    static const struct {
+        const char* what;
+        int scanner_mode;
+        uint8_t paused;
+        uint8_t resume_pending;
+        int want;
+    } cases[] = {
+        {"running", 1, 0U, 0U, 1},
+        {"paused", 0, 1U, 0U, 1},
+        {"resume pending", 0, 1U, 1U, 1},
+        {"stopped", 0, 0U, 0U, 0},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        opts.scanner_mode = cases[i].scanner_mode;
+        state.lcn_scan_paused = cases[i].paused;
+        state.lcn_scan_resume_pending = cases[i].resume_pending;
+        state.lcn_freq_count = 3;
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (snap.trunk_scanner != cases[i].want) {
+            DSD_FPRINTF(stderr, "scanner save, %s -Y: wrote %d, want %d\n", cases[i].what, snap.trunk_scanner,
+                        cases[i].want);
+            rc |= 1;
+        }
+    }
+
+    reset_opts_and_state(opts, state);
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_enable = 0;
+    state.trunk_scan_paused = 1U;
+    state.trunk_scan_target_count = 2U;
+    state.trunk_scan_configured_trunk_enable = 1U;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.trunk_scan_enabled == 0 || snap.trunk_enabled != 1 || snap.trunk_scanner != 0) {
+        DSD_FPRINTF(stderr, "paused trunk scan save: scan=%d trunking=%d scanner=%d, want 1/1/0\n",
+                    snap.trunk_scan_enabled, snap.trunk_enabled, snap.trunk_scanner);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* Issue #671 (N1): what a config apply left for the next start is what a save writes, field by field; with nothing
+   waiting the running values are. */
+static int
+test_snapshot_writes_the_next_start(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "running.csv");
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    int rc = 0;
+    if (snap.frontend_kind != DSD_FRONTEND_NONE || strcmp(snap.trunk_chan_csv, "running.csv") != 0) {
+        DSD_FPRINTF(stderr, "next start: nothing waiting, but the save wrote frontend %d map %s\n",
+                    (int)snap.frontend_kind, snap.trunk_chan_csv);
+        rc |= 1;
+    }
+    dsd_opts_next_start* next = &opts.next_start;
+    next->pending = DSD_NEXT_START_FRONTEND | DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS
+                    | DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL | DSD_NEXT_START_TRUNK_SCAN_ACTIVITY_HOLD
+                    | DSD_NEXT_START_CHANNEL_MAP | DSD_NEXT_START_BAND_PLAN;
+    next->frontend_kind = DSD_FRONTEND_TERMINAL;
+    next->trunk_scan_enabled = 1;
+    next->trunk_scan_idle_dwell_ms = 4321;
+    next->trunk_scan_activity_hold_ms = 2500;
+    DSD_SNPRINTF(next->trunk_scan_targets_csv, sizeof next->trunk_scan_targets_csv, "%s", "next-targets.csv");
+    DSD_SNPRINTF(next->chan_in_file, sizeof next->chan_in_file, "%s", "next.csv");
+    DSD_SNPRINTF(next->p25_bandplan_in_file, sizeof next->p25_bandplan_in_file, "%s", "next-plan.csv");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.frontend_kind != DSD_FRONTEND_TERMINAL || snap.frontend_kind_is_set == 0 || snap.trunk_scan_enabled == 0
+        || snap.trunk_scan_idle_dwell_ms != 4321 || snap.trunk_scan_activity_hold_ms != 2500
+        || strcmp(snap.trunk_scan_targets_csv, "next-targets.csv") != 0 || strcmp(snap.trunk_chan_csv, "next.csv") != 0
+        || strcmp(snap.trunk_p25_bandplan_csv, "next-plan.csv") != 0) {
+        DSD_FPRINTF(stderr, "next start: the save did not write every waiting setting\n");
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* Issue #671 (B1, round 4): the trunk-scan rules startup refuses to start without, on a composed config, with the
+   reason; with a config to compare against, only the rules newly broken. */
+static int
+test_check_trunk_scan_startable(void) {
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig before;
+    char why[256];
+    int rc = 0;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0 || why[0] != '\0') {
+        DSD_FPRINTF(stderr, "startable: no trunk scan refused (%s)\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_scan_enabled = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
+        || strcmp(why, "targets_csv is required when trunk_scan.enabled is true") != 0) {
+        DSD_FPRINTF(stderr, "startable: no list: %s\n", why);
+        rc |= 1;
+    }
+    DSD_SNPRINTF(cfg.trunk_scan_targets_csv, sizeof cfg.trunk_scan_targets_csv, "%s", "targets.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "startable: a trunk scan with its list refused (%s)\n", why);
+        rc |= 1;
+    }
+    DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
+        || strncmp(why, "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled", 68) != 0) {
+        DSD_FPRINTF(stderr, "startable: a band plan: %s\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_p25_bandplan_csv[0] = '\0';
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "chan.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
+        || strncmp(why, "trunking.chan_csv cannot be combined with trunk_scan.enabled", 60) != 0) {
+        DSD_FPRINTF(stderr, "startable: a channel map: %s\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_chan_csv[0] = '\0';
+    cfg.trunk_scanner = 1;
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) == 0
+        || strncmp(why, "trunking.scanner cannot be combined with trunk_scan.enabled", 59) != 0) {
+        DSD_FPRINTF(stderr, "startable: the scanner: %s\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_enabled = 1; /* trunking wins over the scanner */
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, nullptr, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "startable: trunking and the scanner refused (%s)\n", why);
+        rc |= 1;
+    }
+
+    /* Against a config that already breaks the map rule: that rule kept, or fixed, passes; another one refuses. */
+    DSD_MEMSET(&before, 0, sizeof before);
+    before.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(before.trunk_scan_targets_csv, sizeof before.trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(before.trunk_chan_csv, sizeof before.trunk_chan_csv, "%s", "chan.csv");
+    cfg = before;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "other.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, &before, why, sizeof why) != 0 || why[0] != '\0') {
+        DSD_FPRINTF(stderr, "startable: the broken rule kept refused (%s)\n", why);
+        rc |= 1;
+    }
+    cfg.trunk_scan_enabled = 0;
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, &before, why, sizeof why) != 0) {
+        DSD_FPRINTF(stderr, "startable: the broken rule fixed refused (%s)\n", why);
+        rc |= 1;
+    }
+    cfg = before;
+    DSD_SNPRINTF(cfg.trunk_p25_bandplan_csv, sizeof cfg.trunk_p25_bandplan_csv, "%s", "plan.csv");
+    if (dsd_user_config_check_trunk_scan_startable(&cfg, &before, why, sizeof why) == 0
+        || strncmp(why, "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled", 68) != 0) {
+        DSD_FPRINTF(stderr, "startable: another rule broken: %s\n", why);
+        rc |= 1;
+    }
+    if (dsd_user_config_check_trunk_scan_startable(nullptr, nullptr, why, sizeof why) == 0) {
+        rc |= 1;
+    }
+    return rc;
+}
+
 static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
@@ -5172,6 +5378,10 @@ main(void) {
     rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_names_switched_inputs();
+    rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
+    rc |= test_snapshot_scanner_saves_a_paused_scan();
+    rc |= test_snapshot_writes_the_next_start();
+    rc |= test_check_trunk_scan_startable();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_roundtrip_agc_rtl_gain();

@@ -205,7 +205,7 @@ UiController::invalidateForTarget(const dsd_state* snapshot) {
             m_network->clear();
         }
         if (m_metrics) {
-            m_metrics->clear();
+            m_metrics->clearForTarget();
         }
         if (m_talkgroups) {
             m_talkgroups->invalidateForTarget();

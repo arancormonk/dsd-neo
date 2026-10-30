@@ -512,10 +512,11 @@ event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
            && memcmp(lhs->t_mode, rhs->t_mode, sizeof lhs->t_mode) == 0
            && memcmp(lhs->s_mode, rhs->s_mode, sizeof lhs->s_mode) == 0
            && memcmp(lhs->channel_label, rhs->channel_label, sizeof lhs->channel_label) == 0
-           && lhs->channel_label_resolved == rhs->channel_label_resolved && lhs->channel == rhs->channel
-           && lhs->freq_hz == rhs->freq_hz && lhs->access_code_kind == rhs->access_code_kind
-           && lhs->access_code == rhs->access_code && lhs->event_time == rhs->event_time
-           && lhs->event_start_time == rhs->event_start_time && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
+           && lhs->channel_label_resolved == rhs->channel_label_resolved && lhs->operator_tuned == rhs->operator_tuned
+           && lhs->scan_member == rhs->scan_member && lhs->channel == rhs->channel && lhs->freq_hz == rhs->freq_hz
+           && lhs->access_code_kind == rhs->access_code_kind && lhs->access_code == rhs->access_code
+           && lhs->event_time == rhs->event_time && lhs->event_start_time == rhs->event_start_time
+           && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
            && memcmp(lhs->sysid_string, rhs->sysid_string, sizeof lhs->sysid_string) == 0
            && memcmp(lhs->alias, rhs->alias, sizeof lhs->alias) == 0
            && memcmp(lhs->gps_s, rhs->gps_s, sizeof lhs->gps_s) == 0
@@ -3312,7 +3313,9 @@ test_unlabelled_row_string_is_unchanged(void) {
 
 // A reacquired segment is the same transmission on the same channel, so the label survives both
 // the ring shift that an interleaved notice causes and the merge that folds the segment in -- even
-// though the scanner has already rolled on to the next channel by then.
+// though the scanner has already rolled on to the next channel by then. So do the tuner-owner
+// stamps frozen with it (issue #671): a scan member, not the operator's, though the operator has
+// taken the tuner by the time the segment merges.
 static int
 test_channel_label_survives_push_and_merge(void) {
     static dsd_opts opts;
@@ -3331,9 +3334,14 @@ test_channel_label_survives_push_and_merge(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_has_substr("first segment is labelled", event_history[0].Event_History_Items[1].event_string,
                             "[Fire Dispatch] TEST");
+    rc |= expect_int("first segment is a scan member", event_history[0].Event_History_Items[1].scan_member, 1);
+    rc |= expect_int("first segment is not the operator's", event_history[0].Event_History_Items[1].operator_tuned, 0);
 
     // A system notice shifts the whole ring: the committed voice row moves to index 2.
     assert(dsd_event_emit_system_notice(&opts, &state, 0U, "System notice;") == 0);
+    rc |= expect_int("shifted row stays a scan member", event_history[0].Event_History_Items[2].scan_member, 1);
+    rc |= expect_int("shifted row stays not the operator's", event_history[0].Event_History_Items[2].operator_tuned, 0);
+    state.operator_tuned = 1U; // the operator takes the tuner before the segment merges
 
     // The scanner rolls on while the transmission is still flapping.
     rc |= expect_int("next scan list name stores", dsd_state_trunk_lcn_name_set(&state, 1U, "PD Tac"), 0);
@@ -3353,6 +3361,9 @@ test_channel_label_survives_push_and_merge(void) {
     rc |= expect_str_eq("shifted row keeps its label", merged->channel_label, "Fire Dispatch");
     rc |= expect_has_substr("merged row re-renders the original label", merged->event_string, "[Fire Dispatch] TEST");
     rc |= expect_no_substr("merged row does not adopt the new channel", merged->event_string, "[PD Tac]");
+    rc |= expect_int("merged row stays a scan member", merged->scan_member, 1);
+    rc |= expect_int("merged row stays not the operator's", merged->operator_tuned, 0);
+    state.operator_tuned = 0U;
 
     dsd_state_trunk_lcn_name_free(&state);
     dsd_state_ext_free_all(&state);
@@ -3390,6 +3401,91 @@ test_channel_label_is_frozen_at_first_render(void) {
     rc |= expect_no_substr("finalize pass does not adopt the new channel", committed->event_string, "[PD Tac]");
 
     dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// operator_tuned and scan_member freeze with the label, on the call's first render. A release that
+// ends a call begun under the scan must not rewrite the call's identity, and a call heard under a
+// pause carries the operator flag even if the pause lifts before it ends.
+static int
+test_tuner_owner_stamps_freeze_at_first_render(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+
+    // Begun under -Y on an unnamed row, then released: scan member, not operator.
+    reset_fixture(&opts, &state, event_history);
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    opts.scanner_mode = 0;
+    state.operator_tuned = 1U;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("unnamed -Y row call commits", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("unnamed -Y row call is a scan member", row->scan_member, 1);
+    rc |= expect_int("call begun before a release is not operator tuned", row->operator_tuned, 0);
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+
+    // Begun while paused (scan stopped, operator holds the tuner), then resumed.
+    reset_fixture(&opts, &state, event_history);
+    state.operator_tuned = 1U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    state.operator_tuned = 0U;
+    opts.scanner_mode = 1;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("call begun while paused is operator tuned", row->operator_tuned, 1);
+    rc |= expect_int("call begun while paused is not a scan member", row->scan_member, 0);
+    dsd_state_ext_free_all(&state);
+
+    // No scan at all.
+    reset_fixture(&opts, &state, event_history);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("call with no scan is not a scan member", row->scan_member, 0);
+    rc |= expect_int("call with no scan is not operator tuned", row->operator_tuned, 0);
+    dsd_state_ext_free_all(&state);
+
+    // No scan, and a manual tune (a frequency entry, a tap) moves the receiver off the session mid-call: the call it
+    // ended began under the session and keeps 0; the next call is the operator's.
+    reset_fixture(&opts, &state, event_history);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    state.operator_tuned = 1U;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("call begun before a manual tune is not operator tuned", row->operator_tuned, 0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 101U, 202U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("manual-tune call commits", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_int("call begun after a manual tune is operator tuned", row->operator_tuned, 1);
+    rc |= expect_int("call begun after a manual tune is not a scan member", row->scan_member, 0);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -8469,6 +8565,7 @@ main(void) {
     rc |= test_unlabelled_row_string_is_unchanged();
     rc |= test_channel_label_survives_push_and_merge();
     rc |= test_channel_label_is_frozen_at_first_render();
+    rc |= test_tuner_owner_stamps_freeze_at_first_render();
     rc |= test_row_frequency_is_pinned_at_first_active_render();
     rc |= test_call_frequency_outranks_the_tuner();
     rc |= test_audio_input_row_takes_no_tuner_value();

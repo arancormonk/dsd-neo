@@ -54,6 +54,9 @@ typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
     RTL_STREAM_TUNE_DEFERRED = 1,
     RTL_STREAM_TUNE_FAILED = -1,
     RTL_STREAM_TUNE_TIMEOUT = -2,
+    /* A completion only, for a manual tune's tag (issue #671): another request took the queued retune over before it
+       ran, so this tag's tune never runs and its own completion never comes. */
+    RTL_STREAM_TUNE_SUPERSEDED = -3,
 } rtl_stream_tune_result;
 
 /**
@@ -69,6 +72,15 @@ typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
  */
 typedef void (*rtl_stream_tune_completion_callback)(uint64_t request_id, rtl_stream_tune_result result,
                                                     void* user_data);
+
+/**
+ * @brief The request ID bit that marks a manual tune (io_control_set_freq_tagged(), issue #671).
+ *
+ * Such an ID only asks for the tune's completion: it owns no controller request, so a later tune of any owner
+ * coalesces into a queued one as into an untagged tune, and the completion is then reported under the later tune's
+ * ID, if it has one. The trunk-tuning ledger counts its IDs up from 1 and never reaches this bit.
+ */
+#define RTL_STREAM_TUNE_ID_MANUAL_BIT (UINT64_C(1) << 63)
 
 /* Lifecycle */
 /**
@@ -162,6 +174,7 @@ int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
  * A queued tagged tune owns its controller request until completion. A tune
  * from a different owner, including an untagged tune, is deferred instead of
  * replacing the queued target and profile. A zero request ID is invalid.
+ * A manual tune's ID (RTL_STREAM_TUNE_ID_MANUAL_BIT) owns nothing.
  *
  * @param ctx Stream context.
  * @param center_freq_hz New center frequency in Hz.
@@ -265,6 +278,15 @@ uint32_t rtl_stream_output_rate(const RtlSdrContext* ctx);
  * explicit output clear.
  */
 uint32_t rtl_stream_output_generation(void);
+
+/**
+ * @brief Return the stream session generation (issue #671).
+ *
+ * Moves whenever a stream opens and whenever one stops, and at nothing else: a retune, an output clear, an rtl_tcp
+ * reconnect or a USB recovery keep it. A stop fails the retune it had queued (published FAILED under its tag), so a
+ * completion read under another session belongs to a stream that is gone.
+ */
+uint32_t rtl_stream_session_generation(void);
 
 /**
  * @brief Return the stream's discontinuity count (issue #518 D5): how many gaps on the same carrier it has had (a USB

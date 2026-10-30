@@ -609,6 +609,294 @@ Item {
             compare(app.currentTab, 2);
             compare(app.sessionDestination, "");
         }
+        // Issue #671: while the operator holds the tuner a saved system's scan had
+        // (paused by a frequency entered anywhere), the session is not that system:
+        // the monitor names it Exploring and the menu offers no edit that would
+        // push CSVs into it. Resume scan gives both back.
+        function heldTuner(held) {
+            testContext.setMetrics({operatorTuned: held, scanKind: 1, scanRotationActive: !held, scanPaused: held,
+                                    scanResumable: held, tunerControlled: !held, scannerMode: !held});
+        }
+        function menuOffersEdit() {
+            findChild(app, "monitorScreen").openSessionMenu();
+            var menu = findChild(app, "sessionMenu");
+            verify(menu.visible);
+            var row = findChild(menu, "sessionMenuEdit");
+            var offered = row !== null && row.visible;
+            menu.visible = false;
+            return offered;
+        }
+        function test_a_held_tuner_detaches_the_saved_system_until_resume() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Scanning site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"});
+            var row = savedSystems.count - 1;
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                testContext.setMetric("optionsKnown", true);
+                heldTuner(false);
+                compare(app.sessionRow, row);
+                verify(menuOffersEdit(), "the running saved system offered no edit");
+                compare(title(), "Scanning site");
+                heldTuner(true);
+                compare(app.sessionRow, -1);
+                verify(!menuOffersEdit(), "the menu offered to edit a system the session left");
+                compare(title(), "Exploring");
+                compare(app.sessionSavedSystemUid, "");
+                verify(!app.exploring, "a saved system's pause took taps");
+                heldTuner(false);
+                compare(app.sessionRow, row);
+                verify(menuOffersEdit(), "the resumed saved system offered no edit");
+                compare(title(), "Scanning site");
+                compare(app.sessionSavedSystemUid, savedSystems.get(row).uid);
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, scannerMode: false,
+                                        optionsKnown: false});
+                savedSystems.remove(row);
+            }
+        }
+        // A recreated Activity finds the tuner held: no session map came with it,
+        // so it names the session Exploring until the resume, then by the label
+        // the history kept.
+        function test_a_reattached_session_names_a_held_tuner() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            callHistory.sessionLabel = "Scan";
+            loader.active = false;
+            wait(0);
+            loader.active = true;
+            tryCompare(loader, "status", Loader.Ready);
+            try {
+                verify(app.monitorMode);
+                compare(title(), "Scan");
+                testContext.setMetric("optionsKnown", true);
+                heldTuner(true);
+                compare(title(), "Exploring");
+                heldTuner(false);
+                compare(title(), "Scan");
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, scannerMode: false,
+                                        optionsKnown: false});
+                callHistory.sessionLabel = "Test Site";
+            }
+        }
+        // A recreated Activity finds a scan list running: it takes the session's
+        // identity from the start the host last accepted (the scan list and its UID),
+        // so the list behaves as it did before -- its targets are named, a pause
+        // makes the receiver the operator's to tune by hand with Resume scan, and
+        // the resume brings the list back.
+        function reattach() {
+            loader.active = false;
+            wait(0);
+            loader.active = true;
+            tryCompare(loader, "status", Loader.Ready);
+            verify(app.monitorMode);
+        }
+        function test_a_reattached_scan_list_keeps_its_identity() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            scanLists.add({name: "County scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]});
+            var row = scanLists.count - 1;
+            var list = scanLists.get(row);
+            var entryUid = list.entries[0].uid;
+            verify(entryUid && entryUid.length > 0, "the fixture's entry has no UID");
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            prefs.acceptedStartKind = "scan";
+            prefs.acceptedStartUid = list.uid;
+            try {
+                reattach();
+                verify(app.sessionScanList, "the reattached session forgot it is a scan list");
+                compare(title(), "County scan");
+                testContext.setMetrics({optionsKnown: true, scanKind: 2, scanRotationActive: true, scanPaused: false,
+                                        scanResumable: false, operatorTuned: false, tunerControlled: true,
+                                        scanTargetId: entryUid, scanTargetOrdinal: 1, scanTargetCount: 1});
+                compare(app.scanTargetLabel(), "Simplex");
+                // Issue #671: a call named by its channel reads the entry's name, never its uid.
+                compare(callHistory.channelNames()[entryUid], "Simplex");
+                compare(metrics.channelNames[entryUid], "Simplex");
+                // Go to (from any frontend) pauses it: the receiver is the operator's, by hand too.
+                testContext.setMetrics({scanRotationActive: false, scanPaused: true, scanResumable: true,
+                                        operatorTuned: true, tunerControlled: false, scanTargetId: "",
+                                        scanTargetOrdinal: 0});
+                compare(title(), "Exploring");
+                verify(app.exploring, "a reattached paused scan list stayed view-only");
+                compare(callHistory.channelNames()[entryUid], "Simplex", "the paused list's names went with the pause");
+                choose("Spectrum");
+                var spectrum = findChild(app, "spectrumScreen");
+                verify(!spectrum.viewOnly, "the reattached paused list's spectrum is VIEW ONLY");
+                verify(!findChild(spectrum, "spectrumExploreFromHere").visible, "it offers Explore from here");
+                var resume = findChild(spectrum, "spectrumResumeScan");
+                verify(resume.visible && resume.enabled, "it offers no Resume scan");
+                resume.clicked();
+                compare(testContext.resumeScanCalls(), 1);
+                app.spectrumOpen = false;
+                // The resume lands on the target it left.
+                testContext.setMetrics({scanRotationActive: true, scanPaused: false, scanResumable: false,
+                                        operatorTuned: false, tunerControlled: true, scanTargetId: entryUid,
+                                        scanTargetOrdinal: 1});
+                compare(title(), "County scan");
+                verify(!app.exploring, "the resumed list stayed free to tap-tune");
+                compare(app.scanTargetLabel(), "Simplex");
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, optionsKnown: false,
+                                        scanTargetId: "", scanTargetOrdinal: 0, scanTargetCount: 0});
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                scanLists.remove(row);
+            }
+        }
+        // The list was already paused when the Activity went: the recreated UI
+        // holds the list for Resume scan before it names the session Exploring,
+        // so the resume brings the list back, not History's label.
+        function test_a_reattached_paused_scan_list_resumes_to_its_list() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            scanLists.add({name: "County scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]});
+            var row = scanLists.count - 1;
+            var list = scanLists.get(row);
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            prefs.acceptedStartKind = "scan";
+            prefs.acceptedStartUid = list.uid;
+            callHistory.sessionLabel = "Label from history";
+            try {
+                testContext.setMetrics({optionsKnown: true, scanKind: 2, scanRotationActive: false, scanPaused: true,
+                                        scanResumable: true, operatorTuned: true, tunerControlled: false});
+                reattach();
+                compare(title(), "Exploring");
+                verify(app.exploring, "the reattached paused list is not tunable by hand");
+                verify(app.pausedScanSystem !== null && app.pausedScanSystem.name === "County scan",
+                       "the hold did not keep the list");
+                testContext.setMetrics({scanRotationActive: true, scanPaused: false, scanResumable: false,
+                                        operatorTuned: false, tunerControlled: true});
+                compare(title(), "County scan");
+                verify(!app.exploring);
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, optionsKnown: false});
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                callHistory.sessionLabel = "Test Site";
+                scanLists.remove(row);
+            }
+        }
+        // A saved system reattached keeps its map and row, as a start in this UI
+        // has them: its title, Edit saved system and the key sheet's system.
+        function test_a_reattached_saved_system_keeps_its_map() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            savedSystems.add({name: "Reattached site", sourceType: "usb", freqMhz: "851.5"});
+            var row = savedSystems.count - 1;
+            var sys = savedSystems.get(row);
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            prefs.acceptedStartKind = "saved";
+            prefs.acceptedStartUid = sys.uid;
+            callHistory.sessionLabel = "Label from history";
+            try {
+                reattach();
+                compare(title(), "Reattached site");
+                compare(app.sessionRow, row);
+                compare(app.sessionSavedSystemUid, sys.uid);
+                compare(findChild(findChild(app, "monitorScreen"), "keySheet").systemUid, sys.uid);
+                verify(menuOffersEdit(), "the reattached saved system offered no edit");
+                verify(!app.exploring, "a reattached saved system became tunable by hand");
+            } finally {
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                callHistory.sessionLabel = "Test Site";
+                savedSystems.remove(row);
+            }
+        }
+        // The Activity goes while start B is still starting, after start A was
+        // recorded at its initialization edge: the recreated UI takes B, the
+        // start the host accepted last, and leaves A's record to Home.
+        function test_a_reattach_while_starting_takes_the_accepted_start() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            scanLists.add({name: "Scan A", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]});
+            var listRow = scanLists.count - 1;
+            savedSystems.add({name: "System B", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "852.5"});
+            var row = savedSystems.count - 1;
+            var kind = prefs.lastStartedKind;
+            var uid = prefs.lastStartedUid;
+            prefs.lastStartedKind = "scan";
+            prefs.lastStartedUid = scanLists.get(listRow).uid;
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startSystem(row);
+                compare(decoderHost.sessionState, 1);
+                compare(prefs.acceptedStartKind, "saved");
+                compare(prefs.acceptedStartUid, savedSystems.get(row).uid);
+                compare(prefs.lastStartedKind, "scan", "the start wrote Home's record before it initialized");
+                reattach();
+                testContext.setLifecyclePhase(2);
+                verify(!app.sessionScanList, "the recreated UI took the last initialized start's list");
+                compare(title(), "System B");
+                compare(app.sessionRow, row);
+            } finally {
+                prefs.lastStartedKind = kind;
+                prefs.lastStartedUid = uid;
+                savedSystems.remove(row);
+                scanLists.remove(listRow);
+            }
+        }
+        // With no session map to name the receiver (an unknown session, or an
+        // Explore session's first tune after a recreation), the hold's Explore map
+        // takes the running input's own kind, so the pill and Save as system match
+        // the receiver, never an assumed USB one.
+        function test_a_held_tuner_keeps_the_running_receiver_data() {
+            // The pill opens a receiver sheet only for a local receiver; rtl_tcp keeps an indicator.
+            return [{tag: "rtl_tcp", source: {sourceType: "rtltcp", host: "10.0.0.2", port: 1235}, receiver: ""},
+                    {tag: "airspy", source: {sourceType: "airspy"}, receiver: "airspy"},
+                    {tag: "usb", source: {sourceType: "usb"}, receiver: "usb"}];
+        }
+        function test_a_held_tuner_keeps_the_running_receiver(data) {
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            prefs.acceptedStartKind = "";
+            prefs.acceptedStartUid = "";
+            testContext.setScanTestUsb(true, true);
+            try {
+                reattach();
+                compare(app.sessionSystem, null);
+                testContext.setMetrics({optionsKnown: true, radioSource: data.source, operatorTuned: true});
+                verify(app.sessionSystem !== null);
+                compare(app.sessionSystem.name, "Exploring");
+                compare(app.sessionSystem.sourceType, data.source.sourceType);
+                if (data.source.host !== undefined) {
+                    compare(app.sessionSystem.host, data.source.host);
+                    compare(app.sessionSystem.port, data.source.port);
+                }
+                compare(findChild(app, "monitorScreen").sessionReceiver, data.receiver);
+            } finally {
+                testContext.setScanTestUsb(false, false);
+                testContext.setMetrics({operatorTuned: false, optionsKnown: false, radioSource: {}});
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+            }
+        }
+        // The same for an Explore session: reattached, it is still free to tune.
+        function test_a_reattached_explore_session_still_explores() {
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            prefs.acceptedStartKind = "explore";
+            prefs.acceptedStartUid = "";
+            try {
+                reattach();
+                verify(app.exploring, "a reattached Explore session became view-only");
+                verify(!app.sessionScanList);
+                choose("Spectrum");
+                verify(!findChild(app, "spectrumScreen").viewOnly);
+                app.spectrumOpen = false;
+            } finally {
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+            }
+        }
         function test_actual_history_instances_share_search_across_stop() {
             var idle = findChild(findChild(app, "idleHistoryScreen"), "historySearch");
             var live = findChild(findChild(app, "sessionHistoryScreen"), "historySearch");

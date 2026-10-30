@@ -9,6 +9,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -69,8 +70,9 @@ _Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0]))
  * bytes, which must render nothing rather than an empty phrase.
  */
 static int
-scan_timing_is_active(const dsd_opts* opts, const dsd_scan_timing_publication* pub) {
-    if (opts->trunk_scan_enabled != 1 && opts->scanner_mode != 1) {
+scan_timing_is_active(const dsd_opts* opts, const dsd_state* state, const dsd_scan_timing_publication* pub) {
+    /* A paused trunk scan runs no timer (issue #671). */
+    if (!dsd_trunk_scan_owns_tuner(opts, state) && opts->scanner_mode != 1) {
         return 0;
     }
     if (pub->reason == (uint8_t)DSD_SCAN_STAY_NONE) {
@@ -191,7 +193,7 @@ dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double no
         return -1;
     }
     const dsd_scan_timing_publication* pub = &state->scan_timing;
-    if (!scan_timing_is_active(opts, pub)) {
+    if (!scan_timing_is_active(opts, state, pub)) {
         return 0;
     }
     const dsd_scan_timing_row* row = &k_scan_timing_rows[pub->reason];

@@ -72,6 +72,15 @@ void ui_statusf(const char* fmt, ...);
  * `ui_menu_handle_key`.
  */
 void ui_menu_open_async(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Open the overlay for one modal alone, over the main screen with no menu frame under it (the '=' key's
+ * frequency entry, issue #671).
+ *
+ * @p open_modal runs at once with the overlay's context and opens a prompt, help or a chooser. The overlay closes as
+ * soon as no modal is left: in this call when the opener opened none, otherwise in the key handling or tick that
+ * finds its modal closed (submit, cancel, Esc). A callback that opens a follow-up modal keeps it open.
+ */
+void ui_menu_open_modal_async(dsd_opts* opts, dsd_state* state, nc_action_fn open_modal);
 /** @brief Return 1 when the overlay is currently open. */
 int ui_menu_is_open(void);
 /**
