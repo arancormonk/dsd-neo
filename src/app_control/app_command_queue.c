@@ -596,7 +596,6 @@ ui_cmd_apply_status_from_service_rc(int rc) {
     return UI_CMD_APPLY_FAILED;
 }
 
-#ifdef USE_RADIO
 static int
 ui_cmd_apply_status_from_tune_rc(int rc) {
     if (rc == RTL_STREAM_TUNE_TIMEOUT) {
@@ -607,7 +606,6 @@ ui_cmd_apply_status_from_tune_rc(int rc) {
     }
     return ui_cmd_apply_status_from_service_rc(rc);
 }
-#endif
 
 struct UiVisibilityToggleSpec {
     int cmd_id;
@@ -1439,7 +1437,6 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
     ui_rxid_guard_leave(taken);
 }
 
-#ifdef USE_RADIO
 /* The operator moved the receiver off its session (issue #671): an accepted frequency entry or tap-to-tune, never a P25
    control-channel selection, which keeps the session. Calls heard from here on are stamped with it at their first
    render (dsd_events.c), which may run under the P25 SM tick guard, so it is written under it; only a resume or a new
@@ -1450,6 +1447,8 @@ ui_mark_operator_tuned(dsd_state* state) {
     state->operator_tuned = 1U;
     ui_rxid_guard_leave(taken);
 }
+
+#ifdef USE_RADIO
 
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
@@ -1929,7 +1928,9 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd
     }
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
+#endif /* USE_RADIO */
 
+/* The frequency entry, on every build: a radio-off build tunes a rigctl peer with it (issue #671). */
 static int cc_has_active_p25_context(const dsd_opts* opts, const dsd_state* state);
 
 static int
@@ -2029,6 +2030,7 @@ ui_cmd_pause_channel_scan_after_tune(dsd_opts* opts, dsd_state* state) {
    back when it stops, so a typed row's staged tune and scopes never become them. A running -Y scan refuses the search
    instead (dsd_engine_signal_search_start()), so only a pending resume is taken back, and only for a start that goes
    on: one the engine refuses changes nothing. */
+#ifdef USE_RADIO
 static void
 ui_cmd_search_takes_back_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->id != DSD_APP_CMD_SIGNAL_SEARCH_START || !state || !state->lcn_scan_resume_pending
@@ -2041,6 +2043,7 @@ ui_cmd_search_takes_back_scan_resume(dsd_opts* opts, dsd_state* state, const str
         (void)ui_cmd_pause_channel_scan_after_tune(opts, state);
     }
 }
+#endif
 
 /* A frequency payload the tuner cannot take, toasted: 0. Every other uint32_t reaches the tuner as it is, on every
    build (issue #671). Returns 1 with the command status in *status when the payload is refused. */
@@ -2066,7 +2069,9 @@ ui_cmd_rtl_set_freq_refused(const dsd_opts* opts, dsd_state* state, uint32_t v, 
     return ui_cmd_freq_payload_refused(state, v, status);
 }
 
-/* The toast a frequency entry's tune leaves, from svc_rtl_set_freq()'s result. */
+#ifdef USE_RADIO
+/* The toast a radio command's refusal leaves when the radio stream is unavailable (svc_radio_control_unavailable_text()).
+   A build without radio support has no stream to be unavailable: a rigctl peer's refusal is the plain failure. */
 static int
 ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
     const char* unavailable = svc_radio_control_unavailable_text(rc);
@@ -2076,6 +2081,7 @@ ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
     ui_set_toast(state, 4, "Failed: %s", unavailable);
     return 1;
 }
+#endif
 
 /* A success names @p applied, the frequency the controller applied (a coalesced request can land on another than
    @p v); a pending, deferred or failed tune names the one asked for. */
@@ -2092,7 +2098,12 @@ ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied
         ui_set_toast(state, 4, "Deferred; retry: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
-    } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
+    } else {
+#ifdef USE_RADIO
+        if (ui_cmd_radio_unavailable_toast(state, rc)) {
+            return;
+        }
+#endif
         ui_set_toast(state, 4, "Failed: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     }
 }
@@ -2157,6 +2168,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return result;
 }
 
+#ifdef USE_RADIO
 /* Defined further down with the manual-tuning helpers; tap-to-tune needs the
  * same call-state teardown the manual return-to-CC path uses. */
 static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc);
@@ -3158,6 +3170,20 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+#ifndef USE_RADIO
+/* Without a radio backend the frequency entry still tunes a rigctl peer (issue #671), as the Input row offers. */
+static int
+apply_cmd_io_and_import_freq_entry(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
+    };
+    if (!opts || !c) {
+        return 0;
+    }
+    return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
+}
+#endif
+
 static int
 apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     /* Each group returns nonzero once it handled the command. */
@@ -3167,6 +3193,8 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 #ifdef USE_RADIO
         apply_cmd_io_and_import_rtl_a,          apply_cmd_io_and_import_rtl_b,
         apply_cmd_io_and_import_rtl_c,          apply_cmd_io_and_import_rtl_d,
+#else
+        apply_cmd_io_and_import_freq_entry,
 #endif
         apply_cmd_io_and_import_squelch,        apply_cmd_io_and_import_runtime_a,
         apply_cmd_io_and_import_pulse_io,       apply_cmd_io_and_import_lrrp_and_p2,

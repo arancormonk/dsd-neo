@@ -7423,16 +7423,23 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
  * @param target_freq_hz Desired center frequency in Hz.
  * @return Request ID completed after the queued retune, or zero when deferred.
  */
-static uint32_t
-schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz, uint64_t caller_token = 0U) {
-    if (!s) {
-        return 0U;
+/* Whether the live controller takes a manual retune from @p caller_token before its lock: never one a running Signal
+   search does not own, nor one before the controller thread runs. A stand-in controller takes every one. */
+static int
+manual_retune_admitted(const struct controller_state* s, uint64_t caller_token) {
+    if (s != &controller) {
+        return 1;
     }
     const uint64_t search_owner = rtl_signal_search_owner();
-    if (s == &controller && search_owner && caller_token != search_owner) {
-        return 0U;
+    if (search_owner && caller_token != search_owner) {
+        return 0;
     }
-    if (s == &controller && g_stream && !g_stream->controller_thread_started.load(std::memory_order_acquire)) {
+    return !(g_stream && !g_stream->controller_thread_started.load(std::memory_order_acquire));
+}
+
+static uint32_t
+schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz, uint64_t caller_token = 0U) {
+    if (!s || !manual_retune_admitted(s, caller_token)) {
         return 0U;
     }
     dsd_mutex_lock(&s->hop_m);
@@ -7450,6 +7457,9 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
         dsd_mutex_unlock(&s->hop_m);
         return 0U;
     }
+    /* A manual tune whose queued request this caller takes over never runs under its own tag: told so after the lock
+       (issue #671), or the decoder would wait on a completion that cannot come. */
+    const uint64_t displaced = pending && s->manual_retune_token != caller_token ? s->manual_retune_token : 0U;
     if (!pending) {
         request_id = s->retune_request_id.fetch_add(1, std::memory_order_acq_rel) + 1;
         s->manual_retune_pending.store(1, std::memory_order_release);
@@ -7461,6 +7471,9 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
     (void)rtl_stream_take_pending_retune_profile(&s->manual_retune_profile, request_id, target_freq_hz);
     dsd_cond_signal(&s->hop);
     dsd_mutex_unlock(&s->hop_m);
+    if ((displaced & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U) {
+        rtl_stream_publish_tune_completion(displaced, RTL_STREAM_TUNE_SUPERSEDED);
+    }
     return request_id;
 }
 

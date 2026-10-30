@@ -597,6 +597,18 @@ test_target_ids_read_as_their_names(void) {
     model.refresh(ring.state);
     expect("a channel the names do not cover shows as it is",
            model.count() == 3 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Dispatch");
+
+    /* Two targets of one name are still two channels: the same talkgroup and unit heard on each, close together, stay
+       two rows (the name is for display; the row keeps the id it was heard on). */
+    model.setChannelNames(QVariantMap{{QStringLiteral("target-a"), QStringLiteral("Dispatch")},
+                                      {QStringLiteral("target-b"), QStringLiteral("Dispatch")}});
+    ring.commit(0, 5004, 103, when + 30, when + 32, "", "", "target-a");
+    ring.commit(0, 5004, 103, when + 33, when + 35, "", "", "target-b");
+    model.refresh(ring.state);
+    expect("two targets of one name stay two rows", model.count() == 5);
+    expect("both read the shared name",
+           model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Dispatch"
+               && model.data(model.index(1), CallHistoryModel::ChannelRole).toString() == "Dispatch");
 }
 
 void

@@ -538,10 +538,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         SeenMap* seen = nullptr;
         qint64 session = 0;
         QString sessionLabel;
-        QString systemUid;                    // the attribution uid, empty unless the session is single-system
-        QHash<QString, QString> channelNames; // setChannelNames()
-        bool cleared = false;                 // the clear mark covers this ring...
-        qulonglong clearedThrough = 0U;       // ...up to this push stamp of the walked slot
+        QString systemUid;              // the attribution uid, empty unless the session is single-system
+        bool cleared = false;           // the clear mark covers this ring...
+        qulonglong clearedThrough = 0U; // ...up to this push stamp of the walked slot
     };
 
     /** @brief noteSeen() verdicts. */

@@ -994,7 +994,10 @@ suite runs under this compiler.
 - API note: `<dsd-neo/core/channel_label.h>`'s `dsd_channel_label_current()` resolves the one label a frontend
   should show for the channel being listened to: the active `--trunk-scan` target id, else the name of the `-Y`
   scan-list row the receiver is parked on; `dsd_channel_label_current_source()` says which of the two it is, so a
-  frontend words it as a target or a channel and never names both at once. Those names come from a channel-map CSV
+  frontend words it as a target or a channel and never names both at once. The Qt app writes each entry's uid as the
+  target id, so its History and monitor show the entry's name for it (`CallHistoryModel::setChannelNames()`,
+  `MetricsModel::setChannelNames()`, from Main's scan list, issue #671): History maps it only for display, and a row
+  keeps the id it was heard on, which tells two targets of one name apart and outlives a rename. Those names come from a channel-map CSV
   that opts in with a `name` header column and live in a heap store beside the scan list, reached through
   `dsd_state_trunk_lcn_name_get()`/`_set()`/`_reserve()`/`_free()` in `src/core/util/dsd_state_trunk_lcn.c` and
   released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
@@ -5117,7 +5120,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Tagged retune ownership (issue #671): a queued tagged retune defers a tune of another owner, but a manual tune's tag
   (`RTL_STREAM_TUNE_ID_MANUAL_BIT`) only asks for its completion. It owns nothing, so a second frequency entry or an
-  owner tune coalesces into a queued manual request as into an untagged one. `rtl_stream_session_generation()` moves at
+  owner tune coalesces into a queued manual request as into an untagged one. The tag it takes over never runs, so the
+  controller completes it as `RTL_STREAM_TUNE_SUPERSEDED` (after its lock), and the decoder's manual-tune record reports
+  that as a drop: a `-Y` resume waiting on it settles instead of waiting for good. `rtl_stream_session_generation()` moves at
   every `dsd_rtl_stream_open()` and soft stop, and at nothing else. Before it fails the queued retune, the stop moves
   it, so a completion read under another session belongs to a stream that is gone.
 - View rings and SNR fallbacks (`radio/rtl_view_rings.{h,cpp}`): the constellation and eye rings (relaxed-atomic

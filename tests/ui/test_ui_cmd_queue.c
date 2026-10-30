@@ -23320,6 +23320,47 @@ test_config_leaves_a_save_that_starts(void) {
 #endif
 #endif
 
+/* Gate review: the Input row and `=` offer the frequency entry wherever a rigctl peer is live, a radio-off build
+   included, so the entry's command runs on every build: it tunes the peer and pauses a running -Y list. Before, the
+   radio-off build compiled the command's handler out and the entry did nothing. */
+static int g_rigctl_entry_calls;
+static uint32_t g_rigctl_entry_hz;
+
+static int
+rigctl_entry_leg(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    (void)state;
+    g_rigctl_entry_calls++;
+    g_rigctl_entry_hz = hz;
+    opts->rtlsdr_center_freq = hz; /* as io_control_set_freq() caches what the peer took */
+    return 0;
+}
+
+static int
+test_frequency_entry_reaches_a_rigctl_peer_on_every_build(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.use_rigctl = 1;
+    seed_running_list(&opts, &state);
+    g_rigctl_entry_calls = 0;
+    g_rigctl_entry_hz = 0U;
+    dsd_app_command_test_set_tune_leg(rigctl_entry_leg);
+    int rc = expect_int("rigctl entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 146520000U),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("rigctl entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("rigctl entry tunes the peer", g_rigctl_entry_calls == 1 && g_rigctl_entry_hz == 146520000U, 1);
+    rc |= expect_int("rigctl entry pauses the running list",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1, 1);
+    rc |= expect_str("rigctl entry says so", state.ui_msg, "Applied: frequency -> 146.520000 MHz; scan paused");
+    dsd_app_command_test_set_tune_leg(NULL);
+    (void)svc_leave_channel_scan(&opts, &state);
+    opts.use_rigctl = 0;
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -23338,6 +23379,7 @@ main(void) {
     rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();
 #endif
     rc |= test_config_settles_a_paused_list();
+    rc |= test_frequency_entry_reaches_a_rigctl_peer_on_every_build();
     rc |= test_config_channel_map_waits_for_a_restart();
     rc |= test_config_restart_settings_wait_for_the_next_start();
     rc |= test_config_load_then_exit_keeps_the_file();

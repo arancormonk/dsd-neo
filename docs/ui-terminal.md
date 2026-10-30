@@ -371,8 +371,9 @@ frame is waited for, as before.
 
 ### Frequency entry
 
-Input > `Frequency...`, or `=` from the main screen, tunes the radio that runs, or the rigctl peer (`-U`) when one is
-connected, from any input but an I/Q replay; with a rigctl peer on a radio input the peer is the one tuned. The row
+Input > `Frequency...`, or `=` from the main screen (a build without radio support included, for a rigctl peer), tunes
+the radio that runs, or the rigctl peer (`-U`) when one is connected, from any input but an I/Q replay; with a rigctl
+peer on a radio input the peer is the one tuned. The row
 reads the tuned frequency in MHz (`Frequency... [851.012500 MHz]`, `[-]` while none is known); on audio input it reads
 the frequency last sent to the rigctl peer since it connected, `[-]` before the first. Its prompt,
 `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)`, opens empty and reads a number the way a radio keypad does

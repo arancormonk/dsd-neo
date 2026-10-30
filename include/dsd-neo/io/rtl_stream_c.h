@@ -54,6 +54,9 @@ typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
     RTL_STREAM_TUNE_DEFERRED = 1,
     RTL_STREAM_TUNE_FAILED = -1,
     RTL_STREAM_TUNE_TIMEOUT = -2,
+    /* A completion only, for a manual tune's tag (issue #671): another request took the queued retune over before it
+       ran, so this tag's tune never runs and its own completion never comes. */
+    RTL_STREAM_TUNE_SUPERSEDED = -3,
 } rtl_stream_tune_result;
 
 /**

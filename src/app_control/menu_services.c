@@ -2320,77 +2320,6 @@ svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     return 0;
 }
 
-/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
-   the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
-   late failure putting the cached frequency back (issue #671). */
-int
-svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-    if (!opts) {
-        return -1;
-    }
-    const uint32_t prior_hz = opts->rtlsdr_center_freq;
-    uint64_t pending_id = 0U;
-    const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
-    if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
-        dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
-    }
-    return rc;
-}
-
-/* svc_rtl_tune_only(), and its carrier boundary: an accepted tune (applied or pending) puts the receiver on another
-   carrier, which can sync before any no-carrier pass, so the boundary runs at this success point (issue #575).
-   @p guard_held says whether the caller holds the P25 SM tick guard. */
-static int
-svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
-    if (!opts) {
-        return -1;
-    }
-    const int rc = svc_rtl_tune_only(opts, state, hz);
-    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
-    }
-    return rc;
-}
-
-int
-svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-    return svc_rtl_tune(opts, state, hz, 0);
-}
-
-int
-svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
-    return svc_rtl_tune(opts, state, hz, 1);
-}
-
-/* Defined with the trunk-scan pause services below, which build without radio support too. */
-static void svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report);
-
-int
-svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg,
-                              int* out_paused) {
-    if (out_paused) {
-        *out_paused = 0;
-    }
-    if (!opts || !state) {
-        return -1;
-    }
-    /* One hold from the tune to the boundary: no watchdog tick sees the scan's target with the receiver moved. */
-    p25_sm_tick_guard_enter();
-    const int rc = (tune_leg ? tune_leg : svc_rtl_tune_only)(opts, state, hz);
-    if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT) {
-        /* The target's calls end under its name before the boundary, which then forgets the carrier left. */
-        dsd_trunk_scan_leave_report report;
-        const int paused = svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report) == 0;
-        if (out_paused) {
-            *out_paused = paused;
-        }
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
-        svc_trunk_scan_settle_gain(opts, state, &report);
-    }
-    p25_sm_tick_guard_leave();
-    return rc;
-}
-
 int
 svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
@@ -2670,6 +2599,78 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
     return 0;
 }
 #endif
+
+/* The frequency entry's tune, on every build: a radio-off build tunes a rigctl peer with it (issue #671). */
+/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
+   the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
+   late failure putting the cached frequency back (issue #671). */
+int
+svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    if (!opts) {
+        return -1;
+    }
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
+    uint64_t pending_id = 0U;
+    const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
+    if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
+        dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
+    }
+    return rc;
+}
+
+/* svc_rtl_tune_only(), and its carrier boundary: an accepted tune (applied or pending) puts the receiver on another
+   carrier, which can sync before any no-carrier pass, so the boundary runs at this success point (issue #575).
+   @p guard_held says whether the caller holds the P25 SM tick guard. */
+static int
+svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
+    if (!opts) {
+        return -1;
+    }
+    const int rc = svc_rtl_tune_only(opts, state, hz);
+    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
+    }
+    return rc;
+}
+
+int
+svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    return svc_rtl_tune(opts, state, hz, 0);
+}
+
+int
+svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    return svc_rtl_tune(opts, state, hz, 1);
+}
+
+/* Defined with the trunk-scan pause services below, which build without radio support too. */
+static void svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_leave_report* report);
+
+int
+svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc_tune_leg_fn tune_leg,
+                              int* out_paused) {
+    if (out_paused) {
+        *out_paused = 0;
+    }
+    if (!opts || !state) {
+        return -1;
+    }
+    /* One hold from the tune to the boundary: no watchdog tick sees the scan's target with the receiver moved. */
+    p25_sm_tick_guard_enter();
+    const int rc = (tune_leg ? tune_leg : svc_rtl_tune_only)(opts, state, hz);
+    if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* The target's calls end under its name before the boundary, which then forgets the carrier left. */
+        dsd_trunk_scan_leave_report report;
+        const int paused = svc_trunk_scan_pause_and_record(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE, &report) == 0;
+        if (out_paused) {
+            *out_paused = paused;
+        }
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_trunk_scan_settle_gain(opts, state, &report);
+    }
+    p25_sm_tick_guard_leave();
+    return rc;
+}
 
 /* The target a trunk scan paused at ran a tuner gain of its own (@p report): a retune carries no gain profile outside a
    running scan, so the device keeps it until the stream reopens, which it does here on the configured gain the pause

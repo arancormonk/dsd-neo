@@ -157,7 +157,6 @@ class CallHistoryTap {
         qint64 session = 0;
         QString sessionLabel;
         QString sessionUid;
-        QHash<QString, QString> channelNames;
         CallHistoryModel::ClearMark clear;
     };
 

@@ -345,6 +345,24 @@ test_superseded_record_reports_its_drop(fixture* f) {
 /* Final review, Important 2: the synced-frames loop ends a reception on any completion the next poll acts on -- a late
    failure of any tune, an untyped step's landing -- and on nothing else: an entry's landing changes nothing the decoder
    names. */
+/* Gate review: an untagged tune (the UDP tuning control) coalesces into an entry's request still queued after its
+   wait timed out. The request then runs under no tag, so the entry's own completion never comes: the controller says
+   the entry was taken over, and the poll reports its drop. Before, the record waited for good (a -Y resume on it stayed
+   "resuming"). */
+static void
+test_untagged_takeover_reports_the_drop(fixture* f) {
+    fixture_begin(f);
+    (void)enter_frequency(f, ENTRY_A_HZ);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    (void)rtl_stream_test_manual_tune_standin_tune(g_stream_opts, ENTRY_B_HZ, 0U);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    take_request(0U, ENTRY_B_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_B_HZ) == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    fixture_end();
+}
+
 static void
 test_settled_ready_names_what_the_poll_acts_on(fixture* f) {
     fixture_begin(f);
@@ -421,6 +439,7 @@ main(void) {
     test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(&f);
     test_stream_stop_drops_the_record(&f);
     test_superseded_record_reports_its_drop(&f);
+    test_untagged_takeover_reports_the_drop(&f);
     test_settled_ready_names_what_the_poll_acts_on(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
 

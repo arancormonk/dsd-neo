@@ -142,6 +142,10 @@ dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
         return DSD_MANUAL_TUNE_LANDED;
     }
+    if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_SUPERSEDED) {
+        /* Taken over before it ran: what replaced it decides the receiver, as for a tune superseded here. */
+        return DSD_MANUAL_TUNE_DROPPED;
+    }
     if (opts) {
         const uint32_t applied_hz = manual_tune_applied_after_failure();
         if (applied_hz != 0U) {

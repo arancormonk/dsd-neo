@@ -729,6 +729,14 @@ int svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_
 /** @brief dsd_engine_trunk_scan_resume_ex_locked(), a refused retune's return to the monitor recorded as a pause's. */
 int svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out);
 
+/** @brief Tune receiver frequency (Hz), RTL or a rigctl peer, on every build; caller owns trunking and call bookkeeping. */
+/* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the
+   _locked form is for a caller that holds the P25 SM tick guard. */
+int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
+int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
+/* The tune alone, the io/control leg of svc_rtl_set_freq() with its pending manual-tune record (issue #671), for a
+   caller that runs the carrier boundary itself once something else (a scan's pause) has run after the tune. */
+int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** The tune leg of a frequency entry (svc_rtl_tune_only()'s shape): an RTL_STREAM_TUNE_* result or a refusal. */
 typedef int (*svc_tune_leg_fn)(dsd_opts* opts, dsd_state* state, uint32_t hz);
 
@@ -1109,14 +1117,6 @@ int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_a
                                    const svc_airspy_tuning* previous_tuning);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
-/** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */
-/* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the
-   _locked form is for a caller that holds the P25 SM tick guard. */
-int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
-int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
-/* The tune alone, the io/control leg of svc_rtl_set_freq() with its pending manual-tune record (issue #671), for a
-   caller that runs the carrier boundary itself once something else (a scan's pause) has run after the tune. */
-int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /**

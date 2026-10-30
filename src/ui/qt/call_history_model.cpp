@@ -372,6 +372,11 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
     const Row& row = m_rows.at(index.row());
     switch (role) {
         case UidRole: return row.uid;
+        // A trunk-scan target's id is the app's uid for its entry: shown as the entry's name (setChannelNames()).
+        case NameRole:
+            return !row.channel.isEmpty() && row.name == row.channel ? m_channelNames.value(row.channel, row.name)
+                                                                     : row.name;
+        case ChannelRole: return m_channelNames.value(row.channel, row.channel);
         case RecordingsRole:
             return m_recordings != nullptr && !row.fragments.isEmpty()
                        ? m_recordings->recordingsForFragments(row.fragments)
@@ -556,10 +561,12 @@ CallHistoryModel::setChannelNames(const QVariantMap& names) {
     if (next == m_channelNames) {
         return;
     }
-    // As a session change: the running tap starts again on the new names, never on half of them.
-    const bool resumeTap = handOffBackgroundCaptureForSession();
+    // A display name only: rows keep the target id they were heard on, which tells two targets of one name apart
+    // (rows_mergeable()) and outlives a rename.
     m_channelNames = next;
-    resumeBackgroundCapture(resumeTap);
+    if (!m_rows.isEmpty()) {
+        Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {NameRole, ChannelRole});
+    }
 }
 
 void
@@ -795,8 +802,8 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
 }
 
 CallHistoryModel::Row
-row_from_item(const Event_History* item, const QString& sessionLabel, const QString& systemUid,
-              const QHash<QString, QString>& channelNames, int slot, qulonglong seq) {
+row_from_item(const Event_History* item, const QString& sessionLabel, const QString& systemUid, int slot,
+              qulonglong seq) {
     CallHistoryModel::Row row;
     row.slot = slot;
     row.seq = seq;
@@ -826,14 +833,6 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
         row.systemUid = item->scan_member == 0U && item->channel_label[0] == '\0' ? systemUid : QString();
     }
     row.channel = QString::fromUtf8(item->channel_label);
-    // A trunk-scan target's id is the app's uid for the entry: the row reads its name (setChannelNames()).
-    const QString channelName = channelNames.value(row.channel);
-    if (!channelName.isEmpty()) {
-        if (row.name == row.channel) {
-            row.name = channelName;
-        }
-        row.channel = channelName;
-    }
     row.service = QString::fromUtf8(item->service_label);
     row.analog = item->systype == DSD_SYNC_ANALOG;
     row.receiveKind = item->receive_identity.kind;
@@ -987,7 +986,7 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
             continue;
         }
         FreshRow row;
-        row.row = row_from_item(item, walk.sessionLabel, walk.systemUid, walk.channelNames, slot, seq);
+        row.row = row_from_item(item, walk.sessionLabel, walk.systemUid, slot, seq);
         row.row.session = walk.session;
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
         row.isUpdate = verdict == SeenAdvanced;
@@ -1006,7 +1005,6 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
     walk.session = m_session;
     walk.sessionLabel = m_sessionLabel;
     walk.systemUid = systemUid;
-    walk.channelNames = m_channelNames;
     walk.cleared = clearApplies();
     for (int slot = 0; slot < 2; slot++) {
         if (!scan[slot]) {
@@ -2157,7 +2155,6 @@ CallHistoryModel::startBackgroundCapture() {
     context.session = m_session;
     context.sessionLabel = m_sessionLabel;
     context.sessionUid = m_sessionUid;
-    context.channelNames = m_channelNames;
     context.clear = m_clear;
     m_tapClearRev = m_clearRev;
     if (!m_tap->start(std::move(context))) {
