@@ -2305,16 +2305,12 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Change one engine reading and republish it.
+     * @brief Change several metrics readings and send one controlChanged, as one decoder snapshot reaches the real
+     * model (issue #671).
      *
-     * The engine-facing mocks are plain maps, which QML cannot mutate in place;
-     * re-setting the context property is what re-evaluates the bindings that read
-     * it. Exposed to the tests as `testContext` so a case can drive a reading to
-     * a value and back rather than asserting only whatever the fixture started at.
-     */
-    /**
-     * @brief Set several metrics keys and notify once, as one decoder snapshot reaches the real model: a case that
-     * moves the tuner's owner and the scan together (issue #671) never shows a screen a state between the two.
+     * What listens to the signal (Main's operator-hold sync) sees the owner and the scan change together. Bindings on
+     * the readings themselves still re-evaluate key by key as the property map takes each one, so a screen-level case
+     * whose binding must never see a state between two keys still orders its setters.
      */
     Q_INVOKABLE void
     setMetrics(const QVariantMap& values) {
@@ -2334,6 +2330,14 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Change one engine reading and republish it.
+     *
+     * The engine-facing mocks are plain maps, which QML cannot mutate in place;
+     * re-setting the context property is what re-evaluates the bindings that read
+     * it. Exposed to the tests as `testContext` so a case can drive a reading to
+     * a value and back rather than asserting only whatever the fixture started at.
+     */
     Q_INVOKABLE void
     setMetric(const QString& key, const QVariant& value) {
         m_metrics[key] = value;

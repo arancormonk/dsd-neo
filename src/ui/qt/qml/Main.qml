@@ -463,7 +463,10 @@ Window {
         if (host && typeof host.setDarkAppearance === "function")
             host.setDarkAppearance(Theme.dark);
     }
-    Component.onCompleted: updateSystemBars()
+    Component.onCompleted: {
+        updateSystemBars();
+        adoptReattachedSession();
+    }
     onActiveChanged: {
         if (active)
             updateSystemBars();
@@ -642,6 +645,7 @@ Window {
 
                 if (!decoderHost.signalsSessionInitialized)
                     mainRoot.recordSessionInitialized();
+                mainRoot.adoptReattachedSession();
                 mainRoot.syncOperatorHold();
             } else if (decoderHost.sessionState === 0 && mainRoot.sessionReachedRunning) {
                 mainRoot.awaitingSessionInitialized = false;
@@ -691,6 +695,32 @@ Window {
     // An Explore asked for and not yet answered: the release is in the queue, or
     // the options that say whether anything owned the tuner have not arrived.
     property bool exploreRequested: false
+
+    // A recreated Activity finds a session it did not start (the service
+    // outlived the old one): it takes the identity that start recorded at the
+    // post-initialization edge, so a scan list is still one -- its targets are
+    // named from the list, a pause hands the receiver to the operator with
+    // Resume scan -- and an Explore session is still free to tune. A saved
+    // system keeps the view-only default and the label History kept. A start in
+    // this UI sets the identity itself, and keeps it after the session ends: a
+    // late initialization edge still records it.
+    function adoptReattachedSession() {
+        if (decoderHost.sessionState !== 2 || mainRoot.sessionStartKind.length > 0 || mainRoot.pendingStart)
+            return;
+        mainRoot.sessionStartKind = prefs.lastStartedKind || "";
+        mainRoot.sessionStartUid = prefs.lastStartedUid || "";
+        if (mainRoot.sessionStartKind === "scan") {
+            mainRoot.sessionScanList = true;
+            var list = scanLists.getByUid(mainRoot.sessionStartUid);
+            if (list && list.uid)
+                mainRoot.sessionSystem = list;
+        } else if (mainRoot.sessionStartKind === "explore") {
+            mainRoot.exploring = true;
+            // Where it got to before the recreation is not known here.
+            mainRoot.exploreRemembered = false;
+        }
+        mainRoot.syncOperatorHold();
+    }
 
     function forgetOperatorHold() {
         mainRoot.operatorHolds = false;

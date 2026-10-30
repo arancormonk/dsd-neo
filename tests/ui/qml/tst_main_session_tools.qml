@@ -682,6 +682,87 @@ Item {
                 callHistory.sessionLabel = "Test Site";
             }
         }
+        // A recreated Activity finds a scan list running: it takes the session's
+        // identity from what the last start recorded (the scan list and its UID),
+        // so the list behaves as it did before -- its targets are named, a pause
+        // makes the receiver the operator's to tune by hand with Resume scan, and
+        // the resume brings the list back.
+        function reattach() {
+            loader.active = false;
+            wait(0);
+            loader.active = true;
+            tryCompare(loader, "status", Loader.Ready);
+            verify(app.monitorMode);
+        }
+        function test_a_reattached_scan_list_keeps_its_identity() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            scanLists.add({name: "County scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]});
+            var row = scanLists.count - 1;
+            var list = scanLists.get(row);
+            var entryUid = list.entries[0].uid;
+            verify(entryUid && entryUid.length > 0, "the fixture's entry has no UID");
+            var kind = prefs.lastStartedKind;
+            var uid = prefs.lastStartedUid;
+            prefs.lastStartedKind = "scan";
+            prefs.lastStartedUid = list.uid;
+            try {
+                reattach();
+                verify(app.sessionScanList, "the reattached session forgot it is a scan list");
+                compare(title(), "County scan");
+                testContext.setMetrics({optionsKnown: true, scanKind: 2, scanRotationActive: true, scanPaused: false,
+                                        scanResumable: false, operatorTuned: false, tunerControlled: true,
+                                        scanTargetId: entryUid, scanTargetOrdinal: 1, scanTargetCount: 1});
+                compare(app.scanTargetLabel(), "Simplex");
+                // Go to (from any frontend) pauses it: the receiver is the operator's, by hand too.
+                testContext.setMetrics({scanRotationActive: false, scanPaused: true, scanResumable: true,
+                                        operatorTuned: true, tunerControlled: false, scanTargetId: "",
+                                        scanTargetOrdinal: 0});
+                compare(title(), "Exploring");
+                verify(app.exploring, "a reattached paused scan list stayed view-only");
+                choose("Spectrum");
+                var spectrum = findChild(app, "spectrumScreen");
+                verify(!spectrum.viewOnly, "the reattached paused list's spectrum is VIEW ONLY");
+                verify(!findChild(spectrum, "spectrumExploreFromHere").visible, "it offers Explore from here");
+                var resume = findChild(spectrum, "spectrumResumeScan");
+                verify(resume.visible && resume.enabled, "it offers no Resume scan");
+                resume.clicked();
+                compare(testContext.resumeScanCalls(), 1);
+                app.spectrumOpen = false;
+                // The resume lands on the target it left.
+                testContext.setMetrics({scanRotationActive: true, scanPaused: false, scanResumable: false,
+                                        operatorTuned: false, tunerControlled: true, scanTargetId: entryUid,
+                                        scanTargetOrdinal: 1});
+                compare(title(), "County scan");
+                verify(!app.exploring, "the resumed list stayed free to tap-tune");
+                compare(app.scanTargetLabel(), "Simplex");
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, optionsKnown: false,
+                                        scanTargetId: "", scanTargetOrdinal: 0, scanTargetCount: 0});
+                prefs.lastStartedKind = kind;
+                prefs.lastStartedUid = uid;
+                scanLists.remove(row);
+            }
+        }
+        // The same for an Explore session: reattached, it is still free to tune.
+        function test_a_reattached_explore_session_still_explores() {
+            var kind = prefs.lastStartedKind;
+            var uid = prefs.lastStartedUid;
+            prefs.lastStartedKind = "explore";
+            prefs.lastStartedUid = "";
+            try {
+                reattach();
+                verify(app.exploring, "a reattached Explore session became view-only");
+                verify(!app.sessionScanList);
+                choose("Spectrum");
+                verify(!findChild(app, "spectrumScreen").viewOnly);
+                app.spectrumOpen = false;
+            } finally {
+                prefs.lastStartedKind = kind;
+                prefs.lastStartedUid = uid;
+            }
+        }
         function test_actual_history_instances_share_search_across_stop() {
             var idle = findChild(findChild(app, "idleHistoryScreen"), "historySearch");
             var live = findChild(findChild(app, "sessionHistoryScreen"), "historySearch");

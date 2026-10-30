@@ -1053,8 +1053,11 @@ Item {
             spacing: 10
             visible: metrics.scanRotationActive || screen.scanPaused
             // Whole pixels: a cell ending on a fraction loses its right border to
-            // the list's clip when the strip is in the list.
-            readonly property real cell: Math.floor((width - 20) / 3)
+            // the list's clip when the strip is in the list. Sized from the width
+            // both of the strip's hosts give it (the screen less its padding), not
+            // from the host it sits in: the cells' height is part of the budget
+            // that picks the host, and reading the host back closed that loop.
+            readonly property real cell: Math.floor((screen.width - 2 * Theme.screenPadding - 20) / 3)
             leftPadding: Math.floor((width - 3 * cell - 20) / 2)
             // One height for the three, from the widest label: a label that needs
             // two lines on a narrow phone takes them in every cell.
