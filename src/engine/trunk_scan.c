@@ -1105,6 +1105,45 @@ scan_field_wrapped(char** fields, size_t count, int idx) {
     return length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
 }
 
+/* A spreadsheet saves a cell that holds a double quote wrapped in double quotes, each quote inside doubled (RFC 4180):
+   `"Tower ""A"""`. Read in place as the spreadsheet meant it, each doubled quote as one, when the cell was wrapped and
+   every quote inside it is doubled -- the rule the options cell reads such quoting by
+   (dsd_scan_options_cell_csv_quoted()); any other cell is left as it is. */
+static void
+scan_csv_unescape_doubled_quotes(char* text) {
+    for (const char* p = text; *p; p++) {
+        if (*p == '"') {
+            if (p[1] != '"') {
+                return;
+            }
+            p++;
+        }
+    }
+    char* w = text;
+    for (const char* r = text; *r; r++) {
+        *w++ = *r;
+        if (*r == '"') {
+            r++;
+        }
+    }
+    *w = '\0';
+}
+
+/* The optional `label` column (issue #782): free text that names the channel while parked here, never an error. */
+static void
+scan_parse_target_label(dsd_trunk_scan_target* target, char** fields, size_t count, int idx) {
+    if (idx < 0 || (size_t)idx >= count) {
+        target->label[0] = '\0';
+        return;
+    }
+    const int wrapped = scan_field_wrapped(fields, count, idx);
+    char* cell = scan_unquote(fields[idx]);
+    if (wrapped) {
+        scan_csv_unescape_doubled_quotes(cell);
+    }
+    dsd_channel_label_sanitize(cell, target->label, sizeof target->label);
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -1141,8 +1180,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
     target.csv_row = parse->row;
-    dsd_channel_label_sanitize(scan_optional_field(fields, field_count, parse->label_idx), target.label,
-                               sizeof target.label);
+    scan_parse_target_label(&target, fields, field_count, parse->label_idx);
     target.dwell_is_set = dwell_s[0] != '\0';
     target.activity_hold_is_set = hold_s[0] != '\0';
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {

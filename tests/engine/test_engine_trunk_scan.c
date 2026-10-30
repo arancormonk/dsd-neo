@@ -781,6 +781,50 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
     return test_rc;
 }
 
+/* Issue #782: the `label` column as a spreadsheet saves it. A cell wrapped in quotes with every quote inside doubled
+ * reads each doubled quote as one, as the options cell does; a cell whose quotes are not all doubled keeps them; a
+ * plain cell is read as it is, and padding and control characters are dropped. */
+static int
+test_parser_reads_spreadsheet_quoted_labels(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,dmr-conventional,451000000,,,,,\"Tower \"\"A\"\", east\"\n"
+                                       "b,dmr-conventional,452000000,,,,,\"Bob\"s yard\"\n"
+                                       "c,dmr-conventional,453000000,,,,, County Fire \n"
+                                       "d,dmr-conventional,454000000,,,,,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int test_rc = 0;
+    if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) != 0 || list.count != 4) {
+        DSD_FPRINTF(stderr, "label parse rc count=%zu err=%s\n", list.count, err);
+        test_rc = 1;
+    } else {
+        static const char* const want[] = {"Tower \"A\", east", "Bob\"s yard", "County Fire", ""};
+        for (size_t i = 0; i < 4; i++) {
+            if (strcmp(list.targets[i].label, want[i]) != 0) {
+                DSD_FPRINTF(stderr, "label %zu '%s', want '%s'\n", i, list.targets[i].label, want[i]);
+                test_rc = 1;
+            }
+        }
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_parser_accepts_nxdn_targets(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -15073,6 +15117,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
+    rc |= test_parser_reads_spreadsheet_quoted_labels();
     rc |= run_with_default_tune_hook(test_target_chan_csv_names_are_discarded);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
