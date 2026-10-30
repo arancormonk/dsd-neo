@@ -4180,7 +4180,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_screen_reader_state
         PRIVATE QT_NO_KEYWORDS
     )
-    set_target_properties(dsd-neo_test_ui_qt_screen_reader_state PROPERTIES AUTOMOC ON)
+    set_target_properties(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PROPERTIES AUTOMOC ON
+    )
     add_test(
         NAME UI_QT_SCREEN_READER_STATE
         COMMAND dsd-neo_test_ui_qt_screen_reader_state

@@ -19,18 +19,18 @@ ScreenReaderState::ScreenReaderState(QObject* parent) : QObject(parent), m_activ
 ScreenReaderState::~ScreenReaderState() { QAccessible::removeActivationObserver(this); }
 
 void
-ScreenReaderState::accessibilityActiveChanged(bool active) {
+ScreenReaderState::accessibilityActiveChanged(bool on) {
     // Queued even on this thread: the observer list is being walked, and a slot that ran a QML binding from inside
     // it could install or remove another observer.
-    QMetaObject::invokeMethod(this, [this, active]() { apply(active); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(this, [this, on]() { apply(on); }, Qt::QueuedConnection);
 }
 
 void
-ScreenReaderState::apply(bool active) {
-    if (m_active == active) {
+ScreenReaderState::apply(bool on) {
+    if (m_active == on) {
         return;
     }
-    m_active = active;
+    m_active = on;
     Q_EMIT activeChanged();
 }
 

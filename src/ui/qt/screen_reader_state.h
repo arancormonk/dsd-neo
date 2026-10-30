@@ -37,13 +37,13 @@ class ScreenReaderState : public QObject, public QAccessible::ActivationObserver
     }
 
     /** @brief QAccessible::ActivationObserver; may run on another thread (Android's main thread). */
-    void accessibilityActiveChanged(bool active) override;
+    void accessibilityActiveChanged(bool on) override;
 
   Q_SIGNALS:
     void activeChanged();
 
   private:
-    void apply(bool active);
+    void apply(bool on);
 
     bool m_active = false;
 };
