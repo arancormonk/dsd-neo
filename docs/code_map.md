@@ -10925,23 +10925,33 @@ every few seconds is named through `qml/SpeechPacer.qml`: its name catches up wi
 the reading appearing or disappearing). The text on screen stays live, and nothing runs per tick: the pacer reads the
 reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
 `ReadableText` named that way (`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set.
-Paced: the Monitor's reading groups, scan timing line, call durations and "Signal & site" description (steps:
-`MonitorScreen.speechStep`; the squelch group adds the gate), the Spectrum status line and readout, the recordings
-export progress text and bar value, SiteSheet's field groups (renamed once a rebuild is over, not once per row), a
-recording's position (the time's name, the seek bar's description and value; steps: play, pause, stop, the end of the
-part, a seek once the host reports where it landed), Signal Search's status line, live level and call detail (steps:
-`SignalSearchScreen.speechStep`, a new hit or a state change), and the squelch readouts and status lines in the Radio
-and Squelch sheets (steps: the gate opening or closing, `MetricsModel::squelchGateOpen`, or the setting changing).
-A step is applied 1 ms after it, once all its bindings have settled, so a step that moves several readings renames
-once. `Navigation.speechPeriodMs` is the period (5000); only tests change it. Names that change only on a user action
-(a drag, a nudge, a choice), on a step itself (a new target, carrier, call, hit or identity), or no faster than every
-few seconds are not paced: the coarse tuning rail, the site row and Spectrum identity, the hero and other-slot call,
-the scan target header, call and history rows, receiver pills, the radio gain and width values, the search's
-frequency, identification and saved names, the diagnostics lines (read only while paused).
-A part whose state only its colour shows gives its
-words as `spokenText` (the strip's LOCK: "Carrier lock" / "No carrier lock"). Readings sit inside a group whose own
-place does not move, so a value whose width changes moves no accessible node (a LocationChanged becomes a main-thread
-task). The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
+Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
+durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
+Spectrum status line and readout, the recordings export progress text, SiteSheet's field groups (renamed once a
+rebuild is over, not once per row), a recording's position (the time's name and the seek bar's description; steps:
+play, pause, stop, the end of the part, a seek once the host reports a position near where it was asked to land),
+Signal Search's status line, live level and call detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state
+change), and the squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate opening or
+closing, `MetricsModel::squelchGateOpen`, or the setting changing). A step is heard 1 ms after it, once all its
+bindings have settled, so a step that moves several readings renames once; and steps have a floor: a step input that
+flaps (a marginal lock, a gate, a reading coming and going) is heard at most once a floor (1 s), the last state at the
+end of it. `Navigation.speechPeriodMs` (5000) and `Navigation.speechStepFloorMs` (1000) are the period and the floor;
+only tests change them. A pacer runs only while its node is shown and the navigation gate allows it. Names that
+change only on a user action (a drag, a nudge, a choice), on a step itself (a new target, carrier, call, hit or
+identity), or no faster than every few seconds are not paced: the coarse tuning rail, the site row and Spectrum
+identity, the other-slot call, the scan target header, call and history rows, receiver pills, the radio gain and width
+values, the search's frequency, identification and saved names, the diagnostics lines (read only while paused). A
+Slider- or ProgressBar-role `Item` (the seek bar, the export bar, the coarse tuning rail) keeps its `value` live: Qt
+connects `valueChanged` only for an item that has a value interface when its `Accessible` object is made, which these
+do not, so a moving value raises no event, and Android reads the value when it reads the node.
+
+A part whose state only its colour shows gives its words as `spokenText` (the strip's LOCK: "Carrier lock" / "No
+carrier lock"). Readings sit inside a group whose own place does not move, so a value whose width changes moves no
+accessible node (a LocationChanged becomes a main-thread task). A list handed over whole on each refresh feeds its
+Repeater through `qml/StableRows.qml`, a row per entry added or removed only when the count changes, each row reading
+its entry by index in place (the Network sheet, the key sheet's slots): a refresh that changes nothing shown rebuilds
+nothing, and P25NetworkModel keeps the engine's last-seen times, which order its rows but are not shown, out of them.
+The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
 
 `UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
