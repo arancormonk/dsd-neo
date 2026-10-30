@@ -129,8 +129,8 @@ class DsdNeoActivity : QtActivity() {
         AccessibilityBridge.onPause(this)
     }
 
-    // A stop that is part of a configuration change is followed at once by a start; it is not a loss. Leaving the
-    // foreground pauses a call recording playing (#708 D10).
+    // A stop that is part of a recreation is not a loss of the foreground (on Qt 6.11.2 the process restarts right
+    // after it; see onDestroy). Leaving the foreground pauses a call recording playing (#708 D10).
     override fun onStop() {
         super.onStop()
         trace.phase(this, "stopped")
@@ -217,9 +217,12 @@ class DsdNeoActivity : QtActivity() {
             backCallback = null
         }
         LocationSupport.onDestroy(this)
-        // Not on a configuration change: those destroy and immediately recreate the
-        // Activity, and Qt keeps the process across them (it skips its own teardown for
-        // exactly this case). Quitting there would take the UI down on a rotation.
+        // Not on a recreation. The manifest handles every configuration change in place
+        // (configChanges, pinned by launch_policy), so a change never destroys this
+        // activity. A recreation that happens anyway skips this teardown, as Qt skips
+        // its own, and on Qt 6.11.2 the new instance's super.onCreate() then restarts
+        // the whole process without it (#782; LaunchGuard records it, and docs/code_map.md
+        // "Launch policy" documents the limit).
         if (!isChangingConfigurations) {
             val uptime = HostRecordText.uptime(SystemClock.uptimeMillis())
             HostDiagnostics.submit("teardown: activity ${trace.snapshot.activity} destroying at uptime $uptime")

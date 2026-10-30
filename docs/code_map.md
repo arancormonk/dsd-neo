@@ -8760,8 +8760,8 @@ Qt Quick frontend (`src/ui/qt`):
     logged it, or that last extended it through a merge (`session` role, persisted per row and per seen entry).
   - Views: the monitor's recent calls (`monitorView.historySession`) and the heard talkgroups
     (`TalkgroupListModel::historySession`) select the running session's rows; 0 selects the whole log. A UI
-    reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
-    so it sees the calls its predecessor logged in that session.
+    created over a running session takes the session the history kept, so it would see the calls its predecessor
+    logged in that session; on Qt 6.11.2 no UI is created over a running session (Android, "Launch policy").
   - Clear (`clearAll()`) names what it wiped by ring position: push_seq per slot as last read (`callHistory/clear/*`).
     It removes the rows (one `rowsRemoved`) rather than resetting the model: a list building a row in its cache buffer
     cancels it by index on a reset, after the model is already empty.
@@ -8927,8 +8927,9 @@ Qt Quick frontend (`src/ui/qt`):
     `recording_store_follow_host()` (wired in `qt_ui.cpp`) hands the store every host report
     (`hostSessionReport(DecoderHost::sessionStateKnown(), sessionActive(), sessionState() == Running)`, at load and on
     `sessionStateChanged()` / `sessionStateKnownChanged()`). The store starts holding every journal: Android knows its
-    state only after its first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder that
-    kept running while the UI was recreated reads as Idle until then. A first known state with no session, or a session
+    state only after its first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder
+    already running when the host starts (a UI recreated over a live service, which Qt 6.11.2 never allows: Android,
+    "Launch policy") reads as Idle until then. A first known state with no session, or a session
     ending after the host saw it Running, frees every folder; a session that ends without ever running keeps its folders
     out of compaction for the rest of the process (`m_unproven`), until a later session runs and ends (one decoder at a
     time, starts taken in order): Android's start grace can show a start Failed while its intent still waits, and the
@@ -9441,11 +9442,12 @@ Qt Quick frontend (`src/ui/qt`):
   system or scan list opens the sheet as a fresh start does. A reattached Explore session, and one the UI cannot name,
   has no map, so it keeps the inert pill until an operator tune, made before or after the recreation
   (`metrics.operatorTuned` at adoption), gives it the operator hold's map (`heldReceiver()`); LOST still shows there
-  from `receiverHealth`. In tier 5, where the header scrolls with the list, a lost receiver also shows as one fixed line
-  above Stop (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens
-  the same sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already
-  fixes only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would
-  show (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
+  from `receiverHealth` (on Qt 6.11.2 a recreation restarts the process instead, so none of this runs: Android, "Launch
+  policy"). In tier 5, where the header scrolls with the list, a lost receiver also shows as one fixed line above Stop
+  (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens the same
+  sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already fixes only
+  Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would show
+  (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
   `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and `headerActionsFit` requires it
   to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`, `headerStacked` and the budget's
   `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to the session menu as in tier 1 and
