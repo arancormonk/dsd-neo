@@ -173,7 +173,7 @@ ModalSheet {
         enabled: !sheet.locationId
         onClicked: sheet.useLocation()
     }
-    Text {
+    ReadableText {
         objectName: "siteLocationNotice"
         width: parent.width
         text: sheet.locationId ? qsTr("Finding the nearest saved site in this system…") : sheet.notice || (prefs.lastFixAt > 0 ? (sheet.locationUpdated ? qsTr("Sites ordered by distance from your location.") : qsTr("Using your saved location. Refresh if you have moved.")) : qsTr("Use your location to find the nearest saved site in this system."))
@@ -184,7 +184,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(14)
         color: Theme.textSecondary
     }
-    Text {
+    ReadableText {
         objectName: "nearestSiteSummary"
         width: parent.width
         visible: prefs.lastFixAt > 0 && !sheet.locationId
@@ -196,7 +196,7 @@ ModalSheet {
         font.weight: Font.DemiBold
         color: Theme.textPrimary
     }
-    Text {
+    ReadableText {
         objectName: "siteLocationAccuracy"
         width: parent.width
         visible: text.length > 0 && !sheet.locationId
@@ -235,7 +235,7 @@ ModalSheet {
             property real distance: (sheet.revision, prefs.lastFixAt > 0 ? savedSystems.distanceKm(modelData, prefs.lastLat, prefs.lastLon) : -1)
             readonly property string distanceText: Util.fmtDistanceKm(distance, prefs.metricUnits)
             readonly property string title: (site.siteName || site.name) + (distanceText.length > 0 ? " · " + distanceText : "")
-            Text {
+            ReadableText {
                 objectName: "siteTitle" + siteRow.modelData
                 width: parent.width
                 visible: sheet.sessionState !== 0
@@ -255,7 +255,7 @@ ModalSheet {
                 enabled: sheet.sessionState === 0 && !siteRow.site.avoidSite
                 onClicked: sheet.choose(siteRow.modelData)
             }
-            Text {
+            ReadableText {
                 objectName: "sitePositionNotice" + siteRow.modelData
                 width: parent.width
                 visible: !siteRow.site.hasSitePos

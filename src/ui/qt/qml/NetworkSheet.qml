@@ -39,7 +39,7 @@ ModalSheet {
             MicroLabel {
                 text: section.modelData
             }
-            Text {
+            ReadableText {
                 visible: section.rows.length === 0
                 text: qsTr("(none announced)")
                 font.family: Theme.sans
@@ -47,7 +47,7 @@ ModalSheet {
             }
             Repeater {
                 model: section.rows
-                Text {
+                ReadableText {
                     required property var modelData
                     width: parent.width
                     text: sheet.rowText(section.index, modelData)

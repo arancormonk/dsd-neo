@@ -238,7 +238,7 @@ ModalSheet {
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: qsTr("A level mutes audio below it. Noise opens when the FM noise above voice quiets by its margin, as a radio's squelch does: feed it the discriminator or unfiltered FM audio.")
         textFormat: Text.PlainText
@@ -257,7 +257,7 @@ ModalSheet {
             sheet.chooseScope(index === 1);
         }
     }
-    Text {
+    ReadableText {
         objectName: "squelchScopeNote"
         width: parent.width
         visible: sheet.rowSquelch
@@ -315,7 +315,7 @@ ModalSheet {
     }
     // The squelch in force: "learning" until the noise squelch has a reference,
     // its quieting, or why it is off here.
-    Text {
+    ReadableText {
         objectName: "squelchStatus"
         visible: sheet.squelchStatus !== ""
         width: parent.width
@@ -348,7 +348,7 @@ ModalSheet {
         }
     }
     // A row with its own squelch keeps it while on air: the controls edit the default.
-    Text {
+    ReadableText {
         objectName: "squelchRowNote"
         width: parent.width
         visible: sheet.squelchRowOverride && !sheet.rowSquelch

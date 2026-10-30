@@ -648,7 +648,7 @@ ModalSheet {
             sheet.chooseScope(index === 1);
         }
     }
-    Text {
+    ReadableText {
         objectName: "radioScopeNote"
         visible: sheet.rowScope
         width: parent.width
@@ -676,7 +676,7 @@ ModalSheet {
         visible: !sheet.airspyActive
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             text: qsTr("Gain")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
@@ -684,7 +684,7 @@ ModalSheet {
         Row {
             width: parent.width
             spacing: 10
-            Text {
+            ReadableText {
                 objectName: "radioGainValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -749,7 +749,7 @@ ModalSheet {
                 border.width: 1
                 border.color: Theme.controlBorder
 
-                Text {
+                ReadableText {
                     id: gainRowBadge
                     anchors.centerIn: parent
                     text: qsTr("target")
@@ -759,7 +759,7 @@ ModalSheet {
                     color: Theme.cyan
                 }
             }
-            Text {
+            ReadableText {
                 objectName: "radioGainDefault"
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("default %1").arg(sheet.gainText(sheet.gainDb))
@@ -773,7 +773,7 @@ ModalSheet {
     Column {
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             text: qsTr("Squelch")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
@@ -831,7 +831,7 @@ ModalSheet {
         // The dynamic squelch in force: the floor it opens over ("learning"
         // until it has one), the quieting the noise squelch reads, or why it is
         // off here (no radio input, a digital channel).
-        Text {
+        ReadableText {
             objectName: "radioSquelchAutoStatus"
             visible: sheet.squelchAutoStatus !== ""
             width: parent.width
@@ -879,7 +879,7 @@ ModalSheet {
                 border.width: 1
                 border.color: Theme.controlBorder
 
-                Text {
+                ReadableText {
                     id: rowBadge
                     anchors.centerIn: parent
                     text: qsTr("row")
@@ -889,7 +889,7 @@ ModalSheet {
                     color: Theme.cyan
                 }
             }
-            Text {
+            ReadableText {
                 objectName: "radioSquelchDefault"
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("default %1").arg(sheet.squelchSettingText(sheet.squelchAuto, sheet.squelchNoise,
@@ -905,7 +905,7 @@ ModalSheet {
         visible: !sheet.airspyActive
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             text: qsTr("PPM")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
@@ -913,7 +913,7 @@ ModalSheet {
         Row {
             width: parent.width
             spacing: 10
-            Text {
+            ReadableText {
                 objectName: "radioPpmValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -946,7 +946,7 @@ ModalSheet {
     }
 
     // ---- Modulation ----
-    Text {
+    ReadableText {
         width: parent.width
         visible: sheet.savesToSystem || sheet.saveError.length > 0
         text: sheet.saveError.length > 0 ? sheet.saveError
@@ -962,7 +962,7 @@ ModalSheet {
     // it. A simulcast P25 system reads as noise on C4FM and never locks,
     // and that is the single most common reason a real signal decodes
     // nothing.
-    Text {
+    ReadableText {
         text: qsTr("Modulation")
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(14)
@@ -985,7 +985,7 @@ ModalSheet {
     }
 
     // ---- Decode ----
-    Text {
+    ReadableText {
         text: qsTr("Listening for")
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(14)
@@ -1026,7 +1026,7 @@ ModalSheet {
     // Why the AM chip is greyed out, rather than leaving a dead control. The
     // sheet opens only on a radio input, but stays open across a live switch to
     // audio that arrives demodulated, where the chip goes grey under the reader.
-    Text {
+    ReadableText {
         objectName: "radioDecodeIqNote"
         visible: metrics.radioInput !== true
         width: parent.width
@@ -1046,7 +1046,7 @@ ModalSheet {
         visible: sheet.analogWidthOffered
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             objectName: "radioAnalogSectionTitle"
             text: sheet.sectionAm ? qsTr("AM channel width") : qsTr("NFM channel width")
             color: Theme.textSecondary
@@ -1123,7 +1123,7 @@ ModalSheet {
                 border.width: 1
                 border.color: Theme.controlBorder
 
-                Text {
+                ReadableText {
                     id: analogRowBadge
                     anchors.centerIn: parent
                     text: qsTr("row")
@@ -1133,7 +1133,7 @@ ModalSheet {
                     color: Theme.cyan
                 }
             }
-            Text {
+            ReadableText {
                 objectName: "radioAnalogBandwidthRowDefault"
                 anchors.verticalCenter: parent.verticalCenter
                 text: sheet.analogWidthDefaultText
@@ -1153,7 +1153,7 @@ ModalSheet {
             onClicked: sheet.resetAnalogWidth()
         }
         // Outside the preset, with no analog row on air: what the setting is for.
-        Text {
+        ReadableText {
             objectName: "radioAnalogBandwidthIdleNote"
             visible: !sheet.analogWidthInForce && sheet.analogWidthEditable
             width: parent.width
@@ -1166,7 +1166,7 @@ ModalSheet {
         // audio input with a rigctl peer (a live switch to it while the sheet is
         // open, issue #621) the width is the peer's passband, which the
         // monitor's Passband row sets.
-        Text {
+        ReadableText {
             objectName: "radioAnalogBandwidthNote"
             visible: !sheet.analogWidthEditable
             width: parent.width
@@ -1186,7 +1186,7 @@ ModalSheet {
         visible: sheet.otherWidthOffered
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             objectName: "radioAnalogOtherSectionTitle"
             text: sheet.otherKindAm ? qsTr("AM channel width") : qsTr("NFM channel width")
             color: Theme.textSecondary
@@ -1196,7 +1196,7 @@ ModalSheet {
             objectName: "radioAnalogOtherBandwidth"
             width: parent.width
             spacing: 10
-            Text {
+            ReadableText {
                 objectName: "radioAnalogOtherBandwidthValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -1231,7 +1231,7 @@ ModalSheet {
             enabled: sheet.analogWidthEditable
             onClicked: sheet.resetOtherWidth()
         }
-        Text {
+        ReadableText {
             objectName: "radioAnalogOtherBandwidthIdleNote"
             width: parent.width
             wrapMode: Text.WordWrap

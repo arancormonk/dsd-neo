@@ -18,7 +18,7 @@ ModalSheet {
         discardAction = action;
         visible = true;
     }
-    Text {
+    ReadableText {
         objectName: "discardDialogQuestion"
         width: parent.width
         text: sheet.question.length ? sheet.question : qsTr("Discard unsaved changes?")

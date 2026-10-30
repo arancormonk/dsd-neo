@@ -104,7 +104,7 @@ ModalSheet {
             PlexTextField { id: startField; width: (parent.width - 12) / 2; label: qsTr("Start · MHz"); mono: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
             PlexTextField { id: endField; width: (parent.width - 12) / 2; label: qsTr("End · MHz"); mono: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
         }
-        Text { text: qsTr("Channel step"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
+        ReadableText { text: qsTr("Channel step"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
         PlexComboBox {
             id: stepPreset
             objectName: "searchStepPreset"
@@ -139,7 +139,7 @@ ModalSheet {
             }
         }
         PlexTextField { id: bandwidthField; width: parent.width; label: qsTr("Channel bandwidth · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
-        Text { text: qsTr("Digital identification"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
+        ReadableText { text: qsTr("Digital identification"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
         PlexComboBox {
             id: digital
             width: parent.width
@@ -147,7 +147,7 @@ ModalSheet {
             Accessible.name: qsTr("Digital identification profile")
             model: [qsTr("Analog only"), "Auto", "P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF", "M17"]
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Auto needs about six seconds to try all symbol profiles. A two-second probe may leave digital identification unresolved.")
             wrapMode: Text.Wrap
@@ -161,15 +161,15 @@ ModalSheet {
             PlexTextField { id: probeField; width: (parent.width - 12) / 2; label: qsTr("Probe · seconds (2–10)"); inputMethodHints: Qt.ImhDigitsOnly }
             PlexTextField { id: visitField; width: (parent.width - 12) / 2; label: qsTr("Max visit · seconds"); placeholderText: qsTr("0 disables"); inputMethodHints: Qt.ImhDigitsOnly }
         }
-        Text { text: qsTr("RF detection"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+        ReadableText { heading: true; text: qsTr("RF detection"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexTextField { id: sensitivityField; width: parent.width; label: qsTr("Above local noise · dB (3–30)"); inputMethodHints: Qt.ImhDigitsOnly }
         PlexCheckBox { id: minimumSwitch; text: qsTr("Also require a minimum RF level") }
         PlexTextField { id: minimumField; width: parent.width; visible: minimumSwitch.checked; label: qsTr("Minimum RF level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
-        Text { text: qsTr("Listening squelch"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+        ReadableText { heading: true; text: qsTr("Listening squelch"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexComboBox { id: squelch; objectName: "searchRangeSquelch"; width: parent.width; Accessible.name: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
         PlexTextField { id: marginField; width: parent.width; visible: squelch.currentIndex !== 0; label: qsTr("Squelch margin / quieting · dB"); inputMethodHints: Qt.ImhDigitsOnly }
         PlexTextField { id: levelField; width: parent.width; visible: squelch.currentIndex === 0; label: qsTr("Listening level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
-        Text { text: qsTr("Receiver gain"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+        ReadableText { heading: true; text: qsTr("Receiver gain"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexComboBox { id: gainMode; width: parent.width; visible: sheet.sourceType !== "airspy"; Accessible.name: qsTr("Receiver gain mode"); model: [qsTr("Session setting"), qsTr("Hardware auto"), qsTr("Manual")] }
         PlexTextField { id: gainField; width: parent.width; visible: sheet.sourceType !== "airspy" && gainMode.currentIndex === 2; label: qsTr("Gain · dB"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         PlexCheckBox { id: airspyOverride; visible: sheet.sourceType === "airspy"; text: qsTr("Use Airspy gain settings for this range") }
@@ -193,6 +193,8 @@ ModalSheet {
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
             Accessible.role: Accessible.AlertMessage
+            // A role alone reads nothing (issue #782): the error is its name.
+            Accessible.name: text
         }
         GradientButton {
             objectName: "searchRangeSave"

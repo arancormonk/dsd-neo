@@ -43,7 +43,7 @@ ModalSheet {
         font.weight: Font.Bold
         color: Theme.textPrimary
     }
-    Text {
+    ReadableText {
         objectName: "confirmMessage"
         width: parent.width
         text: sheet.message

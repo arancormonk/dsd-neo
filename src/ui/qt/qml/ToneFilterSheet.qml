@@ -108,7 +108,7 @@ ModalSheet {
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: qsTr("Allow hears only traffic carrying a listed CTCSS tone or DCS code; block mutes it and hears the rest.")
         textFormat: Text.PlainText
@@ -127,7 +127,7 @@ ModalSheet {
             sheet.chooseScope(index === 1);
         }
     }
-    Text {
+    ReadableText {
         objectName: "toneFilterScopeNote"
         width: parent.width
         visible: sheet.rowScope
@@ -138,7 +138,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
     }
     // An edit sets the configured policy; a scan row with its own keeps it while on air.
-    Text {
+    ReadableText {
         objectName: "toneFilterRowNote"
         width: parent.width
         visible: metrics.toneFilterRowOverride && !sheet.rowScope
@@ -198,7 +198,7 @@ ModalSheet {
         inputValid: sheet.listError.length === 0
         onClicked: sheet.apply()
     }
-    Text {
+    ReadableText {
         width: parent.width
         visible: text.length > 0
         text: sheet.localMessage

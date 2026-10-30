@@ -32,7 +32,7 @@ Column {
         spacing: 10
     }
 
-    Text {
+    ReadableText {
         objectName: "radioReferencePasswordHint"
         width: parent.width
         text: editor.passwordHint
@@ -42,7 +42,7 @@ Column {
         wrapMode: Text.Wrap
     }
 
-    Text {
+    ReadableText {
         objectName: "radioReferenceAppKeyHeading"
         width: parent.width
         visible: !radioReference.buildHasAppKey && editor.appKeyHeading.length > 0
@@ -67,11 +67,13 @@ Column {
         }
     }
 
-    Text {
+    ReadableText {
         width: parent.width
         visible: !radioReference.buildHasAppKey
         text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
         textFormat: Text.StyledText
+        // Read as the words it shows, without the link markup.
+        Accessible.name: Accessible.ignored ? "" : text.replace(/<[^>]*>/g, "")
         linkColor: Theme.cyan
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(12)

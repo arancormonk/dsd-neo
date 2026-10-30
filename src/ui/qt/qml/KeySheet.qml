@@ -230,7 +230,7 @@ ModalSheet {
             required property var modelData
             width: parent.width
             spacing: 6
-            Text {
+            ReadableText {
                 width: parent.width
                 text: qsTr("Slot %1 · %2%3").arg(modelData.slot).arg(modelData.status).arg(modelData.lastObserved ? qsTr(" · last observed") : "") + (modelData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(modelData.algorithm) : "") + (modelData.keyId.length ? qsTr("\nCall key ID: %1").arg(modelData.keyId) : "") + "\n" + modelData.source + (modelData.effectiveId.length ? " · " + modelData.effectiveId : "") + "\n" + modelData.availability + (modelData.fallback.length ? "\n" + modelData.fallback : "") + (modelData.privateCall && modelData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (modelData.blockReason.length ? qsTr("\nListening policy: %1").arg(modelData.blockReason) : "")
                 textFormat: Text.PlainText

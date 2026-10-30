@@ -217,7 +217,7 @@ ModalSheet {
         currentIndex: sheet.modes.indexOf(sheet.draft.mode)
         onActivated: sheet.setField("mode", sheet.modes[currentIndex])
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: sheet.draft.legacy ? qsTr("Legacy configuration retained. Changing a direct key type requires replacement material.") : sheet.draft.mode === "automatic" ? qsTr("Use the received key ID for each call where supported. An empty collection means no keys supplied.") : sheet.draft.mode === "direct" ? qsTr("A direct override disables automatic key loading. It applies to the configured channel or session, not an individual talkgroup.") : sheet.draft.mode === "vendor" ? qsTr("Standalone DMR session only. Vendor modes force their own processing; stop and restart to change them. They cannot be assigned to scan entries or changed live.") : qsTr("No key material will be installed by this profile. Received encryption status and listening policy are separate.")
         wrapMode: Text.Wrap
@@ -239,7 +239,7 @@ ModalSheet {
             })
             onActivated: sheet.setField("directType", sheet.types[currentIndex].id)
         }
-        Text {
+        ReadableText {
             width: parent.width
             visible: sheet.draft.keyConfigured === true
             text: qsTr("Key configured. Leave the replacement field blank to keep it.")
@@ -343,7 +343,7 @@ ModalSheet {
         MicroLabel {
             text: qsTr("Talkgroup key overrides")
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Group calls only. A missing or incompatible mapped key falls back to the signaled key ID. Overrides do not unblock excluded talkgroups.")
             wrapMode: Text.Wrap
@@ -402,7 +402,7 @@ ModalSheet {
         text: sheet.draft.force >= 32 ? Number(sheet.draft.force).toString(16).toUpperCase() : ""
         onEditingFinished: sheet.setField("force", /^[0-9a-f]{2}$/i.test(text) ? parseInt(text, 16) : -2)
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: qsTr("Save changes this profile for its saved systems and scan entries on their next start. Apply to a running session is a separate action.") + (sheet.draft.useCount > 1 ? qsTr(" Shared by %1 saved references.").arg(sheet.draft.useCount) : "")
         wrapMode: Text.Wrap

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -77,7 +78,8 @@ ModalSheet {
         }
     }
 
-    Text {
+    ReadableText {
+        heading: true
         width: parent.width
         text: qsTr("Site identity") + " · " + metrics.siteProtocol
         textFormat: Text.PlainText
@@ -86,7 +88,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(20)
         color: Theme.textPrimary
     }
-    Text {
+    ReadableText {
         objectName: "siteRetained"
         width: parent.width
         visible: !metrics.siteConfirmed
@@ -101,11 +103,19 @@ ModalSheet {
     // rows an accessibility client is told about. Opening fills them as they
     // are.
     component FieldGrid: Grid {
+        id: fieldGrid
         property var fields: []
         property bool live: true
         width: parent.width
         columns: 1
         spacing: 10
+        // One item for a screen reader (issue #782): every shown field, label
+        // and value, read where it is reached. The rows themselves are rebuilt
+        // with each change and stay plain, so a rebuild tells it nothing.
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(fieldGrid)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: Accessible.ignored ? "" : Util.shownText(fieldGrid)
         Repeater {
             model: live ? fields : []
             delegate: Grid {
@@ -360,7 +370,7 @@ ModalSheet {
         ]
     }
     // What RAS means for decoding, in the terminal notice's words.
-    Text {
+    ReadableText {
         objectName: "siteDmrRasNote"
         width: parent.width
         visible: sheet.rasShown
@@ -374,7 +384,7 @@ ModalSheet {
         color: Theme.textSecondary
     }
     // What the action changes: the app-wide setting, in the Settings row's words.
-    Text {
+    ReadableText {
         objectName: "siteRelaxedCrcHelp"
         width: parent.width
         visible: sheet.offerRelaxedCrc
@@ -386,7 +396,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSecondary
     }
-    Text {
+    ReadableText {
         objectName: "siteRelaxedCrcError"
         width: parent.width
         visible: sheet.rasShown && text.length > 0
