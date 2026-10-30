@@ -405,7 +405,7 @@ Item {
                 Accessible.name: statusSpeech.spoken
                 SpeechPacer {
                     id: statusSpeech
-                    shown: statusText.visible
+                    shown: Navigation.allows(statusText) && statusText.visible
                     step: screen.speechStep
                     read: function () {
                         return statusText.text;
@@ -545,6 +545,7 @@ Item {
                             }
                         }
                         Text {
+                            id: strengthText
                             objectName: "searchStrength"
                             // The cue's slot is kept for the whole visit, so the
                             // text does not move as a live level comes and goes.
@@ -559,7 +560,6 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: strengthSlot.lines
                             elide: Text.ElideRight
-                            id: strengthText
                             readonly property string spoken: strengthSpeech.spoken
                             Accessible.name: spoken
                             Accessible.description: spoken.length > 0 && (screen.hit.range || "").length > 0 ? spoken + " · " + screen.hit.range : spoken
@@ -567,7 +567,7 @@ Item {
                             // The live level moves every tick (issue #782).
                             SpeechPacer {
                                 id: strengthSpeech
-                                shown: strengthText.text.length > 0
+                                shown: Navigation.allows(strengthText) && strengthText.visible && strengthText.text.length > 0
                                 step: screen.speechStep
                                 read: function () {
                                     return strengthText.text.replace("\n", " · ");
@@ -593,6 +593,7 @@ Item {
                         width: parent.width
                         height: 2 * Math.ceil(detailMetrics.lineSpacing)
                         Text {
+                            id: searchDetailText
                             objectName: "searchDetail"
                             width: parent.width
                             // The hint belongs to a search that is running or paused;
@@ -612,14 +613,13 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
-                            id: searchDetailText
                             Accessible.name: detailSpeech.spoken
                             Accessible.description: detailSpeech.spoken
                             Accessible.ignored: text.length === 0
                             // A monitored call's talkgroup and source change with each call (issue #782).
                             SpeechPacer {
                                 id: detailSpeech
-                                shown: searchDetailText.text.length > 0
+                                shown: Navigation.allows(searchDetailText) && searchDetailText.visible && searchDetailText.text.length > 0
                                 step: screen.speechStep
                                 read: function () {
                                     return searchDetailText.fullText;

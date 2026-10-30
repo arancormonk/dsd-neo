@@ -83,12 +83,13 @@ Column {
     // Issue #782: what a screen reader is told of the position, which moves
     // every tick while it plays: at most every few seconds (SpeechPacer), and
     // at once on play, pause, stop, the end of the part, or a seek once the
-    // host reports where it landed.
+    // host reports a position near where it was asked to land (a position
+    // sent before the host applied the seek does not count).
     property int seekLanded: 0
-    property bool seekPending: false
+    property real seekTargetMs: -1
     SpeechPacer {
         id: positionSpeech
-        shown: player.visible
+        shown: Navigation.allows(player) && player.visible
         step: [player.playState, player.loaded, player.part ? player.part.path : "", player.durationMs, player.seekLanded].join("|")
         read: function () {
             return String(player.positionMs);
@@ -313,8 +314,8 @@ Column {
         }
         function onPlaybackPositionChanged() {
             player.followHost();
-            if (player.seekPending) {
-                player.seekPending = false;
+            if (player.seekTargetMs >= 0 && Math.abs(decoderHost.playbackPositionMs - player.seekTargetMs) < 1000) {
+                player.seekTargetMs = -1;
                 player.seekLanded++;
             }
         }
@@ -397,7 +398,9 @@ Column {
                     Accessible.role: Accessible.Slider
                     Accessible.name: qsTr("Position")
                     Accessible.description: player.spokenTimeText
-                    readonly property real value: player.spokenPositionMs / 1000
+                    // Read when asked (Android polls it); a plain Item's value raises no
+                    // ValueChanged, so it stays live (issue #782).
+                    readonly property real value: player.positionMs / 1000
                     readonly property real minimumValue: 0
                     readonly property real maximumValue: player.durationMs / 1000
                     readonly property bool navigationAllowed: Navigation.allows(seekBar)
@@ -422,8 +425,8 @@ Column {
                     }
                     function seekTo(ms) {
                         if (seekable && Navigation.allows(seekBar)) {
-                            player.seekPending = true;
-                            decoderHost.seekPlayback(Math.max(0, Math.min(player.durationMs, ms)));
+                            player.seekTargetMs = Math.max(0, Math.min(player.durationMs, ms));
+                            decoderHost.seekPlayback(player.seekTargetMs);
                         }
                     }
                     function nudge(delta) {

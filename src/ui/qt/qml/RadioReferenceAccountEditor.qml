@@ -67,29 +67,39 @@ Column {
         }
     }
 
-    ReadableText {
+    // A link a screen reader can open (issue #782): one node, the wrapper,
+    // read as the words the line shows and pressed as the link in it. The
+    // line itself stays a plain Text with no accessible interface, so Qt adds
+    // no second, unpressable hyperlink node for its anchor.
+    Item {
         id: appKeyRequest
         objectName: "radioReferenceAppKeyLink"
         width: parent.width
+        height: appKeyRequestText.height
         visible: !radioReference.buildHasAppKey
-        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
-        textFormat: Text.StyledText
-        // A link a screen reader can open (issue #782): read as the words it
-        // shows, without the markup, and pressed as the link in it.
-        readonly property string linkUrl: (text.match(/href="([^"]+)"/) || ["", ""])[1]
+        readonly property string linkUrl: (appKeyRequestText.text.match(/href="([^"]+)"/) || ["", ""])[1]
         Accessible.role: Accessible.Link
-        Accessible.name: Accessible.ignored ? "" : text.replace(/<[^>]*>/g, "")
+        readonly property bool navigationAllowed: Navigation.allows(appKeyRequest)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: Accessible.ignored ? "" : appKeyRequestText.text.replace(/<[^>]*>/g, "")
         Accessible.onPressAction: {
             if (Navigation.allows(appKeyRequest) && linkUrl.length > 0)
                 Qt.openUrlExternally(linkUrl);
         }
-        linkColor: Theme.cyan
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(12)
-        color: Theme.textSubdued
-        wrapMode: Text.Wrap
-        onLinkActivated: function (link) {
-            Qt.openUrlExternally(link);
+
+        Text {
+            id: appKeyRequestText
+            width: parent.width
+            text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
+            textFormat: Text.StyledText
+            linkColor: Theme.cyan
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(12)
+            color: Theme.textSubdued
+            wrapMode: Text.Wrap
+            onLinkActivated: function (link) {
+                Qt.openUrlExternally(link);
+            }
         }
     }
 }

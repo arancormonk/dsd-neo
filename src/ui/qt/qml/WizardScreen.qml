@@ -925,7 +925,10 @@ Item {
                         anchors.margins: Theme.cardPadding
                         spacing: 8
 
-                        ReadableText {
+                        // Read in the field below, which carries the same words (issue #782).
+                        Text {
+                            objectName: "wizardFrequencyCaption"
+                            Accessible.ignored: true
                             text: qsTr("Frequency")
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
@@ -1324,7 +1327,10 @@ Item {
                                 width: (parent.width - 20) / 3
                                 spacing: 6
 
-                                ReadableText {
+                                // Read in the field below, which carries the same words (issue #782).
+                                Text {
+                                    objectName: "wizardGainCaption"
+                                    Accessible.ignored: true
                                     text: qsTr("Gain dB")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)
@@ -1354,7 +1360,10 @@ Item {
                                 width: (parent.width - 20) / 3
                                 spacing: 6
 
-                                ReadableText {
+                                // Read in the field below, which carries the same words (issue #782).
+                                Text {
+                                    objectName: "wizardPpmCaption"
+                                    Accessible.ignored: true
                                     text: qsTr("PPM")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)

@@ -27,12 +27,9 @@ Rectangle {
         y: 14
         width: parent.width - 28
         spacing: 5
-        // The card's lines are one item for a screen reader (issue #782), read
-        // before its switch and edit button, which name themselves.
-        Accessible.role: Accessible.StaticText
-        readonly property bool navigationAllowed: Navigation.allows(content)
-        Accessible.ignored: !navigationAllowed || !visible
-        Accessible.name: Accessible.ignored ? "" : Util.shownText(content)
+        // The card's lines are read with its switch (issue #782): its
+        // description. A card is rebuilt with its table, so it adds no node of
+        // its own to the two controls it already had.
         Text {
             width: parent.width
             objectName: "talkgroupBadge"
@@ -44,6 +41,7 @@ Rectangle {
             color: Theme.textSecondary
         }
         Text {
+            objectName: "talkgroupCardName"
             width: parent.width
             text: card.name
             textFormat: Text.PlainText
@@ -54,6 +52,7 @@ Rectangle {
             color: Theme.textPrimary
         }
         Text {
+            objectName: "talkgroupCardTags"
             width: parent.width
             visible: text.length > 0
             text: card.listed ? card.tags : qsTr("Heard in this session")
@@ -78,6 +77,7 @@ Rectangle {
             width: parent.width
             height: Theme.minimumTouchSize
             Text {
+                objectName: "talkgroupCardListening"
                 anchors.left: parent.left
                 anchors.right: listenSwitch.left
                 anchors.verticalCenter: parent.verticalCenter
@@ -93,6 +93,7 @@ Rectangle {
                 anchors.rightMargin: 12
                 checked: card.listening
                 accessibleName: qsTr("Listen to %1, talkgroup %2").arg(card.name).arg(card.idText)
+                Accessible.description: Util.shownText(content)
                 onToggled: card.clicked()
             }
             IconButton {

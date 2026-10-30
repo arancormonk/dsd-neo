@@ -18,8 +18,13 @@ Item {
     Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
     Accessible.name: hasRecording ? qsTr("%1, has a recording").arg(accessibleName) : accessibleName
     // What the row shows besides its name (issue #782): the meta line, its
-    // tags and its time, unless the caller's name already reads the time.
-    Accessible.description: [metaText, emergency ? Util.shownText(emergencyTag) : "", enc ? Util.shownText(encTag) : "",
+    // tags and its time, each once: a tag the meta line already says (History
+    // puts EMERGENCY and "encrypted" there) and a time the caller's name
+    // already reads are left out.
+    readonly property string emergencyWords: emergency ? Util.shownText(emergencyTag) : ""
+    Accessible.description: [metaText,
+        emergencyWords.length > 0 && metaText.indexOf(emergencyWords) < 0 ? emergencyWords : "",
+        enc && metaText.indexOf(qsTr("encrypted")) < 0 ? Util.shownText(encTag) : "",
         !enc && accessibleName.indexOf(rightText) < 0 ? rightText : ""].filter(function (part) {
         return part.length > 0;
     }).join(", ")

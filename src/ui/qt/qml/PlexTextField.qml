@@ -71,9 +71,12 @@ Rectangle {
         // (issue #782: read even once the field has text) and the helper line
         // are the description, so the field reads as one item. Qt withholds a
         // password field's name (QQuickAccessibleAttached::name()), so there
-        // the label leads the description instead.
+        // the label leads the description instead. A bare number in the
+        // placeholder (a default, "30") would read like the field's value, so
+        // only a worded example is read.
         readonly property bool secret: echoMode === TextInput.Password
-        Accessible.description: [secret ? control.label : "", control.unit, control.placeholderText !== control.label ? control.placeholderText : "", control.hint, control.error].filter(function (s) {
+        readonly property bool placeholderWorded: control.placeholderText !== control.label && !/^\s*[-+]?[0-9]+([.,][0-9]+)?\s*$/.test(control.placeholderText)
+        Accessible.description: [secret ? control.label : "", control.unit, placeholderWorded ? control.placeholderText : "", control.hint, control.error].filter(function (s) {
             return s.length > 0;
         }).join(". ")
         Accessible.passwordEdit: echoMode === TextInput.Password

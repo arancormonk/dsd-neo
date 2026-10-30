@@ -191,6 +191,8 @@ Item {
         // does; an entry without one is text with nothing to read. Keyed by the declaring file and the item's id or
         // objectName, and, where only some of an item's texts are meant, by those texts.
         readonly property var allowlist: [
+            {file: "PlexTextField.qml", name: "placeholder", textPattern: /^\s*[-+]?[0-9]+([.,][0-9]+)?\s*$/,
+                reason: "A bare number as a placeholder is the default the field falls back to; read with the field it would sound like the value typed in, so the field leaves it out."},
             {file: "PlexTextField.qml", name: /^(fieldLabel|helper|placeholder)$/,
                 readBy: function (text) { return text.parent.input; },
                 reason: "The field reads its label as its name and its unit, example and helper line as its description; on its own each would read twice."},
@@ -204,10 +206,20 @@ Item {
                 reason: "The receiver status pill reads the same detail as its description."},
             {file: "WizardScreen.qml", name: /^(trunkTitle|trunkRule)$/, readBy: function (text) { return findNear(text, "wizardTrunkSwitch"); },
                 reason: "The trunking switch reads its title as its name and the rule under it as its description."},
-            {file: "EncTag.qml", name: "tag", readBy: function (text) { return findNear(text, "otherSlotIdentity"); },
+            {file: "EncTag.qml", name: "tag", readBy: otherSlotIdentity,
                 reason: "Beside the other slot's call, whose identity line reads its tags."},
-            {file: "EmergencyTag.qml", name: "tag", readBy: function (text) { return findNear(text, "otherSlotIdentity"); },
+            {file: "EmergencyTag.qml", name: "tag", readBy: otherSlotIdentity,
                 reason: "Beside the other slot's call, whose identity line reads its tags."},
+            {file: "EncTag.qml", name: "tag", when: function (text) {
+                    var row = text.parent ? text.parent.parent ? text.parent.parent.parent : null : null;
+                    return row !== null && row.metaText !== undefined && /\bencrypted\b/.test(row.metaText);
+                },
+                reason: "In a call row whose meta line already says \"encrypted\", which the row's description reads; reading ENC as well would say it twice."},
+            {file: "TalkgroupCard.qml", name: /^(talkgroupBadge|talkgroupCardName|talkgroupCardTags|temporaryTgAvoidBadge|talkgroupCardListening)$/,
+                readBy: function (text) { return findNear(text, "talkgroupListeningSwitch"); },
+                reason: "The card's listening switch reads its lines as its description; a card is rebuilt with its table, so it adds no node of its own."},
+            {file: "WizardScreen.qml", name: /^wizard(Frequency|Gain|Ppm)Caption$/, readBy: fieldBelow,
+                reason: "The field below carries the same words in its name (\"Frequency in MHz\", \"Gain (dB)\", \"PPM correction\")."},
             {file: "OutlineButton.qml", name: "label", texts: ["Hold TG", "Use default", "List value", "Use the default width"],
                 reason: "A short label for a button whose name spells the action out (\"Hold this talkgroup\", \"This Channel Uses the Default Squelch\")."},
             {file: "BandRail.qml", name: /^rail(Low|High)$/,
@@ -240,6 +252,24 @@ Item {
             }
             return null;
         }
+        // The other slot's identity line, for a tag in the other slot's panel only.
+        function otherSlotIdentity(text) {
+            var panel = text.parent ? text.parent.parent : null;
+            return panel !== null && panel.objectName === "otherSlotPanel" ? findChild(panel, "otherSlotIdentity") : null;
+        }
+        // The field after a caption in its column: a PlexTextField's input or a FrequencyField's.
+        function fieldBelow(text) {
+            var kids = text.parent.children;
+            for (var k = 0; k < kids.length; ++k) {
+                if (kids[k] === text)
+                    continue;
+                if (kids[k].input !== undefined)
+                    return kids[k].input;
+                if (kids[k].acceptableInput !== undefined)
+                    return kids[k].children[0].children[0];
+            }
+            return null;
+        }
         function matches(pattern, value) {
             return pattern instanceof RegExp ? pattern.test(value) : pattern === value;
         }
@@ -254,9 +284,16 @@ Item {
                     continue;
                 if (allowed.texts !== undefined && allowed.texts.indexOf(entry.text) < 0)
                     continue;
+                if (allowed.textPattern !== undefined && !allowed.textPattern.test(entry.text))
+                    continue;
+                if (allowed.when !== undefined && !allowed.when(entry.item))
+                    continue;
                 if (allowed.readBy !== undefined) {
                     var reader = allowed.readBy(entry.item);
-                    if (reader === null || reader === undefined || !testContext.nodeCarries(reader, entry.text)) {
+                    // An entry whose reader is not there (a tag outside the panel it names) does not apply.
+                    if (reader === null || reader === undefined)
+                        continue;
+                    if (!testContext.nodeCarries(reader, entry.text)) {
                         problems.push(describe(entry) + " is allowlisted as read by another item, which does not read it");
                         return true;
                     }
@@ -324,6 +361,7 @@ Item {
             verify(testContext.accessibilityActive(), "run with DSD_QML_TEST_ACCESSIBILITY=1, or there is no tree");
         }
         function cleanup() {
+            Ui.Navigation.speechPeriodMs = 5000;
             Ui.Navigation.modals = [];
             Ui.Navigation.layers = [];
         }
@@ -365,13 +403,17 @@ Item {
         function test_3_every_branch_shown(data) {
             var item = build(data.spec);
             open(item, data.spec);
+            // Every branch shown at once changes what moving readings show without a step; a short period lets
+            // their names catch up before the walk.
+            Ui.Navigation.speechPeriodMs = 10;
             reveal(item);
             var nested = sheetsWithin(item, []);
             Ui.Navigation.layers = [];
             Ui.Navigation.modals = isSheet(item) ? [item] : [];
             waitForRendering(host);
             // A group whose rows the reveal rebuilt names them once the rebuild is over (SpeechPacer).
-            wait(20);
+            wait(40);
+            Ui.Navigation.speechPeriodMs = 5000;
             var problems = unexplained(item, nested, data.spec.file);
             for (var i = 0; i < nested.length; ++i) {
                 Ui.Navigation.modals = [nested[i]];
@@ -435,6 +477,8 @@ Item {
                 algorithm: "21", keyId: "1A", effectiveId: "", source: "Call 1", availability: "No matching key",
                 fallback: "", blockReason: "", materialKind: "", targetId: "100", group: true, privateCall: false,
                 dmr: true, profileRef: ""}]);
+            callHistory.pushEncrypted("TODAY");
+            callHistory.pushEmergency();
             diagnosticsLog.paused = false;
             testContext.pushDiagnostic("reach fixture line");
             diagnosticsLog.refresh();
@@ -456,9 +500,21 @@ Item {
                 },
                 DiagnosticsScreen: function (screen) {
                     return diagnosticsLog.paused && diagnosticsLog.rowCount() > 0;
+                },
+                HistoryScreen: function (screen) {
+                    var shown = false;
+                    (function look(item) {
+                        for (var k = 0; k < item.children.length; ++k) {
+                            if (item.children[k].objectName === "rowEncTag" && item.children[k].visible)
+                                shown = true;
+                            look(item.children[k]);
+                        }
+                    })(screen);
+                    return shown;
                 }
             };
-            for (var file of ["HomeScreen", "ImportsScreen", "RadioReferenceScreen", "KeySheet", "DiagnosticsScreen"]) {
+            for (var file of ["HomeScreen", "ImportsScreen", "RadioReferenceScreen", "KeySheet", "DiagnosticsScreen",
+                    "HistoryScreen"]) {
                 var item = build({file: file});
                 open(item, {});
                 if (file === "DiagnosticsScreen")
@@ -489,6 +545,7 @@ Item {
                 testContext.setRadioReference(key, rrBefore[key]);
             testContext.setMetric("decryptionSlots", slotsBefore);
             diagnosticsLog.clear();
+            callHistory.clearAll();
             compare(problems.length, 0, report(problems));
         }
 
@@ -515,7 +572,9 @@ Item {
             dispose(wizard);
         }
 
-        // The application-key request is a link TalkBack can open, read without its markup.
+        // The application-key request is one link node TalkBack can open: read without its markup, with no second
+        // hyperlink node for its anchor (an accessible StyledText gets one per anchor, which has no action), and a
+        // touch on the link's words lands on that node, whose press opens the link.
         function test_6_radio_reference_link_opens() {
             var editor = build({file: "RadioReferenceAccountEditor"});
             open(editor, {});
@@ -525,9 +584,16 @@ Item {
             var node = testContext.accessibleNode(link);
             verify(node.exists && node.inTree, JSON.stringify(node));
             compare(node.role, Accessible.Link);
+            compare(node.childCount, 0, "no hyperlink node beside it");
             verify(node.name.indexOf("<") < 0 && node.name.indexOf("radioreference.com/account/api/apply") >= 0, node.name);
+            compare(testContext.accessibleNode(link.children[0]).exists, false, "the line itself has no node");
+            // Where the link's words are drawn: the end of the line's last line.
+            var line = link.children[0];
+            var touched = testContext.accessibleNodeAt(link, line.width / 2, line.height - 4);
+            verify(touched.exists, "a touch on the link lands on a node");
+            compare(touched.object, link, "and on the link node: " + JSON.stringify({role: touched.role, name: touched.name}));
             testContext.captureOpenedUrls();
-            var pressed = testContext.pressAccessible(link);
+            var pressed = testContext.pressAccessible(touched.object);
             var opened = testContext.openedUrls();
             testContext.releaseOpenedUrls();
             dispose(editor);

@@ -801,7 +801,7 @@ ModalSheet {
             spacing: 10
             Text {
                 id: squelchValueText
-            objectName: "radioSquelchValue"
+                objectName: "radioSquelchValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
                 text: sheet.squelchReading
@@ -812,7 +812,7 @@ ModalSheet {
                 // once when the gate opens or closes or the setting changes, else at their pace.
                 SpeechPacer {
                     id: squelchSpeech
-                    shown: squelchValueText.visible
+                    shown: Navigation.allows(squelchValueText) && squelchValueText.visible
                     step: sheet.squelchStep
                     read: function () {
                         return sheet.squelchRowOverride ? metrics.squelchReadout

@@ -52,10 +52,13 @@
 #include <QMetaEnum>
 #include <QMetaObject>
 #include <QMetaProperty>
+#include <QPoint>
+#include <QPointF>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlPropertyMap>
 #include <QQuickItem>
+#include <QQuickWindow>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
@@ -2796,7 +2799,38 @@ class Setup : public QObject {
                 {QStringLiteral("name"), iface->text(QAccessible::Name)},
                 {QStringLiteral("description"), iface->text(QAccessible::Description)},
                 {QStringLiteral("value"), iface->text(QAccessible::Value)},
-                {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)}};
+                {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
+                {QStringLiteral("childCount"), iface->childCount()}};
+    }
+
+    /**
+     * @brief Issue #782: the node a screen reader's touch lands on at (@p x, @p y) in @p item: from the window's
+     * interface down through childAt(), the walk explore-by-touch makes. Gives the node's object, role, name and
+     * childCount, or `exists` false when nothing is there.
+     */
+    Q_INVOKABLE QVariantMap
+    accessibleNodeAt(QObject* item, qreal x, qreal y) const {
+        auto* quick = qobject_cast<QQuickItem*>(item);
+        if (quick == nullptr || quick->window() == nullptr) {
+            return {{QStringLiteral("exists"), false}};
+        }
+        const QPoint global = quick->window()->mapToGlobal(quick->mapToScene(QPointF(x, y))).toPoint();
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(quick->window());
+        while (iface != nullptr) {
+            QAccessibleInterface* child = iface->childAt(global.x(), global.y());
+            if (child == nullptr) {
+                break;
+            }
+            iface = child;
+        }
+        if (iface == nullptr || !iface->isValid()) {
+            return {{QStringLiteral("exists"), false}};
+        }
+        return {{QStringLiteral("exists"), true},
+                {QStringLiteral("object"), QVariant::fromValue(iface->object())},
+                {QStringLiteral("role"), static_cast<int>(iface->role())},
+                {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("childCount"), iface->childCount()}};
     }
 
     /**
