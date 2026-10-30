@@ -1757,6 +1757,12 @@ Window {
         }
     }
 
+    // Issue #782: TalkBack stuck on a control after a system dialog (see the file).
+    ScreenReaderFocusRelease {
+        window: mainRoot
+        enabled: screenReader.active && Qt.platform.os === "android"
+    }
+
     Item {
         id: sessionTools
         objectName: "sessionTools"

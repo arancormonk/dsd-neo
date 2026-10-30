@@ -42,6 +42,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QFocusEvent>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -2964,6 +2965,36 @@ class Setup : public QObject {
             return false;
         }
         actions->doAction(QAccessibleActionInterface::pressAction());
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: the window of @p item loses (@p in false) or regains the focus, as the platform tells Qt Quick
+     * when a system dialog takes the focus and gives it back (QQuickWindow::focusOutEvent/focusInEvent).
+     */
+    Q_INVOKABLE void
+    sendWindowFocus(QObject* item, bool in) const {
+        auto* quick = qobject_cast<QQuickItem*>(item);
+        if (quick == nullptr || quick->window() == nullptr) {
+            return;
+        }
+        QFocusEvent event(in ? QEvent::FocusIn : QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+        QCoreApplication::sendEvent(quick->window(), &event);
+    }
+
+    /**
+     * @brief Issue #782: focus @p item as TalkBack does: Qt's Android bridge carries out ACTION_ACCESSIBILITY_FOCUS with
+     * the node's set-focus action (androidjniaccessibility.cpp focusAction_helper). Returns false when the node has
+     * none.
+     */
+    Q_INVOKABLE bool
+    focusAccessible(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr || !actions->actionNames().contains(QAccessibleActionInterface::setFocusAction())) {
+            return false;
+        }
+        actions->doAction(QAccessibleActionInterface::setFocusAction());
         return true;
     }
 

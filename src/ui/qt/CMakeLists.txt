@@ -140,6 +140,7 @@ qt_add_resources(
         qml/SpeechPacer.qml
         qml/LiveText.qml
         qml/StableRows.qml
+        qml/ScreenReaderFocusRelease.qml
         qml/ModalSheet.qml
         qml/ActionMenu.qml
         qml/MonitorScreen.qml
