@@ -1514,6 +1514,18 @@ module behind it, so androiddeployqt has nothing extra to package.
     does not come back until TalkBack is turned off and on again.
   - Turning TalkBack off while the app runs leaves the bridge on until the app is
     closed and reopened.
+- **TalkBack can stay on a text field after a system dialog** (#782). Qt carries out
+  TalkBack's "focus this" as a keyboard focus, and tells TalkBack it landed only when
+  the keyboard focus moves. After a system dialog (the USB permission prompt) closes,
+  Qt gives the keyboard focus back to the control that had it, so TalkBack, coming
+  back to that control, gets no answer and each swipe asks again. The app lets go of
+  a button's or a row's keyboard focus while the window is behind the dialog, so
+  TalkBack comes back at once; a text field keeps its focus for the keyboard, so on a
+  field TalkBack can still stay put until the screen is touched.
+- **TalkBack reads the Network sheet in a fixed order** (#782). With TalkBack on,
+  each section lists its entries by frequency, SGID or radio ID rather than most
+  recent first: Qt tells TalkBack nothing when rows change places, and a list that
+  kept reordering under it made swiping skip, repeat or loop entries.
 - **A recreated Activity restarts the app.** Under Qt 6.11.2, a second instance of
   the app's Activity in the running process makes Qt restart the whole process from
   inside that instance's start, with none of the app's teardown: decoding stops at

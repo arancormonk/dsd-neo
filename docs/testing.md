@@ -2693,6 +2693,13 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   the decode quality group, the received tone, the tone filter and its Edit button). G moves the readings 40 times at a
   100 ms period: the strip renames at most once a period and once more, and catches up. H holds the closed sheets and
   the screens hidden under the monitor to no event at all over time, at a 30 ms period with readings moving and hops.
+- **Monitor toggles, focus return.** `tst_a11y_monitor_controls.qml` presses Hold scan through the accessible press
+  action and reads its accessible checked state at once (held from the press), after the engine's state arrives, and
+  when it never does (back to the engine's state after 2 s). `tst_a11y_focus_return.qml` makes the window give up its
+  focus and take it back (`testContext.sendWindowFocus()`) and asks a button's set-focus action again
+  (`testContext.focusAccessible()`, what Qt's bridge does for TalkBack): without `ScreenReaderFocusRelease` no Focus
+  event follows (the control case, Qt's own behaviour), with it one does; a text field keeps its focus.
+  `UI_QT_SCREEN_READER_STATE` checks the screen-reader state follows `QAccessible` on and off.
 - **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
   "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
   under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not
@@ -2709,8 +2716,9 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   the Monitor's lock state. Text no node reads must be in the
   file's one `allowlist` with a reason: an entry with `readBy` names the item that reads it instead (a field reads its
   label), which the walk checks; one with `when` applies only where its check holds (the talkgroup card's "Listening"
-  line, which the switch's checked state says); one without either is text with nothing to read. `test_1` is the
-  positive control, and
+  line, which the switch's checked state says); one without either is text with nothing to read. The same walk reports
+  every enabled heading in the tree that is not focusable (`testContext.unfocusableHeadings()`), which TalkBack's swipes
+  would skip. `test_1` is the positive control, and
   `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
   messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
 - **Paced names.** `tst_a11y_paced_names.qml` checks that the app's period is 5 s, then sets
@@ -2723,19 +2731,23 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   within 100 ms. The harness cannot focus a node as TalkBack does, so every node is held to what a focused one needs.
   Other QML tests that read a paced name shorten the period in `initTestCase()` and restore it in
   `cleanupTestCase()`, since the files of one run share the singleton.
-  Case F flips the lock and a decode-quality reading 40 times at a 200 ms floor: the strip, the hero and the summary
-  row rename at most once a floor and once more, and end on the last state. Case F2 publishes one hop, whose keys
-  change in separate notifications, at a 300 ms floor and the app's 5 s period, then moves the SNR for two floors: the
-  strip renames once. Case C2 has the host leave a seek unapplied and playback stop, then plays past where the seek
-  asked to land: no rename until the period. Case G holds a hidden monitor to silence at a 30 ms period.
+  Case F flips the lock and a decode-quality reading 40 times at a 200 ms floor: the strip, the hero and the summary row
+  rename at most once a floor and once more, and end on the last state. Case F2 publishes one hop, whose keys change in
+  separate notifications, at a 300 ms floor and the app's 5 s period, then moves the SNR for two floors: the strip
+  renames once. Case C2 has the host leave a seek unapplied and playback stop, then plays past where the seek asked to
+  land: no rename until the period. Case G holds a hidden monitor to silence at a 30 ms period. Case H runs 50 scan hops
+  at a fifth of the app's times (60 ms apart, a 1 s period): the scan header renames at most once a period and once
+  more, ends on the current target, and a hold is heard at once.
   `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
   a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the open Network sheet 10
   refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename), then one changed entry
   (one rename, at once), one new entry (one row added) and the same neighbours on another system (each row renamed once,
-  at once, and kept with its neighbour); `test_open_network_sheet_reorders_move_rows` moves one neighbour to the top 16
-  times, 100 ms apart: no show, hide or rename, every row read as what it shows at every refresh, and the row a listener
-  is on moving with its neighbour; `test_open_network_sheet_capped_arrivals` has 20 radios register into a full section
-  of 100: at most one rename each, none elsewhere, and the radio at row 50 keeping its row and name;
+  at once, and kept with its neighbour); `test_open_network_sheet_keeps_its_order_for_a_screen_reader` (this run has a
+  screen reader on) shows the neighbours in frequency order and moves one to the top of the model's list 16 times: no
+  row moves, shows, hides, is renamed or raises a LocationChanged, and every row is read as what it shows
+  (`tst_network_sheet.qml`'s `test_recent_first_without_a_screen_reader` checks the most recent first, rows moving with
+  their entries, without one); `test_open_network_sheet_capped_arrivals` has 20 radios register into a full section of
+  100: at most one rename each, none elsewhere, and the radio at row 50 keeping its row and name;
   `test_open_network_sheet_clear_and_refill` empties and refills the list in one turn (nothing at all) and a turn apart
   (the rows kept, out of the tree in between, and only "(none announced)" showing and hiding);
   `test_open_network_sheet_hold_reads_nothing` empties the list: each held row reports itself invisible and unnamed, and

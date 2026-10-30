@@ -9459,14 +9459,17 @@ Qt Quick frontend (`src/ui/qt`):
   (`test_header_actions_fit_a_tall_phone`, `test_header_geometry_unchanged_off_android`),
   `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier rows).
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
-  (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
-  checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does
-  the scan controls' Hold scan. Four columns where a quarter of the row, less the 12 px either side of a label, fits the
-  longest word of any label (Mute, Hold TG, Skip, Avoid TG, Lock out) at the font scale in force, else two (a 360 px
-  phone takes four at 1.0, two at 1.6); one label line count and one height for every cell, at least
-  `Theme.minimumTouchSize`; labels wrap only at spaces (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's
-  border is never lost to the list's clip in tier 5. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`,
-  `test_toggles_show_checked`), `tst_monitor_compact.qml`.
+  (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as checked
+  (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does the
+  scan controls' Hold scan. Mute, Hold TG and Hold scan read back a command the decoder applies later, so they set
+  `commandToggle` (issue #782): from the press they show and report the state asked for (`shownChecked`) until `checked`
+  changes or 2 s pass. Qt's Android bridge sends the click event TalkBack reads out as the press returns, with the
+  node's state then, before the engine's state reaches `checked` (`tst_a11y_monitor_controls.qml`). Four columns where a
+  quarter of the row, less the 12 px either side of a label, fits the longest word of any label (Mute, Hold TG, Skip,
+  Avoid TG, Lock out) at the font scale in force, else two (a 360 px phone takes four at 1.0, two at 1.6); one label
+  line count and one height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces
+  (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's border is never lost to the list's clip in tier 5.
+  Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`, `test_toggles_show_checked`), `tst_monitor_compact.qml`.
 - Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
@@ -10705,6 +10708,17 @@ Each run gives its setup, then what must hold:
   other target no P25 row is reached or read, the row that had focus reads nothing, and each section's "(none
   announced)" is reached and read; back on the P25 target the rows are read as shown. An old row read on the other
   target fails the check.
+- **N-rotate swipe.** As N-rotate, then swipe next and previous through the Neighbours section several times while it
+  keeps reordering on the control channel: each neighbour is visited once a pass, in frequency order, with no skip,
+  repeat or loop (the screen-reader order holds the rows still).
+- **Headings.** With TalkBack on, swipe through Home, the Monitor and Site → Network: each section label and screen
+  title is reached and read as a heading, and each "(none announced)" right after its section's heading.
+- **Focus after a dialog.** With TalkBack on Connect RTL-SDR, raise the USB permission dialog and dismiss it with Back;
+  then swipe: focus moves on from Connect at once, with no touch needed (`ScreenReaderFocusRelease`).
+- **Hold scan.** With TalkBack on Hold scan during a scan, activate it six times: each time TalkBack says the new
+  state ("on" when it holds), matching the header's HOLD.
+- **Scan header.** With TalkBack on the scan header during a 300 ms dwell scan, it is read at most every 5 s, and at
+  once when the scan is held or released.
 
 ### Android screen modes
 
@@ -10927,6 +10941,30 @@ that carries meaning reaches a screen reader one of these ways:
   its description. Such a sibling-read `Text` says so with `Accessible.ignored: true` and a comment.
 - Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
 
+A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal search's paused ranges row) sets
+`Accessible.focusable`. Qt reports a node focusable only when its item takes Tab focus or has a text role
+(`QAccessibleQuickItem::state()`), and Heading is not one; the Android bridge passes that on (`setFocusable`), and
+TalkBack's linear navigation skips a text node that is neither focusable nor clickable, so without it every section and
+screen heading was skipped and a section's lines (the Network sheet's "(none announced)") were heard without it. The
+text walk reports any enabled heading in the tree that is not focusable.
+
+Whether a screen reader is on is `screen_reader_state.{h,cpp}` (`ScreenReaderState`, the `screenReader` context
+property): Qt's accessibility being active (`QAccessible::isActive()`), which on Android is the bridge being on, so
+TalkBack at launch (the gate). It follows Qt through `QAccessible::installActivationObserver()` (on Android the call
+comes from the main thread, so it is queued onto the object's thread) and polls nothing; a desktop has it off unless an
+assistive technology is attached (`UI_QT_SCREEN_READER_STATE`). Views read it to order (the Network sheet) or keep
+(`ScreenReaderFocusRelease`) what a screen reader is given.
+
+Qt's Android bridge carries out TalkBack's focus action as a keyboard focus (the set-focus action, `forceActiveFocus`,
+queued by `focusAction_helper` in `androidjniaccessibility.cpp`) and reports success at once; TalkBack hears the focus
+landed only from the Focus event a real focus change raises (`QQuickItem::focusInEvent`). After a system dialog (the
+USB permission prompt) takes the window's focus and gives it back, Qt Quick restores the keyboard focus to the same
+control (`QQuickWindow::focusInEvent`), so TalkBack's focus action on it changes nothing, raises nothing, and each swipe
+asks again until a touch. `qml/ScreenReaderFocusRelease.qml` (in `Main.qml`, on Android with a screen reader on) lets go
+of the keyboard focus when the window gives its focus up, so the next focus action is a real change; a text field keeps
+its focus for the keyboard, so a field focused when a dialog opens can still hold TalkBack until a touch
+(`android/README.md` "Known limits"; `tst_a11y_focus_return.qml`).
+
 A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node TalkBack
 has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an announcement, so a
 reading named by its live text would be read out on every tick. A reading that moves faster than every few seconds is
@@ -10940,21 +10978,22 @@ description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate)
 the recordings export progress text, SiteSheet's field groups (renamed once a rebuild is over, not once per row), a
 recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
 seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
-detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), and the squelch readouts and status lines
-in the Radio and Squelch sheets (steps: the gate opening or closing, `MetricsModel::squelchGateOpen`, or the setting
-changing). A step is heard 1 ms after it, once all its bindings have settled, so a step that moves several readings, or
-whose inputs change in several notifications (a hop's target, frequency and sync; a call's slot, talkgroup and source),
-renames once: a step that comes while that 1 ms is pending is part of it. Steps have a floor: a step input that flaps (a
-marginal lock, a gate, a reading coming and going) is heard at most once a floor (1 s), the last state at the end of it.
-`Navigation.speechPeriodMs` (5000) and `Navigation.speechStepFloorMs` (1000) are the period and the floor; only tests
-change them. A pacer runs only while its node is shown and the navigation gate allows it. Names that change only on a
-user action (a drag, a nudge, a choice), on a step itself (a new target, carrier, call, hit or identity), or no faster
-than every few seconds are not paced: the coarse tuning rail, the site row and Spectrum identity, the other-slot call,
-the scan target header, call and history rows, receiver pills, the radio gain and width values, the search's frequency,
-identification and saved names, the diagnostics lines (read only while paused). A Slider- or ProgressBar-role `Item`
-(the seek bar, the export bar, the coarse tuning rail) keeps its `value` live: Qt connects `valueChanged` only for an
-item that has a value interface when its `Accessible` object is made, which these do not, so a moving value raises no
-event, and Android reads the value when it reads the node.
+detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
+scan starting or stopping, held or released; a hop is not one, as a 300 ms dwell hops three times a second), and the
+squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate opening or closing,
+`MetricsModel::squelchGateOpen`, or the setting changing). A step is heard 1 ms after it, once all its bindings have
+settled, so a step that moves several readings, or whose inputs change in several notifications (a hop's target,
+frequency and sync; a call's slot, talkgroup and source), renames once: a step that comes while that 1 ms is pending is
+part of it. Steps have a floor: a step input that flaps (a marginal lock, a gate, a reading coming and going) is heard
+at most once a floor (1 s), the last state at the end of it. `Navigation.speechPeriodMs` (5000) and
+`Navigation.speechStepFloorMs` (1000) are the period and the floor; only tests change them. A pacer runs only while its
+node is shown and the navigation gate allows it. Names that change only on a user action (a drag, a nudge, a choice), on
+a step itself (a new target, carrier, call, hit or identity), or no faster than every few seconds are not paced: the
+coarse tuning rail, the site row and Spectrum identity, the other-slot call, call and history rows, receiver pills, the
+radio gain and width values, the search's frequency, identification and saved names, the diagnostics lines (read only
+while paused). A Slider- or ProgressBar-role `Item` (the seek bar, the export bar, the coarse tuning rail) keeps its
+`value` live: Qt connects `valueChanged` only for an item that has a value interface when its `Accessible` object is
+made, which these do not, so a moving value raises no event, and Android reads the value when it reads the node.
 
 A part whose state only its colour shows gives its words as `spokenText` (the strip's LOCK: "Carrier lock" / "No carrier
 lock"). Readings sit inside a group whose own place does not move, so a value whose width changes moves no accessible
@@ -10966,24 +11005,27 @@ the turn, so a list emptied and refilled in one turn keeps them. Until a row pas
 once: `shown`, the list's length now, draws rows from it on at no opacity (no event; Qt then reports the row invisible),
 and `live`, the rows holding an entry (at once on a shrink, at the end of the turn on emptying), names them as nothing;
 the key sheet hides a departed slot's row and keeps it reading its last slot, never an empty one. The Network sheet keys
-its rows by entry (neighbours by frequency, patches by SGID, affiliations by RID and TG, radios by RID) and lists each
-section most recent first, so an entry heard again moves its row to the top: a move raises a LocationChanged for each
-row that shifts and nothing else, and every row is always named for the entry it shows. Its rows are not paced. With
-`holdWhenEmpty` (the Network sheet) an empty list keeps the rows, `live` 0: they leave the tree (`Accessible.ignored`,
-which raises ObjectDestroyed, not sent on by Android's bridge), are transparent and unnamed, and their column takes no
-height; the next list reuses them. Nothing the rows raise then refreshes Android's cached copy of the sheet (only a show
-or hide does, `QtAccessibilityDelegate.java` `notifyObjectShow`/`notifyObjectHide`), so a held row must read as nothing
-there: transparent, Qt reports it invisible (`qaccessiblequickitem.cpp` `state()`), which Android passes on as not
-visible to the user, and unnamed it has no words, even with TalkBack's focus left on it. Unnaming is a NameChanged per
-row, one call into Java that returns at once unless TalkBack is on that row. Each section's "(none announced)" stays in
-the tree while hidden, so its show as the section empties refreshes Android's copy and a swipe reaches it, and its hide
-does so as the rows come back. A hop to a target with no P25 network therefore costs, in main-thread work on Android,
-one show or hide per section that empties or fills and the sheet's layout, whatever the number of rows. Hidden or
-removed instead, each row would raise a hide (and a show coming back). P25NetworkModel keeps the engine's last-seen
-times, which order its rows but are not shown, out of them. A scan hop publishes the new target's network in one
-replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the sheet is closed or the session is not
-live), never an empty list first.
-The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
+its rows by entry (neighbours by frequency, patches by SGID, affiliations by RID and TG, radios by RID). Without a
+screen reader each section is most recent first, as P25NetworkModel lists it, so an entry heard again moves its row to
+the top: a move raises a LocationChanged for each row that shifts and nothing else, and every row is always named for
+the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys
+(`NetworkSheet.readingOrder()`): Qt's bridge sends Android no event for a row that moves, and TalkBack swiped a
+reordering section in an order it had left, skipping, repeating and looping (the N-rotate check). Its rows are not
+paced. With `holdWhenEmpty` (the Network sheet) an empty list keeps the rows, `live` 0: they leave the tree
+(`Accessible.ignored`, which raises ObjectDestroyed, not sent on by Android's bridge), are transparent and unnamed, and
+their column takes no height; the next list reuses them. Nothing the rows raise then refreshes Android's cached copy of
+the sheet (only a show or hide does, `QtAccessibilityDelegate.java` `notifyObjectShow`/`notifyObjectHide`), so a held
+row must read as nothing there: transparent, Qt reports it invisible (`qaccessiblequickitem.cpp` `state()`), which
+Android passes on as not visible to the user, and unnamed it has no words, even with TalkBack's focus left on it.
+Unnaming is a NameChanged per row, one call into Java that returns at once unless TalkBack is on that row. Each
+section's "(none announced)" stays in the tree while hidden, so its show as the section empties refreshes Android's copy
+and a swipe reaches it, and its hide does so as the rows come back. A hop to a target with no P25 network therefore
+costs, in main-thread work on Android, one show or hide per section that empties or fills and the sheet's layout,
+whatever the number of rows. Hidden or removed instead, each row would raise a hide (and a show coming back).
+P25NetworkModel keeps the engine's last-seen times, which order its rows but are not shown, out of them. A scan hop
+publishes the new target's network in one replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the
+sheet is closed or the session is not live), never an empty list first. The Diagnostics log's lines are read only while
+Pause holds it: each refresh rebuilds the rows.
 
 `UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
