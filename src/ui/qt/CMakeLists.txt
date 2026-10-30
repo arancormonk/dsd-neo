@@ -59,6 +59,7 @@ target_sources(
         signal_search_model.cpp
         known_frequency_index.cpp
         spectrum_view_item.cpp
+        screen_reader_state.cpp # Issue #782
         session_args.cpp
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp

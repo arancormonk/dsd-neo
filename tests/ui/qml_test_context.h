@@ -103,6 +103,7 @@
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
+#include "screen_reader_state.h"
 #include "session_args.h"
 #include "site_groups.h"
 #include "spectrum_model.h"
@@ -4301,6 +4302,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
         m_network = new dsd_qt::P25NetworkModel(engine);
         ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
+        // Issue #782: the production state, following QAccessible (on in the DSD_QML_TEST_ACCESSIBILITY=1 run).
+        ctx->setContextProperty(QStringLiteral("screenReader"), new dsd_qt::ScreenReaderState(engine));
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         auto* controller = new TestUiController(engine);
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);

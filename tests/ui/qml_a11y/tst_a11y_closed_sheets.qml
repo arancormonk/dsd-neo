@@ -371,12 +371,14 @@ Item {
             fakeNet.neighbours = [];
         }
 
-        // Issue #782: an open Network sheet lists each section most recent first, so a neighbour heard again moves to
-        // the top. Its row moves with it: no row shows, hides or is renamed, the row a listener is on stays with its
-        // neighbour, and every row is read as what it shows, at every refresh.
-        function test_open_network_sheet_reorders_move_rows() {
+        // Issue #782: P25NetworkModel lists each section most recent first, so a neighbour heard again moves to the
+        // top of its list. With a screen reader on (this run) the sheet keeps each section in frequency order
+        // instead: Qt's bridge tells Android nothing of a row that moves, so TalkBack would swipe the rows in an
+        // order they had left. Every row stays where it is and is read as what it shows, and nothing is raised.
+        function test_open_network_sheet_keeps_its_order_for_a_screen_reader() {
+            verify(screenReader.active, "this run has a screen reader on");
             var sheet = networkLoader.item;
-            var order = [0, 1, 2, 3, 4, 5, 6, 7];
+            var order = [5, 2, 7, 0, 3, 6, 1, 4];
             var listed = function () {
                 return order.map(function (i) {
                     return {freqHz: 851000000 + i * 12500, sysid: 291, rfss: 1, site: i, wacn: 1, wacnValid: true, lra: 0,
@@ -390,37 +392,39 @@ Item {
             wait(50);
             var rows = neighbourRows(sheet);
             compare(rows.length, 8);
-            var row = rows[3];
-            var name = testContext.accessibleNode(row).name;
-            compare(name, row.text);
+            for (var k = 0; k < rows.length; ++k)
+                verify(rows[k].text.indexOf(" Site:" + k + " ") >= 0, "row " + k + " is the " + k + "th by frequency: "
+                       + rows[k].text);
+            var list = rows[0].parent;
+            var texts = rows.map(function (r) { return r.text; });
             testContext.startAccessibilityCount();
             var wrong = [];
             for (var refresh = 1; refresh <= 16; ++refresh) {
-                // The last neighbour in the list is heard again and moves to the top.
+                // The last neighbour in the list is heard again and moves to the top of the model's list.
                 order = [order[order.length - 1]].concat(order.slice(0, order.length - 1));
                 fakeNet.neighbours = listed();
-                wait(100);
-                rows = neighbourRows(sheet);
-                for (var k = 0; k < rows.length; ++k) {
-                    if (testContext.accessibleNode(rows[k]).name !== rows[k].text)
+                wait(50);
+                var now = neighbourRows(sheet);
+                compare(now, rows, "no row moves");
+                for (k = 0; k < now.length; ++k) {
+                    if (now[k].text !== texts[k] || testContext.accessibleNode(now[k]).name !== now[k].text)
                         wrong.push(refresh + ":" + k);
                 }
-                compare(rows[order.indexOf(3)], row, "the neighbour's row moves with it");
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
-            compare(wrong.length, 0, "rows read as another neighbour than they show: " + JSON.stringify(wrong));
-            compare(showHide(sheet), 0, JSON.stringify(counts.chains));
-            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
-            compare(testContext.accessibleNode(row).name, name);
+            compare(wrong.length, 0, "rows changed or read as another neighbour than they show: " + JSON.stringify(wrong));
+            for (var type of ["ObjectShow", "ObjectHide", "NameChanged", "LocationChanged"])
+                compare(testContext.accessibilityCountWithin(list, type), 0, type + ": " + JSON.stringify(counts.chains));
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];
         }
 
         // Issue #782: the affiliations and radios are the 100 heard last, so on a busy system a radio that registers
-        // again enters at the top and the 100th leaves. The row of the one that left is renamed for the new one, and
-        // no other row: a listener on a radio that stays keeps its row and its name.
+        // again enters the list and the 100th heard leaves. The row of the one that left is renamed for the new one,
+        // and no other row: a listener on a radio that stays keeps its row and its name. (With a screen reader on, as
+        // here, the radios are in RID order, so the new radios come last.)
         function test_open_network_sheet_capped_arrivals() {
             var sheet = networkLoader.item;
             var rids = [];
@@ -469,11 +473,11 @@ Item {
                     if (testContext.accessibleNode(rows[k]).name !== rows[k].text)
                         wrong.push(arrival + ":" + k);
                 }
-                compare(rows[50 + arrival], row, "the radio's row moves with it");
+                compare(rows[50], row, "the radio keeps its row");
             }
             compare(wrong.length, 0, "rows read as another radio than they show: " + JSON.stringify(wrong));
             compare(testContext.accessibleNode(row).name, name);
-            compare(rows[0].text, "RID:" + (5000 + arrivals));
+            compare(rows[99].text, "RID:" + (5000 + arrivals));
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.radios = [];

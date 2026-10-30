@@ -43,6 +43,7 @@
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
+#include "screen_reader_state.h"
 #include "session_args.h"
 #include "signal_search_model.h"
 #include "site_groups.h"
@@ -309,6 +310,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
     context->setContextProperty(QStringLiteral("p25Network"), network); // WP-F2
+    // Issue #782: whether a screen reader is on, for views that order or pace what it reads.
+    context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(&engine));
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);

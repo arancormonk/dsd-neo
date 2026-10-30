@@ -4162,6 +4162,34 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_frequency_query
     )
 
+    # Issue #782: the screen-reader state follows Qt's accessibility activation.
+    add_executable(
+        dsd-neo_test_ui_qt_screen_reader_state
+        ui/test_ui_qt_screen_reader_state.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PRIVATE Qt6::Core Qt6::Gui
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_screen_reader_state PROPERTIES AUTOMOC ON)
+    add_test(
+        NAME UI_QT_SCREEN_READER_STATE
+        COMMAND dsd-neo_test_ui_qt_screen_reader_state
+    )
+    set_tests_properties(
+        UI_QT_SCREEN_READER_STATE
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups
@@ -4718,6 +4746,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+            # Issue #782: whether a screen reader is on, as views read it.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
             # needs the CLI mapping behind it, and that translation unit is
