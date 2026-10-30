@@ -10,7 +10,9 @@
  * owns it. The completion arrives on the controller thread into a single atomic slot that packs the ID's count (its
  * low half, which tells manual-tune IDs apart) with the result, so the decoder reads both in one load. One slot is
  * enough: a completion of another manual tune than the noted one comes only from a newer tune, which supersedes the
- * record anyway.
+ * record anyway. A record superseded, or whose stream session ended, is dropped, and the next poll reports the drop
+ * once, so the owner of what the tune was for (a -Y resume's row) settles it rather than waiting on a completion that
+ * no longer counts.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -38,10 +40,14 @@ typedef struct {
     uint32_t session_generation;
 } dsd_manual_tune_record;
 
+/* Where the record stands: nothing noted, a tune noted and its completion awaited, or the noted tune dropped (another
+   tune decides where the receiver goes) with the drop still to report to its owner. */
+enum { MANUAL_TUNE_NONE_NOTED = 0, MANUAL_TUNE_NOTED = 1, MANUAL_TUNE_DROPPED_UNREPORTED = 2 };
+
 static dsd_manual_tune_record g_record;
-/* The record the last poll that took a completion settled. */
+/* The record the last poll that settled one took. */
 static dsd_manual_tune_settled g_settled;
-static atomic_int g_record_pending = 0;
+static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
 /* (ID count << 32) | (uint32_t)result of the last manual-tune completion; 0 when none came. */
 static dsd_atomic_u64 g_completion = {0U};
 
@@ -88,36 +94,51 @@ dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind,
     g_record.scan_session = scan_session;
     g_record.map_seq = map_seq;
     g_record.session_generation = manual_tune_session_generation();
-    atomic_store(&g_record_pending, 1);
+    atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
 }
 
 void
 dsd_engine_manual_tune_supersede(dsd_state* state) {
     (void)state; // the record is process-wide, as the RTL controller is
-    atomic_store(&g_record_pending, 0);
+    if (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED) {
+        atomic_store(&g_record_pending, MANUAL_TUNE_DROPPED_UNREPORTED);
+    }
 }
 
-int
-dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
-    if (!atomic_load(&g_record_pending)) {
-        return DSD_MANUAL_TUNE_NONE;
-    }
-    if (g_record.session_generation != manual_tune_session_generation()) {
-        /* The stream it was asked of stopped: a stop fails its queued request, and the next stream opens on the
-           frequency the decoder holds. */
-        atomic_store(&g_record_pending, 0);
-        return DSD_MANUAL_TUNE_NONE;
-    }
-    const uint64_t packed = dsd_atomic_u64_load_acquire(&g_completion);
-    if ((uint32_t)(packed >> 32) != (uint32_t)g_record.id) {
-        return DSD_MANUAL_TUNE_NONE;
-    }
-    atomic_store(&g_record_pending, 0);
+/* The record goes, and what it was stays for its owner (dsd_engine_manual_tune_last_settled()). */
+static void
+manual_tune_settle(void) {
+    atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
     g_settled.kind = g_record.kind;
     g_settled.requested_hz = g_record.requested_hz;
     g_settled.row = g_record.row;
     g_settled.scan_session = g_record.scan_session;
     g_settled.map_seq = g_record.map_seq;
+}
+
+int
+dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
+    const int noted = atomic_load(&g_record_pending);
+    if (noted == MANUAL_TUNE_NONE_NOTED) {
+        return DSD_MANUAL_TUNE_NONE;
+    }
+    if (noted == MANUAL_TUNE_DROPPED_UNREPORTED) {
+        manual_tune_settle();
+        return DSD_MANUAL_TUNE_DROPPED;
+    }
+    /* The completion before the session: a stop moves the session before it fails the request it queued, so a failure
+       read here that a stop made is always seen with the stop's session, and never toasted as a failed tune. */
+    const uint64_t packed = dsd_atomic_u64_load_acquire(&g_completion);
+    if (g_record.session_generation != manual_tune_session_generation()) {
+        /* The stream it was asked of stopped: a stop fails its queued request, and the next stream opens on the
+           frequency the decoder holds. */
+        manual_tune_settle();
+        return DSD_MANUAL_TUNE_DROPPED;
+    }
+    if ((uint32_t)(packed >> 32) != (uint32_t)g_record.id) {
+        return DSD_MANUAL_TUNE_NONE;
+    }
+    manual_tune_settle();
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
         return DSD_MANUAL_TUNE_LANDED;
     }
@@ -145,10 +166,13 @@ dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out) {
 }
 
 int
-dsd_engine_manual_tune_landed(dsd_manual_tune_kind kind) {
-    if (!atomic_load(&g_record_pending) || g_record.kind != kind) {
+dsd_engine_manual_tune_settled_ready(void) {
+    if (atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED) {
         return 0;
     }
     const uint64_t packed = dsd_atomic_u64_load_acquire(&g_completion);
-    return (uint32_t)(packed >> 32) == (uint32_t)g_record.id && (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
+    if ((uint32_t)(packed >> 32) != (uint32_t)g_record.id) {
+        return 0;
+    }
+    return (int32_t)(uint32_t)packed != RTL_STREAM_TUNE_OK || g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP;
 }

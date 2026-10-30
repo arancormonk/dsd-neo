@@ -1332,11 +1332,11 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     push_response("RPRT 0\n");
     push_response("RPRT 0\n");
 
-    assert(opts.rigctl_set_freq_hz == 0U);
+    assert(opts.rigctl_sent_freq_hz == 0U);
     assert(io_control_set_freq(&opts, &state, 851050000U) == 0);
     assert(opts.rtlsdr_center_freq == 851050000U);
     /* The frequency the peer accepted, which the terminal's Frequency... row shows on audio input (issue #671). */
-    assert(opts.rigctl_set_freq_hz == 851050000U);
+    assert(opts.rigctl_sent_freq_hz == 851050000U);
     assert(g_command_count == 3);
     assert(strcmp(g_commands[0], "m\n") == 0);
     assert(strcmp(g_commands[1], "M NFM 12500\n") == 0);
@@ -1349,7 +1349,7 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     assert(io_control_set_freq(&opts, &state, 851062500U) == -1);
     assert(g_command_count == 1 && strcmp(g_commands[0], "F 851062500\n") == 0);
     assert(opts.rtlsdr_center_freq == 851050000U);
-    assert(opts.rigctl_set_freq_hz == 851050000U);
+    assert(opts.rigctl_sent_freq_hz == 851050000U);
 
     reset_stubs();
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;

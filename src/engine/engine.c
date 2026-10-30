@@ -100,6 +100,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -1328,7 +1329,7 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
  * the session runs the peer's own passband (-B 0, or the FM monitor with neither a width nor -B) it asks for FM at 0,
  * best-effort: that undoes a passband this client set (a session width before a switch to a digital mode, say) with
  * the passband read before it, and is a no-op for a peer back on its own or never asked. The frequency the peer is on
- * afterwards is the one last sent (dsd_opts::rigctl_set_freq_hz). */
+ * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). */
 static dsd_trunk_tune_result
 no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long int freq) {
     if (opts->use_rigctl != 1) {
@@ -1361,7 +1362,7 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long in
         }
         s_last_rigctl_freq = freq;
     }
-    opts->rigctl_set_freq_hz = (uint32_t)freq;
+    opts->rigctl_sent_freq_hz = (uint32_t)freq;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -1562,10 +1563,26 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
 /* Whether a settled untyped step's row is still the current scan's to commit (dsd_engine_scan_untyped_poll()). */
 static int
 untyped_settled_row_is_current(const dsd_opts* opts, const dsd_state* state, const dsd_manual_tune_settled* settled) {
-    return (opts->scanner_mode == 1 || state->lcn_scan_resume_pending) && opts->trunk_scan_enabled != 1
+    return dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1
            && !dsd_channel_modes_present(state) && settled->scan_session == state->lcn_scan_session
            && settled->map_seq == state->trunk_chan_map_seq && settled->row >= 0 && settled->row < state->lcn_freq_count
            && *dsd_state_trunk_lcn_slot_const(state, settled->row) == (long int)settled->requested_hz;
+}
+
+/* A settled step whose row is no longer the current scan's (dsd_engine_scan_untyped_poll()). A landing still moved the
+   receiver, to a carrier no row or pause boundary has seen (a pause in place forgot only the carrier it left): the
+   boundary runs for the move, so nothing decoded on the old carrier carries over. A resume whose own row it was
+   (issue #671: its session, its list) can no longer land, so the scan goes back to paused. */
+static void
+untyped_settle_stale_row(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_settled* settled, int polled) {
+    if (polled == DSD_MANUAL_TUNE_LANDED) {
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
+    }
+    if (state->lcn_scan_resume_pending && !dsd_channel_modes_present(state)
+        && settled->scan_session == state->lcn_scan_session) {
+        dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled->requested_hz,
+                                              DSD_SCAN_RESUME_FAILED_TUNE);
+    }
 }
 
 int
@@ -1576,7 +1593,11 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     }
     dsd_manual_tune_settled settled;
     dsd_engine_manual_tune_last_settled(&settled);
-    if (settled.kind != DSD_MANUAL_TUNE_UNTYPED_STEP || !untyped_settled_row_is_current(opts, state, &settled)) {
+    if (settled.kind != DSD_MANUAL_TUNE_UNTYPED_STEP) {
+        return polled;
+    }
+    if (!untyped_settled_row_is_current(opts, state, &settled)) {
+        untyped_settle_stale_row(opts, state, &settled, polled);
         return polled;
     }
     const time_t now = dsd_decode_time();
@@ -1587,6 +1608,7 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
         untyped_install_row(state, settled.row, now);
         dsd_engine_channel_scan_resume_landed(opts, state);
     } else if (state->lcn_scan_resume_pending) {
+        /* Failed, or dropped (a newer tune, a stream reopen): the row never lands, so the resume never does. */
         dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled.requested_hz, DSD_SCAN_RESUME_FAILED_TUNE);
     } else {
         no_carrier_rearm_abandoned_scan(opts, state, now);
@@ -2630,7 +2652,7 @@ engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
     return opts
            && (opts->trunk_enable == 1 || dsd_trunk_scan_owns_tuner(opts, state)
                || dsd_engine_signal_search_active(state)
-               || ((opts->scanner_mode == 1 || state->lcn_scan_resume_pending) && dsd_channel_modes_present(state)));
+               || (dsd_channel_scan_owns_tuner(opts, state) && dsd_channel_modes_present(state)));
 }
 
 /* A failed asynchronous RTL retune left the radio on the frequency the stream last applied, while the decoder's tuner
@@ -3511,10 +3533,13 @@ static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
-        /* An untyped -Y row whose tune timed out has landed (issue #671): the reception ends before another frame
-           decodes, so the outer pass commits the row (dsd_engine_scan_untyped_poll(): the boundary under the row left,
-           then its keys) and the hunt finds the frame again under them. One load while no tune is noted. */
-        if (dsd_engine_manual_tune_landed(DSD_MANUAL_TUNE_UNTYPED_STEP)) {
+        /* A manual tune that timed out has settled (issue #671): an untyped -Y row's landing, or any tune's late
+           failure. The reception ends before another frame decodes, so the outer pass settles it
+           (dsd_engine_scan_untyped_poll(): a row commits under the boundary, then its keys; a failure puts the cached
+           centre back and says so) and the hunt finds the frame again under what is now true. A carrier that keeps sync
+           (a control channel) would otherwise go on decoding under the frequency that failed. One load while no tune is
+           noted. */
+        if (dsd_engine_manual_tune_settled_ready()) {
             state->synctype = DSD_SYNC_NONE;
             break;
         }

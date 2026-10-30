@@ -30,8 +30,11 @@ int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
  * that is the last receive request the leave makes, so rtl_stream_receive_request_seq() names it right after. Returns 1
  * when that request was queued, -1 when the front end refused it at once at the rate it publishes (a retune moved the
  * rate since the width was held to it; also with no front end hook installed), and 0 when the leave asked nothing of
- * the monitor: NULL arguments, no active scan, not RTL input, or a digital configured family. The interactive leaves
- * go through svc_leave_channel_scan(), which records the result for the decoder (issue #578). */
+ * the monitor: NULL arguments, no active scan, not RTL input, or a digital configured family. A paused scan
+ * (dsd_state::lcn_scan_paused, no resume pending; issue #671) is not active: its pause already left the row, so its
+ * leave only drops the list state the pause kept, and ends no call, resets no acquisition and asks the monitor for
+ * nothing of the manual session. The interactive leaves go through svc_leave_channel_scan(), which records the result
+ * for the decoder (issue #578) and then clears the pause. */
 int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
 /** Pause a running -Y scan, typed or untyped (issue #671): the operator takes the tuner and the scan waits for a
  * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
@@ -41,7 +44,7 @@ int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
  * the session edits and their session. Dropped: a row tune staged or pending (nothing commits after the pause,
  * lcn_scan_session moves), a retry, a commit owed, the row on air and its staged options and keys, and an operator
  * hold. Leaves scanner_mode 0, lcn_scan_paused and operator_tuned 1. Also takes back a resume still pending. Nothing
- * to do (0) without a -Y scan running or resuming. Returns what the return to the configured profile asked of the
+ * to do (0) without a -Y scan running or resuming (dsd_channel_scan_owns_tuner()). Returns what the return to the configured profile asked of the
  * monitor, as dsd_engine_channel_scan_leave() does; the interactive pause goes through svc_pause_channel_scan().
  * Safe under the P25 SM tick guard: nothing under it takes the guard its caller holds. Decoder thread. */
 int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place);

@@ -183,7 +183,12 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             return scan_resume_trunk(opts, state);
         }
         if (svc_pause_trunk_scan_in_place(opts, state) != 0) {
-            trunk_action_toast(state, 3, "Trunk scan active: conventional scanner unavailable");
+            /* With a coordinator the pause itself failed (it names no target to leave); without one, trunk scan is
+               only configured, which rules out the conventional scanner `y` would start. */
+            trunk_action_toast(state, 3,
+                               state->trunk_scan_target_count > 0U
+                                   ? "Trunk scan active: pause unavailable"
+                                   : "Trunk scan active: conventional scanner unavailable");
             return TRUNK_ACTION_REFUSED;
         }
         trunk_action_toast(state, 3, "Trunk scan paused");

@@ -95,6 +95,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <errno.h>
 #include <sndfile.h>
 #include <stdarg.h>
@@ -1826,10 +1827,12 @@ ui_radio_row_took_over(dsd_opts* opts, dsd_state* state, int pcm_timing_rate_hz)
    input and its start, and, when the start fails, on through putting back the input that ran and starting it again
    (issue #578): nothing the watchdog reads is read or written outside it, as a config apply's reopen holds it
    throughout. A copy taken before the guard could miss a retune the watchdog completed in between, which putting it
-   back would undo while the trunking state follows the retune. */
+   back would undo while the trunking state follows the retune. A scan in force refuses the switch, as the PCM rows
+   refuse it (ui_input_switch_refused(), issue #634): a running -Y scan, or a trunk scan's coordinator, paused or not.
+   A paused -Y scan does not: a switch that runs stops it (ui_input_switch_ends_paused_scan()). */
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (opts && state && ui_input_mode_refused(opts, state)) {
+    if (opts && state && ui_input_switch_refused(opts, state)) {
         return UI_CMD_APPLY_UNSUPPORTED;
     }
     if (ui_cmd_rtl_enable_input_refused(opts, state, c)) {
@@ -2007,17 +2010,29 @@ ui_cmd_tune_leg(dsd_opts* opts, dsd_state* state, uint32_t hz) {
 
 /* An accepted frequency entry pauses a running -Y scan, typed or untyped, and takes back a resume still waiting on its
    row (issue #671): the tune came first, so the row's calls ended under its label and keys, and the pause keeps the
-   list, cursor, avoids and session edits for a resume. Under the P25 SM tick guard, which the entry (not a guarded
-   command) takes here. Returns 1 when it paused the scan. */
+   list, cursor, avoids and session edits for a resume. A spectrum tap and a Signal search start take back a pending
+   resume the same way. Under the P25 SM tick guard, which none of these (not guarded commands) holds, so it is taken
+   here. Returns 1 when it paused the scan. */
 static int
 ui_cmd_pause_channel_scan_after_tune(dsd_opts* opts, dsd_state* state) {
-    if (opts->scanner_mode != 1 && !state->lcn_scan_resume_pending) {
+    if (!dsd_channel_scan_owns_tuner(opts, state)) {
         return 0;
     }
     p25_sm_tick_guard_enter();
     (void)svc_pause_channel_scan(opts, state, 0);
     p25_sm_tick_guard_leave();
     return 1;
+}
+
+/* A Signal search start over a -Y resume still waiting on its row (issue #671): the search takes the receiver from it,
+   as a frequency entry does, and the scan stays paused. Before the start, which captures the settings the search puts
+   back when it stops, so a typed row's staged tune and scopes never become them. A running -Y scan refuses the search
+   instead (dsd_engine_signal_search_start()), so only a pending resume is taken back. */
+static void
+ui_cmd_search_takes_back_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (c->id == DSD_APP_CMD_SIGNAL_SEARCH_START && state && state->lcn_scan_resume_pending) {
+        (void)ui_cmd_pause_channel_scan_after_tune(opts, state);
+    }
 }
 
 /* A frequency payload the tuner cannot take, toasted: 0. Every other uint32_t reaches the tuner as it is, on every
@@ -2167,7 +2182,9 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
      * channel; conventional scanner mode steps the channel map on its own once
      * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
      * tap accepted under it would be silently undone seconds later — worse than
-     * a refusal, because the toast would have claimed it worked. */
+     * a refusal, because the toast would have claimed it worked. A -Y resume
+     * still waiting on its row runs nothing yet: the tap takes it back, as a
+     * frequency entry does, and the scan stays paused (issue #671). */
     if (opts->trunk_enable) {
         ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
         return UI_CMD_APPLY_FAILED;
@@ -2197,14 +2214,18 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
         dsd_analog_rx_reset(state); // the tune itself ran the carrier boundary (svc_rtl_set_freq(), issue #575)
+        /* A resume's row still in flight then commits nothing: the pause moved the scan session. */
+        const int scan_paused = ui_cmd_pause_channel_scan_after_tune(opts, state);
         reset_call_tracking(opts, state, 1);
         ui_mark_operator_tuned(state); // after the calls the tap ended, which began under the session
 
+        const char* paused_note = scan_paused ? "; scan paused" : "";
         if (rc == 0) {
             /* The frequency the controller applied, as the frequency entry's toast names it. */
-            ui_set_toast(state, 3, "Applied: tuned -> %s MHz", ui_toast_mhz(applied, mhz, sizeof mhz));
+            ui_set_toast(state, 3, "Applied: tuned -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz), paused_note);
         } else {
-            ui_set_toast(state, 3, "Accepted: tuned -> %s MHz (pending)", ui_toast_mhz(v, mhz, sizeof mhz));
+            ui_set_toast(state, 3, "Accepted: tuned -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
+                         paused_note);
         }
     } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
         ui_set_toast(state, 4, "Deferred; retry: tune -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
@@ -5081,8 +5102,9 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
 /* A release with nothing to do: the tuner is already the operator's, nothing owns it, and a scan pause stands. */
 static int
 tuner_release_finds_pause(const dsd_opts* opts, const dsd_state* state) {
-    return !dsd_trunk_scan_owns_tuner(opts, state) && opts->trunk_enable != 1 && opts->scanner_mode != 1
-           && !state->lcn_scan_resume_pending && (state->lcn_scan_paused || dsd_engine_trunk_scan_paused(state));
+    return !dsd_trunk_scan_owns_tuner(opts, state) && opts->trunk_enable != 1
+           && !dsd_channel_scan_owns_tuner(opts, state)
+           && (state->lcn_scan_paused || dsd_engine_trunk_scan_paused(state));
 }
 
 /**
@@ -5129,7 +5151,13 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     int paused = 0;
     if (dsd_trunk_scan_owns_tuner(opts, state)) {
         paused = svc_pause_trunk_scan_in_place(opts, state) == 0;
-    } else if (opts->scanner_mode == 1 || state->lcn_scan_resume_pending) {
+        if (!paused && state->trunk_scan_target_count > 0U) {
+            /* A coordinator that cannot pause (it names no target to leave) still holds the tuner: trunking stays,
+               since clearing it under the coordinator would strand a target in a followed call (B5). */
+            ui_set_toast(state, 3, "Trunk scan active: pause unavailable");
+            return UI_CMD_APPLY_FAILED;
+        }
+    } else if (dsd_channel_scan_owns_tuner(opts, state)) {
         (void)svc_pause_channel_scan(opts, state, 1);
         paused = 1;
     }
@@ -8861,6 +8889,9 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         }
         return UI_CMD_APPLY_UNSUPPORTED;
     }
+#ifdef USE_RADIO // a Signal search needs a radio build
+    ui_cmd_search_takes_back_scan_resume(opts, state, c);
+#endif
     int r = ui_cmd_dispatch_available(opts, state, c);
     if (r) {
         return r;

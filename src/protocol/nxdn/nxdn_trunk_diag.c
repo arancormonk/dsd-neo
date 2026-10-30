@@ -9,6 +9,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"

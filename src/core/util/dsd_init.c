@@ -351,7 +351,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     // rigctl options
     opts->use_rigctl = 0;
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
-    opts->rigctl_set_freq_hz = 0U;
+    opts->rigctl_sent_freq_hz = 0U;
     opts->rigctlportno = 4532; //TCP Port Number; GQRX - 7356; SDR++ - 4532
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", "localhost");
 

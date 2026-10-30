@@ -7,7 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"

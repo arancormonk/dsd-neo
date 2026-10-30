@@ -140,12 +140,13 @@ svc_disable_event_log(dsd_opts* opts) {
 static int g_trunk_pause_calls;
 static int g_trunk_resume_calls;
 static int g_trunk_resume_rc;
+static int g_trunk_pause_fails; /* a coordinator whose pause fails: it names no target to leave */
 
 int
 svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     g_trunk_pause_calls++;
-    if (state->trunk_scan_target_count == 0U) {
+    if (state->trunk_scan_target_count == 0U || g_trunk_pause_fails) {
         return -1;
     }
     state->trunk_scan_paused = 1U;
@@ -810,6 +811,16 @@ test_scanner_toggle_pauses_and_resumes(void) {
     state.trunk_scan_paused = 0U;
     rc |= expect_int("resume of a running trunk scan", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("running trunk scan toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
+    /* Final review, Minor 5: a coordinator whose pause fails is still a trunk scan, and `y` says so; it used to toast
+       the conventional scanner, which `y` never asked for here. */
+    g_trunk_pause_fails = 1;
+    rc |=
+        expect_int("y over a coordinator that cannot pause", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
+    rc |= expect_true("coordinator that cannot pause toast",
+                      strcmp(state.ui_msg, "Trunk scan active: pause unavailable") == 0);
+    rc |= expect_true("coordinator that cannot pause changes nothing",
+                      state.trunk_scan_paused == 0U && opts.scanner_mode == 0);
+    g_trunk_pause_fails = 0;
     /* No coordinator behind the flag: the toggle is refused as before. */
     state.trunk_scan_target_count = 0U;
     rc |= expect_int("y with no coordinator", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);

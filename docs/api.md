@@ -722,7 +722,9 @@ field, and the decoder refuses the rest when it applies the command.
   only tunes; the scan stays paused.
 * **`tuner_release`**: hands the tuner to the operator. Trunking (`-T`) stops; a
   running `-Y` scan or trunk scan pauses where it is (`Automatic tuning
-  paused`). A scan already paused stays paused.
+  paused`). A scan already paused stays paused. A trunk scan that cannot pause
+  keeps trunking and fails the command (`Trunk scan active: pause
+  unavailable`).
 * **`scanner_toggle`**: the terminal's `y`. A paused scan resumes; a running
   trunk scan pauses where it is (it cannot be stopped at runtime); a running
   `-Y` scan stops, and with none running `-Y` starts. A `-Y` resume still
@@ -733,9 +735,12 @@ field, and the decoder refuses the rest when it applies the command.
   scan is running`), and with nothing paused nothing starts. A resume that
   finds no row to tune, or whose tune is refused, leaves the scan paused and
   says why.
-* **`manual_tune`**: a spectrum tap. It is refused while trunking, a `-Y` scan
-  or a trunk scan owns the tuner (`status.message` says which); a paused scan
-  does not refuse it, and it leaves the scan paused.
+* **`manual_tune`**: a spectrum tap. It is refused while trunking, a running
+  `-Y` scan or a running trunk scan owns the tuner (`status.message` says
+  which); a paused scan does not refuse it, and it leaves the scan paused. A
+  `-Y` resume still waiting on its row's tune does not refuse it either: the tap
+  takes the receiver back, the scan stays paused (the toast ends `; scan
+  paused`), and the row's tune commits nothing when it lands.
 * Key words (`key_rc4des_set`, `key_hytera_set`, `key_aes_set`) are 64-bit:
   send them as `"0x..."` strings.
 

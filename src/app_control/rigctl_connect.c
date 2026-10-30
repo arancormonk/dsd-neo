@@ -47,7 +47,7 @@ svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int
         opts->rigctlportno = port;
         opts->rigctl_sockfd = DSD_INVALID_SOCKET;
         opts->use_rigctl = 0;
-        opts->rigctl_set_freq_hz = 0U;
+        opts->rigctl_sent_freq_hz = 0U;
         p25_sm_tick_guard_leave();
         return -1;
     }
@@ -71,7 +71,7 @@ svc_rigctl_connect(dsd_opts* opts, const dsd_state* state, const char* host, int
     opts->rigctl_sockfd = new_sockfd;
     opts->use_rigctl = 1;
     /* Nothing was sent on the new connection yet (issue #671): a peer on the same endpoint may have restarted. */
-    opts->rigctl_set_freq_hz = 0U;
+    opts->rigctl_sent_freq_hz = 0U;
     /* Issue #621: a peer that demodulates audio input is asked for the width the session's monitor runs, as at start. A
        new peer was asked nothing; on the same endpoint the record taken over is unconfirmed, so a restarted peer is
        asked again. The state tells a scan's request from the session's (an untyped -Y list's is the session's).

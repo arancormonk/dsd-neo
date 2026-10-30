@@ -18,7 +18,7 @@
 #include <dsd-neo/runtime/number_text.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <errno.h>
 #include <math.h>
 #include <stddef.h>

@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -904,7 +905,7 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         }
         s_backend_rigctl_moved = 1;
         opts->rtlsdr_center_freq = (uint32_t)freq;
-        opts->rigctl_set_freq_hz = (uint32_t)freq;
+        opts->rigctl_sent_freq_hz = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
             rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);

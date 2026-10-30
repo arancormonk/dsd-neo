@@ -33,7 +33,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/receive_policy.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

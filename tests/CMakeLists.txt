@@ -8111,7 +8111,10 @@ target_compile_definitions(
 )
 target_include_directories(
     dsd-neo_test_app_command_queue
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/engine
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
@@ -8220,6 +8223,7 @@ if(
             "LINKER:--wrap=dsd_app_telemetry_publish_snapshot"
             "LINKER:--wrap=dsd_app_telemetry_publish_opts_snapshot"
             "LINKER:--wrap=rtl_stream_tune_tagged"
+            "LINKER:--wrap=rtl_stream_session_generation"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

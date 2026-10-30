@@ -52,6 +52,7 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

@@ -93,7 +93,9 @@ typedef struct {
 
 static void
 fixture_begin(fixture* f) {
+    /* A record a case left goes, and its drop's report with it. */
     dsd_engine_manual_tune_supersede(f->state);
+    (void)dsd_engine_manual_tune_poll(NULL, NULL);
     DSD_MEMSET(f->opts, 0, sizeof *f->opts);
     DSD_MEMSET(f->state, 0, sizeof *f->state);
     DSD_MEMSET(g_stream_opts, 0, sizeof *g_stream_opts);
@@ -280,22 +282,96 @@ test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(fixture* f) {
                     APPLIED_HZ);
     }
     assert(f->opts->rtlsdr_center_freq == APPLIED_HZ);
+    /* A's drop is reported once, and changes nothing: B's failure already put the centre back. */
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
     assert(f->opts->rtlsdr_center_freq == APPLIED_HZ);
     fixture_end();
 }
 
 /* The stream stops with the tune queued: the stop fails it under its tag, but the session it was asked of is gone, so
-   the record is dropped and the cached centre stays for the next stream to open on. */
+   the record is dropped, and the poll reports the drop once (never a failure: no toast), with what the tune was for.
+   The cached centre stays for the next stream to open on. */
 static void
 test_stream_stop_drops_the_record(fixture* f) {
     fixture_begin(f);
     (void)enter_frequency(f, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_stop() == 1);
-    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    /* The stop's failure ends a reception as any failure does; the poll then reads the session the stop moved first
+       (the completion before the session), so it reports the drop, not a failed tune. */
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    dsd_manual_tune_settled settled;
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_ENTRY && settled.requested_hz == ENTRY_A_HZ);
     assert(f->opts->rtlsdr_center_freq == ENTRY_A_HZ);
     assert(f->state->ui_msg[0] == '\0');
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    fixture_end();
+}
+
+/* Final review, Important 1: another tune of the receiver supersedes the noted one, and the poll reports the drop
+   once, with what the tune was for (an untyped -Y step's row, a resume's), so its owner settles it; before, the record
+   went silently and a resume waiting on the row waited for good. Its late completion then changes nothing. A newer
+   tune noted in its place owns the receiver: the older one's drop is not reported. */
+static void
+test_superseded_record_reports_its_drop(fixture* f) {
+    fixture_begin(f);
+    const uint64_t id = enter_frequency(f, ENTRY_A_HZ);
+    take_request(id, ENTRY_A_HZ);
+    dsd_engine_manual_tune_supersede(f->state);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    dsd_manual_tune_settled settled;
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_ENTRY && settled.requested_hz == ENTRY_A_HZ && settled.row == -1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    dsd_engine_manual_tune_supersede(f->state); /* nothing noted: nothing to drop */
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ) == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    assert(f->opts->rtlsdr_center_freq == ENTRY_A_HZ && f->state->ui_msg[0] == '\0');
+    fixture_end();
+
+    fixture_begin(f);
+    (void)enter_frequency(f, ENTRY_A_HZ);
+    const uint64_t id_b = enter_frequency(f, ENTRY_B_HZ); /* supersedes A, then is noted itself */
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    take_request(id_b, ENTRY_B_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_B_HZ) == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
+    fixture_end();
+}
+
+/* Final review, Important 2: the synced-frames loop ends a reception on any completion the next poll acts on -- a late
+   failure of any tune, an untyped step's landing -- and on nothing else: an entry's landing changes nothing the decoder
+   names. */
+static void
+test_settled_ready_names_what_the_poll_acts_on(fixture* f) {
+    fixture_begin(f);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+    uint64_t id = enter_frequency(f, ENTRY_A_HZ);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+    take_request(id, ENTRY_A_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ) == 0);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_FAILED);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+
+    id = enter_frequency(f, ENTRY_B_HZ);
+    take_request(id, ENTRY_B_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_B_HZ) == 0);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
+
+    /* An untyped -Y step's landing commits its row. */
+    const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
+    id = 0U;
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_UNTYPED_STEP, id, ENTRY_A_HZ, prior_hz, 0, 1U, 1U);
+    take_request(id, ENTRY_A_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
     fixture_end();
 }
 
@@ -344,6 +420,8 @@ main(void) {
     test_second_entry_coalesces_into_a_queued_one(&f);
     test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(&f);
     test_stream_stop_drops_the_record(&f);
+    test_superseded_record_reports_its_drop(&f);
+    test_settled_ready_names_what_the_poll_acts_on(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
 
     rtl_stream_register_tune_completion_callback(NULL, NULL);

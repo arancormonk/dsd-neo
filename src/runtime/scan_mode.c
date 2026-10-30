@@ -22,7 +22,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

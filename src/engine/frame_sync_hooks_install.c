@@ -21,6 +21,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"

@@ -687,7 +687,8 @@ void svc_note_analog_width_change(const dsd_opts* opts, const dsd_state* state, 
  * @return As dsd_engine_channel_scan_leave(): 1 queued, -1 refused at once, 0 nothing asked of the monitor.
  *
  * A stop ends a paused -Y scan too (issue #671): it clears dsd_state::lcn_scan_paused and a resume still pending, and
- * leaves dsd_state::operator_tuned alone, since the tuner stays with the operator.
+ * leaves dsd_state::operator_tuned alone, since the tuner stays with the operator. A paused list was already left, so
+ * the manual session it stops goes on: no call ends and the monitor is asked for nothing.
  */
 int svc_leave_channel_scan(dsd_opts* opts, dsd_state* state);
 

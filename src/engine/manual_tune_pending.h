@@ -28,14 +28,17 @@ typedef struct {
     uint64_t map_seq;
 } dsd_manual_tune_settled;
 
-/* The record the last dsd_engine_manual_tune_poll() that returned DSD_MANUAL_TUNE_LANDED or DSD_MANUAL_TUNE_FAILED took,
-   for the caller to settle what the tune was for (an untyped -Y step's row). Decoder thread. */
+/* The record the last dsd_engine_manual_tune_poll() that returned DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or
+   DSD_MANUAL_TUNE_DROPPED took, for the caller to settle what the tune was for (an untyped -Y step's row). Decoder
+   thread. */
 void dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out);
 
-/* Whether a tune of @p kind is noted and its completion has come as a landing, which the next
-   dsd_engine_manual_tune_poll() will take: the synced-frames loop ends a reception on it, so an untyped -Y row commits
-   before more of its frames decode. One atomic load while nothing is noted. Decoder thread. */
-int dsd_engine_manual_tune_landed(dsd_manual_tune_kind kind);
+/* Whether the noted tune's completion has come, and the next dsd_engine_manual_tune_poll() will act on it: a failure of
+   any tune (the cached centre goes back, an entry's toast) or an untyped -Y step's landing (its row commits). The
+   synced-frames loop ends a reception on it, so a frame decoded after it is never named after a frequency the receiver
+   did not reach, nor after the row left. An entry's landing changes nothing the decoder names, so it ends nothing. One
+   atomic load while nothing is noted. Decoder thread. */
+int dsd_engine_manual_tune_settled_ready(void);
 
 /* Store the completion of the manual tune @p id (an rtl_stream_tune_result) for the decoder's next poll. Called on
    the RTL controller thread, or on the thread stopping the stream; never blocks. */

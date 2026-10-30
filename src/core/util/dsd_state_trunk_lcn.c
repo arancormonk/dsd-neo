@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

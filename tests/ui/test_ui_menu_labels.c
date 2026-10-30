@@ -1161,7 +1161,7 @@ test_input_freq_label(void) {
     opts.use_rigctl = 1;
     opts.rigctl_sockfd = (dsd_socket_t)5;
     rc |= expect_str("rigctl frequency nothing sent", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [-]");
-    opts.rigctl_set_freq_hz = 146520000U;
+    opts.rigctl_sent_freq_hz = 146520000U;
     rc |= expect_str("rigctl frequency last sent", lbl_input_freq(&ctx, b, sizeof(b)), "Frequency... [146.520000 MHz]");
     /* A dropped peer was sent nothing this row can tune again. */
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;

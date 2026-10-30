@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -665,6 +666,17 @@ resume_failures_stay_paused(void) {
     dsd_state_set_trunk_chan_freq(&g_state, 0x1234, k_p25_vc_hz);
     int rc = expect(run_action(DSD_APP_CMD_SCANNER_TOGGLE) == 1 && toast_is("Trunk scan paused"), "y pauses");
     rc |= expect(g_state.p2_wacn == 0U && g_state.trunk_chan_map[0x1234] == 0, "the pause leaves no target table live");
+    /* The configured modulation the pause put back (final review, Minor 9): a refused resume's rollback leaves the
+       target's scope, which must bring back exactly these, never the target's. An operator's modulation lock made
+       while paused is the configured one now. */
+    g_opts.mod_c4fm = 0;
+    g_opts.mod_qpsk = 1;
+    g_opts.mod_gfsk = 0;
+    g_opts.mod_cli_lock = 1;
+    const int mod_c4fm = g_opts.mod_c4fm;
+    const int mod_qpsk = g_opts.mod_qpsk;
+    const int mod_gfsk = g_opts.mod_gfsk;
+    const int mod_cli_lock = g_opts.mod_cli_lock;
     /* What the manual carrier decoded since. */
     g_state.p2_wacn = 0xCAFE1;
     int tunes = g_cc_tunes;
@@ -677,6 +689,9 @@ resume_failures_stay_paused(void) {
     rc |= expect_paused("refused retune");
     rc |= expect(g_state.p2_wacn == 0xCAFE1 && g_state.trunk_chan_map[0x1234] == 0,
                  "the manual session's state is back, the target's tables are not live");
+    rc |= expect(g_opts.mod_c4fm == mod_c4fm && g_opts.mod_qpsk == mod_qpsk && g_opts.mod_gfsk == mod_gfsk
+                     && g_opts.mod_cli_lock == mod_cli_lock,
+                 "the refused retune's rollback keeps the configured modulation");
     rc |= expect(frames_current(), "the refused park holds no frames back");
     tunes = g_cc_tunes;
     trunk_scan_test_set_now(30.0);
@@ -701,6 +716,9 @@ resume_failures_stay_paused(void) {
     dsd_key_set_test_alloc_fail_after(-1);
     rc |= expect(g_cc_tunes == tunes, "the failed preparation tuned nothing");
     rc |= expect_paused("failed preparation");
+    rc |= expect(g_opts.mod_c4fm == mod_c4fm && g_opts.mod_qpsk == mod_qpsk && g_opts.mod_gfsk == mod_gfsk
+                     && g_opts.mod_cli_lock == mod_cli_lock,
+                 "the failed preparation keeps the configured modulation");
     trunk_scan_test_set_now(60.0);
     dsd_engine_trunk_scan_tick(&g_opts, &g_state);
     p25_sm_try_tick(&g_opts, &g_state);

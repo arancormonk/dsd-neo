@@ -40,8 +40,8 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -215,7 +215,7 @@ static int channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row);
 /* A resume still pending (issue #671) owns its row as a running scan does: only its landing publishes the scan. */
 static int
 channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
-    return (opts->scanner_mode == 1 || state->lcn_scan_resume_pending) && opts->trunk_scan_enabled != 1
+    return dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1
            && scan->map_sequence == state->trunk_chan_map_seq;
 }
 
@@ -1236,12 +1236,17 @@ dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
 
 /* The -Y scan's leave (@p keep 0) and pause (@p keep 1, issue #671). Every end of a scan moves the session, so a row
    tune still pending from it never commits its row afterwards. A pause ends the calls whatever the list (an untyped one
-   has no scope, F3); a leave ends them only where a scan is active, as it always has. */
+   has no scope, F3); a leave ends them only where a scan is active, as it always has. A paused list (no resume pending)
+   was already left by its pause, which kept only its list state: its leave drops that and leaves the manual session
+   alone, so a stop over a pause ends no call, resets no acquisition and asks the monitor for nothing. */
 static int
 channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     state->lcn_scan_session++;
     channel_scan* scan = channel_scan_get(state);
-    const int active = scan != NULL || dsd_scan_mode_configured_view(state) != NULL || dsd_scan_mode_updating(state);
+    const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
+    const int active =
+        !already_left
+        && (scan != NULL || dsd_scan_mode_configured_view(state) != NULL || dsd_scan_mode_updating(state));
     if (active || keep) {
         channel_scan_end_calls(opts, state);
     }
@@ -1283,7 +1288,7 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
 
 int
 dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
-    if (!opts || !state || (opts->scanner_mode != 1 && !state->lcn_scan_resume_pending)) {
+    if (!dsd_channel_scan_owns_tuner(opts, state)) {
         return 0;
     }
     /* The calls end under the row on air, still named and keyed (F3); the configured keys come back after them. */

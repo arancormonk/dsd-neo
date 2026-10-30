@@ -1085,7 +1085,7 @@ io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq
     if (opts->use_rigctl == 1) {
         rc = set_rigctl_frequency(opts, state, freq_hz);
         if (rc == 0) {
-            opts->rigctl_set_freq_hz = freq_hz;
+            opts->rigctl_sent_freq_hz = freq_hz;
         }
 #ifdef USE_RADIO
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {

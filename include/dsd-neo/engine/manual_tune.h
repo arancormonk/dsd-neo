@@ -11,7 +11,9 @@
  * and reports its completion later. The decoder notes one such tune at a time, and its loop polls for the completion
  * while one is noted. A late failure puts the cached tuner frequency back on the centre the stream applied, so the
  * decoder never goes on naming a frequency the receiver did not reach. Any newer tune of the receiver, and a stream
- * stop or open, supersedes the noted tune, so an old completion never overwrites a newer state. Decoder thread only.
+ * stop or open, drops the noted tune, so an old completion never overwrites a newer state; the next poll reports the
+ * drop, so what the tune was for (an untyped -Y step's row, a resume's) is settled, never left waiting. Decoder thread
+ * only.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_ENGINE_MANUAL_TUNE_H
@@ -30,9 +32,10 @@ typedef enum { DSD_MANUAL_TUNE_ENTRY = 1, DSD_MANUAL_TUNE_UNTYPED_STEP = 2 } dsd
 
 /** dsd_engine_manual_tune_poll() results. */
 enum {
-    DSD_MANUAL_TUNE_NONE = 0,   /**< Nothing noted, or no completion for it yet. */
-    DSD_MANUAL_TUNE_LANDED = 1, /**< The noted tune landed; the record is gone. */
-    DSD_MANUAL_TUNE_FAILED = 2, /**< The noted tune failed; the record is gone, the cached centre put back. */
+    DSD_MANUAL_TUNE_NONE = 0,    /**< Nothing noted, or no completion for it yet. */
+    DSD_MANUAL_TUNE_LANDED = 1,  /**< The noted tune landed; the record is gone. */
+    DSD_MANUAL_TUNE_FAILED = 2,  /**< The noted tune failed; the record is gone, the cached centre put back. */
+    DSD_MANUAL_TUNE_DROPPED = 3, /**< The noted tune was superseded, or its stream session ended; the record is gone. */
 };
 
 /**
@@ -52,8 +55,9 @@ void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind 
                                          uint32_t scan_session, uint64_t map_seq);
 
 /**
- * @brief Forget the noted tune: another tune of the receiver, a stream reopen, a scan pause or stop, or a list
- * replacement now decides where the receiver is.
+ * @brief Drop the noted tune: another tune of the receiver now decides where the receiver is. The next
+ * dsd_engine_manual_tune_poll() reports the drop (DSD_MANUAL_TUNE_DROPPED), unless a newer tune is noted first, which
+ * then owns the receiver. Nothing when no tune is noted.
  */
 void dsd_engine_manual_tune_supersede(dsd_state* state);
 
@@ -61,12 +65,13 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  * @brief Take the noted tune's completion, if it has come.
  *
  * Costs one atomic load while nothing is noted. A record whose stream session has ended (rtl_stream_session_generation())
- * is dropped. On a failure, @p opts->rtlsdr_center_freq goes back to the centre the stream last applied (or the prior
- * one noted), and for an entry a toast names the frequency that failed. An untyped -Y step's failure is not toasted:
- * the scan retries the row, as after a step that failed in its wait, and the engine's loop settles the row
- * (dsd_engine_scan_untyped_poll()).
+ * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
+ * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
+ * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
+ * An untyped -Y step's failure is not toasted: the scan retries the row, as after a step that failed in its wait, and
+ * the engine's loop settles the row (dsd_engine_scan_untyped_poll()).
  *
- * @return DSD_MANUAL_TUNE_NONE, DSD_MANUAL_TUNE_LANDED or DSD_MANUAL_TUNE_FAILED.
+ * @return DSD_MANUAL_TUNE_NONE, DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or DSD_MANUAL_TUNE_DROPPED.
  */
 int dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state);
 

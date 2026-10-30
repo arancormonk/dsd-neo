@@ -1869,7 +1869,9 @@ is delayed.
   for `y` (Qt/Android **Resume scan**, the API's `scan_resume`), which carries on with the row the scan would have
   stepped to next (`Scan resumed`, or `Resuming scan: waiting for the tune` until that row's tune lands; calls heard
   meanwhile stay the operator's). A resume with no row to tune, or whose tune fails, leaves the scan paused and says
-  why. While paused, another entry or a spectrum tap only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused:
+  why. While a resume waits on its row, a frequency entry, a spectrum tap or a Signal search start takes the receiver
+  back and the scan stays paused (`; scan paused`); a stream reopen that drops the row's tune does the same, saying
+  `Scan stays paused: tune to ... failed`. While paused, another entry or a spectrum tap only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused:
   resume it first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference
   import that replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
   the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`

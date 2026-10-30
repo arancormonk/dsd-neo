@@ -54,6 +54,7 @@
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>

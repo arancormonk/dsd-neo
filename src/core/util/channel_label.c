@@ -11,7 +11,7 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 
 #include <stddef.h>
 

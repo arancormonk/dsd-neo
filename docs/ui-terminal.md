@@ -358,10 +358,10 @@ stop, and the message says so). From an audio input, a radio that does not start
   when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream); a capture recorded under another name
   reopens as PCM audio.
 
-While a `-Y` scan with rows runs, or a `--trunk-scan` has targets (running or paused), the audio-input switches and
-`Stop replay` are refused with `Unsupported: stop the scan first`: the scan's saved timing belongs to the running input.
-A paused `-Y` scan does not refuse them: a switch that runs stops it, and one that is refused or rolled back to the
-input that ran leaves it paused. The M17 IP frame receiver, the M17 encoders and MBE playback read no switched input, so
+While a `-Y` scan with rows runs, or a `--trunk-scan` has targets (running or paused), every switch (the audio inputs,
+the radio rows `RTL-SDR` and `Airspy R2 / Mini`, and `Stop replay`) is refused with `Unsupported: stop the scan first`:
+the scan's saved timing belongs to the running input. A paused `-Y` scan does not refuse them: a switch that runs stops
+it, and one that is refused or rolled back to the input that ran leaves it paused. The M17 IP frame receiver, the M17 encoders and MBE playback read no switched input, so
 they refuse every switch.
 
 While a UDP sender is silent, a menu command is applied once the silence has lasted about half a second. A TCP server
@@ -401,8 +401,8 @@ A refused entry reopens the prompt with the text typed and the reason inside it,
 `Enter` on an empty field, cancels. The toast names the frequency in MHz: `Applied: frequency -> 851.012500 MHz`
 names the frequency the receiver took, `Accepted: frequency -> 851.012500 MHz (pending)` one still being applied,
 `Deferred; retry: frequency -> ...` one the receiver could not take yet (retry it), and `Failed: ...` one that did
-not tune; `; scan paused` follows a tune that paused a running scan. A manual tune from Qt/Android or the control API
-(`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding 769.768750 MHz (1 avoided)`) name their frequency
+not tune; `; scan paused` follows a tune that paused a running scan, or took back a `-Y` resume still waiting on its
+row. A manual tune from Qt/Android or the control API (`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding 769.768750 MHz (1 avoided)`) name their frequency
 the same way. During single-system P25 trunking the entry selects a new control channel
 (`Applied: P25 control channel -> 851.012500 MHz`; see "Trunking & Scanning" in `docs/cli.md`).
 

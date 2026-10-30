@@ -470,22 +470,29 @@ symbol_profile_scan_release_record(const dsd_opts* opts, int running, int earlie
 }
 #endif
 
-int
-svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
-    /* A stop ends a paused scan as well, and a resume waiting on its row (issue #671); the tuner stays the
-       operator's. */
+/* A stop ends a paused scan as well, and a resume waiting on its row (issue #671); the tuner stays the operator's.
+   After the engine's leave, which tells a pause (already left) from a scan still in force by them. */
+static void
+symbol_profile_scan_leave_ends_pause(dsd_state* state) {
     if (state) {
         state->lcn_scan_paused = 0U;
         state->lcn_scan_resume_pending = 0U;
     }
+}
+
+int
+svc_leave_channel_scan(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     int earlier_not_run = 0;
     const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
     const int result = dsd_engine_channel_scan_leave(opts, state);
+    symbol_profile_scan_leave_ends_pause(state);
     symbol_profile_scan_release_record(opts, running, earlier_not_run, result);
     return result;
 #else
-    return dsd_engine_channel_scan_leave(opts, state);
+    const int result = dsd_engine_channel_scan_leave(opts, state);
+    symbol_profile_scan_leave_ends_pause(state);
+    return result;
 #endif
 }
 

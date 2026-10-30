@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
+#include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -79,6 +80,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -109,7 +111,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/engine/manual_tune.h"
 #include "dsd-neo/runtime/config.h"
+#include "manual_tune_pending.h"
+#include "scan_step_untyped.h"
 #include "services.h"
 #include "test_support.h"
 
@@ -2590,6 +2595,37 @@ test_retune_commands_clear_received_tone(void) {
  * unconditional clear of both, safe to repeat, and it has to leave behind a
  * decoder that can be tuned by hand.
  */
+/* Final review, Minor 5: trunk scan with a coordinator published (targets counted) whose pause fails, as one naming no
+   target to leave would: the release keeps trunking, since clearing it under the coordinator strands a target in a
+   followed call (B5), and says why. It used to fall through to the plain release, clearing trunking under the flag and
+   toasting "Automatic tuning stopped". */
+static int
+test_tuner_release_keeps_trunking_when_a_trunk_scan_cannot_pause(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_enable = 1;
+    state.trunk_scan_target_count = 2U; /* no coordinator behind it: dsd_engine_trunk_scan_pause_ex_locked() fails */
+    state.ui_msg[0] = '\0';
+    int rc = expect_int("release over an unpausable trunk scan queued",
+                        dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release over an unpausable trunk scan drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release over an unpausable trunk scan keeps trunking", opts.trunk_enable, 1);
+    rc |= expect_str("release over an unpausable trunk scan says why", state.ui_msg,
+                     "Trunk scan active: pause unavailable");
+    rc |= expect_int("release over an unpausable trunk scan fails", dsd_app_command_test_last_failed(), 1);
+    /* With no coordinator published, the flag alone holds nothing: the release clears trunking as before. */
+    state.trunk_scan_target_count = 0U;
+    rc |= expect_int("release with the flag alone queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release with the flag alone drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release with the flag alone clears trunking", opts.trunk_enable, 0);
+    opts.trunk_scan_enabled = 0;
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_tuner_release(void) {
     int rc = 0;
@@ -8906,10 +8942,27 @@ __wrap_rtl_stream_replay_checkpoint(dsd_iq_replay_checkpoint* out) {
     return 0;
 }
 
+/* The stream session (rtl_stream_session_generation(), issue #671), which a stop ends as the real one does, and the
+   ledger request a stop fails with it (0: none), as the real one fails the retune it had queued. */
+static uint32_t g_fake_session_generation;
+static uint64_t g_fake_stop_fails_request;
+
+uint32_t __wrap_rtl_stream_session_generation(void);
+
+uint32_t
+__wrap_rtl_stream_session_generation(void) {
+    return g_fake_session_generation;
+}
+
 /* A restart stops and destroys the running context, which the tests fake with a pointer to their own storage. */
 int
 __wrap_rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
+    g_fake_session_generation++;
+    if (g_fake_stop_fails_request != 0U) {
+        dsd_trunk_tuning_request_publish(g_fake_stop_fails_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        g_fake_stop_fails_request = 0U;
+    }
     return 0;
 }
 
@@ -9056,8 +9109,17 @@ __wrap_p25_sm_tick_guard_try_enter(void) {
     return entered;
 }
 
+/* A blocking enter by the thread that already holds the guard: the real guard is not re-entrant, so that enter would
+   spin for good. Counted and stepped over instead, so the case fails rather than hangs; main() asserts none. */
+static int g_guard_reentries;
+
 void
 __wrap_p25_sm_tick_guard_enter(void) {
+    if (p25_sm_tick_guard_held_by_caller()) {
+        ++g_guard_reentries;
+        DSD_FPRINTF(stderr, "p25_sm_tick_guard_enter() re-entered by its holder\n");
+        return;
+    }
     __real_p25_sm_tick_guard_enter();
     if (g_guard_probe_opts) {
         if (g_guard_probe_publishing) {
@@ -9087,6 +9149,7 @@ __wrap_p25_sm_tick_guard_leave(void) {
 static int g_rtl_tune_tagged_scripted;
 static int g_rtl_tune_tagged_answer;
 static uint64_t g_rtl_tune_tagged_id;
+static int g_rtl_tune_tagged_guarded; /* the scripted tune ran under the P25 SM tick guard its caller held */
 
 int __real_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
 int __wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
@@ -9097,6 +9160,7 @@ __wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint6
         return __real_rtl_stream_tune_tagged(ctx, center_freq_hz, request_id);
     }
     g_rtl_tune_tagged_id = request_id;
+    g_rtl_tune_tagged_guarded = p25_sm_tick_guard_held_by_caller();
     return g_rtl_tune_tagged_answer;
 }
 
@@ -9699,24 +9763,27 @@ test_squelch_commands_edit_the_configured_default(void) {
     rc |= expect_squelch_db("airspy edit keeps the default", configured_squelch(&state), -70.0);
     rc |= expect_squelch_db("airspy edit demod level", g_cmd_squelch_pushed, -60.0);
 
-    /* Enabling an input does not rewrite the squelch either: the stream it opens starts on the
-     * row's level, the one in force, and the default stays put. The Airspy enable rewrites the
-     * device spec first, so it gets its own step. */
+    /* Enabling an input under the row neither rewrites the squelch nor runs at all: a scan in force refuses Input >
+     * Switch source, the radio rows as the PCM rows (issue #671, as #634), so nothing opens and the row's level and the
+     * default stay put. The Airspy enable rewrites the device spec first, so it gets its own step. */
     g_config_rtl_creates = 0;
+    state.ui_msg[0] = '\0';
     rc |= expect_true("airspy enable input queued", post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT) > 0);
     rc |= expect_int("airspy enable input drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("airspy enable input selects the Airspy", opts.audio_in_dev, "airspy");
-    rc |= expect_true("airspy enable input opened a stream", g_config_rtl_creates >= 1);
-    rc |= expect_squelch_db("airspy enable input opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_str("airspy enable input refused under the row", state.ui_msg, "Unsupported: stop the scan first");
+    rc |= expect_str("airspy enable input keeps the device", opts.audio_in_dev, "airspy");
+    rc |= expect_int("airspy enable input opened nothing", g_config_rtl_creates, 0);
     rc |= expect_squelch_db("airspy enable input keeps the row", opts.rtl_squelch_level, -60.0);
     rc |= expect_squelch_db("airspy enable input keeps the default", configured_squelch(&state), -70.0);
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851375000:22:0:24:-70:2");
     g_config_rtl_creates = 0;
+    state.ui_msg[0] = '\0';
     rc |= expect_true("enable input queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT) > 0);
     rc |= expect_int("enable input drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("enable input opened a stream", g_config_rtl_creates >= 1);
-    rc |= expect_squelch_db("enable input opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_str("enable input refused under the row", state.ui_msg, "Unsupported: stop the scan first");
+    rc |= expect_int("enable input opened nothing", g_config_rtl_creates, 0);
+    rc |= expect_squelch_db("enable input keeps the row", opts.rtl_squelch_level, -60.0);
     rc |= expect_squelch_db("enable input keeps the default", configured_squelch(&state), -70.0);
 
     /* CONFIG_APPLY pushes its own default while suspended; the row's level comes back after. */
@@ -15862,6 +15929,253 @@ test_scan_pause_and_refused_resume_return_to_the_monitor(void) {
     return rc;
 }
 
+#if defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
+static void seed_running_list(dsd_opts* opts, dsd_state* state);
+static int drain_action(dsd_opts* opts, dsd_state* state, int id, const char* label);
+
+/* What takes the receiver from a -Y resume still waiting on its row (issue #671), each through the command queue. */
+enum { PENDING_TAKEN_BY_TAP = 0, PENDING_TAKEN_BY_SEARCH = 1, PENDING_TAKEN_BY_REOPEN = 2 };
+
+static const char*
+pending_taker_name(int taker) {
+    return taker == PENDING_TAKEN_BY_TAP ? "tap" : (taker == PENDING_TAKEN_BY_SEARCH ? "search" : "reopen");
+}
+
+/* A spectrum tap, a Signal search start (refused here: no live SDR, after it took the receiver), or an explicit stream
+   restart, drained as the decoder drains them. */
+static int
+drain_pending_taker(dsd_opts* opts, dsd_state* state, int taker, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = 0;
+    if (taker == PENDING_TAKEN_BY_TAP) {
+        reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+        rc |= expect_int(label, dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 862000000U),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+    } else if (taker == PENDING_TAKEN_BY_SEARCH) {
+        dsd_signal_search_config config;
+        DSD_MEMSET(&config, 0, sizeof config);
+        config.session_id = 9U;
+        rc |= expect_int(label, dsd_app_signal_search_start(&config), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    } else {
+        reset_config_rtl_wrap();
+        g_config_rtl_open_ok = 1;
+        rc |= expect_int(label, post_empty(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    }
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    if (taker == PENDING_TAKEN_BY_REOPEN) {
+        rc |= expect_str(label, state->ui_msg, "Applied: RTL stream restarted");
+        rc |= expect_int(label, g_config_rtl_creates == 1 && state->rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx, 1);
+    }
+    return rc;
+}
+
+/* Final review, Minor 2: a stop of a typed list already paused (a config apply with the scanner off, an import, an
+   input switch) leaves the manual session it stops: the call heard on the operator's frequency goes on, and nothing is
+   asked of the monitor, which the pause already put back. The list state the pause kept goes. Before, the kept list
+   read as a scan in force, so the stop ended that call and asked the configured monitor again. */
+static int
+expect_stop_leaves_the_manual_session(const char* label, dsd_opts* opts, dsd_state* state) {
+    const dsd_call_observation heard = {.protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+    int rc = expect_int(label, dsd_call_state_observe(state, &heard, DSD_CALL_BOUNDARY_BEGIN), 1);
+    rc |= expect_int(label, dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN) != NULL, 1);
+    const int requests = g_analog_req_calls;
+    (void)svc_leave_channel_scan(opts, state);
+    dsd_call_snapshot call;
+    rc |= expect_int(label, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int(label, g_analog_req_calls, requests);
+    rc |= expect_int(label,
+                     state->lcn_scan_paused == 0 && state->lcn_scan_resume_pending == 0
+                         && dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN) == NULL,
+                     1);
+    return rc;
+}
+
+/* The scan is paused again, nothing pending, the tuner the operator's, and the row's late landing commits nothing. */
+static int
+expect_pending_resume_settled_paused(const char* label, const dsd_opts* opts, const dsd_state* state) {
+    return expect_int(label,
+                      opts->scanner_mode == 0 && state->lcn_scan_paused == 1 && state->lcn_scan_resume_pending == 0
+                          && state->operator_tuned == 1,
+                      1);
+}
+
+/*
+ * Issue #671 (final review, Important 1): a -Y resume whose row tune timed out leaves scanner_mode 0 while it waits,
+ * and every tune of the receiver meanwhile, or a stream reopen, takes the row from it. A spectrum tap and a Signal
+ * search start now take the resume back through the frequency entry's pause; a reopen drops the row's tune, and the
+ * engine loop's poll settles the resume. Either way the scan is paused again, and the row's late landing commits
+ * nothing. On the branch before the fix an untyped list stayed "resuming" for good (the tap superseded the row's
+ * record, a reopen dropped it, and nothing settled the resume), and a typed one committed its row, published as
+ * running, while the receiver sat on the tap's frequency.
+ */
+static int
+test_pending_resume_taken_back(int typed, int taker) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    char label[64];
+    DSD_SNPRINTF(label, sizeof label, "%s pending resume, %s", typed ? "typed" : "untyped", pending_taker_name(taker));
+    int rc = 0;
+    if (typed) {
+        rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 0,
+                                      DSD_SCAN_MODE_NXDN48, NULL, label);
+        state.lcn_freq_count = 1;
+        *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+        rc |= expect_int(label, dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    } else {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        seed_running_list(&opts, &state);
+    }
+    rc |= expect_int(label, svc_pause_channel_scan(&opts, &state, 1) >= 0 && state.lcn_scan_paused == 1, 1);
+    /* The resume's row tune times out: the row waits on it, scanner_mode 0. */
+    g_rtl_tune_tagged_scripted = 1;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_TIMEOUT;
+    p25_sm_tick_guard_enter();
+    rc |= expect_int(label, svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_PENDING);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_tagged_scripted = 0;
+    const uint64_t row_request = g_rtl_tune_tagged_id;
+    rc |= expect_int(label, opts.scanner_mode == 0 && state.lcn_scan_resume_pending == 1 && row_request != 0U, 1);
+
+    if (taker == PENDING_TAKEN_BY_REOPEN && typed) {
+        g_fake_stop_fails_request = row_request; /* the ledger request the stop fails, as the real stop does */
+    }
+    rc |= drain_pending_taker(&opts, &state, taker, label);
+    if (taker == PENDING_TAKEN_BY_TAP) {
+        rc |= expect_str(label, state.ui_msg, "Applied: tuned -> 862.000000 MHz; scan paused");
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+    } else if (taker == PENDING_TAKEN_BY_SEARCH) {
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+    } else {
+        /* The reopen dropped the row's tune; the engine loop's next pass settles the resume. */
+        if (typed) {
+            (void)dsd_engine_channel_scan_pending(&opts, &state);
+        } else {
+            rc |= expect_int(label, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_DROPPED);
+        }
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "Scan stays paused: tune to %s MHz failed",
+                     typed ? "851.375000" : "853.375000");
+        rc |= expect_str(label, state.ui_msg, want);
+    }
+
+    /* The row's tune lands late: nothing commits, the scan stays paused. */
+    if (typed) {
+        dsd_trunk_tuning_request_publish(row_request, DSD_TRUNK_TUNE_RESULT_OK);
+        (void)dsd_engine_channel_scan_pending(&opts, &state);
+        rc |= expect_int(label, dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+    } else {
+        dsd_engine_manual_tune_completion(row_request, RTL_STREAM_TUNE_OK);
+        (void)dsd_engine_scan_untyped_poll(&opts, &state);
+        (void)dsd_engine_scan_untyped_poll(&opts, &state);
+    }
+    rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+    rc |= expect_int(label, state.lcn_freq_roll == (typed ? 0 : 2), 1);
+    if (typed) {
+        rc |= expect_stop_leaves_the_manual_session(label, &opts, &state);
+    }
+    g_fake_stop_fails_request = 0U;
+    reset_config_rtl_wrap();
+    if (typed) {
+        finish_scan_row_on_analog(&opts, &state);
+    } else {
+        (void)svc_leave_channel_scan(&opts, &state);
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* SCAN_RESUME through the drain, as `y` or Resume scan submits it, and the toast it leaves. */
+static int
+drain_scan_resume(dsd_opts* opts, dsd_state* state, const char* toast, const char* label) {
+    state->ui_msg[0] = '\0';
+    int rc = expect_int(label, dsd_app_command_action(DSD_APP_CMD_SCAN_RESUME), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int(label, dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str(label, state->ui_msg, toast);
+    return rc;
+}
+
+/*
+ * Final review, Minor 8: a typed -Y resume under the real, non-reentrant P25 SM tick guard. SCAN_RESUME is a guarded
+ * command, so the drain holds the guard through the row's whole start: its scope, its ledger tune with the RTL wait,
+ * its keys and, when the tune lands at once, its commit. Nothing under it may take the guard again (a re-entry would
+ * spin for good; the guard wrap counts one instead). Here the row lands at once, is refused, and times out, whose
+ * landing the engine loop's pass then commits outside the guard.
+ */
+static int
+test_typed_resume_under_the_real_tick_guard(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    const char* label = "typed resume under the guard";
+    int rc = init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 0,
+                                     DSD_SCAN_MODE_NXDN48, NULL, label);
+    state.lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+    rc |= expect_int(label, dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    const int reentries = g_guard_reentries;
+
+    static const struct {
+        int answer;
+        const char* toast;
+        const char* stage;
+    } k_legs[] = {
+        {RTL_STREAM_TUNE_OK, "Scan resumed", "lands at once"},
+        {RTL_STREAM_TUNE_FAILED, "Scan stays paused: tune to 851.375000 MHz failed", "refused"},
+        {RTL_STREAM_TUNE_TIMEOUT, "Resuming scan: waiting for the tune", "pending"},
+    };
+
+    for (size_t i = 0; i < sizeof k_legs / sizeof k_legs[0]; i++) {
+        char stage[96];
+        DSD_SNPRINTF(stage, sizeof stage, "%s: %s", label, k_legs[i].stage);
+        if (!state.lcn_scan_paused) {
+            rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, stage);
+        }
+        rc |= expect_int(stage, opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+        g_rtl_tune_tagged_scripted = 1;
+        g_rtl_tune_tagged_answer = k_legs[i].answer;
+        g_rtl_tune_tagged_guarded = 0;
+        rc |= drain_scan_resume(&opts, &state, k_legs[i].toast, stage);
+        g_rtl_tune_tagged_scripted = 0;
+        rc |= expect_int(stage, g_rtl_tune_tagged_guarded, 1); /* the row's tune ran under the drain's hold */
+        rc |= expect_int(stage, g_guard_reentries, reentries);
+        rc |= expect_int(stage, p25_sm_tick_guard_held_by_caller(), 0);
+        if (k_legs[i].answer == RTL_STREAM_TUNE_FAILED) {
+            rc |= expect_int(stage, opts.scanner_mode == 0 && state.lcn_scan_paused == 1, 1);
+            continue;
+        }
+        if (k_legs[i].answer == RTL_STREAM_TUNE_TIMEOUT) {
+            rc |= expect_int(stage, opts.scanner_mode == 0 && state.lcn_scan_resume_pending == 1, 1);
+            dsd_trunk_tuning_request_publish(g_rtl_tune_tagged_id, DSD_TRUNK_TUNE_RESULT_OK);
+            (void)dsd_engine_channel_scan_pending(&opts, &state);
+        }
+        rc |= expect_int(stage,
+                         opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                             && dsd_scan_mode_active(&state) == DSD_SCAN_MODE_DMR,
+                         1);
+    }
+    (void)svc_leave_channel_scan(&opts, &state);
+    finish_scan_row_on_analog(&opts, &state);
+    return rc;
+}
+
+static int
+test_pending_resume_taken_back_by_tap_search_and_reopen(void) {
+    int rc = 0;
+    for (int typed = 0; typed <= 1; typed++) {
+        for (int taker = PENDING_TAKEN_BY_TAP; taker <= PENDING_TAKEN_BY_REOPEN; taker++) {
+            rc |= test_pending_resume_taken_back(typed, taker);
+        }
+    }
+    return rc;
+}
+#endif
+
 /*
  * Issue #671: a stream restart while a -Y scan is paused (an rtl_tcp reconnect's reopen alike). A frequency entry
  * pauses the scan off a typed NXDN48 row, whose channel profile held the front end off the monitor; the restart opens
@@ -19432,10 +19746,10 @@ test_config_apply_holds_an_am_row_width_to_a_reopen(void) {
 #ifdef DSD_NEO_TEST_RTL_WRAP
 /*
  * Issue #526: Input > Switch source > RTL-SDR opens the device at the RTL DSP bandwidth, and a scan with am rows or
- * targets without a width of their own runs the configured AM width there whenever one comes on air. So the configured
- * AM width is held to that rate beside the preset's own width -- on a digital session and on -fA alike -- and a switch
- * whose rate cannot filter it is refused before the running input is torn down. The AM default (6 kHz) fits a 12 kHz
- * DSP bandwidth; a scanner that is not running holds nothing.
+ * targets without a width of their own runs the configured AM width there whenever one comes on air. A running scanner
+ * now refuses the switch outright (issue #671, as the PCM rows refuse it, #634), whatever its widths: the AM width that
+ * does not fit and the AM default that does are refused alike, before the running input is torn down. A scanner that
+ * is not running holds nothing, so the same list opens.
  */
 static int
 rtl_enable_input_am_case(int analog_session) {
@@ -19460,13 +19774,16 @@ rtl_enable_input_am_case(int analog_session) {
     rc |= expect_int(tag, dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int(tag, opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int(tag, g_config_rtl_creates, 0);
-    rc |= expect_int(tag, strncmp(state.ui_msg, "Refused: AM 10 kHz does not fit the 12 kHz DSP rate", 51) == 0, 1);
+    rc |= expect_str(tag, state.ui_msg, "Unsupported: stop the scan first");
 
-    /* The AM default fits the same bandwidth. */
+    /* The AM default fits the same bandwidth, and is refused the same: the scan runs. */
     opts.analog_am_bandwidth_hz = 0;
+    state.ui_msg[0] = '\0';
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int(tag, g_config_rtl_creates, 1);
+    rc |= expect_int(tag, opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_int(tag, g_config_rtl_creates, 0);
+    rc |= expect_str(tag, state.ui_msg, "Unsupported: stop the scan first");
 
     /* Without the scanner the am row runs nothing. */
     opts.audio_in_type = AUDIO_IN_PULSE;
@@ -19729,9 +20046,11 @@ test_channel_map_import_names_rows_the_dsp_rate_skips(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /*
- * Issue #671: Input > Switch source > RTL-SDR (or Airspy) is an input switch like the PCM rows: one that runs ends a
- * paused -Y scan, whose timing and rows were the input left's; one refused before it changes anything, or whose start
- * fails and puts the input that ran back, keeps the pause.
+ * Issue #671: Input > Switch source > RTL-SDR (or Airspy) is an input switch like the PCM rows: a scan running refuses
+ * it as it refuses them (#634: a running -Y list with rows, a trunk scan's coordinator), with the same reason, and
+ * nothing changes; before, the radio rows switched under a running -Y list and carried it over to the radio. One that
+ * runs ends a paused -Y scan, whose timing and rows were the input left's; one refused before it changes anything, or
+ * whose start fails and puts the input that ran back, keeps the pause.
  */
 static int
 test_rtl_row_switch_ends_a_paused_list(void) {
@@ -19748,6 +20067,30 @@ test_rtl_row_switch_ends_a_paused_list(void) {
     *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
     *dsd_state_trunk_lcn_slot(&state, 1) = 852375000;
     state.lcn_freq_roll = 1;
+
+    /* A scan running refuses both radio rows, though the device would open. */
+    g_config_rtl_open_ok = 1;
+    static const int k_rows[] = {DSD_APP_CMD_RTL_ENABLE_INPUT, DSD_APP_CMD_AIRSPY_ENABLE_INPUT};
+    for (int owner = 0; owner < 2; owner++) {
+        for (size_t row = 0; row < sizeof k_rows / sizeof k_rows[0]; row++) {
+            const char* label = owner == 0 ? "radio row under a running -Y list" : "radio row under a trunk scan";
+            opts.scanner_mode = owner == 0 ? 1 : 0;
+            opts.trunk_scan_enabled = owner == 1 ? 1 : 0;
+            state.trunk_scan_target_count = owner == 1 ? 2U : 0U;
+            g_config_rtl_creates = 0;
+            state.ui_msg[0] = '\0';
+            (void)post_empty(k_rows[row]);
+            rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_str(label, state.ui_msg, "Unsupported: stop the scan first");
+            rc |= expect_int(label, g_config_rtl_creates == 0 && opts.audio_in_type == AUDIO_IN_WAV, 1);
+            rc |= expect_str(label, opts.audio_in_dev, "voice.wav");
+            rc |= expect_int(label, opts.scanner_mode, owner == 0 ? 1 : 0);
+        }
+    }
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0U;
+    g_config_rtl_open_ok = 0;
     state.lcn_scan_paused = 1U;
     state.operator_tuned = 1U;
 
@@ -20054,8 +20397,9 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("digital: not held", g_config_rtl_creates, 1);
 
-    /* Issue #526: the switch is unscoped, so the stream it opens starts on the settings in force, an nfm scan row's
-       own width among them, which the configured digital session does not use: that width is held to the rate too. */
+    /* Issue #526 held an nfm scan row's own width to the rate, the stream the switch opens starting on the settings in
+       force. A scan row in force now refuses the switch outright (issue #671, as the PCM rows refuse it, #634): the row
+       whose width does not fit the 24 kHz DSP rate and the same row at 48 kHz are refused alike, and nothing opens. */
     opts.audio_in_type = AUDIO_IN_PULSE;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
     opts.analog_nfm_bandwidth_hz = 0;
@@ -20071,14 +20415,14 @@ test_rtl_enable_input_holds_the_nfm_width(void) {
     rc |= expect_int("row width to rtl drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("row width to rtl: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_int("row width to rtl: nothing opened", g_config_rtl_creates, 0);
-    rc |= expect_toast(
-        "row width to rtl toast", &state,
-        "Refused: NFM 25 kHz does not fit the 24 kHz DSP rate (max 20.4 kHz); use a 48 or 72 kHz DSP bandwidth");
-    /* The same row at a 48 kHz DSP bandwidth opens. */
+    rc |= expect_str("row width to rtl toast", state.ui_msg, "Unsupported: stop the scan first");
     opts.rtl_dsp_bw_khz = 48;
+    state.ui_msg[0] = '\0';
     (void)post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT);
     (void)dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_int("row width to rtl at 48 kHz: opened", g_config_rtl_creates, 1);
+    rc |= expect_int("row width to rtl at 48 kHz: still PCM", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_int("row width to rtl at 48 kHz: nothing opened", g_config_rtl_creates, 0);
+    rc |= expect_str("row width to rtl at 48 kHz: toast", state.ui_msg, "Unsupported: stop the scan first");
     dsd_scan_mode_leave(&opts, &state);
     opts.analog_only = 0;
 
@@ -20774,6 +21118,26 @@ expect_row_republished(const char* label, const dsd_state* state, int cqpsk, int
     return rc;
 }
 
+static int
+input_switch_command(int command) {
+    return command == DSD_APP_CMD_AIRSPY_ENABLE_INPUT || command == DSD_APP_CMD_RTL_ENABLE_INPUT;
+}
+
+/* Input > Switch source refused under a scan row (issue #671, as the PCM rows are, #634): the reason on the status
+   line, and nothing changed: no stream opened, the input that ran (@p dev) and the tone received on it
+   (@p generation) kept, the row still on air with nothing asked of the front end. */
+static int
+expect_switch_refused_under_the_row(const char* label, const dsd_opts* opts, const dsd_state* state, const char* dev,
+                                    uint32_t generation) {
+    int rc = expect_str(label, state->ui_msg, "Unsupported: stop the scan first");
+    rc |= expect_int(label, g_config_rtl_creates == 0 && g_config_rtl_starts == 0 && state->rtl_ctx != NULL, 1);
+    rc |= expect_str(label, opts->audio_in_dev, dev);
+    rc |= expect_received_tone_kept(label, state, generation);
+    rc |= expect_int(label, dsd_scan_mode_active(state) != DSD_SCAN_MODE_INHERIT, 1);
+    rc |= expect_int(label, g_demod_req_calls == 0 && g_analog_req_calls == 0, 1);
+    return rc;
+}
+
 /*
  * Issue #578: Input > Switch source, a DSP bandwidth change and an Airspy setting leave a scan row's scope in force, so
  * a stream they start opens on the row's settings, but with the CQPSK state an open picks, which DSD_NEO_CQPSK decides
@@ -20784,7 +21148,7 @@ expect_row_republished(const char* label, const dsd_state* state, int cqpsk, int
  * resume asks it of a stream it started, and timed for the rate that stream runs it at: a C4FM row at the 24 kHz the
  * CQPSK open delivers (5 samples per 4800 Bd symbol), a CQPSK row at the 24 kHz demod rate its timing loop runs at, not
  * the 48 kHz of the FSK output (10). Nothing is reset as for a new input. With no scan row the rollback asks nothing,
- * as before.
+ * as before. Input > Switch source itself is now refused under the row (issue #671): its legs show the refusal.
  */
 static int
 test_rollback_restart_republishes_the_scan_row(void) {
@@ -20825,15 +21189,18 @@ test_rollback_restart_republishes_the_scan_row(void) {
         g_config_rtl_fail_starts = 1; /* the new device, bandwidth or rate does not start */
         const uint32_t generation = state.analog_rx.generation;
         rc |= submit_stream_restart(&opts, &state, legs[i].command, 12, label);
+        if (input_switch_command(legs[i].command)) {
+            /* A scan row in force refuses Input > Switch source (issue #671, as #634): nothing to roll back. */
+            rc |= expect_switch_refused_under_the_row(label, &opts, &state, legs[i].dev, generation);
+            finish_row_restart_session(&opts, &state);
+            continue;
+        }
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
         rc |= expect_int(label, g_config_rtl_creates == 2 && g_config_rtl_starts == 2 && state.rtl_ctx != NULL, 1);
         rc |= expect_str(label, g_config_rtl_create_dev, legs[i].dev);
         rc |= expect_str(label, opts.audio_in_dev, legs[i].dev);
         rc |= expect_int(label, opts.rtl_dsp_bw_khz, 24);
         rc |= expect_str(label, state.ui_msg, legs[i].toast);
-        if (legs[i].command == DSD_APP_CMD_AIRSPY_ENABLE_INPUT || legs[i].command == DSD_APP_CMD_RTL_ENABLE_INPUT) {
-            rc |= expect_received_tone_kept(label, &state, generation);
-        }
         if (legs[i].row) {
             rc |= expect_row_republished(label, &state, legs[i].row_cqpsk, 5);
         } else {
@@ -20847,7 +21214,8 @@ test_rollback_restart_republishes_the_scan_row(void) {
 /*
  * Issue #578: the same rollback under an analog row. The restart opens on the row's monitor, as the stream it replaced
  * ran it (the options in force are the row's), and the row's profile asked of it is that monitor: an nfm row's own
- * 12.5 kHz, an am row's own 20 kHz, and no symbol profile.
+ * 12.5 kHz, an am row's own 20 kHz, and no symbol profile. A DSP bandwidth change that does not start rolls back;
+ * Input > Switch source, which used to roll back the same way, is refused under the row first (issue #671).
  */
 static int
 test_rollback_restart_republishes_an_analog_scan_row(void) {
@@ -20872,13 +21240,15 @@ test_rollback_restart_republishes_an_analog_scan_row(void) {
         g_config_rtl_fail_starts = 1;
         const uint32_t generation = state.analog_rx.generation;
         rc |= switch_input_from(&opts, &state, DSD_APP_CMD_AIRSPY_ENABLE_INPUT, label);
+        rc |= expect_switch_refused_under_the_row(label, &opts, &state, "rtl:0:851.375M:0:0:24", generation);
+        rc |= submit_dsp_bandwidth(&opts, &state, 48, label);
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 1);
         rc |= expect_restarted_on(label, &opts, &state, "rtl:0:851.375M:0:0:24");
+        rc |= expect_int(label, opts.rtl_dsp_bw_khz, 24);
         rc |= expect_int(label,
                          g_config_rtl_create_analog_only == 1 && g_config_rtl_create_kind == kind
                              && g_config_rtl_create_width_hz == width_hz,
                          1);
-        rc |= expect_received_tone_kept(label, &state, generation);
         rc |= expect_int(label, dsd_scan_mode_active(&state) == (am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM), 1);
         rc |= expect_last_monitor_request(label, 1, kind, width_hz);
         rc |= expect_int(label, g_demod_req_calls, 0);
@@ -20893,7 +21263,7 @@ test_rollback_restart_republishes_an_analog_scan_row(void) {
  * DSD_NEO_CQPSK=1 a P25 C4FM row runs the FSK discriminator on the new Airspy, the RTL-SDR switched back to, the RTL-SDR
  * reopened at a 48 kHz DSP bandwidth (10 samples per symbol at the 48 kHz CQPSK output), the Airspy reopened at a new
  * sample rate, and the RTL-SDR an explicit restart, a gain or a device index reopens. With no scan row a restart asks
- * nothing, as before.
+ * nothing, as before. Input > Switch source is now refused under the row (issue #671): its legs show the refusal.
  */
 static int
 test_restart_under_a_scan_row_republishes_the_row(void) {
@@ -20925,7 +21295,14 @@ test_restart_under_a_scan_row_republishes_the_row(void) {
         DSD_SNPRINTF(label, sizeof label, "%s that starts, c4fm row, DSD_NEO_CQPSK=1", legs[i].label);
         init_row_restart_session(&opts, &state, (RtlSdrContext*)fake_ctx, legs[i].dev, legs[i].row, 0, 1);
         g_fake_output_rate_hz = (unsigned int)legs[i].khz * 1000U; /* the new CQPSK stream's output */
+        const uint32_t generation = state.analog_rx.generation;
         rc |= submit_stream_restart(&opts, &state, legs[i].command, legs[i].khz, label);
+        if (input_switch_command(legs[i].command)) {
+            /* A scan row in force refuses Input > Switch source (issue #671, as #634). */
+            rc |= expect_switch_refused_under_the_row(label, &opts, &state, legs[i].dev, generation);
+            finish_row_restart_session(&opts, &state);
+            continue;
+        }
         rc |= expect_int(label, dsd_app_command_test_last_failed(), 0);
         rc |= expect_int(label, g_config_rtl_creates == 1 && state.rtl_ctx != NULL, 1);
         rc |= expect_str(label, opts.audio_in_dev, legs[i].dev_after);
@@ -23081,6 +23458,10 @@ main(void) {
     rc |= test_scan_leave_retired_by_a_row_keeps_an_armed_switch();
     rc |= test_scan_leave_record_goes_with_its_stream();
     rc |= test_scan_pause_and_refused_resume_return_to_the_monitor();
+#if defined(DSD_NEO_TEST_RTL_WRAP) && defined(DSD_NEO_TEST_IO_CONTROL_WRAP)
+    rc |= test_pending_resume_taken_back_by_tap_search_and_reopen();
+    rc |= test_typed_resume_under_the_real_tick_guard();
+#endif
     rc |= test_trunk_scan_pause_returns_to_the_monitor();
     rc |= test_restart_while_a_list_is_paused_opens_on_the_configured_profile();
     rc |= test_trunk_scan_pause_reopens_for_the_configured_gain();
@@ -23221,6 +23602,7 @@ main(void) {
     rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
+    rc |= test_tuner_release_keeps_trunking_when_a_trunk_scan_cannot_pause();
     rc |= test_replay_refuses_tunes_and_release();
     rc |= test_scan_hold_avoid_commands();
     rc |= test_replay_refuses_channel_cycle_and_return_cc();
@@ -23242,6 +23624,9 @@ main(void) {
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     rc |= expect_int("every case reaching the sink helpers plays to the null output", g_ensure_off_null_calls, 0);
+#endif
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= expect_int("no case re-entered the P25 SM tick guard", g_guard_reentries, 0);
 #endif
     dsd_socket_cleanup();
     if (rc == 0) {

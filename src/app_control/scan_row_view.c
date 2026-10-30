@@ -16,7 +16,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>

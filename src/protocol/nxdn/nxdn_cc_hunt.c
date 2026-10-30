@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

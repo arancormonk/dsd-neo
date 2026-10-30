@@ -2703,11 +2703,16 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
   active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed and "paused" while
   it is paused (`src/app_control/app_command_queue.c`)
-- `dsd_trunk_scan_owns_tuner()` (static inline, issue #671) — the running predicate: `trunk_scan_enabled` and not
-  `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary decisions, the frame-sync yields and
-  decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl request classing, the P25p1 trial,
-  per-target map presence, the channel label and the app-control row, timing and gain views read it; a configured
-  setting a retained scan forbids reads `trunk_scan_enabled`.
+- `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
+  predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
+  decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl
+  request classing, the P25p1 trial, per-target map presence, the channel label and the app-control row, timing and gain
+  views read it; a configured setting a retained scan forbids reads `trunk_scan_enabled`. Its `-Y` counterpart,
+  `dsd_channel_scan_owns_tuner()` in the same header, is `scanner_mode` or a resume still pending
+  (`lcn_scan_resume_pending`): the pause and release gates, the frequency entry's and a spectrum tap's pause, the
+  typed commit gate, the untyped landing poll and the tuning-owner check read it. Both read the full `dsd_opts` and
+  `dsd_state`, so they live in a header of their own that only their readers include, rather than pulling `state.h`
+  into every includer of the hook table.
 
 Recovery ownership lives beside these hooks. `dsd_trunk_p25_recovery_allowed()` / `dsd_trunk_dmr_recovery_allowed()`
 admit a validated owner (`dsd_state::trunk_recovery_protocol`), or, with none yet, a frame set that decodes only that
@@ -2763,9 +2768,13 @@ controller supersedes the record (`dsd_engine_manual_tune_supersede()`): another
 (`dsd_engine_tune_rtl()`), the untyped `-Y` step's RTL leg (unless it timed out, when it notes its own record), the
 direct control-channel return, a Signal search visit, `request_manual_tune()`'s direct leg and the RadioReference
 apply. A stream stop or open drops it as well (`rtl_stream_session_generation()`), since a stop fails the queued request
-under its tag. The record is process-wide, as the controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING`
-(the real controller stood in for, with late failure, late success, a newer entry, coalescing, a failure inside a
-coalesced wait and a stop), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+under its tag; the poll reads the completion before the session, so a stop's failure is never toasted. A dropped record
+is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so
+its owner settles what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver,
+and the older drop goes unreported. The record is process-wide, as the controller and its callback are. Tests:
+`ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer entry,
+coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, and what ends a synced reception),
+`IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
 engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It finds the
@@ -2778,19 +2787,23 @@ drain and any control-channel return), then installs the row: the cursor past it
 clocks. An RTL timeout notes an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`,
 moved by every `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and
 resume) and `trunk_chan_map_seq`; until the completion the cursor, the keys and the deadline stay. The synced-frames
-loop checks for the landing before every frame (`dsd_engine_manual_tune_landed()`, one atomic load while nothing is
-noted) and ends the reception when it has come, so at most the frame in flight decodes under the row left. The outer
-pass's poll then commits the row (boundary, then install), but only while the scan is still that one: `-Y` on (or a
-resume pending, below), no modes, the same session and map, the row still on the frequency tuned. Otherwise nothing
-commits, and only the frequency stands. A late failure abandons the row as a failure inside the wait does: the cursor
-stays for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the outgoing
+loop checks before every frame for a completion the poll will act on (`dsd_engine_manual_tune_settled_ready()`, one
+atomic load while nothing is noted: a step's landing, or any noted tune's late failure) and ends the reception when it
+has come, so at most the frame in flight decodes under the row left, and a carrier that keeps sync (a control channel)
+never goes on decoding under an entry's frequency the receiver did not reach. The outer pass's poll then commits the
+row (boundary, then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no
+modes, the same session and map, the row still on the frequency tuned. Otherwise nothing commits and only the frequency
+stands; a landing still moved the receiver, so the `SCAN_STEP` boundary runs for the move (a pause in place forgot only
+the carrier it left). A late failure, or a drop, abandons the row as a failure inside the wait does: the cursor stays
+for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the outgoing
 boundary and resets the received tone, but keeps the cursor and the deadline. `dsd_engine_scan_untyped_enter_row()` runs
 the same pieces with the boundary inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency
 they last sent; a manual tune moves the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the
 `TUNE` carrier boundary and at every tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET`
 (a step back to a row after an entry, a timed-out row's landing and late failure, a landing in the middle of a
-reception, a landing after a rigctl move, under a hold, after a stop or a list replacement, a failure's centre, an empty
-or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
+reception, a landing after a rigctl move, under a hold, after a stop, a list replacement or a pause in place, a
+failure's centre, an entry's late failure on a carrier that keeps sync, an empty or all-avoided list, the find and
+enter pieces), `APP_COMMAND_QUEUE`.
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
@@ -2807,7 +2820,11 @@ and try it again), in an untyped one any row with a frequency that is not avoide
 (`dsd_engine_scan_untyped_find_row()`). With none it never starts (`DSD_SCAN_RESUME_NO_ROW`, toasted). Otherwise it ends
 the manual session's calls, keeps trunking off, forgets the legacy tune caches, moves the session, and tunes the row as
 a step would. Until the row lands the scan is resume-pending (`lcn_scan_resume_pending`): still paused, `scanner_mode`
-0, no row named, so a call heard meanwhile keeps the manual attribution. A typed row's tune and commit run with
+0, no row named, so a call heard meanwhile keeps the manual attribution. It still owns the tuner
+(`dsd_channel_scan_owns_tuner()`): a frequency entry, a spectrum tap (`MANUAL_TUNE`) or a Signal search start takes it
+back through the entry's pause, so the scan stays paused and the row's tune, still in flight, commits nothing; a
+release pauses it in place. A row tune dropped under it (another tune, a stream reopen) is reported by the manual-tune
+record, and the untyped poll leaves the scan paused with the failure toast, as for a late failure. A typed row's tune and commit run with
 `scanner_mode` 1 for the duration (the dual-leg tune and the row's receive profile read it); no frame decodes while it
 is outstanding. The typed commit gate and the untyped landing poll accept a resume-pending scan as current. The landing
 runs the outgoing boundary, installs the row, and only then publishes the scan (`scanner_mode` 1, `lcn_scan_paused` and
@@ -2822,7 +2839,10 @@ manual frequency while its row was outstanding stays one call. A resume while on
 running, changes nothing; one of a scan neither paused nor running, or under a trunk scan, is refused with a toast.
 Nothing on these paths takes the P25 SM tick guard non-re-entrantly: they run inside the guarded scanner commands. The
 pause service records its return to the monitor as `svc_leave_channel_scan()` records a leave's. That stop also ends a
-pause and a pending resume, and leaves `operator_tuned` set; the engine's shutdown leave clears neither flag, so the
+pause and a pending resume, and leaves `operator_tuned` set. A paused list (no resume pending) was already left by its
+pause, so its stop drops only the list state the pause kept: no call of the manual session ends, the acquisition is not
+reset and nothing is asked of the monitor (`channel_scan_release()`, `already_left`); the service clears the flags
+after the engine's leave, which reads them; the engine's shutdown leave clears neither flag, so the
 exit autosave sees the pause and writes `scanner = true` (`snapshot_trunking_config()`: `scanner_mode ||
 lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last (`cfg_settle_scan_owner()`
 in app_control): without `[trunking]` the pause stays, trunking on or the scanner off stop it, the scanner on resumes
@@ -2833,8 +2853,10 @@ and `ENGINE_CLEANUP_AUDIO` (the exit autosave right after a pause, and after a p
 `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a row every visit skips, a refused,
 deferred, unprepared and pending typed resume, the pause hook at once and late, a pause while one is pending),
 `ENGINE_NO_CARRIER_RESET` (the untyped resume through the real step: a step's landing after a pause, a pending resume's
-reception, landing and late failure, which keeps the call heard), `APP_COMMAND_QUEUE` (the services, the monitor
-reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
+reception, landing and late failure, which keeps the call heard, and its row tune dropped), `APP_COMMAND_QUEUE` (the
+services, the monitor reconciliation at once and late, the caller's guard, a tap, a search start and a reopen over an
+untyped and a typed pending resume, a stop over a paused typed list, and a typed resume under the real tick guard
+through landing, refusal and pending), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
 
 ### Channel Scan Pause Hook (Engine → Runtime ← App-Control)
 
@@ -2946,7 +2968,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     capture, a rotation), so `SYMCAP_STOP` no longer writes `audio_in_dev`. The RTL-SDR row opens
     `svc_rtl_row_destination()` (the first radio spec that is no Airspy one: the running spec, then the one a PCM switch
     kept; else `rtl`), and is checked against it before anything changes; once the radio runs, the PCM input it
-    replaced is closed (`closeAudioInDevice()`), and kept when the radio does not start. A config apply's same-type reopens (TCP, UDP, Pulse) go
+    replaced is closed (`closeAudioInDevice()`), and kept when the radio does not start. The radio rows (RTL-SDR and
+    Airspy, `ui_cmd_handle_rtl_enable_input()`) refuse a switch while a scan is in force as the PCM rows do
+    (`ui_input_switch_refused()`, the same `Unsupported: stop the scan first`; issue #671), so a running `-Y` list is
+    never carried over to the radio; a paused one is stopped by a switch that runs (`ui_input_switch_ends_paused_scan()`)
+    and kept by one that is refused or rolled back. The row-width holds below (#526, #578) therefore meet no scan row or
+    running list from these rows; they stay the general rule for the widths a switch opens on. A config apply's
+    same-type reopens (TCP, UDP, Pulse) go
     through the switch too, put back the input name the config wrote when they fail, and take the boundary for a
     restarted UDP input (`apply_cfg_note_reopen()`); its WAV reopen refuses a pipe or device. The queue answers the
     runtime's controls-pending query (`dsd_app_commands_pending()`). Tests: `APP_COMMAND_QUEUE`, `RUNTIME_CONFIG_APPLY`,
@@ -5170,7 +5198,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     Both rigctl reconnects, the '9' key (the TCP input's host at the rigctl port) and the menu's host and port, go
     through `svc_rigctl_connect()` (`src/app_control/rigctl_connect.c`): it connects, then, under the P25 SM tick guard
     since the watchdog's retunes use the socket, rebinds, closes the old socket without sending it anything (the old
-    peer keeps what a scan last set on it) and forgets the engine's legacy tune cache and `rigctl_set_freq_hz` (nothing
+    peer keeps what a scan last set on it) and forgets the engine's legacy tune cache and `rigctl_sent_freq_hz` (nothing
     was sent on the new connection); a connect that fails while rigctl is on changes nothing, so the connection in use
     and its record stay. The connect then asks the new peer for the
     session's width (`dsd_engine_rigctl_ask_session_passband()`, under the same hold). The engine names the record for a
@@ -8396,7 +8424,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     cancels silently, a refusal puts the parser's message in the status (which the prompt shows inside its box) and
     reopens the opener with the text typed, and OK posts `DSD_APP_CMD_RTL_SET_FREQ` with the Hz. The row
     (`input.freq`, after `input.switch`, hotkey `=`, every build) shows `lbl_input_freq()`: `dsd_opts_tuned_freq_hz()`
-    in MHz on a radio input, `dsd_opts::rigctl_set_freq_hz` (the frequency the rigctl peer last accepted on this
+    in MHz on a radio input, `dsd_opts::rigctl_sent_freq_hz` (the frequency the rigctl peer last accepted on this
     connection: set by the manual, scan and trunking rigctl legs, 0 after a connect) off one, `[-]` at 0.
     `input_freq_offered()` / `freq_entry_offered(opts)` offer it on a radio input or with a live rigctl peer
     (`dsd_opts_rigctl_live()`), never during an I/Q replay; a scan no longer hides it, since an accepted entry pauses
@@ -9836,7 +9864,7 @@ Additional includes of interest:
   `<dsd-neo/engine/channel_scan.h>`, `<dsd-neo/engine/manual_tune.h>`
 - Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`,
   `<dsd-neo/runtime/trunk_scan_hooks.h>`, `<dsd-neo/runtime/trunk_tuning_hooks.h>`,
-  `<dsd-neo/runtime/channel_scan_hooks.h>`, `<dsd-neo/runtime/control_pump.h>`,
+  `<dsd-neo/runtime/channel_scan_hooks.h>`, `<dsd-neo/runtime/tuner_owner.h>`, `<dsd-neo/runtime/control_pump.h>`,
   `<dsd-neo/runtime/radioreference.h>`, `<dsd-neo/runtime/radioreference_generate.h>`,
   `<dsd-neo/runtime/radioreference_import.h>`, `<dsd-neo/runtime/rigctl_passband.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,

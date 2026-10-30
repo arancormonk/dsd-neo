@@ -33,7 +33,7 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/squelch.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -507,7 +507,7 @@ lbl_input_freq(const void* v, char* b, size_t n) {
     const dsd_opts* opts = c ? c->opts : NULL;
     uint32_t hz = dsd_opts_tuned_freq_hz(opts);
     if (opts && !dsd_opts_input_is_radio(opts)) {
-        hz = dsd_opts_rigctl_live(opts) ? opts->rigctl_set_freq_hz : 0U;
+        hz = dsd_opts_rigctl_live(opts) ? opts->rigctl_sent_freq_hz : 0U;
     }
     char mhz[16];
     if (hz == 0U || dsd_freq_hz_mhz_text(hz, mhz, sizeof mhz) < 0) {
