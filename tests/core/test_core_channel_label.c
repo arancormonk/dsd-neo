@@ -123,6 +123,11 @@ test_trunk_scan_target_wins(void) {
                       dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_NONE);
     st->trunk_scan_paused = 0U;
     opts->scanner_mode = 1;
+    // Issue #782: a target with a label is named by it, not by its id (an internal UID in the Qt/Android lists).
+    DSD_SNPRINTF(st->trunk_scan_active_label, sizeof(st->trunk_scan_active_label), "%s", "County Fire");
+    rc |= expect_true("a labelled target is named by its label",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 1 && strcmp(out, "County Fire") == 0);
+    st->trunk_scan_active_label[0] = '\0';
 
     // Trunk scan on but nothing selected yet, and no -Y underneath it.
     opts->scanner_mode = 0;

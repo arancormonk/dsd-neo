@@ -261,6 +261,28 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
     return {};
 }
 
+/* Issue #782: the name a person knows the target by, in the CSV's `label` column, which names the channel being heard
+   (a call with no name of its own is named for it, and so are its history row and recording); the id is the entry's
+   internal UID, which the monitor maps back to the entry and never shows. The same name the monitor's scan header
+   gives: the saved system's name, else the frequency entry's name, else its frequency. The parser strips the cell's
+   outer quotes but does not unescape doubled ones, so a quote inside is written as an apostrophe and a line break as
+   a space; the engine sanitizes and truncates the rest. */
+QString
+targetLabel(const QVariantMap& entry, const QVariantMap& sys) {
+    QString label = sys.value("name").toString().trimmed();
+    if (label.isEmpty() && entry.value("kind") == "freq") {
+        const QString mhz = entry.value("freqMhz").toString().trimmed();
+        label = mhz.isEmpty() ? QString() : mhz + QStringLiteral(" MHz");
+    }
+    if (label.isEmpty()) {
+        return {};
+    }
+    label.replace(QLatin1Char('"'), QLatin1Char('\''));
+    label.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    label.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    return QLatin1Char('"') + label + QLatin1Char('"');
+}
+
 QStringList
 targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& target, const QStringList& options) {
     const int gain =
@@ -280,6 +302,7 @@ targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& targ
                             sys.value("p25BandplanCsvPath").toString(),
                             target.modulation,
                             gain >= 0 ? QString::number(gain) : QString(),
+                            targetLabel(entry, sys),
                             options.join(QLatin1Char(' '))};
     return cells;
 }
@@ -386,7 +409,7 @@ scan_list_targets(const QVariantMap& list, const QVariantList& systems) {
         }
     }
     QString csv = QStringLiteral("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,keys_dec_"
-                                 "csv,p25_bandplan_csv,modulation,rtl_gain,options\n");
+                                 "csv,p25_bandplan_csv,modulation,rtl_gain,label,options\n");
     QSet<QString> seen;
     QSet<QString> ids;
     for (const auto& value : list.value("entries").toList()) {

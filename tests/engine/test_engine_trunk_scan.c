@@ -1591,6 +1591,67 @@ test_coordinator_publishes_active_target_label(void) {
 }
 
 /*
+ * Issue #782: a target's optional `label` column names the channel being heard while it is parked there, so a list
+ * whose ids are internal (the Qt/Android scan lists use entry UIDs) never names a call, history row or recording by
+ * one: it is published beside the id, and dsd_channel_label_current() prefers it (CORE_CHANNEL_LABEL). A target
+ * without a label publishes none and is named by its id, as before. The label is sanitized: a control character
+ * becomes a space and the cell's padding is dropped.
+ */
+static int
+test_target_label_names_the_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file_with_header(dir, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n",
+                                       "f4c3562f-afab-49ee-bc0a-1f8df9845cb3,dmr-conventional,451000000,,250,,,"
+                                       "\" County\tDMR, east \"\n"
+                                       "b,p25-trunk,852000000,,250,,,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "label scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "init", "f4c3562f-afab-49ee-bc0a-1f8df9845cb3", 1U, 2U);
+    if (strcmp(state.trunk_scan_active_label, "County DMR, east") != 0) {
+        DSD_FPRINTF(stderr, "published label '%s', want the target's sanitized label 'County DMR, east'\n",
+                    state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_published_target(&state, "rotation to b", "b", 2U, 2U);
+    if (state.trunk_scan_active_label[0] != '\0') {
+        DSD_FPRINTF(stderr, "unlabelled target published label '%s'\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.trunk_scan_active_label[0] != '\0') {
+        DSD_FPRINTF(stderr, "label '%s' left published after shutdown\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
  * A target's chan_csv may carry a name column, and the importer stores it. Trunk scan has
  * to drop it: the per-target snapshot carries the positional scan list but no names, so the
  * next target's list would land under the previous target's names.
@@ -15011,6 +15072,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
+    rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
     rc |= run_with_default_tune_hook(test_target_chan_csv_names_are_discarded);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);

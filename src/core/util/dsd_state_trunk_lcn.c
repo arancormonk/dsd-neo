@@ -12,6 +12,7 @@
  * without dragging in the full initState/freeState dependency chain.
  */
 
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
@@ -133,17 +134,14 @@ trunk_lcn_name_trim_in_place(char* out, size_t len) {
 }
 
 /*
- * Render one CSV name into a zero-filled entry-sized buffer: the padding the
- * file carried (CSV spacing, the line ending) dropped before it can spend the
- * budget, the rest truncated to fit, and control characters replaced with
- * spaces so a tab or a stray CR never reaches printw().
+ * Render one CSV name into a zero-filled entry-sized buffer (see the header).
  *
  * Substitution runs before the final trim, not after: a leading control byte
  * ("\x01Dispatch") would otherwise be stored as a leading space, and a
  * truncation landing just after an interior control byte as a trailing one.
  */
-static void
-trunk_lcn_name_sanitize(const char* name, char* out, size_t out_sz) {
+void
+dsd_channel_label_sanitize(const char* name, char* out, size_t out_sz) {
     DSD_MEMSET(out, 0, out_sz);
     if (!name || out_sz < 2) {
         return;
@@ -178,7 +176,7 @@ dsd_state_trunk_lcn_name_set(dsd_state* state, size_t index, const char* name) {
     if (!state || index == SIZE_MAX) {
         return -1;
     }
-    trunk_lcn_name_sanitize(name, entry, sizeof entry);
+    dsd_channel_label_sanitize(name, entry, sizeof entry);
     if (entry[0] == '\0' && index >= state->trunk_lcn_name_capacity) {
         // Nothing to store and no entry to clear: a file whose name column is
         // blank throughout never allocates the store.

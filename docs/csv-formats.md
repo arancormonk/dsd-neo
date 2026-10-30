@@ -154,7 +154,7 @@ Notes:
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
-  air its id is the label instead, and the Scan Mode row shows no name. Traffic a service name labels
+  air its `label` column, else its id, is the label instead, and the Scan Mode row shows no name. Traffic a service name labels
   (`--dcc-name` and the other [naming options](cli.md#receive-filters-and-service-names)) carries that name in the
   event-row prefix instead; the `Channel:` line still names the row.
 - Every column is positional, so an empty middle field is an empty frequency: `1,,851000000` is a row with no

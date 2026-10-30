@@ -27,7 +27,7 @@ extern "C" {
 /** Which scanner is naming the channel currently tuned. */
 typedef enum {
     DSD_CHANNEL_LABEL_SOURCE_NONE = 0,       /**< No scanner is naming a channel. */
-    DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN = 1, /**< The active `--trunk-scan` target's id. */
+    DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN = 1, /**< The active `--trunk-scan` target's label, else its id. */
     DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST = 2,  /**< The name of the `-Y` scan-list row on air. */
 } dsd_channel_label_source;
 
@@ -48,7 +48,7 @@ dsd_channel_label_source dsd_channel_label_current_source(const dsd_opts* opts, 
  * Resolve the label for the channel currently tuned.
  *
  * Trunk scan wins over the conventional scanner: with `--trunk-scan` enabled the
- * label is the active target's id, and only when no target is selected does a
+ * label is the active target's `label` column, else its id, and only when no target is selected does a
  * `-Y` scan list get a say, contributing the name of the row it is parked on.
  * An unnamed row, an unnamed target and an idle receiver all report no label.
  *
@@ -60,6 +60,15 @@ dsd_channel_label_source dsd_channel_label_current_source(const dsd_opts* opts, 
  * @return 1 when a label was resolved, 0 when there is none.
  */
 int dsd_channel_label_current(const dsd_opts* opts, const dsd_state* state, char* out, size_t out_sz);
+
+/**
+ * Render one channel name from a file into a zero-filled buffer of @p out_sz bytes: the padding the file carried (CSV
+ * spacing, the line ending) dropped before it can spend the budget, the rest truncated to fit without splitting a
+ * UTF-8 character, control characters replaced with spaces (so a tab or a stray CR never reaches the terminal), and
+ * the result trimmed of leading and trailing ASCII whitespace. A NULL or blank name, or an @p out_sz under 2, leaves
+ * @p out empty. Used for `-Y` scan-list row names and `--trunk-scan` target labels.
+ */
+void dsd_channel_label_sanitize(const char* name, char* out, size_t out_sz);
 
 #ifdef __cplusplus
 }

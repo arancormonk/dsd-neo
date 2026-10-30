@@ -33,14 +33,14 @@ main(int argc, char** argv) {
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}};
     auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
     sys["radioSettings"] = QVariantMap{{"modulation", 1}, {"squelch", "auto+12"}};
-    check(build().ok && build().csv.contains(",cqpsk,,--squelch auto+12"));
+    check(build().ok && build().csv.contains(",cqpsk,,\"Example\",--squelch auto+12"));
     entry["modulation"] = "c4fm";
     list["entries"] = QVariantList{entry};
-    check(build().ok && build().csv.contains(",c4fm,,--squelch auto+12"));
+    check(build().ok && build().csv.contains(",c4fm,,\"Example\",--squelch auto+12"));
     entry.remove("modulation");
     list["entries"] = QVariantList{entry};
     sys["decodeFlag"] = "-fA";
-    check(build().ok && build().csv.contains(",,,--squelch auto+12"));
+    check(build().ok && build().csv.contains(",,,\"Example\",--squelch auto+12"));
     sys["radioSettings"] = QVariantMap{{"modulation", 8}};
     check(!build().ok);
     sys.remove("radioSettings");
@@ -84,7 +84,7 @@ main(int argc, char** argv) {
         list["entries"] = QVariantList{entry};
         const auto analogTargets = build();
         check(analogTargets.ok && analogTargets.paths.isEmpty());
-        check(analogTargets.csv.endsWith(analog.second + ",851500000,,,,,,,,,20,\n"));
+        check(analogTargets.csv.endsWith(analog.second + ",851500000,,,,,,,,,20,\"Example\",\n"));
         check(!analogTargets.csv.contains("-b") && !analogTargets.csv.contains("-G")
               && !analogTargets.csv.contains("gfsk") && !analogTargets.csv.contains("keys.csv")
               && !analogTargets.csv.contains("-4"));
@@ -139,10 +139,19 @@ main(int argc, char** argv) {
     list["entries"] = mixed;
     const auto mixedTargets = build();
     check(mixedTargets.ok && mixedTargets.targetCount == 4);
-    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,")
-          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,")
-          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,")
-          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,"));
+    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,\"118.3 MHz\",")
+          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,\"119.3 MHz\",")
+          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,\"120.3 MHz\",")
+          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,\"121.3 MHz\","));
+    // Issue #782: the `label` column names each target as the monitor does, never by its internal entry UID: a
+    // frequency entry by its name, else its frequency. A quote becomes an apostrophe (the parser does not unescape
+    // doubled quotes) and a line break a space; a comma stays, inside the quoted cell.
+    check(mixedTargets.csv.startsWith("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,"
+                                      "keys_dec_csv,p25_bandplan_csv,modulation,rtl_gain,label,options\n"));
+    QVariantMap named = mixed[0].toMap();
+    named["name"] = "Tower \"A\",\nnorth";
+    list["entries"] = QVariantList{named};
+    check(build().ok && build().csv.contains(",c4fm,,\"Tower 'A', north\","));
     list["entries"] = QVariantList{entry};
     sys["trunking"] = true;
     sys["decodeFlag"] = "-mq";
