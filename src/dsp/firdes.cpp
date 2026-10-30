@@ -364,11 +364,18 @@ dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, doubl
     return ntaps;
 }
 
-/* Whether dsd_firdes_root_raised_cosine() can design from these arguments. */
+/* Bounds far beyond any real rate or gain, there only to refuse an infinity. */
+static const double kRrcMaxRateHz = 1e12;
+static const double kRrcMaxGain = 1e12;
+
+/* Whether dsd_firdes_root_raised_cosine() can design from these arguments. Bounded comparisons rather than isfinite(),
+   which the fast-math presets fold away (and Clang refuses there): under IEEE semantics a NaN fails every comparison
+   and an infinity the upper bounds. */
 static bool
 rrc_args_valid(double gain, double sampling_freq, double symbol_rate, double alpha, int ntaps, const float* taps_out) {
-    return taps_out && sampling_freq > 0.0 && symbol_rate > 0.0 && alpha > 0.0 && alpha <= 1.0 && ntaps > 0
-           && std::isfinite(gain) && std::isfinite(sampling_freq) && std::isfinite(symbol_rate);
+    return taps_out && sampling_freq > 0.0 && sampling_freq < kRrcMaxRateHz && symbol_rate > 0.0
+           && symbol_rate < kRrcMaxRateHz && gain > -kRrcMaxGain && gain < kRrcMaxGain && alpha > 0.0 && alpha <= 1.0
+           && ntaps > 0;
 }
 
 /* Tap @p i of an @p ntaps root-raised-cosine before its gain normalisation: the loop body of GNU Radio's

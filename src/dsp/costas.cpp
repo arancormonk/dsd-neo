@@ -25,6 +25,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/tetra_uplink_timing.h>
+#include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/config.h>
 #include <iterator>
 #include "dsd-neo/core/safe_api.h"
@@ -222,6 +223,15 @@ load_pair_or_zero(const float* sample, float* out_r, float* out_j) {
 static inline bool
 stored_float_is_finite(const float* value) {
     return (stored_float_bits(value) & kFloatExponentMask) != kFloatExponentMask;
+}
+
+/* A value the code just took as an argument or computed: under fast-math Clang treats such a float as never NaN or
+   infinite and would fold a bit test on it, so the value goes through a volatile round trip first (fp_opaque.h). For
+   per-block and per-setting values, not per-sample ones. */
+static bool
+computed_float_is_finite(float value) {
+    const float opaque = dsd_fp_opaque_f(value);
+    return stored_float_is_finite(&opaque);
 }
 
 static int
@@ -1482,7 +1492,7 @@ dsd_fll_band_edge_total_freq(const dsd_fll_band_edge_state_t* f) {
 /* A bound that is not a positive finite value means no mixer. */
 static float
 tetra_premix_limit_or_zero(float pre_limit) {
-    return (stored_float_is_finite(&pre_limit) && pre_limit > 0.0f) ? pre_limit : 0.0f;
+    return (computed_float_is_finite(pre_limit) && pre_limit > 0.0f) ? pre_limit : 0.0f;
 }
 
 extern "C" void
@@ -1490,7 +1500,7 @@ dsd_fll_band_edge_split_total(dsd_fll_band_edge_state_t* f, float total, float p
     if (!f) {
         return;
     }
-    if (!stored_float_is_finite(&total)) {
+    if (!computed_float_is_finite(total)) {
         f->pre_freq = 0.0f;
         f->freq = 0.0f;
         return;
@@ -1507,7 +1517,7 @@ dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f) {
         return;
     }
     float total = f->freq + f->pre_freq;
-    if (!stored_float_is_finite(&total)) {
+    if (!computed_float_is_finite(total)) {
         total = 0.0f;
     }
     f->freq = clampf_range(total, f->min_freq, f->max_freq);
@@ -1524,7 +1534,7 @@ dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit) {
     const float pre = f->pre_freq;
     const float freq = f->freq;
     const float total = pre + freq;
-    if (!stored_float_is_finite(&total)) {
+    if (!computed_float_is_finite(total)) {
         return; /* a corrupt estimate stays where it is; the next reset clears it */
     }
     const float limit = tetra_premix_limit_or_zero(pre_limit);
@@ -1594,7 +1604,7 @@ dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f) {
     }
     const float total = f->pre_freq + f->freq;
     float size = 0.0f;
-    if (!stored_float_is_finite(&total) || !fll_tetra_window_take(f, total, &size)) {
+    if (!computed_float_is_finite(total) || !fll_tetra_window_take(f, total, &size)) {
         return;
     }
     if (f->tetra_track <= 0) {

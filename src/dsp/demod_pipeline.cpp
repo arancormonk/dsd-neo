@@ -2403,6 +2403,13 @@ tetra_stream_piece(struct demod_state* d, tetra_stream_cursor* c, int seg) {
  */
 static int
 full_demod_tetra_stream_block(struct demod_state* d, tetra_stream_block* r) {
+    /* Defined on every return, so the caller reads no indeterminate field whichever way the gate goes. */
+    r->channel = NULL;
+    r->channel_pairs = 0;
+    r->out = NULL;
+    r->out_pairs = 0;
+    r->in_pairs = 0;
+    r->agc_before = 0.0f;
     int sub = 0;
     if (!tetra_stream_block_runs(d, &sub)) {
         return 0;

@@ -46,9 +46,11 @@ _Static_assert((DSD_TETRA_UL_DIFF_RING & (DSD_TETRA_UL_DIFF_RING - 1)) == 0, "a 
    -pi/4, -3pi/4 (clause 5.5.2.2 with the decoder's dibit numbering, sync_patterns.h). */
 static void
 ul_training_from(dsd_tetra_ul_training* tr, const char* dibits, int len) {
-    static const float k = 0.70710678118654752f;
-    static const float step_re[4] = {k, -k, k, -k};
-    static const float step_im[4] = {k, k, -k, -k};
+    /* cos(pi/4) as a literal: a C static initializer must be a constant expression (MSVC refuses a const variable). */
+    static const float step_re[4] = {0.70710678118654752f, -0.70710678118654752f, 0.70710678118654752f,
+                                     -0.70710678118654752f};
+    static const float step_im[4] = {0.70710678118654752f, 0.70710678118654752f, -0.70710678118654752f,
+                                     -0.70710678118654752f};
     tr->len = len;
     for (int i = 0; i < len; i++) {
         const int dibit = (dibits[i] - '0') & 3;
