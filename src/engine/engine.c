@@ -3542,7 +3542,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
            failure. The reception ends before another frame decodes, so the outer pass settles it
            (dsd_engine_scan_untyped_poll(): a row commits under the boundary, then its keys; a failure puts the cached
            centre back and says so) and the hunt finds the frame again under what is now true. A carrier that keeps sync
-           (a control channel) would otherwise go on decoding under the frequency that failed. One load while no tune is
+           (a control channel) would otherwise go on decoding under the frequency that failed. Two loads while no tune is
            noted. */
         if (dsd_engine_manual_tune_settled_ready()) {
             state->synctype = DSD_SYNC_NONE;
@@ -3746,7 +3746,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         dsd_runtime_pump_controls(opts, state);
-        /* A manual tune that timed out lands or fails late (issue #671): one load while none is pending. An untyped
+        /* A manual tune that timed out lands or fails late (issue #671): two loads while none is pending. An untyped
            -Y step's row commits as it lands. */
         (void)dsd_engine_scan_untyped_poll(opts, state);
         /* An interrupted idle read skips noCarrier(), but a stalled NFM call still expires. */

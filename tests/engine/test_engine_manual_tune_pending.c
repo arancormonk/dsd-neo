@@ -93,9 +93,9 @@ typedef struct {
 
 static void
 fixture_begin(fixture* f) {
-    /* A record a case left goes, and its drop's report with it. */
+    /* A record a case left goes, and its drop's reports with it. */
     dsd_engine_manual_tune_supersede(f->state);
-    (void)dsd_engine_manual_tune_poll(NULL, NULL);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
     DSD_MEMSET(f->opts, 0, sizeof *f->opts);
     DSD_MEMSET(f->state, 0, sizeof *f->state);
     DSD_MEMSET(g_stream_opts, 0, sizeof *g_stream_opts);
@@ -342,6 +342,38 @@ test_superseded_record_reports_its_drop(fixture* f) {
     fixture_end();
 }
 
+/* Gate review: a tune noted over an untyped -Y step's record (a live Airspy apply under a pending resume) displaces it;
+   the step's drop is still reported, first and once, with its row, since a resume may wait on it. The newer tune is
+   then polled on its own. An entry displaced leaves no report: its drop settles nothing. */
+static void
+test_displaced_step_reports_its_drop(fixture* f) {
+    fixture_begin(f);
+    const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
+    uint64_t step_id = 0U;
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &step_id) == RTL_STREAM_TUNE_TIMEOUT);
+    dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_UNTYPED_STEP, step_id, ENTRY_A_HZ, prior_hz, 2, 5U,
+                                        7U);
+    take_request(step_id, ENTRY_A_HZ);
+    const uint64_t entry_id = enter_frequency(f, ENTRY_B_HZ);
+    /* The step's own late landing changes nothing: its record went with the displacement. */
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
+    assert(dsd_engine_manual_tune_settled_ready() == 1);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    dsd_manual_tune_settled settled;
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_UNTYPED_STEP && settled.requested_hz == ENTRY_A_HZ && settled.row == 2
+           && settled.scan_session == 5U && settled.map_seq == 7U);
+    assert(dsd_engine_manual_tune_settled_ready() == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    take_request(entry_id, ENTRY_B_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_B_HZ) == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
+    dsd_engine_manual_tune_last_settled(&settled);
+    assert(settled.kind == DSD_MANUAL_TUNE_ENTRY && settled.requested_hz == ENTRY_B_HZ);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
+    fixture_end();
+}
+
 /* Final review, Important 2: the synced-frames loop ends a reception on any completion the next poll acts on -- a late
    failure of any tune, an untyped step's landing -- and on nothing else: an entry's landing changes nothing the decoder
    names. */
@@ -459,6 +491,7 @@ main(void) {
     test_superseded_record_reports_its_drop(&f);
     test_untagged_takeover_reports_the_drop(&f);
     test_older_completion_keeps_the_awaited_one(&f);
+    test_displaced_step_reports_its_drop(&f);
     test_settled_ready_names_what_the_poll_acts_on(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
 

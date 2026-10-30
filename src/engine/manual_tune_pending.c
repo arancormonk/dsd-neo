@@ -12,7 +12,7 @@
  * enough: a completion of another manual tune than the noted one comes only from a newer tune, which supersedes the
  * record anyway. A record superseded, or whose stream session ended, is dropped, and the next poll reports the drop
  * once, so the owner of what the tune was for (a -Y resume's row) settles it rather than waiting on a completion that
- * no longer counts.
+ * no longer counts. An untyped -Y step's record that a newer tune displaces keeps its drop for the poll as well.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -45,6 +45,12 @@ typedef struct {
 enum { MANUAL_TUNE_NONE_NOTED = 0, MANUAL_TUNE_NOTED = 1, MANUAL_TUNE_DROPPED_UNREPORTED = 2 };
 
 static dsd_manual_tune_record g_record;
+/* An untyped -Y step's record a newer tune displaced, its drop still to report: its row (a resume's) has an owner
+   waiting on it, which the newer record's settlement would never name (issue #671). An entry's drop settles nothing,
+   so an entry displaced leaves none. One is enough: a newer step displaced comes from a newer scan session, which the
+   older one's report would only find stale. */
+static dsd_manual_tune_record g_displaced;
+static int g_displaced_unreported;
 /* The record the last poll that settled one took. */
 static dsd_manual_tune_settled g_settled;
 static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
@@ -103,6 +109,10 @@ dsd_engine_manual_tune_completion(uint64_t id, int result) {
 void
 dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
                                     uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t map_seq) {
+    if (atomic_load(&g_record_pending) != MANUAL_TUNE_NONE_NOTED && g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP) {
+        g_displaced = g_record;
+        g_displaced_unreported = 1;
+    }
     dsd_engine_manual_tune_supersede(state);
     if (id == 0U) {
         return;
@@ -126,19 +136,31 @@ dsd_engine_manual_tune_supersede(dsd_state* state) {
     }
 }
 
-/* The record goes, and what it was stays for its owner (dsd_engine_manual_tune_last_settled()). */
+/* What @p record was stays for its owner (dsd_engine_manual_tune_last_settled()). */
+static void
+manual_tune_keep_settled(const dsd_manual_tune_record* record) {
+    g_settled.kind = record->kind;
+    g_settled.requested_hz = record->requested_hz;
+    g_settled.row = record->row;
+    g_settled.scan_session = record->scan_session;
+    g_settled.map_seq = record->map_seq;
+}
+
+/* The record goes, and what it was stays for its owner. */
 static void
 manual_tune_settle(void) {
     atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
-    g_settled.kind = g_record.kind;
-    g_settled.requested_hz = g_record.requested_hz;
-    g_settled.row = g_record.row;
-    g_settled.scan_session = g_record.scan_session;
-    g_settled.map_seq = g_record.map_seq;
+    manual_tune_keep_settled(&g_record);
 }
 
 int
 dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
+    if (g_displaced_unreported) {
+        /* The displaced step first: the record that displaced it is polled next. */
+        g_displaced_unreported = 0;
+        manual_tune_keep_settled(&g_displaced);
+        return DSD_MANUAL_TUNE_DROPPED;
+    }
     const int noted = atomic_load(&g_record_pending);
     if (noted == MANUAL_TUNE_NONE_NOTED) {
         return DSD_MANUAL_TUNE_NONE;
@@ -193,6 +215,9 @@ dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out) {
 
 int
 dsd_engine_manual_tune_settled_ready(void) {
+    if (g_displaced_unreported) {
+        return 1;
+    }
     if (atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED) {
         return 0;
     }

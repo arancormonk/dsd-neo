@@ -57,14 +57,15 @@ void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind 
 /**
  * @brief Drop the noted tune: another tune of the receiver now decides where the receiver is. The next
  * dsd_engine_manual_tune_poll() reports the drop (DSD_MANUAL_TUNE_DROPPED), unless a newer tune is noted first, which
- * then owns the receiver. Nothing when no tune is noted.
+ * then owns the receiver: an untyped -Y step's drop is still reported then, ahead of the newer tune, since a resume may
+ * wait on its row. Nothing when no tune is noted.
  */
 void dsd_engine_manual_tune_supersede(dsd_state* state);
 
 /**
  * @brief Take the noted tune's completion, if it has come.
  *
- * Costs one atomic load while nothing is noted. A record whose stream session has ended (rtl_stream_session_generation())
+ * Costs a flag read and one atomic load while nothing is noted. A record whose stream session has ended (rtl_stream_session_generation())
  * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
  * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.

@@ -1856,7 +1856,7 @@ setup_untyped_keyed_list(dsd_opts* opts, dsd_state* state, long int row0_hz, lon
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
     dsd_engine_manual_tune_supersede(state);
-    (void)dsd_engine_manual_tune_poll(NULL, NULL); /* and the drop's report with it */
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {} /* and the drops' reports with it */
     opts->scanner_mode = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_hangtime = 1;
@@ -2288,7 +2288,7 @@ test_entry_late_failure_ends_a_synced_reception(void) {
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
     dsd_engine_manual_tune_supersede(state);
-    (void)dsd_engine_manual_tune_poll(NULL, NULL);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtlsdr_center_freq = 980012500U;
     state->rtl_ctx = (RtlSdrContext*)state;
@@ -2383,6 +2383,55 @@ test_untyped_resume_settles_when_its_row_tune_is_dropped(void) {
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect_true("dropped-resume-late-landing", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE
                                                          && opts->scanner_mode == 0 && state->lcn_freq_roll == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Gate review: a tune noted over a -Y resume's pending row tune, with no pause first (a live Airspy apply that moves the
+   centre and times out), replaces the manual-tune record. Before, the row's drop went with it and the resume waited for
+   good, Resume scan unavailable. The displaced row's drop is now reported ahead of the newer tune, and the scan stays
+   paused, saying why. */
+static int
+test_untyped_resume_settles_when_a_newer_tune_displaces_its_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 976012500, 977012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("displaced-resume-pending", dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                                                      && state->lcn_scan_resume_pending == 1);
+    /* The newer tune, as svc_rtl_tune_only() makes it: its wait times out too, and it is noted. */
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
+    uint64_t pending_id = 0U;
+    rc |= expect_true("displaced-newer-times-out",
+                      io_control_set_freq_tagged(opts, state, 977512500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                          && pending_id != 0U);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, 977512500U, prior_hz, -1, 0U, 0U);
+    state->ui_msg[0] = '\0';
+    rc |= expect_true("displaced-ends-a-reception", dsd_engine_manual_tune_settled_ready() == 1);
+    rc |= expect_true("displaced-row-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_DROPPED);
+    rc |= expect_true("displaced-stays-paused", opts->scanner_mode == 0 && state->lcn_scan_paused == 1
+                                                    && state->lcn_scan_resume_pending == 0 && state->operator_tuned == 1
+                                                    && state->lcn_freq_roll == 0);
+    rc |= expect_true("displaced-says-why",
+                      strcmp(state->ui_msg, "Scan stays paused: the resume to 976.012500 MHz was interrupted") == 0);
+    /* The newer tune is still awaited, and reported once, on its own. */
+    rc |= expect_true("displaced-newer-awaited", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE
+                                                     && dsd_engine_manual_tune_settled_ready() == 0);
+    dsd_engine_manual_tune_supersede(state);
+    rc |= expect_true("displaced-newer-dropped", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_DROPPED);
+    rc |=
+        expect_true("displaced-newer-dropped-once", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -8174,6 +8223,7 @@ main(void) {
     rc |= test_untyped_resume_waits_for_its_row();
     rc |= test_entry_late_failure_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
+    rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();
     rc |= test_running_step_dropped_keeps_the_windows();
     rc |= test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
