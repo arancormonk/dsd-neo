@@ -615,7 +615,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   width the front end refuses fails the tune before any backend moves. Test: `ENGINE_TRUNK_RETUNE_REGRESSION` (the `-fA`
   and `-fM` blank rows among them).
 - DSP `getFrameSync()` builds its sync windows from a dibit history that a no-sync exit (the timeout after a matchless
-  1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`. The next call takes it
+  1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`, with the raw levels of
+  its last symbols (the call's level window, which the window's level estimate and the NXDN96 FSW's four-level reading
+  read). The levels go and come with the dibits under every rule below, re-ringed onto the next call's level window,
+  which another sync type can size differently. The next call takes it
   up only when nothing came between: the same symbol clock, clock epoch, input, carrier count, trunk tuning generation,
   SPS hunt profile and modulation (the profile and modulation the history was read under), no off-thread tune awaiting
   reconciling, and no `dsd_state_forget_sync_join_histories()` since the history began. The decoder thread's trunk
@@ -624,12 +627,20 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   carrier boundary (a typed scanner row that moved the receiver yet ends unlanded is one,
   `channel_scan_note_unlanded_move()`) and every acquisition reset; so a P25 release's retune, or a direct return, in
   the exit's own no-sync hooks keeps nothing. Its first read checks the clock, epoch, carrier count, generation, drops
-  and pending off-thread tunes again, for a flush an RTL reader finds only when it reads. A matcher that reads only its
-  window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17) then matches a frame that
-  straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before it was lost. DMR and
-  X2-TDMA read their pre-sync half from the rolling dibit buffers, which the no-carrier reset clears, so for them
-  nothing changes. A sync, an input interruption, a signal-search yield and shutdown drop it too. Test:
-  `FRAME_SYNC_HISTORY_CARRY`.
+  and pending off-thread tunes again, for a flush an RTL reader finds only when it reads; a failed check drops the
+  levels with the dibits. A matcher that reads only its window or reads its frame forward from the sync (TETRA, P25,
+  NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then matches a frame that straddles the exit; before, a TETRA control
+  uplink burst that began fewer than 20 symbols before it was lost. An NXDN96 FSW straddling the exit is read on its
+  carried levels, so it counts as clear only when its 20 bits are, and acquisition still needs two clear FSWs a frame
+  apart; `frame_sync_nxdn96_fsw_bit_errors()` reads a window with fewer than ten levels as not clear (only a test's
+  sign-only window keeps the sign match). DMR and X2-TDMA decode their burst back from the rolling dibit buffers
+  (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset clears, so they match only on a 24-symbol window the
+  call read itself (`frame_sync_match_window_own()`), as before the carry. What the carry does not restore is either
+  continuous across the exit (the soft symbol history `dsd_state::symbol_history`, which TETRA's soft capture and
+  every warm start read, and `sbuf`) or sync evidence that noCarrier resets (the NXDN96 hits and lock, the M17
+  preamble run, candidate, polarity and join hits, `lastsynctype`, the ProVoice and M17 confirms), after which a
+  matcher needs more evidence, not less. A sync, an input interruption, a signal-search yield and shutdown drop it too.
+  Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync straddling the exit among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned

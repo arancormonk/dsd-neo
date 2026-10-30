@@ -356,6 +356,8 @@ typedef struct {
     float lmax;
     float lmin;
     unsigned int ready_windows;
+    /* Dibits of the history the call read itself (frame_sync_runtime_ctx::own_count). */
+    int own_symbols;
     char* modulation;
     char* synctest;
     char* synctest8;
@@ -391,6 +393,15 @@ static int
 frame_sync_match_window_ready(const frame_sync_match_ctx* ctx, int length) {
     const unsigned int flag = frame_sync_window_flag(length);
     return ctx && flag != 0 && (ctx->ready_windows & flag) != 0;
+}
+
+/* Whether the window of @p length was read whole by this call, none of it carried from the last
+ * (dsd_frame_sync_history_carry). A matcher whose decoder reads its burst back from the rolling dibit buffers, which
+ * the no-carrier reset after a no-sync exit clears, needs that: it would decode the carried part as the cleared
+ * buffer's zeros. */
+static int
+frame_sync_match_window_own(const frame_sync_match_ctx* ctx, int length) {
+    return frame_sync_match_window_ready(ctx, length) && ctx->own_symbols >= length;
 }
 
 static int
@@ -873,8 +884,9 @@ frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* la
 static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
+    /* The burst is decoded back from dibit_buf_p (frame_sync_accept_x2tdma()). */
     if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
-        || !frame_sync_match_window_ready(ctx, 24)) {
+        || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1883,8 +1895,9 @@ frame_sync_try_dmr_rc_data(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
+    /* The burst is decoded back from dmr_payload_p (90 dibits, the sync's included). */
     if (ctx->opts->frame_dmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_ready(ctx, 24)) {
+        || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2959,6 +2972,10 @@ typedef struct frame_sync_runtime_ctx {
     int t_max;
     int history_head;
     int history_count;
+    /* Dibits of the history this call read itself, up to the capacity: the rest were carried from the last call. */
+    int own_count;
+    /* 1 for a test's sign-only window, which has no levels to read (dsd_frame_sync_test_try_protocol_matches()). */
+    int sign_only;
     /* The SPS hunt profile and modulation the history was read under (the window's build): an exit that steps either
        leaves a history the next call cannot use (frame_sync_history_keep()). */
     int history_sps_idx;
@@ -2991,13 +3008,16 @@ typedef struct frame_sync_runtime_ctx {
     char synctest16[17];
     char modulation[8];
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
-    float lbuf[48];
+    /* The level window, t_max levels; a carried history brings its levels (dsd_frame_sync_history_carry::levels). */
+    float lbuf[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
 } frame_sync_runtime_ctx;
 
 /* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
  * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). The levels are the
- * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels). With fewer
- * than ten to read -- a sign-only test window -- there is nothing to count, and the sign match stands. */
+ * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels), and which a
+ * carried history brings its levels into (frame_sync_history_resume()). A window with fewer than ten levels to read is
+ * not read clear: all 20 bits count as errors. Only a test's sign-only window, which has no levels at all, keeps the
+ * sign match. */
 /* A level read on four levels: +3, +1, -1 or -3 against the window's centre and its two mid thresholds. */
 static inline int
 frame_sync_four_level_slice(float x, float center, float umid, float lmid) {
@@ -3014,7 +3034,13 @@ static int
 frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) {
     static const int fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};
     const frame_sync_runtime_ctx* rt = ctx->history;
-    if (!rt || rt->level_count < 10 || rt->t_max < 10 || ctx->lmax - ctx->lmin < 1e-6f) {
+    if (rt && rt->sign_only) {
+        return 0;
+    }
+    if (!rt || rt->level_count < 10 || rt->t_max < 10) {
+        return 20;
+    }
+    if (ctx->lmax - ctx->lmin < 1e-6f) {
         return 0;
     }
     const float center = (ctx->lmax + ctx->lmin) * 0.5f;
@@ -3083,6 +3109,42 @@ frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* 
 _Static_assert(DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS == FRAME_SYNC_HISTORY_CAPACITY,
                "the carried history is the whole history ring");
 
+/* The level window's levels, oldest first, into @p out (DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS); returns how many. */
+static int
+frame_sync_levels_unwrap(const frame_sync_runtime_ctx* rt, float* out) {
+    int n = rt->level_count;
+    if (rt->t_max < 1 || rt->t_max > DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS || n < 0) {
+        return 0;
+    }
+    if (n > rt->t_max) {
+        n = rt->t_max;
+    }
+    for (int i = 0; i < n; i++) {
+        out[i] = rt->lbuf[(rt->lidx - n + i + rt->t_max) % rt->t_max];
+    }
+    return n;
+}
+
+/* The last of @p count levels (oldest first) into the level window, as many as it holds: the next call's window can be
+ * another size than the last's (frame_sync_select_t_max()). */
+static void
+frame_sync_levels_rewrap(frame_sync_runtime_ctx* rt, const float* levels, int count) {
+    if (rt->t_max < 1) {
+        rt->level_count = 0;
+        rt->lidx = 0;
+        return;
+    }
+    int n = count < rt->t_max ? count : rt->t_max;
+    if (n < 0) {
+        n = 0;
+    }
+    for (int i = 0; i < n; i++) {
+        rt->lbuf[i] = levels[count - n + i];
+    }
+    rt->level_count = n;
+    rt->lidx = n % rt->t_max;
+}
+
 /* A no-sync exit: keep the history for the next call, with where the stream is (dsd_frame_sync_history_carry). Not when
  * the history was dropped or a tune completed since it began: the exit's own hooks run first, and a P25 release there
  * returns to the control channel, so the history is the carrier left's. */
@@ -3096,6 +3158,8 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     DSD_MEMCPY(carry->dibits, rt->symbol_history, sizeof(carry->dibits));
     carry->head = rt->history_head;
     carry->count = rt->history_count;
+    /* The levels the window was read on go with it: a matcher that reads them (the NXDN96 FSW) reads them whole. */
+    carry->level_count = frame_sync_levels_unwrap(rt, carry->levels);
     carry->symbol_clock = state->symbol_clock;
     carry->symbol_clock_epoch = state->symbol_clock_epoch;
     carry->symbol_clock_input = state->symbol_clock_input;
@@ -3114,6 +3178,14 @@ frame_sync_history_drop(dsd_state* state) {
     state->frame_sync_carry.valid = 0;
 }
 
+/* Whether the carried ring's head and counts lie within its buffers. */
+static int
+frame_sync_history_carry_in_range(const dsd_frame_sync_history_carry* carry) {
+    return carry->head >= 0 && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
+           && carry->count <= FRAME_SYNC_HISTORY_CAPACITY && carry->level_count >= 0
+           && carry->level_count <= DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS;
+}
+
 /* A call's start: take up the history the last call kept when the stream went on from there unbroken, and drop it
  * either way, so it is taken up once. An off-thread tune noted after this call applied the pending ones
  * (dsd_frame_sync_apply_off_thread_tunes()) and not applied yet counts as a retune too. */
@@ -3125,9 +3197,7 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
                          && carry->symbol_clock_input == state->symbol_clock_input
                          && carry->carrier_seq == state->carrier_seq && carry->sps_hunt_idx == state->sps_hunt_idx
                          && carry->rf_mod == state->rf_mod && carry->tune_generation == rt->history_tune_gen
-                         && !dsd_frame_sync_off_thread_tune_pending() && carry->head >= 0
-                         && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
-                         && carry->count <= FRAME_SYNC_HISTORY_CAPACITY;
+                         && !dsd_frame_sync_off_thread_tune_pending() && frame_sync_history_carry_in_range(carry);
     carry->valid = 0;
     if (!unbroken) {
         return;
@@ -3135,6 +3205,7 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
     DSD_MEMCPY(rt->symbol_history, carry->dibits, sizeof(rt->symbol_history));
     rt->history_head = carry->head;
     rt->history_count = carry->count;
+    frame_sync_levels_rewrap(rt, carry->levels, carry->level_count);
     rt->resumed = 1;
     rt->resume_clock = state->symbol_clock;
     rt->resume_epoch = state->symbol_clock_epoch;
@@ -3157,6 +3228,8 @@ frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
     if (!unbroken) {
         rt->history_head = 0;
         rt->history_count = 0;
+        rt->lidx = 0;
+        rt->level_count = 0;
     }
 }
 
@@ -3166,6 +3239,9 @@ frame_sync_history_push(frame_sync_runtime_ctx* rt, char symbol) {
     rt->history_head = (rt->history_head + 1) % FRAME_SYNC_HISTORY_CAPACITY;
     if (rt->history_count < FRAME_SYNC_HISTORY_CAPACITY) {
         rt->history_count++;
+    }
+    if (rt->own_count < FRAME_SYNC_HISTORY_CAPACITY) {
+        rt->own_count++;
     }
 }
 
@@ -3584,6 +3660,7 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .lmax = rt->lmax,
         .lmin = rt->lmin,
         .ready_windows = rt->ready_windows,
+        .own_symbols = rt->own_count,
         .modulation = rt->modulation,
         .synctest = rt->synctest,
         .synctest8 = rt->synctest8,
@@ -3625,6 +3702,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
     }
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    rt.sign_only = 1;
     for (int i = 0; i < symbol_count; i++) {
         frame_sync_history_push(&rt, symbols[i]);
     }
@@ -3638,6 +3716,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .lmax = state->max,
         .lmin = state->min,
         .ready_windows = rt.ready_windows,
+        .own_symbols = rt.own_count,
         .modulation = rt.modulation,
         .synctest = rt.synctest,
         .synctest8 = rt.synctest8,

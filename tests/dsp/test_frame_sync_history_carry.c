@@ -19,6 +19,10 @@
  * unbroken, and starts blind when it did not: a carrier change, a trunk retune (in the exit's own no-sync hooks, as a
  * P25 release makes one, or between the calls, on the decoder thread or off it), a completed tune, a stream flush the
  * next read finds, a symbol read between the calls, another modulation, or another hunt profile.
+ *
+ * The raw levels of the window go with its dibits: an NXDN96 FSW straddling the exit is read on its four levels, so a
+ * sign-only one is no clear hit and pairs with no clear FSW a frame later. DMR and X2-TDMA decode their burst back from
+ * rolling buffers the no-carrier reset clears, so their syncs match only on a window the call read itself.
  */
 
 #include <assert.h>
@@ -53,6 +57,8 @@ enum {
 };
 
 static char g_stream[STREAM_LEN];
+/* The level each symbol is read at. */
+static float g_levels[STREAM_LEN];
 static int g_pos = 0;
 /* 1: the next read finds a stream flush, as an RTL reader does after a retune (dsd_symbol.c bumps the clock's
    epoch). */
@@ -61,6 +67,17 @@ static int g_flush_on_next_read = 0;
    ones pending at its start (dsd_frame_sync_apply_off_thread_tunes()). */
 static int g_off_thread_tune_on_next_read = 0;
 static char g_block1[CB_HALF];
+
+/* The CQPSK slicer's levels for each dibit (frame_sync_slice_cqpsk_dibit(): 1 at +3, 0 at +1, 2 at -1, 3 at -3). */
+static float
+dibit_level(char dibit) {
+    switch (dibit) {
+        case '1': return 3.0f;
+        case '0': return 1.0f;
+        case '2': return -1.0f;
+        default: return -3.0f;
+    }
+}
 
 /* Filler that runs 0, 1, 2, 3 over and over, which no training sequence matches in any rotation (each holds a dibit
    twice in a row, which a rotation keeps and the filler never has), at all four levels so the window's levels centre
@@ -85,18 +102,10 @@ stream_build(void) {
         seed = (seed * 1103515245u) + 12345u;
         g_stream[at + i] = (char)('0' + ((seed >> 16) & 3u));
     }
-    g_pos = 0;
-}
-
-/* The CQPSK slicer's levels for each dibit (frame_sync_slice_cqpsk_dibit(): 1 at +3, 0 at +1, 2 at -1, 3 at -3). */
-static float
-dibit_level(char dibit) {
-    switch (dibit) {
-        case '1': return 3.0f;
-        case '0': return 1.0f;
-        case '2': return -1.0f;
-        default: return -3.0f;
+    for (int i = 0; i < STREAM_LEN; i++) {
+        g_levels[i] = dibit_level(g_stream[i]);
     }
+    g_pos = 0;
 }
 
 /* What dsd_symbol.c's read leaves behind: the soft history, the symbol count and the stream's symbol clock. */
@@ -104,7 +113,7 @@ float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)have_sync;
-    const float symbol = dibit_level(g_pos < STREAM_LEN ? g_stream[g_pos] : (char)('0' + (g_pos & 3)));
+    const float symbol = g_pos < STREAM_LEN ? g_levels[g_pos] : dibit_level((char)('0' + (g_pos & 3)));
     g_pos++;
     if (g_flush_on_next_read) {
         g_flush_on_next_read = 0;
@@ -382,6 +391,211 @@ test_profile_step_keeps_the_read_profile(void) {
     free_state_buffers(&state);
 }
 
+/* Where a sync word straddling the exit ends: 4 symbols into the next call, so its first symbols are carried. */
+enum { WORD_END = DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 4, NXDN_FRAME = (int)DSD_FRAME_SYNC_NXDN_FRAME_SYMBOLS };
+
+/* Filler at +3, +1, -1, -3 over and over (the signs 1 1 3 3), which none of the sign-sliced sync words below holds, and
+   all four levels, so the window's levels span the slicer. */
+static void
+sign_stream_filler(void) {
+    static const float filler[4] = {3.0f, 1.0f, -1.0f, -3.0f};
+    for (int i = 0; i < STREAM_LEN; i++) {
+        g_levels[i] = filler[i & 3];
+        g_stream[i] = g_levels[i] > 0.0f ? '1' : '3';
+    }
+    g_pos = 0;
+}
+
+/* A sign-sliced word ('1' at +3, '3' at -3) whose last symbol is @p end - 1. */
+static void
+sign_stream_put_word(const char* word, int len, int end) {
+    for (int i = 0; i < len; i++) {
+        g_levels[end - len + i] = word[i] == '1' ? 3.0f : -3.0f;
+        g_stream[end - len + i] = word[i];
+    }
+}
+
+/* What noCarrier() resets of the sync's evidence after a no-sync exit (no_carrier_reset_decode_state()): the NXDN96
+   hits and lock, and the last sync type. The carried history is not among them. */
+static void
+no_carrier_resets_sync_evidence(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    dsd_nxdn96_sync_clear(&state->nxdn96_sync);
+    state->lastsynctype = DSD_SYNC_NONE;
+}
+
+/* A session on the 4800/4 profile (or 6000/4) under a C4FM or GFSK lock, sign-sliced, with noCarrier()'s resets run in
+   the exit's no-sync hooks. */
+static void
+init_sign_session(dsd_opts* opts, dsd_state* state, int profile, int gfsk) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->wav_decimator = 48000;
+    opts->mod_c4fm = gfsk ? 0 : 1;
+    opts->mod_gfsk = gfsk ? 1 : 0;
+    opts->mod_cli_lock = 1;
+    opts->msize = 1024;
+    opts->ssize = 128;
+    state->rf_mod = gfsk ? 2 : 0;
+    state->p25_p2_active_slot = -1;
+    state->min = -3.0f;
+    state->max = 3.0f;
+    state->lmid = -2.0f;
+    state->umid = 2.0f;
+    state->minref = -2.4f;
+    state->maxref = 2.4f;
+    state->sps_hunt_idx = profile;
+    state->samplesPerSymbol = profile == DSD_FRAME_SYNC_SPS_PROFILE_6000_4 ? 8 : 10;
+    state->symbolCenter = state->samplesPerSymbol / 2 - 1;
+    assert(init_state_buffers(state));
+    sign_stream_filler();
+    dsd_frame_sync_reset_mod_state();
+    static dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.no_carrier = no_carrier_resets_sync_evidence;
+    dsd_frame_sync_hooks_set(&hooks);
+}
+
+static void
+first_sign_call_times_out(dsd_opts* opts, dsd_state* state) {
+    assert(getFrameSync(opts, state) == -1);
+    assert(g_pos == DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+    assert(state->frame_sync_carry.valid == 1);
+}
+
+/* The NXDN frame sync word, + polarity, at its four levels (TS 1-A 4.2): +3 01, +1 00, -1 10, -3 11. */
+static const float k_nxdn_fsw[10] = {-3.0f, 1.0f, -3.0f, 3.0f, -3.0f, -3.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+
+/* An NXDN96 FSW whose last symbol is @p end - 1, at its levels, or with every magnitude wrong (+3 read +1 and so on):
+   the same signs, so the same sign-sliced window, but all ten magnitude bits in error. */
+static void
+put_nxdn_fsw(int end, int magnitudes_wrong) {
+    for (int i = 0; i < 10; i++) {
+        float level = k_nxdn_fsw[i];
+        if (magnitudes_wrong) {
+            level = level > 0.0f ? (level > 2.0f ? 1.0f : 3.0f) : (level < -2.0f ? -1.0f : -3.0f);
+        }
+        g_levels[end - 10 + i] = level;
+        g_stream[end - 10 + i] = level > 0.0f ? '1' : '3';
+    }
+}
+
+static void
+init_nxdn96(dsd_opts* opts, dsd_state* state) {
+    init_sign_session(opts, state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 1);
+    opts->frame_nxdn96 = 1;
+}
+
+/* An NXDN96 FSW straddling the exit whose magnitudes are all wrong, then a clear one a frame later: the first is a
+   sign-only hit, so the pair is no acquisition (TS 1-A 5.3: two FSWs within two bit errors each). The carried window's
+   levels go with its dibits; without them the first hit's four-level reading had nothing to read and passed. */
+static void
+test_nxdn96_sign_only_fsw_across_the_exit_does_not_acquire(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_nxdn96(&opts, &state);
+    put_nxdn_fsw(WORD_END, 1);
+    put_nxdn_fsw(WORD_END + NXDN_FRAME, 0);
+    first_sign_call_times_out(&opts, &state);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+/* Both FSWs clear: the one straddling the exit is read on its carried levels and counts, so the next acquires. */
+static void
+test_nxdn96_clear_fsw_across_the_exit_acquires(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_nxdn96(&opts, &state);
+    put_nxdn_fsw(WORD_END, 0);
+    put_nxdn_fsw(WORD_END + NXDN_FRAME, 0);
+    first_sign_call_times_out(&opts, &state);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NXDN_POS);
+    assert(g_pos == WORD_END + NXDN_FRAME);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+/* The carried levels are re-ringed onto the next call's level window, which another sync type can size differently
+   (YSF's 20 symbols against 24): a clear FSW straddling the exit still reads clear. */
+static void
+test_nxdn96_levels_follow_a_level_window_resize(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_nxdn96(&opts, &state);
+    put_nxdn_fsw(WORD_END, 0);
+    put_nxdn_fsw(WORD_END + NXDN_FRAME, 0);
+    state.lastsynctype = DSD_SYNC_YSF_POS; /* a 20-symbol level window for the first call */
+    dsd_frame_sync_hooks_set(NULL);        /* keep it: noCarrier would reset it */
+    first_sign_call_times_out(&opts, &state);
+    state.lastsynctype = DSD_SYNC_NONE; /* the next call's is 24 */
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NXDN_POS);
+    assert(g_pos == WORD_END + NXDN_FRAME);
+    free_state_buffers(&state);
+}
+
+/* DMR's decoder reads its burst's 66 dibits before the sync, and the sync, back from dmr_payload_p, a rolling buffer
+   noCarrier() clears; a sync window that reaches into the carried history would decode those as the cleared buffer's
+   zeros. So DMR matches only on what the call read itself, as before the carry: a sync straddling the exit is not
+   matched, and one read whole in the call is. */
+static void
+test_dmr_sync_across_the_exit_is_not_matched(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    opts.frame_dmr = 1;
+    sign_stream_put_word(DMR_BS_DATA_SYNC, 24, WORD_END);
+    first_sign_call_times_out(&opts, &state);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+static void
+test_dmr_sync_read_whole_in_the_call_is_matched(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    opts.frame_dmr = 1;
+    sign_stream_put_word(DMR_BS_DATA_SYNC, 24, WORD_END + 24);
+    first_sign_call_times_out(&opts, &state);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_DMR_BS_DATA_POS);
+    assert(g_pos == WORD_END + 24);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+/* X2-TDMA's decoder reads a data burst 90 dibits back from dibit_buf_p, which noCarrier() clears too. */
+static void
+test_x2tdma_sync_across_the_exit_is_not_matched(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 0);
+    opts.frame_x2tdma = 1;
+    sign_stream_put_word(X2TDMA_BS_DATA_SYNC, 24, WORD_END);
+    first_sign_call_times_out(&opts, &state);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_NONE);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+static void
+test_x2tdma_sync_read_whole_in_the_call_is_matched(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 0);
+    opts.frame_x2tdma = 1;
+    sign_stream_put_word(X2TDMA_BS_DATA_SYNC, 24, WORD_END + 24);
+    first_sign_call_times_out(&opts, &state);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_X2TDMA_DATA_POS);
+    assert(g_pos == WORD_END + 24);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
 int
 main(void) {
     test_burst_across_the_exit_locks();
@@ -397,6 +611,13 @@ main(void) {
     test_off_thread_tune_during_first_read_starts_blind();
     test_new_modulation_starts_blind();
     test_profile_step_keeps_the_read_profile();
+    test_nxdn96_sign_only_fsw_across_the_exit_does_not_acquire();
+    test_nxdn96_clear_fsw_across_the_exit_acquires();
+    test_nxdn96_levels_follow_a_level_window_resize();
+    test_dmr_sync_across_the_exit_is_not_matched();
+    test_dmr_sync_read_whole_in_the_call_is_matched();
+    test_x2tdma_sync_across_the_exit_is_not_matched();
+    test_x2tdma_sync_read_whole_in_the_call_is_matched();
     printf("FRAME_SYNC_HISTORY_CARRY: OK\n");
     return 0;
 }

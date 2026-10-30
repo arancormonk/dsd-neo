@@ -13284,7 +13284,8 @@ add_test(
 
 # The frame sync's history across a no-sync exit: a TETRA control uplink burst that straddles the end of a matchless
 # pass locks in the next call when the stream went on unbroken, and not across a carrier, epoch, read or modulation
-# change.
+# change. The levels go with the dibits: an NXDN96 FSW straddling the exit is read on them (a sign-only one does not
+# acquire, a clear one does). DMR and X2-TDMA syncs match only on windows the call read itself.
 add_executable(
     dsd-neo_test_frame_sync_history_carry
     dsp/test_frame_sync_history_carry.c

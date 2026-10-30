@@ -187,27 +187,35 @@ typedef struct {
 
 /* Dibits of frame-sync history a getFrameSync() call hands the next (dsd_frame_sync_history_carry). */
 #define DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS 128
+/* Raw levels it hands on with them: the call's level window, at most this many. */
+#define DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS 48
 
-/* The dibit history the frame sync's windows are built from, as a getFrameSync() call left it on a no-sync exit (the
- * timeout after a matchless pass, or the hunt budget's), with where the stream was then. The next call starts from
- * it when nothing came between: the symbol clock has not moved; neither the clock's epoch, the input, the carrier
- * count, the trunk tuning generation, the SPS hunt profile nor the modulation changed; no tune off the decoder
- * thread awaits reconciling; and no retune forgot the sync histories (dsd_state_forget_sync_join_histories(), which
- * the decoder thread's trunk retunes run: a tune through the trunk tuning hooks, dsd_engine_rxid_trunk_tune(), and
- * noCarrier's direct control-channel return; and so do every off-thread tune applied, every carrier boundary, a
- * typed scanner row that moved the receiver yet ends unlanded included, and every acquisition reset) since the call
- * began. The first symbol the next call reads is checked again, for a stream flush its read found. A sync matcher
- * that reads only its window, or reads forward from its sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17), then
- * matches a frame that began before the exit as one that did not; before, the new call started with no history, and
- * a TETRA uplink burst whose training ended fewer than its window's symbols into the call was never matched. DMR and
- * X2-TDMA read the part before their sync from the rolling dibit buffers, which the no-carrier reset clears, so for
- * them it buys nothing. Every other exit, a sync above all, drops it. Written and read by the frame sync alone
+/* The dibit history the frame sync's windows are built from, and the raw levels of its last symbols (the call's
+ * level window, which the window's level estimate and the NXDN96 FSW's four-level reading read), as a getFrameSync()
+ * call left them on a no-sync exit, the timeout after a matchless pass or the hunt budget's, with where the stream
+ * was then. The next call starts from it when nothing came between: the symbol clock has not moved; neither the
+ * clock's epoch, the input, the carrier count, the trunk tuning generation, the SPS hunt profile nor the modulation
+ * changed; no tune off the decoder thread awaits reconciling; and no retune forgot the sync histories
+ * (dsd_state_forget_sync_join_histories(), which the decoder thread's trunk retunes run: a tune through the trunk
+ * tuning hooks, dsd_engine_rxid_trunk_tune(), and noCarrier's direct control-channel return; and so do every
+ * off-thread tune applied, every carrier boundary, a typed scanner row that moved the receiver yet ends unlanded
+ * included, and every acquisition reset) since the call began. The first symbol the next call reads is checked
+ * again, for a stream flush its read found. A sync matcher that reads only its window, or reads forward from its
+ * sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS), then matches a frame that began before the exit
+ * as one that did not; before, the new call started with no history, and a TETRA uplink burst whose training ended
+ * fewer than its window's symbols into the call was never matched. The levels go with the dibits under the same
+ * rules, so a window read on its levels (the NXDN96 FSW) is read whole. DMR and X2-TDMA decode their burst back from
+ * the rolling dibit buffers, which the no-carrier reset clears, so they match only on a window the call read itself,
+ * as before. Every other exit, a sync above all, drops it. Written and read by the frame sync alone
  * (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories(); decoder-thread private. */
 typedef struct {
     char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
     int head;                                         /* the next slot to write */
     int count;                                        /* dibits held, up to the capacity */
-    uint64_t symbol_clock;                            /* dsd_state::symbol_clock at the exit */
+    /* The raw levels of the last level_count symbols, oldest first: the level window's, unwrapped. */
+    float levels[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
+    int level_count;
+    uint64_t symbol_clock; /* dsd_state::symbol_clock at the exit */
     uint32_t symbol_clock_epoch;
     uint32_t symbol_clock_input;
     uint32_t carrier_seq;
