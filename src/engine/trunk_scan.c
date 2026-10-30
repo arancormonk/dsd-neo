@@ -4805,6 +4805,11 @@ dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_tru
     const int monitor_request = trunk_scan_resume_rollback(opts, state, coord, prepare_failed);
     if (out) {
         out->monitor_request = monitor_request;
+        /* A refused retune may have put the target's own gain on the device before the refusal (a receive profile
+           refused at the rate it landed on): it stays there until the stream reopens, as at a pause. */
+        int target_gain_db = 0;
+        out->restart_gain = !prepare_failed && trunk_scan_target_gain(rt, &target_gain_db)
+                            && target_gain_db != coord->configured_rtl_gain_value;
     }
     dsd_engine_scan_toast_resume_failed(state, (long)rt->target.frequency_hz,
                                         prepare_failed ? DSD_SCAN_RESUME_FAILED_SETUP : DSD_SCAN_RESUME_FAILED_TUNE);

@@ -2717,7 +2717,9 @@ svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_trunk_scan_leave_report report;
-    return svc_trunk_scan_resume_and_record(opts, state, &report);
+    const int rc = svc_trunk_scan_resume_and_record(opts, state, &report);
+    svc_trunk_scan_settle_gain(opts, state, &report);
+    return rc;
 }
 
 /* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */

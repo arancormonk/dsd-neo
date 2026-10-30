@@ -16442,6 +16442,24 @@ test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
     rc |= expect_int("failed reopen: still paused, configured gain",
                      state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
 
+    /* A resume whose retune is refused may have put the target's gain on the device first: the pause stands, and the
+       stream reopens on the configured gain, as at a pause (gate review). */
+    rc |= expect_int("paused entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("paused entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_config_rtl_creates = 0;
+    g_config_rtl_create_gain = -1;
+    const dsd_trunk_tune_result cc_result = g_cc_tune_result;
+    const int cc_calls = g_cc_tune_calls;
+    g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    rc |= trunk_scan_y(&opts, &state, "refused gain resume");
+    g_cc_tune_result = cc_result;
+    rc |= expect_int("refused resume: the retune was refused", g_cc_tune_calls, cc_calls + 1);
+    rc |= expect_int("refused resume: still paused, configured gain",
+                     state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
+    rc |= expect_int("refused resume: the stream reopened on the configured gain",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
+
     /* Resumed onto "own", advanced to "inherit" (the configured gain), paused again: nothing to reopen. */
     rc |= trunk_scan_y(&opts, &state, "gain resume");
     rc |= expect_int("gain resume: own gain again", opts.rtl_gain_value == 10 && state.trunk_scan_paused == 0, 1);

@@ -772,7 +772,8 @@ int svc_pause_trunk_scan_in_place(dsd_opts* opts, dsd_state* state);
  * @brief Resume the paused trunk scan on the target it left (dsd_engine_trunk_scan_resume_ex_locked(), issue #671).
  *
  * A resume whose retune is refused leaves the scan paused; its return to the configured monitor is recorded as a
- * pause's is. The caller holds the P25 SM tick guard. Decoder thread only.
+ * pause's is, and the stream reopens on the configured gain when the target runs its own, as at a pause. The caller
+ * holds the P25 SM tick guard. Decoder thread only.
  *
  * @return As dsd_engine_trunk_scan_resume_ex_locked(): 0 running, 1 running with the park in flight, -1 no trunk scan,
  * -2 preparation failed, -3 retune refused (both failures leave the scan paused, with the reason on the status line).

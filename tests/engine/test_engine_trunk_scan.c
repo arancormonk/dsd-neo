@@ -14817,7 +14817,7 @@ test_refused_resume_stays_paused(void) {
     test_rc |= expect_paused_publication(&state, "refused: resume", 2U, 0, 0U, 0U);
     if (state.p2_wacn != 0x12345ULL || state.rx_id.p25_wacn != 0x4242U || opts.trunk_enable != 0
         || state.rkey_array[9] != 0ULL || state.rkey_array[3] != 111ULL || dsd_scan_mode_configured_view(&state) != NULL
-        || dsd_trunk_scan_hook_p25_ctx() != NULL || report.monitor_request != 0) {
+        || dsd_trunk_scan_hook_p25_ctx() != NULL || report.monitor_request != 0 || report.restart_gain != 0) {
         DSD_FPRINTF(stderr, "refused: not a coherent pause wacn=%llx rx=%u trunk=%d key9=%llu scope=%d\n",
                     state.p2_wacn, (unsigned)state.rx_id.p25_wacn, opts.trunk_enable,
                     (unsigned long long)state.rkey_array[9], dsd_scan_mode_configured_view(&state) != NULL);

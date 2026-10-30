@@ -193,8 +193,9 @@ int dsd_engine_trunk_scan_pause_locked(dsd_opts* opts, dsd_state* state, dsd_tru
  * A resume that cannot park leaves a coherent pause, the paused flags put back before anything is torn down: a
  * preparation failure (no memory for the scopes or keys) drops the scopes it began; a refused retune puts the manual
  * session's state and received identity back, then leaves the target's options, keys, policy and maps, then the
- * scopes, whose front-end request (@p out->monitor_request, recorded as for a pause) comes last. The status line says
- * why. A later resume tries again at once.
+ * scopes, whose front-end request (@p out->monitor_request, recorded as for a pause) comes last, and
+ * @p out->restart_gain is set as a pause sets it, for the target's own gain the retune may have applied. The status
+ * line says why. A later resume tries again at once.
  *
  * The caller holds the P25 SM tick guard, and nothing here takes it.
  *
