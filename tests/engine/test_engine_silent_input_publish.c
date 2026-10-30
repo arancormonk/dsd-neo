@@ -64,11 +64,14 @@ silent_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_m
     return -1;
 }
 
-/* The watchdog tick: holds the guard for k_tick_ms, then leaves it and notes when. */
+/* The watchdog tick: holds the guard until the test has published under it (let_tick_leave()), then k_tick_ms more,
+   then leaves it and notes when. Its hold never ends before the publication it is to put off, however late the test
+   thread runs. */
 static struct {
     dsd_mutex_t mutex;
     dsd_cond_t condition;
     int held;
+    int may_leave;
     dsd_atomic_u64 released_ms; /* 0 while held */
 } g_tick;
 
@@ -79,12 +82,27 @@ watchdog_tick(void* arg) {
     dsd_mutex_lock(&g_tick.mutex);
     g_tick.held = 1;
     dsd_cond_broadcast(&g_tick.condition);
+    /* Bounded, so a test that failed before letting it go still ends. */
+    for (int waits = 0; !g_tick.may_leave && waits < 30; ++waits) {
+        (void)dsd_cond_timedwait(&g_tick.condition, &g_tick.mutex, 1000U);
+    }
     dsd_mutex_unlock(&g_tick.mutex);
     dsd_sleep_ms(k_tick_ms);
     dsd_atomic_u64_store_release(&g_tick.released_ms, dsd_realtime_mono_ms());
     p25_sm_tick_guard_leave();
     DSD_THREAD_RETURN;
 }
+
+/* The test has published under the tick's hold: the tick may go on to leave the guard. */
+static void
+let_tick_leave(void) {
+    dsd_mutex_lock(&g_tick.mutex);
+    g_tick.may_leave = 1;
+    dsd_cond_broadcast(&g_tick.condition);
+    dsd_mutex_unlock(&g_tick.mutex);
+}
+
+static int start_tick(dsd_thread_t* tick);
 
 static int
 put_off_publication_reaches_the_frontends(dsd_opts* opts, dsd_state* state) {
@@ -94,19 +112,10 @@ put_off_publication_reaches_the_frontends(dsd_opts* opts, dsd_state* state) {
     int rc = expect(published && published->trunk_cc_freq == k_baseline_hz, "the baseline is published");
 
     dsd_thread_t tick;
-    if (dsd_thread_create(&tick, watchdog_tick, NULL) != 0) {
+    if (!start_tick(&tick)) {
         dsd_app_frontend_runtime_stop();
-        return expect(0, "tick thread started");
+        return rc | expect(0, "the tick holds the guard");
     }
-    dsd_mutex_lock(&g_tick.mutex);
-    while (!g_tick.held) {
-        if (dsd_cond_timedwait(&g_tick.condition, &g_tick.mutex, 2000U) != 0) {
-            break;
-        }
-    }
-    const int held = g_tick.held;
-    dsd_mutex_unlock(&g_tick.mutex);
-    rc |= expect(held, "the tick holds the guard");
 
     /* A command's result, published while the tick runs: put off, not waited for. */
     (void)dsd_app_frontend_redraw_consume();
@@ -116,6 +125,7 @@ put_off_publication_reaches_the_frontends(dsd_opts* opts, dsd_state* state) {
     rc |= expect(dsd_app_telemetry_snapshot_pending() && dsd_atomic_u64_load_acquire(&g_tick.released_ms) == 0U
                      && published && published->trunk_cc_freq == k_baseline_hz,
                  "the publication is put off while the tick holds the guard");
+    let_tick_leave();
 
     /* The decode loop on a silent input: the hunt reads, and the pump runs when a read leaves its wait. */
     int interrupts_while_held = 0;
@@ -158,6 +168,7 @@ put_off_publication_reaches_the_frontends(dsd_opts* opts, dsd_state* state) {
 static int
 start_tick(dsd_thread_t* tick) {
     g_tick.held = 0;
+    g_tick.may_leave = 0;
     dsd_atomic_u64_store_release(&g_tick.released_ms, 0U);
     if (dsd_thread_create(tick, watchdog_tick, NULL) != 0) {
         return 0;
@@ -171,6 +182,7 @@ start_tick(dsd_thread_t* tick) {
     const int held = g_tick.held;
     dsd_mutex_unlock(&g_tick.mutex);
     if (!held) {
+        let_tick_leave();
         dsd_thread_join(*tick);
     }
     return held;
@@ -198,6 +210,7 @@ drained_publications_ask_for_a_redraw(dsd_opts* opts, dsd_state* state) {
                         && dsd_atomic_u64_load_acquire(&g_tick.released_ms) == 0U;
     rc |= expect(drained && put_off && dsd_app_frontend_redraw_consume() == 0,
                  "a publication the tick put off asks for no redraw yet");
+    let_tick_leave();
     dsd_thread_join(tick);
     rc |= expect(dsd_app_drain_cmds(opts, state) == 0 && !dsd_app_telemetry_opts_snapshot_pending()
                      && !dsd_app_telemetry_snapshot_pending() && dsd_app_frontend_redraw_consume() == 1,
