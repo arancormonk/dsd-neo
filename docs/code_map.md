@@ -10919,17 +10919,26 @@ that carries meaning reaches a screen reader one of these ways:
 
 A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node
 TalkBack has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an
-announcement; the Qt side still makes one JNI call per rename while TalkBack runs. So a reading renames its node at
-most once per change of the poll (250 ms), and readings sit inside a group whose own place does not move, so a value
-whose width changes moves no accessible node (a LocationChanged becomes a main-thread task). The Diagnostics log's
-lines are read only while Pause holds it: each refresh rebuilds the rows.
+announcement, so a reading named by its live text would be read out on every tick. A reading that moves faster than
+every few seconds is named through `qml/SpeechPacer.qml`: its name catches up with the text on screen at most every
+5 s, and at once on a meaningful step (a call starting or ending, a new scan target or carrier, a lock or sync change,
+the reading appearing or disappearing). The text on screen stays live, and nothing runs per tick: the pacer reads the
+reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
+`ReadableText` named that way (`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set.
+Paced: the Monitor's reading groups, scan timing line, call durations and "Signal & site" description (steps:
+`MonitorScreen.speechStep`), the Spectrum status line and readout, the recordings export progress, and SiteSheet's
+field groups (renamed once a rebuild is over, not once per row). A part whose state only its colour shows gives its
+words as `spokenText` (the strip's LOCK: "Carrier lock" / "No carrier lock"). Readings sit inside a group whose own
+place does not move, so a value whose width changes moves no accessible node (a LocationChanged becomes a main-thread
+task). The Diagnostics log's lines are read only while Pause holds it: each refresh rebuilds the rows.
 
 `UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
 details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
 SiteSheet (`tst_a11y_closed_sheets.qml`) and a hidden Talkgroups screen across two targets' tables
 (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no node reads,
-against one allowlist with a reason per entry. How the harness works and how to add a case: `docs/testing.md`
+against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their pace.
+How the harness works and how to add a case: `docs/testing.md`
 "Accessibility event counts".
 
 #### Qt scan-list start path

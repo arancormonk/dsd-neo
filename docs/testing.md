@@ -2687,7 +2687,7 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   (sheet, part, how to find it, the fix): it is held as an expected failure, and the fix turns that into an unexpected
   pass, which fails until the entry is removed. Its cases F and G open the Monitor's details: hops rename the reading
   groups and nothing else (no show, hide or move, nothing renamed under the closed sheets), and readings that change
-  value and width every tick rename only the signal strip.
+  value and width every tick rename nothing at once and show, hide or move nothing; the strip then catches up.
 - **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
   "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
   under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not
@@ -2695,11 +2695,22 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   the Android bridge makes; wordless text is skipped. `nodeCarries(item, text)` makes the same check against one item.
   Each screen and sheet the harness builds on its own is checked as it opens, then with every item's `visible` forced
   on, so text only some state shows is checked too; there each sheet nested inside is checked on its own as the top
-  layer. `test_4_monitor_in_a_call` adds a two-slot call with the details open. Text no node reads must be in the
+  layer. `test_4_monitor_in_a_call` adds a two-slot call with the details open; `test_5_model_rows` fills the models
+  the bare fixture leaves empty (a saved system, an imported CSV, RadioReference sites, a key slot, a diagnostics line
+  read while paused) and checks each screen shows the rows before walking it, and the wizard's CSV choices; the
+  `test_6` cases press the wizard's Advanced header and the RadioReference link as TalkBack does
+  (`testContext.pressAccessible()`, with `captureOpenedUrls()` recording what `Qt.openUrlExternally` opens) and read the
+  Monitor's lock state. Text no node reads must be in the
   file's one `allowlist` with a reason: an entry with `readBy` names the item that reads it instead (a field reads its
   label), which the walk checks; one without is text with nothing to read. `test_1` is the positive control, and
   `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
   messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
+- **Paced names.** `tst_a11y_paced_names.qml` drives the Monitor's and Spectrum's moving readings at 4 Hz for 10 s
+  (real time): each node renames at most three times and ends on the value on screen within the 5 s period, while the
+  text on screen follows every tick; a lost lock, a new scan target, a sync change and a call ending rename at once.
+  The harness cannot focus a node as TalkBack does, so every node is held to what a focused one needs.
+  `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
+  a hop and one hidden group per protocol change.
 
 The Android side, which no host test reaches, is checked by hand on an emulator: "Qt upgrade checks" in
 `docs/code_map.md`.
