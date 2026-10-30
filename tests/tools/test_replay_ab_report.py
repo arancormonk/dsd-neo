@@ -417,6 +417,55 @@ class ReplayAbReport(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("exited non-zero", result.stdout)
 
+    def test_tetra_build_from_before_the_end_notice_is_judged_by_exit_status_when_named(self):
+        # "before" is a build from before replay printed its end-of-capture notice: none of its runs has it. Unnamed,
+        # it completes no run and the report fails with a hint; named with --no-end-notice, its runs that exited zero
+        # pair with the new build's, one that exited non-zero is still left out, and the new build still needs the
+        # notice.
+        self.tetra_summary([
+            tetra_row("before", 1, wanted=25, ok=24, bad=1, completed="0", samples="NA"),
+            tetra_row("after", 1, wanted=25, ok=25),
+            tetra_row("after", 2, wanted=25, ok=25),
+            tetra_row("before", 2, wanted=24, ok=23, completed="0", samples="NA"),
+            tetra_row("before", 3, wanted=3, completed="0", samples="NA", rc="139"),
+            tetra_row("after", 3, wanted=25, ok=25),
+            tetra_row("after", 4, wanted=2, ok=1, completed="0", samples="NA"),
+            tetra_row("before", 4, wanted=25, ok=24, completed="0", samples="NA"),
+        ])
+        result = report(self.summary, "--baseline", "before")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("0/4", metric_line(result.stdout, "completed", "before"))
+        self.assertIn("report it with --no-end-notice before", result.stdout)
+
+        result = report(self.summary, "--baseline", "before", "--no-end-notice", "before")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("3/4", metric_line(result.stdout, "completed", "before"))
+        self.assertIn("3/4", metric_line(result.stdout, "completed", "after"))
+        self.assertIn("note: before: judged by exit status alone (--no-end-notice)", result.stdout)
+        self.assertIn("warning: before: 1 of 4 runs incomplete and left out of the report (0 without an "
+                      "end-of-capture notice, 1 exited non-zero)", result.stdout)
+        self.assertIn("warning: after: 1 of 4 runs incomplete and left out of the report (1 without an "
+                      "end-of-capture notice, 0 exited non-zero)", result.stdout)
+        # Paired over repeats 1 and 2, where both completed: +0 and +1 wanted, +1 and +2 tch_ok.
+        self.assertIn("+0.50", metric_line(result.stdout, "wanted_bsch", "after"))
+        self.assertIn("+1.50", metric_line(result.stdout, "tch_ok", "after"))
+
+    def test_tetra_no_end_notice_is_refused_for_a_build_that_printed_the_notice(self):
+        self.tetra_summary([
+            tetra_row("a", 1, wanted=4), tetra_row("b", 1, wanted=4, completed="0", samples="NA"),
+            tetra_row("b", 2, wanted=4), tetra_row("a", 2, wanted=4),
+        ])
+        result = report(self.summary, "--baseline", "a", "--no-end-notice", "b")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("b printed the end-of-capture notice in 1 run(s)", result.stdout)
+        result = report(self.summary, "--no-end-notice", "c")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("build 'c' not present", result.stdout)
+        write_summary(self.summary, [["a", "cap.json-fast", "1", "4", "2", "1"]], COLUMNS[:6])
+        result = report(self.summary, "--no-end-notice", "a")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only applies to the TETRA metric", result.stdout)
+
     def test_tetra_identity_dominance_is_never_used_to_pick_the_wanted_identity(self):
         # In build b another network outnumbers the wanted one. The wanted column stays the fixed identity's count,
         # the other network stays in other_bsch, and the report only notes the dominance.

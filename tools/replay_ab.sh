@@ -79,7 +79,9 @@ set -euo pipefail
 #   first_wanted_s the first wanted BSCH's time from the capture's start, in whole seconds, or NA when no wanted BSCH
 #                  follows the log's first time stamp
 #   completed      1 when the replay printed "IQ replay: end of capture after <N> samples", else 0; a run without it
-#                  stopped early or lost its reader, which is not a run that decoded nothing
+#                  stopped early or lost its reader, which is not a run that decoded nothing. A build from before
+#                  replay printed the notice reads 0 in every run: name it to the report with --no-end-notice <build>
+#                  and its runs are judged by exit status alone
 #   samples        N from that notice, or NA
 #   wanted         the --tetra-wanted identity as MCC/MNC/0xCC, repeated per row so the report can check that one
 #                  identity was fixed for every build

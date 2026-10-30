@@ -3157,6 +3157,12 @@ Reading it:
     a line (it may follow other text under `--iq-loop`), and `samples` is N. A run without it stopped early or lost its
     reader. The report leaves such a run, and one that exited non-zero, out of every column and names it, while a
     complete run that decoded nothing keeps its zero row. The exit status is 1 when a build completed no run.
+  - A build from before replay printed that notice (`origin/main` before the TETRA receive chain, for one) completes
+    no run by that rule, and the report fails with a hint. Name it with `tools/replay_ab_report.py --no-end-notice
+    <build>` (its name in the summary, once per such build) and its runs are judged by their exit status alone; the
+    report notes that for it, since an early stop that still exits zero then counts as complete. The flag is refused
+    for a build that printed the notice in any run, and every build not named still needs the notice, so the new
+    build's incomplete runs are still caught.
   - `first_wanted_s` is the time of the first wanted BSCH from the capture's start. It reads the decode clock's
     `HH:MM:SS` stamp of the line that printed the BSCH, less the capture's start time as the replay anchored its clock
     (`capture_started_utc`, a WAV's start time, else 2000-01-01T00:00:00Z) in the same local time zone, so the
