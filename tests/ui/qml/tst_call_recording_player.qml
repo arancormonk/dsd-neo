@@ -22,15 +22,18 @@ Item {
     TestCase {
         name: "CallRecordingPlayer"
         when: windowShown
-        // Issue #782: moving readings name themselves at the screen reader's pace (SpeechPacer); a short period
-        // keeps these checks of what is read quick. The app's 5 s is restored for the next file in the run.
+        // Issue #782: moving readings name themselves at the screen reader's pace (SpeechPacer); a short period and
+        // no step floor keep these checks of what is read quick. The app's pace is restored for the next file in the
+        // run.
         property int appSpeechPeriod: 0
         function initTestCase() {
             appSpeechPeriod = Ui.Navigation.speechPeriodMs;
             Ui.Navigation.speechPeriodMs = 50;
+            Ui.Navigation.speechStepFloorMs = 1;
         }
         function cleanupTestCase() {
             Ui.Navigation.speechPeriodMs = appSpeechPeriod;
+            Ui.Navigation.speechStepFloorMs = 1000;
         }
 
         readonly property string pathA: "/rec/County (12345678)/A.wav"

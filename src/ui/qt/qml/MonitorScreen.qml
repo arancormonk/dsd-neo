@@ -389,12 +389,42 @@ Item {
     // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
     // readings the rows below already show; a fault is said here, never by
     // opening the rows.
+    // A group of readings read as one node, named by what it shows at the
+    // readings' pace (issue #782, SpeechPacer); `speechStep` is what is heard
+    // at once. The labels and values inside stay plain.
+    component ReadingFlow: Flow {
+        id: readingFlow
+        property alias speechStep: readingFlowSpeech.step
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(readingFlow)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: readingFlowSpeech.spoken
+        SpeechPacer {
+            id: readingFlowSpeech
+            group: readingFlow
+            shown: !readingFlow.Accessible.ignored
+        }
+    }
+    component ReadingRow: Row {
+        id: readingRow
+        property alias speechStep: readingRowSpeech.step
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(readingRow)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: readingRowSpeech.spoken
+        SpeechPacer {
+            id: readingRowSpeech
+            group: readingRow
+            shown: !readingRow.Accessible.ignored
+        }
+    }
+
     // What makes a moving reading worth hearing at once (issue #782; SpeechPacer):
     // a call starting or ending on either slot, a new scan target or carrier,
     // and a change of lock or sync. Between these, readings are re-read at
     // most every 5 s.
     readonly property string speechStep: [metrics.scanTargetId, metrics.centerFreqHz, metrics.carrierLock,
-        metrics.syncedHere, metrics.syncLabel, heroSlot, heroTgId, otherSlot, otherTgId].join("|")
+        metrics.syncedHere, metrics.syncLabel, heroSlot, heroTgId, heroSrc, otherSlot, otherTgId].join("|")
 
     readonly property var detailsSummary: {
         var tokens = [];
@@ -719,10 +749,20 @@ Item {
             Accessible.role: Accessible.StaticText
             readonly property bool navigationAllowed: Navigation.allows(hero)
             Accessible.ignored: !navigationAllowed || !visible
-            Accessible.name: Accessible.ignored ? "" : screen.heroSlot === 0 ? heroWaitingText.text
-                : [screen.heroHeadline, Util.shownText(heroSubline)].filter(function (part) {
-                    return part.length > 0;
-                }).join(", ")
+            // Through a pacer (issue #782): its waiting line follows the lock, which
+            // can flap; a call starting or ending is a step and heard at once.
+            Accessible.name: heroSpeech.spoken
+            SpeechPacer {
+                id: heroSpeech
+                shown: !hero.Accessible.ignored
+                step: screen.speechStep
+                read: function () {
+                    return [screen.heroSlot === 0 ? heroWaitingText.text : screen.heroHeadline,
+                        heroSubline.visible ? Util.shownText(heroSubline) : ""].filter(function (part) {
+                        return part.length > 0;
+                    }).join(", ");
+                }
+            }
 
             // Faint diagonal cyan→magenta wash over the panel.
             Rectangle {
@@ -973,7 +1013,6 @@ Item {
     // the session has them. Fixed under the hero in tiers 0-2; in the list header,
     // above the disclosure, from tier 3.
     Column {
-        id: stripGroup
         objectName: "monitorLiveStrip"
         parent: screen.stripInList ? stripSlot : stripHost
         width: parent ? parent.width : 0
@@ -1579,19 +1618,9 @@ Item {
             // it. Each reading is one child, so a wrap drops a whole reading to the
             // next line and never splits a label from its value. Whitespace groups
             // them, as in the design — separator glyphs would strand at a line head.
-            Flow {
+            ReadingFlow {
                 objectName: "signalStrip"
-                id: signalStripGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(signalStripGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: signalStripGroupSpeech.spoken
-                SpeechPacer {
-                    id: signalStripGroupSpeech
-                    group: signalStripGroup
-                    shown: !signalStripGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
                 width: parent.width
                 visible: metrics.radioInput
                 spacing: 10
@@ -1715,19 +1744,9 @@ Item {
             }
 
             // Decode quality also applies to PCM, network and file sources.
-            Flow {
+            ReadingFlow {
                 objectName: "decodeQualityRow"
-                id: decodeQualityRowGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(decodeQualityRowGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: decodeQualityRowGroupSpeech.spoken
-                SpeechPacer {
-                    id: decodeQualityRowGroupSpeech
-                    group: decodeQualityRowGroup
-                    shown: !decodeQualityRowGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
                 width: parent.width
                 visible: metrics.qualityValid
                 spacing: 10
@@ -1777,20 +1796,10 @@ Item {
             // the alert colour for a codec that cannot play speech. Flows, as the
             // rows below are, so a long reading moves under its label on a narrow
             // phone rather than running off it.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorTetra"
-                id: monitorTetraGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorTetraGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorTetraGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorTetraGroupSpeech
-                    group: monitorTetraGroup
-                    shown: !monitorTetraGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1833,19 +1842,9 @@ Item {
             // the loaded key that applies to the carrier being received; in
             // direct mode the transmission's security class. Magenta, as
             // encryption is on the rows around it.
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraSecurity"
-                id: monitorTetraSecurityGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorTetraSecurityGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorTetraSecurityGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorTetraSecurityGroupSpeech
-                    group: monitorTetraSecurityGroup
-                    shown: !monitorTetraSecurityGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1873,19 +1872,9 @@ Item {
 
             // Each label and its reading are children of the Flow, so a long
             // reading moves under its label rather than off the body.
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraChannels"
-                id: monitorTetraChannelsGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorTetraChannelsGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorTetraChannelsGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorTetraChannelsGroupSpeech
-                    group: monitorTetraChannelsGroup
-                    shown: !monitorTetraChannelsGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1955,19 +1944,9 @@ Item {
                 }
             }
 
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraMmStatus"
-                id: monitorTetraMmStatusGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorTetraMmStatusGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorTetraMmStatusGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorTetraMmStatusGroupSpeech
-                    group: monitorTetraMmStatusGroup
-                    shown: !monitorTetraMmStatusGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1993,19 +1972,9 @@ Item {
                 }
             }
 
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraCodec"
-                id: monitorTetraCodecGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorTetraCodecGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorTetraCodecGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorTetraCodecGroupSpeech
-                    group: monitorTetraCodecGroup
-                    shown: !monitorTetraCodecGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -2045,20 +2014,10 @@ Item {
             // Magenta, not cyan: cyan is signal health here, magenta is encryption,
             // same as the ENC tags on the rows below. Hidden at zero, so a site with
             // no encrypted traffic never carries a permanent 0.
-            Row {
+            ReadingRow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "encLockoutRow"
-                id: encLockoutRowGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(encLockoutRowGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: encLockoutRowGroupSpeech.spoken
-                SpeechPacer {
-                    id: encLockoutRowGroupSpeech
-                    group: encLockoutRowGroup
-                    shown: !encLockoutRowGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 spacing: 5
                 visible: metrics.encLockoutCount > 0
@@ -2093,20 +2052,10 @@ Item {
             // second spelling off the clipped body with no way to reach it. The value
             // then moves under the label whole; it wraps between its words only if
             // even it alone is wider than the body.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorRxTone"
-                id: monitorRxToneGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorRxToneGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorRxToneGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorRxToneGroupSpeech
-                    group: monitorRxToneGroup
-                    shown: !monitorRxToneGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -2146,20 +2095,10 @@ Item {
             // "off", so its Edit button can open the live editor. A Flow for the received
             // row's reason: a long list, its verdict and the button move under the label
             // on a narrow phone rather than run off it.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorToneFilter"
-                id: monitorToneFilterGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorToneFilterGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorToneFilterGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorToneFilterGroupSpeech
-                    group: monitorToneFilterGroup
-                    shown: !monitorToneFilterGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -2246,21 +2185,11 @@ Item {
             // voice)"). On a radio input the Radio sheet has the squelch; here,
             // with no tuner, the monitor is where it is set. A Flow, as the
             // tone filter row is, so the button moves under a long reading.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorSquelch"
-                id: monitorSquelchGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorSquelchGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorSquelchGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorSquelchGroupSpeech
-                    group: monitorSquelchGroup
-                    shown: !monitorSquelchGroup.Accessible.ignored
-                    // The squelch opening or closing is heard at once too.
-                    step: screen.speechStep + "|" + (metrics.squelchGateOpen === true)
-                }
+                // The squelch opening or closing is heard at once too.
+                speechStep: screen.speechStep + "|" + (metrics.squelchGateOpen === true)
 
                 width: parent.width
                 spacing: 5
@@ -2304,20 +2233,10 @@ Item {
             // sheet has the width; here, with no tuner, the monitor is where it
             // is set. A Flow, as the squelch row is, so the button moves under a
             // long reading.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorPassband"
-                id: monitorPassbandGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(monitorPassbandGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: monitorPassbandGroupSpeech.spoken
-                SpeechPacer {
-                    id: monitorPassbandGroupSpeech
-                    group: monitorPassbandGroup
-                    shown: !monitorPassbandGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -2360,20 +2279,10 @@ Item {
             // and outside any rotation, so an idle session never carries a 0. The
             // [avoided] marker is the trunk-scan fallback: every alternate failed to
             // retune and the receiver stayed on a target that was avoided.
-            Row {
+            ReadingRow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "scanAvoidRow"
-                id: scanAvoidRowGroup
-                Accessible.role: Accessible.StaticText
-                readonly property bool navigationAllowed: Navigation.allows(scanAvoidRowGroup)
-                Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: scanAvoidRowGroupSpeech.spoken
-                SpeechPacer {
-                    id: scanAvoidRowGroupSpeech
-                    group: scanAvoidRowGroup
-                    shown: !scanAvoidRowGroup.Accessible.ignored
-                    step: screen.speechStep
-                }
+                speechStep: screen.speechStep
 
                 spacing: 8
                 visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0

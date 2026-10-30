@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Issue #782: what a trunk scan costs an accessibility client, end to end through Main.
 //
@@ -154,6 +155,9 @@ Item {
             tryCompare(keys, "targetName", "Target 1");
         }
         function cleanup() {
+            // A case that changed the screen reader's pace puts the app's back, whatever it failed on.
+            Ui.Navigation.speechPeriodMs = 5000;
+            Ui.Navigation.speechStepFloorMs = 1000;
             testContext.stopAccessibilityCount();
             testContext.publishTarget(restore);
             testContext.setLifecyclePhase(0);
@@ -323,25 +327,39 @@ Item {
         }
 
         // Issue #782 (T9): the monitor's readings are now read by TalkBack, each group of them (a label and its value,
-        // a strip of readings) one node named by what it shows. With the details open, hops rename those groups and
-        // nothing else: no reading group shows, hides or moves, and the texts under the closed sheets, which hold no
-        // name while hidden, rename nothing.
-        function test_f_hops_with_details_open_rename_only() {
+        // a strip of readings) one node named by what it shows at the readings' pace (SpeechPacer, renaming 1 ms after
+        // a step). The event loop runs between hops, so those renames are seen: with the details open, each hop
+        // renames a changed group once, no reading group shows, hides or moves, and the texts under the closed
+        // sheets, which hold no name while hidden, rename nothing. The step floor is off here, so each hop is a step
+        // heard on its own (tst_a11y_paced_names.qml holds a flapping step to the floor).
+        function test_f_hops_with_details_open_rename_once_each() {
             var monitor = findChild(app, "monitorScreen");
             var label = findChild(monitor, "otherSlotLabel");
             var closed = closedSheets();
+            var floor = Ui.Navigation.speechStepFloorMs;
+            Ui.Navigation.speechStepFloorMs = 1;
             monitor.setDetailsExpanded(true);
             waitForRendering(app.contentItem);
+            wait(20);
             var strip = findChild(monitor, "signalStrip");
             verify(strip.visible, "the signal strip is on screen");
             verify(/FREQ/.test(testContext.accessibleNode(strip).name), "the strip is read: "
                    + JSON.stringify(testContext.accessibleNode(strip)));
             testContext.startAccessibilityCount();
-            for (var i = 1; i <= hops; ++i)
+            for (var i = 1; i <= hops; ++i) {
                 testContext.publishTarget(reading(i));
+                wait(20);
+            }
             var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            Ui.Navigation.speechStepFloorMs = floor;
             compare(showHide(monitor) - showHide(label), 0, "only the slot label shows or hides: " + churn(counts));
             compare(testContext.accessibilityCountWithin(monitor, "LocationChanged"), 0, JSON.stringify(counts.chains));
+            // Each hop moves to another carrier, so the strip (its FREQ) renames once a hop, and nothing more than once.
+            var renames = renamesByOwner(counts);
+            compare(renames.signalStrip, hops, "the strip renames once a hop: " + JSON.stringify(renames));
+            for (var owner in renames)
+                verify(renames[owner] <= hops, owner + " renamed more than once a hop: " + JSON.stringify(renames));
             var renamed = [];
             for (var sheet of closed) {
                 if (testContext.accessibilityCountWithin(sheet, "NameChanged") !== 0)
@@ -349,45 +367,153 @@ Item {
             }
             compare(renamed.length, 0, "closed sheets that renamed something: " + JSON.stringify(renamed) + " "
                     + churn(counts));
-            testContext.stopAccessibilityCount();
             monitor.setDetailsExpanded(false);
         }
+        // NameChanged and DescriptionChanged by the object that raised them.
+        function renamesByOwner(counts) {
+            var out = {};
+            for (var chain in counts.chains) {
+                var match = /^(NameChanged|DescriptionChanged) (\w+)/.exec(chain);
+                if (match)
+                    out[match[2]] = (out[match[2]] || 0) + counts.chains[chain];
+            }
+            return out;
+        }
 
-        // Readings that move on every tick are read at their pace (SpeechPacer, tst_a11y_paced_names.qml): a burst of
-        // them renames nothing at once, and nothing shows, hides or moves, whatever the values' widths; ticks that
-        // change nothing rename nothing. The strip then catches up with what it shows.
-        function test_g_moving_readings_wait_for_their_pace() {
+        // Hops between a digital and an analog target hide the readings the other kind does not have: the decode
+        // quality group leaving an analog target, the received tone and tone filter (with its Edit button, as before
+        // T9) leaving a digital one. Content that differs, one hide each per change, as the open site sheet's field
+        // groups; no show (a reading returns as a creation, which Android does not forward).
+        function test_f2_mixed_hops_hide_what_differs() {
             var monitor = findChild(app, "monitorScreen");
-            var restore = {snrValid: metrics.snrValid, snrDb: metrics.snrDb, cfoHz: metrics.cfoHz};
+            var mixed = function (i) {
+                var digital = i % 2 === 0;
+                return Object.assign(reading(0), {scanTargetOrdinal: (i % 2) + 1, scanTargetId: "target-" + ((i % 2) + 1),
+                    syncedHere: digital, siteProtocol: digital ? "P25" : "", syncLabel: digital ? "P25p1" : "",
+                    twoSlotCarrier: false, centerFreqHz: digital ? 851012500 : 154430000, qualityValid: digital,
+                    ccFecValid: digital, ccFecOkPct: 95, rxToneVisible: !digital,
+                    rxToneText: digital ? "" : "CTCSS 100.0", toneFilterVisible: !digital});
+            };
+            for (var key of ["qualityValid", "ccFecValid", "ccFecOkPct", "rxToneVisible", "rxToneText", "toneFilterVisible"]) {
+                if (!(key in restore))
+                    restore[key] = metrics[key];
+            }
             monitor.setDetailsExpanded(true);
-            testContext.setMetric("snrValid", true);
+            testContext.publishTarget(mixed(0));
             waitForRendering(app.contentItem);
+            wait(20);
             testContext.startAccessibilityCount();
-            testContext.tickMetrics(20);
-            var steady = testContext.accessibilityCount();
-            compare(typed(steady, "NameChanged"), 0, churn(steady));
-            testContext.stopAccessibilityCount();
-            testContext.startAccessibilityCount();
-            var changes = 20;
-            for (var t = 0; t < changes; ++t) {
-                // From 9.0 dB to 22.3 dB and a CFO from 0 Hz to -703 Hz: the readings change width as well as value.
-                testContext.setMetric("snrDb", 9 + t * 0.7);
-                testContext.setMetric("cfoHz", (t % 2 ? 1 : -1) * t * 37);
+            var changes = 10;
+            for (var i = 1; i <= changes; ++i) {
+                testContext.publishTarget(mixed(i));
+                wait(20);
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
-            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0, churn(counts));
-            compare(typed(counts, "LocationChanged"), 0, JSON.stringify(counts.chains));
-            compare(typed(counts, "NameChanged") + typed(counts, "DescriptionChanged"), 0,
-                    "a burst of readings renames nothing at once: " + JSON.stringify(counts.chains));
+            monitor.setDetailsExpanded(false);
+            var hides = {};
+            for (var chain in counts.chains) {
+                var match = /^ObjectHide (\w+)/.exec(chain);
+                if (match)
+                    hides[match[1]] = (hides[match[1]] || 0) + counts.chains[chain];
+            }
+            compare(JSON.stringify(hides), JSON.stringify({decodeQualityRow: changes / 2, monitorRxTone: changes / 2,
+                monitorToneFilter: changes / 2, monitorToneFilterEdit: changes / 2}), JSON.stringify(counts.chains));
+            // No reading group shows. (After case E's calls, the recent calls list's own rows, accessible before T9,
+            // come and go as the target changes; they are case E's subject, not this one's.)
+            var shows = Object.keys(counts.chains).filter(function (chain) {
+                return /^ObjectShow /.test(chain) && !/^ObjectShow recentCallsList /.test(chain);
+            });
+            compare(shows.length, 0, JSON.stringify(shows));
+        }
+
+        // Readings that move on every tick are read at their pace: a short test period, the event loop running
+        // between ticks, and the strip renames at most once a period (and once when the count starts), never per
+        // tick; nothing shows, hides or moves, whatever the values' widths; ticks that change nothing rename nothing.
+        function test_g_moving_readings_rename_at_their_pace() {
+            var monitor = findChild(app, "monitorScreen");
+            var restoreReadings = {snrValid: metrics.snrValid, snrDb: metrics.snrDb, cfoHz: metrics.cfoHz};
+            var period = Ui.Navigation.speechPeriodMs;
+            monitor.setDetailsExpanded(true);
+            testContext.setMetric("snrValid", true);
+            waitForRendering(app.contentItem);
+            wait(30);
+            testContext.startAccessibilityCount();
+            testContext.tickMetrics(20);
+            wait(50);
+            var steady = testContext.accessibilityCount();
+            compare(typed(steady, "NameChanged"), 0, churn(steady));
+            testContext.stopAccessibilityCount();
+            Ui.Navigation.speechPeriodMs = 100;
+            testContext.startAccessibilityCount();
+            var changes = 40;
+            var start = Date.now();
+            for (var t = 0; t < changes; ++t) {
+                // From 9.0 dB to 36.3 dB and a CFO from 0 Hz to -1443 Hz: the readings change width as well as value.
+                testContext.setMetric("snrDb", 9 + t * 0.7);
+                testContext.setMetric("cfoHz", (t % 2 ? 1 : -1) * t * 37);
+                wait(10);
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
             var strip = findChild(monitor, "signalStrip");
             var last = Number(9 + (changes - 1) * 0.7).toFixed(1) + " dB";
             tryVerify(function () {
                 return testContext.accessibleNode(strip).name.indexOf("SNR " + last) >= 0;
-            }, 6000, "the strip catches up: " + testContext.accessibleNode(strip).name);
+            }, 1000, "the strip catches up: " + testContext.accessibleNode(strip).name);
+            Ui.Navigation.speechPeriodMs = period;
             monitor.setDetailsExpanded(false);
-            for (var key in restore)
-                testContext.setMetric(key, restore[key]);
+            for (var key in restoreReadings)
+                testContext.setMetric(key, restoreReadings[key]);
+            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0, churn(counts));
+            compare(typed(counts, "LocationChanged"), 0, JSON.stringify(counts.chains));
+            var renames = renamesByOwner(counts);
+            var most = Math.min(Math.ceil(elapsed / 100) + 1, changes / 4);
+            verify(renames.signalStrip >= 1 && renames.signalStrip <= most, "the strip renamed " + renames.signalStrip
+                   + " times for " + changes + " ticks in " + elapsed + " ms (at most " + most + "): "
+                   + JSON.stringify(renames));
+            verify(renames.monitorDetailsRow >= 1 && renames.monitorDetailsRow <= most, "the summary redescribed "
+                   + renames.monitorDetailsRow + " times: " + JSON.stringify(renames));
+        }
+
+        // Closed sheets and the screens hidden under the monitor stay silent over time, not only at once: a short
+        // period, moving readings and hops, with the event loop running throughout.
+        function test_h_hidden_and_closed_stay_silent_over_time() {
+            var closed = closedSheets();
+            var hidden = ["homeScreen", "idleHistoryScreen", "sessionHistoryScreen"].map(function (name) {
+                var screen = findChild(app, name);
+                verify(screen !== null && !screen.visible, name + " must be hidden under the monitor");
+                return screen;
+            });
+            var period = Ui.Navigation.speechPeriodMs;
+            Ui.Navigation.speechPeriodMs = 30;
+            var restoreReadings = {snrValid: metrics.snrValid, snrDb: metrics.snrDb, squelchAutoStatus: metrics.squelchAutoStatus};
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= 20; ++i) {
+                testContext.setMetric("snrValid", true);
+                testContext.setMetric("snrDb", 9 + i * 0.5);
+                testContext.setMetric("squelchAutoStatus", "quieting " + (10 + i) + " dB");
+                if (i % 5 === 0)
+                    testContext.publishTarget(reading(i));
+                wait(15);
+            }
+            wait(150);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            Ui.Navigation.speechPeriodMs = period;
+            for (var key in restoreReadings)
+                testContext.setMetric(key, restoreReadings[key]);
+            var noisy = [];
+            for (var scope of closed.concat(hidden)) {
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(scope, type);
+                if (events !== 0)
+                    noisy.push((scope.objectName || sheetName(scope)) + ": " + events);
+            }
+            compare(noisy.length, 0, "hidden or closed parts that raised events over time: " + JSON.stringify(noisy) + " "
+                    + JSON.stringify(counts.chains));
         }
     }
 }

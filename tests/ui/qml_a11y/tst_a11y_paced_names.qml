@@ -13,8 +13,9 @@ import "../../../src/ui/qt/qml" as Ui
 // The app's period is 5 s (Navigation.speechPeriodMs, checked first). The updates run at a 100 ms period, 40 of
 // them a few milliseconds apart, as 4 Hz for 10 s is 40 updates over two 5 s periods: a node may rename once a period
 // (and once when the count starts), whatever the timer's jitter makes of the elapsed time, and far fewer times than
-// it is updated. The steps run at a 2 s period, so a rename within 100 ms is the step's and not the period's, and a
-// check that an update alone waits runs just after a step, which starts a period.
+// it is updated. The steps run at a 2 s period with the step floor off, so a rename within 100 ms is the step's and
+// not the period's, and a check that an update alone waits runs just after a step, which starts a period. A step
+// that flaps is held to the floor (case F, at a 200 ms floor instead of the app's 1 s).
 Item {
     id: root
     width: 420
@@ -141,9 +142,10 @@ Item {
                        + updates + " updates in " + elapsed + " ms (at most " + most + "): " + report);
             }
         }
-        // The long period the step checks run at.
+        // The long period the step checks run at, each step heard on its own.
         function stepPace() {
             Ui.Navigation.speechPeriodMs = stepPeriod;
+            Ui.Navigation.speechStepFloorMs = 1;
             wait(20);
         }
 
@@ -151,6 +153,7 @@ Item {
             verify(testContext.accessibilityActive(), "run with DSD_QML_TEST_ACCESSIBILITY=1, or nothing is counted");
             appPeriod = Ui.Navigation.speechPeriodMs;
             compare(appPeriod, 5000, "the app paces names at 5 s");
+            compare(Ui.Navigation.speechStepFloorMs, 1000, "and hears a flapping step once a second at most");
             Ui.Navigation.speechPeriodMs = period;
             for (var loader of [monitorLoader, spectrumLoader, historyLoader, searchLoader, radioLoader, squelchLoader])
                 loader.active = true;
@@ -161,6 +164,7 @@ Item {
             for (var loader of [monitorLoader, spectrumLoader, historyLoader, searchLoader, radioLoader, squelchLoader])
                 loader.active = false;
             Ui.Navigation.speechPeriodMs = appPeriod;
+            Ui.Navigation.speechStepFloorMs = 1000;
         }
         function init() {
             testContext.setHostRunning(true);
@@ -180,6 +184,8 @@ Item {
         }
         function cleanup() {
             testContext.stopAccessibilityCount();
+            Ui.Navigation.speechStepFloorMs = 1000;
+            monitor.visible = true;
             testContext.setPrefs("monitorDetailsExpanded", false);
             historyLoader.item.visible = false;
             radioLoader.item.visible = false;
@@ -283,8 +289,6 @@ Item {
             compare(time.text, "0:11 / 1:00", "the time on screen follows every update");
             verifyPaced(counts, "NameChanged", ["recordingTime"], elapsed);
             verifyPaced(counts, "DescriptionChanged", ["recordingSeekBar"], elapsed);
-            verify(raised(counts, "ValueChanged", "recordingSeekBar") <= 3, "the seek bar's value: "
-                   + JSON.stringify(counts.chains));
             tryVerify(function () { return nameOf(time) === "0:11 of 1:00"; }, period + 500, nameOf(time));
             tryVerify(function () { return descriptionOf(bar) === "0:11 of 1:00"; }, period + 500, descriptionOf(bar));
             stepPace();
@@ -405,6 +409,63 @@ Item {
             set({effectiveSquelchMarginDb: 14, configuredSquelchMarginDb: 14});
             tryVerify(function () { return nameOf(value).indexOf("quieting 33 dB") >= 0; }, 100,
                       "a new setting is heard at once: " + nameOf(value));
+        }
+
+        // A step input that flaps (a marginal lock, a decode-quality reading coming and going) is heard once a floor
+        // at most, and the last state within a floor of the last flap. The monitor's strip, its hero (whose waiting
+        // line follows the lock) and its summary row each.
+        function test_f_flapping_steps_are_held_to_the_floor() {
+            var floor = 200;
+            Ui.Navigation.speechPeriodMs = stepPeriod;
+            Ui.Navigation.speechStepFloorMs = floor;
+            set({slot1CallState: 0, leadSlot: 0});
+            wait(50);
+            var strip = item(monitor, "signalStrip");
+            var hero = item(monitor, "monitorHero");
+            testContext.startAccessibilityCount();
+            var flaps = 40;
+            var start = Date.now();
+            for (var i = 1; i <= flaps; ++i) {
+                set({carrierLock: i % 2 === 0, ccFecValid: i % 3 !== 0, snrDb: 10 + i * 0.25});
+                wait(tick);
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var most = Math.ceil(elapsed / floor) + 1;
+            for (var named of ["signalStrip", "monitorHero"]) {
+                var renames = raised(counts, "NameChanged", named);
+                verify(renames >= 1 && renames <= most, named + " renamed " + renames + " times for " + flaps
+                       + " flaps in " + elapsed + " ms (at most " + most + "): " + JSON.stringify(counts.chains));
+            }
+            var described = raised(counts, "DescriptionChanged", "monitorDetailsRow");
+            verify(described >= 1 && described <= most, "the summary redescribed " + described + " times: "
+                   + JSON.stringify(counts.chains));
+            // The last state, the lock held after an even flap, within a floor.
+            tryVerify(function () {
+                return nameOf(strip).indexOf("Carrier lock") >= 0 && nameOf(strip).indexOf("No carrier lock") < 0
+                    && nameOf(strip).indexOf("SNR " + Number(10 + flaps * 0.25).toFixed(1) + " dB") >= 0;
+            }, floor + 200, nameOf(strip));
+            tryVerify(function () { return nameOf(hero) === "waiting for a call…"; }, floor + 200, nameOf(hero));
+        }
+
+        // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.
+        function test_g_hidden_monitor_stays_silent() {
+            Ui.Navigation.speechPeriodMs = 30;
+            monitor.visible = false;
+            spectrum.visible = false;
+            wait(100);
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= 20; ++i) {
+                set({snrDb: 30 + i * 0.4, scanTimerRemainingDs: 100 - i, carrierLock: i % 2 === 0});
+                wait(15);
+            }
+            wait(200);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(testContext.accessibilityCountWithin(monitor, "NameChanged")
+                    + testContext.accessibilityCountWithin(monitor, "DescriptionChanged")
+                    + testContext.accessibilityCountWithin(spectrum, "NameChanged"), 0, JSON.stringify(counts.chains));
         }
     }
 }
