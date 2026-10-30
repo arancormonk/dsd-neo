@@ -70,7 +70,14 @@ decoding without it, as it does for the RTL UDP retune control.
   frontends use, and are applied on the decoder thread. A response of
   `"status":"queued"` means the queue admitted the command, not that the decoder
   accepted it: the decoder can still refuse it when it is applied, which it
-  reports in the notice line (`status.message`).
+  reports in the notice line (`status.message`). A command that needs the P25
+  state machine (`scanner_toggle`, `scan_resume`, `tuner_release`, and
+  `rtl_set_freq` under a trunk scan) waits for the frame or watchdog step it is
+  working on, then applies whole.
+* A publication that meets a P25 watchdog step is put off, never dropped, and
+  goes out at the next decoder pass with the state as it is then. On a silent
+  UDP or RTL input that comes shortly after the step ends; on a connected TCP
+  or stdin input that has gone quiet it waits for the next sample or command.
 * Without the terminal frontend (no `--frontend terminal`), the CLI
   opens the shared frontend runtime for the API: the command session, and the
   20 Hz snapshot publish the terminal frontend also runs.
@@ -642,34 +649,39 @@ field, and the decoder refuses the rest when it applies the command.
   are accepted; unknown keys are ignored, as in a file. See
   [docs/config-system.md](config-system.md) for the keys.
 
-  Settings that only a restart puts in place (the frontend, `[trunk_scan]
-  enabled`, `[trunking] chan_csv` (the channel map is imported at startup
-  only), an Airspy input chosen over a non-radio input, and while a trunk scan
-  runs its target list and its dwell and hold defaults) keep
-  their running values, and `status.message` names them (`Config applied;
-  restart to use the new channel map`), after any other message the apply left.
-  The applied values wait for the next start: every save, the exit autosave
-  included, writes them, so the restart runs them. A later config that names the
-  running value again takes one back, and a channel-map import or clear sets the
-  map at once. A config whose next start startup would refuse (a global
-  `chan_csv` or `p25_bandplan_csv`, or `scanner = true` with trunking off,
-  beside an enabled trunk scan, or a trunk scan without `targets_csv`) is
-  refused whole before anything changes, with the rule in `status.message`
-  (`Config not applied: trunking.chan_csv cannot be combined with
-  trunk_scan.enabled`); a rule the session's save already breaks refuses only a
-  config that breaks another. While a trunk scan waits for the next start,
-  `scanner_toggle` will not start the scanner (`Scanner not started: ...`), and
-  channel-map and band-plan imports are refused the same way. A config whose
-  input does not start is rolled back and, like a refused one, leaves nothing
-  waiting for the next start; a value an earlier config left waiting that would
-  now break those rules is dropped, and `status.message` says so (`...; the
-  trunk scan waiting for a restart is dropped`). An apply that fails (an output
-  reconfigure, say) is reported as failed even when it also needs a restart.
-  Under a trunk scan `[trunking] enabled = true` is the setting the scan puts
-  back at shutdown and a save writes, not the parked target's. Over a paused
-  `-Y` scan, a config without `[trunking]` keeps the pause; trunking on or
-  `scanner = false` stop it; `scanner = true` resumes it. A config whose input
-  does not start is rolled back and keeps the pause.
+  Settings that only a restart puts in place keep their running values: the
+  frontend, `[trunk_scan] enabled`, `[trunking] chan_csv` (the channel map is
+  imported at startup only), an Airspy input chosen over a non-radio input, and
+  while a trunk scan runs its target list and its dwell and hold defaults.
+  `status.message` names them (`Config applied; restart to use the new channel
+  map`), after any other message the apply left. The applied values wait for
+  the next start: every save, the exit autosave included, writes them, so the
+  restart runs them. A later config that names the running value again takes
+  one back, and a channel-map import or clear sets the map at once. An apply
+  that fails (an output reconfigure, say) is reported as failed even when it
+  also needs a restart.
+
+  A config whose next start startup would refuse (a global `chan_csv` or
+  `p25_bandplan_csv`, or `scanner = true` with trunking off, beside an enabled
+  trunk scan, or a trunk scan without `targets_csv`) is refused whole before
+  anything changes, with the rule in `status.message` (`Config not applied:
+  trunking.chan_csv cannot be combined with trunk_scan.enabled`); a rule the
+  session's save already breaks refuses only a config that breaks another.
+  While a trunk scan waits for the next start, `scanner_toggle` will not start
+  the scanner (`Scanner not started: ...`), and channel-map and band-plan
+  imports are refused the same way. A config whose input does not start is
+  rolled back and, like a refused one, leaves nothing waiting for the next
+  start. A value waiting for the next start, an earlier config's or this
+  config's own, that would then break those rules beside what the session keeps
+  (the scanner, a paused `-Y` scan, a band plan) is dropped, and
+  `status.message` says so (`...; the trunk scan waiting for a restart is
+  dropped`).
+
+  Under a trunk scan, running or paused, `[trunking] enabled = true` is the
+  setting the scan puts back at shutdown and a save writes, not the parked
+  target's. Over a paused `-Y` scan, a config without `[trunking]` keeps the
+  pause; trunking on or `scanner = false` stops it; `scanner = true` resumes it.
+  A config whose input does not start keeps the pause.
 
   ```json
   {"cmd":"config_apply","params":{"sections":{
@@ -702,9 +714,9 @@ field, and the decoder refuses the rest when it applies the command.
   channel. Otherwise, once the tune is accepted (applied, or still pending on
   the tuner), a running `-Y` scan or trunk scan pauses: the scan keeps its list,
   cursor, avoids and session edits, the receiver stays on `value` with the
-  configured decoder, and `status.message` ends in `; scan paused`. A refused
-  tune changes nothing and says why. An entry while a scan is paused only tunes;
-  the scan stays paused.
+  configured decoder, and `status.message` ends in `; scan paused`. A refused or
+  deferred tune changes nothing and says why. An entry while a scan is paused
+  only tunes; the scan stays paused.
 * **`tuner_release`**: hands the tuner to the operator. Trunking (`-T`) stops; a
   running `-Y` scan or trunk scan pauses where it is (`Automatic tuning
   paused`). A scan already paused stays paused.
@@ -713,9 +725,9 @@ field, and the decoder refuses the rest when it applies the command.
   `-Y` scan stops, and with none running `-Y` starts. A `-Y` resume still
   waiting for its row's tune is left alone.
 * **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
-  scan from the next row after its cursor, a trunk scan on the target it left,
-  with fresh timers. A running scan is left as it is (`Not paused: the scan is
-  running`), and with nothing paused nothing starts. A resume that finds no row
+  scan on the row it would have stepped to next, a trunk scan on the target it
+  left, with fresh timers. A running scan is left as it is (`Not paused: the
+  scan is running`), and with nothing paused nothing starts. A resume that finds no row
   to tune, or whose tune is refused, leaves the scan paused and says why.
 * **`manual_tune`**: a spectrum tap. It is refused while trunking, a `-Y` scan
   or a trunk scan owns the tuner (`status.message` says which); a paused scan

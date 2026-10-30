@@ -39,13 +39,14 @@ For the same reason `End` stops on `Advanced` rather than on `Quit DSD-neo`: the
 on the quit row, so `End` followed by `Enter` cannot end a running decode. Reaching it takes a deliberate `Down`,
 `PageDown`, or the `q` hotkey.
 
-The keypad Enter key is `Enter` on the main screen, in the menu, prompts, help, pickers and the RadioReference panel,
-on Windows too, and `Shift`+keypad Enter is `Enter` everywhere but the main screen. Under tmux with `TERM=tmux-256color`, whose terminal database has no keypad Enter (`kent`), that key
-arrives as `Esc O M`, and its `Esc` cancels a prompt or backs out of the menu; use the main Enter key there. In a
-prompt, a character the field cannot hold (a non-ASCII character in a UTF-8 terminal, a character beyond Latin-1 on
-Windows) is typed as one `?` rather than dropped, so a pasted `145．5` reads `145?5` and is refused instead of tuning
-1455 MHz. The Windows keypad `+ - * /` keys type their characters. A number prompt refuses a value outside the integer
-range with `Invalid integer input` instead of wrapping it.
+The keypad Enter key is `Enter` on the main screen, in the menu, prompts, help, pickers and the RadioReference panel, on
+Windows too, and `Shift`+keypad Enter is `Enter` everywhere but the main screen. Under tmux with `TERM=tmux-256color`,
+whose terminal database has no keypad Enter (`kent`), that key arrives as `Esc O M`, and its `Esc` cancels a prompt or
+backs out of the menu; use the main Enter key there. In a prompt, a character the field cannot hold (a non-ASCII
+character in a UTF-8 terminal, a character beyond Latin-1 on Windows) is typed as one `?` rather than dropped, so a
+pasted `145．5` reads `145?5` and is refused instead of tuning 1455 MHz. The Windows keypad `+ - * /` keys type their
+characters. A number prompt refuses a value outside the integer range with `Invalid integer input` instead of wrapping
+it.
 
 Rows come in three kinds:
 
@@ -357,9 +358,11 @@ stop, and the message says so). From an audio input, a radio that does not start
   when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream); a capture recorded under another name
   reopens as PCM audio.
 
-While a scan runs (`-Y` with rows, or `--trunk-scan` with targets), the audio-input switches and `Stop replay` are
-refused with `Unsupported: stop the scan first`: the scan's saved timing belongs to the running input. The M17 IP frame
-receiver, the M17 encoders and MBE playback read no switched input, so they refuse every switch.
+While a `-Y` scan with rows runs, or a `--trunk-scan` has targets (running or paused), the audio-input switches and
+`Stop replay` are refused with `Unsupported: stop the scan first`: the scan's saved timing belongs to the running input.
+A paused `-Y` scan does not refuse them: a switch that runs stops it, and one that is refused or rolled back to the
+input that ran leaves it paused. The M17 IP frame receiver, the M17 encoders and MBE playback read no switched input, so
+they refuse every switch.
 
 While a UDP sender is silent, a menu command is applied once the silence has lasted about half a second. A TCP server
 that went away is noticed when a read times out (the socket's receive timeout, 1.5 seconds by default); an M17
@@ -369,9 +372,9 @@ frame is waited for, as before.
 ### Frequency entry
 
 Input > `Frequency...`, or `=` from the main screen, tunes the radio that runs, or the rigctl peer (`-U`) when one is
-connected, from any input but an I/Q replay; with a rigctl peer on a radio input the peer is the one tuned. The row reads
-the tuned frequency in MHz (`Frequency... [851.012500 MHz]`, `[-]` while none is known); on audio input it reads the
-frequency last sent to the rigctl peer since it connected, `[-]` before the first. Its prompt,
+connected, from any input but an I/Q replay; with a rigctl peer on a radio input the peer is the one tuned. The row
+reads the tuned frequency in MHz (`Frequency... [851.012500 MHz]`, `[-]` while none is known); on audio input it reads
+the frequency last sent to the rigctl peer since it connected, `[-]` before the first. Its prompt,
 `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)`, opens empty and reads a number the way a radio keypad does
 (issue #670; it used to read every number as Hz):
 
@@ -602,18 +605,18 @@ expected to match exactly.
 While a scan row or target is on air that can take a "this channel" edit (issue #518), the `Squelch...`, `NFM
 bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt: `All channels
 (default)...` goes on to the prompt above, which edits the configured default; `This channel (county-p25)...` prompts on
-what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row on a
-radio input, or `noise[+N]` on an `nfm` row; the
-width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row alone for the rest of the session; `This
-channel: use the default` (offered when the row's list sets the setting) makes it follow the configured default, and
-`This channel: back to the list value` (offered while it runs an edit) drops the edit. The edit goes to the row named
-when the chooser opened, at once if it is on air and from its next visit otherwise (`This channel (county-p25): squelch
--55 dB for this session`, `... from its next visit`). A width row is offered only under a row of its kind, and the gain
-only for a `--trunk-scan` target on an RTL-family input other than an Airspy. Edits end when the scan does (under `-Y`,
-when the scanner leaves or the channel map changes) and are never saved. On audio input with a rigctl peer the width
-rows' chooser is titled `NFM passband` or `AM passband`, and their `This channel` prompt (`NFM passband Hz on this
-channel (8000..25000)`) opens on the passband the row runs: its own width, the configured one it follows, or `-B`
-standing in for an unset NFM width. See [Live per-channel edits](trunk-scan.md#runtime-behavior).
+what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row on a radio
+input, or `noise[+N]` on an `nfm` row; the width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row
+alone for the rest of the session; `This channel: use the default` (offered when the row's list sets the setting) makes
+it follow the configured default, and `This channel: back to the list value` (offered while it runs an edit) drops the
+edit. The edit goes to the row named when the chooser opened, at once if it is on air and from its next visit otherwise
+(`This channel (county-p25): squelch -55 dB for this session`, `... from its next visit`). A width row is offered only
+under a row of its kind, and the gain only for a `--trunk-scan` target on an RTL-family input other than an Airspy.
+Edits end when the scan does (under `-Y`, when the scanner leaves or the channel map changes), a pause keeps them, and
+they are never saved. On audio input with a rigctl peer the width rows' chooser is titled `NFM passband` or `AM
+passband`, and their `This channel` prompt (`NFM passband Hz on this channel (8000..25000)`) opens on the passband the
+row runs: its own width, the configured one it follows, or `-B` standing in for an unset NFM width. See [Live
+per-channel edits](trunk-scan.md#runtime-behavior).
 
 `Decoder > Receive filters and names` edits slot, DMR DCC, NXDN RAN and P25 NAC filters.
 Each filter has separate allow and block lists and an enabled state. Enter identifiers
@@ -736,6 +739,10 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
+
+While a scan is paused, `Y`, `b`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the hold and
+the avoids stay for the resume. Under `--trunk-scan`, running or paused, `t` is refused with
+`Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on stops the scan.
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them

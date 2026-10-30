@@ -177,8 +177,9 @@ start_tick(dsd_thread_t* tick) {
 }
 
 /* Frontends that redraw on request (Qt's network, call-history and talkgroup models) learn of a drained command's
-   result, here a toast cleared, a command that asks for no redraw itself: its publication asks once it has landed, and a publication a tick put off asks when its retry
-   lands it, never before, while the frontends would redraw the snapshot from before it. */
+   result, here a toast cleared, a command that asks for no redraw itself: its publication asks once it has landed,
+   and a publication a tick put off asks when its retry lands it, never before, while the frontends would redraw the
+   snapshot from before it. */
 static int
 drained_publications_ask_for_a_redraw(dsd_opts* opts, dsd_state* state) {
     dsd_app_frontend_runtime_start(opts, state);

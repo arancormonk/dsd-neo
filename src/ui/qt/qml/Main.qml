@@ -152,9 +152,10 @@ Window {
         if (decoderHost.sessionActive || decoderHost.transitioning)
             return;
         if (!attemptedSource) {
-            // D2a: a recreated Activity has no verified link from the
-            // service's run to a saved system or scan list, so Reconnect only
-            // asks for that receiver again; the notice says to start it after.
+            // D2a: a recreated Activity names the running session (the
+            // acceptedStart pref pair) but holds no start to repeat, so
+            // Reconnect only asks for that receiver again; the notice says to
+            // start it after.
             if (receiverEnded)
                 decoderHost.requestLocalDeviceAccessForSource(receiverHealth.source);
             return;

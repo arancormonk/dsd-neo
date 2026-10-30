@@ -147,7 +147,11 @@ Generated (do not edit/commit):
     runtime table (`include/dsd-neo/runtime/trunk_tuning_hooks.h`) so protocol state machines can retune without
     depending on IO
   - Single-tuner trunk scan coordinator: `src/engine/trunk_scan.c` behind
-    `include/dsd-neo/engine/trunk_scan.h` (see below)
+    `include/dsd-neo/engine/trunk_scan.h` (see below), including its pause and resume (issue #671)
+  - `-Y` pause and resume and the manual-tune completion record (issue #671): `src/engine/channel_scan.c` behind
+    `include/dsd-neo/engine/channel_scan.h`, `src/engine/manual_tune_pending.c` behind
+    `include/dsd-neo/engine/manual_tune.h`, and the untyped step's shared pieces in `src/engine/scan_step_untyped.h`
+    (see "A manual tune stays out of that ledger" under the trunk-tuning hooks below)
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
@@ -328,7 +332,16 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   maps, with the scope leave's front-end request last; the status line says why. Everything outside the coordinator
   that acts for the scan's ownership of the receiver reads the running predicate `dsd_trunk_scan_owns_tuner()`
   (runtime hooks below); what a retained scan forbids (global maps, input switch, Signal search, -Y) keeps reading
-  `trunk_scan_enabled`.
+  `trunk_scan_enabled`. A trunk scan has no runtime stop, so a paused one, with its targets, snapshots, avoids, hold and
+  live per-target edits, lasts until shutdown. The commands that pause or resume it (the frequency entry's trunk-scan
+  branch, `y`, `SCAN_RESUME`, `TUNER_RELEASE`) hold the guard for the whole step: one that meets a watchdog tick or a
+  frame dispatch waits for it and never applies in part. Tests: `ENGINE_TRUNK_SCAN` (the coordinator with its
+  collaborators stubbed: teardown order, in-place forget, requests in flight, every gated consumer, refused and
+  unprepared resumes, shutdown after a pause), `ENGINE_TRUNK_SCAN_PAUSE` (the real P25 and DMR machines, carrier
+  boundary, tuning ledger and non-re-entrant guard, driven by the app-control services and commands: a pause over a
+  Phase 2 call, a pause over a P25 park or DMR tune in flight and its late answer, a resume that supersedes one, both
+  resume failures, a watchdog thread reading the hooks beside a pause and a resume, each command waiting out a held
+  guard), `APP_COMMAND_QUEUE`.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
@@ -2395,23 +2408,22 @@ suite runs under this compiler.
     digital and whether it is AM, and says why a dynamic setting runs, runs as AUTO (NOISE on a radio input's AM
     channel) or is off (AUTO off a radio input, either off audio and radio input, a digital channel, NOISE on AM audio:
     `DSD_SQUELCH_RESOLVED_AUDIO_AM`), for the views, the engine's startup check and the scan warnings;
-    `dsd_squelch_noise_has_no_fm()` is the AM monitor on its own (`-fM`, no scan), where the engine refuses
-    `--squelch noise` at startup and `svc_rtl_set_sql_setting()` refuses a NOISE request (`SVC_SQL_NOISE_NEEDS_FM`); it
-    refuses AUTO on audio input too (`SVC_SQL_AUTO_NEEDS_RADIO`, issue #628). `dsd_squelch_pcm_noise_in_force()` is
-    NOISE on audio input's FM monitor, the PCM noise squelch (DSP, below). The decoder's comparisons go through
-    `dsd_squelch_dynamic_in_force()` (an RTL-family input's AUTO or NOISE, or the PCM noise squelch while
-    `dsd_state::squelch_noise_state` says it is learning or holds a reference), `dsd_squelch_flags_in_force()` (whether
-    the monitor's per-sample flags carry the gate: that, or the PCM noise squelch running at all, whose flags read open
-    with no band or no room, so a block shut up to the decision stays shut), `dsd_squelch_level_in_force()`,
-    `dsd_squelch_level_open()` and `dsd_squelch_gate_open()` (DSP, below). `dsd_squelch_publish_status()` copies the
-    stream's dynamic squelch status on radio input (the RTL IO hook `squelch_status`, `rtl_stream_get_squelch_status()`)
-    into int-only `dsd_state::squelch_auto_*` and `squelch_noise_*` fields inside the snapshot range, the floor in
-    centi-dB on `rtl_squelch_level`'s scale and the noise squelch's quieting in centi-dB; while the PCM noise squelch
-    is in force it leaves the fields its decoder-thread writer set (`squelch_noise_state`, the `dsd_squelch_noise_state`
-    learning, provisional, known, no-band or no-room, among them), and elsewhere it clears them; the frame sync's
-    throttled UI publish calls it. Tests:
-    `RUNTIME_SQUELCH`, `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`,
-    `ENGINE_IO_HOOKS_INSTALL`.
+    `dsd_squelch_noise_has_no_fm()` is the AM monitor on its own (`-fM`, no scan running: a paused `-Y` scan or trunk
+    scan runs no row, issue #671), where the engine refuses `--squelch noise` at startup and `svc_rtl_set_sql_setting()`
+    refuses a NOISE request (`SVC_SQL_NOISE_NEEDS_FM`); it refuses AUTO on audio input too (`SVC_SQL_AUTO_NEEDS_RADIO`,
+    issue #628). `dsd_squelch_pcm_noise_in_force()` is NOISE on audio input's FM monitor, the PCM noise squelch (DSP,
+    below). The decoder's comparisons go through `dsd_squelch_dynamic_in_force()` (an RTL-family input's AUTO or NOISE,
+    or the PCM noise squelch while `dsd_state::squelch_noise_state` says it is learning or holds a reference),
+    `dsd_squelch_flags_in_force()` (whether the monitor's per-sample flags carry the gate: that, or the PCM noise
+    squelch running at all, whose flags read open with no band or no room, so a block shut up to the decision stays
+    shut), `dsd_squelch_level_in_force()`, `dsd_squelch_level_open()` and `dsd_squelch_gate_open()` (DSP, below).
+    `dsd_squelch_publish_status()` copies the stream's dynamic squelch status on radio input (the RTL IO hook
+    `squelch_status`, `rtl_stream_get_squelch_status()`) into int-only `dsd_state::squelch_auto_*` and `squelch_noise_*`
+    fields inside the snapshot range, the floor in centi-dB on `rtl_squelch_level`'s scale and the noise squelch's
+    quieting in centi-dB; while the PCM noise squelch is in force it leaves the fields its decoder-thread writer set
+    (`squelch_noise_state`, the `dsd_squelch_noise_state` learning, provisional, known, no-band or no-room, among them),
+    and elsewhere it clears them; the frame sync's throttled UI publish calls it. Tests: `RUNTIME_SQUELCH`,
+    `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`, `ENGINE_IO_HOOKS_INSTALL`.
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the standard 50-tone CTCSS table and 150.0 Hz in tenths of a hertz, index lookup and the
     `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
@@ -2755,31 +2767,30 @@ under its tag. The record is process-wide, as the controller and its callback ar
 (the real controller stood in for, with late failure, late success, a newer entry, coalescing, a failure inside a
 coalesced wait and a stop), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
-The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared
-pieces engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It
-finds the next row (`dsd_engine_scan_untyped_find_row()`: not avoided; a placeholder parks the timed step where it is,
-and `skip_placeholders` skips it; with none, an empty or all-avoided list, the scan's windows reopen as after an
-abandoned step, so an expired cap or voice gate does not cut every reception after one frame) and tunes every configured front end, rigctl first, then RTL through
-`io_control_set_rtl_freq_tagged()`, so the cached centre follows the outcome as a manual tune's does. A tune that
-landed runs the `SCAN_STEP` carrier boundary (in `no_carrier_run()`, after the playout drain and any control-channel
-return), then installs the row: the cursor past it, its keys, the analog reset, fresh scan clocks. An RTL timeout notes
-an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`, moved by every
-`dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and resume) and
-`trunk_chan_map_seq`; until the
-completion the cursor, the keys and the deadline stay. The synced-frames loop checks for the landing before every frame
-(`dsd_engine_manual_tune_landed()`, one atomic load while nothing is noted) and ends the reception when it has come, so
-no frame of the new row decodes under the row left. The outer pass's poll then commits the row (boundary, then
-install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no modes, the same session
-and map, the row still on the frequency tuned. Otherwise
-nothing commits, and only the frequency stands. A late failure abandons the row as a failure inside the wait does: the
-cursor stays for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the
-outgoing boundary and resets the received tone, but keeps the cursor and the deadline.
-`dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary inside, for a caller outside the
-no-carrier pass. The legacy legs skip a frequency they last sent; a manual tune moves the receiver without them, so
-`dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every tune `request_manual_tune()`'s
-direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing
-and late failure, a landing in the middle of a reception, a landing after a rigctl move, under a hold, after a stop or a
-list replacement, a failure's centre, an empty or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
+The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
+engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It finds the
+next row (`dsd_engine_scan_untyped_find_row()`: not avoided; a placeholder parks the timed step where it is, and
+`skip_placeholders` skips it; with none, an empty or all-avoided list, the scan's windows reopen as after an abandoned
+step, so an expired cap or voice gate does not cut every reception after one frame) and tunes every configured front
+end, rigctl first, then RTL through `io_control_set_rtl_freq_tagged()`, so the cached centre follows the outcome as a
+manual tune's does. A tune that landed runs the `SCAN_STEP` carrier boundary (in `no_carrier_run()`, after the playout
+drain and any control-channel return), then installs the row: the cursor past it, its keys, the analog reset, fresh scan
+clocks. An RTL timeout notes an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`,
+moved by every `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and
+resume) and `trunk_chan_map_seq`; until the completion the cursor, the keys and the deadline stay. The synced-frames
+loop checks for the landing before every frame (`dsd_engine_manual_tune_landed()`, one atomic load while nothing is
+noted) and ends the reception when it has come, so at most the frame in flight decodes under the row left. The outer
+pass's poll then commits the row (boundary, then install), but only while the scan is still that one: `-Y` on (or a
+resume pending, below), no modes, the same session and map, the row still on the frequency tuned. Otherwise nothing
+commits, and only the frequency stands. A late failure abandons the row as a failure inside the wait does: the cursor
+stays for a retry, the scan's windows reopen, no toast. A failure after the rigctl leg moved still runs the outgoing
+boundary and resets the received tone, but keeps the cursor and the deadline. `dsd_engine_scan_untyped_enter_row()` runs
+the same pieces with the boundary inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency
+they last sent; a manual tune moves the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the
+`TUNE` carrier boundary and at every tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET`
+(a step back to a row after an entry, a timed-out row's landing and late failure, a landing in the middle of a
+reception, a landing after a rigctl move, under a hold, after a stop or a list replacement, a failure's centre, an empty
+or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
@@ -2824,6 +2835,17 @@ deferred, unprepared and pending typed resume, the pause hook at once and late, 
 `ENGINE_NO_CARRIER_RESET` (the untyped resume through the real step: a step's landing after a pause, a pending resume's
 reception, landing and late failure, which keeps the call heard), `APP_COMMAND_QUEUE` (the services, the monitor
 reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
+
+### Channel Scan Pause Hook (Engine → Runtime ← App-Control)
+
+`include/dsd-neo/runtime/channel_scan_hooks.h` (`src/runtime/channel_scan_hooks.c`, issue #671) holds one function: the
+`-Y` pause the engine runs again on its own when a resume's row never lands (`dsd_channel_scan_pause_hook_get()`, read
+on the decoder thread in `channel_scan.c`). App-control installs `svc_pause_channel_scan()` at frontend start
+(`dsd_app_frontend_runtime_start()`, beside the control-pump queries) and removes it at stop, so that pause records its
+return to the configured monitor for the command drain (issue #578) as an interactive pause does. With nothing installed
+(headless runs, tests) the engine pauses with `dsd_engine_channel_scan_pause()`, unrecorded. The hook's lock follows
+the stream-notice hooks' pattern: one that fails to initialize leaves the hook unset and is never locked
+(`RUNTIME_CHANNEL_SCAN_HOOKS_INIT_FAILURE`); install and removal: `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
 
 ## App-Control
 
@@ -2931,19 +2953,18 @@ reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOO
     `UI_MENU_SERVICES`, `UI_TCP_AUDIO_CONNECT`.
   - Replay tuning (issue #575): an I/Q replay plays the tuning its capture recorded and defers every other retune
     unseen, so while the input in force is a replay (`dsd_opts_input_is_iq_replay()`) `MANUAL_TUNE` (the Spectrum tap),
-    `RTL_SET_FREQ` (the terminal menu's frequency row, Qt's frequency entry), `TUNER_RELEASE`
-    (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases, trunking off or no control
-    channel yet, so it never reads as done) and `CHANNEL_CYCLE`
-    (every leg: LCN, P25 candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q
-    replay cannot retune." (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail
-    on the backend's deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their
-    main effect is on the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts
-    point at a release; every refusal of the tap, the owner gates included, is a failed command with its reason toasted,
-    as the frequency entry's are. Qt and the control API learn it from the toast: they see only whether the command was
-    queued. Qt's Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned
-    frequency, call codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the
-    tuned-frequency reading follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`,
-    `UI_MENU_SERVICES`.
+    `RTL_SET_FREQ` (the terminal's frequency entry, `=` or Input > `Frequency...`, Qt's Spectrum "Go to" and the API's
+    `rtl_set_freq`), `TUNER_RELEASE` (`CommandBridge::releaseTuner()`), `RETURN_CC` (refused ahead of its no-op cases,
+    trunking off or no control channel yet, so it never reads as done) and `CHANNEL_CYCLE` (every leg: LCN, P25
+    candidate, `-Y` row, trunk-scan target) are refused as failed commands with the toast "An I/Q replay cannot retune."
+    (`ui_cmd_refuse_replay_tune()`), where they used to report a tune that never landed or fail on the backend's
+    deferred result with no reason given. Scan hold and avoid, skip and lockout are not refused: their main effect is on
+    the scan or the decoder. The tap's refusal comes ahead of its tuner-owner gates, whose toasts point at a release;
+    every refusal of the tap, the owner gates included, is a failed command with its reason toasted, as the frequency
+    entry's are. Qt and the control API learn it from the toast: they see only whether the command was queued. Qt's
+    Spectrum screen offers none of them during a replay (`MetricsModel::replayInput`; see UI, Qt, "Tuned frequency, call
+    codes and replay tuning on screen"). `svc_rtl_stop_locked()` clears the replay centre the tuned-frequency reading
+    follows (see IO, "I/Q replay tuned frequency"). Tests: `APP_COMMAND_QUEUE`, `UI_MENU_SERVICES`.
   - Tune toasts and payload range (issue #670): every tune toast names its frequency in MHz through
     `ui_toast_mhz()` (`dsd_freq_hz_mhz_text()`): `RTL_SET_FREQ`, `MANUAL_TUNE`, the P25 control channel selection and
     the `-Y` avoid (`Avoiding <MHz> (<n> avoided)`, to the Hz). `LOG_*` tune lines and numeric API payloads stay Hz (the
@@ -2960,6 +2981,35 @@ reconciliation at once and late, the caller's guard), `APP_CONTROL_TELEMETRY_HOO
     `DSD_TRUNK_FREQ_MAX_HZ` on every platform, as `state.h` promises, rather than storing it; the entry refuses it
     before converting the payload to that `long`, toasting `Above 2147.483647 MHz, the trunking limit`
     (`UI_CMD_APPLY_FAILED`). Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
+  - Scan pause commands (issue #671): an accepted frequency entry wins over a running scan and pauses it.
+    `ui_cmd_handle_rtl_set_freq()` refuses a replay and 0 only. A running trunk scan comes first, before
+    `manual_frequency_selects_p25_cc()`, since a parked trunked target has trunking on:
+    `svc_pause_trunk_scan_for_tune()` takes the P25 SM tick guard (the entry is not apply-guarded), runs the tune leg
+    alone, and only on an accepted tune (applied or pending) pauses the coordinator, runs the `TUNE` boundary and
+    reconciles the monitor request the scope leave made; a refused tune leaves the scan as it was. Then `-T` P25
+    control-channel selection as before. Otherwise `svc_rtl_set_freq()` tunes with its boundary, and an accepted tune
+    pauses a running `-Y` scan, or takes back a resume still waiting on its row, through `svc_pause_channel_scan()`
+    under the guard: the tune came first, so the row's calls end under its label and keys. Every accepted entry marks
+    the operator's tuner (`ui_mark_operator_tuned()`) and its toast ends `; scan paused` when it paused one; an entry
+    over a paused scan only tunes. `ui_cmd_leaves_scanner_scope()` answers 0 while a `-Y` pause stands, so
+    `apply_cmd_scoped()`'s post-handler leave never drops one. `TUNER_RELEASE` (`apply_tuner_release()`) stops `-T` as
+    before, pauses a running `-Y` scan or trunk scan in place (`svc_pause_channel_scan(..., 1)`,
+    `svc_pause_trunk_scan_in_place()`; `Automatic tuning paused`) and leaves a paused one alone; it sets
+    `operator_tuned` itself whenever it releases trunking, and the pauses set it. `SCANNER_TOGGLE` (`y`) and
+    `SCAN_RESUME` (219, API `scan_resume`, `CommandBridge::resumeScan()`) live in `actions/actions_trunk.c`: `y` resumes
+    a paused scan, pauses a running trunk scan in place (a pending trunk-scan resume counts as running), and stops or
+    starts `-Y` as before; `SCAN_RESUME` resumes only a paused scan (`Not paused: the scan is running`, `Not scanning:
+    no paused scan to resume`), and a second one while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are
+    refused under a trunk-scan coordinator (`Trunk scan: each target sets its own trunking`): clearing trunking there
+    stranded a target in a followed call (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one,
+    and trunking off leaves the pause. Hold, avoid, clear avoids and Next channel on a paused scan answer `Scan paused:
+    resume it first` (a failed command; the hold and avoids stay), while `MANUAL_TUNE` is allowed. A paused `-Y` scan
+    ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
+    RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
+    `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
+    `operator_tuned` is cleared only by a resume and at session start, never by turning trunking or `-Y` on (an Explore
+    followed by "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`,
+    `API_COMMANDS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -5030,10 +5080,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Tagged retune ownership (issue #671): a queued tagged retune defers a tune of another owner, but a manual tune's tag
-  (`RTL_STREAM_TUNE_ID_MANUAL_BIT`) only asks for its completion. It owns nothing, so a second frequency entry or an owner
-  tune coalesces into a queued manual request as into an untagged one. `rtl_stream_session_generation()` moves at every
-  `dsd_rtl_stream_open()` and soft stop, and at nothing else. Before it fails the queued retune, the stop moves it, so
-  a completion read under another session belongs to a stream that is gone.
+  (`RTL_STREAM_TUNE_ID_MANUAL_BIT`) only asks for its completion. It owns nothing, so a second frequency entry or an
+  owner tune coalesces into a queued manual request as into an untagged one. `rtl_stream_session_generation()` moves at
+  every `dsd_rtl_stream_open()` and soft stop, and at nothing else. Before it fails the queued retune, the stop moves
+  it, so a completion read under another session belongs to a stream that is gone.
 - View rings and SNR fallbacks (`radio/rtl_view_rings.{h,cpp}`): the constellation and eye rings (relaxed-atomic
   samples, demod-thread appends, retune clears) and the fallback estimates over them behind
   `rtl_stream_estimate_snr_{c4fm_eye,gfsk_eye,qpsk_const}()`. Every append and clear is one write batch (a writer
@@ -8525,22 +8575,20 @@ Qt Quick frontend (`src/ui/qt`):
   - Receiver notice (Main.qml): when `receiverHealth` reads `lost` or `failed` and no session is active,
     `receiverNotice()` words the ending as Home's failure, ranked after a start error and live USB-access text and
     before the host's failure: "RTL-SDR was unplugged, so <name> stopped. Plug it back in, then tap Reconnect." or
-    "RTL-SDR stopped sending samples, so <name> stopped. Tap Reconnect to reset it and start again." (an Airspy,
-    never reset: "… Tap Reconnect to start again."; no copy blames the cable, #782), naming the
-    attempt's system, scan list, Explore or Signal search. The `FailureCard` (`homeFailureCard`) button reads
-    `retryText` "Reconnect" while the notice shows (`receiverNoticeShown`), and the details panel is hidden, so two
-    Retry actions never compete. Reconnect is `retrySource()`: the usual USB gate (a permission prompt if needed), then
-    the same session. After an Activity recreation `attemptedSource` is empty (the recreated UI names the running
-    session from `prefs.acceptedStart*`, but holds no start to repeat), so Reconnect only asks for access to the lost
-    kind, starts nothing,
-    and the copy ends "Plug it back in, tap Reconnect, then start it again." (a stream failure: "Tap Reconnect to reset
-    it, then start it again.", an Airspy's "Tap Reconnect, then start it again."). With Signal search open, its screen
-    says "… plug it back in, then start the search again." (or "Start the search again to reset it.", an Airspy's
-    "Start the search again."). Dismiss clears the
-    notice and any restart queued behind a Reconnect or Retry (`cancelPendingRestart()`); Back does not cancel a
-    pending Reconnect (Android's permission dialog takes Back as a denial). While a start waits on USB access the live
-    access text ("USB permission denied") outranks the input-failure texts. During a session the notice never shows;
-    the Monitor carries the loss (Monitor receiver pill below).
+    "RTL-SDR stopped sending samples, so <name> stopped. Tap Reconnect to reset it and start again." (an Airspy, never
+    reset: "… Tap Reconnect to start again."; no copy blames the cable, #782), naming the attempt's system, scan list,
+    Explore or Signal search. The `FailureCard` (`homeFailureCard`) button reads `retryText` "Reconnect" while the
+    notice shows (`receiverNoticeShown`), and the details panel is hidden, so two Retry actions never compete. Reconnect
+    is `retrySource()`: the usual USB gate (a permission prompt if needed), then the same session. After an Activity
+    recreation `attemptedSource` is empty (the recreated UI names the running session from `prefs.acceptedStart*`, but
+    holds no start to repeat), so Reconnect only asks for access to the lost kind, starts nothing, and the copy ends
+    "Plug it back in, tap Reconnect, then start it again." (a stream failure: "Tap Reconnect to reset it, then start it
+    again.", an Airspy's "Tap Reconnect, then start it again."). With Signal search open, its screen says "… plug it
+    back in, then start the search again." (or "Start the search again to reset it.", an Airspy's "Start the search
+    again."). Dismiss clears the notice and any restart queued behind a Reconnect or Retry (`cancelPendingRestart()`);
+    Back does not cancel a pending Reconnect (Android's permission dialog takes Back as a denial). While a start waits
+    on USB access the live access text ("USB permission denied") outranks the input-failure texts. During a session the
+    notice never shows; the Monitor carries the loss (Monitor receiver pill below).
   - Auto-start on attachment (Settings "Start when a dongle is attached", "Resume the last USB-receiver system or scan
     list"): saved systems and scan lists on `usb` or `airspy` are eligible, and an attachment starts one only when the
     kind of the receiver that attached equals the target's source (`autoStartKindMatches()` in
@@ -9095,40 +9143,42 @@ Qt Quick frontend (`src/ui/qt`):
     shows "An I/Q replay cannot retune." in the button's place, the refusal's own words.
   - Scan pause (issue #671): `MetricsModel::fillScanControlView()` reads the app-control scan-state view
     (`dsd_app_scan_state_view_get()`) for `scanKind`, `scanPaused`, `scanResumable` (paused with no -Y resume already
-    waiting on its row), `scanEntryCount` and `operatorTuned`, and for the running predicate behind
-    `tunerControlled`, `scanRotationActive` and the target fields; a paused `--trunk-scan` keeps `trunk_scan_enabled`,
-    so no Qt reading may gate on that flag. Spectrum's "Go to" has its own predicate (`goToAllowed`:
-    `!replay && (exploring && !tunerHeld || scanList && scanRotationActive || scanPaused)`, where
-    `scanList` is Main's `sessionScanList`) and sends `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that
-    pauses a running scan); taps, drags and steps keep `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet
-    says Tune pauses the scan while one runs, and closes with the reason when `goToAllowed` falls (a replay keeps its
-    own). `CommandBridge::resumeScan()` (`SCAN_RESUME`) backs "Resume scan" on Spectrum and in the Monitor's scan
-    controls row, which shows it in place of Hold/Avoid/Next while paused; the header reads `SCAN PAUSED · n
-    targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main names the session from the decoder, never from a
-    queued command: `syncOperatorHold()` (on the lifecycle's Running with options known) swaps `sessionSystem` for an
-    "Exploring" map while `operatorTuned` holds, keeping the session's map and row in
-    `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the resume; a scan
-    list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its spectrum takes
-    taps until Resume scan, or for good once the paused scan is stopped. The decoder sets `operator_tuned` on every
-    accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection, MANUAL_TUNE) and on a
-    TUNER_RELEASE that releases trunking or pauses a scan (`ui_mark_operator_tuned()`), so Explore from here never
-    relabels history: with an owner the session is named on the decoder's answer, and with none it only detaches
-    the session map and row (the calls before the first tune are still the system's). History rows take their
-    identity from the call's own stamps (`Event_History::operator_tuned` -> "Exploring", no UID; the saved-system UID
-    only with `scan_member == 0`), so the call a release or tune ends keeps the session's name and nothing depends on
-    when the UI reads a row. `HistoryDetailSheet` offers a history Hold TG only with no scan and no operator hold
-    (`scanKind === 0 && !operatorTuned`), since the session keeps its UID for the rows heard before. The
-    post-initialization edge records
-    `sessionStartKind`/`sessionStartUid`, what was started, not what an early Explore made it. A start the host
-    accepts also writes that pair to the device-local `prefs.acceptedStartKind/Uid` at once (`lastStarted*` stays
-    the initialized record Home and auto-start read); a recreated Activity that finds a session Running and started
-    nothing itself adopts it (`adoptReattachedSession()`): a scan list's list (`sessionScanList`, its map), Explore's
-    `exploring`, a saved system's map and row. With no session map, the hold's and a no-owner Explore's map take the
-    running input's kind from `metrics.radioSource` (`heldReceiver()`), never an assumed USB one. Tests:
-    `UI_QT_METRICS_MODEL` (`test_scan_state()`), `UI_QT_CALL_HISTORY_MODEL`
+    waiting on its row), `scanEntryCount` and `operatorTuned`, and for the running predicate behind `tunerControlled`,
+    `scanRotationActive` and the target fields; a paused `--trunk-scan` keeps `trunk_scan_enabled`, so no Qt reading may
+    gate on that flag. Spectrum's "Go to" has its own predicate (`goToAllowed`: `!replay && (exploring && !tunerHeld ||
+    scanList && scanRotationActive || scanPaused)`, where `scanList` is Main's `sessionScanList`) and sends
+    `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that pauses a running scan); taps, drags and steps keep
+    `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet says Tune pauses the scan while one runs, and closes
+    with the reason when `goToAllowed` falls (a replay keeps its own). `CommandBridge::resumeScan()` (`SCAN_RESUME`)
+    backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of Hold/Avoid/Next
+    while paused; the header reads `SCAN PAUSED · n targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main
+    names the session from the decoder, never from a queued command: `syncOperatorHold()` (on the lifecycle's Running
+    with options known) swaps `sessionSystem` for an "Exploring" map while `operatorTuned` holds, keeping the session's
+    map and row in `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
+    resume; a scan list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its
+    spectrum takes taps until Resume scan, or for good once the paused scan is stopped. The decoder sets
+    `operator_tuned` on every accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection,
+    MANUAL_TUNE; `ui_mark_operator_tuned()`), on a TUNER_RELEASE that releases trunking (`apply_tuner_release()`) and in
+    every scan pause (the engine's `-Y` and trunk-scan pauses), so Explore from here never relabels history: with an
+    owner the session is named on the decoder's answer, and with none it only detaches the session map and row (the
+    calls before the first tune are still the system's). History rows take their identity from the call's own stamps
+    (`Event_History::operator_tuned` -> "Exploring", no UID; the saved-system UID only with `scan_member == 0`), so the
+    call a release or tune ends keeps the session's name and nothing depends on when the UI reads a row.
+    `HistoryDetailSheet` offers a history Hold TG only with no scan and no operator hold (`scanKind === 0 &&
+    !operatorTuned`), since the session keeps its UID for the rows heard before. The post-initialization edge records
+    `sessionStartKind`/`sessionStartUid`, what was started, not what an early Explore made it. A start the host accepts
+    also writes that pair to the device-local `prefs.acceptedStartKind/Uid` at once (`lastStarted*` stays the
+    initialized record Home and auto-start read); a recreated Activity that finds a session Running and started nothing
+    itself adopts it (`adoptReattachedSession()`): a scan list's list (`sessionScanList`, its map), Explore's
+    `exploring` (no map: the Monitor's receiver pill stays inert until its first tune makes the hold's map), a saved
+    system's map and row. The pair names the session only because every start goes through `startWithMap()`, which
+    writes it once the host accepts; a start added on another path must write it too. With no session map, the hold's
+    and a no-owner Explore's map take the running input's kind from `metrics.radioSource` (`heldReceiver()`), never an
+    assumed USB one. Tests: `UI_QT_METRICS_MODEL` (`test_scan_state()`), `UI_QT_CALL_HISTORY_MODEL`
     (`test_tuner_owner_stamps_set_row_identity()`), `UI_QT_QML_CALL_LISTS` (`tst_spectrum_screen.qml` 03j-03o,
     `tst_monitor_scan_target.qml`, `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`,
-    `tst_history_hold.qml`, `tst_main_session_tools.qml`), `APP_COMMAND_QUEUE` (`test_manual_tunes_mark_the_operator()`).
+    `tst_history_hold.qml`, `tst_main_session_tools.qml`), `APP_COMMAND_QUEUE`
+    (`test_manual_tunes_mark_the_operator()`).
   - Carrier identity (Spectrum strip): `SpectrumScreen.qml`'s status strip is two lines bounded by the Radio button
     (the strip edge when it is hidden). Line 1 (`spectrumSyncLabel`, SNR, `spectrumCfoLabel`, `spectrumCallLabel`)
     gives way talkgroup first (elided), then the offset (hidden); line 2 (`spectrumIdentityLabel`) is
@@ -9273,32 +9323,32 @@ Qt Quick frontend (`src/ui/qt`):
   label `monitorLiveLabel`, dot `monitorLiveDot`) reads `LOST` with a `Theme.alert` dot (no halo) as soon as the host's
   `receiverHealth` reports the session's receiver lost or failed (`receiverLost`, read through a `DeviceStatus`), while
   the engine still saves and uploads its last calls, instead of `LIVE` until teardown ends; Stop reads "Stopping…" and
-  is disabled meanwhile. For a session on a local receiver (`sessionReceiver`: the system's `usb` or `airspy` source,
-  or the lost receiver's kind) the pill is a button (accessible name "RTL-SDR lost" while lost) that opens
+  is disabled meanwhile. For a session on a local receiver (`sessionReceiver`: the system's `usb` or `airspy` source, or
+  the lost receiver's kind) the pill is a button (accessible name "RTL-SDR lost" while lost) that opens
   `monitorReceiverSheet`, a `ConfirmDialog`: healthy, the receiver's headline and record text with OK; lost, what
-  happened and that the session is finishing, with Cancel and **Stop now** (`decoderHost.stop()`, the user's Stop,
-  which abandons the upload backlog). The sheet fixes its view when it opens, closes if `receiverLost` changes under it
-  (OK never turns into Stop now under a finger) and closes with the screen. rtl_tcp, network and file sessions, and
-  every desktop session, keep an inert pill (StaticText, no tab stop). A healthy session the Monitor reattaches to after
-  an Activity recreation has its system map again (Main's `adoptReattachedSession()`, issue #671), so a USB or Airspy
-  system or scan list opens the sheet as a fresh start does; one the UI cannot name keeps the inert pill, while LOST
-  still shows there from `receiverHealth`. In tier
-  5, where the header scrolls with the list, a lost receiver also shows as one fixed line above Stop
-  (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens the same
-  sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already fixes
-  only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would show
-  (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
-  `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and `headerActionsFit` requires it
-  to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`, `headerStacked` and the budget's
-  `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to the session menu as in tier 1
-  and tier 0 keeps the title-line header; a label change never changes which actions show. A 360 dp phone at 1.0 with
-  Sites and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…` would overflow); 411 dp at
-  1.0 keeps all four (at 1.6 `STOPPING…` overflows there too). Every gate is `!localDeviceBrokered ||`, so desktop
-  geometry is unchanged; the one desktop change is the LIVE pill's accessible name, which now names the receiver's
-  state there too. Tests:
-  `UI_QT_QML_MONITOR_RECEIVER` (`tst_monitor_receiver.qml`), `tst_monitor_scan_target.qml`
-  (`test_header_actions_fit_a_tall_phone`, `test_header_geometry_unchanged_off_android`),
-  `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier rows).
+  happened and that the session is finishing, with Cancel and **Stop now** (`decoderHost.stop()`, the user's Stop, which
+  abandons the upload backlog). The sheet fixes its view when it opens, closes if `receiverLost` changes under it (OK
+  never turns into Stop now under a finger) and closes with the screen. rtl_tcp, network and file sessions, and every
+  desktop session, keep an inert pill (StaticText, no tab stop). A healthy session the Monitor reattaches to after an
+  Activity recreation has its system map again (Main's `adoptReattachedSession()`, issue #671), so a USB or Airspy
+  system or scan list opens the sheet as a fresh start does. A reattached Explore session, and one the UI cannot name,
+  has no map, so it keeps the inert pill until a manual tune gives it the operator hold's map (`heldReceiver()`); LOST
+  still shows there from `receiverHealth`. In tier 5, where the header scrolls with the list, a lost receiver also shows
+  as one fixed line above Stop (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session
+  finishing", ›) that opens the same sheet; hidden it has no height, and it sits outside the budget (it can appear only
+  where the budget already fixes only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the
+  actions the session would show (Sites, session options, Spectrum, and the pill at the widest label it can show,
+  `LIVE`, `LOST`, `STARTING…`, `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and
+  `headerActionsFit` requires it to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`,
+  `headerStacked` and the budget's `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to
+  the session menu as in tier 1 and tier 0 keeps the title-line header; a label change never changes which actions show.
+  A 360 dp phone at 1.0 with Sites and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…`
+  would overflow); 411 dp at 1.0 keeps all four (at 1.6 `STOPPING…` overflows there too). Every gate is
+  `!localDeviceBrokered ||`, so desktop geometry is unchanged; the one desktop change is the LIVE pill's accessible
+  name, which now names the receiver's state there too. Tests: `UI_QT_QML_MONITOR_RECEIVER`
+  (`tst_monitor_receiver.qml`), `tst_monitor_scan_target.qml` (`test_header_actions_fit_a_tall_phone`,
+  `test_header_geometry_unchanged_off_android`), `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier
+  rows).
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
   (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
   checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does
@@ -9778,9 +9828,11 @@ Key public headers:
 Additional includes of interest:
 
 - Engine: `<dsd-neo/engine/engine.h>`, `<dsd-neo/engine/frame_processing.h>`,
-  `<dsd-neo/engine/protocol_dispatch.h>`, `<dsd-neo/engine/trunk_scan.h>`, `<dsd-neo/engine/trunk_tuning.h>`
+  `<dsd-neo/engine/protocol_dispatch.h>`, `<dsd-neo/engine/trunk_scan.h>`, `<dsd-neo/engine/trunk_tuning.h>`,
+  `<dsd-neo/engine/channel_scan.h>`, `<dsd-neo/engine/manual_tune.h>`
 - Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`,
   `<dsd-neo/runtime/trunk_scan_hooks.h>`, `<dsd-neo/runtime/trunk_tuning_hooks.h>`,
+  `<dsd-neo/runtime/channel_scan_hooks.h>`, `<dsd-neo/runtime/control_pump.h>`,
   `<dsd-neo/runtime/radioreference.h>`, `<dsd-neo/runtime/radioreference_generate.h>`,
   `<dsd-neo/runtime/radioreference_import.h>`, `<dsd-neo/runtime/rigctl_passband.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,

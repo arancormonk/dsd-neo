@@ -135,11 +135,11 @@ class AppPrefs : public QObject {
     QString lastStartedKind() const;
     void setLastStartedKind(const QString& value);
     QString lastStartedUid() const;
+    void setLastStartedUid(const QString& value);
     QString acceptedStartKind() const;
     void setAcceptedStartKind(const QString& value);
     QString acceptedStartUid() const;
     void setAcceptedStartUid(const QString& value);
-    void setLastStartedUid(const QString& value);
     double lastLat() const;
     void setLastLat(double value);
     double lastLon() const;

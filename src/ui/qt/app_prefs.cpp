@@ -783,6 +783,20 @@ AppPrefs::setLastStartedKind(const QString& value) {
 }
 
 QString
+AppPrefs::lastStartedUid() const {
+    return m_settings.value(key_name(kLastStartedUid), QString()).toString();
+}
+
+void
+AppPrefs::setLastStartedUid(const QString& value) {
+    if (m_settings.value(key_name(kLastStartedUid), QString()).toString() == value) {
+        return;
+    }
+    m_settings.setValue(key_name(kLastStartedUid), value);
+    Q_EMIT lastStartedUidChanged();
+}
+
+QString
 AppPrefs::acceptedStartKind() const {
     return m_settings.value(key_name(kAcceptedStartKind), QString()).toString();
 }
@@ -808,20 +822,6 @@ AppPrefs::setAcceptedStartUid(const QString& value) {
     }
     m_settings.setValue(key_name(kAcceptedStartUid), value);
     Q_EMIT acceptedStartChanged();
-}
-
-QString
-AppPrefs::lastStartedUid() const {
-    return m_settings.value(key_name(kLastStartedUid), QString()).toString();
-}
-
-void
-AppPrefs::setLastStartedUid(const QString& value) {
-    if (m_settings.value(key_name(kLastStartedUid), QString()).toString() == value) {
-        return;
-    }
-    m_settings.setValue(key_name(kLastStartedUid), value);
-    Q_EMIT lastStartedUidChanged();
 }
 
 double

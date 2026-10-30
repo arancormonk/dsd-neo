@@ -957,8 +957,9 @@ answers "No RTL-SDR attached" until an Airspy system is started; **Dismiss** hid
 the notice for that Activity only, as it does any failure, so a recreated Activity
 shows a dismissed (but not acknowledged) notice again. A healthy session
 reattached after a recreation is named as it was started (its saved system, scan
-list or Explore session), so its receiver pill opens the receiver sheet as before;
-LOST still shows if it ends.
+list or Explore session). A saved system's or scan list's receiver pill opens the
+receiver sheet as before; an Explore session's pill shows LIVE with no sheet until
+you tune somewhere. LOST still shows if the session ends.
 
 ### What a failed start says
 
@@ -1983,7 +1984,8 @@ USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only
 after engine initialization; an **Explore from here** taken while the list is
 still starting does not change what is recorded. Monitor shows the active target ID,
-ordinal/count and hold state, or **SCAN PAUSED** with **Resume scan** while paused. System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
+ordinal/count and hold state, or **SCAN PAUSED** with **Resume scan** while paused.
+System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 
