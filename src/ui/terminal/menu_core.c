@@ -512,6 +512,11 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     rr_panel_tick(opts, state);
+    /* The RR panel's tick can end it: a modal-only overlay that held nothing else closes now, not after an empty frame. */
+    ui_menu_close_if_modal_done();
+    if (!g_overlay_open || g_depth <= 0) {
+        return;
+    }
     // Render Prompt overlay (highest priority) - delegate to menu_prompts.c
     if (ui_prompt_active()) {
         ui_prompt_render();

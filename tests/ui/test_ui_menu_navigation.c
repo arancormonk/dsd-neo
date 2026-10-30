@@ -58,6 +58,12 @@ static int g_rr_panel_render_calls = 0;
 static int g_rr_panel_close_calls = 0;
 /* 1: the prompt stub closes on the key it handles, as submit, cancel and Esc do. */
 static int g_prompt_closes_on_key = 0;
+/* 1: the prompt stub closes on the key it handles and its callback opens a follow-up prompt (a refusal reopening the
+   prompt with the reason), all within that key. */
+static int g_prompt_reopens_on_key = 0;
+static int g_prompt_reopen_calls = 0;
+/* 1: the RR panel stub ends in its next tick (an import that finished), as the panel can on its own. */
+static int g_rr_panel_ends_on_tick = 0;
 static int g_draw_menu_calls = 0; /* frames the tick set out to draw */
 static int g_modal_opener_calls = 0;
 static UiCtx* g_modal_opener_ctx = NULL;
@@ -131,6 +137,13 @@ open_help_modal(void* ctx) {
     g_modal_opener_calls++;
     g_modal_opener_ctx = (UiCtx*)ctx;
     ui_help_open("one-line reason");
+}
+
+static void
+open_rr_panel_modal(void* ctx) {
+    g_modal_opener_calls++;
+    g_modal_opener_ctx = (UiCtx*)ctx;
+    g_rr_panel_active = 1;
 }
 
 static void
@@ -271,8 +284,12 @@ int
 ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
     g_prompt_key_calls++;
-    if (g_prompt_closes_on_key) {
+    if (g_prompt_closes_on_key || g_prompt_reopens_on_key) {
         g_prompt_active = 0;
+    }
+    if (g_prompt_reopens_on_key) {
+        g_prompt_reopen_calls++;
+        g_prompt_active = 1;
     }
     return 1;
 }
@@ -344,6 +361,9 @@ void
 rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
+    if (g_rr_panel_ends_on_tick) {
+        g_rr_panel_active = 0;
+    }
 }
 
 void
@@ -740,11 +760,20 @@ main(void) {
     assert(g_draw_menu_calls == 0);
     g_prompt_closes_on_key = 0;
 
-    /* A callback that opens a follow-up modal (a refusal reopening the prompt) keeps the overlay. */
+    /* A callback that opens a follow-up modal (a refusal reopening the prompt) keeps the overlay: the key closes the
+       prompt and its callback opens another before the key returns, and the next tick draws that prompt alone. */
     reset_modal_capture();
     ui_menu_open_modal_async(opts, state, open_prompt_modal);
-    assert(ui_menu_handle_key('x', opts, state) == 1); /* the stub keeps the prompt: a reopened one */
+    g_prompt_reopens_on_key = 1;
+    g_prompt_reopen_calls = 0;
+    assert(ui_menu_handle_key('\n', opts, state) == 1);
+    g_prompt_reopens_on_key = 0;
+    assert(g_prompt_reopen_calls == 1 && g_prompt_active == 1);
     assert(ui_menu_is_open() == 1);
+    g_prompt_render_calls = 0;
+    ui_menu_tick(opts, state);
+    assert(g_prompt_render_calls == 1);
+    assert(g_draw_menu_calls == 0);
     /* A prompt closed from elsewhere is noticed at the next tick, before anything is drawn. */
     g_prompt_active = 0;
     ui_menu_tick(opts, state);
@@ -763,6 +792,20 @@ main(void) {
     g_help_active = 0; /* the help stub's close key */
     assert(ui_menu_handle_key('\n', opts, state) == 1);
     assert(ui_menu_is_open() == 0);
+
+    /* Final review, Minor 7: a modal-only overlay whose RR panel ends in its own tick closes in that tick, before the
+       frame it held nothing else for would be drawn. */
+    reset_modal_capture();
+    ui_menu_open_modal_async(opts, state, open_rr_panel_modal);
+    assert(ui_menu_is_open() == 1);
+    ui_menu_tick(opts, state);
+    assert(g_rr_panel_render_calls == 1 && g_draw_menu_calls == 0);
+    g_rr_panel_ends_on_tick = 1;
+    ui_menu_tick(opts, state);
+    g_rr_panel_ends_on_tick = 0;
+    assert(ui_menu_is_open() == 0);
+    assert(g_draw_menu_calls == 0);
+    assert(g_rr_panel_render_calls == 1);
 
     /* An opener that opens nothing leaves no overlay behind, and no empty frame is ever drawn. */
     reset_modal_capture();
