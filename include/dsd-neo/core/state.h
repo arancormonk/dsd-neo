@@ -185,6 +185,12 @@ typedef struct {
     uint8_t b2_lead_soft_valid;
 } dsd_tetra_sync_capture;
 
+/* Where every clear of the rolling dibit buffers (dibit_buf, dmr_payload_buf, dmr_soft_buf: initState(), noCarrier(),
+ * an NXDN reset) and every wrap puts the write pointer: the buffer plus this many entries. What lies before it is the
+ * clear's zeros or the dibits a wrap left, none of them the stream's latest, so a decoder that reads back from the
+ * pointer has real dibits only for what was written since (dsd_state_rolling_dibits()). */
+#define DSD_ROLLING_DIBIT_FLOOR             200
+
 /* Dibits of frame-sync history a getFrameSync() call hands the next (dsd_frame_sync_history_carry). */
 #define DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS 128
 /* Raw levels it hands on with them: the call's level window, at most this many. */
@@ -2549,6 +2555,15 @@ struct dsd_state {
     /* The frame sync's history from its last no-sync exit, for the next call (dsd_frame_sync_history_carry). */
     dsd_frame_sync_history_carry frame_sync_carry;
 
+    /* The oldest dibits of the read-back the burst the frame sync just accepted is decoded from that are not the
+     * stream's (DSD_ROLLING_DIBIT_FLOOR): DMR's 90 back from dmr_payload_p, X2-TDMA's 90 (data) or 144 (voice) back
+     * from dibit_buf_p. Set at every DMR and X2-TDMA accept, for the symbol clock and epoch it was accepted on; a decoder
+     * reads it before reading any symbol (dsd_state_sync_readback_invalid()) and decodes and publishes nothing from
+     * those dibits. 0 when the whole read-back is the stream's. */
+    uint16_t sync_readback_invalid;
+    uint64_t sync_readback_clock;
+    uint32_t sync_readback_epoch;
+
     /* 1 from initState() until an engine run starts on this state, which clears it (dsd_engine_run_with_lifecycle()).
      * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the
      * decode clock onto an I/Q replay's capture clock only on a fresh one (dsd_engine_decode_clock_enter_replay()). */
@@ -2611,6 +2626,36 @@ dsd_state_carrier_settling(const dsd_state* state, uint64_t lookback) {
     }
     const uint64_t last_left = state->carrier_change_symbol_clock;
     return (state->symbol_clock < last_left || state->symbol_clock - last_left < lookback) ? 1 : 0;
+}
+
+/* Entries written to the rolling buffer @p buf (dibit_buf or dmr_payload_buf) at @p p since its last clear or wrap
+ * (DSD_ROLLING_DIBIT_FLOOR): how far back from @p p a decoder reads real dibits. */
+static inline long
+dsd_state_rolling_dibits(const int* buf, const int* p) {
+    if (buf == NULL || p == NULL || p < buf + DSD_ROLLING_DIBIT_FLOOR) {
+        return 0;
+    }
+    return (long)(p - (buf + DSD_ROLLING_DIBIT_FLOOR));
+}
+
+/* Note @p invalid oldest dibits of the read-back of the burst the frame sync accepts now (dsd_state::sync_readback_invalid).
+ */
+static inline void
+dsd_state_note_sync_readback(dsd_state* state, long invalid) {
+    state->sync_readback_invalid = (uint16_t)(invalid > 0 ? (invalid < 0xFFFF ? invalid : 0xFFFF) : 0);
+    state->sync_readback_clock = state->symbol_clock;
+    state->sync_readback_epoch = state->symbol_clock_epoch;
+}
+
+/* For a decoder about to decode the burst the frame sync accepted, before it reads any symbol: how many of the oldest
+ * dibits of its read-back are not the stream's. 0 once a symbol was read since the accept, so a decoder further on in a
+ * burst loop never takes it. */
+static inline unsigned int
+dsd_state_sync_readback_invalid(const dsd_state* state) {
+    if (state->sync_readback_clock != state->symbol_clock || state->sync_readback_epoch != state->symbol_clock_epoch) {
+        return 0U;
+    }
+    return state->sync_readback_invalid;
 }
 
 static inline int

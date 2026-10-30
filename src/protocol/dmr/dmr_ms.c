@@ -245,6 +245,26 @@ dmr_ms_process_audio_frames(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frame
     dmr_vcrypt_clear_frame(state, 0U);
 }
 
+/* The bootstrap burst's frames when its read-back is not all the stream's (dsd_state_sync_readback_invalid(): a cold
+   start or an acquisition reset left no soft history to re-read what noCarrier() cleared): a frame with a dibit of the
+   @p invalid oldest of the 90 read back (the CACH's 12, then the first frame's 36, then the second's first 18) is not
+   decoded and plays silence; the rest decode at their positions as dmr_ms_process_audio_frames() decodes them. */
+static void
+dmr_ms_process_audio_frames_after(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frames* frames, unsigned int invalid) {
+    char (*const frame[3])[24] = {frames->ambe_fr, frames->ambe_fr2, frames->ambe_fr3};
+    const unsigned int first_dibit[3] = {12U, 48U, 90U};
+    for (uint8_t i = 0; i < 3U; i++) {
+        if (invalid > first_dibit[i]) {
+            DSD_MEMSET(state->s_l4[i], 0, sizeof(state->s_l4[i]));
+            DSD_MEMSET(state->s_l4u[i], 0, sizeof(state->s_l4u[i]));
+            continue;
+        }
+        dmr_vcrypt_set_frame(state, 0U, 1U, i);
+        dmr_ms_process_single_mbe(opts, state, frame[i], i);
+    }
+    dmr_vcrypt_clear_frame(state, 0U);
+}
+
 static void
 dmr_ms_play_voice(dsd_opts* opts, dsd_state* state) {
     if (opts->pulse_digi_out_channels != 1 && opts->pulse_digi_out_channels != 2) {
@@ -458,6 +478,8 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
     dmr_sm_emit_voice_sync(opts, state, 0);
 
+    /* Read before any symbol is: how much of the read-back is not the stream's. */
+    const unsigned int invalid = dsd_state_sync_readback_invalid(state);
     dmr_ms_prepare_bootstrap_payload(state);
     /* The voice sync the hunt accepted is burst A: the superframe starts here, and the MI catches up over any the
        hunt spent between this one and the last (issue #729). */
@@ -474,16 +496,25 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
         dmr_ms_clear_mode_flags(state);
         return;
     }
-    dmr_ms_dump_bootstrap_debug_burst(opts, state);
-    dmr_ms_dump_dsp_output(opts, state);
+    if (invalid == 0U) {
+        dmr_ms_dump_bootstrap_debug_burst(opts, state);
+        dmr_ms_dump_dsp_output(opts, state);
+    }
     dmr_ms_print_bootstrap_sync(opts, state, timestr);
 
     dmr_ms_copy_frames_for_late_entry(&frames);
     dmr_ms_apply_keystream(state, &frames);
-    dmr_ms_process_audio_frames(opts, state, &frames, 1U);
+    if (invalid == 0U) {
+        dmr_ms_process_audio_frames(opts, state, &frames, 1U);
+    } else {
+        dmr_ms_process_audio_frames_after(opts, state, &frames, invalid);
+    }
     dmr_ms_play_voice(opts, state);
 
-    dmr_late_entry_mi_fragment(opts, state, 1, frames.m1, frames.m2, frames.m3);
+    /* The late-entry fragments are the three frames': none when one was not read back. */
+    if (invalid <= 12U) {
+        dmr_late_entry_mi_fragment(opts, state, 1, frames.m1, frames.m2, frames.m3);
+    }
 
     skipDibit(opts, state, 144); //skip to next TDMA slot
     dmrMS(opts, state);          //bootstrap into full TDMA frame
@@ -492,6 +523,9 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 //simplied to a simple data collector, and then passed on to dmr_data_sync for the usual processing
 void
 dmrMSData(dsd_opts* opts, dsd_state* state) {
+    /* Read before any symbol is: a read-back not all the stream's (dsd_state_sync_readback_invalid()) holds the burst's
+       CACH and the first half of its payload and slot type, so nothing of the burst decodes. */
+    const unsigned int invalid = dsd_state_sync_readback_invalid(state);
 
     char timestr[9];
     (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
@@ -548,7 +582,7 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
        everything decodes only after that read, so a slot type read whole before the move would publish the colour code
        of the carrier left after the boundary forgot it. Nor when an input interruption cut the live half, which is
        erasures the reader stood in. The burst is dropped, as on a sync loss. */
-    if (!dsd_state_frame_read_lost(state, carrier_seq)) {
+    if (!dsd_state_frame_read_lost(state, carrier_seq) && invalid == 0U) {
         state->dmr_stereo = 1;
         state->dmr_ms_mode = 1;
         dmr_data_sync(opts, state);

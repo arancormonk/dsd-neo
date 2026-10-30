@@ -443,6 +443,17 @@ dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_da
 
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
+    /* A read-back not all the stream's (dsd_state_sync_readback_invalid(): a cold start or an acquisition reset left no
+       soft history to re-read what noCarrier() cleared) holds the burst's CACH, then the first half of its payload and
+       slot type: nothing of the burst decodes. Its live half is read past, as a decoded burst's is. */
+    if (dsd_state_sync_readback_invalid(state) != 0U) {
+        if (state->dmr_stereo == 0) {
+            skipDibit(opts, state, 5 + 49);
+            skipDibit(opts, state, 12 + 49 + 5);
+        }
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
     dmr_data_sync_ctx ctx;
     dmr_data_sync_init_ctx(&ctx, opts, state);
     char debug_line[192];

@@ -618,29 +618,46 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   1800-symbol pass, or the hunt budget's) hands the next call in `dsd_state::frame_sync_carry`, with the raw levels of
   its last symbols (the call's level window, which the window's level estimate and the NXDN96 FSW's four-level reading
   read). The levels go and come with the dibits under every rule below, re-ringed onto the next call's level window,
-  which another sync type can size differently. The next call takes it
-  up only when nothing came between: the same symbol clock, clock epoch, input, carrier count, trunk tuning generation,
-  SPS hunt profile and modulation (the profile and modulation the history was read under), no off-thread tune awaiting
-  reconciling, and no `dsd_state_forget_sync_join_histories()` since the history began. The decoder thread's trunk
-  retunes run it (a tune through the trunk tuning hooks, `dsd_engine_rxid_trunk_tune()`, and noCarrier's direct
-  control-channel return, `no_carrier_accept_direct_cc_return()`), and so do every off-thread tune applied, every
-  carrier boundary (a typed scanner row that moved the receiver yet ends unlanded is one,
-  `channel_scan_note_unlanded_move()`) and every acquisition reset; so a P25 release's retune, or a direct return, in
-  the exit's own no-sync hooks keeps nothing. Its first read checks the clock, epoch, carrier count, generation, drops
-  and pending off-thread tunes again, for a flush an RTL reader finds only when it reads; a failed check drops the
-  levels with the dibits. A matcher that reads only its window or reads its frame forward from the sync (TETRA, P25,
-  NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then matches a frame that straddles the exit; before, a TETRA control
-  uplink burst that began fewer than 20 symbols before it was lost. An NXDN96 FSW straddling the exit is read on its
-  carried levels, so it counts as clear only when its 20 bits are, and acquisition still needs two clear FSWs a frame
-  apart; `frame_sync_nxdn96_fsw_bit_errors()` reads a window with fewer than ten levels as not clear (only a test's
-  sign-only window keeps the sign match). DMR and X2-TDMA decode their burst back from the rolling dibit buffers
-  (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset clears, so they match only on a 24-symbol window the
-  call read itself (`frame_sync_match_window_own()`), as before the carry. What the carry does not restore is either
-  continuous across the exit (the soft symbol history `dsd_state::symbol_history`, which TETRA's soft capture and
-  every warm start read, and `sbuf`) or sync evidence that noCarrier resets (the NXDN96 hits and lock, the M17
-  preamble run, candidate, polarity and join hits, `lastsynctype`, the ProVoice and M17 confirms), after which a
-  matcher needs more evidence, not less. A sync, an input interruption, a signal-search yield and shutdown drop it too.
-  Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync straddling the exit among them).
+  which another sync type can size differently. The next call takes it up only when nothing came between: the same
+  symbol clock, clock epoch, input, carrier count, trunk tuning generation, SPS hunt profile and modulation (the profile
+  and modulation the history was read under), no off-thread tune awaiting reconciling, and no
+  `dsd_state_forget_sync_join_histories()` since the history began. The decoder thread's trunk retunes run it (a tune
+  through the trunk tuning hooks, `dsd_engine_rxid_trunk_tune()`, and noCarrier's direct control-channel return,
+  `no_carrier_accept_direct_cc_return()`), and so do every off-thread tune applied, every carrier boundary (a typed
+  scanner row that moved the receiver yet ends unlanded is one, `channel_scan_note_unlanded_move()`) and every
+  acquisition reset; so a P25 release's retune, or a direct return, in the exit's own no-sync hooks keeps nothing. Its
+  first read checks the clock, epoch, carrier count, generation, drops and pending off-thread tunes again, for a flush
+  an RTL reader finds only when it reads; a failed check drops the levels with the dibits. A matcher that reads only its
+  window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then
+  matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before
+  it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as clear only when its 20
+  bits are, and acquisition still needs two clear FSWs a frame apart; `frame_sync_nxdn96_fsw_bit_errors()` reads a
+  window with fewer than ten levels as not clear (only a test's sign-only window keeps the sign match). DMR and X2-TDMA
+  decode their burst back from the rolling dibit buffers (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset
+  clears, so they match only on a 24-symbol window the call read itself (`frame_sync_match_window_own()`), as before the
+  carry. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
+  at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the clear's zeros or a wrap's stale dibits, which pass
+  Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
+  still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
+  (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a decoder before it reads a symbol
+  through `dsd_state_sync_readback_invalid()`, which answers 0 once a symbol was read). For DMR the 90 dibits written
+  since the clear are the stream's, and so are the 66 before the sync that `dmr_resample_cach()` re-reads from the soft
+  symbol history, which the clear leaves; `frame_sync_dmr_resample_on_sync()` gives those below the floor their symbols'
+  soft metrics too, in place of the clear's zero reliabilities. So DMR notes dibits only after a cold start or an
+  acquisition reset (no soft history), and X2-TDMA (no re-read) within 90 (data) or 144 (voice) dibits of any clear. The
+  decoders then decode and publish nothing from them: `dmr_data_sync()`, `dmrMSData()` and `processX2TDMAdata()` nothing
+  of the burst (CACH, slot type and payload are all read back) and read its live half past; `dmrBSBootstrap()` nothing
+  of burst A, since the CACH names its slot, before its loop takes the next burst at the slot that burst's own TACT
+  names (no slot to alternate from); `dmrMSBootstrap()` no AMBE frame with a dibit among them (silence in its place),
+  nor the burst's late-entry fragments, debug dump or DSP output line; `dmrRC()` nothing when they reach its last 36
+  dibits; and `processX2TDMAvoice()` nothing of its first slot when they reach its CACH. Tests: `DMR_DATA_SYNC`,
+  `DMR_MS_DATA`, `DMR_BS_SYNC_TIMES`, `DMR_RC_BURST`, `X2TDMA_DATA`, `X2TDMA_VOICE_HELPERS`, `FRAME_SYNC_HISTORY_CARRY`.
+  What the carry does not restore is either continuous across the exit (the soft symbol history
+  `dsd_state::symbol_history`, which TETRA's soft capture and every warm start read, and `sbuf`) or sync evidence that
+  noCarrier resets (the NXDN96 hits and lock, the M17 preamble run, candidate, polarity and join hits, `lastsynctype`,
+  the ProVoice and M17 confirms), after which a matcher needs more evidence, not less. A sync, an input interruption, a
+  signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync
+  straddling the exit, and DMR and X2-TDMA syncs short of their read-back after a clear, among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned

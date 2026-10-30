@@ -414,6 +414,32 @@ test_handler_emits_control_event(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The frame sync accepted the burst with the oldest of its 90 dibits read back not the stream's (a cold start or an
+   acquisition reset: dsd_state_sync_readback_invalid()). The RC burst decodes from its last 36 (RC_a, EMB_a, the sync):
+   with 55 not the stream's, RC_a's first dibit is among them, so no command is published; with 54, all 36 are the
+   stream's and it is. The live dibits are read either way. */
+static void
+test_handler_publishes_nothing_it_did_not_read_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload_buf[64];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(payload_buf, 0, sizeof(payload_buf));
+    reset_notice_spy();
+
+    dsd_state_note_sync_readback(&state, 55);
+    drive_rc_burst(&opts, &state, payload_buf, /*cmd*/ 4, /*cc*/ 1, 0x7A);
+    assert(g_live_pos == 12);
+    assert(g_notice_calls == 0U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_state_note_sync_readback(&state, 54);
+    drive_rc_burst(&opts, &state, payload_buf, /*cmd*/ 4, /*cc*/ 1, 0x7A);
+    assert(g_notice_calls == 1U);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_handler_no_event_on_invalid_or_reserved(void) {
     static dsd_opts opts;
@@ -544,6 +570,7 @@ main(void) {
     test_assemble_bits_round_trip();
     test_handler_consumes_trailing_dibits();
     test_handler_emits_control_event();
+    test_handler_publishes_nothing_it_did_not_read_back();
     test_handler_no_event_on_invalid_or_reserved();
     test_notify_dedup_window();
     test_handler_bails_out_on_short_history();

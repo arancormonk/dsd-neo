@@ -131,11 +131,38 @@ test_unknown_burst_without_data_sync_uses_blank_subtype(void) {
     assert_common_skip();
 }
 
+/* The frame sync accepted the burst with the 60 oldest of its 90 dibits read back not the stream's (noCarrier() cleared
+   dibit_buf fewer than 90 dibits before: dsd_state_sync_readback_invalid()). Its CACH, which names the slot, and its
+   slot type are among them: nothing of the burst decodes, and the rest of it is read past as a decoded burst's is. */
+static void
+test_burst_not_read_back_whole_decodes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[90];
+
+    reset_fixture(&opts, &state, dibits);
+    set_slot_from_cach(dibits, 0, 0);
+    set_bursttype(dibits, "0110", 0);
+    set_sync(dibits, X2TDMA_BS_DATA_SYNC, 0);
+    state.currentslot = 1;
+    DSD_SNPRINTF(state.slot0light, sizeof state.slot0light, "%s", " slot0 ");
+    DSD_SNPRINTF(state.fsubtype, sizeof state.fsubtype, "%s", "    unchanged ");
+    dsd_state_note_sync_readback(&state, 60);
+
+    processX2TDMAdata(&opts, &state);
+
+    assert(state.currentslot == 1);
+    assert(strcmp(state.slot0light, " slot0 ") == 0);
+    assert(strcmp(state.fsubtype, "    unchanged ") == 0);
+    assert_common_skip();
+}
+
 int
 main(void) {
     test_data_sync_marks_slot_and_maps_bursttype();
     test_inverted_mobile_data_marks_slot_one();
     test_unknown_burst_without_data_sync_uses_blank_subtype();
+    test_burst_not_read_back_whole_decodes_nothing();
     printf("X2TDMA_DATA: OK\n");
     return 0;
 }

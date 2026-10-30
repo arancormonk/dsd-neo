@@ -26,6 +26,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -415,11 +416,18 @@ sign_stream_put_word(const char* word, int len, int end) {
     }
 }
 
-/* What noCarrier() resets of the sync's evidence after a no-sync exit (no_carrier_reset_decode_state()): the NXDN96
-   hits and lock, and the last sync type. The carried history is not among them. */
+/* What noCarrier() resets after a no-sync exit that the frame sync reads: the rolling dibit buffers
+   (no_carrier_reset_dibit_and_dmr_buffers()), the NXDN96 hits and lock, and the last sync type
+   (no_carrier_reset_decode_state()). The carried history and the soft symbol history are not among them. */
 static void
 no_carrier_resets_sync_evidence(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    state->dibit_buf_p = state->dibit_buf + DSD_ROLLING_DIBIT_FLOOR;
+    DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * DSD_ROLLING_DIBIT_FLOOR);
+    state->dmr_payload_p = state->dmr_payload_buf + DSD_ROLLING_DIBIT_FLOOR;
+    DSD_MEMSET(state->dmr_payload_buf, 0, sizeof(int) * DSD_ROLLING_DIBIT_FLOOR);
+    state->dmr_soft_p = state->dmr_soft_buf + DSD_ROLLING_DIBIT_FLOOR;
+    DSD_MEMSET(state->dmr_soft_buf, 0, sizeof(dsd_dibit_soft_t) * DSD_ROLLING_DIBIT_FLOOR);
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     state->lastsynctype = DSD_SYNC_NONE;
 }
@@ -554,6 +562,16 @@ test_dmr_sync_across_the_exit_is_not_matched(void) {
     free_state_buffers(&state);
 }
 
+/* A DMR dibit at its four levels (+3 01, +1 00, -1 10, -3 11). */
+static int
+dmr_dibit_of_level(float level) {
+    return level > 2.0f ? 1 : (level > 0.0f ? 0 : (level > -2.0f ? 2 : 3));
+}
+
+/* Read whole in the call, 28 dibits after noCarrier() cleared the payload buffer: the 66 dibits before the sync are
+   re-read from the soft symbol history, which the clear leaves (dmr_resample_cach()), and so are the soft metrics of
+   those the clear zeroed, so the burst is decoded from the stream's dibits and their own reliabilities, all of them
+   the stream's (dsd_state_sync_readback_invalid()). */
 static void
 test_dmr_sync_read_whole_in_the_call_is_matched(void) {
     static dsd_opts opts;
@@ -564,6 +582,41 @@ test_dmr_sync_read_whole_in_the_call_is_matched(void) {
     first_sign_call_times_out(&opts, &state);
     assert(hunt_to_end(&opts, &state) == DSD_SYNC_DMR_BS_DATA_POS);
     assert(g_pos == WORD_END + 24);
+    assert(dsd_state_sync_readback_invalid(&state) == 0U);
+    const int* dibits = state.dmr_payload_p - 90;
+    const dsd_dibit_soft_t* soft = state.dmr_soft_p - 90;
+    for (int i = 0; i < 90; i++) {
+        assert(dibits[i] == dmr_dibit_of_level(g_levels[g_pos - 90 + i]));
+        assert(soft[i].reliability > 0U);
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+/* A cold start (or an acquisition reset): no soft history to re-read, so a DMR sync 30 dibits in is accepted with the
+   60 oldest of its 90 read back not the stream's, which its decoder takes no field from; the next burst's, 144 dibits
+   on, reads back the stream's whole. */
+static void
+test_dmr_sync_on_a_cold_start_notes_what_it_cannot_read_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    opts.frame_dmr = 1;
+    sign_stream_put_word(DMR_BS_DATA_SYNC, 24, 30);
+    sign_stream_put_word(DMR_BS_DATA_SYNC, 24, 30 + 144);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_DMR_BS_DATA_POS);
+    assert(g_pos == 30);
+    assert(dsd_state_sync_readback_invalid(&state) == 60U);
+    const dsd_dibit_soft_t* soft = state.dmr_soft_p - 90;
+    for (int i = 0; i < 60; i++) {
+        assert(soft[i].reliability == 0U);
+    }
+    /* A symbol read since the accept: no decoder further on takes it. */
+    (void)getSymbol(&opts, &state, 0);
+    assert(dsd_state_sync_readback_invalid(&state) == 0U);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_DMR_BS_DATA_POS);
+    assert(g_pos == 30 + 144);
+    assert(dsd_state_sync_readback_invalid(&state) == 0U);
     dsd_frame_sync_hooks_set(NULL);
     free_state_buffers(&state);
 }
@@ -582,6 +635,8 @@ test_x2tdma_sync_across_the_exit_is_not_matched(void) {
     free_state_buffers(&state);
 }
 
+/* X2-TDMA has no soft re-read: after noCarrier() cleared dibit_buf, a data sync read whole in the call 28 dibits on
+   reads back 62 dibits that are not the stream's, and a voice sync 120 dibits into a cold start 24 of its 144. */
 static void
 test_x2tdma_sync_read_whole_in_the_call_is_matched(void) {
     static dsd_opts opts;
@@ -592,6 +647,26 @@ test_x2tdma_sync_read_whole_in_the_call_is_matched(void) {
     first_sign_call_times_out(&opts, &state);
     assert(hunt_to_end(&opts, &state) == DSD_SYNC_X2TDMA_DATA_POS);
     assert(g_pos == WORD_END + 24);
+    assert(dsd_state_sync_readback_invalid(&state) == 62U);
+    dsd_frame_sync_hooks_set(NULL);
+    free_state_buffers(&state);
+}
+
+static void
+test_x2tdma_voice_sync_notes_what_it_cannot_read_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 0);
+    opts.frame_x2tdma = 1;
+    sign_stream_put_word(X2TDMA_BS_VOICE_SYNC, 24, 120);
+    sign_stream_put_word(X2TDMA_BS_VOICE_SYNC, 24, 120 + 288);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_X2TDMA_VOICE_POS);
+    assert(g_pos == 120);
+    assert(dsd_state_sync_readback_invalid(&state) == 24U);
+    (void)getSymbol(&opts, &state, 0);
+    assert(hunt_to_end(&opts, &state) == DSD_SYNC_X2TDMA_VOICE_POS);
+    assert(g_pos == 120 + 288);
+    assert(dsd_state_sync_readback_invalid(&state) == 0U);
     dsd_frame_sync_hooks_set(NULL);
     free_state_buffers(&state);
 }
@@ -616,8 +691,10 @@ main(void) {
     test_nxdn96_levels_follow_a_level_window_resize();
     test_dmr_sync_across_the_exit_is_not_matched();
     test_dmr_sync_read_whole_in_the_call_is_matched();
+    test_dmr_sync_on_a_cold_start_notes_what_it_cannot_read_back();
     test_x2tdma_sync_across_the_exit_is_not_matched();
     test_x2tdma_sync_read_whole_in_the_call_is_matched();
+    test_x2tdma_voice_sync_notes_what_it_cannot_read_back();
     printf("FRAME_SYNC_HISTORY_CARRY: OK\n");
     return 0;
 }

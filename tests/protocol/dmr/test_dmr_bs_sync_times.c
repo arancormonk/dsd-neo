@@ -957,6 +957,38 @@ test_bs_burst_split_by_a_carrier_boundary_is_dropped(void) {
 }
 
 /* The same for the burst the frame sync found: its second half is read after the boundary moved. */
+/* The frame sync accepted burst A with the oldest of its 90 dibits read back not the stream's (a cold start or an
+   acquisition reset: dsd_state_sync_readback_invalid()). Its CACH is among them, and the CACH names the burst's slot,
+   so nothing of the burst decodes: no voice sync for a slot, no frame, no CACH fragment, no late-entry fragment. Its
+   second half is read past, and the loop takes the next burst. */
+static void
+test_bs_bootstrap_decodes_nothing_it_did_not_read_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_is_tuned = 1;
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    state.currentslot = 1;
+    state.dmr_color_code = 16;
+    state.dmr_payload_p = g_bootstrap_payload + 90U;
+    load_bootstrap_voice_stream(1);
+    g_any_voice_open = 1;
+    dsd_state_note_sync_readback(&state, 60);
+
+    dmrBSBootstrap(&opts, &state);
+
+    assert(g_dibit_index >= 144U);
+    assert(g_sm_voice_sync_calls == 0U);
+    assert(g_process_mbe_calls == 0U);
+    assert(g_cach_calls == 0U);
+    assert(g_late_entry_calls == 0U);
+    assert(g_alg_reset_calls == 0U);
+    assert(state.last_vc_sync_time == 0);
+}
+
 static void
 test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped(void) {
     static dsd_opts opts;
@@ -1339,6 +1371,7 @@ main(void) {
     test_bs_bootstrap_prefetched_voice_runs_first_frame_path();
     test_bs_burst_split_by_a_carrier_boundary_is_dropped();
     test_bs_bootstrap_split_by_a_carrier_boundary_is_dropped();
+    test_bs_bootstrap_decodes_nothing_it_did_not_read_back();
     test_bs_burst_cut_by_an_input_interruption_is_dropped();
     test_bs_bootstrap_cut_by_an_input_interruption_is_dropped();
     test_bs_loop_end_discards_the_mix_media();

@@ -863,11 +863,16 @@ static int
 frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* label, int marks_first_frame) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    /* A voice burst's decoder reads 144 dibits back from dibit_buf_p, a data burst's 90. */
+    /* A voice burst's decoder reads 144 dibits back from dibit_buf_p, a data burst's 90. noCarrier() clears the buffer
+       (DSD_ROLLING_DIBIT_FLOOR), and what of them was not written since is the clear's zeros: the decoder decodes and
+       publishes nothing from it (dsd_state_note_sync_readback()). */
     const int voice = synctype == DSD_SYNC_X2TDMA_VOICE_POS || synctype == DSD_SYNC_X2TDMA_VOICE_NEG;
-    if (frame_sync_burst_settling(ctx, voice ? 144U : 90U)) {
+    const uint64_t lookback = voice ? 144U : 90U;
+    if (frame_sync_burst_settling(ctx, lookback)) {
         return DSD_SYNC_NONE;
     }
+    const long written = dsd_state_rolling_dibits(state->dibit_buf, state->dibit_buf_p);
+    dsd_state_note_sync_readback(state, written < (long)lookback ? (long)lookback - written : 0);
     frame_sync_set_basic_lock(ctx);
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
     if (opts->errorbars == 1) {
@@ -1653,6 +1658,54 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     return frame_sync_try_m17_join(ctx, sync_type, word, is_inverted);
 }
 
+/* The soft metrics of the dibits dmr_resample_cach() just re-read below the payload buffer's floor
+ * (frame_sync_dmr_resample_on_sync()). */
+static void
+frame_sync_dmr_refresh_cleared_soft(dsd_state* state, int readback) {
+    if (state->dmr_soft_buf == NULL || state->dmr_soft_p == NULL
+        || state->dmr_soft_p - state->dmr_soft_buf != state->dmr_payload_p - state->dmr_payload_buf
+        || state->dmr_payload_p - state->dmr_payload_buf < readback) {
+        return;
+    }
+    const int* dibits = state->dmr_payload_p - readback;
+    dsd_dibit_soft_t* soft = state->dmr_soft_p - readback;
+    const int* clear_floor = state->dmr_payload_buf + DSD_ROLLING_DIBIT_FLOOR;
+    for (int i = 0; i < DMR_RESAMPLE_SYMBOLS && dibits + i < clear_floor; i++) {
+        const float symbol = dsd_symbol_history_get_back(state, readback - 1 - i);
+        const int d = dibits[i] & 3;
+        const uint8_t rel = dmr_compute_reliability(state, symbol);
+        soft[i].reliability = rel;
+        soft[i].llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);
+        soft[i].llr[1] = (int16_t)((d & 1) ? rel : -(int)rel);
+    }
+}
+
+/* dmr_resample_on_sync(), and what of the 90 dibits the burst is decoded back from dmr_payload_p (its CACH, the first
+ * half of its payload, its slot type's first half or EMB, and the sync) is the stream's, for its decoder
+ * (dsd_state_note_sync_readback()). noCarrier() clears the buffer (DSD_ROLLING_DIBIT_FLOOR), and the clear's zeros pass
+ * Golay and Hamming as codewords. The dibits written since are the stream's; so are the 66 before the sync that
+ * dmr_resample_cach() re-reads from the soft symbol history, which the clear leaves, when it holds them. Their soft
+ * metrics below the floor are the clear's zeros or stale ones, so they get the re-read symbols' too, as
+ * frame_sync_store_dmr_payload_symbol() gives a dibit it writes; metrics written since stay as they were. What is
+ * neither (a cold start, an acquisition reset) stays as it is, and its decoder decodes nothing from it. */
+static void
+frame_sync_dmr_resample_on_sync(dsd_opts* opts, dsd_state* state) {
+    enum { READBACK = DMR_SYNC_SYMBOLS + DMR_RESAMPLE_SYMBOLS };
+
+    const long written = dsd_state_rolling_dibits(state->dmr_payload_buf, state->dmr_payload_p);
+    const int resampled = dmr_resample_on_sync(opts, state) == 0 && state->symbol_history != NULL
+                          && state->symbol_history_count >= READBACK && state->dmr_payload_buf != NULL
+                          && state->dmr_payload_p != NULL;
+    long invalid = 0;
+    if (written < READBACK) {
+        invalid = (resampled && written >= DMR_SYNC_SYMBOLS) ? 0 : READBACK - written;
+    }
+    dsd_state_note_sync_readback(state, invalid);
+    if (resampled) {
+        frame_sync_dmr_refresh_cleared_soft(state, READBACK);
+    }
+}
+
 static inline void
 frame_sync_prepare_dmr_sync(frame_sync_match_ctx* ctx) {
     ctx->state->dmr_dm_sync_slot = 0U;
@@ -1673,12 +1726,12 @@ frame_sync_try_dmr_ms_data(frame_sync_match_ctx* ctx) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR MS");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_DATA;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_VOICE;
 }
 
@@ -1694,12 +1747,12 @@ frame_sync_try_dmr_ms_voice(frame_sync_match_ctx* ctx) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR MS");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_VOICE;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_DATA;
 }
 
@@ -1720,7 +1773,7 @@ frame_sync_try_dmr_bs_data(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_BS_DATA_POS;
     }
 
@@ -1729,7 +1782,7 @@ frame_sync_try_dmr_bs_data(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_NEG;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_BS_VOICE_NEG;
 }
 
@@ -1748,7 +1801,7 @@ frame_sync_try_dmr_dm_ts1_data(frame_sync_match_ctx* ctx) {
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_DATA;
     }
 
@@ -1757,7 +1810,7 @@ frame_sync_try_dmr_dm_ts1_data(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_VOICE;
 }
 
@@ -1776,7 +1829,7 @@ frame_sync_try_dmr_dm_ts2_data(frame_sync_match_ctx* ctx) {
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_DATA;
     }
 
@@ -1785,7 +1838,7 @@ frame_sync_try_dmr_dm_ts2_data(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_VOICE;
 }
 
@@ -1806,7 +1859,7 @@ frame_sync_try_dmr_bs_voice(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_BS_VOICE_POS;
     }
 
@@ -1815,7 +1868,7 @@ frame_sync_try_dmr_bs_voice(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_BS_DATA_NEG;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_BS_DATA_NEG;
 }
 
@@ -1837,12 +1890,12 @@ frame_sync_try_dmr_dm_ts1_voice(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_VOICE;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_DATA;
 }
 
@@ -1864,13 +1917,13 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_VOICE;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_DATA;
 }
 
@@ -1889,7 +1942,7 @@ frame_sync_try_dmr_rc_data(frame_sync_match_ctx* ctx) {
     frame_sync_prepare_dmr_sync(ctx);
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR RC");
     state->lastsynctype = DSD_SYNC_DMR_RC_DATA;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_RC_DATA;
 }
 
