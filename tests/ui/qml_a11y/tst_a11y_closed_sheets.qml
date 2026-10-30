@@ -299,10 +299,11 @@ Item {
             testContext.stopAccessibilityCount();
             compare(showHide(sheet), 0, "last-seen refreshes rebuild no row: " + JSON.stringify(counts.chains));
             compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
-            // A neighbour's site changes: that row is renamed, in place.
+            // A neighbour's site changes: that row is renamed, in place, at the readings' pace (no entry came or went).
+            Ui.Navigation.speechPeriodMs = 100;
             testContext.startAccessibilityCount();
             fakeNet.neighbours = neighbours(10, 11, 42);
-            wait(20);
+            wait(200);
             counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
             compare(showHide(sheet), 0, JSON.stringify(counts.chains));
@@ -318,6 +319,58 @@ Item {
             verify(testContext.accessibilityCountWithin(sheet, "ObjectShow") <= 1, JSON.stringify(counts.chains));
             verify(testContext.accessibilityCountWithin(sheet, "NameChanged") <= 1, "only the new row is named: "
                    + JSON.stringify(counts.chains));
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.neighbours = [];
+        }
+
+        // Issue #782: an open Network sheet lists each section most recent first, so a neighbour heard again moves to
+        // the top and every row above its old place shows another entry. A row is renamed at the readings' pace for
+        // that, not on each refresh: a listener can stay on a row and hear it out. It ends on what it shows.
+        function test_open_network_sheet_reorders_at_the_pace() {
+            var sheet = networkLoader.item;
+            var period = 500;
+            var order = [0, 1, 2, 3, 4, 5, 6, 7];
+            var listed = function () {
+                return order.map(function (i) {
+                    return {freqHz: 851000000 + i * 12500, sysid: 291, rfss: 1, site: i, wacn: 1, wacnValid: true, lra: 0,
+                        lraValid: false, isCurrentCc: i === 0, isCandidate: false, cfvaText: "valid"};
+                });
+            };
+            Ui.Navigation.speechPeriodMs = period;
+            fakeNet.neighbours = listed();
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, 8);
+            var row = rows[3];
+            compare(testContext.accessibleNode(row).name, row.text);
+            testContext.startAccessibilityCount();
+            var renames = 0;
+            var said = testContext.accessibleNode(row).name;
+            var start = Date.now();
+            for (var refresh = 1; refresh <= 16; ++refresh) {
+                // The last neighbour in the list is heard again and moves to the top.
+                order = [order[order.length - 1]].concat(order.slice(0, order.length - 1));
+                fakeNet.neighbours = listed();
+                wait(100);
+                var now = testContext.accessibleNode(row).name;
+                if (now !== said)
+                    ++renames;
+                said = now;
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(showHide(sheet), 0, JSON.stringify(counts.chains));
+            var most = Math.ceil(elapsed / period) + 1;
+            verify(renames >= 1 && renames <= most, "row 3 renamed " + renames + " times for 16 refreshes in " + elapsed
+                   + " ms (at most " + most + ")");
+            verify(row.text.indexOf("Site:" + order[3] + " ") >= 0, "the text on screen follows every refresh: " + row.text);
+            tryVerify(function () { return testContext.accessibleNode(row).name === row.text; }, period + 500,
+                      testContext.accessibleNode(row).name);
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];
