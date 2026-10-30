@@ -48,8 +48,28 @@ static dsd_manual_tune_record g_record;
 /* The record the last poll that settled one took. */
 static dsd_manual_tune_settled g_settled;
 static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
-/* (ID count << 32) | (uint32_t)result of the last manual-tune completion; 0 when none came. */
-static dsd_atomic_u64 g_completion = {0U};
+
+/* The last few manual-tune completions, each (ID count << 32) | (uint32_t)result, 0 for an empty slot. Not one slot:
+   an older tune that finishes late (one in flight before a newer one queued) would overwrite the completion the record
+   awaits, which then never comes again (issue #671). A completion can also arrive before its record is noted, so the
+   slots are not filtered by the record either. Eight outlast any run of tunes between a note and its poll. */
+enum { MANUAL_TUNE_COMPLETION_SLOTS = 8 };
+
+static dsd_atomic_u64 g_completions[MANUAL_TUNE_COMPLETION_SLOTS];
+static atomic_uint g_completion_next;
+
+/* The completion for @p id in the slots, in @p packed: 1 when one came, 0 otherwise. */
+static int
+manual_tune_completion_for(uint64_t id, uint64_t* packed) {
+    for (int i = 0; i < MANUAL_TUNE_COMPLETION_SLOTS; i++) {
+        const uint64_t slot = dsd_atomic_u64_load_acquire(&g_completions[i]);
+        if (slot != 0U && (uint32_t)(slot >> 32) == (uint32_t)id) {
+            *packed = slot;
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static uint32_t
 manual_tune_session_generation(void) {
@@ -76,7 +96,8 @@ manual_tune_applied_after_failure(void) {
 void
 dsd_engine_manual_tune_completion(uint64_t id, int result) {
     const uint64_t packed = ((uint64_t)(uint32_t)id << 32) | (uint64_t)(uint32_t)result;
-    dsd_atomic_u64_store_release(&g_completion, packed);
+    const unsigned int slot = atomic_fetch_add(&g_completion_next, 1U) % MANUAL_TUNE_COMPLETION_SLOTS;
+    dsd_atomic_u64_store_release(&g_completions[slot], packed);
 }
 
 void
@@ -128,14 +149,15 @@ dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
     }
     /* The completion before the session: a stop moves the session before it fails the request it queued, so a failure
        read here that a stop made is always seen with the stop's session, and never toasted as a failed tune. */
-    const uint64_t packed = dsd_atomic_u64_load_acquire(&g_completion);
+    uint64_t packed = 0U;
+    const int completed = manual_tune_completion_for(g_record.id, &packed);
     if (g_record.session_generation != manual_tune_session_generation()) {
         /* The stream it was asked of stopped: a stop fails its queued request, and the next stream opens on the
            frequency the decoder holds. */
         manual_tune_settle();
         return DSD_MANUAL_TUNE_DROPPED;
     }
-    if ((uint32_t)(packed >> 32) != (uint32_t)g_record.id) {
+    if (!completed) {
         return DSD_MANUAL_TUNE_NONE;
     }
     manual_tune_settle();
@@ -174,8 +196,8 @@ dsd_engine_manual_tune_settled_ready(void) {
     if (atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED) {
         return 0;
     }
-    const uint64_t packed = dsd_atomic_u64_load_acquire(&g_completion);
-    if ((uint32_t)(packed >> 32) != (uint32_t)g_record.id) {
+    uint64_t packed = 0U;
+    if (!manual_tune_completion_for(g_record.id, &packed)) {
         return 0;
     }
     return (int32_t)(uint32_t)packed != RTL_STREAM_TUNE_OK || g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP;

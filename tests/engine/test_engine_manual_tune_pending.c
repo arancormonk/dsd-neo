@@ -363,6 +363,24 @@ test_untagged_takeover_reports_the_drop(fixture* f) {
     fixture_end();
 }
 
+/* Gate review: entry A times out and is taken in flight; entry B queues behind it and times out; an untagged tune takes
+   B over (B's completion: superseded), and only then does A finish. A's late completion must not hide B's: the record
+   awaits B, and B never completes again. Before, the one completion slot held only the last, so B's record waited for
+   good. */
+static void
+test_older_completion_keeps_the_awaited_one(fixture* f) {
+    fixture_begin(f);
+    const uint64_t id_a = enter_frequency(f, ENTRY_A_HZ);
+    take_request(id_a, ENTRY_A_HZ);
+    (void)enter_frequency(f, ENTRY_B_HZ);
+    (void)rtl_stream_test_manual_tune_standin_tune(g_stream_opts, ENTRY_A_HZ + 12500U, 0U);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_DROPPED);
+    take_request(0U, ENTRY_A_HZ + 12500U);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ + 12500U) == 0);
+    fixture_end();
+}
+
 static void
 test_settled_ready_names_what_the_poll_acts_on(fixture* f) {
     fixture_begin(f);
@@ -440,6 +458,7 @@ main(void) {
     test_stream_stop_drops_the_record(&f);
     test_superseded_record_reports_its_drop(&f);
     test_untagged_takeover_reports_the_drop(&f);
+    test_older_completion_keeps_the_awaited_one(&f);
     test_settled_ready_names_what_the_poll_acts_on(&f);
     test_manual_ids_stay_out_of_the_ledger(&f);
 

@@ -2760,7 +2760,8 @@ A manual tune stays out of that ledger (issue #671, `include/dsd-neo/engine/manu
 (`RTL_STREAM_TUNE_ID_MANUAL_BIT`, bit 63, above any ledger ID). On `RTL_STREAM_TUNE_TIMEOUT` it hands the ID back, and
 the caller notes one pending record (`dsd_engine_manual_tune_note_pending()`; `svc_rtl_tune()` for the frequency entry,
 tap-to-tune and the Airspy live apply). The engine's one RTL completion callback (`trunk_tuning_hooks_install.c`) sends
-manual IDs into a single atomic slot and every other ID to the ledger, so `dsd_trunk_tuning_frame_is_current()` never
+manual IDs into a small ring of atomic slots (eight; the poll looks for its record's ID, so an older tune finishing late
+never hides the completion awaited) and every other ID to the ledger, so `dsd_trunk_tuning_frame_is_current()` never
 waits on a manual tune. The decoder loop polls (`dsd_engine_scan_untyped_poll()` over `dsd_engine_manual_tune_poll()`,
 one atomic load while nothing is pending). A late failure puts `opts->rtlsdr_center_freq` back on the stream's applied
 centre and, for an entry, toasts `Failed: frequency -> <MHz> MHz`. A late success returns `DSD_MANUAL_TUNE_LANDED`. The
