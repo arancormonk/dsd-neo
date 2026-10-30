@@ -68,12 +68,21 @@ Column {
     }
 
     ReadableText {
+        id: appKeyRequest
+        objectName: "radioReferenceAppKeyLink"
         width: parent.width
         visible: !radioReference.buildHasAppKey
         text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
         textFormat: Text.StyledText
-        // Read as the words it shows, without the link markup.
+        // A link a screen reader can open (issue #782): read as the words it
+        // shows, without the markup, and pressed as the link in it.
+        readonly property string linkUrl: (text.match(/href="([^"]+)"/) || ["", ""])[1]
+        Accessible.role: Accessible.Link
         Accessible.name: Accessible.ignored ? "" : text.replace(/<[^>]*>/g, "")
+        Accessible.onPressAction: {
+            if (Navigation.allows(appKeyRequest) && linkUrl.length > 0)
+                Qt.openUrlExternally(linkUrl);
+        }
         linkColor: Theme.cyan
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(12)

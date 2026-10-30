@@ -353,6 +353,7 @@ Item {
             var item = build(data.spec);
             open(item, data.spec);
             waitForRendering(host);
+            wait(20);
             var problems = unexplained(item, [], data.spec.file);
             dispose(item);
             compare(problems.length, 0, report(problems));
@@ -370,6 +371,7 @@ Item {
             Ui.Navigation.layers = [];
             Ui.Navigation.modals = isSheet(item) ? [item] : [];
             waitForRendering(host);
+            wait(20);
             var problems = unexplained(item, nested, data.spec.file);
             for (var i = 0; i < nested.length; ++i) {
                 Ui.Navigation.modals = [nested[i]];
@@ -382,7 +384,6 @@ Item {
 
         // The monitor in a two-slot call with its details open: the hero, the other slot and every reading group.
         function test_4_monitor_in_a_call() {
-            var monitor = build({file: "MonitorScreen"});
             testContext.setHostRunning(true);
             var calls = {leadSlot: 1, twoSlotCarrier: true, slot1CallState: 2, slot2CallState: 2, slot1CallName: "Dispatch",
                 slot2CallName: "Fireground", slot1TgId: 456, slot2TgId: 789, slot1TgText: "456", slot2TgText: "789",
@@ -396,15 +397,164 @@ Item {
                 restore[key] = metrics[key];
                 testContext.setMetric(key, calls[key]);
             }
-            monitor.setDetailsExpanded(true);
+            // Built on the call: names follow moving readings at their pace (SpeechPacer), so the readings are set
+            // first and the walk sees names that have caught up.
+            var monitor = build({file: "MonitorScreen"});
+            testContext.setPrefs("monitorDetailsExpanded", true);
             waitForRendering(host);
+            wait(20);
             var problems = unexplained(monitor, [], "MonitorScreen in a call");
-            monitor.setDetailsExpanded(false);
+            testContext.setPrefs("monitorDetailsExpanded", false);
             for (var name in restore)
                 testContext.setMetric(name, restore[name]);
             testContext.setHostRunning(false);
             dispose(monitor);
             compare(problems.length, 0, report(problems));
+        }
+
+        // Rows that come from a model the bare fixture leaves empty: saved-system cards on Home, imported files,
+        // RadioReference sites, the wizard's CSV choices, the Diagnostics log while paused and the key sheet's slots.
+        function test_5_model_rows() {
+            var groups = testContext.writeFixtureCsv("reach-groups.csv", "id,mode,name\n1001,A,Dispatch\n1002,A,Fireground\n");
+            var imported = importedFiles.importFile(groups, "reach-groups.csv", "group");
+            verify(imported.ok, "the fixture CSV must import");
+            savedSystems.add({name: "County P25", sourceType: "rtltcp", freqMhz: "851.0125"});
+            var systemRow = savedSystems.rowForUid(savedSystems.get(savedSystems.count - 1).uid);
+            var rrBefore = {credentialsReady: radioReference.credentialsReady, systemDetails: radioReference.systemDetails,
+                sites: radioReference.sites};
+            testContext.setRadioReference("credentialsReady", true);
+            testContext.setRadioReference("systemDetails", {sid: 6673, name: "Test System", typeDescr: "Project 25",
+                flavorDescr: "Phase II"});
+            testContext.setRadioReference("sites", [
+                {siteNumber: 1, descr: "Alpha", freqCount: 11, controlFreqMhz: "851.0125", simulcast: false,
+                    freqMhz: "851.0125", colorCode: ""},
+                {siteNumber: 2, descr: "Bravo", freqCount: 13, controlFreqMhz: "852.5", simulcast: false,
+                    freqMhz: "852.5", colorCode: ""}]);
+            var slotsBefore = metrics.decryptionSlots;
+            testContext.setMetric("decryptionSlots", [{slot: 1, status: "Encrypted", protocol: "dmr", lastObserved: false,
+                algorithm: "21", keyId: "1A", effectiveId: "", source: "Call 1", availability: "No matching key",
+                fallback: "", blockReason: "", materialKind: "", targetId: "100", group: true, privateCall: false,
+                dmr: true, profileRef: ""}]);
+            diagnosticsLog.paused = false;
+            testContext.pushDiagnostic("reach fixture line");
+            diagnosticsLog.refresh();
+            var problems = [];
+            // How each screen shows that its rows are on screen, so the walk is known to cover them.
+            var rowsShown = {
+                HomeScreen: function (screen) {
+                    var title = findChild(screen, "savedSystemTitle");
+                    return title !== null && title.visible && title.text === "County P25";
+                },
+                ImportsScreen: function (screen) {
+                    return findChild(screen, "importedFilesList").count > 0 && !findChild(screen, "importsEmptyMessage").visible;
+                },
+                RadioReferenceScreen: function (screen) {
+                    return screen.systemLoaded && screen.siteList.length === 2;
+                },
+                KeySheet: function (sheet) {
+                    return findChild(sheet, "keySheetSlots").count === 1;
+                },
+                DiagnosticsScreen: function (screen) {
+                    return diagnosticsLog.paused && diagnosticsLog.rowCount() > 0;
+                }
+            };
+            for (var file of ["HomeScreen", "ImportsScreen", "RadioReferenceScreen", "KeySheet", "DiagnosticsScreen"]) {
+                var item = build({file: file});
+                open(item, {});
+                if (file === "DiagnosticsScreen")
+                    diagnosticsLog.paused = true;
+                waitForRendering(host);
+                wait(20);
+                verify(rowsShown[file](item), file + " shows its model's rows");
+                problems = problems.concat(unexplained(item, sheetsWithin(item, []), file + " with rows"));
+                dispose(item);
+            }
+            diagnosticsLog.paused = false;
+            // The wizard's CSV choices, its picker open on talkgroup lists.
+            var wizard = build({file: "WizardScreen"});
+            open(wizard, {});
+            var sheet = findChild(wizard, "wizardCsvSheet");
+            wizard.pickerTarget = "group";
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(host);
+            wait(20);
+            verify(sheet.entries.length > 0, "the picker lists the imported file");
+            problems = problems.concat(unexplained(sheet, [], "WizardScreen CSV choices"));
+            dispose(wizard);
+            // Leave the fixture as it was.
+            savedSystems.remove(systemRow);
+            importedFiles.remove(importedFiles.rowForPath(imported.path));
+            for (var key in rrBefore)
+                testContext.setRadioReference(key, rrBefore[key]);
+            testContext.setMetric("decryptionSlots", slotsBefore);
+            diagnosticsLog.clear();
+            compare(problems.length, 0, report(problems));
+        }
+
+        // The wizard's Advanced header is a button TalkBack can press, saying whether it is open.
+        function test_6_wizard_advanced_header_is_a_button() {
+            var wizard = build({file: "WizardScreen"});
+            open(wizard, {});
+            var header = findChild(wizard, "wizardAdvancedHeader");
+            verify(header !== null);
+            wizard.step = 1;
+            waitForRendering(host);
+            verify(header.visible, "the header is on the decode step");
+            var node = testContext.accessibleNode(header);
+            verify(node.exists && node.inTree, JSON.stringify(node));
+            compare(node.role, Accessible.Button);
+            compare(node.name, "Advanced");
+            verify(/Collapsed$/.test(node.description), node.description);
+            verify(!wizard.advancedOpen);
+            verify(testContext.pressAccessible(header), "the header offers a press action");
+            verify(wizard.advancedOpen, "pressing it opens the section");
+            verify(/Expanded$/.test(testContext.accessibleNode(header).description));
+            verify(testContext.pressAccessible(header));
+            verify(!wizard.advancedOpen, "pressing it again closes the section");
+            dispose(wizard);
+        }
+
+        // The application-key request is a link TalkBack can open, read without its markup.
+        function test_6_radio_reference_link_opens() {
+            var editor = build({file: "RadioReferenceAccountEditor"});
+            open(editor, {});
+            waitForRendering(host);
+            var link = findChild(editor, "radioReferenceAppKeyLink");
+            verify(link !== null && link.visible);
+            var node = testContext.accessibleNode(link);
+            verify(node.exists && node.inTree, JSON.stringify(node));
+            compare(node.role, Accessible.Link);
+            verify(node.name.indexOf("<") < 0 && node.name.indexOf("radioreference.com/account/api/apply") >= 0, node.name);
+            testContext.captureOpenedUrls();
+            var pressed = testContext.pressAccessible(link);
+            var opened = testContext.openedUrls();
+            testContext.releaseOpenedUrls();
+            dispose(editor);
+            verify(pressed, "the link offers a press action");
+            compare(JSON.stringify(opened), JSON.stringify(["https://www.radioreference.com/account/api/apply"]));
+        }
+
+        // The monitor's LOCK reading says its state, which the dot shows by colour only.
+        function test_6_monitor_lock_reading_says_its_state() {
+            var restore = {radioInput: metrics.radioInput, carrierLock: metrics.carrierLock};
+            testContext.setMetric("radioInput", true);
+            testContext.setMetric("carrierLock", true);
+            var monitor = build({file: "MonitorScreen"});
+            testContext.setPrefs("monitorDetailsExpanded", true);
+            waitForRendering(host);
+            wait(20);
+            var strip = findChild(monitor, "signalStrip");
+            verify(/(^|, )Carrier lock(,|$)/.test(testContext.accessibleNode(strip).name), testContext.accessibleNode(strip).name);
+            // A change of lock is a step: the strip says it at once.
+            testContext.setMetric("carrierLock", false);
+            tryVerify(function () {
+                return /(^|, )No carrier lock(,|$)/.test(testContext.accessibleNode(strip).name);
+            }, 500, "the strip says the lock is lost");
+            testContext.setPrefs("monitorDetailsExpanded", false);
+            dispose(monitor);
+            for (var key in restore)
+                testContext.setMetric(key, restore[key]);
         }
 
         // Every allowlist entry explains a text some case met: an entry nothing needs any more must go.

@@ -1220,8 +1220,27 @@ Item {
                     Item {
                         id: advHeader
 
+                        objectName: "wizardAdvancedHeader"
                         width: parent.width
                         height: 66
+                        // A button a screen reader can press (issue #782), as the scan list's
+                        // Advanced header is: its title is the name, its second line and
+                        // whether it is open the description.
+                        activeFocusOnTab: Navigation.allows(advHeader) && visible
+                        Accessible.role: Accessible.Button
+                        Accessible.name: advTitle.text
+                        Accessible.description: advSubtitle.text + ". " + (wizard.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
+                        readonly property bool navigationAllowed: Navigation.allows(advHeader)
+                        Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.onPressAction: toggle()
+                        Keys.onSpacePressed: toggle()
+                        Keys.onReturnPressed: toggle()
+                        Keys.onEnterPressed: toggle()
+                        function toggle() {
+                            if (enabled && Navigation.allows(advHeader))
+                                wizard.advancedOpen = !wizard.advancedOpen;
+                        }
+                        FocusFrame {}
 
                         Column {
                             anchors.left: parent.left
@@ -1231,7 +1250,8 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 3
 
-                            ReadableText {
+                            Text {
+                                id: advTitle
                                 width: parent.width
                                 text: qsTr("Advanced")
                                 font.family: Theme.sans
@@ -1241,7 +1261,8 @@ Item {
                                 elide: Text.ElideRight
                             }
 
-                            ReadableText {
+                            Text {
+                                id: advSubtitle
                                 width: parent.width
                                 text: wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
@@ -1268,7 +1289,7 @@ Item {
                         }
 
                         TapHandler {
-                            onTapped: wizard.advancedOpen = !wizard.advancedOpen
+                            onTapped: advHeader.toggle()
                         }
                     }
 

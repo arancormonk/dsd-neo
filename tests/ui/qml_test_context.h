@@ -39,6 +39,7 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFont>
@@ -59,6 +60,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
@@ -2835,6 +2837,50 @@ class Setup : public QObject {
         return containsAllWords(spokenWords(iface), readableWords(text, false));
     }
 
+    /**
+     * @brief Issue #782: press @p item as a screen reader does: TalkBack's click on a node runs the interface's press
+     * action. Returns false, without acting, when the node offers no press action (Android then makes it unclickable,
+     * except for a Link).
+     */
+    Q_INVOKABLE bool
+    pressAccessible(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr || !actions->actionNames().contains(QAccessibleActionInterface::pressAction())) {
+            return false;
+        }
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: from now on, http and https URLs that QML opens (Qt.openUrlExternally) are recorded here
+     * rather than handed to a browser; openedUrls() lists them. releaseOpenedUrls() hands them back.
+     */
+    Q_INVOKABLE void
+    captureOpenedUrls() {
+        m_opened_urls.clear();
+        QDesktopServices::setUrlHandler(QStringLiteral("https"), this, "recordOpenedUrl");
+        QDesktopServices::setUrlHandler(QStringLiteral("http"), this, "recordOpenedUrl");
+    }
+
+    Q_INVOKABLE QStringList
+    openedUrls() const {
+        return m_opened_urls;
+    }
+
+    Q_INVOKABLE void
+    releaseOpenedUrls() {
+        QDesktopServices::unsetUrlHandler(QStringLiteral("https"));
+        QDesktopServices::unsetUrlHandler(QStringLiteral("http"));
+    }
+
+    /** @brief Issue #782: the URL handler captureOpenedUrls() installs. */
+    Q_INVOKABLE void
+    recordOpenedUrl(const QUrl& url) {
+        m_opened_urls.append(url.toString());
+    }
+
     /** @brief Issue #782: count accessibility events from now on, forgetting earlier counts. */
     Q_INVOKABLE void
     startAccessibilityCount() {
@@ -4226,6 +4272,8 @@ class Setup : public QObject {
   private:
     /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
     bool m_accessibility_activated = false;
+    /* Issue #782: the URLs QML opened while captureOpenedUrls() held the handler. */
+    QStringList m_opened_urls;
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
     ReadingMap* m_metric_readings = nullptr;
     ReadingMap* m_host_readings = nullptr;
