@@ -13,6 +13,8 @@ Window {
     height: 900
     title: qsTr("DSD-neo")
     color: Theme.bg
+    // The one platform read in this file (the QML tests stand in Android for it).
+    readonly property bool onAndroid: Qt.platform.os === "android"
 
     // The screen has two modes with one principle carried over from the old UI:
     // idle is for choosing what to hear, and the moment a session is asked for the
@@ -623,7 +625,7 @@ Window {
         mainRoot.awaitingSessionInitialized = false;
         // Accepted argv is only a request. These writes belong to the engine's
         // post-initialization edge, after file validation and tuner open.
-        if (Qt.platform.os === "android" && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
+        if (mainRoot.onAndroid && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
             notificationExplanation.visible = true;
         prefs.lastStartedKind = mainRoot.sessionStartKind;
         prefs.lastStartedUid = mainRoot.sessionStartUid;
@@ -1760,7 +1762,7 @@ Window {
     // Issue #782: TalkBack stuck on a control after a system dialog (see the file).
     ScreenReaderFocusRelease {
         window: mainRoot
-        enabled: screenReader.active && Qt.platform.os === "android"
+        enabled: screenReader.active && mainRoot.onAndroid
     }
 
     Item {
