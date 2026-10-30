@@ -10946,7 +10946,12 @@ A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal searc
 (`QAccessibleQuickItem::state()`), and Heading is not one; the Android bridge passes that on (`setFocusable`), and
 TalkBack's linear navigation skips a text node that is neither focusable nor clickable, so without it every section and
 screen heading was skipped and a section's lines (the Network sheet's "(none announced)") were heard without it. The
-text walk reports any enabled heading in the tree that is not focusable.
+text walk reports any enabled heading in the tree that is not focusable. A heading is a swipe stop and Qt's bridge reads
+out each rename of the one TalkBack is on, so no heading follows a reading a scan moves on every hop: the Spectrum's
+scale ticks are plain text out of the tree (a scale, like BandRail's rail ends), its Go to caption is read in its
+field's name ("Go to frequency in MHz"), and the headings that do name a moving reading are paced (above).
+`tst_a11y_paced_names.qml` case I retunes the canned spectrum over ten hops and checks no Monitor or Spectrum heading is
+renamed.
 
 Whether a screen reader is on is `screen_reader_state.{h,cpp}` (`ScreenReaderState`, the `screenReader` context
 property): Qt's accessibility being active (`QAccessible::isActive()`), which on Android is the bridge being on, so
@@ -10979,13 +10984,14 @@ the recordings export progress text, SiteSheet's field groups (renamed once a re
 recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
 seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
 detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
-scan starting or stopping, held or released; a hop is not one, as a 300 ms dwell hops three times a second), and the
-squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate opening or closing,
-`MetricsModel::squelchGateOpen`, or the setting changing). A step is heard 1 ms after it, once all its bindings have
-settled, so a step that moves several readings, or whose inputs change in several notifications (a hop's target,
-frequency and sync; a call's slot, talkgroup and source), renames once: a step that comes while that 1 ms is pending is
-part of it. Steps have a floor: a step input that flaps (a marginal lock, a gate, a reading coming and going) is heard
-at most once a floor (1 s), the last state at the end of it. `Navigation.speechPeriodMs` (5000) and
+scan starting or stopping, held or released; a hop is not one, as a 300 ms dwell hops three times a second), two
+headings a scan renames on its hops (the Spectrum's title, which names what is tuned, and the site sheet's, which names
+the protocol; no steps), and the squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate
+opening or closing, `MetricsModel::squelchGateOpen`, or the setting changing). A step is heard 1 ms after it, once all
+its bindings have settled, so a step that moves several readings, or whose inputs change in several notifications (a
+hop's target, frequency and sync; a call's slot, talkgroup and source), renames once: a step that comes while that 1 ms
+is pending is part of it. Steps have a floor: a step input that flaps (a marginal lock, a gate, a reading coming and
+going) is heard at most once a floor (1 s), the last state at the end of it. `Navigation.speechPeriodMs` (5000) and
 `Navigation.speechStepFloorMs` (1000) are the period and the floor; only tests change them. A pacer runs only while its
 node is shown and the navigation gate allows it. Names that change only on a user action (a drag, a nudge, a choice), on
 a step itself (a new target, carrier, call, hit or identity), or no faster than every few seconds are not paced: the

@@ -2737,7 +2737,10 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   renames once. Case C2 has the host leave a seek unapplied and playback stop, then plays past where the seek asked to
   land: no rename until the period. Case G holds a hidden monitor to silence at a 30 ms period. Case H runs 50 scan hops
   at a fifth of the app's times (60 ms apart, a 1 s period): the scan header renames at most once a period and once
-  more, ends on the current target, and a hold is heard at once.
+  more, ends on the current target, and a hold is heard at once. Case I retunes the canned spectrum
+  (`testContext.setSpectrumCenterHz()`) over ten scan hops at the app's period: no focusable heading on the Monitor or
+  the Spectrum is renamed, and no scale tick is in the tree. The site sheet's mixed-protocol hops
+  (`test_open_site_sheet_on_hops`) rename its heading 0 times.
   `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
   a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the open Network sheet 10
   refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename), then one changed entry
