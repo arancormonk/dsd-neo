@@ -23,7 +23,7 @@ ModalSheet {
             return "SG:" + row.sgid + (row.isPatch ? " · Patch" : " · Simulselect") + (row.groups.length ? " · TG:" + row.groups.join(", ") : "") + (row.radios.length ? " · RID:" + row.radios.join(", ") : "");
         return "RID:" + row.rid + (section === 2 ? " · TG:" + row.tg : "");
     }
-    // What tells one entry from another, for the rows' pace below.
+    // What tells one entry from another, so its row follows it (StableRows).
     function entryKey(section, row) {
         if (section === 0)
             return String(row.freqHz);
@@ -42,52 +42,39 @@ ModalSheet {
             required property int index
             required property string modelData
             readonly property var rows: [sheet.network.neighbours, sheet.network.patches, sheet.network.affiliations, sheet.network.radios][index]
-            // Issue #782: each section lists its entries most recent first, so
-            // an entry heard again moves to the top, and every row above where
-            // it was then shows another entry: about once a second on a control
-            // channel that cycles its neighbours. Each row is named at the
-            // readings' pace (SpeechPacer), and at once when an entry arrives
-            // or leaves; its text on screen stays live.
-            readonly property string entries: rows.map(function (row) {
-                return sheet.entryKey(section.index, row);
-            }).sort().join(" ")
-            readonly property var spokenRows: rowSpeech.spoken.length > 0 ? rowSpeech.spoken.split("\n") : []
-            SpeechPacer {
-                id: rowSpeech
-                shown: Navigation.allows(section) && section.visible
-                step: section.entries
-                read: function () {
-                    return section.rows.map(function (row) {
-                        return sheet.rowText(section.index, row);
-                    }).join("\n");
-                }
-            }
             width: parent.width
             spacing: 8
             MicroLabel {
                 text: section.modelData
             }
             ReadableText {
-                visible: section.rows.length === 0
+                visible: sectionRows.live === 0
                 text: qsTr("(none announced)")
                 font.family: Theme.sans
                 color: Theme.textSubdued
             }
-            // Issue #782: one row per entry, kept across refreshes (StableRows): a
+            // Issue #782: a row per entry, kept across refreshes (StableRows): a
             // refresh hands a new list, and a list model would rebuild every row
-            // a screen reader is told about. Each row reads its entry in place,
-            // and is named for it at the section's pace; a row the pace has not
-            // reached yet, one just added, is named by its text.
+            // a screen reader is told about. Each section lists its entries most
+            // recent first, so an entry heard again moves to the top: its row
+            // moves with it, and no row is renamed for it. A row is renamed only
+            // when its own entry's words change, or a new entry takes the row of
+            // one that left.
             Repeater {
                 model: StableRows {
-                    size: section.rows.length
+                    id: sectionRows
+                    entries: section.rows
+                    keyOf: function (row) {
+                        return sheet.entryKey(section.index, row);
+                    }
+                    lineOf: function (row) {
+                        return sheet.rowText(section.index, row);
+                    }
                 }
                 ReadableText {
-                    required property int index
-                    readonly property var row: section.rows[index]
+                    required property string line
                     width: parent.width
-                    text: row ? sheet.rowText(section.index, row) : ""
-                    Accessible.name: Accessible.ignored ? "" : index >= 0 && index < section.spokenRows.length ? section.spokenRows[index] : text
+                    text: line
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     font.family: Theme.mono

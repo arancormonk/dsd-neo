@@ -168,9 +168,9 @@ Item {
             // And it follows a change while open.
             testContext.publishTarget({decryptionSlots: slots(0)});
             compare(rows.count, slots(0).length);
-            // Closed again, it lets the rows go.
+            // Closed again, it lets the rows go, at the end of the turn (StableRows).
             keySheet.visible = false;
-            compare(rows.count, 0);
+            tryCompare(rows, "count", 0);
         }
 
         function test_closed_site_sheet_leaves_its_fields_unbuilt() {
@@ -255,7 +255,8 @@ Item {
 
         // Issue #782: an open Network sheet reads each entry as its own row, and a refresh that hands a new list with
         // the same entries (the engine's last-seen times moved) rebuilds nothing: no row shows or hides, and none is
-        // renamed. A changed entry renames its row only; a new entry adds one row.
+        // renamed. A changed entry renames its row only, at once; a new entry adds one row. A hop to a site that lists
+        // the same neighbours with other fields renames the rows whose words differ, at once.
         function neighbours(n, seen, site) {
             var rows = [];
             for (var i = 0; i < n; ++i)
@@ -270,8 +271,9 @@ Item {
             (function collect(item) {
                 for (var k = 0; k < item.children.length; ++k) {
                     var child = item.children[k];
-                    // A neighbour row: a text that starts with its frequency.
-                    if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text) && child.visible)
+                    // A neighbour row: a text that starts with its frequency, drawn (not held for a later list).
+                    if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text) && child.visible
+                            && child.parent.opacity > 0)
                         rows.push(child);
                     collect(child);
                 }
@@ -299,11 +301,10 @@ Item {
             testContext.stopAccessibilityCount();
             compare(showHide(sheet), 0, "last-seen refreshes rebuild no row: " + JSON.stringify(counts.chains));
             compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
-            // A neighbour's site changes: that row is renamed, in place, at the readings' pace (no entry came or went).
-            Ui.Navigation.speechPeriodMs = 100;
+            // A neighbour's site changes: that row is renamed, in place.
             testContext.startAccessibilityCount();
             fakeNet.neighbours = neighbours(10, 11, 42);
-            wait(200);
+            wait(20);
             counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
             compare(showHide(sheet), 0, JSON.stringify(counts.chains));
@@ -319,17 +320,33 @@ Item {
             verify(testContext.accessibilityCountWithin(sheet, "ObjectShow") <= 1, JSON.stringify(counts.chains));
             verify(testContext.accessibilityCountWithin(sheet, "NameChanged") <= 1, "only the new row is named: "
                    + JSON.stringify(counts.chains));
+            // The same neighbours on another system: each row's words change, and each is renamed once, at once.
+            var other = neighbours(11, 13, 42).map(function (row) {
+                return Object.assign({}, row, {sysid: 0x2A0});
+            });
+            rows = neighbourRows(sheet);
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = other;
+            wait(20);
+            counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(showHide(sheet), 0, JSON.stringify(counts.chains));
+            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 11, JSON.stringify(counts.chains));
+            compare(neighbourRows(sheet), rows, "each row stays with its neighbour");
+            for (r of rows) {
+                verify(r.text.indexOf("SYS:2A0 ") >= 0, r.text);
+                compare(testContext.accessibleNode(r).name, r.text);
+            }
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];
         }
 
         // Issue #782: an open Network sheet lists each section most recent first, so a neighbour heard again moves to
-        // the top and every row above its old place shows another entry. A row is renamed at the readings' pace for
-        // that, not on each refresh: a listener can stay on a row and hear it out. It ends on what it shows.
-        function test_open_network_sheet_reorders_at_the_pace() {
+        // the top. Its row moves with it: no row shows, hides or is renamed, the row a listener is on stays with its
+        // neighbour, and every row is read as what it shows, at every refresh.
+        function test_open_network_sheet_reorders_move_rows() {
             var sheet = networkLoader.item;
-            var period = 500;
             var order = [0, 1, 2, 3, 4, 5, 6, 7];
             var listed = function () {
                 return order.map(function (i) {
@@ -337,7 +354,6 @@ Item {
                         lraValid: false, isCurrentCc: i === 0, isCandidate: false, cfvaText: "valid"};
                 });
             };
-            Ui.Navigation.speechPeriodMs = period;
             fakeNet.neighbours = listed();
             sheet.visible = true;
             Ui.Navigation.modals = [sheet];
@@ -346,31 +362,119 @@ Item {
             var rows = neighbourRows(sheet);
             compare(rows.length, 8);
             var row = rows[3];
-            compare(testContext.accessibleNode(row).name, row.text);
+            var name = testContext.accessibleNode(row).name;
+            compare(name, row.text);
             testContext.startAccessibilityCount();
-            var renames = 0;
-            var said = testContext.accessibleNode(row).name;
-            var start = Date.now();
+            var wrong = [];
             for (var refresh = 1; refresh <= 16; ++refresh) {
                 // The last neighbour in the list is heard again and moves to the top.
                 order = [order[order.length - 1]].concat(order.slice(0, order.length - 1));
                 fakeNet.neighbours = listed();
                 wait(100);
-                var now = testContext.accessibleNode(row).name;
-                if (now !== said)
-                    ++renames;
-                said = now;
+                rows = neighbourRows(sheet);
+                for (var k = 0; k < rows.length; ++k) {
+                    if (testContext.accessibleNode(rows[k]).name !== rows[k].text)
+                        wrong.push(refresh + ":" + k);
+                }
+                compare(rows[order.indexOf(3)], row, "the neighbour's row moves with it");
             }
-            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(wrong.length, 0, "rows read as another neighbour than they show: " + JSON.stringify(wrong));
+            compare(showHide(sheet), 0, JSON.stringify(counts.chains));
+            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
+            compare(testContext.accessibleNode(row).name, name);
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.neighbours = [];
+        }
+
+        // Issue #782: the affiliations and radios are the 100 heard last, so on a busy system a radio that registers
+        // again enters at the top and the 100th leaves. The row of the one that left is renamed for the new one, and
+        // no other row: a listener on a radio that stays keeps its row and its name.
+        function test_open_network_sheet_capped_arrivals() {
+            var sheet = networkLoader.item;
+            var rids = [];
+            for (var i = 0; i < 100; ++i)
+                rids.push(1000 + i);
+            var listed = function () {
+                return rids.map(function (rid) { return {rid: rid}; });
+            };
+            var radioRows = function () {
+                var found = [];
+                (function collect(item) {
+                    for (var k = 0; k < item.children.length; ++k) {
+                        var child = item.children[k];
+                        if (child.textFormat !== undefined && /^RID:[0-9]+$/.test(child.text) && child.parent.opacity > 0)
+                            found.push(child);
+                        collect(child);
+                    }
+                })(sheet);
+                return found;
+            };
+            fakeNet.radios = listed();
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var rows = radioRows();
+            compare(rows.length, 100);
+            var row = rows[50];
+            var name = testContext.accessibleNode(row).name;
+            compare(name, "RID:1050");
+            var wrong = [];
+            var arrivals = 20;
+            for (var arrival = 1; arrival <= arrivals; ++arrival) {
+                testContext.startAccessibilityCount();
+                rids = [5000 + arrival].concat(rids.slice(0, 99));
+                fakeNet.radios = listed();
+                wait(20);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(showHide(sheet), 0, JSON.stringify(counts.chains));
+                verify(testContext.accessibilityCountWithin(sheet, "NameChanged") <= 1, "arrival " + arrival + " renamed "
+                       + testContext.accessibilityCountWithin(sheet, "NameChanged") + " rows");
+                rows = radioRows();
+                compare(rows.length, 100);
+                for (var k = 0; k < rows.length; ++k) {
+                    if (testContext.accessibleNode(rows[k]).name !== rows[k].text)
+                        wrong.push(arrival + ":" + k);
+                }
+                compare(rows[50 + arrival], row, "the radio's row moves with it");
+            }
+            compare(wrong.length, 0, "rows read as another radio than they show: " + JSON.stringify(wrong));
+            compare(testContext.accessibleNode(row).name, name);
+            compare(rows[0].text, "RID:" + (5000 + arrivals));
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.radios = [];
+        }
+
+        // Issue #782: a list emptied and filled again in one turn (a publisher that clears first) keeps every row:
+        // nothing shows, hides or is renamed.
+        function test_open_network_sheet_clear_and_refill() {
+            var sheet = networkLoader.item;
+            var listed = neighbours(8, 0, 3);
+            fakeNet.neighbours = listed;
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, 8);
+            testContext.startAccessibilityCount();
+            for (var cycle = 1; cycle <= 10; ++cycle) {
+                fakeNet.neighbours = [];
+                fakeNet.neighbours = listed;
+                wait(20);
+            }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
             compare(showHide(sheet), 0, JSON.stringify(counts.chains));
-            var most = Math.ceil(elapsed / period) + 1;
-            verify(renames >= 1 && renames <= most, "row 3 renamed " + renames + " times for 16 refreshes in " + elapsed
-                   + " ms (at most " + most + ")");
-            verify(row.text.indexOf("Site:" + order[3] + " ") >= 0, "the text on screen follows every refresh: " + row.text);
-            tryVerify(function () { return testContext.accessibleNode(row).name === row.text; }, period + 500,
-                      testContext.accessibleNode(row).name);
+            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
+            compare(neighbourRows(sheet), rows, "the same rows");
+            for (var r of rows)
+                compare(testContext.accessibleNode(r).name, r.text);
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];

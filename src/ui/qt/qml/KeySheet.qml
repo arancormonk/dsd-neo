@@ -233,7 +233,7 @@ ModalSheet {
         objectName: "keySheetSlots"
         readonly property var slots: sheet.visible ? (metrics.decryptionSlots || []) : []
         model: StableRows {
-            size: slotRepeater.slots.length
+            entries: slotRepeater.slots
         }
         Column {
             id: slotRow
