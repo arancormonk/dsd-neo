@@ -78,8 +78,11 @@ ModalSheet {
         }
     }
 
-    ReadableText {
+    // Names the protocol, which a mixed scan changes on every hop: read at the
+    // readings' pace (issue #782); the field groups below are the content.
+    LiveText {
         heading: true
+        objectName: "siteHeading"
         width: parent.width
         text: qsTr("Site identity") + " · " + metrics.siteProtocol
         textFormat: Text.PlainText

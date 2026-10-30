@@ -243,6 +243,19 @@ Item {
                 wait(20);
             }
             var mixed = testContext.accessibilityCount();
+            // The heading names the protocol, and is read at the readings' pace, not on each protocol change.
+            var heading = null;
+            (function find(item) {
+                for (var k = 0; k < item.children.length && heading === null; ++k) {
+                    if (String(item.children[k].text).indexOf("Site identity") === 0)
+                        heading = item.children[k];
+                    else
+                        find(item.children[k]);
+                }
+            })(siteSheet);
+            verify(heading !== null, "the site sheet's heading");
+            compare(testContext.accessibilityCountWithin(heading, "NameChanged"), 0,
+                    "the heading renamed on protocol hops: " + JSON.stringify(mixed.chains));
             var hides = 0;
             for (var key in mixed.chains) {
                 if (/^ObjectHide siteFields /.test(key))

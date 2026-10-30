@@ -2899,6 +2899,43 @@ class Setup : public QObject {
         return out;
     }
 
+    /** @brief Issue #782: retune the canned spectrum frames to @p hz (0 puts back the default centre). */
+    Q_INVOKABLE void
+    setSpectrumCenterHz(double hz) const {
+        dsd_neo_qml_stub::set_spectrum_center_hz(hz > 0 ? static_cast<unsigned int>(hz)
+                                                        : dsd_neo_qml_stub::kSpectrumCenterHz);
+    }
+
+    /**
+     * @brief Issue #782: each focusable heading node in the tree under @p root, as {item, name}: what TalkBack's
+     * heading navigation and swipes stop on.
+     */
+    Q_INVOKABLE QVariantList
+    focusableHeadings(QObject* root) const {
+        QVariantList out;
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectFocusableHeadings(item, out);
+        }
+        return out;
+    }
+
+    static void
+    collectFocusableHeadings(QQuickItem* item, QVariantList& out) {
+        if (!item->isVisible()) {
+            return;
+        }
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(item);
+        if (iface != nullptr && iface->isValid() && iface->object() == item && iface->role() == QAccessible::Heading
+            && accessibleInTree(iface) && iface->state().focusable) {
+            out.append(QVariantMap{{QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                                   {QStringLiteral("name"), iface->text(QAccessible::Name)}});
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectFocusableHeadings(child, out);
+        }
+    }
+
     /**
      * @brief Issue #782: the headings under @p root that TalkBack cannot move to: each visible item whose accessible
      * node is in the tree with the Heading role and is not focusable. Qt reports a Heading node focusable only when the

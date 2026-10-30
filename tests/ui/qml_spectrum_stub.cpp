@@ -24,6 +24,7 @@ using namespace dsd_neo_qml_stub;
 namespace {
 
 int g_enabled = 0;
+unsigned int g_center_hz = kSpectrumCenterHz;
 /* A fresh frame on every poll, which is what a producer running faster than the
  * view does. Serial 0 means "nothing published", so it is skipped. */
 uint32_t g_serial = 0;
@@ -48,7 +49,7 @@ dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* ou
         }
     }
     if (out_center_freq_hz) {
-        *out_center_freq_hz = kSpectrumCenterHz;
+        *out_center_freq_hz = g_center_hz;
     }
     if (out_span_hz) {
         *out_span_hz = kSpectrumSpanHz;
@@ -58,6 +59,11 @@ dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* ou
         *out_frame_serial = g_serial;
     }
     return n;
+}
+
+void
+dsd_neo_qml_stub::set_spectrum_center_hz(unsigned int hz) {
+    g_center_hz = hz;
 }
 
 extern "C" void

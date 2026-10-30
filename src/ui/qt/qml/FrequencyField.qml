@@ -19,6 +19,8 @@ Column {
     property alias text: field.text
     /** Names the input itself, for tests that address it directly. */
     property alias fieldObjectName: field.objectName
+    /** What a screen reader calls the field; it reads the unit. */
+    property string accessibleName: qsTr("Frequency in MHz")
     /** Size of the number; the unit stays at its own size beside it. */
     property int pixelSize: 32
     /** Whether the text currently satisfies the validator. */
@@ -45,7 +47,7 @@ Column {
             verticalAlignment: TextInput.AlignVCenter
             clip: true
             Accessible.role: Accessible.EditableText
-            Accessible.name: qsTr("Frequency in MHz")
+            Accessible.name: root.accessibleName
             readonly property bool navigationAllowed: Navigation.allows(root)
             Accessible.ignored: !navigationAllowed || !visible
             font.family: Theme.mono

@@ -38,6 +38,9 @@ spectrum_peak_hz() {
               / static_cast<double>(kSpectrumBins));
 }
 
+/** Issue #782: the centre the canned frames report, as a retune moves it; kSpectrumCenterHz until set. */
+void set_spectrum_center_hz(unsigned int hz);
+
 } // namespace dsd_neo_qml_stub
 
 #endif /* DSD_NEO_TESTS_UI_QML_SPECTRUM_STUB_H_ */

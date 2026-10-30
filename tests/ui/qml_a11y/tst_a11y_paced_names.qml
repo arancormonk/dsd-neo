@@ -545,6 +545,45 @@ Item {
                       + nameOf(header));
         }
 
+        // TalkBack's headings are swipe stops and its heading navigation's list, and Qt's bridge reads out each
+        // rename of the one it is on. A scan's hops, each a retune, rename none of the Monitor's or the Spectrum's
+        // headings at the app's pace: the Spectrum's scale ticks, which move with every retune, are not headings (not
+        // in the tree at all), and its title, which names what is tuned, is paced.
+        function test_i_scan_hops_rename_no_heading() {
+            Ui.Navigation.speechPeriodMs = appPeriod;
+            var screens = [monitor, spectrum];
+            var before = [];
+            for (var screen of screens)
+                before = before.concat(testContext.focusableHeadings(screen));
+            verify(before.length > 0, "the screens have headings");
+            var renamed = [];
+            for (var i = 1; i <= 10; ++i) {
+                var hz = 851012500 + i * 250000;
+                testContext.setSpectrumCenterHz(hz);
+                testContext.publishTarget({scanTargetOrdinal: (i % 3) + 1, scanTargetId: "target-" + i, centerFreqHz: hz});
+                wait(100);
+                for (var h of before) {
+                    var now = testContext.accessibleNode(h.item).name;
+                    if (now !== h.name)
+                        renamed.push(i + ": " + JSON.stringify(h.name) + " -> " + JSON.stringify(now));
+                    h.name = now;
+                }
+            }
+            testContext.setSpectrumCenterHz(0);
+            compare(renamed.length, 0, "headings renamed by hops: " + JSON.stringify(renamed));
+            var ticks = [];
+            (function collect(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    if (item.children[k].objectName === "spectrumScaleLabel" && item.children[k].visible)
+                        ticks.push(item.children[k]);
+                    collect(item.children[k]);
+                }
+            })(spectrum);
+            verify(ticks.length > 0, "the scale is drawn");
+            for (var tick of ticks)
+                verify(!testContext.accessibleNode(tick).inTree, "a scale tick is not in the tree: " + tick.text);
+        }
+
         // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.
         function test_g_hidden_monitor_stays_silent() {
             Ui.Navigation.speechPeriodMs = 30;

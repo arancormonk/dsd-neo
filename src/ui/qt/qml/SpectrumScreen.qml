@@ -369,9 +369,21 @@ Item {
             y: (header.titleHeight - height) / 2
             spacing: 2
 
+            // Names what the receiver is tuned to, which a scan changes on every
+            // hop: read at the readings' pace (issue #782, SpeechPacer).
             MicroLabel {
+                id: spectrumTitle
+                objectName: "spectrumTitle"
                 width: parent.width
                 elide: Text.ElideRight
+                Accessible.name: spectrumTitlePace.spoken
+                SpeechPacer {
+                    id: spectrumTitlePace
+                    shown: !spectrumTitle.Accessible.ignored
+                    read: function () {
+                        return spectrumTitle.text;
+                    }
+                }
                 text: {
                     if (typeof knownFrequencies === "undefined")
                         return qsTr("Spectrum");
@@ -719,11 +731,18 @@ Item {
                 // freshly built list destroys and recreates every label each time
                 // the viewport moves, which during a drag is fifteen times a
                 // second. The delegates stay put and only their bindings re-evaluate.
+                //
+                // The ticks are a scale, drawn in the section label's type and
+                // left out of the accessibility tree (issue #782): they move and
+                // rename on every retune, a scan's every hop, and the readout
+                // already says where the receiver is.
                 Repeater {
                     model: body.maxTicks
 
-                    MicroLabel {
+                    Text {
                         required property int index
+
+                        objectName: "spectrumScaleLabel"
 
                         readonly property var tick: index < body.ticks.length ? body.ticks[index] : null
 
@@ -733,7 +752,10 @@ Item {
                         x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth, (tick.xFraction * axis.width) - (implicitWidth / 2)))) : 0
                         y: Math.round((axis.height - implicitHeight) / 2)
                         text: tick ? tick.label : ""
-                        font.capitalization: Font.MixedCase
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        font.letterSpacing: Theme.fontSize(11) * 0.18
+                        color: Theme.textSubdued
                     }
                 }
             }
@@ -1374,12 +1396,16 @@ Item {
                 screen.hint = qsTr("Cannot tune to %1 MHz").arg(Util.mhzText(mhz * 1.0e6));
         }
 
+        // Read in the field's name (issue #782), not as a heading of its own.
         MicroLabel {
+            objectName: "spectrumGoToCaption"
             text: qsTr("Go to")
+            Accessible.ignored: true
         }
 
         FrequencyField {
             id: goToField
+            accessibleName: qsTr("Go to frequency in MHz")
 
             width: parent.width
             fieldObjectName: "spectrumGoToField"
