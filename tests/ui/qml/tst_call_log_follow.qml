@@ -95,34 +95,31 @@ Item {
         }
 
         // Issue #782: hidden, the log holds no rows, so calls landing under the
-        // monitor build none; shown again it lists them as they are then, newest
-        // first and from the top, with the search it had still applied.
-        function test_00_hidden_log_reopens_at_the_latest() {
+        // monitor build none; shown again it lists them as they are then, with
+        // the search it had still applied and no flash of the empty state. Where
+        // it reopens is test_08 to test_10's.
+        function test_00_a_hidden_log_holds_no_rows() {
             var screen = screenLoader.item
             var empty = findChild(screen, "callLogEmptyState")
             verify(empty !== null, "the empty state is missing")
-            tc.scrollBack()
-            historyView.filterText = "call"
+            callHistory.pushWithSourceName("Radio 7777")
+            historyView.filterText = "radio 7777"
+            tryCompare(historyView, "count", 1)
             screen.visible = false
-            var newest = ""
             for (var i = 0; i < 5; i++) {
-                newest = callHistory.push("TODAY")
+                callHistory.push("TODAY")
                 tc.waitForRendering(screen.parent)
             }
+            callHistory.pushWithSourceName("Radio 7777")
+            tc.waitForRendering(screen.parent)
             compare(tc.list.count, 0, "a hidden log holds no rows")
             compare(tc.list.contentItem.children.filter(function (child) { return child.name !== undefined }).length, 0)
-            verify(!empty.visible)
             screen.visible = true
-            tc.waitForRendering(tc.list)
-            compare(tc.list.count, historyView.count)
-            compare(historyView.count, 29, "the search still applies")
-            compare(historyView.filterText, "call")
+            compare(tc.list.count, 2, "the search still applies to what landed while hidden")
+            compare(historyView.count, 2)
             verify(!empty.visible, "a log with calls never shows its empty state")
-            tryVerify(function () { return tc.atTop() })
-            tryVerify(function () {
-                var first = tc.list.itemAtIndex(0)
-                return first !== null && first.name === newest
-            }, 5000, "the newest call is not the first row")
+            tc.waitForRendering(tc.list)
+            verify(!empty.visible)
             historyView.filterText = "no such call"
             tryVerify(function () { return empty.visible }, 5000, "an empty result still says so")
         }
@@ -492,6 +489,74 @@ Item {
             tryVerify(function () { return tc.atTop() }, 5000,
                       "a filter change that hid no rows left the log where it was")
             compare(tc.list.count, 24)
+        }
+
+        // Issue #782: the log lets its rows go while hidden, and a reader who was
+        // reading back comes back to the same row at the same height, on the
+        // first frame: no deferred restore, so compare() right after the show.
+        function test_08_a_hidden_log_keeps_the_readers_place() {
+            var screen = screenLoader.item
+            tc.scrollBack()
+            var anchorRow = tc.rowAtViewportTop()
+            var anchorName = anchorRow.name
+            var anchorScreenY = anchorRow.y - tc.list.contentY
+            screen.visible = false
+            for (var i = 0; i < 5; i++) {
+                callHistory.push("TODAY")
+                tc.waitForRendering(screen.parent)
+            }
+            compare(tc.list.count, 0, "a hidden log holds no rows")
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            compare(tc.list.count, historyView.count)
+            var row = tc.rowAtViewportTop()
+            compare(row.name, anchorName, "the reader's row is back at the top of the viewport")
+            verify(Math.abs((row.y - tc.list.contentY) - anchorScreenY) <= 2,
+                   "at the same height: " + (row.y - tc.list.contentY) + " vs " + anchorScreenY)
+            var first = tc.list.itemAtIndex(0)
+            verify(first === null || first.y + first.height <= tc.list.contentY + 1,
+                   "the newest call stays above the viewport")
+        }
+
+        // A reader on the latest call is on it again, newest first.
+        function test_09_a_hidden_log_at_the_latest_reopens_at_the_newest() {
+            var screen = screenLoader.item
+            verify(tc.atTop())
+            screen.visible = false
+            var newest = ""
+            for (var i = 0; i < 5; i++) {
+                newest = callHistory.push("TODAY")
+                tc.waitForRendering(screen.parent)
+            }
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            verify(tc.atTop(), "back on the latest call")
+            var first = tc.list.itemAtIndex(0)
+            verify(first !== null)
+            compare(first.name, newest)
+        }
+
+        // A reader whose row went while the log was hidden (here, History was
+        // cleared) has no place to come back to, and lands on the newest call.
+        function test_10_a_reader_whose_row_is_gone_lands_at_the_top() {
+            var screen = screenLoader.item
+            var empty = findChild(screen, "callLogEmptyState")
+            tc.scrollBack()
+            screen.visible = false
+            callHistory.clearAll()
+            var newest = ""
+            // Longer than the viewport, so landing anywhere but the top shows.
+            for (var i = 0; i < 24; i++) {
+                newest = callHistory.push("TODAY")
+                tc.waitForRendering(screen.parent)
+            }
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            verify(tc.atTop(), "no place to keep: the top")
+            verify(!empty.visible)
+            var first = tc.list.itemAtIndex(0)
+            verify(first !== null)
+            compare(first.name, newest)
         }
     }
 }

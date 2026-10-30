@@ -488,6 +488,38 @@ Item {
             settle();
             compare(tc.monitor.stripHeight, unreserved, "a new session starts unreserved");
         }
+        // Without a rotation nothing is reserved: a single-target session's
+        // strip follows its carrier.
+        function test_two_slot_reservation_needs_a_rotation() {
+            setStrip(true, false);
+            settle();
+            verify(tc.monitor.stripHeight > 0, "the strip shows on a two-slot carrier");
+            m("twoSlotCarrier", false);
+            settle();
+            compare(tc.monitor.stripHeight, 0, "and goes with it outside a rotation");
+            verify(!tc.monitor.rotationReservesStrip);
+        }
+        // The reservation is the rotation's, not the screen's: hops made while
+        // the monitor is hidden keep it, and the screen comes back as it left.
+        function test_two_slot_reservation_holds_while_hidden() {
+            setStrip(false, true);
+            hopTo(0);
+            settle();
+            var reserved = tc.monitor.stripHeight;
+            var holdY = sceneY("scanHoldButton");
+            tc.monitor.visible = false;
+            try {
+                hopTo(1);
+                hopTo(2);
+                settle();
+            } finally {
+                tc.monitor.visible = true;
+            }
+            settle();
+            compare(tc.monitor.stripHeight, reserved);
+            compare(sceneY("scanHoldButton"), holdY);
+            verify(!item("otherSlotPanel").visible, "no slot on the single-slot carrier");
+        }
 
         // An empty summary keeps its line: the disclosure's height, which the
         // budget measures, never follows the readings.

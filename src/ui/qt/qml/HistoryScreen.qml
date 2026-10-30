@@ -176,12 +176,8 @@ Item {
         // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
         // would also scroll the list under the overlay.
         enabled: !confirmClear.visible
-        // Hidden, the log holds no rows (issue #782): a session runs on the
-        // monitor with this screen under it, and every row built for a call
-        // landing there is announced to accessibility clients as hidden. The
-        // search and filters live in historyView and stay set; shown again, the
-        // log lists the calls as they are then, from the top.
-        model: visible ? historyView : null
+        // Set by logPlace below, only while the log is visible (issue #782).
+        model: null
 
         section.property: "dayLabel"
         section.delegate: MicroLabel {
@@ -203,6 +199,8 @@ Item {
             // ("851.0125 backup" heard on 460 MHz). Reading frequencyQuery
             // re-runs this on each search change.
             readonly property bool freqMatched: historyView.frequencyQuery && model.freqHz > 0 && historyView.frequencyMatches(model.freqHz)
+            // The row's identity, for logPlace.
+            readonly property var rowUid: model.uid
 
             interactive: true
             width: ListView.view.width
@@ -305,7 +303,28 @@ Item {
 
     // Keeps the newest call in view for a reader parked at the top of the log.
     FollowLatest {
+        id: follow
         list: logList
+    }
+
+    // Hidden, the log holds no rows (issue #782): a session runs on the monitor
+    // with this screen under it, and every row built for a call landing there is
+    // announced to accessibility clients as hidden. The search and filters live
+    // in historyView and stay set. Shown again, a reader who was on the latest
+    // call is on it again, and one reading further back is back on the same row
+    // at the same height.
+    KeepPlace {
+        id: logPlace
+        list: logList
+        model: historyView
+        atStart: follow.atLatest
+        keyOf: function (row) {
+            return row.rowUid;
+        }
+        rowOf: function (uid) {
+            var source = callHistory.rowForUid(uid);
+            return source < 0 ? -1 : historyView.mapFromSource(callHistory.index(source, 0)).row;
+        }
     }
 
     // A new search or filter is a new question, answered from the top — which is

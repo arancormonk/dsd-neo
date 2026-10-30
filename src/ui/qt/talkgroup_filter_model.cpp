@@ -89,4 +89,14 @@ TalkgroupFilterModel::snapshotSelection() const {
     return rows;
 }
 
+int
+TalkgroupFilterModel::rowForTalkgroup(qulonglong idStart) const {
+    for (int i = 0; i < rowCount(); ++i) {
+        if (data(index(i, 0), TalkgroupListModel::IdStartRole).toULongLong() == idStart) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 } // namespace dsd_qt

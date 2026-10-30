@@ -57,7 +57,8 @@ Item {
     // let their models go: a scan brings each target's own table, and every
     // card or chip rebuilt under the hidden screen sends accessibility events.
     // The filters live in talkgroupView and stay set; reopening lists the
-    // table as it is then, from the top.
+    // table as it is then, with the reader back on the card they had at the
+    // top (gridPlace), or from the top when the table was replaced meanwhile.
     readonly property bool live: screen.visible
     onVisibleChanged: {
         if (!visible)
@@ -247,7 +248,8 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         clip: true
-        model: screen.live ? talkgroupView : null
+        // Set by gridPlace below, only while the grid is visible (issue #782).
+        model: null
         spacing: 10
         enabled: decoderHost.running
 
@@ -276,6 +278,22 @@ Item {
             color: Theme.textSubdued
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
+        }
+    }
+
+    // Hands the grid its model only while it is shown and keeps the reader on
+    // the card they had at the top (issue #782; see `live` above). A table
+    // replaced while hidden resets the model, and the grid starts from the
+    // top, as it does on a reset while shown.
+    KeepPlace {
+        id: gridPlace
+        list: grid
+        model: talkgroupView
+        keyOf: function (card) {
+            return card.idStart;
+        }
+        rowOf: function (idStart) {
+            return talkgroupView.rowForTalkgroup(idStart);
         }
     }
 

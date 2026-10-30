@@ -88,7 +88,9 @@ Item {
     // A scan rotation that mixes two-slot and single-slot carriers (issue #782): once it has visited a two-slot one,
     // the strip's place stays reserved for the rest of the rotation, empty on a single-slot carrier, so the hops never
     // move the scan buttons under it, the list or the tier. Set by the handlers below, never by a binding on itself;
-    // the rotation ending and a new session clear it.
+    // the rotation ending and a new session clear it. A new session is seen as an edge of decoderHost.running, the
+    // only session boundary the host publishes: a stop, then a start. A restart that kept running true would carry
+    // the reservation over, which costs at most a blank strip until that rotation ends.
     property bool rotationReservesStrip: false
     readonly property bool stripRotating: metrics.scanRotationActive
     readonly property bool stripTwoSlot: metrics.twoSlotCarrier

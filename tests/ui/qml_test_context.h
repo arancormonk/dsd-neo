@@ -2445,6 +2445,27 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Issue #782: rename the fixture table's row for @p id in place, as an edit does: the rows keep their
+     * bounds, so the list changes that row's data and is not reset.
+     */
+    Q_INVOKABLE bool
+    renameFixtureTalkgroup(double id, const QString& mode, const QString& name, const QString& tags) {
+        dsd_tg_policy_entry entry{};
+        if (dsd_tg_policy_make_exact_entry(static_cast<uint32_t>(id), mode.toUtf8().constData(),
+                                           name.toUtf8().constData(), DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+            != 0) {
+            return false;
+        }
+        DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", tags.toUtf8().constData());
+        if (dsd_tg_policy_upsert_exact(m_talkgroup_state.get(), &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
+            return false;
+        }
+        m_applied_table = nullptr;
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        return true;
+    }
+
+    /**
      * @brief Issue #782: show scan target @p target's talkgroup table, as the poll tick does after a hop.
      *
      * Targets 0 and 1 are two prepared policy tables, A and B, each with its own policy context and with different

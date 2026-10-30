@@ -42,6 +42,13 @@ class TalkgroupFilterModel : public QSortFilterProxyModel {
     void setFilterText(const QString& text);
     void setFilterTag(const QString& tag);
     Q_INVOKABLE QVariantList snapshotSelection() const;
+    /**
+     * @brief The view row that lists the range starting at @p idStart, or -1 when none does.
+     *
+     * For the Talkgroups screen, which lets its model go while hidden (issue #782) and puts the reader back on the
+     * card they had at the top. One pass over the filtered rows, once per show.
+     */
+    Q_INVOKABLE int rowForTalkgroup(qulonglong idStart) const;
 
   Q_SIGNALS:
     void countChanged();

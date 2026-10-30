@@ -801,12 +801,11 @@ Item {
             anchors.bottom: parent.bottom
             anchors.topMargin: 12
             clip: true
-            // Hidden, the list holds no rows (issue #782): a session runs on the
-            // monitor with this screen under it, and every row built for a call
-            // landing there is announced to accessibility clients as hidden.
-            // Shown again, it lists the calls as they are then, from the top.
-            model: visible ? callHistory : null
+            // Set by recentPlace below, only while the list is visible (issue #782).
+            model: null
             delegate: CallRow {
+                // The row's identity, for recentPlace.
+                readonly property var rowUid: model.uid
                 width: recentList.width
                 name: model.name
                 metaText: model.systemName
@@ -844,6 +843,21 @@ Item {
                 wrapMode: Text.Wrap
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSize(14)
+            }
+        }
+        // Hidden, the list holds no rows (issue #782): a session runs on the
+        // monitor with this screen under it, and every row built for a call
+        // landing there is announced to accessibility clients as hidden.
+        // Shown again, it lists the calls as they are then, and a reader who
+        // had scrolled down is back on the same row.
+        KeepPlace {
+            list: recentList
+            model: callHistory
+            keyOf: function (row) {
+                return row.rowUid;
+            }
+            rowOf: function (uid) {
+                return callHistory.rowForUid(uid);
             }
         }
     }

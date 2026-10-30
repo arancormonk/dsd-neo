@@ -217,6 +217,19 @@ test_policy_and_heard_rows() {
            view.count() == 1 && view.data(view.index(0, 0), TalkgroupListModel::IdStartRole).toULongLong() == 1300);
     view.setFilterTag(QStringLiteral("fire"));
     expect("category match remains exact", view.count() == 0);
+    expect("a range filtered away has no row", view.rowForTalkgroup(1300) == -1);
+    view.setFilterTag(QString());
+    view.setFilterText(QString());
+    expect("each listed range is found at its view row", [&view]() {
+        for (int i = 0; i < view.count(); ++i) {
+            const qulonglong first = view.data(view.index(i, 0), TalkgroupListModel::IdStartRole).toULongLong();
+            if (view.rowForTalkgroup(first) != i) {
+                return false;
+            }
+        }
+        return view.count() > 0;
+    }());
+    expect("a range that is not listed has no row", view.rowForTalkgroup(999999) == -1);
 
     changes = 0;
     DSD_SNPRINTF(fixture.opts->group_in_file, sizeof(fixture.opts->group_in_file), "groups.csv");

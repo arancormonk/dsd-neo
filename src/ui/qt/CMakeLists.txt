@@ -123,6 +123,7 @@ qt_add_resources(
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
+        qml/KeepPlace.qml
         qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml

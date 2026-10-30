@@ -153,6 +153,59 @@ Item {
             compare(chipTexts(chips), ["All", "EMS", "FIRE"]);
         }
 
+        // The grid lets its cards go while hidden but keeps the reader's place: a reader who had scrolled down a long
+        // table is back on the same card at the same height, through edits that keep the table's rows. A table
+        // replaced while hidden is a new list, which starts from the top as it does when shown.
+        function test_hidden_screen_keeps_the_readers_place() {
+            var cards = item("talkgroupGrid");
+            verify(testContext.clearTalkgroups());
+            try {
+                for (var id = 5001; id <= 5030; ++id)
+                    verify(testContext.pushTalkgroup(id, "A", "Unit " + id, "LONG"));
+                verify(testContext.applyTalkgroupTable(-1));
+                tryCompare(cards, "count", 30);
+                cards.contentY = cards.originY + 600;
+                waitForRendering(cards);
+                var top = cards.indexAt(cards.width / 2, cards.contentY + 1);
+                verify(top > 0, "scrolled past the first card");
+                var idText = cards.itemAtIndex(top).idText;
+                var offset = cards.itemAtIndex(top).y - cards.contentY;
+
+                screen.visible = false;
+                verify(testContext.renameFixtureTalkgroup(5002, "A", "Unit 5002 renamed", "LONG"));
+                compare(talkgroups.count, 30, "an edit keeps the rows");
+                compare(cards.count, 0, "a hidden grid holds no cards");
+                screen.visible = true;
+                compare(cards.count, 30);
+                var now = cards.indexAt(cards.width / 2, cards.contentY + 1);
+                verify(now >= 0);
+                compare(cards.itemAtIndex(now).idText, idText, "the reader's card is back at the top");
+                verify(Math.abs(cards.itemAtIndex(now).y - cards.contentY - offset) <= 2,
+                       "at the same height: " + (cards.itemAtIndex(now).y - cards.contentY) + " vs " + offset);
+
+                // A row added while hidden changes the table's bounds, which resets the list: from the top, even
+                // though the reader's card is still in it.
+                cards.contentY = cards.originY + 600;
+                waitForRendering(cards);
+                screen.visible = false;
+                verify(testContext.pushTalkgroup(5031, "A", "Unit 5031", "LONG"));
+                screen.visible = true;
+                compare(cards.count, 31);
+                verify(Math.abs(cards.contentY - cards.originY) < 1, "a reset table starts from the top");
+
+                cards.contentY = cards.originY + 600;
+                waitForRendering(cards);
+                screen.visible = false;
+                verify(testContext.applyTalkgroupTable(1));
+                screen.visible = true;
+                compare(cards.count, tableB.length);
+                verify(Math.abs(cards.contentY - cards.originY) < 1, "a replaced table starts from the top");
+            } finally {
+                screen.visible = true;
+                verify(testContext.clearTalkgroups());
+            }
+        }
+
         // An edit opened on table B carries B's policy version; a hop to table A under it leaves it at that, and
         // the decoder's version check refuses it as stale, as it always has.
         function test_edit_keeps_the_version_it_opened_with() {
