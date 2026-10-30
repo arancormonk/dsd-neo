@@ -216,6 +216,25 @@ Item {
             }
         }
 
+        // A card's listening switch says each of its lines once: its name gives the talkgroup's name and ID and its
+        // state whether it is listened to, so its description gives the rest of the card (rank, tags, an avoid).
+        function test_card_switch_says_each_line_once() {
+            var component = Qt.createComponent(uiDir + "/TalkgroupCard.qml");
+            compare(component.status, Component.Ready, component.errorString());
+            var card = component.createObject(screen.parent, {width: 300, idText: "1234", name: "Fire Dispatch",
+                tags: "Law", listening: true, listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1});
+            verify(card !== null);
+            var node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
+            compare(node.name, "Listen to Fire Dispatch, talkgroup 1234");
+            compare(node.description, "Priority 2 · Preempt, Law, Temporarily avoided: 1. Clear in Settings → Listening.");
+            card.priority = 0;
+            card.temporaryAvoidCount = 0;
+            card.listed = false;
+            node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
+            compare(node.description, "Heard in this session");
+            card.destroy();
+        }
+
         // An edit opened on table B carries B's policy version; a hop to table A under it leaves it at that, and
         // the decoder's version check refuses it as stale, as it always has.
         function test_edit_keeps_the_version_it_opened_with() {

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 import QtQuick
-import "Util.js" as Util
 
 Rectangle {
     id: card
@@ -13,6 +12,7 @@ Rectangle {
     required property int priority
     required property bool preempt
     required property var temporaryAvoidCount
+    readonly property var rank: priority > 0 ? [qsTr("Priority %1").arg(priority)].concat(preempt ? [qsTr("Preempt")] : []) : []
     signal editRequested
     signal clicked
     implicitHeight: content.implicitHeight + 28
@@ -27,13 +27,15 @@ Rectangle {
         y: 14
         width: parent.width - 28
         spacing: 5
-        // The card's lines are read with its switch (issue #782): its
-        // description. A card is rebuilt with its table, so it adds no node of
-        // its own to the two controls it already had.
+        // The card's lines are read with its switch (issue #782). A card is
+        // rebuilt with its table, so it adds no node of its own to the two
+        // controls it already had. The switch's name says the talkgroup and
+        // its state whether it is listened to, so its description gives only
+        // the rest: the rank, the tags and an avoid.
         Text {
             width: parent.width
             objectName: "talkgroupBadge"
-            text: card.idText + (card.priority > 0 ? qsTr(" · Priority %1").arg(card.priority) + (card.preempt ? qsTr(" · Preempt") : "") : "")
+            text: [card.idText].concat(card.rank).join(" · ")
             textFormat: Text.PlainText
             wrapMode: Text.WrapAnywhere
             font.family: Theme.mono
@@ -52,6 +54,7 @@ Rectangle {
             color: Theme.textPrimary
         }
         Text {
+            id: tagsLine
             objectName: "talkgroupCardTags"
             width: parent.width
             visible: text.length > 0
@@ -63,6 +66,7 @@ Rectangle {
             color: Theme.textSecondary
         }
         Text {
+            id: avoidBadge
             objectName: "temporaryTgAvoidBadge"
             width: parent.width
             visible: card.temporaryAvoidCount > 0
@@ -93,7 +97,9 @@ Rectangle {
                 anchors.rightMargin: 12
                 checked: card.listening
                 accessibleName: qsTr("Listen to %1, talkgroup %2").arg(card.name).arg(card.idText)
-                Accessible.description: Util.shownText(content)
+                Accessible.description: [card.rank.join(" · "), tagsLine.visible ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
+                    return part.length > 0;
+                }).join(", ")
                 onToggled: card.clicked()
             }
             IconButton {

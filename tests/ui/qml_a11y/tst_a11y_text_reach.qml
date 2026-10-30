@@ -215,9 +215,15 @@ Item {
                     return row !== null && row.metaText !== undefined && /\bencrypted\b/.test(row.metaText);
                 },
                 reason: "In a call row whose meta line already says \"encrypted\", which the row's description reads; reading ENC as well would say it twice."},
-            {file: "TalkgroupCard.qml", name: /^(talkgroupBadge|talkgroupCardName|talkgroupCardTags|temporaryTgAvoidBadge|talkgroupCardListening)$/,
+            {file: "TalkgroupCard.qml", name: /^(talkgroupBadge|talkgroupCardName|talkgroupCardTags|temporaryTgAvoidBadge)$/,
                 readBy: function (text) { return findNear(text, "talkgroupListeningSwitch"); },
-                reason: "The card's listening switch reads its lines as its description; a card is rebuilt with its table, so it adds no node of its own."},
+                reason: "The card's listening switch reads the talkgroup in its name and the rest of the card as its description; a card is rebuilt with its table, so it adds no node of its own."},
+            {file: "TalkgroupCard.qml", name: "talkgroupCardListening", when: function (text) {
+                    var listen = findNear(text, "talkgroupListeningSwitch");
+                    return listen !== null && testContext.accessibleNode(listen).inTree
+                        && listen.checked === (text.text === "Listening");
+                },
+                reason: "\"Listening\" or \"Not tuned\" beside the listening switch, whose on or off state says it; reading the words as well would say it twice."},
             {file: "WizardScreen.qml", name: /^wizard(Frequency|Gain|Ppm)Caption$/, readBy: fieldBelow,
                 reason: "The field below carries the same words in its name (\"Frequency in MHz\", \"Gain (dB)\", \"PPM correction\")."},
             {file: "OutlineButton.qml", name: "label", texts: ["Hold TG", "Use default", "List value", "Use the default width"],
