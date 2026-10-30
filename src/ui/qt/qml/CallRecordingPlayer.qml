@@ -87,6 +87,11 @@ Column {
     // sent before the host applied the seek does not count).
     property int seekLanded: 0
     property real seekTargetMs: -1
+    // A seek the host never applied (it clamped or dropped it) is forgotten
+    // when playback stops or fails, or moves to another part: a later
+    // position passing near it is not a landing.
+    readonly property string seekScope: [loaded, part ? part.path : "", playState === 0 || playState === 4].join("|")
+    onSeekScopeChanged: seekTargetMs = -1
     SpeechPacer {
         id: positionSpeech
         shown: Navigation.allows(player) && player.visible

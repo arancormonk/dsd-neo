@@ -312,6 +312,44 @@ Item {
                       + nameOf(time));
         }
 
+        // A seek the host never applies (it clamps or ignores it) is forgotten when playback stops: a later position
+        // that happens to pass where the seek asked to land is not heard at once as if the seek had landed.
+        function test_c2_an_unlanded_seek_is_forgotten() {
+            monitor.visible = false;
+            spectrum.visible = false;
+            var sheet = historyLoader.item;
+            var uid = callHistory.pushWithRecordings([{id: "t-1", path: root.pathA, fileName: "A.wav", folderUid: "u1",
+                start: 1700000000, durationMs: 60000, rate: 8000, bytes: 96000, failed: false, available: true}]);
+            sheet.open({uid: uid, name: "Dispatch", tg: 1001, when: 1700000000, systemUid: "test-system"});
+            waitForRendering(sheet);
+            var time = item(sheet, "recordingTime");
+            var bar = item(sheet, "recordingSeekBar");
+            stepPace();
+            testContext.publishPlayback(root.pathA, 2, 13000, 60000, "");
+            wait(50);
+            // The host leaves the seek unapplied, and playback stops.
+            testContext.setSeekApplied(false);
+            bar.seekTo(50000);
+            var calls = testContext.hostCalls();
+            compare(calls[calls.length - 1].name, "seekPlayback", "the seek was asked for");
+            testContext.setSeekApplied(true);
+            testContext.publishPlayback(root.pathA, 2, 13250, 60000, "");
+            testContext.publishPlayback(root.pathA, 0, 13500, 60000, "");
+            wait(50);
+            // Played again, from further on.
+            testContext.publishPlayback(root.pathA, 2, 45000, 60000, "");
+            tryVerify(function () { return nameOf(time) === "0:45 of 1:00"; }, 100, "playing is heard at once: "
+                      + nameOf(time));
+            testContext.startAccessibilityCount();
+            testContext.publishPlayback(root.pathA, 2, 50000, 60000, "");
+            wait(50);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(raised(counts, "NameChanged", "recordingTime"), 0, "playing past where the seek asked to land "
+                    + "waits for the period: " + JSON.stringify(counts.chains));
+            compare(nameOf(time), "0:45 of 1:00");
+        }
+
         // Signal search, while it scans and while it receives: the channel count, the live level and a monitored
         // call's details move at the readings' pace; a new hit or a change of state is heard at once.
         function test_d_signal_search_lines() {

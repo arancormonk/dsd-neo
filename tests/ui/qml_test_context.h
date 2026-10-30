@@ -1947,6 +1947,9 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     seekPlayback(qint64 positionMs) {
         noteCall(QStringLiteral("seekPlayback"), {{QStringLiteral("ms"), positionMs}});
+        if (!seekApplied) {
+            return;
+        }
         insert(QStringLiteral("playbackPositionMs"), positionMs);
         Q_EMIT playbackPositionChanged();
     }
@@ -1991,6 +1994,8 @@ class ReadingMap : public QQmlPropertyMap {
 
     QVariantList calls;
     bool shareAccepted = true;
+    /* Issue #782: false for a host that ignores a seek (a platform player that clamps it or drops it). */
+    bool seekApplied = true;
 
   Q_SIGNALS:
     void playbackChanged();
@@ -3014,6 +3019,7 @@ class Setup : public QObject {
     resetHostPlayback() {
         m_host_readings->calls.clear();
         m_host_readings->shareAccepted = true;
+        m_host_readings->seekApplied = true;
         m_host_readings->publishPlayback(QString(), 0, 0, 0, QString());
         setHostReading(QStringLiteral("recordingTransferActive"), false);
         setHostReading(QStringLiteral("recordingTransferBytes"), 0);
@@ -3030,6 +3036,12 @@ class Setup : public QObject {
     Q_INVOKABLE void
     setShareAccepted(bool accepted) {
         m_host_readings->shareAccepted = accepted;
+    }
+
+    /** @brief Issue #782: whether the decoderHost map's seekPlayback() moves the position (else it only records it). */
+    Q_INVOKABLE void
+    setSeekApplied(bool applied) {
+        m_host_readings->seekApplied = applied;
     }
 
     /** @brief End the running export or save of @p selection with @p result (DecoderHost::RecordingTransferResult). */
