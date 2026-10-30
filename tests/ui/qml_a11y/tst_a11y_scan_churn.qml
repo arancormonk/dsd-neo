@@ -274,6 +274,38 @@ Item {
             verify(showHide(label) >= changes / 2 && showHide(label) <= changes, churn(counts));
         }
 
+        // Calls landing while the monitor is up reach its own list and nothing else: the Home and History screens
+        // under it hold no rows while hidden, so no row is created, moved or destroyed there for each call. Before,
+        // every call built a row in each of the three hidden lists, each one raising ObjectHide as it was parented
+        // under the hidden screen.
+        function test_e_calls_leave_hidden_lists_quiet() {
+            var monitorList = findChild(app, "recentCallsList");
+            var hidden = ["homeScreen", "idleHistoryScreen", "sessionHistoryScreen"].map(function (name) {
+                var screen = findChild(app, name);
+                verify(screen !== null && !screen.visible, name + " must be hidden under the monitor");
+                return screen;
+            });
+            var before = monitorList.count;
+            testContext.startAccessibilityCount();
+            // One frame per call, as calls land in a session: an item view lays out its rows when it is polished.
+            for (var i = 0; i < 10; ++i) {
+                callHistory.push("TODAY");
+                waitForRendering(app.contentItem);
+            }
+            var counts = testContext.accessibilityCount();
+            compare(monitorList.count, before + 10, "the calls reached the monitor");
+            var noisy = [];
+            for (var screen of hidden) {
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(screen, type);
+                if (events !== 0)
+                    noisy.push(screen.objectName + ": " + events);
+            }
+            compare(noisy.length, 0, "hidden screens that raised events: " + JSON.stringify(noisy) + " "
+                    + JSON.stringify(counts.chains));
+        }
+
         // The control for case B: hops that pass through the defaults first, as every hop did before the fix, flood
         // the closed sheets the root fix quietens. So case B cannot pass because the hops stopped reaching these
         // sheets. It guards the screens against a publication that passes through the defaults; whether production

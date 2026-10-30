@@ -176,7 +176,12 @@ Item {
         // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
         // would also scroll the list under the overlay.
         enabled: !confirmClear.visible
-        model: historyView
+        // Hidden, the log holds no rows (issue #782): a session runs on the
+        // monitor with this screen under it, and every row built for a call
+        // landing there is announced to accessibility clients as hidden. The
+        // search and filters live in historyView and stay set; shown again, the
+        // log lists the calls as they are then, from the top.
+        model: visible ? historyView : null
 
         section.property: "dayLabel"
         section.delegate: MicroLabel {
@@ -332,9 +337,11 @@ Item {
     // into its contentItem, where `parent.count` is undefined and the empty state
     // would never show.
     Column {
+        objectName: "callLogEmptyState"
         anchors.centerIn: logList
         width: logList.width - 2 * Theme.screenPadding
-        visible: logList.count === 0
+        // The filter's count, not the view's: the view holds no rows while hidden.
+        visible: historyView.count === 0
         spacing: 8
 
         // An empty filtered view and an empty log are different situations: the

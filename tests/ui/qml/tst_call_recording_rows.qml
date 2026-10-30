@@ -123,6 +123,32 @@ Item {
             home.active = false;
         }
 
+        // Issue #782: hidden under the monitor, Home's recent calls hold no rows,
+        // so calls landing there build none; shown again they list the calls as
+        // they are then, newest first, and the empty line stays away.
+        function test_home_recent_calls_hidden() {
+            callHistory.clearAll();
+            callHistory.push("TODAY");
+            home.active = true;
+            waitForRendering(home.item);
+            var list = findChild(home.item, "homeRecentList");
+            compare(list.count, 1);
+            home.item.visible = false;
+            var newest = "";
+            for (var i = 0; i < 3; ++i) {
+                newest = callHistory.push("TODAY");
+                waitForRendering(home);
+            }
+            compare(list.count, 0, "a hidden list holds no rows");
+            home.item.visible = true;
+            waitForRendering(home.item);
+            compare(list.count, 4);
+            tryVerify(function () { return list.itemAtIndex(0) !== null && list.itemAtIndex(0).name === newest; });
+            var empty = findChild(home.item, "homeRecentEmpty");
+            verify(empty !== null && !empty.visible, "a list with calls never says it is empty");
+            home.active = false;
+        }
+
         function test_save_failing_notice() {
             var notice = findChild(history.item, "historySaveFailing");
             verify(!notice.visible);

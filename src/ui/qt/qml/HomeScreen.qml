@@ -801,7 +801,11 @@ Item {
             anchors.bottom: parent.bottom
             anchors.topMargin: 12
             clip: true
-            model: callHistory
+            // Hidden, the list holds no rows (issue #782): a session runs on the
+            // monitor with this screen under it, and every row built for a call
+            // landing there is announced to accessibility clients as hidden.
+            // Shown again, it lists the calls as they are then, from the top.
+            model: visible ? callHistory : null
             delegate: CallRow {
                 width: recentList.width
                 name: model.name
@@ -831,9 +835,11 @@ Item {
                 })
             }
             Text {
+                objectName: "homeRecentEmpty"
                 anchors.centerIn: parent
                 width: parent.width - 32
-                visible: recentList.count === 0
+                // The store's count, not the view's: the view holds no rows while hidden.
+                visible: callHistory.count === 0
                 text: qsTr("Received activity will appear here.")
                 wrapMode: Text.Wrap
                 color: Theme.textSecondary

@@ -77,6 +77,7 @@ Item {
         }
 
         function cleanup() {
+            screenLoader.item.visible = true
             var sheet = findChild(screenLoader.item, "historyDetailSheet")
             if (sheet !== null)
                 sheet.visible = false
@@ -91,6 +92,39 @@ Item {
             historyView.filterText = "radio 1201"
             tryCompare(historyView, "count", 1)
             historyView.filterText = ""
+        }
+
+        // Issue #782: hidden, the log holds no rows, so calls landing under the
+        // monitor build none; shown again it lists them as they are then, newest
+        // first and from the top, with the search it had still applied.
+        function test_00_hidden_log_reopens_at_the_latest() {
+            var screen = screenLoader.item
+            var empty = findChild(screen, "callLogEmptyState")
+            verify(empty !== null, "the empty state is missing")
+            tc.scrollBack()
+            historyView.filterText = "call"
+            screen.visible = false
+            var newest = ""
+            for (var i = 0; i < 5; i++) {
+                newest = callHistory.push("TODAY")
+                tc.waitForRendering(screen.parent)
+            }
+            compare(tc.list.count, 0, "a hidden log holds no rows")
+            compare(tc.list.contentItem.children.filter(function (child) { return child.name !== undefined }).length, 0)
+            verify(!empty.visible)
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            compare(tc.list.count, historyView.count)
+            compare(historyView.count, 29, "the search still applies")
+            compare(historyView.filterText, "call")
+            verify(!empty.visible, "a log with calls never shows its empty state")
+            tryVerify(function () { return tc.atTop() })
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === newest
+            }, 5000, "the newest call is not the first row")
+            historyView.filterText = "no such call"
+            tryVerify(function () { return empty.visible }, 5000, "an empty result still says so")
         }
 
         function test_01_calls_landing_at_the_top_stay_in_view() {
