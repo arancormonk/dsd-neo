@@ -355,6 +355,27 @@ dsd_tetra_ul_timing_push(dsd_tetra_ul_timing* t, float in_r, float in_j, float* 
     t->pushed = n + 1;
 }
 
+/* Queue a burst's rotation for the carrier loop at symbol @p at, after those already waiting (their symbols come
+   first: the Gardner aligns at most once a symbol). A full queue's newest entry takes it instead. */
+static void
+ul_carrier_queue(dsd_tetra_ul_timing* t, uint64_t at, float phase) {
+    int slot = 0;
+    if (t->carrier_count < DSD_TETRA_UL_CARRIERS) {
+        slot = (t->carrier_head + t->carrier_count) % DSD_TETRA_UL_CARRIERS;
+        t->carrier_count++;
+    } else {
+        slot = (t->carrier_head + DSD_TETRA_UL_CARRIERS - 1) % DSD_TETRA_UL_CARRIERS;
+    }
+    t->carriers[slot].at = at;
+    t->carriers[slot].phase = phase;
+}
+
+static void
+ul_carrier_pop(dsd_tetra_ul_timing* t) {
+    t->carrier_head = (t->carrier_head + 1) % DSD_TETRA_UL_CARRIERS;
+    t->carrier_count--;
+}
+
 int
 dsd_tetra_ul_timing_align(dsd_tetra_ul_timing* t, double next_strobe, float omega, float* move) {
     *move = 0.0f;
@@ -382,20 +403,23 @@ dsd_tetra_ul_timing_align(dsd_tetra_ul_timing* t, double next_strobe, float omeg
     const double diff = (double)chosen->anchor + (double)chosen->frac - strobe;
     *move = (float)(diff - period * floor(diff / period + 0.5));
     /* The carrier loop takes the burst's rotation from the symbol after the one the Gardner is emitting. */
-    t->carrier_pending = 1;
-    t->carrier_at = t->symbols_out + 1;
-    t->carrier_phase = chosen->carrier;
+    ul_carrier_queue(t, t->symbols_out + 1U, chosen->carrier);
+    t->aligned++;
     return 1;
 }
 
 int
 dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase) {
     const uint64_t at = t->carrier_seen++;
-    if (!t->carrier_pending || at != t->carrier_at) {
+    while (t->carrier_count > 0 && t->carriers[t->carrier_head].at < at) {
+        ul_carrier_pop(t);
+    }
+    if (t->carrier_count == 0 || t->carriers[t->carrier_head].at != at) {
         return 0;
     }
-    t->carrier_pending = 0;
-    *phase = t->carrier_phase;
+    *phase = t->carriers[t->carrier_head].phase;
+    ul_carrier_pop(t);
+    t->carriers_taken++;
     return 1;
 }
 

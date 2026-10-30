@@ -238,11 +238,12 @@ cqpsk_symbol_rate_hz(const demod_state* d) {
 static const float kTetraGardnerGain = 0.07f;
 
 /* The Gardner gain: the requested one (ted_gain, else 0.025), lowered to 0.018 at 5500 sym/s and above once 240 symbols
-   in the lock metric holds at 0.05, unless a gain was set. The block decides it from the lock at its start, so where a
-   block starts decides when it moves; the TETRA chain, whose output must not depend on the cut, keeps its gain, a set
-   one or kTetraGardnerGain (on TETRA captures the lowered one also decoded less). */
+   in the lock metric (@p lock_accum over @p lock_count) holds at 0.05, unless a gain was set. A block decides it from
+   the lock at its start, so where a block starts decides when it moves; the TETRA chain, whose output must not depend
+   on the cut, keeps its gain, a set one or kTetraGardnerGain (on TETRA captures the lowered one also decoded less),
+   and an uplink session decides it every DSD_TETRA_UL_GAIN_SYMBOLS symbols instead (gardner_run_loop()). */
 static float
-op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
+op25_gardner_gain_mu_for_lock(const demod_state* d, float lock_accum, int lock_count) {
     const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -259,16 +260,21 @@ op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
     if (cqpsk_symbol_rate_hz(d) < 5500) {
         return requested;
     }
-    if (!ted || ted->lock_count < 240) {
+    if (lock_count < 240) {
         return requested;
     }
 
-    float lock_metric = ted->lock_accum / (float)ted->lock_count;
+    float lock_metric = lock_accum / (float)lock_count;
     if (lock_metric < 0.05f) {
         return requested;
     }
 
     return 0.018f;
+}
+
+static float
+op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
+    return op25_gardner_gain_mu_for_lock(d, ted ? ted->lock_accum : 0.0f, ted ? ted->lock_count : 0);
 }
 
 /*
@@ -976,11 +982,22 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
 
 } // namespace
 
-/* The Gardner loop over a block. With kUplinkTiming the samples come through the TETRA uplink look-ahead, and after
-   each symbol the next strobe moves onto the grid of a burst its training placed (dsd_tetra_ul_timing_align()). */
+/* An uplink session's Gardner gain, decided from the lock now (op25_gardner_gain_mu_for_lock()) and kept in @p ul
+   until the next decision. */
+static inline void
+gardner_uplink_decide_gain(gardner_loop_context_t* ctx, const demod_state* d, dsd_tetra_ul_timing* ul) {
+    ul->gain_mu = op25_gardner_gain_mu_for_lock(d, ctx->lock_accum, ctx->lock_count);
+    ctx->gain_mu = ul->gain_mu;
+    ctx->gain_omega = 0.1f * ul->gain_mu * ul->gain_mu;
+}
+
+/* The Gardner loop over a block. With kUplinkTiming the samples come through the TETRA uplink look-ahead, after each
+   symbol the next strobe moves onto the grid of a burst its training placed (dsd_tetra_ul_timing_align()), and the
+   gain is decided every DSD_TETRA_UL_GAIN_SYMBOLS symbols, not per block, so the symbols do not depend on the cut. */
 template <bool kUplinkTiming>
 static void
-gardner_run_loop(gardner_loop_context_t* ctx_ptr, const ted_state_t* ted, dsd_tetra_ul_timing* ul) {
+gardner_run_loop(gardner_loop_context_t* ctx_ptr, const demod_state* d, const ted_state_t* ted,
+                 dsd_tetra_ul_timing* ul) {
     gardner_loop_context_t& ctx = *ctx_ptr;
     while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
         if (!gardner_consume_until_ready<kUplinkTiming>(&ctx, ul)) {
@@ -1018,6 +1035,11 @@ gardner_run_loop(gardner_loop_context_t* ctx_ptr, const ted_state_t* ted, dsd_te
         ctx.iq_out[ctx.o++] = sym_j;
         if (kUplinkTiming) {
             ul->symbols_out++;
+            if (ul->symbols_out % DSD_TETRA_UL_GAIN_SYMBOLS == 0U) {
+                gardner_uplink_decide_gain(&ctx, d, ul);
+            }
+        } else {
+            (void)d;
         }
     }
 }
@@ -1052,6 +1074,12 @@ gardner_run_loop(gardner_loop_context_t* ctx_ptr, const ted_state_t* ted, dsd_te
  * block, so a stream gives the same symbols however it is cut; a block can make
  * none. Only the adaptive gain is decided per block.
  */
+/* Every burst the Gardner aligns in one block waits for the carrier loop (dsd_tetra_ul_timing_align()). A block holds
+   at most DSD_DEMOD_WORKBUF_LENGTH / 2 samples, so at 2 samples a symbol fewer control uplink bursts (103 symbols)
+   than the queue holds, one more waiting from the block before included. */
+static_assert((DSD_TETRA_UL_CARRIERS - 1) * 103 * DSD_TETRA_UL_MIN_SPS >= DSD_DEMOD_WORKBUF_LENGTH / 2,
+              "the uplink carrier queue holds every burst of the largest block");
+
 extern "C" void
 op25_gardner_cc(struct demod_state* d) {
     if (!d || !d->lowpassed || d->lp_len < 2 || !d->cqpsk_enable) {
@@ -1080,10 +1108,18 @@ op25_gardner_cc(struct demod_state* d) {
             dsd_tetra_ul_timing_reset(ul, sps);
             ted->ul_lookahead_live = 1;
         }
-        gardner_run_loop<true>(&ctx, ted, ul);
+        /* The gain the last decision left, or the first decision, at the reset. */
+        if (ul->gain_mu > 0.0f) {
+            ctx.gain_mu = ul->gain_mu;
+            ctx.gain_omega = 0.1f * ul->gain_mu * ul->gain_mu;
+        } else {
+            gardner_uplink_decide_gain(&ctx, d, ul);
+        }
+        gardner_run_loop<true>(&ctx, d, ted, ul);
+        d->ted_effective_gain = ctx.gain_mu;
     } else {
         ted->ul_lookahead_live = 0;
-        gardner_run_loop<false>(&ctx, ted, nullptr);
+        gardner_run_loop<false>(&ctx, d, ted, nullptr);
     }
 
     gardner_commit_loop_context(d, ted, &ctx);

@@ -12,7 +12,9 @@
  * and move the Gardner's strobe onto the burst's grid once, two symbols before its first symbol. Noise alone and a
  * burst without its training find no burst scoring like a training. A later peak never takes a burst's slot, a burst
  * the strobe passed blocks none after it, a normal burst whose neighbouring payload matches three of the extended
- * sequence's four outer symbols stays a normal burst, and the look-ahead counts the signal it holds back.
+ * sequence's four outer symbols stays a normal burst, and the look-ahead counts the signal it holds back. Every
+ * burst's carrier phase waits for its own symbol however many bursts the Gardner aligns before the carrier loop runs,
+ * and a full queue keeps the earlier bursts' phases.
  */
 
 #include <assert.h>
@@ -372,6 +374,119 @@ test_passed_burst_blocks_nothing(void) {
     }
 }
 
+/* A pending burst at @p start (Gardner input samples) whose training ends 58 symbols later, with carrier phase
+   @p carrier, in slot 0. */
+static void
+place_burst(uint64_t start, float carrier) {
+    dsd_tetra_ul_burst* b = &g_t.bursts[0];
+    b->start = start;
+    b->end = start + 103U * (uint64_t)SPS;
+    b->anchor = start + 58U * (uint64_t)SPS;
+    b->frac = 0.0f;
+    b->score = 0.99f;
+    b->carrier = carrier;
+    b->pending = 1;
+}
+
+/* One symbol of the Gardner at strobe @p strobe (in Gardner input samples, the look-ahead included): the alignment
+   check, then the symbol counted. Returns 1 when it aligned. */
+static int
+gardner_symbol(double strobe) {
+    float move = 0.0f;
+    const int hit = dsd_tetra_ul_timing_align(&g_t, strobe - (double)g_t.pushed, (float)SPS, &move);
+    g_t.symbols_out++;
+    return hit;
+}
+
+/* The Gardner runs over a whole demod block before the carrier loop takes its first symbol, and a block can span
+   several bursts: each burst's rotation waits for the symbol after its alignment, so the carrier loop takes every one
+   at its own symbol, in order, however many the block held. */
+static void
+test_carriers_wait_for_their_symbols(void) {
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+
+    enum { BURSTS = 5, SYMBOLS = 800 };
+
+    const float phases[BURSTS] = {0.1f, -0.7f, 0.45f, -0.2f, 0.75f};
+    uint64_t at[BURSTS];
+    int found = 0;
+    /* The bursts 150 symbols apart; each one placed as its training would place it, while the strobe is still ahead. */
+    for (int k = 0; k < SYMBOLS; k++) {
+        const double strobe = (double)k * SPS;
+        if (found < BURSTS && k == 40 + 150 * found) {
+            place_burst((uint64_t)(k + 10) * (uint64_t)SPS, phases[found]);
+        }
+        if (gardner_symbol(strobe)) {
+            assert(found < BURSTS);
+            /* The strobe reached two symbols before the burst: the rotation applies from the next symbol. */
+            at[found] = g_t.symbols_out;
+            found++;
+        }
+    }
+    assert(found == BURSTS);
+    assert(g_t.aligned == (uint64_t)BURSTS);
+    assert(g_t.carrier_count == BURSTS);
+    /* Now the carrier loop takes the block's symbols. */
+    int taken = 0;
+    for (int k = 0; k < SYMBOLS; k++) {
+        float phase = 99.0f;
+        if (dsd_tetra_ul_timing_carrier(&g_t, &phase)) {
+            assert(taken < BURSTS);
+            assert((uint64_t)k == at[taken]);
+            assert(fabsf(phase - phases[taken]) < 1e-9f);
+            taken++;
+        }
+    }
+    assert(taken == BURSTS);
+    assert(g_t.carriers_taken == (uint64_t)BURSTS);
+    assert(g_t.carrier_count == 0);
+
+    /* A rotation whose symbol the carrier loop already passed is dropped, not taken late. */
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+    place_burst(20U * (uint64_t)SPS, 0.3f);
+    for (int k = 0; k < 30; k++) {
+        (void)gardner_symbol((double)k * SPS);
+    }
+    assert(g_t.carrier_count == 1);
+    g_t.carrier_seen = g_t.carriers[g_t.carrier_head].at + 1U;
+    float phase = 0.0f;
+    assert(dsd_tetra_ul_timing_carrier(&g_t, &phase) == 0);
+    assert(g_t.carrier_count == 0 && g_t.carriers_taken == 0U);
+}
+
+/* More rotations than the queue holds before the carrier loop takes any (bursts overlapping each other, as peaks on
+   noise can): the newest waiting one gives way to the next, so every earlier burst keeps its own and the last one
+   placed is taken at its symbol. */
+static void
+test_carrier_queue_overflow(void) {
+    dsd_tetra_ul_timing_reset(&g_t, SPS);
+    const int total = DSD_TETRA_UL_CARRIERS + 3;
+    static uint64_t at[DSD_TETRA_UL_CARRIERS + 3];
+    int found = 0;
+    for (int k = 0; found < total; k++) {
+        if (g_t.bursts[0].end == 0 || !g_t.bursts[0].pending) {
+            place_burst((uint64_t)(k + 2) * (uint64_t)SPS, (float)found * 1e-3f);
+        }
+        if (gardner_symbol((double)k * SPS)) {
+            at[found++] = g_t.symbols_out;
+        }
+    }
+    assert(g_t.carrier_count == DSD_TETRA_UL_CARRIERS);
+    int taken = 0;
+    for (uint64_t k = 0; k <= at[total - 1]; k++) {
+        float phase = 0.0f;
+        if (dsd_tetra_ul_timing_carrier(&g_t, &phase)) {
+            /* The first DSD_TETRA_UL_CARRIERS - 1 bursts, then the last one. */
+            const int want = taken < DSD_TETRA_UL_CARRIERS - 1 ? taken : total - 1;
+            assert(k == at[want]);
+            assert(fabsf(phase - (float)want * 1e-3f) < 1e-9f);
+            taken++;
+        }
+    }
+    assert(taken == DSD_TETRA_UL_CARRIERS);
+    assert(g_t.carrier_count == 0);
+}
+
 /* The samples of signal the look-ahead holds: none before any, a whole look-ahead after one, counting down as zeros
    push it out. */
 static void
@@ -432,6 +547,8 @@ main(void) {
     test_later_peak_keeps_the_burst();
     test_outer_three_of_four_is_normal();
     test_passed_burst_blocks_nothing();
+    test_carriers_wait_for_their_symbols();
+    test_carrier_queue_overflow();
     test_held();
     test_reset_and_bounds();
     printf("DSP_TETRA_UPLINK_TIMING: OK\n");

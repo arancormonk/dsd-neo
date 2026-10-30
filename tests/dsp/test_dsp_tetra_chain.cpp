@@ -10,13 +10,15 @@
  * half-band cascade too, whichever buffer that leaves the block in) and the FLL's gear, the squelch and signal-search
  * behaviour, the once-per-stream warnings for a TETRA profile whose chain cannot run, the pull-in on a
  * clean synthetic stream, and a P25 stream after a TETRA session running exactly as a fresh one, and an uplink session,
- * which keeps only the TETRA channel filter. The tests force the TETRA profile on the demodulator directly.
+ * which keeps only the TETRA channel filter and whose symbols do not depend on the cut either, however many bursts a
+ * block spans. The tests force the TETRA profile on the demodulator directly.
  */
 
 #include <atomic>
 #include <cmath>
 #include <cstring>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -1215,6 +1217,169 @@ test_block_partitions(void) {
     return rc;
 }
 
+/* --- Uplink block partitions ------------------------------------------------------------------------------- */
+
+const int kUplinkBursts = 8;
+
+/* A trunked mode uplink at @p rate: kUplinkBursts bursts from radios of their own, control (103 symbols, the extended
+ * training sequence) and normal (231, normal training sequence 1) in turn, 40 symbols of noise apart after a 200-symbol
+ * lead-in, each on a carrier of its own about 2 kHz above the centre, with a phase and level of its own. */
+std::vector<float>
+make_uplink_stream(int rate, int* pairs_out) {
+    const int sps = rate / 18000;
+    std::vector<float> rrc((size_t)DSD_TETRA_RRC_MAX_TAPS);
+    const int taps = dsd_tetra_rrc_design(sps, rrc.data(), DSD_TETRA_RRC_MAX_TAPS);
+    const int c = taps > 0 ? (taps - 1) / 2 : 0;
+    int symbols = 200;
+    for (int b = 0; b < kUplinkBursts; b++) {
+        symbols += ((b & 1) ? 231 : 103) + 40;
+    }
+    symbols += 200;
+    const int pairs = symbols * sps;
+    std::vector<float> iq((size_t)pairs * 2U, 0.0f);
+    Lcg rng{0xB0257u};
+    static const double kSteps[4] = {kPi / 4.0, 3.0 * kPi / 4.0, -kPi / 4.0, -3.0 * kPi / 4.0};
+    int first = 200;
+    for (int b = 0; b < kUplinkBursts && taps > 0; b++) {
+        const bool normal = (b & 1) != 0;
+        const char* training = normal ? TETRA_NDB_NTS_SYNC : TETRA_CB_SYNC;
+        const int half = normal ? 108 : 42;
+        std::vector<int> dibits = {3, 0};
+        for (int i = 0; i < half; i++) {
+            dibits.push_back((int)(rng.next() >> 30));
+        }
+        for (const char* t = training; *t; t++) {
+            dibits.push_back(*t - '0');
+        }
+        for (int i = 0; i < half; i++) {
+            dibits.push_back((int)(rng.next() >> 30));
+        }
+        dibits.push_back(3);
+        dibits.push_back(0);
+        const double w = 2.0 * kPi * (2000.0 + 170.0 * (double)((b * 5) % 7 - 3)) / (double)rate;
+        const double amp = 0.25 + 0.05 * (double)(b % 4);
+        double phase = 0.7 * (double)b;
+        for (size_t k = 0; k < dibits.size(); k++) {
+            phase += kSteps[dibits[k] & 3];
+            const int centre = (first + (int)k) * sps;
+            for (int t = 0; t < taps; t++) {
+                const int n = centre + t - c;
+                if (n < 0 || n >= pairs) {
+                    continue;
+                }
+                const double a = (double)rrc[(size_t)t] * (double)sps * amp;
+                const double ph = phase + w * (double)n;
+                iq[(size_t)n * 2U] += (float)(a * std::cos(ph));
+                iq[((size_t)n * 2U) + 1U] += (float)(a * std::sin(ph));
+            }
+        }
+        first += (int)dibits.size() + 40;
+    }
+    for (int n = 0; n < pairs; n++) {
+        /* Box-Muller from the stream's own generator. */
+        const double u1 = rng.uniform() + 1e-12;
+        const double u2 = rng.uniform();
+        const double r = std::sqrt(-2.0 * std::log(u1)) * 0.01;
+        iq[(size_t)n * 2U] += (float)(r * std::cos(2.0 * kPi * u2));
+        iq[((size_t)n * 2U) + 1U] += (float)(r * std::sin(2.0 * kPi * u2));
+    }
+    *pairs_out = pairs;
+    return iq;
+}
+
+/* The uplink session at @p rate over @p iq cut as @p cuts, its look-ahead pushed out at the end; the symbols in
+ * @p out, and the bursts the burst timing aligned and the carrier loop took. */
+int
+run_uplink(int rate, const std::vector<float>& iq, const std::vector<int>& cuts, std::vector<float>* out,
+           uint64_t* aligned, uint64_t* taken) {
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_tetra(s, rate);
+    s->tetra_uplink = 1;
+    size_t pos = 0;
+    out->clear();
+    for (int n : cuts) {
+        const std::vector<float> sym = run_block(s, iq.data() + pos * 2U, n);
+        pos += (size_t)n;
+        out->insert(out->end(), sym.begin(), sym.end());
+    }
+    if (dsd_demod_tetra_uplink_flush(s)) {
+        out->insert(out->end(), s->result, s->result + s->result_len);
+    }
+    *aligned = s->tetra_ul_timing.aligned;
+    *taken = s->tetra_ul_timing.carriers_taken;
+    const int waiting = s->tetra_ul_timing.carrier_count;
+    const int live = s->ted_state.ul_lookahead_live;
+    free_demod(s);
+    int rc = expect_int("uplink partitions: burst timing live", live, 1);
+    rc |= expect_int("uplink partitions: carrier phases left waiting", waiting, 0);
+    return rc;
+}
+
+/* An uplink session gives the same symbols however its input is cut into blocks. The Gardner runs over a whole block
+ * before the Costas loop takes any of its symbols, so a block spanning several bursts (live input that arrives in
+ * larger reads, or the whole stream in one) must still give each burst the carrier phase its training measured, at
+ * its own symbol, and the Gardner's gain must move at the same symbol whatever the cut. The reference takes a symbol
+ * a block. */
+int
+uplink_partitions_at(int rate) {
+    int rc = 0;
+    const int sps = rate / 18000;
+    int total = 0;
+    const std::vector<float> iq = make_uplink_stream(rate, &total);
+    std::vector<float> ref;
+    uint64_t ref_aligned = 0;
+    uint64_t ref_taken = 0;
+    rc |= run_uplink(rate, iq, cuts_of(total, sps), &ref, &ref_aligned, &ref_taken);
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz: every burst aligned", rate);
+    if (ref_aligned < (uint64_t)kUplinkBursts) {
+        rc |= fail(label);
+    }
+    DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz: reference carrier phases taken", rate);
+    rc |= expect_int(label, (int)ref_taken, (int)ref_aligned);
+    const std::vector<std::vector<int>> partitions = {
+        cuts_of(total, total),           cuts_of(total, 4096),          cuts_of(total, 2048), cuts_of(total, 1001),
+        irregular_cuts(total, 4096, 3u), irregular_cuts(total, 61, 9u),
+    };
+    double worst_all = 0.0;
+    for (size_t p = 0; p < partitions.size(); p++) {
+        std::vector<float> got;
+        uint64_t aligned = 0;
+        uint64_t taken = 0;
+        rc |= run_uplink(rate, iq, partitions[p], &got, &aligned, &taken);
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz, partition %d: symbols", rate, (int)p);
+        rc |= expect_int(label, (int)got.size(), (int)ref.size());
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz, partition %d: bursts aligned", rate, (int)p);
+        rc |= expect_int(label, (int)aligned, (int)ref_aligned);
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz, partition %d: carrier phases taken", rate, (int)p);
+        rc |= expect_int(label, (int)taken, (int)aligned);
+        double worst = 0.0;
+        for (size_t k = 0; k < got.size() && k < ref.size(); k++) {
+            worst = std::fmax(worst, std::fabs((double)got[k] - (double)ref[k]));
+        }
+        /* The SIMD kernels' rounding over blocks of other lengths, not a different trajectory. */
+        DSD_SNPRINTF(label, sizeof label, "uplink at %d Hz, partition %d: worst symbol difference", rate, (int)p);
+        rc |= expect_near(label, worst, 0.0, 1e-3);
+        worst_all = std::fmax(worst_all, worst);
+    }
+    DSD_FPRINTF(stdout,
+                "TETRA uplink block partitions at %d Hz: %d symbols, %d bursts aligned, worst difference %.3g\n", rate,
+                (int)ref.size(), (int)ref_aligned, worst_all);
+    return rc;
+}
+
+int
+test_uplink_block_partitions(void) {
+    int rc = 0;
+    rc |= uplink_partitions_at(72000);
+    rc |= uplink_partitions_at(36000);
+    rc |= uplink_partitions_at(144000);
+    return rc;
+}
+
 /* A block that arrives in hb_workbuf without a half-band pass (the matched filter then writes the input's own buffer
  * behind its read cursor, as after an odd pass count) makes the same symbols as the same block in the input buffer. */
 int
@@ -1512,6 +1677,7 @@ main(void) {
     rc |= test_block_after_gap_makes_symbols();
     rc |= test_partition_invariance();
     rc |= test_block_partitions();
+    rc |= test_uplink_block_partitions();
     rc |= test_block_in_workbuf();
     rc |= test_fll_gears();
     rc |= test_p25_after_tetra_session();

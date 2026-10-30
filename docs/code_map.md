@@ -4615,8 +4615,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     burst only when the extended sequence's four outer symbols agree; overlapping bursts keep the higher score). When
     the strobe comes within two symbols of a burst's first symbol it moves onto the grid by less than half a symbol, and
     the Costas loop takes the burst's rotation within a quarter turn, frequency and smoothing reset, from the symbol
-    after. `op25_gardner_cc()` and `op25_costas_loop_cc()` run separate template instantiations for it, so every other
-    stream runs the loops unchanged; `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the
+    after. The Gardner runs over a whole block before the Costas loop takes any of its symbols, so each rotation waits
+    in a queue keyed by its symbol (`dsd_tetra_ul_timing::carriers`, `DSD_TETRA_UL_CARRIERS`, every burst the largest
+    block can hold; when full, the newest waiting rotation gives way) and a block that spans several bursts gives each
+    its own. The stage's Gardner gain (`op25_gardner_gain_mu_for_lock()`) is decided every `DSD_TETRA_UL_GAIN_SYMBOLS`
+    (96) symbols counted from the look-ahead's reset, not at each block's start, so the stage's symbols do not depend
+    on how the input is cut. `op25_gardner_cc()` and `op25_costas_loop_cc()` run separate template instantiations for
+    it, so every other stream runs the loops unchanged; `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the
     stage and every block a signal search drops (what it held would reach the decoder after the gap), starts the
     look-ahead over with the TED. The look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the
     Gardner's input stops it is pushed out as zeros through Gardner, differential, Costas and the phase demodulator: a
@@ -4652,7 +4657,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     discriminator.
   - Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions, warnings, the WIDE-identical fallback,
     pull-in from +6 kHz and +600 Hz, squelch, the symbols a block after a gap makes, partition invariance of the linear
-    filters, P25 after a TETRA session through the leave transition, the uplink's channel filter alone),
+    filters, P25 after a TETRA session through the leave transition, the uplink's channel filter alone, the uplink's
+    symbols under every cut, blocks spanning several bursts included),
     `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the 22.5 kHz width a TETRA open, downlink or uplink, publishes),
     `DSP_CHANNEL_FILTERS`, `DSP_FLL_BAND_EDGE`, and the `DECODE_IQ_TETRA_*` I/Q cases (`docs/testing.md`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,
@@ -4660,8 +4666,9 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   contracts in `src/dsp/simd_fir_internal.h`) carry their look-ahead, and the half-band its decimation phase, from one
   block to the next, so the front end's output does not depend on where the blocks are cut. The stages after it still
   decide per block, so `full_demod()`'s output as a whole does: channel power and the squelch decision, the squelch
-  envelope, I/Q balance, the AM detector's warm start, CQPSK's adaptive Gardner gain, the rounding of a squelched
-  block's zero-symbol count, metrics, and the block a profile request is consumed on. A replay's block is therefore
+  envelope, I/Q balance, the AM detector's warm start, CQPSK's adaptive Gardner gain (except on the TETRA chain, which
+  keeps its gain, and a TETRA uplink session, which decides it every 96 symbols), the rounding of a squelched block's
+  zero-symbol count, metrics, and the block a profile request is consumed on. A replay's block is therefore
   sized like a live one (I/Q replay framing below): one live transfer at most, so those decisions run at a receiver's
   cadence in a replay too (issue #626). Holding the look-ahead is
   latency: a filter emits an output only once it holds the c inputs after it, about 74 samples (1.54 ms) at 48 kHz on

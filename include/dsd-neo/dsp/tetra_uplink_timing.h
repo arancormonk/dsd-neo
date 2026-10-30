@@ -26,6 +26,10 @@
  * first block included. The Costas loop takes the rotation the training measured on the phasors (within a quarter
  * turn, the frame sync's 90 degree steps being its own) from the symbol after, with its frequency and error smoothing
  * started over. Both loops track from there as before.
+ *
+ * The Gardner runs over a whole demod block before the Costas loop takes any of its symbols, and a block can span
+ * many bursts, so each burst's rotation waits in a queue keyed by the symbol it applies at until the Costas loop
+ * reaches that symbol: every burst gets its own, however the input is cut into blocks.
  */
 
 #ifndef DSD_NEO_DSP_TETRA_UPLINK_TIMING_H
@@ -50,6 +54,15 @@ extern "C" {
 #define DSD_TETRA_UL_DIFF_RING         128
 /* Bursts found and not yet passed: the one the Gardner is heading for and those behind it. */
 #define DSD_TETRA_UL_BURSTS            4
+/* Burst rotations waiting for the carrier loop (dsd_tetra_ul_timing_align()): the Gardner places every burst of a
+ * demod block before the carrier loop takes the block's first symbol. The largest block (MAXIMUM_BUF_LENGTH / 2
+ * complex samples and the channel filter's growth, demod_state.h) at 2 samples a symbol holds 638 control uplink
+ * bursts of 103 symbols; one more waits from the block before. costas.cpp asserts the bound. */
+#define DSD_TETRA_UL_CARRIERS          640
+/* Symbols between the uplink Gardner's gain decisions (op25_gardner_cc()), counted from the reset: the 5.33 ms a
+ * replay's block, one live transfer, lasts at every TETRA rate, at the symbol count rather than where a block begins,
+ * so a stream gives the same symbols however it is cut. */
+#define DSD_TETRA_UL_GAIN_SYMBOLS      96
 /* Normalized training score a burst needs (1 is an exact, noiseless match). The trainings of the uplink fixture score
  * 0.95 to 0.99 at their symbol centres and far less two samples either side; payload stays below 0.83 and noise mostly
  * below the threshold (up to 0.91 on the normal training sequence), and a burst found on noise is replaced by the real
@@ -89,6 +102,12 @@ typedef struct {
     int pending;     /**< 1 until the Gardner's strobe reached it */
 } dsd_tetra_ul_burst;
 
+/** A burst's rotation waiting for the carrier loop. */
+typedef struct {
+    uint64_t at; /**< the symbol (symbols_out count) the carrier loop takes it from */
+    float phase; /**< the carrier loop's phase from there */
+} dsd_tetra_ul_carrier;
+
 /** The look-ahead and its training search (demod_state::tetra_ul_timing). */
 typedef struct {
     int sps;         /**< samples per symbol it was reset for; 0 = not set up */
@@ -107,9 +126,15 @@ typedef struct {
     dsd_tetra_ul_burst bursts[DSD_TETRA_UL_BURSTS];
     uint64_t symbols_out;  /**< symbols the Gardner emitted since the reset */
     uint64_t carrier_seen; /**< symbols the carrier loop took since the reset */
-    int carrier_pending;   /**< 1 while a burst's carrier phase waits for its symbol */
-    uint64_t carrier_at;   /**< the symbol (symbols_out count) the carrier loop takes it from */
-    float carrier_phase;   /**< that phase */
+    /** Burst rotations waiting for the carrier loop, oldest first from carrier_head, in the order of their symbols. */
+    dsd_tetra_ul_carrier carriers[DSD_TETRA_UL_CARRIERS];
+    int carrier_head;        /**< index of the oldest waiting rotation */
+    int carrier_count;       /**< rotations waiting */
+    uint64_t aligned;        /**< bursts the Gardner's strobe moved onto since the reset */
+    uint64_t carriers_taken; /**< burst rotations the carrier loop took since the reset */
+    /** The Gardner's gain for an uplink session, decided every DSD_TETRA_UL_GAIN_SYMBOLS symbols it emits; 0 until
+     * the first decision. */
+    float gain_mu;
     /** The pushed count at which every non-zero sample pushed so far has come out (dsd_tetra_ul_timing_held()). */
     uint64_t held_until;
 } dsd_tetra_ul_timing;
@@ -131,9 +156,12 @@ void dsd_tetra_ul_timing_push(dsd_tetra_ul_timing* t, float in_r, float in_j, fl
  * @p next_strobe is where the next symbol will be read, in samples relative to the next sample the Gardner will take
  * (0 is that sample, -1 the newest it took). Returns 1 once for each burst, when the strobe has reached two symbols
  * before its first symbol and not yet passed its training, with @p move the samples to add to the Gardner's mu that
- * put the strobe on the burst's grid, within half of @p omega either way; the burst's carrier phase then waits for the
- * symbol after the one the Gardner emits now (dsd_tetra_ul_timing_carrier()). Returns 0 with @p move 0 otherwise. The
- * Gardner counts each symbol it emits in symbols_out.
+ * put the strobe on the burst's grid, within half of @p omega either way; the burst's carrier phase then waits in the
+ * queue for the symbol after the one the Gardner emits now (dsd_tetra_ul_timing_carrier()). Returns 0 with @p move 0
+ * otherwise. The Gardner counts each symbol it emits in symbols_out.
+ *
+ * Should the queue be full (DSD_TETRA_UL_CARRIERS, more than the largest demod block holds of bursts that do not
+ * overlap), the new phase replaces the newest waiting one: that burst's span is the one this burst cuts short.
  */
 int dsd_tetra_ul_timing_align(dsd_tetra_ul_timing* t, double next_strobe, float omega, float* move);
 
@@ -141,7 +169,8 @@ int dsd_tetra_ul_timing_align(dsd_tetra_ul_timing* t, double next_strobe, float 
  * @brief Called by the carrier loop for each symbol it takes, in the Gardner's order.
  *
  * Returns 1 with @p phase, the phase the loop takes from this symbol on, at the symbol a burst's grid begins with
- * (dsd_tetra_ul_timing_align()); else 0.
+ * (dsd_tetra_ul_timing_align()); else 0. A waiting phase whose symbol already went by (never, while the carrier loop
+ * takes every symbol the Gardner emits) is dropped.
  */
 int dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase);
 
