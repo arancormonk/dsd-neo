@@ -1043,8 +1043,18 @@ main(int argc, char** argv) {
     state.synctype = DSD_SYNC_P25P1_POS;
     state.p25_aff_rid[0] = 123;
     state.trunk_scan_active_ordinal = 1;
+    // A running trunk scan owns the tuner across the hop below (issue #671).
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 2;
     tick();
     check(!metrics.syncLabel().isEmpty());
+    check(metrics.scanRotationActive() && metrics.tunerControlled());
+    int ownershipDrops = 0;
+    QObject::connect(&metrics, &dsd_qt::MetricsModel::controlChanged, [&]() {
+        if (!metrics.scanRotationActive() || !metrics.tunerControlled()) {
+            ++ownershipDrops;
+        }
+    });
     check(talkgroups.count() == 1);
     QObject::connect(&talkgroups, &QAbstractItemModel::modelReset, [&]() { ++resets; });
     check(network.radios().size() == 1);
@@ -1053,7 +1063,10 @@ main(int argc, char** argv) {
     state.lastsynctype = DSD_SYNC_NONE;
     state.trunk_scan_active_ordinal = 2;
     tick();
-    check(resets == 0); // A scan hop must preserve the list view.
+    check(resets == 0);         // A scan hop must preserve the list view.
+    check(ownershipDrops == 0); // A hop never reads as the scan letting go of the tuner (issue #671).
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0;
     check(talkgroups.count() == 1);
     check(metrics.syncLabel().isEmpty()); // Old target's sync hold must not survive.
     check(network.radios().isEmpty());

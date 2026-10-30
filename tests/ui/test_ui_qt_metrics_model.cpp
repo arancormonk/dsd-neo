@@ -2881,6 +2881,18 @@ main(int argc, char** argv) {
             expect("a nameless call is named by its channel", model.slot1CallName() == QStringLiteral("Fire Dispatch"));
             /* No talkgroup decoded: no talkgroup text, never "0" (issue #773). */
             expect("the talkgroup text stays empty", model.slot1TgText().isEmpty());
+
+            /* Issue #671: a trunk-scan target's id names the channel; the hero reads the entry's name instead. */
+            DSD_SNPRINTF(staged->channel_label, sizeof(staged->channel_label), "%s", "96e4230d-7220-4a76");
+            model.setChannelNames(QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County")}});
+            model.refresh(&opts, &state);
+            expect("a target id reads as its name in the hero",
+                   model.slot1CallName() == QStringLiteral("Benton County")
+                       && model.slot1Channel() == QStringLiteral("Benton County"));
+            model.setChannelNames(QVariantMap());
+            model.refresh(&opts, &state);
+            expect("without names the id shows as it is",
+                   model.slot1CallName() == QStringLiteral("96e4230d-7220-4a76"));
         }
     }
 

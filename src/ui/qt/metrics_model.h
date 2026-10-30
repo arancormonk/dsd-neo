@@ -16,6 +16,7 @@
 #define DSD_NEO_SRC_UI_QT_METRICS_MODEL_H_
 
 // Complete types are needed by inline Qt container and metatype instantiations.
+#include <QHash>
 #include <QList> // IWYU pragma: keep
 #include <QMap>
 #include <QObject>
@@ -2062,6 +2063,20 @@ class MetricsModel : public QObject {
      * Showing nothing is honest; showing the readings from a minute ago is not.
      */
     void clear();
+    /**
+     * @brief What a trunk-scan target change clears: the readings that belong to the target left (sync, identity,
+     * quality), as clear() does, while who owns the tuner and the session's settings stay as they are. A target change
+     * does not change them, and clearing them for one frame would read as the scan stopping (issue #671: an open Go to
+     * closed, and the spectrum's ownership badge moved, on every hop).
+     */
+    void clearForTarget();
+
+    /**
+     * @brief Names for the scan channels a call can be heard on: a trunk-scan target's id (the app writes each entry's
+     * uid) to the name the operator gave it. A call with no name of its own is named by its channel, and an id is not
+     * a name a person recognises (issue #671). Ids not in @p names show as they are.
+     */
+    Q_INVOKABLE void setChannelNames(const QVariantMap& names);
 
   Q_SIGNALS:
     void siteChanged();
@@ -2533,7 +2548,7 @@ class MetricsModel : public QObject {
     static void fillFamilySite(SiteView& site, uint8_t family, const dsd_state* snapshot);
     static void fillSiteView(View& next, const dsd_state* snapshot);
     static void fillCrcPolicy(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    static void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m);
+    void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) const;
     static void fillQualityView(View& next, const dsd_state* snapshot);
 
     /** @brief Build one slot's structured call identity from the snapshot. */
@@ -2596,6 +2611,7 @@ class MetricsModel : public QObject {
     static QVariantMap airspyView(const dsd_opts* opts_snapshot);
     static QVariantMap radioSourceView(const dsd_opts* opts_snapshot);
     View m_view;
+    QHash<QString, QString> m_channelNames;
     /* Held across frames rather than derived from one: frame sync comes and goes
      * between 250 ms polls, so a single sample answers "is it synced right now",
      * which is not the question. The hold decays on its own rather than being

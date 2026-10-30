@@ -570,6 +570,35 @@ test_channel_label_is_its_own_role(void) {
     expect("a different channel keeps the same talkgroup on its own row", model.count() == 3);
 }
 
+/* Issue #671: a trunk-scan target's channel label is the app's uid for its entry. A call with no name of its own is
+ * named by its channel, so the row shows the entry's name in its place, in the title and the channel role alike; a
+ * channel the names do not cover shows as it is. */
+void
+test_target_ids_read_as_their_names(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    model.setSessionLabel(QStringLiteral("County Scan"));
+    model.setChannelNames(QVariantMap{{QStringLiteral("96e4230d-7220-4a76"), QStringLiteral("Benton County")}});
+    const time_t when = 1754500300;
+    ring.commit(0, 5001, 100, when, when + 3, "", "", "96e4230d-7220-4a76");
+    model.refresh(ring.state);
+    expect("a target id reads as its name",
+           model.count() == 1 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Benton County"
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County");
+
+    ring.commit(0, 5002, 101, when + 10, when + 12, "", "Fire Ops", "96e4230d-7220-4a76");
+    model.refresh(ring.state);
+    expect("a named talkgroup keeps its name, its channel the entry's",
+           model.count() == 2 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Fire Ops"
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == "Benton County");
+
+    ring.commit(0, 5003, 102, when + 20, when + 22, "", "", "Dispatch");
+    model.refresh(ring.state);
+    expect("a channel the names do not cover shows as it is",
+           model.count() == 3 && model.data(model.index(0), CallHistoryModel::NameRole).toString() == "Dispatch");
+}
+
 void
 test_reacquisition_merge_updates_in_place(void) {
     resetStorage();
@@ -2892,6 +2921,7 @@ main(int argc, char** argv) {
     test_labelled_notice_name_drops_its_own_channel_prefix();
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
+    test_target_ids_read_as_their_names();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();

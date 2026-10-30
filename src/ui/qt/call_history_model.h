@@ -195,6 +195,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
     Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
 
+    /**
+     * @brief Names for the scan channels a call can be heard on: a trunk-scan target's id (the app writes each entry's
+     * uid) to the name the operator gave it. A call with no name of its own is named by its channel, and an id is not
+     * a name a person recognises (issue #671). Ids not in @p names show as they are.
+     */
+    Q_INVOKABLE void setChannelNames(const QVariantMap& names);
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
@@ -531,9 +538,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         SeenMap* seen = nullptr;
         qint64 session = 0;
         QString sessionLabel;
-        QString systemUid;              // the attribution uid, empty unless the session is single-system
-        bool cleared = false;           // the clear mark covers this ring...
-        qulonglong clearedThrough = 0U; // ...up to this push stamp of the walked slot
+        QString systemUid;                    // the attribution uid, empty unless the session is single-system
+        QHash<QString, QString> channelNames; // setChannelNames()
+        bool cleared = false;                 // the clear mark covers this ring...
+        qulonglong clearedThrough = 0U;       // ...up to this push stamp of the walked slot
     };
 
     /** @brief noteSeen() verdicts. */
@@ -713,6 +721,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     QHash<QString, SeenState> m_seen;
     QString m_sessionLabel;
     QString m_sessionUid;
+    QHash<QString, QString> m_channelNames;
     qint64 m_session = 0;
     /* Persisted so the still-populated ring cannot resurrect cleared rows after an
      * Activity restart. */

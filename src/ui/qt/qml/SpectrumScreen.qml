@@ -1255,7 +1255,9 @@ Item {
             // the screen and would read as a fault rather than as progress.
             visible: !screen.sweeping && toastLabel.text.length > 0
             width: Math.min(parent.width, toastLabel.implicitWidth + 24)
-            height: 30
+            // Two lines at most: a tune's answer names the frequency and what it did to the scan ("; scan paused",
+            // issue #671), which one line on a phone cuts before the part that matters.
+            height: Math.max(30, toastLabel.height + 12)
             radius: Theme.radiusButton
             color: Theme.panel
             border.width: 1
@@ -1272,6 +1274,9 @@ Item {
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(12)
                 color: Theme.cyan
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                maximumLineCount: 2
                 elide: Text.ElideRight
             }
         }

@@ -472,6 +472,44 @@ MetricsModel::clear() {
     publish(cleared);
 }
 
+void
+MetricsModel::setChannelNames(const QVariantMap& names) {
+    m_channelNames.clear();
+    for (auto it = names.constBegin(); it != names.constEnd(); ++it) {
+        const QString name = it.value().toString();
+        if (!it.key().isEmpty() && !name.isEmpty()) {
+            m_channelNames.insert(it.key(), name);
+        }
+    }
+}
+
+void
+MetricsModel::clearForTarget() {
+    m_messageTimer.stop();
+    m_sync_type_here = DSD_SYNC_NONE;
+    m_sync_seen_m = 0.0;
+    View cleared;
+    cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
+    cleared.tone_filter_configured_mode = m_view.tone_filter_configured_mode;
+    cleared.tone_filter_configured_list = m_view.tone_filter_configured_list;
+    // Who owns the tuner and what the session is set to: the next snapshot republishes them unchanged.
+    cleared.options_known = m_view.options_known;
+    cleared.tuner_controlled = m_view.tuner_controlled;
+    cleared.replay_input = m_view.replay_input;
+    cleared.trunking_enabled = m_view.trunking_enabled;
+    cleared.scanner_mode = m_view.scanner_mode;
+    cleared.scan_kind = m_view.scan_kind;
+    cleared.scan_rotation_active = m_view.scan_rotation_active;
+    cleared.scan_paused = m_view.scan_paused;
+    cleared.scan_resumable = m_view.scan_resumable;
+    cleared.operator_tuned = m_view.operator_tuned;
+    cleared.scan_target_count = m_view.scan_target_count;
+    cleared.scan_hold = m_view.scan_hold;
+    cleared.audio_muted = m_view.audio_muted;
+    cleared.configured_squelch_off = m_view.configured_squelch_off;
+    publish(cleared);
+}
+
 /**
  * @brief Fill in what the decoder is doing and what it is set to.
  *
@@ -1060,11 +1098,19 @@ MetricsModel::fillAnalogChannel(View& next, const dsd_opts* opts_snapshot, const
 }
 
 void
-MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) {
+MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) const {
     int line_states[DSD_CALL_STATE_SLOT_COUNT];
     double started[DSD_CALL_STATE_SLOT_COUNT];
     for (quint8 slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
         next.slot_call[slot] = slotCallView(snapshot, slot, now_m);
+        SlotCall& call = next.slot_call[slot];
+        const QString channelName = m_channelNames.value(call.channel);
+        if (!channelName.isEmpty()) {
+            if (call.name == call.channel) {
+                call.name = channelName;
+            }
+            call.channel = channelName;
+        }
         line_states[slot] = next.slot_call[slot].state;
         started[slot] = next.slot_call[slot].started_m;
     }

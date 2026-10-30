@@ -467,6 +467,7 @@ Window {
     Component.onCompleted: {
         updateSystemBars();
         adoptReattachedSession();
+        publishChannelNames();
     }
     onActiveChanged: {
         if (active)
@@ -693,6 +694,11 @@ Window {
     // what Resume scan returns to, and what names the targets once it has.
     property var pausedScanSystem: null
     property int pausedSessionRow: -1
+    // Issue #671: a trunk-scan target's id is the app's uid for its entry, and a
+    // call with no name of its own is named by the channel it was heard on. The
+    // names here are what the monitor and History show in place of those ids.
+    readonly property var scanChannelNames: mainRoot.channelNamesOf(mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem)
+    onScanChannelNamesChanged: mainRoot.publishChannelNames()
     // An Explore asked for and not yet answered: the release is in the queue, or
     // the options that say whether anything owned the tuner have not arrived.
     property bool exploreRequested: false
@@ -945,6 +951,28 @@ Window {
         var sys = savedSystems.get(row);
         if (sys)
             mainRoot.startWithMap(sys, row, false);
+    }
+
+    // The name each entry of @a list goes by, by uid: as scanTargetLabel() names
+    // the target on air. A list from a targets file uses that file's own ids.
+    function channelNamesOf(list) {
+        var names = {};
+        if (!list || !list.entries || list.targetSource === "csv")
+            return names;
+        for (var i = 0; i < list.entries.length; ++i) {
+            var entry = list.entries[i];
+            if (!entry || !entry.uid)
+                continue;
+            if (entry.kind === "system")
+                names[entry.uid] = savedSystems.getByUid(entry.systemUid).name || qsTr("Saved system");
+            else
+                names[entry.uid] = entry.name || (entry.freqMhz ? entry.freqMhz + " MHz" : qsTr("Frequency"));
+        }
+        return names;
+    }
+    function publishChannelNames() {
+        callHistory.setChannelNames(mainRoot.scanChannelNames);
+        metrics.setChannelNames(mainRoot.scanChannelNames);
     }
 
     function scanTargetLabel() {

@@ -1501,6 +1501,17 @@ class CallLogStore : public QAbstractListModel {
         setSessionUid(uid);
     }
 
+    /** @brief The scan channels' names (CallHistoryModel::setChannelNames(), issue #671), kept for a case to read. */
+    Q_INVOKABLE void
+    setChannelNames(const QVariantMap& names) {
+        m_channelNames = names;
+    }
+
+    Q_INVOKABLE QVariantMap
+    channelNames() const {
+        return m_channelNames;
+    }
+
     QStringList
     systemLabels() const {
         return m_rows.isEmpty() ? QStringList() : QStringList{m_systemName};
@@ -1835,6 +1846,7 @@ class CallLogStore : public QAbstractListModel {
 
     QList<StoreRow> m_rows;
     QString m_systemName = QStringLiteral("Test Site");
+    QVariantMap m_channelNames;
     QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
     qint64 m_session = 0;
@@ -1867,6 +1879,12 @@ class ReadingMap : public QQmlPropertyMap {
     /* Main's failure card tells the host it was dismissed (#782); the readings have no attempt to give up. */
     Q_INVOKABLE void
     dismissFailure() {}
+
+    /* Issue #671: Main hands the metrics the scan channels' names; kept as the "channelNames" reading for a case. */
+    Q_INVOKABLE void
+    setChannelNames(const QVariantMap& names) {
+        insert(QStringLiteral("channelNames"), names);
+    }
 
     /* Issue #708: the call recording player, export and share, as the decoderHost map plays them. A play opens at
      * once (Preparing), pause and resume flip the state, a seek moves the position and a stop clears the path, as a

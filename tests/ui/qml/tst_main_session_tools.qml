@@ -714,12 +714,16 @@ Item {
                                         scanResumable: false, operatorTuned: false, tunerControlled: true,
                                         scanTargetId: entryUid, scanTargetOrdinal: 1, scanTargetCount: 1});
                 compare(app.scanTargetLabel(), "Simplex");
+                // Issue #671: a call named by its channel reads the entry's name, never its uid.
+                compare(callHistory.channelNames()[entryUid], "Simplex");
+                compare(metrics.channelNames[entryUid], "Simplex");
                 // Go to (from any frontend) pauses it: the receiver is the operator's, by hand too.
                 testContext.setMetrics({scanRotationActive: false, scanPaused: true, scanResumable: true,
                                         operatorTuned: true, tunerControlled: false, scanTargetId: "",
                                         scanTargetOrdinal: 0});
                 compare(title(), "Exploring");
                 verify(app.exploring, "a reattached paused scan list stayed view-only");
+                compare(callHistory.channelNames()[entryUid], "Simplex", "the paused list's names went with the pause");
                 choose("Spectrum");
                 var spectrum = findChild(app, "spectrumScreen");
                 verify(!spectrum.viewOnly, "the reattached paused list's spectrum is VIEW ONLY");
