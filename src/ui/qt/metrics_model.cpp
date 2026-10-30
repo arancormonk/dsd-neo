@@ -1009,6 +1009,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.effective_squelch_margin_db = 0;
         next.configured_squelch_level_off = false;
         next.squelch_auto_status.clear();
+        next.squelch_gate_open = false;
         return;
     }
     next.configured_squelch_db = dsd_app_squelch_db_or_off(squelch.configured_level);
@@ -1031,6 +1032,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     char status[40];
     (void)dsd_app_squelch_view_dynamic_status(&squelch, status, sizeof status);
     next.squelch_auto_status = QString::fromUtf8(status);
+    next.squelch_gate_open = squelch.auto_gate_open != 0U || squelch.noise_gate_open != 0U;
 }
 
 /* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog

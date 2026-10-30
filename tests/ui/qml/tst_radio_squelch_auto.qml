@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 import "../../../src/ui/qt/qml/Util.js" as Util
 
 // The dynamic squelches (issue #518 follow-up): the Radio sheet chooses between
@@ -25,6 +26,16 @@ Item {
     TestCase {
         name: "RadioSquelchAuto"
         when: windowShown
+        // Issue #782: moving readings name themselves at the screen reader's pace (SpeechPacer); a short period
+        // keeps these checks of what is read quick. The app's 5 s is restored for the next file in the run.
+        property int appSpeechPeriod: 0
+        function initTestCase() {
+            appSpeechPeriod = Ui.Navigation.speechPeriodMs;
+            Ui.Navigation.speechPeriodMs = 50;
+        }
+        function cleanupTestCase() {
+            Ui.Navigation.speechPeriodMs = appSpeechPeriod;
+        }
 
         readonly property var sheet: loader.item
         readonly property int squelchField: 1
@@ -130,7 +141,7 @@ Item {
             var status = findChild(sheet, "radioSquelchAutoStatus");
             verify(status.visible);
             compare(status.text, "floor -78.3 dB");
-            compare(findChild(sheet, "radioSquelchValue").Accessible.name, "auto +12 dB (floor -78.3 dB)");
+            tryCompare(findChild(sheet, "radioSquelchValue").Accessible, "name", "auto +12 dB (floor -78.3 dB)");
             setAuto(true, true, 12, "off on digital");
             compare(findChild(sheet, "radioSquelchAutoStatus").text, "off on digital");
         }
@@ -269,7 +280,7 @@ Item {
             compare(findChild(sheet, "radioSquelchMode").currentIndex, 2);
             compare(findChild(sheet, "radioSquelchValue").text, "noise +12 dB");
             compare(findChild(sheet, "radioSquelchAutoStatus").text, "quieting 23 dB");
-            compare(findChild(sheet, "radioSquelchValue").Accessible.name, "noise +12 dB (quieting 23 dB)");
+            tryCompare(findChild(sheet, "radioSquelchValue").Accessible, "name", "noise +12 dB (quieting 23 dB)");
             findChild(sheet, "radioSquelchUp").clicked();
             compare(testContext.squelchNoiseCalls(), 1);
             compare(testContext.lastSquelchMarginDb(), 13);

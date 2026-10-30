@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Issue #708: a call's recordings in its History detail sheet. The decoderHost
 // map plays the host (qml_test_context.h): a play opens Preparing, pause and
@@ -21,6 +22,16 @@ Item {
     TestCase {
         name: "CallRecordingPlayer"
         when: windowShown
+        // Issue #782: moving readings name themselves at the screen reader's pace (SpeechPacer); a short period
+        // keeps these checks of what is read quick. The app's 5 s is restored for the next file in the run.
+        property int appSpeechPeriod: 0
+        function initTestCase() {
+            appSpeechPeriod = Ui.Navigation.speechPeriodMs;
+            Ui.Navigation.speechPeriodMs = 50;
+        }
+        function cleanupTestCase() {
+            Ui.Navigation.speechPeriodMs = appSpeechPeriod;
+        }
 
         readonly property string pathA: "/rec/County (12345678)/A.wav"
         readonly property string pathB: "/rec/County (12345678)/B.wav"
@@ -293,13 +304,13 @@ Item {
             compare(item("recordingTime").text, "0:00 / 0:01");
             testContext.publishPlayback(pathA, 0, 240, 240, "");
             compare(item("recordingTime").text, "0:01 / 0:01", "a finished part reads its length");
-            compare(item("recordingTime").Accessible.name, "0:01 of 0:01");
+            tryCompare(item("recordingTime").Accessible, "name", "0:01 of 0:01");
             tap("recordingPart1");
             testContext.publishPlayback(pathB, 2, 1500, 2600, "");
             compare(item("recordingTime").text, "0:01 / 0:03");
             testContext.publishPlayback(pathB, 0, 2600, 2600, "");
             compare(item("recordingTime").text, "0:03 / 0:03");
-            compare(item("recordingSeekBar").Accessible.description, "0:03 of 0:03");
+            tryCompare(item("recordingSeekBar").Accessible, "description", "0:03 of 0:03");
         }
 
         function test_duration_line_counts_seconds() {

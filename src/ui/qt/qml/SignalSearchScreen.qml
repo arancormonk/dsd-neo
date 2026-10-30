@@ -57,6 +57,12 @@ Item {
     readonly property var hit: status.hit || ({})
     readonly property int phase: status.phase || 0
     readonly property bool receiving: receivingIn(status)
+    // Issue #782: what makes the search's moving lines worth hearing at once
+    // (SpeechPacer): a new hit or a change of state. Between these the
+    // channel count, the live level and the call details are re-read at most
+    // every few seconds.
+    readonly property string speechStep: [sessionActive, phase, receiving, status.identifying === true, status.pass || 0,
+        status.rangeName || "", hit.id || "", hit.freqMHz || "", hit.confirmed === true, hit.protocol || ""].join("|")
     readonly property bool editable: !sessionActive || phase === 6
     readonly property bool ownedSession: sessionActive && !!status.owned
     signal closed
@@ -396,7 +402,15 @@ Item {
                 maximumLineCount: screen.sessionActive ? screen.statusLines : 1000
                 elide: Text.ElideRight
                 Accessible.role: Accessible.StaticText
-                Accessible.name: text
+                Accessible.name: statusSpeech.spoken
+                SpeechPacer {
+                    id: statusSpeech
+                    shown: statusText.visible
+                    step: screen.speechStep
+                    read: function () {
+                        return statusText.text;
+                    }
+                }
             }
         }
     }
@@ -545,10 +559,20 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: strengthSlot.lines
                             elide: Text.ElideRight
-                            readonly property string spoken: text.replace("\n", " · ")
+                            id: strengthText
+                            readonly property string spoken: strengthSpeech.spoken
                             Accessible.name: spoken
                             Accessible.description: spoken.length > 0 && (screen.hit.range || "").length > 0 ? spoken + " · " + screen.hit.range : spoken
                             Accessible.ignored: text.length === 0
+                            // The live level moves every tick (issue #782).
+                            SpeechPacer {
+                                id: strengthSpeech
+                                shown: strengthText.text.length > 0
+                                step: screen.speechStep
+                                read: function () {
+                                    return strengthText.text.replace("\n", " · ");
+                                }
+                            }
                         }
                     }
                     Text {
@@ -588,9 +612,19 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
-                            Accessible.name: fullText
-                            Accessible.description: fullText
+                            id: searchDetailText
+                            Accessible.name: detailSpeech.spoken
+                            Accessible.description: detailSpeech.spoken
                             Accessible.ignored: text.length === 0
+                            // A monitored call's talkgroup and source change with each call (issue #782).
+                            SpeechPacer {
+                                id: detailSpeech
+                                shown: searchDetailText.text.length > 0
+                                step: screen.speechStep
+                                read: function () {
+                                    return searchDetailText.fullText;
+                                }
+                            }
                         }
                     }
                     // Two names, then how many more: the names elide, the count

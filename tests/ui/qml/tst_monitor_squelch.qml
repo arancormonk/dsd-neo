@@ -18,6 +18,16 @@ Item {
     TestCase {
         name: "MonitorSquelch"
         when: windowShown
+        // Issue #782: moving readings name themselves at the screen reader's pace (SpeechPacer); a short period
+        // keeps these checks of what is read quick. The app's 5 s is restored for the next file in the run.
+        property int appSpeechPeriod: 0
+        function initTestCase() {
+            appSpeechPeriod = Ui.Navigation.speechPeriodMs;
+            Ui.Navigation.speechPeriodMs = 50;
+        }
+        function cleanupTestCase() {
+            Ui.Navigation.speechPeriodMs = appSpeechPeriod;
+        }
         readonly property int squelchField: 1
         function item(name) {
             var found = findChild(monitor, name);
@@ -135,7 +145,7 @@ Item {
             compare(item("squelchMode").currentIndex, 1);
             compare(item("squelchValue").text, "noise +12 dB");
             compare(item("squelchStatus").text, "learning");
-            compare(item("squelchValue").Accessible.name, "noise +12 dB (learning)");
+            tryCompare(item("squelchValue").Accessible, "name", "noise +12 dB (learning)");
             mouseClick(item("squelchUp"));
             compare(testContext.squelchNoiseCalls(), 1);
             compare(testContext.lastSquelchMarginDb(), 13);

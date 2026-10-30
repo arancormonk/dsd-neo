@@ -2393,6 +2393,14 @@ main(int argc, char** argv) {
     state.squelch_auto_floor_cdb = -7900;
     model.refresh(&opts, &state);
     expect("a moving floor reaches the panel", model.squelchAutoStatus() == QStringLiteral("floor -79.0 dB"));
+    /* Issue #782: the gate opening and closing, which a screen reader hears at once. */
+    expect("a closed auto gate reads closed", !model.squelchGateOpen());
+    state.squelch_auto_gate_open = 1;
+    model.refresh(&opts, &state);
+    expect("an open auto gate reaches the panel", model.squelchGateOpen());
+    state.squelch_auto_gate_open = 0;
+    model.refresh(&opts, &state);
+    expect("and closes again", !model.squelchGateOpen());
     /* The noise squelch: its flags, its quieting while it runs, and no Noise offered on the AM monitor on its own. */
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
     state.squelch_noise_active = 1;

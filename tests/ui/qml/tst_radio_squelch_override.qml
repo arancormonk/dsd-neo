@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Issue #521: a scan row or target can carry its own squelch. While it is on air
 // the panel shows the row's threshold first, badges it as the row's, names the
@@ -21,6 +22,16 @@ Item {
     TestCase {
         name: "RadioSquelchOverride"
         when: windowShown
+        // Issue #782: moving readings name themselves at the screen reader's pace (SpeechPacer); a short period
+        // keeps these checks of what is read quick. The app's 5 s is restored for the next file in the run.
+        property int appSpeechPeriod: 0
+        function initTestCase() {
+            appSpeechPeriod = Ui.Navigation.speechPeriodMs;
+            Ui.Navigation.speechPeriodMs = 50;
+        }
+        function cleanupTestCase() {
+            Ui.Navigation.speechPeriodMs = appSpeechPeriod;
+        }
 
         readonly property var sheet: loader.item
 
@@ -77,7 +88,7 @@ Item {
             verify(findChild(sheet, "radioSquelchRowBadge").visible);
             compare(findChild(sheet, "radioSquelchDefault").text, "default -80 dB");
             // Read aloud as the terminal prints it.
-            compare(findChild(sheet, "radioSquelchValue").Accessible.name, "-60.0 dB (row; default -80.0 dB)");
+            tryCompare(findChild(sheet, "radioSquelchValue").Accessible, "name", "-60.0 dB (row; default -80.0 dB)");
         }
 
         function test_full_scale_default_is_not_off() {

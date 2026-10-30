@@ -1,33 +1,93 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Issue #782: a reading that moves every tick is not read out every tick.
 //
 // Qt's Android bridge speaks every rename of the node TalkBack is focused on (QtAccessibilityDelegate's
 // notifyDescriptionOrNameChanged sends an announcement for the focused node). The harness cannot focus a node the
 // way TalkBack does, so these cases hold every node to the rule a focused one needs: a moving reading's name catches
-// up at most every 5 s (SpeechPacer), and at once on a meaningful step, while the text on screen stays live.
+// up at most once a period (SpeechPacer), and at once on a meaningful step, while the text on screen stays live.
+//
+// The app's period is 5 s (Navigation.speechPeriodMs, checked first). The updates run at a 100 ms period, 40 of
+// them a few milliseconds apart, as 4 Hz for 10 s is 40 updates over two 5 s periods: a node may rename once a period
+// (and once when the count starts), whatever the timer's jitter makes of the elapsed time, and far fewer times than
+// it is updated. The steps run at a 2 s period, so a rename within 100 ms is the step's and not the period's, and a
+// check that an update alone waits runs just after a step, which starts a period.
 Item {
     id: root
     width: 420
     height: 900
+    readonly property string pathA: "/rec/County (12345678)/A.wav"
+    // The search model the screen reads, as tst_signal_search.qml fakes it.
+    QtObject {
+        id: searchFake
+        property var ranges: [{name: "Local UHF", startMHz: "450.000000", endMHz: "460.000000", enabled: true,
+            stepNum: 12500, stepDen: 1, bandwidth: 16000, am: false, digital: 1, gainSet: false, gainAuto: true,
+            gain: 0, sensitivity: 15, minimumSet: false, minimum: -60, squelchMode: 2, squelchMargin: 10,
+            squelchLevel: -60, probe: 2, visit: 30}]
+        property var history: []
+        property var avoids: []
+        property var sessionAvoids: []
+        property var status: ({phase: 0})
+        property string error: ""
+        function control(action, session, hit) { return true; }
+        function avoidFrequency(session, frequency) { return true; }
+        function avoidPermanently(session, frequency) { return true; }
+        function removeSessionAvoid(frequency) { return true; }
+        function removeAvoid(frequency) {}
+        function arm() { return ""; }
+        function saveRange(row, range) { return ""; }
+        function defaultRange() { return Object.assign({}, ranges[0]); }
+    }
     Loader {
         id: monitorLoader
         anchors.fill: parent
+        active: false
         source: uiDir + "/MonitorScreen.qml"
     }
     Loader {
         id: spectrumLoader
         anchors.fill: parent
+        active: false
         source: uiDir + "/SpectrumScreen.qml"
+    }
+    Loader {
+        id: historyLoader
+        anchors.fill: parent
+        active: false
+        source: uiDir + "/HistoryDetailSheet.qml"
+    }
+    Loader {
+        id: searchLoader
+        anchors.fill: parent
+        active: false
+        source: uiDir + "/SignalSearchScreen.qml"
+        onLoaded: item.searchModel = searchFake
+    }
+    Loader {
+        id: radioLoader
+        anchors.fill: parent
+        active: false
+        source: uiDir + "/RadioSheet.qml"
+    }
+    Loader {
+        id: squelchLoader
+        anchors.fill: parent
+        active: false
+        source: uiDir + "/SquelchSheet.qml"
     }
     TestCase {
         name: "A11yPacedNames"
         when: windowShown
         readonly property var monitor: monitorLoader.item
         readonly property var spectrum: spectrumLoader.item
-        readonly property int period: 5000
+        readonly property int period: 100
+        readonly property int stepPeriod: 2000
+        readonly property int updates: 40
+        readonly property int tick: 5
+        property int appPeriod: 0
         property var restore: ({})
 
         function item(scope, name) {
@@ -44,8 +104,14 @@ Item {
             }
             return total;
         }
+        function typed(counts, type) {
+            return counts.types[type] ? counts.types[type] : 0;
+        }
         function nameOf(target) {
             return testContext.accessibleNode(target).name;
+        }
+        function descriptionOf(target) {
+            return testContext.accessibleNode(target).description;
         }
         function set(values) {
             for (var key in values) {
@@ -54,10 +120,47 @@ Item {
                 testContext.setMetric(key, values[key]);
             }
         }
+        // Runs @p update(i) for i = 1..updates, a tick apart, at the short period; returns the milliseconds it took.
+        function run(update) {
+            Ui.Navigation.speechPeriodMs = period;
+            var start = Date.now();
+            for (var i = 1; i <= updates; ++i) {
+                update(i);
+                wait(tick);
+            }
+            return Date.now() - start;
+        }
+        // Each of @p names raised @p type at least once, at most once a period over @p elapsed ms and once more, and
+        // far fewer times than it was updated.
+        function verifyPaced(counts, type, names, elapsed) {
+            var report = JSON.stringify(counts.chains);
+            var most = Math.min(Math.ceil(elapsed / period) + 1, updates / 4);
+            for (var named of names) {
+                var renames = raised(counts, type, named);
+                verify(renames >= 1 && renames <= most, named + " raised " + type + " " + renames + " times for "
+                       + updates + " updates in " + elapsed + " ms (at most " + most + "): " + report);
+            }
+        }
+        // The long period the step checks run at.
+        function stepPace() {
+            Ui.Navigation.speechPeriodMs = stepPeriod;
+            wait(20);
+        }
 
         function initTestCase() {
             verify(testContext.accessibilityActive(), "run with DSD_QML_TEST_ACCESSIBILITY=1, or nothing is counted");
-            verify(monitor !== null && spectrum !== null);
+            appPeriod = Ui.Navigation.speechPeriodMs;
+            compare(appPeriod, 5000, "the app paces names at 5 s");
+            Ui.Navigation.speechPeriodMs = period;
+            for (var loader of [monitorLoader, spectrumLoader, historyLoader, searchLoader, radioLoader, squelchLoader])
+                loader.active = true;
+            verify(monitor !== null && spectrum !== null && historyLoader.item !== null && searchLoader.item !== null
+                   && radioLoader.item !== null && squelchLoader.item !== null);
+        }
+        function cleanupTestCase() {
+            for (var loader of [monitorLoader, spectrumLoader, historyLoader, searchLoader, radioLoader, squelchLoader])
+                loader.active = false;
+            Ui.Navigation.speechPeriodMs = appPeriod;
         }
         function init() {
             testContext.setHostRunning(true);
@@ -69,6 +172,8 @@ Item {
                 ccFecValid: true, ccFecOkPct: 90});
             monitor.visible = true;
             spectrum.visible = true;
+            // Each case shows only the screens it reads.
+            searchLoader.item.visible = false;
             testContext.setPrefs("monitorDetailsExpanded", true);
             waitForRendering(root);
             wait(50);
@@ -76,15 +181,24 @@ Item {
         function cleanup() {
             testContext.stopAccessibilityCount();
             testContext.setPrefs("monitorDetailsExpanded", false);
+            historyLoader.item.visible = false;
+            radioLoader.item.visible = false;
+            squelchLoader.item.visible = false;
+            searchFake.status = {phase: 0};
+            searchLoader.item.sessionActive = false;
+            Ui.Navigation.modals = [];
             for (var key in restore)
                 testContext.setMetric(key, restore[key]);
             restore = {};
+            testContext.resetHostPlayback();
+            recordings.reset();
+            callHistory.clearAll();
             testContext.setHostRunning(false);
         }
 
-        // Every moving reading the monitor and spectrum show, at 4 Hz for 10 s: each node renames a few times at
-        // most, and ends on the value on screen. The text on screen follows every change.
-        function test_a_four_hertz_for_ten_seconds() {
+        // The monitor's and spectrum's moving readings: each node renames a few times at most and ends on the value
+        // on screen. The text on screen follows every update.
+        function test_a_monitor_and_spectrum() {
             var strip = item(monitor, "signalStrip");
             var timing = item(monitor, "scanTimingRow");
             var duration = item(monitor, "heroDuration");
@@ -92,62 +206,205 @@ Item {
             var status = item(spectrum, "spectrumStatusLine");
             var snrText = item(monitor, "monitorSnrValue");
             testContext.startAccessibilityCount();
-            for (var i = 1; i <= 40; ++i) {
+            var elapsed = run(function (i) {
                 set({snrDb: 9 + i * 0.3, cfoHz: (i % 2 ? -1 : 1) * i * 11, scanTimerRemainingDs: 100 - i * 2,
                     slot1CallSeconds: 1 + Math.floor(i / 4)});
-                compare(snrText.text, Number(9 + i * 0.3).toFixed(1) + " dB", "the strip's text follows every tick");
-                wait(250);
-            }
+                compare(snrText.text, Number(9 + i * 0.3).toFixed(1) + " dB", "the strip's text follows every update");
+            });
             var counts = testContext.accessibilityCount();
-            var report = JSON.stringify(counts.chains);
-            for (var named of ["signalStrip", "scanTimingRow", "heroDuration", "spectrumStatusLine"]) {
-                var renames = raised(counts, "NameChanged", named);
-                verify(renames >= 1 && renames <= 3, named + " renamed " + renames + " times in 10 s: " + report);
-            }
-            var described = raised(counts, "DescriptionChanged", "monitorDetailsRow");
-            verify(described >= 1 && described <= 3, "the summary row redescribed " + described + " times: " + report);
-            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide") + typed(counts, "LocationChanged"), 0, report);
+            verifyPaced(counts, "NameChanged", ["signalStrip", "scanTimingRow", "heroDuration", "spectrumStatusLine"],
+                        elapsed);
+            verifyPaced(counts, "DescriptionChanged", ["monitorDetailsRow"], elapsed);
+            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide") + typed(counts, "LocationChanged"), 0,
+                    JSON.stringify(counts.chains));
             // A focused node is never left behind for longer than the period: each catches up with the screen.
-            var snr = Number(9 + 40 * 0.3).toFixed(1) + " dB";
-            tryVerify(function () { return nameOf(strip).indexOf("SNR " + snr) >= 0; }, period + 1000, nameOf(strip));
-            tryVerify(function () { return nameOf(timing) === timing.text; }, period + 1000, nameOf(timing));
-            tryVerify(function () { return nameOf(duration) === duration.text; }, period + 1000, nameOf(duration));
-            tryVerify(function () {
-                return testContext.accessibleNode(summary).description === summary.accessibleDescription;
-            }, period + 1000, testContext.accessibleNode(summary).description);
-            tryVerify(function () { return nameOf(status).indexOf(snr) >= 0; }, period + 1000, nameOf(status));
-        }
-        function typed(counts, type) {
-            return counts.types[type] ? counts.types[type] : 0;
+            var snr = Number(9 + updates * 0.3).toFixed(1) + " dB";
+            tryVerify(function () { return nameOf(strip).indexOf("SNR " + snr) >= 0; }, period + 500, nameOf(strip));
+            tryVerify(function () { return nameOf(timing) === timing.text; }, period + 500, nameOf(timing));
+            tryVerify(function () { return nameOf(duration) === duration.text; }, period + 500, nameOf(duration));
+            tryVerify(function () { return descriptionOf(summary) === summary.accessibleDescription; }, period + 500,
+                      descriptionOf(summary));
+            tryVerify(function () { return nameOf(status).indexOf(snr) >= 0; }, period + 500, nameOf(status));
         }
 
         // A meaningful step renames at once, with every reading as it then is: a lost lock, a new scan target, a call
         // ending, a sync change on the spectrum.
-        function test_b_steps_rename_at_once() {
+        function test_b_monitor_steps_rename_at_once() {
             var strip = item(monitor, "signalStrip");
             var timing = item(monitor, "scanTimingRow");
             var status = item(spectrum, "spectrumStatusLine");
-            // Let the period start, then move a reading without a step: the names hold.
-            wait(100);
+            stepPace();
+            // A step starts a period; a reading moved just after it, without a step, waits for the next.
+            set({scanTargetOrdinal: 1, scanTargetId: "target-1b"});
+            wait(30);
             set({snrDb: 21.4});
-            wait(100);
-            verify(nameOf(strip).indexOf("SNR 21.4 dB") < 0, "a tick alone renames at the readings' pace: " + nameOf(strip));
+            wait(50);
+            verify(nameOf(strip).indexOf("SNR 21.4 dB") < 0, "an update alone renames at the readings' pace: "
+                   + nameOf(strip));
             set({carrierLock: false});
             tryVerify(function () {
                 return nameOf(strip).indexOf("No carrier lock") >= 0 && nameOf(strip).indexOf("SNR 21.4 dB") >= 0;
-            }, 300, "a lost lock is said at once, with the SNR as it is: " + nameOf(strip));
-            tryVerify(function () { return nameOf(status).indexOf("21.4") >= 0; }, 300, nameOf(status));
+            }, 100, "a lost lock is said at once, with the SNR as it is: " + nameOf(strip));
+            tryVerify(function () { return nameOf(status).indexOf("21.4") >= 0; }, 100, nameOf(status));
             set({scanTimerRemainingDs: 37});
-            wait(100);
+            wait(50);
             verify(nameOf(timing) !== timing.text, "the countdown alone waits: " + nameOf(timing));
             set({scanTargetOrdinal: 2, scanTargetId: "target-2"});
-            tryVerify(function () { return nameOf(timing) === timing.text; }, 300, "a new target is said at once");
+            tryVerify(function () { return nameOf(timing) === timing.text; }, 100, "a new target is said at once");
             set({syncLabel: "DMR"});
-            tryVerify(function () { return nameOf(status).indexOf("DMR") >= 0; }, 300, nameOf(status));
+            tryVerify(function () { return nameOf(status).indexOf("DMR") >= 0; }, 100, nameOf(status));
             // The call ends: its duration leaves the tree with it.
             var duration = item(monitor, "heroDuration");
             set({slot1CallState: 0, leadSlot: 0});
-            tryVerify(function () { return !duration.visible && duration.Accessible.name === ""; }, 300);
+            tryVerify(function () { return !duration.visible && duration.Accessible.name === ""; }, 100);
+        }
+
+        // A recording's position, while it plays: the time's name, the seek bar's description and value move at the
+        // readings' pace; play, pause, a seek once it lands, and the end of the part are heard at once.
+        function test_c_recording_position() {
+            monitor.visible = false;
+            spectrum.visible = false;
+            var sheet = historyLoader.item;
+            var uid = callHistory.pushWithRecordings([{id: "t-1", path: root.pathA, fileName: "A.wav", folderUid: "u1",
+                start: 1700000000, durationMs: 60000, rate: 8000, bytes: 96000, failed: false, available: true}]);
+            sheet.open({uid: uid, name: "Dispatch", tg: 1001, when: 1700000000, systemUid: "test-system"});
+            waitForRendering(sheet);
+            var time = item(sheet, "recordingTime");
+            var bar = item(sheet, "recordingSeekBar");
+            stepPace();
+            testContext.publishPlayback(root.pathA, 2, 1000, 60000, "");
+            tryVerify(function () { return nameOf(time) === "0:01 of 1:00"; }, 100, "playing is heard at once: "
+                      + nameOf(time));
+            testContext.startAccessibilityCount();
+            var elapsed = run(function (i) {
+                testContext.publishPlayback(root.pathA, 2, 1000 + i * 250, 60000, "");
+            });
+            var counts = testContext.accessibilityCount();
+            compare(time.text, "0:11 / 1:00", "the time on screen follows every update");
+            verifyPaced(counts, "NameChanged", ["recordingTime"], elapsed);
+            verifyPaced(counts, "DescriptionChanged", ["recordingSeekBar"], elapsed);
+            verify(raised(counts, "ValueChanged", "recordingSeekBar") <= 3, "the seek bar's value: "
+                   + JSON.stringify(counts.chains));
+            tryVerify(function () { return nameOf(time) === "0:11 of 1:00"; }, period + 500, nameOf(time));
+            tryVerify(function () { return descriptionOf(bar) === "0:11 of 1:00"; }, period + 500, descriptionOf(bar));
+            stepPace();
+            // Pause: at once.
+            testContext.publishPlayback(root.pathA, 2, 12000, 60000, "");
+            testContext.publishPlayback(root.pathA, 3, 12400, 60000, "");
+            tryVerify(function () { return nameOf(time) === "0:12 of 1:00"; }, 100, "a pause is heard at once: "
+                      + nameOf(time));
+            // A seek, once the host reports where it landed: at once.
+            testContext.publishPlayback(root.pathA, 2, 13000, 60000, "");
+            wait(50);
+            bar.seekTo(40000);
+            testContext.publishPlayback(root.pathA, 2, 40000, 60000, "");
+            tryVerify(function () { return nameOf(time) === "0:40 of 1:00"; }, 100, "a seek is heard at once: "
+                      + nameOf(time));
+            // The end of the part: at once.
+            testContext.publishPlayback(root.pathA, 2, 41000, 60000, "");
+            wait(50);
+            testContext.publishPlayback(root.pathA, 0, 60000, 60000, "");
+            tryVerify(function () { return nameOf(time) === "1:00 of 1:00"; }, 100, "the end is heard at once: "
+                      + nameOf(time));
+        }
+
+        // Signal search, while it scans and while it receives: the channel count, the live level and a monitored
+        // call's details move at the readings' pace; a new hit or a change of state is heard at once.
+        function test_d_signal_search_lines() {
+            monitor.visible = false;
+            spectrum.visible = false;
+            var screen = searchLoader.item;
+            screen.visible = true;
+            screen.sessionActive = true;
+            var line = item(screen, "searchStatusLine");
+            var strength = item(screen, "searchStrength");
+            var detail = item(screen, "searchDetail");
+            var scanning = function (channel) {
+                return {phase: 1, pass: 1, channel: channel, count: 800, rangeName: "Local UHF", rangeStartMHz: "450.0",
+                    rangeEndMHz: "460.0"};
+            };
+            searchFake.status = scanning(0);
+            waitForRendering(screen);
+            wait(50);
+            testContext.startAccessibilityCount();
+            var elapsed = run(function (i) {
+                searchFake.status = scanning(i);
+            });
+            var counts = testContext.accessibilityCount();
+            verifyPaced(counts, "NameChanged", ["searchStatusLine"], elapsed);
+            tryVerify(function () { return nameOf(line) === line.text; }, period + 500, nameOf(line));
+            stepPace();
+            // A hit: the search stops scanning and receives, heard at once.
+            var receiving = function (power, target) {
+                return {phase: 4, pass: 1, channel: 41, count: 800, rangeName: "Local UHF", rangeStartMHz: "450.0",
+                    rangeEndMHz: "460.0", livePowerValid: true, livePower: power,
+                    hit: {id: "h1", freqMHz: "451.0125", power: -40, range: "Local UHF", confirmed: true, protocol: "P25",
+                        targetText: "TG " + target, sourceText: "SRC 2001"}};
+            };
+            searchFake.status = receiving(-41, 100);
+            tryVerify(function () { return nameOf(strength).indexOf("-41.0") >= 0; }, 100, "a new hit is heard at once: "
+                      + nameOf(strength));
+            tryVerify(function () { return nameOf(detail).indexOf("TG 100") >= 0; }, 100, nameOf(detail));
+            testContext.stopAccessibilityCount();
+            testContext.startAccessibilityCount();
+            elapsed = run(function (j) {
+                searchFake.status = receiving(-41 - j * 0.5, 100 + Math.floor(j / 4));
+            });
+            counts = testContext.accessibilityCount();
+            verify(strength.text.indexOf(Number(-41 - updates * 0.5).toFixed(1)) >= 0, "the level on screen follows: "
+                   + strength.text);
+            verifyPaced(counts, "NameChanged", ["searchStrength", "searchDetail"], elapsed);
+            tryVerify(function () { return nameOf(strength).indexOf(Number(-41 - updates * 0.5).toFixed(1)) >= 0; },
+                      period + 500, nameOf(strength));
+            tryVerify(function () { return nameOf(detail).indexOf("TG " + (100 + updates / 4)) >= 0; }, period + 500,
+                      nameOf(detail));
+        }
+
+        // The squelch readouts in the radio and squelch sheets, while an auto or noise squelch moves: at the readings'
+        // pace; the gate opening or closing, or a change of the setting, at once.
+        function test_e_squelch_readouts_data() {
+            return [{tag: "radio sheet", loader: "radio", value: "radioSquelchValue", status: "radioSquelchAutoStatus"},
+                    {tag: "squelch sheet", loader: "squelch", value: "squelchValue", status: "squelchStatus"}];
+        }
+        function test_e_squelch_readouts(data) {
+            monitor.visible = false;
+            spectrum.visible = false;
+            var sheet = data.loader === "radio" ? radioLoader.item : squelchLoader.item;
+            set({squelchAudioInput: data.loader === "squelch", effectiveSquelchNoise: true, configuredSquelchNoise: true,
+                squelchNoiseOffered: true, effectiveSquelchMarginDb: 12, configuredSquelchMarginDb: 12,
+                squelchAutoStatus: "quieting 10 dB", squelchGateOpen: false});
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var value = item(sheet, data.value);
+            var status = item(sheet, data.status);
+            verify(status.visible, "the status line shows");
+            testContext.startAccessibilityCount();
+            var elapsed = run(function (i) {
+                set({squelchAutoStatus: "quieting " + (10 + i % 15) + " dB"});
+            });
+            var counts = testContext.accessibilityCount();
+            compare(status.text, "quieting " + (10 + updates % 15) + " dB", "the status on screen follows");
+            verifyPaced(counts, "NameChanged", [data.value, data.status], elapsed);
+            tryVerify(function () { return nameOf(value).indexOf(status.text) >= 0; }, period + 500, nameOf(value));
+            tryVerify(function () { return nameOf(status) === status.text; }, period + 500, nameOf(status));
+            stepPace();
+            // The gate opens: at once. Just after a step (the setting changing) an update alone waits.
+            set({effectiveSquelchMarginDb: 13, configuredSquelchMarginDb: 13});
+            wait(30);
+            set({squelchAutoStatus: "quieting 31 dB"});
+            wait(30);
+            verify(nameOf(value).indexOf("quieting 31 dB") < 0, "an update alone waits: " + nameOf(value));
+            set({squelchGateOpen: true});
+            tryVerify(function () { return nameOf(value).indexOf("quieting 31 dB") >= 0; }, 100,
+                      "the gate opening is heard at once: " + nameOf(value));
+            tryVerify(function () { return nameOf(status) === "quieting 31 dB"; }, 100, nameOf(status));
+            // The setting changes: at once.
+            set({squelchAutoStatus: "quieting 33 dB"});
+            set({effectiveSquelchMarginDb: 14, configuredSquelchMarginDb: 14});
+            tryVerify(function () { return nameOf(value).indexOf("quieting 33 dB") >= 0; }, 100,
+                      "a new setting is heard at once: " + nameOf(value));
         }
     }
 }

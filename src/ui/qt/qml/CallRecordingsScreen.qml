@@ -334,9 +334,20 @@ Item {
                         height: 4
                         radius: 2
                         color: Theme.toggleOffTrack
+                        id: exportBar
                         Accessible.role: Accessible.ProgressBar
                         Accessible.name: qsTr("Export progress")
-                        readonly property real value: decoderHost.recordingTransferBytes
+                        // Each change of the value is an accessibility event: it moves
+                        // at the screen reader's pace (issue #782), the bar at once.
+                        readonly property real value: Number(exportSpeech.spoken)
+                        SpeechPacer {
+                            id: exportSpeech
+                            shown: exportBar.visible
+                            step: String(decoderHost.recordingTransferActive)
+                            read: function () {
+                                return String(decoderHost.recordingTransferBytes);
+                            }
+                        }
                         readonly property real minimumValue: 0
                         readonly property real maximumValue: Math.max(0, decoderHost.recordingTransferTotalBytes)
 

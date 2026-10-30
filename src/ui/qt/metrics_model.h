@@ -314,6 +314,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool squelchNoiseOffered READ squelchNoiseOffered NOTIFY controlChanged)
     Q_PROPERTY(int effectiveSquelchMarginDb READ effectiveSquelchMarginDb NOTIFY controlChanged)
     Q_PROPERTY(QString squelchAutoStatus READ squelchAutoStatus NOTIFY controlChanged)
+    /* Issue #782: whether the dynamic squelch in force has its gate open (auto or noise; false for a level, whose gate
+     * the view does not report). A screen reader hears a moving squelch reading at once when this changes. */
+    Q_PROPERTY(bool squelchGateOpen READ squelchGateOpen NOTIFY controlChanged)
     /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
     Q_PROPERTY(bool configuredSquelchLevelOff READ configuredSquelchLevelOff NOTIFY controlChanged)
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
@@ -1178,6 +1181,12 @@ class MetricsModel : public QObject {
     QString
     squelchAutoStatus() const {
         return m_view.squelch_auto_status;
+    }
+
+    /** @brief Whether the dynamic squelch in force has its gate open (auto_gate_open or noise_gate_open). */
+    bool
+    squelchGateOpen() const {
+        return m_view.squelch_gate_open;
     }
 
     /**
@@ -2205,6 +2214,7 @@ class MetricsModel : public QObject {
         QString ui_message;
         QString squelch_readout;
         QString squelch_auto_status;
+        bool squelch_gate_open = false;
         QString analog_bandwidth_reading;
         QString nfm_bandwidth_unset_text;
         QString am_bandwidth_unset_text;
@@ -2506,7 +2516,7 @@ class MetricsModel : public QObject {
             return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
                    && squelch_readout == other.squelch_readout && squelch_noise_offered == other.squelch_noise_offered
                    && squelch_audio_input == other.squelch_audio_input
-                   && squelch_auto_status == other.squelch_auto_status;
+                   && squelch_auto_status == other.squelch_auto_status && squelch_gate_open == other.squelch_gate_open;
         }
 
         bool

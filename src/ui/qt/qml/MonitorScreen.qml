@@ -2258,7 +2258,8 @@ Item {
                     id: monitorSquelchGroupSpeech
                     group: monitorSquelchGroup
                     shown: !monitorSquelchGroup.Accessible.ignored
-                    step: screen.speechStep
+                    // The squelch opening or closing is heard at once too.
+                    step: screen.speechStep + "|" + (metrics.squelchGateOpen === true)
                 }
 
                 width: parent.width

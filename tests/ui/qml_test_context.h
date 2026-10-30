@@ -4013,6 +4013,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchAuto")] = false;
         metrics[QStringLiteral("effectiveSquelchMarginDb")] = 0;
         metrics[QStringLiteral("squelchAutoStatus")] = QString();
+        metrics[QStringLiteral("squelchGateOpen")] = false;
         metrics[QStringLiteral("configuredSquelchLevelOff")] = false;
         // #628: whether the session runs on audio input, where the monitor's Squelch row edits the squelch.
         metrics[QStringLiteral("squelchAudioInput")] = false;

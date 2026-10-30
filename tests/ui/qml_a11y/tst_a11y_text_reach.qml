@@ -353,7 +353,6 @@ Item {
             var item = build(data.spec);
             open(item, data.spec);
             waitForRendering(host);
-            wait(20);
             var problems = unexplained(item, [], data.spec.file);
             dispose(item);
             compare(problems.length, 0, report(problems));
@@ -371,6 +370,7 @@ Item {
             Ui.Navigation.layers = [];
             Ui.Navigation.modals = isSheet(item) ? [item] : [];
             waitForRendering(host);
+            // A group whose rows the reveal rebuilt names them once the rebuild is over (SpeechPacer).
             wait(20);
             var problems = unexplained(item, nested, data.spec.file);
             for (var i = 0; i < nested.length; ++i) {
