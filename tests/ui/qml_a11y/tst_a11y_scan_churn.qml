@@ -321,5 +321,75 @@ Item {
             for (var name of ["sessionMenu", "radioSheet", "squelchSheet"])
                 verify(showHide(findChild(app, name)) >= hops, name + ": " + churn(counts));
         }
+
+        // Issue #782 (T9): the monitor's readings are now read by TalkBack, each group of them (a label and its value,
+        // a strip of readings) one node named by what it shows. With the details open, hops rename those groups and
+        // nothing else: no reading group shows, hides or moves, and the texts under the closed sheets, which hold no
+        // name while hidden, rename nothing.
+        function test_f_hops_with_details_open_rename_only() {
+            var monitor = findChild(app, "monitorScreen");
+            var label = findChild(monitor, "otherSlotLabel");
+            var closed = closedSheets();
+            monitor.setDetailsExpanded(true);
+            waitForRendering(app.contentItem);
+            var strip = findChild(monitor, "signalStrip");
+            verify(strip.visible, "the signal strip is on screen");
+            verify(/FREQ/.test(testContext.accessibleNode(strip).name), "the strip is read: "
+                   + JSON.stringify(testContext.accessibleNode(strip)));
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= hops; ++i)
+                testContext.publishTarget(reading(i));
+            var counts = testContext.accessibilityCount();
+            compare(showHide(monitor) - showHide(label), 0, "only the slot label shows or hides: " + churn(counts));
+            compare(testContext.accessibilityCountWithin(monitor, "LocationChanged"), 0, JSON.stringify(counts.chains));
+            var renamed = [];
+            for (var sheet of closed) {
+                if (testContext.accessibilityCountWithin(sheet, "NameChanged") !== 0)
+                    renamed.push(sheetName(sheet));
+            }
+            compare(renamed.length, 0, "closed sheets that renamed something: " + JSON.stringify(renamed) + " "
+                    + churn(counts));
+            testContext.stopAccessibilityCount();
+            monitor.setDetailsExpanded(false);
+        }
+
+        // Readings that move on every tick rename the group that reads them, once per change, and nothing shows,
+        // hides or moves, whatever the values' widths; ticks that change nothing rename nothing.
+        function test_g_moving_readings_rename_their_group_only() {
+            var monitor = findChild(app, "monitorScreen");
+            var restore = {snrValid: metrics.snrValid, snrDb: metrics.snrDb, cfoHz: metrics.cfoHz};
+            monitor.setDetailsExpanded(true);
+            testContext.setMetric("snrValid", true);
+            waitForRendering(app.contentItem);
+            testContext.startAccessibilityCount();
+            testContext.tickMetrics(20);
+            var steady = testContext.accessibilityCount();
+            compare(typed(steady, "NameChanged"), 0, churn(steady));
+            testContext.stopAccessibilityCount();
+            testContext.startAccessibilityCount();
+            var changes = 20;
+            for (var t = 0; t < changes; ++t) {
+                // From 9.0 dB to 22.3 dB and a CFO from 0 Hz to -703 Hz: the readings change width as well as value.
+                testContext.setMetric("snrDb", 9 + t * 0.7);
+                testContext.setMetric("cfoHz", (t % 2 ? 1 : -1) * t * 37);
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            monitor.setDetailsExpanded(false);
+            for (var key in restore)
+                testContext.setMetric(key, restore[key]);
+            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0, churn(counts));
+            compare(typed(counts, "LocationChanged"), 0, JSON.stringify(counts.chains));
+            // Each rename by the item that raised it: the strip's own, two readings a change at most.
+            var renames = Object.keys(counts.chains).filter(function (chain) {
+                return /^NameChanged /.test(chain);
+            });
+            compare(JSON.stringify(renames.map(function (chain) {
+                return chain.split(" ")[1];
+            })), JSON.stringify(["signalStrip"]), "only the strip renames: " + JSON.stringify(counts.chains));
+            var stripRenames = counts.chains[renames[0]];
+            verify(stripRenames > 0 && stripRenames <= 2 * changes, "the strip follows its readings: "
+                   + JSON.stringify(counts.chains));
+        }
     }
 }

@@ -2675,6 +2675,99 @@ class Setup : public QObject {
         Q_EMIT m_metric_readings->qualityChanged();
     }
 
+    /** @brief Issue #782: every ancestor's interface lists the one below it, the walk the Android bridge makes. */
+    static bool
+    accessibleInTree(QAccessibleInterface* iface) {
+        QAccessibleInterface* child = iface;
+        for (QAccessibleInterface* parent = child->parent(); parent != nullptr; parent = parent->parent()) {
+            if (parent->indexOfChild(child) < 0) {
+                return false;
+            }
+            child = parent;
+        }
+        return true;
+    }
+
+    /** @brief Issue #782: the lower-case words (letters and digits) of @p text, markup and entities taken out. */
+    static QStringList
+    readableWords(QString text, bool markup) {
+        if (markup) {
+            static const QRegularExpression tag(QStringLiteral("<[^>]*>"));
+            text.replace(tag, QStringLiteral(" "));
+            text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+            text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+            text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+            text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+            text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+        }
+        static const QRegularExpression word(QStringLiteral("[\\p{L}\\p{N}]+"));
+        QStringList words;
+        for (auto it = word.globalMatch(text); it.hasNext();) {
+            words.append(it.next().captured(0).toLower());
+        }
+        return words;
+    }
+
+    static bool
+    containsAllWords(const QStringList& haystack, const QStringList& needles) {
+        for (const QString& needle : needles) {
+            if (!haystack.contains(needle)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @brief Issue #782: the words a platform bridge reads for @p iface: its name, description and value. */
+    static QStringList
+    spokenWords(QAccessibleInterface* iface) {
+        return readableWords(iface->text(QAccessible::Name) + QLatin1Char(' ') + iface->text(QAccessible::Description)
+                                 + QLatin1Char(' ') + iface->text(QAccessible::Value),
+                             false);
+    }
+
+    /** @brief Issue #782: whether some in-tree accessible node from @p item up carries all of @p words. */
+    static bool
+    wordsReachable(QQuickItem* item, const QStringList& words) {
+        for (QQuickItem* at = item; at != nullptr; at = at->parentItem()) {
+            QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(at);
+            if (iface == nullptr || !iface->isValid() || !accessibleInTree(iface)) {
+                continue;
+            }
+            if (containsAllWords(spokenWords(iface), words)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void
+    collectUnreachedTexts(QQuickItem* item, const QList<const QObject*>& skip, QVariantList& out) {
+        if (!item->isVisible() || qFuzzyIsNull(item->opacity()) || skip.contains(item)) {
+            return;
+        }
+        if (item->inherits("QQuickText")) {
+            const QString text = item->property("text").toString();
+            // Text.PlainText is 0; every other format may carry markup.
+            const bool markup = item->property("textFormat").toInt() != 0 && text.contains(QLatin1Char('<'));
+            const QStringList words = readableWords(text, markup);
+            if (!words.isEmpty() && !wordsReachable(item, words)) {
+                const QQmlContext* context = qmlContext(item);
+                out.append(QVariantMap{
+                    {QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                    {QStringLiteral("text"), text},
+                    {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
+                    {QStringLiteral("id"), context != nullptr ? context->nameForObject(item) : QString()},
+                    {QStringLiteral("objectName"), item->objectName()},
+                });
+            }
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectUnreachedTexts(child, skip, out);
+        }
+    }
+
     /** @brief Issue #782: whether accessibility is active (DSD_QML_TEST_ACCESSIBILITY=1 turns it on at startup). */
     Q_INVOKABLE bool
     accessibilityActive() const {
@@ -2695,22 +2788,51 @@ class Setup : public QObject {
         if (iface == nullptr || !iface->isValid()) {
             return {{QStringLiteral("exists"), false}, {QStringLiteral("inTree"), false}};
         }
-        bool inTree = true;
-        QAccessibleInterface* child = iface;
-        for (QAccessibleInterface* parent = child->parent(); parent != nullptr; parent = parent->parent()) {
-            if (parent->indexOfChild(child) < 0) {
-                inTree = false;
-                break;
-            }
-            child = parent;
-        }
         return {{QStringLiteral("exists"), true},
-                {QStringLiteral("inTree"), inTree},
+                {QStringLiteral("inTree"), accessibleInTree(iface)},
                 {QStringLiteral("role"), static_cast<int>(iface->role())},
                 {QStringLiteral("name"), iface->text(QAccessible::Name)},
                 {QStringLiteral("description"), iface->text(QAccessible::Description)},
                 {QStringLiteral("value"), iface->text(QAccessible::Value)},
                 {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)}};
+    }
+
+    /**
+     * @brief Issue #782: the visible text under @p root that no screen reader can reach.
+     *
+     * A plain `Text` has no accessible interface, so the Android bridge makes no node for it; its words reach a
+     * screen reader only through an accessible node on its own ancestor chain: itself named, or a button, row or
+     * group whose name, description or value carries them. This walks every visible, unfaded `Text` (a Controls
+     * `Label` included) under @p root and reports each one whose words are not all among the words of a single such
+     * node that is in the tree (accessibleNode's `inTree`). A text with no letters or digits (a glyph, a separator)
+     * has nothing to read and is skipped. The subtrees of @p skipped (sheets checked on their own) are left out. Each
+     * entry gives the item, its text, the QML file that declares it, its id there and its objectName, for an allowlist
+     * key and a failure message.
+     */
+    Q_INVOKABLE QVariantList
+    unreachedTexts(QObject* root, const QVariantList& skipped = {}) const {
+        QVariantList out;
+        QList<const QObject*> skip;
+        for (const QVariant& entry : skipped) {
+            skip.append(entry.value<QObject*>());
+        }
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectUnreachedTexts(item, skip, out);
+        }
+        return out;
+    }
+
+    /**
+     * @brief Issue #782: whether @p carrier is a node in the tree whose name, description or value holds every word
+     * of @p text: the check behind an allowlist entry that says another item reads a text aloud.
+     */
+    Q_INVOKABLE bool
+    nodeCarries(QObject* carrier, const QString& text) const {
+        QAccessibleInterface* iface = carrier != nullptr ? QAccessible::queryAccessibleInterface(carrier) : nullptr;
+        if (iface == nullptr || !iface->isValid() || !accessibleInTree(iface)) {
+            return false;
+        }
+        return containsAllWords(spokenWords(iface), readableWords(text, false));
     }
 
     /** @brief Issue #782: count accessibility events from now on, forgetting earlier counts. */
