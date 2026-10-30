@@ -1002,7 +1002,11 @@ Window {
         metrics.setChannelNames(mainRoot.scanChannelNames);
     }
 
+    // The name the target's calls are given (issue #782): the target CSV's `label`, which the generated lists fill
+    // with the entry's name, else what is known of the entry here, never its internal UID.
     function scanTargetLabel() {
+        if (metrics.scanTargetLabel)
+            return metrics.scanTargetLabel;
         // The session's own map while the operator holds the tuner, not the
         // Explore one standing in for it.
         var list = mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem;

@@ -47,6 +47,10 @@ main(int argc, char** argv) {
     sys["decodeFlag"] = "-ft";
     auto result = build();
     check(result.ok && result.targetCount == 1 && result.csv.contains("p25-conventional,851500000"));
+    // Issue #782: a saved system with no name is labelled by its protocol and frequency, never left to its UID.
+    sys["name"] = "  ";
+    check(build().ok && build().csv.contains(",\"P25 · 851.5 MHz\",") && !build().csv.contains("\"\","));
+    sys["name"] = "Example";
     for (const auto& flag :
          QStringList{"", "-Y", "-fd", "-fy", "-fm", "-fe", "-mq -Y", "-mq -^ --show-keys", "-fs -^"}) {
         sys["decodeFlag"] = flag;
@@ -139,12 +143,12 @@ main(int argc, char** argv) {
     list["entries"] = mixed;
     const auto mixedTargets = build();
     check(mixedTargets.ok && mixedTargets.targetCount == 4);
-    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,\"118.3 MHz\",")
-          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,\"119.3 MHz\",")
-          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,\"120.3 MHz\",")
-          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,\"121.3 MHz\","));
-    // Issue #782: the `label` column names each target as the monitor does, never by its internal entry UID: a
-    // frequency entry by its name, else its frequency. A quote becomes an apostrophe (the parser does not unescape
+    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,\"P25 · 118.3 MHz\",")
+          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,\"NFM (analog) · 119.3 MHz\",")
+          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,\"AM (analog) · 120.3 MHz\",")
+          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,\"DMR · 121.3 MHz\","));
+    // Issue #782: the `label` column names each target as the scan list does, never by its internal entry UID: an
+    // entry by its name, else its protocol and frequency. A quote becomes an apostrophe (the parser does not unescape
     // doubled quotes) and a line break a space; a comma stays, inside the quoted cell.
     check(mixedTargets.csv.startsWith("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,"
                                       "keys_dec_csv,p25_bandplan_csv,modulation,rtl_gain,label,options\n"));

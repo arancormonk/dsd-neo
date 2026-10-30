@@ -2538,6 +2538,12 @@ main(int argc, char** argv) {
     expect("trunk scan hold on", model.scanHold());
     expect("scan target identity", model.scanTargetId() == QStringLiteral("dispatch") && model.scanTargetOrdinal() == 2
                                        && model.scanTargetCount() == 3);
+    expect("an unlabelled target has no label", model.scanTargetLabel().isEmpty());
+    // Issue #782: the target's label, the name its calls are given, beside its id.
+    DSD_SNPRINTF(state.trunk_scan_active_label, sizeof state.trunk_scan_active_label, "%s", "County Dispatch");
+    model.refresh(&opts, &state);
+    expect("scan target label", model.scanTargetLabel() == QStringLiteral("County Dispatch")
+                                    && model.scanTargetId() == QStringLiteral("dispatch"));
     /* Both flags set: --trunk-scan owns the tuner and the routing prefers it, so the
      * view reads the coordinator's fields, not the scan list's. */
     opts.scanner_mode = 1;
@@ -2618,8 +2624,8 @@ main(int argc, char** argv) {
     model.clear();
     expect("a cleared model reports no lock", !model.syncedHere());
     expect("a cleared model reports no tuner", !model.radioInput());
-    expect("clear removes scan identity",
-           model.scanTargetId().isEmpty() && model.scanTargetOrdinal() == 0 && model.scanTargetCount() == 0);
+    expect("clear removes scan identity", model.scanTargetId().isEmpty() && model.scanTargetLabel().isEmpty()
+                                              && model.scanTargetOrdinal() == 0 && model.scanTargetCount() == 0);
 
     /* The channel width rides the tuner group: it moves when the decoder changes
      * profile, not when the user changes a setting. It is also gated on a radio

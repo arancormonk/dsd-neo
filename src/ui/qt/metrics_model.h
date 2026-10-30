@@ -218,6 +218,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QVariantList decryptionSlots READ decryptionSlots NOTIFY controlChanged)
     // WP-S1: copied from the tick's held snapshot.
     Q_PROPERTY(QString scanTargetId READ scanTargetId NOTIFY controlChanged)
+    /* Issue #782: the parked target's `label` column, "" when it has none: the name its calls are given. */
+    Q_PROPERTY(QString scanTargetLabel READ scanTargetLabel NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetOrdinal READ scanTargetOrdinal NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetCount READ scanTargetCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
@@ -1534,6 +1536,11 @@ class MetricsModel : public QObject {
         return m_view.scan_target_id;
     }
 
+    QString
+    scanTargetLabel() const {
+        return m_view.scan_target_label;
+    }
+
     int
     scanTargetOrdinal() const {
         return m_view.scan_target_ordinal;
@@ -2221,6 +2228,7 @@ class MetricsModel : public QObject {
         QString key_profile_ref;
         QVariantList decryption_slots;
         QString scan_target_id;
+        QString scan_target_label;
         /* #508: the stay reason and the live window, copied from the app-control view. */
         QString scan_stay_phrase;
         /* #522/#523: the received tone or code and, separately, the configured policy. */
@@ -2409,6 +2417,7 @@ class MetricsModel : public QObject {
         bool
         scanControlEquals(const View& other) const {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
+                   && scan_target_label == other.scan_target_label
                    && scan_target_ordinal == other.scan_target_ordinal && scan_target_count == other.scan_target_count
                    && scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
                    && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided

@@ -263,19 +263,22 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
 
 /* Issue #782: the name a person knows the target by, in the CSV's `label` column, which names the channel being heard
    (a call with no name of its own is named for it, and so are its history row and recording); the id is the entry's
-   internal UID, which the monitor maps back to the entry and never shows. The same name the monitor's scan header
-   gives: the saved system's name, else the frequency entry's name, else its frequency. The parser strips the cell's
+   internal UID, which never shows. The entry's name as the scan list shows it: the saved system's or frequency entry's
+   name, else its protocol and frequency ("P25 · 851.5 MHz"), never empty. The monitor's scan header shows the same
+   name, from the engine's publication. The parser strips the cell's
    outer quotes but does not unescape doubled ones, so a quote inside is written as an apostrophe and a line break as
    a space; the engine sanitizes and truncates the rest. */
 QString
-targetLabel(const QVariantMap& entry, const QVariantMap& sys) {
+targetLabel(const QVariantMap& sys, const Target& target) {
     QString label = sys.value("name").toString().trimmed();
-    if (label.isEmpty() && entry.value("kind") == "freq") {
-        const QString mhz = entry.value("freqMhz").toString().trimmed();
-        label = mhz.isEmpty() ? QString() : mhz + QStringLiteral(" MHz");
-    }
     if (label.isEmpty()) {
-        return {};
+        // The scan list's protocol names (ScanListScreen.qml protocolLabels), from the target type's protocol.
+        static const QMap<QString, QString> protocols{{"p25", "P25"},          {"dmr", "DMR"},
+                                                      {"nxdn48", "NXDN48"},    {"nxdn", "NXDN96"},
+                                                      {"nfm", "NFM (analog)"}, {"am", "AM (analog)"}};
+        const QString protocol = target.type.section(QLatin1Char('-'), 0, 0);
+        label = protocols.value(protocol, protocol.toUpper()) + QStringLiteral(" · ") + target.freq
+                + QStringLiteral(" MHz");
     }
     label.replace(QLatin1Char('"'), QLatin1Char('\''));
     label.replace(QLatin1Char('\r'), QLatin1Char(' '));
@@ -302,7 +305,7 @@ targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& targ
                             sys.value("p25BandplanCsvPath").toString(),
                             target.modulation,
                             gain >= 0 ? QString::number(gain) : QString(),
-                            targetLabel(entry, sys),
+                            targetLabel(sys, target),
                             options.join(QLatin1Char(' '))};
     return cells;
 }

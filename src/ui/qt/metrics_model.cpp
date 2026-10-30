@@ -536,6 +536,7 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
     if (trunk_scan) {
         if (running) {
             next.scan_target_id = QString::fromUtf8(snapshot->trunk_scan_active_id);
+            next.scan_target_label = QString::fromUtf8(snapshot->trunk_scan_active_label);
             next.scan_target_ordinal = snapshot->trunk_scan_active_ordinal;
         }
         next.scan_target_count = snapshot->trunk_scan_target_count;

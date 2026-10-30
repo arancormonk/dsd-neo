@@ -73,7 +73,7 @@ Column behavior:
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key. It accepts an optional `0x`, ignores ASCII whitespace, and requires exactly 10, 32, or 64 hex digits. It may be combined with `single_key_dec`, but not either key-file column. |
-| `label` | No | The name the channel being heard goes by while this target is parked, in place of the `id`: in Call Info, the event-history and `-J` prefix, the rdio `talkgroup_tag` fallback, a call's name when it has none of its own (the Qt/Android monitor and history) and its call recordings. Empty uses the `id`. Control characters become spaces, the ends are trimmed, and it is cut to 63 bytes on a character boundary. The Qt/Android scan lists write the saved system's or frequency entry's name here, as their ids are internal entry UIDs. |
+| `label` | No | The name the channel being heard goes by while this target is parked, in place of the `id`: in Call Info, the event-history and `-J` prefix, the rdio `talkgroup_tag` fallback, a call's name when it has none of its own (the Qt/Android monitor and history) and its call recordings. Empty uses the `id`. A cell wrapped in double quotes with every quote inside doubled (a spreadsheet's `"Tower ""A"""`) reads each doubled quote as one, control characters become spaces, the ends are trimmed, and it is cut to 63 bytes on a character boundary. The Qt/Android scan lists write the entry's name here (an unnamed one's protocol and frequency), as their ids are internal entry UIDs. |
 | `options` | No | Per-target [scoped switches](#per-target-options); `relevant_CLI_switches` is an alias. This header and its alias match ASCII case-insensitively, and naming both rejects the file. The target `type` determines which protocol-specific switches are accepted. Omitted settings inherit the outer CLI/configuration. |
 | `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Leave empty for conventional targets, including `p25-conventional`. Its rows are parked in the trunk target's snapshot, so an exported multi-system plan can be named on every `p25-trunk` row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
 
@@ -782,10 +782,12 @@ map's own companions included. One call checks each file once: rows naming the
 same channel map or key list share its inspection and its dry run, with the same
 results and the same first error.
 
-The Qt/Android monitor labels the active target with its saved-system name or frequency-entry name
-(falling back to the frequency), alongside its ordinal/count and hold state. Internal entry UIDs are not displayed: the
-generated target CSV gives each target that name in its `label` column, so a call with no name of its own, its history
-row and its recording are named for the target too, not for its UID.
+The Qt/Android monitor labels the active target with the name its calls are given, alongside its ordinal/count and hold
+state: the target's `label` when it has one, else its saved-system or frequency-entry name, else for a target CSV its
+id. Internal entry UIDs are not displayed: the generated target CSV gives each target the entry's name in its `label`
+column (an unnamed entry its protocol and frequency, "P25 · 851.5 MHz", as the scan list shows it), so a call with no
+name of its own, its history row and its recording are named for the target too, not for its UID. A user's target CSV
+with a `label` column names its targets the same way on the monitor as in their calls.
 
 The UI clears live model caches when `trunk_scan_active_ordinal` changes. A quiet
 new target must not inherit the old target's held sync indication. History keeps

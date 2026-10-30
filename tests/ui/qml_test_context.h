@@ -4112,6 +4112,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();
+        metrics[QStringLiteral("scanTargetLabel")] = QString();
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;
         metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
