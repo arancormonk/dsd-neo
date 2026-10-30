@@ -2570,12 +2570,12 @@ maintainer follow-up: record a transmitter with a known code in both polarities 
 
 The `UI_QT_*` cases register only under `-DDSD_ENABLE_QT_UI=ON`. Most of them
 link `Qt6::Core` alone and run anywhere Qt 6 is installed. `UI_QT_QML_CALL_LISTS`
-(CTest label `qml`) is the exception: it drives the real `.qml` screens through Qt
-Quick Test, so it also needs the **QuickTest** module — both its CMake package
-and its QML plugin, which Debian and Ubuntu package separately as
-`qml6-module-qttest`. Both are probed, and the test is left unregistered with a
-configure-time `STATUS` message when either is missing, rather than failing the
-whole project's configure step.
+and `UI_QT_QML_A11Y_CHURN` (CTest label `qml`) are the exception: they drive the
+real `.qml` screens through Qt Quick Test, so they also need the **QuickTest**
+module — both its CMake package and its QML plugin, which Debian and Ubuntu package
+separately as `qml6-module-qttest`. Both are probed, and the tests are left
+unregistered with a configure-time `STATUS` message when either is missing, rather
+than failing the whole project's configure step.
 
 ```sh
 cmake --preset dev-debug -DDSD_ENABLE_QT_UI=ON
@@ -2583,7 +2583,7 @@ cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_qml
 ctest --preset dev-debug -L qml --output-on-failure
 ```
 
-It carries its own headless environment (offscreen platform, software renderer)
+Each carries its own headless environment (offscreen platform, software renderer)
 in the CTest registration, so it needs no window server and no GPU.
 
 The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLLER`,
@@ -2630,6 +2630,64 @@ enforced (root). `UI_QT_BACKUP_MODEL` holds a job on the worker at a gate in its
 (`tests/ui/qml_backup_recorder.h`), so the QML tests cannot drift from the model. It runs each step with stderr captured
 so the libraries' expected log lines stay quiet, but its own `FAIL:` and `note:` lines go straight to the real stderr,
 so a step that crashes or hangs still shows them.
+
+#### Accessibility event counts
+
+`UI_QT_QML_A11Y_CHURN` (issue #782) counts the accessibility events the real screens raise: on Android, Qt's
+accessibility bridge turns each show or hide into blocking main-thread work (`docs/code_map.md`, "Qt QML editing
+convention"). It runs the same `dsd-neo_test_ui_qt_qml` binary over its own directory, `tests/ui/qml_a11y/`, with
+`DSD_QML_TEST_ACCESSIBILITY=1` added to the headless environment, so the other QML runs neither measure nor pay for it:
+
+```sh
+cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_qml
+ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
+```
+
+- **Activation.** With `DSD_QML_TEST_ACCESSIBILITY=1`, `Setup::applicationAvailable()` in
+  `tests/ui/qml_test_context.h` calls `QAccessible::setActive(true)` once the `QGuiApplication` exists and before any
+  engine, and stops the run (`qFatal`) unless `QAccessible::isActive()` then holds; `cleanupTestCase()` turns it off.
+  The offscreen platform tells Qt's activation observers as a platform bridge would, so Controls attach their accessible
+  objects and a move raises LocationChanged. `setActive()` is internal Qt API, used only here. Every file in the
+  directory checks `testContext.accessibilityActive()` first, so a file run without the variable fails instead of
+  passing on silence.
+- **Counting.** `testContext.startAccessibilityCount()` installs a `QAccessible` update handler
+  (`AccessibilityCounter`), which Qt calls for every event whether or not accessibility is active, and hands each event
+  on as Qt would; `stopAccessibilityCount()` puts the previous handler back. `accessibilityCount()` returns the counts
+  since the start: by event type (`types`), by the nearest named object, the emitter included (`owners`), and by the
+  named chain up from it (`chains`, for failure messages). `accessibilityCountWithin(scope, type)` counts what anything
+  inside `scope` raised, named or not. It is keyed by address, so ask it only about objects that outlive the count, such
+  as a sheet. ObjectCreated arrives before the new item has a parent, so it cannot be scoped: count a view's delegates
+  through the view (`count`, `itemAdded`) instead. The walk up reads only `objectName`, the parent item and the parent,
+  since the handler runs inside object construction, so give an item a case asserts on an `objectName`.
+- **Driving the screens.** `testContext.tickMetrics(n)` re-sets the `metrics` context property `n` times, so every
+  `metrics.*` binding re-evaluates with unchanged values, as a poll tick does to a binding whose notify signal a moving
+  reading shares; `setMetric()` cannot, since an equal value signals nothing. It re-evaluates every reading group at
+  once, more than production does. `publishTarget(map)` writes a whole target's readings in one batch and signals each
+  group once, as `MetricsModel` publishes a target change. The fixture's `metrics` is a property map, not
+  `MetricsModel`, so whether production publishes that way is `UI_QT_CONTROLLER`'s to catch
+  (`test_target_change_publishes_once()`). `applyTalkgroupTable(n)` refreshes the real `TalkgroupListModel` from one of
+  two prepared targets' policy tables (0 and 1, with different rows and categories; any other value goes back to the
+  fixture's own table), and `talkgroupEditVersionValid(context, generation)` makes the decoder's stale-edit check
+  against the table shown. `lastProfileScope()` is the scope the last KeySheet apply sent.
+- **Positive controls first.** `tst_a11y_harness.qml` numbers its cases so they run before anything relies on the
+  counter: accessibility is active; hiding and showing an accessible `Rectangle` counts exactly one ObjectHide and one
+  ObjectShow; a move counts LocationChanged; a Controls `Button` created after activation attaches its accessible
+  object (ObjectCreated and its role, because a Button raises ObjectShow even with accessibility off); `tickMetrics(10)`
+  re-evaluates a binding on `metrics` ten times; nothing is counted after the stop. Run without the variable, controls
+  1, 3 and 4 fail.
+- **The cases.** `tst_a11y_scan_churn.qml` loads `Main.qml` as `tst_main_session_tools.qml` does, checks every sheet is
+  closed by walking the tree, and asserts that steady ticks, scan hops and target name changes raise no show or hide
+  under the closed sheets, that two-slot hops leave the Monitor still, and that calls raise nothing under the hidden
+  Home and History screens. Its case C is the control: hops published through the defaults, the shape before #782, must
+  still flood the session menu and the radio and squelch sheets, so case B cannot pass because the hops stopped
+  reaching them. `tst_a11y_closed_sheets.qml` covers the closed KeySheet and SiteSheet; `tst_a11y_talkgroups.qml` the
+  hidden Talkgroups screen across two targets' tables, reopening at the reader's place, and an edit keeping the version
+  it opened with. A part known to churn whose fix has not landed goes in the scan churn file's `pendingFix` list
+  (sheet, part, how to find it, the fix): it is held as an expected failure, and the fix turns that into an unexpected
+  pass, which fails until the entry is removed.
+
+The Android side, which no host test reaches, is checked by hand on an emulator: "Qt upgrade checks" in
+`docs/code_map.md`.
 
 #### Build-time constants that gate a branch
 

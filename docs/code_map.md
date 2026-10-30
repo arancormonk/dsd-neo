@@ -8727,6 +8727,17 @@ Qt Quick frontend (`src/ui/qt`):
   deadlines were stamped with, so in a replay they freeze while samples stop; the sync hold is real time and expires
   either way. History, network and policy models still refresh on decoder redraws; session lifecycle clears live
   metrics and prevents stale snapshots from restoring them.
+- One metrics publication per scan-target change (issue #782): `UiController::invalidateForTarget()` returns whether
+  `trunk_scan_active_ordinal` moved (it still clears the P25 network model and invalidates the talkgroup model), and
+  `refreshModels()` passes that to `MetricsModel::refresh(opts, snapshot, new_target)`, which drops the old target's
+  latches (`resetTargetLatches()`: the sync hold and the message timer) and then builds and publishes the new target's
+  view once. With the session not live, a target change publishes the cleared view once (`clear()`). A `clear()` then
+  `refresh()` on each hop swung every reading to its default and back, so each binding on the radio input, scan
+  rotation or squelch gates rebuilt its controls twice per hop, under closed sheets too, and on Android each rebuilt
+  accessible item cost the main thread a blocking round trip to the Qt thread. Tests: `UI_QT_CONTROLLER`
+  (`test_target_change_publishes_once()`, which records five gates at every NOTIFY emission and checks every property's
+  signal is watched, `test_target_change_drops_sync_hold()`, `test_target_change_while_stopped_clears()`),
+  `UI_QT_METRICS_MODEL` (`test_new_target_drops_sync_hold_in_one_publication()`).
 - Two clocks: `MetricsModel` ages the call lines, the call-skip count and the scan countdown on the decode clock, and
   publishes its wall-clock now as `decodeNowMs` (read live; `decodeNowMsChanged` fires from `refresh()` when the decode
   second moves). QML compares decoded stamps only against it: `Util.shortAge(when, metrics.decodeNowMs)` for the
@@ -9524,7 +9535,12 @@ Qt Quick frontend (`src/ui/qt`):
   provenance, while the add-system wizard stays the single writer of a saved system. See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
-  acquisition and geocoding, with `decoder_host_android` polling terminal results.
+  acquisition and geocoding, with `decoder_host_android` polling terminal results. A permission prompt Android closed
+  unanswered (empty grants, as when the `singleTask` activity is brought forward; issue #782) is a cancel, not a
+  denial: the record carries `"cancelled": true`, `android/location_record.h` delivers it as
+  `DecoderHost::locationCancelled(requestId)` instead of `locationResult`, `RadioReferenceModel` settles the request
+  with no error and no change to the saved fix, and `SiteChooserSheet` returns to its idle text (`ANDROID_LOCATION_JVM`,
+  `UI_QT_ANDROID_HOST` `check_location_record()`, `UI_QT_RADIO_REFERENCE`, `tst_site_chooser_sheet.qml`).
   `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
   `DecoderHost::requestSiteLocation` shares request ownership and cancellation with nearby import but asks Android
   for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
@@ -9842,8 +9858,16 @@ Qt Quick frontend (`src/ui/qt`):
     starts" resolves the system again by UID at the tap, asks through `ConfirmDialog` before replacing another
     profile, refuses a removed system, and writes `decryptionProfileUid` with `update()`; Main then refreshes
     `sessionSystem`. "Save as profile…" opens the editor's `openDirect()` with the typed draft (QML fields only until
-    Save profile) and selects the saved profile. Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
-    `tst_history_session_identity.qml`.
+    Save profile) and selects the saved profile. During a trunk scan the scope combo (`keySheetScope`) is the fixed
+    pair "Session defaults" / "Active scan target" (issue #782): with the target's name in its model, every hop
+    replaced the model, which reset the choice to session defaults while the sheet was open and rebuilt the popup's
+    delegates while it was closed. The name has its own line, `keySheetTargetName` ("Applies to <name>"), which shows
+    the name captured at `open()` (`openedTargetName`, next to the decryption `context` a target-scope Apply sends),
+    not the scan's current target; once the scan leaves that target, `keySheetTargetLeft` says to reopen the editor,
+    since the decoder refuses that apply as stale. The slot rows (`keySheetSlots`) are built only while the sheet is
+    visible ("Qt QML editing convention"). Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+    `tst_history_session_identity.qml`, `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`
+    `test_b2_target_names_leave_the_closed_key_sheet_quiet`, `tst_a11y_closed_sheets.qml`).
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
@@ -10504,6 +10528,173 @@ thread, which the rest of the interface never is.
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 
+#### Accessibility bridge (issue #782)
+
+Qt 6.11.2 turns its Android accessibility bridge on whenever any accessibility service is enabled, and with the bridge
+on each ObjectShow or ObjectHide becomes one Android main-thread task that makes 8 blocking round trips to the Qt
+thread. On phones with a remote-control or call-recording app bound, a scan stalled the main thread for over a minute
+(the dim, Stop and Start waited; Android reported an ANR). So the bridge runs only when touch exploration (TalkBack's
+explore-by-touch) is on at launch. User-facing limits are in `android/README.md` "Known limits", the records in its
+"Accessibility records"; the QML rules that keep the bridge's load down are under "Qt QML editing convention".
+
+- `AccessibilityGate.kt` (plain Kotlin, no `android.*`) decides. `A11yFacts` (accessibility enabled, touch
+  exploration, the count of bound services, which only the record reads); `bridgeWanted()` is touch exploration alone;
+  `LaunchPlan` holds the variable's launch value (`"1"` keeps the bridge off, `"0"` leaves Qt's default, since Qt keeps
+  it off only for `1` or `true`: `qtKeepsBridgeOff()`), `activated` (wanted and enabled) and `qtFollows` (the variable
+  could not be written and is absent). The gate is process state: the first `launch()` decides, and the notice it owes
+  belongs to the process, not an activity. Through `ActivitySlot` it is shown only to the attached activity while
+  resumed; a dialog closed by a stop or destroy goes back to pending (to idle once touch exploration is off), and after
+  OK nothing shows until the next rising edge. `record()` writes the launch record from flags and counts only (D-A7).
+- `AccessibilityBridge.kt` (an object; main thread only) carries it out around `DsdNeoActivity`'s
+  `super.onCreate()`, where Qt registers its accessibility listener, calls it at once when accessibility is enabled,
+  and reads `QT_ANDROID_DISABLE_ACCESSIBILITY` there and on every later change of the enabled state:
+  - `beforeQt(this)`, immediately before, on the process's first launch only: reads the facts, writes the plan's `"1"`
+    or `"0"` with `Os.setenv` (never unsets: the entry must exist before Qt's `main()` starts) and launches the gate.
+  - `afterQt(this)`, immediately after: freezes the variable at `1`, writing only into an entry that exists and is not
+    `1` yet (the one in-place swap of a TalkBack launch; the environment rule is in "QML garbage collector"), attaches
+    the gate, registers one `TouchExplorationStateChangeListener` per process, submits the launch record once and
+    re-reads the flags.
+  - Frozen because turning the bridge on mid-session crashes Qt 6.11.2 (QTBUG-144911: `setActive` runs on the Android
+    main thread) and turning it off would leave a screen reader with nothing to read. So touch exploration turned on
+    later gets a notice, never an in-place enable, and a bridge already on stays on until the process ends.
+  - `onResume` re-reads the flags and shows a pending notice; `onPause` marks the activity paused; `onStop` and
+    `onDestroy` close a notice shown on that activity (`dropped`), and `onDestroy` detaches it, before
+    `super.onDestroy()`.
+  - A failed `setenv` is recorded and leaves Qt's default, which the launch plan then reports (`qtFollows`, or Qt's
+    reading of a value left over from elsewhere).
+- `AccessibilityRestartNotice.kt` is the platform side: a native `AlertDialog` (the Qt UI cannot be heard with the
+  bridge off) with `a11y_restart_title`, `a11y_restart_message` and one OK. OK and Back acknowledge; a touch outside
+  does nothing, since explore-by-touch touches the screen to read it. The app never closes itself. It also routes the
+  records to `HostDiagnostics.submit()`.
+- No Qt internals and no new R8 keep rule (D-A5): public `AccessibilityManager` calls and `android.system.Os` only.
+
+`DsdNeoActivity.onCreate()` runs, after `ProcessFacts.attach(this)` and as consecutive statements:
+`LaunchGuard.onCreate(ProcessFacts::setStateSummary)`, `AccessibilityBridge.effects = AccessibilityRestartNotice`,
+`QmlGcPolicy.beforeQt(HostDiagnostics::submit)`, `AccessibilityBridge.beforeQt(this)`,
+`super.onCreate(savedInstanceState)`, `AccessibilityBridge.afterQt(this)`, `LaunchGuard.afterQt()`.
+
+#### Launch policy (issue #782)
+
+The Qt limit: Qt 6.11.2 cannot take a second instance of the activity in a process it already started. The new
+instance's `QtActivityBase.onCreate()` sees Qt started and calls `restartApplication()` (`startActivity`, `finish()`,
+`Runtime.exit(0)`) inside `super.onCreate()`, before any of the app's teardown; the session dies with the process. That
+stays as it is, with no cleanup fallback. The app prevents it and records what still gets through:
+
+- The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
+  attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
+  second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
+  permission prompt open in the app's task, which returns cancelled. The `FileDialog` flows end quietly on a reject,
+  and an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own
+  task.
+- `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
+  for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
+  change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
+  `android/CMakeLists.txt` pins `QT_ANDROID_COMPILE_SDK_VERSION` to 36, which CI installs (`ANDROID_COMPILE_SDK`). The
+  list is explicit rather than aapt2's `allKnown`, so a check can pin it.
+- `LaunchGuard.kt` (plain Kotlin) is a record only. `afterQt()` marks Qt started; a later `onCreate()` in the same
+  process hands `SUMMARY` ("activity: second instance in a running process; Qt 6.11.2 restarts the process", within
+  `ActivityManager`'s 128 bytes) to `ProcessFacts.setStateSummary()`, which calls `setProcessStateSummary()` on
+  API 30+ and does nothing on API 29. The next process's `exitLines()` reads `getProcessStateSummary()` into
+  `ExitFacts.Record.summary`, and `ExitFacts.line()` prints it in parentheses as it is. A Qt start that failed inside
+  `super.onCreate()` still marks Qt started; that window is accepted (`LaunchGuard`'s KDoc).
+- So on Qt 6.11.2 no activity, and no Qt UI, is ever created over a running decoder service: a second instance
+  restarts the process, every other destroy of the activity ends it (`QtActivityBase.onDestroy()` ends in
+  `System.exit(0)`, after the app's teardown), and `DecoderService` returns `START_NOT_STICKY`. The paths elsewhere in
+  this map that handle an Activity or host recreated over a running session (a host adopting the service's state and
+  its `endingAcknowledged` mark, Reconnect with no `attemptedSource`) do not run in the app today; they stay for a Qt
+  that keeps the process.
+
+Tests: `ANDROID_A11Y_BRIDGE_JVM` (`run_jvm_tests.py --suite a11y_bridge`):
+
+- Build 1, no stubs: `AccessibilityGateTest.kt` (the predicate table, an idempotent launch, the edges, pause and
+  resume, a notice carried to the next activity, stale callbacks, dropped against acknowledged, `qtFollows`, a record
+  with no service names), `LaunchGuardTest.kt`, `ExitFactsTest.kt`.
+- Build 2, against stubs of `AccessibilityManager` (state listeners, then touch listeners, as AOSP's `setStateLocked`
+  fires them) and of `android.system.Os` (an environment map with an injectable `ErrnoException`), with Qt 6.11.2's
+  listener modelled in the test: `AccessibilityBridgeTest.kt`, `AccessibilityBridgeLaunchTest.kt`,
+  `AccessibilityBridgeErrnoTest.kt`, `AccessibilityBridgeErrnoOffTest.kt`, `AccessibilityBridgeLeftoverTest.kt`,
+  `QmlGcPolicyTest.kt`. The bridge is process state, so each file runs in its own JVM.
+- `a11y_bridge_order()`: the seven launch statements above, consecutive, after `ProcessFacts.attach(this)`, with none of
+  them elsewhere in `onCreate()`; the four lifecycle callbacks forward to the bridge, and its `onDestroy` comes before
+  `super.onDestroy()`.
+- `launch_policy()`: one `DsdNeoActivity`, `singleTask`, `configChanges` exactly `PINNED_CONFIG_CHANGES`, the compile
+  SDK equal in `android/CMakeLists.txt`, in the CI pins and to `AUDITED_COMPILE_SDK`, `LaunchGuard.QT_RESTART` naming
+  `ANDROID_QT_VERSION`, and `ProcessFacts.kt` setting the summary only on API 30+ and reading it back
+  (`launch_record_plumbing()`). Recreation itself cannot be triggered on a fixed build without test-only code, and none
+  is added: the emulator runs below cover it.
+- The environment-writer checks are under "QML garbage collector". `UI_QT_DIAGNOSTICS_LOG` holds the
+  `accessibility:` record shapes and checks each survives redaction unchanged.
+
+#### Qt upgrade checks
+
+A Qt bump re-audits the bridge gate and the launch policy before it merges. They rest on Qt 6.11.2 behaviour read in
+its source:
+
+- `QtAccessibilityDelegate`'s listener reads `QT_ANDROID_DISABLE_ACCESSIBILITY` on every call and stays out only for
+  `1` or `true`;
+- it is registered, and called when accessibility is enabled, synchronously inside `super.onCreate()`;
+- enabling the bridge mid-session is unsafe (QTBUG-144911; fixed upstream in 6.12.1, not in 6.11.3);
+- a second activity instance restarts the process (`QtActivityBase.onCreate()` → `restartApplication()`);
+- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below).
+
+What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
+(`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below
+pass on the new Qt. If the new Qt no longer restarts the process (read `QtActivityBase.onCreate()` in its qtbase, and
+run L-dup on a scratch build with `launchMode` back at `singleTop`: a new pid means it still does), revise
+`LaunchGuard`'s record, `android/README.md` "Known limits" and this section instead. The first bump to 6.12.1 or later
+also decides whether the notice can give way to enabling the bridge in place. The tripwire's limit: it proves that the
+text was edited, not that the checks ran, and it reads the CI pin, not the Qt kit a local build uses. A compile SDK bump
+trips `launch_policy()` on its own, until `configChanges` is audited against the new platform's
+`attrs_manifest.xml` (then `PINNED_CONFIG_CHANGES` and `AUDITED_COMPILE_SDK`). The R8 keep rules have their own Qt
+re-audit (top of this section).
+
+The checks are `ANDROID_A11Y_BRIDGE_JVM` and these runs on an emulator (an API 36 AVD, a release APK of the bump, and
+decoding a trunk scan list for the scanning runs):
+
+- Toggle services with `adb shell settings put secure enabled_accessibility_services <component>` plus
+  `accessibility_enabled 1`; delete both to disable. TalkBack is `com.google.android.marvin.talkback/.TalkBackService`
+  on the image. The "do-nothing service" is any accessibility service that is not a screen reader (a minimal test
+  service), standing in for the remote-control and call-recording apps of the field reports.
+- Never use uiautomator or UiAutomation in these runs: a UiAutomation connection makes `isEnabled()` true by itself.
+  Tap at fixed coordinates.
+- Bridge state: in `adb shell dumpsys activity top`, Qt's bridge is the one plain `android.view.View` under the
+  activity's content root; present is on, absent is off. If a Qt bump changes that, the probe fails the runs rather
+  than passing them, since T1–T3 expect both states.
+- A crash is any of: a new pid, `am_crash` or `am_anr` in `logcat -b events`, a new tombstone, `FATAL EXCEPTION` or
+  `Abort message` in logcat, or QTBUG-144911's `QObject: Cannot create children for a parent that is in a different
+  thread`. The notice and launch records are the `accessibility:` lines in Settings → Diagnostics; stalls are the
+  watchdog's `watchdog: stall` records.
+
+Each run gives its setup, then what must hold:
+
+- **T1.** Launch with no service and start scanning; enable TalkBack, the first service; wait 120 s. The bridge stays
+  off throughout; the notice shows once and TalkBack reads it; OK records `notice acknowledged`; no crash.
+- **T2.** Enable TalkBack and launch (bridge on); disable it, leaving no service; wait 30 s; enable it again; wait
+  120 s. The bridge stays on throughout; no notice; no crash.
+- **T3.** Launch with no service and start scanning; bind the do-nothing service, the first service; wait 120 s. The
+  bridge stays off; no notice; no stall of 1.5 s or more; no crash.
+- **B.** The do-nothing service bound at launch; scan. The launch record says `bridge off at launch`; no stalls; the
+  dim lifts within 50 ms; Stop and Start are delivered within 100 ms; no ANR on Power.
+- **E.** The do-nothing service bound; turn TalkBack on mid-session with the volume-key shortcut. No crash; the notice
+  shows and TalkBack reads it; OK dismisses it and decoding goes on; a swipe from Recents writes the normal `teardown:`
+  records and no `DecoderService` respawns; a relaunch has the bridge on.
+- **L-overlay.** While scanning, `adb shell cmd overlay enable <overlay>` (any framework overlay `cmd overlay list`
+  shows), then `disable`. Same pid; the notice dialog and the notification still render correctly.
+- **L-dup.** With the in-app document picker open, deliver a USB attachment:
+
+  ```sh
+  adb shell am start -a android.hardware.usb.action.USB_DEVICE_ATTACHED \
+    -n io.github.arancormonk.dsdneo/.DsdNeoActivity
+  ```
+
+  Same pid; `onNewIntent` takes the attachment; the picker is cancelled.
+- **L-dup-launcher.** Cold-start through the USB intent (as in L-dup), start decoding, open Import CSV, press Home and
+  tap the launcher icon; then repeat with the location prompt open (Nearby or "Use my location", permission not yet
+  granted). Same pid; the import ends with no error; the cleared location prompt shows no "denied" text and the lookup
+  returns to idle.
+- **L-dup-notification.** As L-dup-launcher, tapping the decoding notification's body instead of the launcher icon.
+  The same must hold.
+
 ### Android screen modes
 
 The Settings → Listening → Screen modes (issue #574; user-facing rules in `android/README.md` "Screen") are decided in
@@ -10685,6 +10876,31 @@ binding loop. A size bound to a `Text` reads its `height`, not `implicitHeight`,
 changes itself under the binding reading it. Deferred work in a component that can be torn down with a call in flight
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
 tests pin these with `failOnWarning`.
+
+Accessibility churn (issue #782). On Android, Qt 6.11.2's accessibility bridge turns each ObjectShow or ObjectHide into
+a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
+items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration
+contracts", but TalkBack users still pay). Qt raises those events for delegates created under a hidden parent, and an
+item view refills its delegates even while invisible, so:
+
+- A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
+  `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
+  (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
+  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt). Opening
+  fills it from the readings as they are then. A sheet whose content follows the snapshot can instead refresh only
+  while visible (`NetworkSheet`).
+- No changing text in a `ComboBox` model. A new model resets `currentIndex` to 0 and rebuilds every popup delegate,
+  open or closed; keep the model a fixed list and put the changing text beside the combo (KeySheet's scope pair and
+  its `keySheetTargetName` line).
+- No equal-list guards. Repeater and ComboBox already ignore an equal model, and typed QML properties and `Accessible.*`
+  setters notify only on a real change; a list that churns has a source to fix (one publication per target change,
+  under UI, Qt) or a hidden view to detach.
+
+`UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
+(`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops and calls against `Main.qml`
+(`tst_a11y_scan_churn.qml`), closed KeySheet and SiteSheet (`tst_a11y_closed_sheets.qml`) and a hidden Talkgroups
+screen across two targets' tables (`tst_a11y_talkgroups.qml`). How the harness works and how to add a case:
+`docs/testing.md` "Accessibility event counts".
 
 #### Qt scan-list start path
 

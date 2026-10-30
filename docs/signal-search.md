@@ -215,10 +215,10 @@ showed.
 - **Hold** overrides quiet release and the maximum visit. A held probe still falls
   back when its identification window expires.
 - **Skip** suppresses this frequency for the current pass.
-- **Avoid this session** lasts until the session ends, including across Activity
-  recreation. Session avoids are listed under **Avoided this session**, and
-  **Stop avoiding** lifts one for the following measurements; a frequency already
-  visited in the current pass returns with the next pass. A history row's avoid
+- **Avoid this session** lasts until the session ends. Session avoids are listed
+  under **Avoided this session**, and **Stop avoiding** lifts one for the following
+  measurements; a frequency already visited in the current pass returns with the
+  next pass. A history row's avoid
   works the same way, and leaves the frequency at once if the search is
   visiting it. **Avoid permanently** also saves it for future searches;
   removing a permanent avoid during a search lifts it from the running session
@@ -268,11 +268,9 @@ showed.
   Resume or leaving the screen, and what the search reports meanwhile (a full
   avoid list, for example) shows below it. If
   it became avoided while the search stopped, Home shows the refusal: **Retry**
-  asks again and **Edit** opens that system. If Android recreates the Activity during the
-  handoff, the reopened app finds the search stopped and starts nothing. A search screen
-  the app reopened over a running search after such a recreation hands off the same way:
-  it stays, reading **Stopping the search…**, until the decoder is idle, and after
-  **Back** the stopped search stays on it.
+  asks again and **Edit** opens that system. A recreated Activity restarts the app
+  under Qt 6.11.2, which ends the search and the handoff with it (`android/README.md`
+  "Known limits").
 - **Retry** on a failed Signal search start opens Signal search again and starts
   the search on the same receiver; **Edit** opens Signal search. Both take the
   receiver attached now, as opening Signal search from Home does: a USB dongle
@@ -282,10 +280,9 @@ showed.
   opens Explore setup on that attempt's receiver and frequency, not on Explore's
   remembered answer. Starting from there keeps the detection's receive mode and
   gain and, like Explore here, does not change where Explore resumes from Home.
-- Android Back follows the existing background-listening preference. The native
-  session and history worker continue when the foreground Activity is recreated,
-  and the reopened screen takes its receiver (USB, Airspy or rtl_tcp server) from
-  the running session.
+- Android Back follows the existing background-listening preference. A recreated
+  Activity restarts the app under Qt 6.11.2 and ends the session (`android/README.md`
+  "Known limits").
 
 Detection history is separate from call history: an RF detection need not decode
 anything. The newest 1,000 detections are retained, with one row updated as details
