@@ -47,9 +47,15 @@ ModalSheet {
             MicroLabel {
                 text: section.modelData
             }
+            // In the tree while hidden (issue #782), so that it shows when the
+            // section empties: that show is what makes Android's bridge refresh
+            // its copy of the sheet (the held rows below leave the tree without
+            // an event it sends on), and a swipe then reaches this line.
             ReadableText {
                 visible: sectionRows.live === 0
                 text: qsTr("(none announced)")
+                Accessible.ignored: !navigationAllowed
+                Accessible.name: navigationAllowed && visible ? text : ""
                 font.family: Theme.sans
                 color: Theme.textSubdued
             }
@@ -62,16 +68,20 @@ ModalSheet {
             // one that left.
             //
             // A target with none of these entries (a hop to a DMR or analog
-            // target, or a P25 site that lists none) keeps the rows, left out of
-            // the tree and out of sight, rather than removing them: removed or
+            // target, or a P25 site that lists none) keeps the rows, out of the
+            // tree and out of sight, rather than removing them: removed or
             // hidden, every row would raise a hide, and again a show on the way
-            // back. Leaving the tree raises only ObjectDestroyed, which Android's
-            // bridge does not send on.
+            // back, each a main-thread task with blocking calls into the Qt
+            // thread on Android. Leaving the tree raises only ObjectDestroyed,
+            // which Android's bridge does not send on. A held row, and a row past
+            // the end of a shrinking list until it goes, is transparent, so Qt
+            // reports it invisible, and unnamed, so a copy Android still holds,
+            // or keeps focus on, reads nothing. Unnaming a row is a call into
+            // Java that returns at once unless TalkBack is on that row.
             Column {
                 width: parent.width
                 spacing: 8
-                height: sectionRows.live > 0 ? implicitHeight : 0
-                opacity: sectionRows.live > 0 ? 1 : 0
+                height: sectionRows.shown > 0 ? implicitHeight : 0
                 Repeater {
                     model: StableRows {
                         id: sectionRows
@@ -85,12 +95,13 @@ ModalSheet {
                         }
                     }
                     ReadableText {
+                        required property int index
                         required property string line
                         width: parent.width
                         text: line
+                        opacity: index < sectionRows.shown ? 1 : 0
                         Accessible.ignored: !navigationAllowed || !visible || sectionRows.live === 0
-                        // Held while the section is empty: renaming it then would raise an event per row.
-                        Accessible.name: navigationAllowed && visible ? text : ""
+                        Accessible.name: navigationAllowed && visible && index < sectionRows.live ? text : ""
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         font.family: Theme.mono

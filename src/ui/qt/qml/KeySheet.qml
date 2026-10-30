@@ -233,14 +233,21 @@ ModalSheet {
         objectName: "keySheetSlots"
         readonly property var slots: sheet.visible ? (metrics.decryptionSlots || []) : []
         model: StableRows {
+            id: slotRows
             entries: slotRepeater.slots
         }
         Column {
             id: slotRow
             required property int index
-            // The rows' reading of a slot, an empty one while the count shrinks under it.
-            readonly property var slotData: slotRow.index < slotRepeater.slots.length ? slotRepeater.slots[slotRow.index]
-                : ({slot: 0, status: "", lastObserved: false, algorithm: "", keyId: "", source: "", effectiveId: "",
+            // A row past the end of a shrinking list goes at the end of the turn;
+            // until then it is hidden, and keeps reading the slot it last read.
+            visible: slotRow.index < slotRows.shown
+            // The slot last read, kept where a binding does not follow it.
+            readonly property var read: ({})
+            onSlotDataChanged: read.slot = slotData
+            // The row's reading of its slot; an empty one only before it has read one.
+            readonly property var slotData: slotRow.index >= 0 && slotRow.index < slotRepeater.slots.length ? slotRepeater.slots[slotRow.index]
+                : slotRow.read.slot || ({slot: 0, status: "", lastObserved: false, algorithm: "", keyId: "", source: "", effectiveId: "",
                     availability: "", fallback: "", privateCall: false, dmr: false, group: false, blockReason: "",
                     profileRef: "", protocol: "", materialKind: "", targetId: ""})
             width: parent.width

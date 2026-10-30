@@ -15,10 +15,13 @@ import QtQuick
 //   row; a row is added or removed only when the count changes;
 // - rows are added and renamed at once, and let go at the end of the turn, so
 //   a list emptied and filled again in one turn keeps its rows;
-// - with `holdWhenEmpty`, an empty list keeps the rows as they are, and `live`
-//   (the rows holding an entry) is 0: the view leaves them out of the tree and
-//   out of sight, which raises nothing a screen reader is sent, and the next
-//   list reuses them.
+// - `shown` is the length of the list as it is now: a view draws rows from
+//   `shown` on at no opacity, so a row that left is not drawn even for the rest
+//   of the turn (an opacity raises no accessibility event);
+// - `live` is the rows holding an entry, at once on a shrink and at the end of
+//   the turn on emptying: a view names rows from `live` on as nothing;
+// - with `holdWhenEmpty`, an empty list keeps the rows as they are, `live` 0:
+//   the view leaves them out of the tree as well, and the next list reuses them.
 ListModel {
     id: rows
     property var entries: []
@@ -30,6 +33,7 @@ ListModel {
     }
     property bool holdWhenEmpty: false
     property int live: 0
+    property int shown: 0
     onEntriesChanged: sync()
     Component.onCompleted: sync()
 
@@ -79,6 +83,7 @@ ListModel {
                 lines[i] = words[i];
             }
         }
+        shown = n;
         if (n > 0)
             live = n;
         if (n === 0 || count > n)
@@ -87,6 +92,7 @@ ListModel {
     // The rows past the end of the list as it is at the end of the turn.
     function trim() {
         var n = entries ? entries.length : 0;
+        shown = n;
         if (n === 0 && holdWhenEmpty) {
             live = 0;
             return;

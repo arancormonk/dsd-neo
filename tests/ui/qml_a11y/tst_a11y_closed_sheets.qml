@@ -272,13 +272,42 @@ Item {
                 for (var k = 0; k < item.children.length; ++k) {
                     var child = item.children[k];
                     // A neighbour row: a text that starts with its frequency, drawn (not held for a later list).
-                    if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text) && child.visible
-                            && child.parent.opacity > 0)
+                    if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text) && drawn(child))
                         rows.push(child);
                     collect(child);
                 }
             })(sheet);
             return rows;
+        }
+        // Whether @p item is drawn: shown, and neither it nor its list transparent.
+        function drawn(item) {
+            return item.visible && item.opacity > 0 && item.parent.opacity > 0;
+        }
+        // Every neighbour row @p sheet has, drawn or held.
+        function allNeighbourRows(sheet) {
+            var rows = [];
+            (function collect(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    var child = item.children[k];
+                    if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text))
+                        rows.push(child);
+                    collect(child);
+                }
+            })(sheet);
+            return rows;
+        }
+        // Each section's "(none announced)" line in @p sheet, in order.
+        function noneLines(sheet) {
+            var lines = [];
+            (function collect(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    var child = item.children[k];
+                    if (child.text === "(none announced)")
+                        lines.push(child);
+                    collect(child);
+                }
+            })(sheet);
+            return lines;
         }
         function test_open_network_sheet_refreshes() {
             var sheet = networkLoader.item;
@@ -405,7 +434,7 @@ Item {
                 (function collect(item) {
                     for (var k = 0; k < item.children.length; ++k) {
                         var child = item.children[k];
-                        if (child.textFormat !== undefined && /^RID:[0-9]+$/.test(child.text) && child.parent.opacity > 0)
+                        if (child.textFormat !== undefined && /^RID:[0-9]+$/.test(child.text) && drawn(child))
                             found.push(child);
                         collect(child);
                     }
@@ -450,6 +479,89 @@ Item {
             fakeNet.radios = [];
         }
 
+        // Issue #782: a hop to a target with no P25 network holds the rows, and Android's bridge must not keep reading
+        // them: Qt sends it no event as they leave the tree, so its cached copy of the sheet is refreshed only by a
+        // show or hide under it. Each held row reports itself invisible and unnamed, so a cached or focused copy
+        // reads nothing; "(none announced)" stays in the tree while hidden, so it shows (refreshing the cache) as the
+        // section empties, and a swipe reaches it. Filled again, the rows are read as themselves and the line hides.
+        function test_open_network_sheet_hold_reads_nothing() {
+            var sheet = networkLoader.item;
+            var listed = neighbours(8, 0, 3);
+            fakeNet.neighbours = listed;
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, 8);
+            var none = noneLines(sheet)[0];
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = [];
+            wait(20);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            for (var held of rows) {
+                var node = testContext.accessibleNode(held);
+                verify(node.invisible, "a held row reports itself invisible: " + held.text);
+                compare(node.name, "", "and reads nothing");
+                verify(!node.inTree);
+            }
+            var line = testContext.accessibleNode(none);
+            verify(line.inTree && !line.invisible, "the section's \"(none announced)\" is reachable");
+            compare(line.name, "(none announced)");
+            compare(testContext.accessibilityCountWithin(none, "ObjectShow"), 1, "and shows, once: "
+                    + JSON.stringify(counts.chains));
+            compare(showHide(sheet), 1, "nothing else shows or hides: " + JSON.stringify(counts.chains));
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = listed;
+            wait(20);
+            counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(testContext.accessibilityCountWithin(none, "ObjectHide"), 1, JSON.stringify(counts.chains));
+            compare(showHide(sheet), 1, JSON.stringify(counts.chains));
+            compare(neighbourRows(sheet), rows, "the same rows");
+            for (var r of rows) {
+                node = testContext.accessibleNode(r);
+                verify(node.inTree && !node.invisible);
+                compare(node.name, r.text);
+            }
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.neighbours = [];
+        }
+
+        // Issue #782: a shrinking list's departed rows go at the end of the turn, but are not drawn or read from the
+        // moment the list shrinks: each reports itself invisible and unnamed, and hides as it goes.
+        function test_open_network_sheet_shrink_hides_departed_rows_at_once() {
+            var sheet = networkLoader.item;
+            fakeNet.neighbours = neighbours(8, 0, 3);
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, 8);
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = neighbours(6, 0, 3);
+            // Before the event loop runs again.
+            compare(neighbourRows(sheet), rows.slice(0, 6), "only the six rows left are drawn");
+            for (var k = 6; k < 8; ++k) {
+                var node = testContext.accessibleNode(rows[k]);
+                verify(node.invisible, "a departed row is not drawn: " + rows[k].text);
+                compare(node.name, "", "nor read");
+            }
+            wait(20);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(allNeighbourRows(sheet).length, 6, "and goes at the end of the turn");
+            // A removed row has left the sheet when it hides, so it is counted by type, not within the sheet.
+            compare(counts.types.ObjectHide || 0, 2, "each departed row hides as it goes: " + JSON.stringify(counts.chains));
+            compare(counts.types.ObjectShow || 0, 0, JSON.stringify(counts.chains));
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.neighbours = [];
+        }
+
         // Issue #782: a list emptied and filled again in one turn (a publisher that clears first) keeps every row:
         // nothing shows, hides or is renamed. Filled again a turn later, the rows are kept too, out of the tree in
         // between, and only the "(none announced)" line comes and goes.
@@ -485,7 +597,11 @@ Item {
             }
             counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
-            verify(showHide(sheet) <= 10, "one \"(none announced)\" line a cycle: " + JSON.stringify(counts.chains));
+            var none = noneLines(sheet)[0];
+            compare(testContext.accessibilityCountWithin(none, "ObjectShow"), 10, JSON.stringify(counts.chains));
+            compare(testContext.accessibilityCountWithin(none, "ObjectHide"), 10, JSON.stringify(counts.chains));
+            compare(showHide(sheet), 20, "the \"(none announced)\" line alone shows and hides: "
+                    + JSON.stringify(counts.chains));
             compare(neighbourRows(sheet), rows, "the same rows");
             for (var r of rows)
                 compare(testContext.accessibleNode(r).name, r.text);
@@ -559,21 +675,32 @@ Item {
                 wait(20);
                 if (hop % 2) {
                     compare(neighbourRows(sheet).length, 0, "no P25 row on the other target");
-                    for (var held of rows)
-                        verify(!testContext.accessibleNode(held).inTree, "nor is one read");
+                    for (var held of rows) {
+                        var node = testContext.accessibleNode(held);
+                        verify(!node.inTree && node.invisible && node.name === "", "nor is one read");
+                    }
                     compare(textsIn(sheet, "(none announced)"), 4);
                 }
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
+            // What Android's bridge turns into main-thread work: the same whatever the number of rows.
             var forwarded = 0;
-            for (var type of ["ObjectShow", "ObjectHide", "NameChanged", "DescriptionChanged", "LocationChanged"]) {
+            for (var type of ["ObjectShow", "ObjectHide", "DescriptionChanged", "LocationChanged"]) {
                 compare(testContext.accessibilityCountWithin(list, type), 0, type + " from the rows: "
                         + JSON.stringify(counts.chains));
                 forwarded += testContext.accessibilityCountWithin(sheet, type);
             }
-            verify(showHide(sheet) <= hops, showHide(sheet) + " shows and hides for " + hops + " hops: "
-                   + JSON.stringify(counts.chains));
+            // Each row is unnamed as it is held and named again as it comes back: one call into Java each, which
+            // returns at once for a row TalkBack is not on (QtAccessibilityDelegate.notifyDescriptionOrNameChanged).
+            compare(testContext.accessibilityCountWithin(list, "NameChanged"), rows.length * hops,
+                    JSON.stringify(counts.chains));
+            // The neighbours' "(none announced)" line shows going and hides coming back; no other section changes.
+            var none = noneLines(sheet)[0];
+            compare(testContext.accessibilityCountWithin(none, "ObjectShow"), hops / 2, JSON.stringify(counts.chains));
+            compare(testContext.accessibilityCountWithin(none, "ObjectHide"), hops / 2, JSON.stringify(counts.chains));
+            compare(showHide(sheet), hops, showHide(sheet) + " shows and hides for " + hops + " hops: "
+                    + JSON.stringify(counts.chains));
             compare(neighbourRows(sheet), rows, "the same rows come back");
             for (var r of rows)
                 compare(testContext.accessibleNode(r).name, r.text);
@@ -594,6 +721,29 @@ Item {
             for (var site = 0; site < 30; ++site)
                 thirty.push(site);
             compare(mixedHops(thirty), eight, "a hop costs the same whatever the number of rows");
+        }
+
+        // Issue #782: a call on one slot after a call on two: the second slot's row goes at the end of the turn, and
+        // until then it is hidden, still reading its last slot, never an empty one.
+        function test_open_key_sheet_drops_a_slot_at_once() {
+            testContext.publishTarget({decryptionSlots: slots(0)});
+            keySheet.open();
+            keySheet.visible = true;
+            Ui.Navigation.modals = [keySheet];
+            var rows = findChild(keySheet, "keySheetSlots");
+            waitForRendering(keySheet);
+            wait(20);
+            compare(rows.count, 2);
+            var second = rows.itemAt(1);
+            var text = second.children[0];
+            var said = text.text;
+            verify(said.indexOf("Slot 2") === 0, said);
+            testContext.publishTarget({decryptionSlots: slots(1)});
+            // Before the event loop runs again.
+            verify(!second.visible, "the row of the slot that left is hidden at once");
+            compare(text.text, said, "and does not read an empty slot");
+            tryCompare(rows, "count", 1);
+            Ui.Navigation.modals = [];
         }
 
         // Issue #782: the open key sheet keeps a row per slot while the count holds; each call publishes a new list,
