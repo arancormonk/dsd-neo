@@ -471,6 +471,18 @@ fingerprint_of(const float* taps, int len) {
     return fp;
 }
 
+/* The size of the terms the second moment cancels down from: the sum of |h| k^2. */
+static double
+moment2_scale_of(const float* taps, int len) {
+    const double c = (double)(len - 1) * 0.5;
+    double scale = 0.0;
+    for (int n = 0; n < len; n++) {
+        const double k = (double)n - c;
+        scale += std::fabs((double)taps[n]) * k * k;
+    }
+    return scale;
+}
+
 /* Every pre-TETRA profile's plan as the design produced it before the TETRA profile existed, at the rates TETRA runs
  * at and the 24/48 kHz rates the other modes run at: the 144-tap profile designs, and the 63-tap fallback prototypes
  * where those do not fit. Fingerprints within a tolerance rather than a hash of the float bits, as for kPinnedWide. */
@@ -512,6 +524,14 @@ fingerprint_matches(double got, double want) {
     return std::fabs(got - want) <= 1e-6 * std::fabs(want) + 1e-9;
 }
 
+/* The second moment cancels terms of either sign, so a last-bit change of the taps (FMA contraction on arm64, a
+   fast-math build) moves it by a part in 1e7 of those terms, not of the result: bound it by their size. The tap count,
+   DC gain and energy keep the tight bound and are what tell a design change. */
+static int
+moment_matches(double got, double want, double scale) {
+    return std::fabs(got - want) <= 1e-5 * scale + 1e-9;
+}
+
 static int
 test_profile_plans_pinned(demod_state* s) {
     static float taps[DSD_CHANNEL_LPF_MAX_TAPS];
@@ -520,7 +540,8 @@ test_profile_plans_pinned(demod_state* s) {
         design_plan(s, pin.rate_hz, pin.profile, 0, taps, &len);
         const plan_fingerprint fp = fingerprint_of(taps, len);
         if (fp.taps_len != pin.fp.taps_len || !fingerprint_matches(fp.sum, pin.fp.sum)
-            || !fingerprint_matches(fp.energy, pin.fp.energy) || !fingerprint_matches(fp.moment2, pin.fp.moment2)) {
+            || !fingerprint_matches(fp.energy, pin.fp.energy)
+            || !moment_matches(fp.moment2, pin.fp.moment2, moment2_scale_of(taps, len))) {
             DSD_FPRINTF(stderr,
                         "profile %d at %d Hz: %d taps sum %.12e energy %.12e moment %.12e, pinned %d taps sum %.12e "
                         "energy %.12e moment %.12e\n",

@@ -479,7 +479,8 @@ test_carrier_queue_overflow(void) {
             /* The first DSD_TETRA_UL_CARRIERS - 1 bursts, then the last one. */
             const int want = taken < DSD_TETRA_UL_CARRIERS - 1 ? taken : total - 1;
             assert(k == at[want]);
-            assert(fabsf(phase - (float)want * 1e-3f) < 1e-9f);
+            /* Entries are 1e-3 apart; the bound only tells them apart (fast-math builds may round the product). */
+            assert(fabsf(phase - (float)want * 1e-3f) < 1e-6f);
             taken++;
         }
     }

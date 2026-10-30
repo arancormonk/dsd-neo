@@ -165,16 +165,28 @@ reference_complex_fir(const float* in, int n_in, float* out, float* hist_i, floa
     return outputs;
 }
 
+/* Bit for bit under IEEE semantics. A fast-math build (GCC/Clang -ffast-math, MSVC /fp:fast) may reassociate either
+   sum its own way, so there the outputs only have to agree to a few float ulps of their magnitude. */
 static bool
 same_bits(const float* a, const float* b, int n) {
+#if defined(__FAST_MATH__) || defined(_M_FP_FAST)
+    for (int k = 0; k < n; k++) {
+        const float bound = 1e-5f * (1.0f + std::fabs(b[k]));
+        if (!(std::fabs(a[k] - b[k]) <= bound)) {
+            return false;
+        }
+    }
+    return true;
+#else
     return n <= 0 || std::memcmp(a, b, (size_t)n * sizeof(float)) == 0;
+#endif
 }
 
 /* The scalar complex FIR (four outputs side by side from one contiguous window) gives the same bits as the reference,
    at tap counts from 3 to the channel filter's 287, zero taps included, over random block cuts of a stream. */
 static int
 test_scalar_complex_fir_matches_reference(void) {
-    std::printf("Testing scalar complex FIR against the per-sample reference (bit-exact)...\n");
+    std::printf("Testing scalar complex FIR against the per-sample reference (bit-exact under IEEE)...\n");
     const int tap_counts[] = {3, 5, 15, 33, 49, 63, 65, 97, 129, 135, 193, 287};
     const int hist_len = 287;
     int failures = 0;

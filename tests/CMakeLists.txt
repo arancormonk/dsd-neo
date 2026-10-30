@@ -72,10 +72,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_costas.cpp
         dsp/test_dsp_demod_segmentation.cpp
         dsp/test_dsp_firdes.c
+        dsp/test_dsp_fll_band_edge.cpp
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
@@ -107,10 +109,12 @@ elseif(MSVC)
         dsp/test_dsp_costas.cpp
         dsp/test_dsp_demod_segmentation.cpp
         dsp/test_dsp_firdes.c
+        dsp/test_dsp_fll_band_edge.cpp
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
