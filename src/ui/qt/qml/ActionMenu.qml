@@ -56,9 +56,11 @@ ModalSheet {
                 accessibleName: text + (row.modelData.description ? ". " + row.modelData.description : "")
                 onClicked: menu.activate(row.index)
             }
+            // Read in the action's own name above (issue #782).
             Text {
                 objectName: "actionMenuDescription" + row.index
                 width: parent.width
+                Accessible.ignored: true
                 visible: text.length > 0
                 text: row.modelData.description || ""
                 textFormat: Text.PlainText

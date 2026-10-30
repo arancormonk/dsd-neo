@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // One call in a list — monitor's recent panel and the history screen share it.
 // Encrypted rows carry the ENC tag while retaining readable text contrast. A
@@ -16,6 +17,12 @@ Item {
     activeFocusOnTab: Navigation.allows(row) && interactive && enabled
     Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
     Accessible.name: hasRecording ? qsTr("%1, has a recording").arg(accessibleName) : accessibleName
+    // What the row shows besides its name (issue #782): the meta line, its
+    // tags and its time, unless the caller's name already reads the time.
+    Accessible.description: [metaText, emergency ? Util.shownText(emergencyTag) : "", enc ? Util.shownText(encTag) : "",
+        !enc && accessibleName.indexOf(rightText) < 0 ? rightText : ""].filter(function (part) {
+        return part.length > 0;
+    }).join(", ")
     readonly property bool navigationAllowed: Navigation.allows(row)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()

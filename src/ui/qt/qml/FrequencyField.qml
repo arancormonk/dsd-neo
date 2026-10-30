@@ -65,9 +65,11 @@ Column {
             }
         }
 
+        // Read in the field's name, "Frequency in MHz" (issue #782).
         Text {
             id: frequencyUnit
             text: "MHz"
+            Accessible.ignored: true
             anchors.baseline: field.baseline
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(15)
@@ -75,7 +77,7 @@ Column {
         }
     }
 
-    Text {
+    ReadableText {
         width: parent.width
         visible: field.text.length > 0 && !sessionArgs.freqValid(field.text)
         text: qsTr("Enter a frequency from 0.000001 to 4294.967295 MHz")

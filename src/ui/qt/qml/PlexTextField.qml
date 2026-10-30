@@ -67,7 +67,13 @@ Rectangle {
         activeFocusOnTab: Navigation.allows(control) && control.enabled
         Accessible.role: Accessible.EditableText
         Accessible.name: control.label
-        Accessible.description: [control.unit, control.hint, control.error].filter(function (s) {
+        // The label is the name; the unit, an example the placeholder shows
+        // (issue #782: read even once the field has text) and the helper line
+        // are the description, so the field reads as one item. Qt withholds a
+        // password field's name (QQuickAccessibleAttached::name()), so there
+        // the label leads the description instead.
+        readonly property bool secret: echoMode === TextInput.Password
+        Accessible.description: [secret ? control.label : "", control.unit, control.placeholderText !== control.label ? control.placeholderText : "", control.hint, control.error].filter(function (s) {
             return s.length > 0;
         }).join(". ")
         Accessible.passwordEdit: echoMode === TextInput.Password
@@ -85,9 +91,11 @@ Rectangle {
         onEditingFinished: control.editingFinished()
     }
 
+    // The helper and the placeholder are read in the field's description.
     Text {
         id: helper
         x: 14
+        Accessible.ignored: true
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 8
         width: parent.width - 28
@@ -102,6 +110,7 @@ Rectangle {
 
     Text {
         id: placeholder
+        Accessible.ignored: true
 
         anchors.fill: input
         verticalAlignment: Text.AlignVCenter

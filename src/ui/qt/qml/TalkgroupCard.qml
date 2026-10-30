@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 import QtQuick
+import "Util.js" as Util
 
 Rectangle {
     id: card
@@ -26,6 +27,12 @@ Rectangle {
         y: 14
         width: parent.width - 28
         spacing: 5
+        // The card's lines are one item for a screen reader (issue #782), read
+        // before its switch and edit button, which name themselves.
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(content)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: Accessible.ignored ? "" : Util.shownText(content)
         Text {
             width: parent.width
             objectName: "talkgroupBadge"

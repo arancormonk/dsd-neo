@@ -64,14 +64,14 @@ Column {
 
     spacing: 12
 
-    Text {
+    ReadableText {
         width: parent.width
         text: qsTr("Airspy R2 / Mini")
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(16)
     }
 
-    Text {
+    ReadableText {
         width: parent.width
         visible: panel.setting("actual_rate", 0) > 0
         text: panel.setting("actual_serial", "") + " · " + (panel.setting("actual_rate", 0) / 1e+06) + " MS/s"
@@ -101,14 +101,18 @@ Column {
             spacing: 4
             visible: !panel.gainsOnly
 
+            // Read as the field's name (issue #782), not on its own.
             Text {
+                id: textLabel
                 text: modelData.label
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSize(13)
+                Accessible.ignored: true
             }
 
             PlexInput {
                 id: textField
+                Accessible.name: textLabel.text
 
                 readonly property string committedText: modelData.key === "sample_rate" && Number(panel.setting(modelData.key, 0)) === 0 ? "auto" : String(panel.setting(modelData.key, modelData.value))
 
@@ -122,7 +126,7 @@ Column {
 
     }
 
-    Text {
+    ReadableText {
         width: parent.width
         visible: panel.settings.rates !== undefined
         text: qsTr("Available rates: ") + (panel.settings.rates || []).join(", ")
@@ -183,14 +187,18 @@ Column {
             spacing: 4
             visible: panel.gainMode === modelData.mode
 
+            // Read as the field's name (issue #782), not on its own.
             Text {
+                id: gainLabel
                 text: modelData.label + " (0–" + modelData.max + ")"
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSize(13)
+                Accessible.ignored: true
             }
 
             PlexInput {
                 id: gainField
+                Accessible.name: gainLabel.text
 
                 readonly property string committedText: String(panel.setting(modelData.key, modelData.value))
 
