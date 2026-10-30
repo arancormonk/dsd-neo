@@ -7,6 +7,7 @@
  * Validation and diagnostics for INI-based user configuration.
  */
 
+#include <algorithm>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/lrrp_ports.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
+#include <iterator>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -923,13 +925,17 @@ dsd_user_config_check_trunk_scan_startable(const dsdneoUserConfig* cfg, const ds
     if (cfg == nullptr) {
         return -1;
     }
-    for (const trunk_scan_start_rule& rule : k_trunk_scan_start_rules) {
-        if (rule.breaks(cfg) && (before == nullptr || !rule.breaks(before))) {
-            if (why != nullptr && why_size > 0U) {
-                DSD_SNPRINTF(why, why_size, "%s", rule.message);
-            }
-            return -1;
-        }
+    /* The first rule @p cfg breaks that @p before did not. */
+    const trunk_scan_start_rule* broken =
+        std::find_if(std::begin(k_trunk_scan_start_rules), std::end(k_trunk_scan_start_rules),
+                     [cfg, before](const trunk_scan_start_rule& rule) {
+                         return rule.breaks(cfg) && (before == nullptr || !rule.breaks(before));
+                     });
+    if (broken == std::end(k_trunk_scan_start_rules)) {
+        return 0;
     }
-    return 0;
+    if (why != nullptr && why_size > 0U) {
+        DSD_SNPRINTF(why, why_size, "%s", broken->message);
+    }
+    return -1;
 }

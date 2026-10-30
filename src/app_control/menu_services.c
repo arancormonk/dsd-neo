@@ -853,11 +853,8 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // that would replace the live map with zeros; refuse instead, which is what
     // the additive import used to do by doing nothing.
     const int mapped_any = (imported->trunk_chan_map_used_count > 0);
-    int adopt_rc = -1;
-    if (import_rc == 0 && mapped_any) {
-        adopt_rc = chan_map_adopt(opts, state, imported);
-    }
-    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+    const int adopted = (import_rc == 0 && mapped_any && chan_map_adopt(opts, state, imported) == 0);
+    if (adopted) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
         /* The adopted rows over the configured policies of the live state, not the scratch state's view of a row the
            scan may be running now (issue #637). */
@@ -868,7 +865,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     dsd_state_ext_free_all(imported);
     dsd_state_trunk_lcn_free(imported);
     free(imported);
-    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+    if (adopted) {
         /* The map runs now, and a save writes it, not one a config left for the next start (issue #671). */
         opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
         return 0;

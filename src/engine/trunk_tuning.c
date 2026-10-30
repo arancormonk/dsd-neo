@@ -117,6 +117,14 @@ dsd_engine_p25_hunt_in_flight(void) {
     return in_flight;
 }
 
+/* Whether the current or last sync is a DMR, NXDN or EDACS one. */
+static int
+dsd_engine_sync_is_dmr_nxdn_or_edacs(const dsd_state* state) {
+    return DSD_SYNC_IS_DMR(state->synctype) || DSD_SYNC_IS_DMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->synctype)
+           || DSD_SYNC_IS_NXDN(state->lastsynctype) || DSD_SYNC_IS_EDACS(state->synctype)
+           || DSD_SYNC_IS_EDACS(state->lastsynctype);
+}
+
 static int
 dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_engine_trunk_scan_active_is_p25_class(state)) {
@@ -138,9 +146,7 @@ dsd_engine_cc_is_p25(const dsd_opts* opts, const dsd_state* state) {
     if (state->rf_mod == 2) {
         return 0;
     }
-    if (DSD_SYNC_IS_DMR(state->synctype) || DSD_SYNC_IS_DMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->synctype)
-        || DSD_SYNC_IS_NXDN(state->lastsynctype) || DSD_SYNC_IS_EDACS(state->synctype)
-        || DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+    if (dsd_engine_sync_is_dmr_nxdn_or_edacs(state)) {
         return 0;
     }
     return 1;

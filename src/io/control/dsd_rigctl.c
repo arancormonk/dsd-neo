@@ -1105,10 +1105,10 @@ io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t 
     if (out_pending_id) {
         *out_pending_id = 0U;
     }
+#ifdef USE_RADIO
     if (!opts || freq_hz == 0U) {
         return -1;
     }
-#ifdef USE_RADIO
     uint32_t applied_freq = freq_hz;
     const int rc = set_rtl_frequency(opts, state, freq_hz, &applied_freq, out_pending_id);
     if (rc == 0) {
@@ -1116,7 +1116,10 @@ io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t 
     }
     return rc;
 #else
+    /* No RTL support in this build: every tune fails. */
+    (void)opts;
     (void)state;
+    (void)freq_hz;
     return -1;
 #endif
 }

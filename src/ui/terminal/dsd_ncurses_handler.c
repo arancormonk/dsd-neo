@@ -188,12 +188,14 @@ ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c)
     return 1;
 }
 
-/* Windows (PDCurses) aliases of '=': Shift+keypad Enter has a code of its own, and Shift+Enter arrives as Enter with
-   the Shift modifier, which PDCurses reports for the key getch() returned last. ncurses has neither (a terminal sends
-   Shift+Enter as Enter, or as an escape sequence), so these exist only where curses.h defines them. */
+/* '=', and its Windows (PDCurses) aliases: Shift+keypad Enter has a code of its own, and Shift+Enter arrives as Enter
+   with the Shift modifier, which PDCurses reports for the key getch() returned last. ncurses has neither (a terminal
+   sends Shift+Enter as Enter, or as an escape sequence), so the aliases exist only where curses.h defines them. */
 static int
-ncurses_key_is_shift_enter(int c) {
-    (void)c; /* ncurses: no alias */
+ncurses_key_opens_tune(int c) {
+    if (c == DSD_KEY_TUNE) {
+        return 1;
+    }
 #ifdef PADENTER
     if (c == SHF_PADENTER) {
         return 1;
@@ -212,7 +214,7 @@ ncurses_key_is_shift_enter(int c) {
    only takes plain Enter. */
 static int
 ncurses_handle_tune_key(dsd_opts* opts, dsd_state* state, int c) {
-    if (c != DSD_KEY_TUNE && !ncurses_key_is_shift_enter(c)) {
+    if (!ncurses_key_opens_tune(c)) {
         return 0;
     }
     ui_menu_open_modal_async(opts, state, act_freq_key);

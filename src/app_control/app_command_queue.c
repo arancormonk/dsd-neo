@@ -5078,6 +5078,13 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* A release with nothing to do: the tuner is already the operator's, nothing owns it, and a scan pause stands. */
+static int
+tuner_release_finds_pause(const dsd_opts* opts, const dsd_state* state) {
+    return !dsd_trunk_scan_owns_tuner(opts, state) && opts->trunk_enable != 1 && opts->scanner_mode != 1
+           && !state->lcn_scan_resume_pending && (state->lcn_scan_paused || dsd_engine_trunk_scan_paused(state));
+}
+
 /**
  * @brief Hand the tuner back to the operator: trunking off, and a running scan paused.
  *
@@ -5115,9 +5122,7 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
-    if (!dsd_trunk_scan_owns_tuner(opts, state) && opts->trunk_enable != 1 && opts->scanner_mode != 1
-        && !state->lcn_scan_resume_pending && (state->lcn_scan_paused || dsd_engine_trunk_scan_paused(state))) {
-        /* Already the operator's: nothing owns the tuner, and the pause stands. */
+    if (tuner_release_finds_pause(opts, state)) {
         ui_set_toast(state, 3, "Automatic tuning paused");
         return UI_CMD_APPLY_COMPLETED;
     }
@@ -8552,6 +8557,20 @@ apply_cfg_recording(dsd_opts* opts, dsd_state* state, const cfg_recording* befor
     return 0;
 }
 
+/* The result of a config that stays applied. A failed output reconfigure, a width the front end refused after the
+   check, or a recording file that did not open (@p failed_rc nonzero) leaves the config applied, and fails it: a
+   failure is reported as one, with what waits for a restart beside it. */
+static int
+cfg_apply_kept_result(dsd_state* state, int restart_causes, const char* restart_names, int failed_rc) {
+    if (restart_causes != 0) {
+        cfg_keep_restart_note(state, restart_names);
+    }
+    if (failed_rc != 0) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    return (restart_causes != 0) ? UI_CMD_APPLY_RESTART_REQUIRED : UI_CMD_APPLY_COMPLETED;
+}
+
 /* Apply the config @p c carries; @p kept is set when the config stays applied, the outcomes a "Config applied" toast (or
    none) reports: a "Config not applied: ..." refusal or rollback leaves it 0. */
 static int
@@ -8651,17 +8670,8 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
 #else
     cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, 1);
 #endif
-    /* A failed output reconfigure, a width the front end refused after the check, or a recording file that did not
-       open leaves the config applied, and fails it: a failure is reported as one, with what waits for a restart beside
-       it. */
     *kept = 1;
-    if (restart_causes != 0) {
-        cfg_keep_restart_note(state, restart_names);
-    }
-    if (reconfigure_rc != 0 || recording_rc != 0) {
-        return UI_CMD_APPLY_FAILED;
-    }
-    return (restart_causes != 0) ? UI_CMD_APPLY_RESTART_REQUIRED : UI_CMD_APPLY_COMPLETED;
+    return cfg_apply_kept_result(state, restart_causes, restart_names, reconfigure_rc | recording_rc);
 }
 
 /*
@@ -9758,12 +9768,10 @@ ui_request_redraw_if_published(void) {
     }
 }
 
-int
-dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
-    int n_applied = 0;
-    ensure_mu_init();
-    /* A publication a watchdog tick put off (snapshot_internal.h) goes out at the next drain, which the decode loop
-       runs every pass: a flag read while none is waiting. */
+/* A publication a watchdog tick put off (snapshot_internal.h) goes out at the next drain, which the decode loop runs
+   every pass: a flag read while none is waiting. */
+static void
+ui_publish_deferred_snapshots(const dsd_opts* opts, const dsd_state* state) {
     const int opts_pending = dsd_app_telemetry_opts_snapshot_pending();
     const int state_pending = dsd_app_telemetry_snapshot_pending();
     if (opts_pending) {
@@ -9775,6 +9783,13 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     if (opts_pending || state_pending) {
         ui_request_redraw_if_published();
     }
+}
+
+int
+dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
+    int n_applied = 0;
+    ensure_mu_init();
+    ui_publish_deferred_snapshots(opts, state);
     ui_show_stream_notice(state);
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between

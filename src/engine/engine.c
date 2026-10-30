@@ -1403,6 +1403,28 @@ no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uin
 }
 #endif
 
+/* The RTL leg of untyped_tune_row(): DSD_UNTYPED_STEP_OK, DSD_UNTYPED_STEP_PENDING for a tune that timed out (noted
+ * against the row, the scan session and the map), or a failure, _FAILED_MOVED when the rigctl leg @p moved the
+ * receiver. Without RTL support every tune fails. */
+static int
+untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, int moved) {
+    const int failed = moved ? DSD_UNTYPED_STEP_FAILED_MOVED : DSD_UNTYPED_STEP_FAILED;
+#ifdef USE_RADIO
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
+    uint64_t pending_id = 0U;
+    const dsd_trunk_tune_result result = no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq, &pending_id);
+    if (result == DSD_TRUNK_TUNE_RESULT_TIMEOUT) {
+        dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_UNTYPED_STEP, pending_id, (uint32_t)freq, prior_hz,
+                                            row, state->lcn_scan_session, state->trunk_chan_map_seq);
+        return DSD_UNTYPED_STEP_PENDING;
+    }
+    return (result == DSD_TRUNK_TUNE_RESULT_OK) ? DSD_UNTYPED_STEP_OK : failed;
+#else
+    UNUSED4(opts, state, row, freq);
+    return failed;
+#endif
+}
+
 /* Puts every configured front end on @p freq for @p row of the untyped list, the rigctl leg first. @p moved is set once
  * a leg has physically retuned the receiver, so a later leg failing still reports the move the caller can no longer
  * take back. An RTL tune that timed out is noted against the row, the scan session and the map
@@ -1410,9 +1432,6 @@ no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uin
  * Returns a DSD_UNTYPED_STEP_* result; it commits nothing. */
 static int
 untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int* moved) {
-#ifndef USE_RADIO
-    UNUSED(row);
-#endif
     *moved = 0;
     if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
         return DSD_UNTYPED_STEP_FAILED;
@@ -1423,24 +1442,10 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int* 
         }
         *moved = 1;
     }
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-        const uint32_t prior_hz = opts->rtlsdr_center_freq;
-        uint64_t pending_id = 0U;
-        const dsd_trunk_tune_result result = no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq, &pending_id);
-        if (result == DSD_TRUNK_TUNE_RESULT_TIMEOUT) {
-            dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_UNTYPED_STEP, pending_id, (uint32_t)freq,
-                                                prior_hz, row, state->lcn_scan_session, state->trunk_chan_map_seq);
-            return DSD_UNTYPED_STEP_PENDING;
-        }
-        if (result != DSD_TRUNK_TUNE_RESULT_OK) {
-            return *moved ? DSD_UNTYPED_STEP_FAILED_MOVED : DSD_UNTYPED_STEP_FAILED;
-        }
-#else
-        return *moved ? DSD_UNTYPED_STEP_FAILED_MOVED : DSD_UNTYPED_STEP_FAILED;
-#endif
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return DSD_UNTYPED_STEP_OK;
     }
-    return DSD_UNTYPED_STEP_OK;
+    return untyped_tune_row_rtl(opts, state, row, freq, *moved);
 }
 
 /* Commit @p row of the untyped list as the row on air: the cursor past it, its keys, the received tone cleared (the

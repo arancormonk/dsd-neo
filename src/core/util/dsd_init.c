@@ -1120,6 +1120,27 @@ init_state_p25_voice_channel_freqs(dsd_state* state) {
 }
 
 static void
+init_state_edacs_defaults(dsd_state* state) {
+    //edacs - may need to make these user configurable instead for stability on non-ea systems
+    state->ea_mode = -1;   //init on -1, 0 is standard, 1 is ea
+    state->esk_mask = 0x0; //esk mask value
+    state->edacs_site_id = 0;
+    state->edacs_sys_id = 0;
+    state->edacs_area_code = 0;
+    state->edacs_lcn_count = 0;
+    state->edacs_cc_lcn = 0;
+    state->edacs_tuned_lcn = -1;
+    state->edacs_a_bits = 4;   //  Agency Significant Bits
+    state->edacs_f_bits = 4;   //   Fleet Significant Bits
+    state->edacs_s_bits = 3;   //Subfleet Significant Bits
+    state->edacs_a_shift = 7;  //Calculated Shift for A Bits
+    state->edacs_f_shift = 3;  //Calculated Shift for F Bits
+    state->edacs_a_mask = 0xF; //Calculated Mask for A Bits
+    state->edacs_f_mask = 0xF; //Calculated Mask for F Bits
+    state->edacs_s_mask = 0x7; //Calculated Mask for S Bits
+}
+
+static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
     state->p2_wacn = 0;
@@ -1181,23 +1202,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     init_state_p25_patch_defaults(state);
     dsd_enc_lockout_init(state);
 
-    //edacs - may need to make these user configurable instead for stability on non-ea systems
-    state->ea_mode = -1;   //init on -1, 0 is standard, 1 is ea
-    state->esk_mask = 0x0; //esk mask value
-    state->edacs_site_id = 0;
-    state->edacs_sys_id = 0;
-    state->edacs_area_code = 0;
-    state->edacs_lcn_count = 0;
-    state->edacs_cc_lcn = 0;
-    state->edacs_tuned_lcn = -1;
-    state->edacs_a_bits = 4;   //  Agency Significant Bits
-    state->edacs_f_bits = 4;   //   Fleet Significant Bits
-    state->edacs_s_bits = 3;   //Subfleet Significant Bits
-    state->edacs_a_shift = 7;  //Calculated Shift for A Bits
-    state->edacs_f_shift = 3;  //Calculated Shift for F Bits
-    state->edacs_a_mask = 0xF; //Calculated Mask for A Bits
-    state->edacs_f_mask = 0xF; //Calculated Mask for F Bits
-    state->edacs_s_mask = 0x7; //Calculated Mask for S Bits
+    init_state_edacs_defaults(state);
 
     //trunking
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));

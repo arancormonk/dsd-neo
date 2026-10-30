@@ -2085,16 +2085,28 @@ snapshot_demod_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCo
     }
 }
 
+/* Under --trunk-scan each target's type sets the live flag while it is parked; the save writes the setting the session
+   runs outside the scan, which the coordinator publishes (issue #671). */
+static int
+snapshot_trunk_enabled(const dsd_opts* opts, const dsd_state* state) {
+    const bool trunk_scan_running =
+        state != nullptr && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U;
+    const int trunk_enable = trunk_scan_running ? state->trunk_scan_configured_trunk_enable : opts->trunk_enable;
+    return (trunk_enable != 0) ? 1 : 0;
+}
+
+/* A -Y scan the operator paused is still the session's scan: the next launch runs it (issue #671). A stopped one saves
+   off. */
+static int
+snapshot_trunk_scanner(const dsd_opts* opts, const dsd_state* state) {
+    return (opts->scanner_mode != 0 || (state != nullptr && state->lcn_scan_paused != 0U)) ? 1 : 0;
+}
+
 static void
 snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_trunking = 1;
-    /* Under --trunk-scan each target's type sets the live flag while it is parked; the save writes the setting the
-       session runs outside the scan, which the coordinator publishes (issue #671). */
-    const bool trunk_scan_running =
-        state != nullptr && opts->trunk_scan_enabled == 1 && state->trunk_scan_target_count > 0U;
-    const int trunk_enable = trunk_scan_running ? state->trunk_scan_configured_trunk_enable : opts->trunk_enable;
-    cfg->trunk_enabled = (trunk_enable != 0) ? 1 : 0;
+    cfg->trunk_enabled = snapshot_trunk_enabled(opts, state);
     DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", opts->chan_in_file);
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s",
@@ -2110,9 +2122,7 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
     cfg->trunk_tune_data_calls = (configured ? configured->trunk_tune_data_calls : opts->trunk_tune_data_calls) != 0;
     cfg->trunk_tune_enc_calls = (configured ? configured->trunk_tune_enc_calls : opts->trunk_tune_enc_calls) != 0;
-    /* A -Y scan the operator paused is still the session's scan: the next launch runs it (issue #671). A stopped one
-       saves off. */
-    cfg->trunk_scanner = (opts->scanner_mode != 0 || (state != nullptr && state->lcn_scan_paused != 0U)) ? 1 : 0;
+    cfg->trunk_scanner = snapshot_trunk_scanner(opts, state);
     cfg->trunk_p25_prefer_candidates =
         (configured ? configured->p25_prefer_candidates : opts->p25_prefer_candidates) != 0;
     cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
