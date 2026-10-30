@@ -2589,12 +2589,6 @@ test_retune_commands_clear_received_tone(void) {
 }
 #endif
 
-/*
- * Releasing the tuner is how a frontend says "stop moving this on your own"
- * without knowing which of the two owners is active — so it has to be an
- * unconditional clear of both, safe to repeat, and it has to leave behind a
- * decoder that can be tuned by hand.
- */
 /* Final review, Minor 5: trunk scan with a coordinator published (targets counted) whose pause fails, as one naming no
    target to leave would: the release keeps trunking, since clearing it under the coordinator strands a target in a
    followed call (B5), and says why. It used to fall through to the plain release, clearing trunking under the flag and
@@ -2626,6 +2620,12 @@ test_tuner_release_keeps_trunking_when_a_trunk_scan_cannot_pause(void) {
     return rc;
 }
 
+/*
+ * Releasing the tuner is how a frontend says "stop moving this on your own"
+ * without knowing which of the two owners is active — so it has to be an
+ * unconditional clear of both, safe to repeat, and it has to leave behind a
+ * decoder that can be tuned by hand.
+ */
 static int
 test_tuner_release(void) {
     int rc = 0;
@@ -15941,7 +15941,7 @@ pending_taker_name(int taker) {
     return taker == PENDING_TAKEN_BY_TAP ? "tap" : (taker == PENDING_TAKEN_BY_SEARCH ? "search" : "reopen");
 }
 
-/* A spectrum tap, a Signal search start (refused here: no live SDR, after it took the receiver), or an explicit stream
+/* A spectrum tap, a Signal search start (refused here: no live SDR, so it takes nothing), or an explicit stream
    restart, drained as the decoder drains them. */
 static int
 drain_pending_taker(dsd_opts* opts, dsd_state* state, int taker, const char* label) {
@@ -16002,7 +16002,8 @@ expect_pending_resume_settled_paused(const char* label, const dsd_opts* opts, co
 /*
  * Issue #671 (final review, Important 1): a -Y resume whose row tune timed out leaves scanner_mode 0 while it waits,
  * and every tune of the receiver meanwhile, or a stream reopen, takes the row from it. A spectrum tap and a Signal
- * search start now take the resume back through the frequency entry's pause; a reopen drops the row's tune, and the
+ * search start that goes on take the resume back through the frequency entry's pause (a refused start takes nothing,
+ * final re-review C1); a reopen drops the row's tune, and the
  * engine loop's poll settles the resume. Either way the scan is paused again, and the row's late landing commits
  * nothing. On the branch before the fix an untyped list stayed "resuming" for good (the tap superseded the row's
  * record, a reopen dropped it, and nothing settled the resume), and a typed one committed its row, published as
@@ -16048,7 +16049,8 @@ test_pending_resume_taken_back(int typed, int taker) {
         rc |= expect_str(label, state.ui_msg, "Applied: tuned -> 862.000000 MHz; scan paused");
         rc |= expect_pending_resume_settled_paused(label, &opts, &state);
     } else if (taker == PENDING_TAKEN_BY_SEARCH) {
-        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+        /* A refused start changes nothing (final re-review, C1): the resume still waits on its row. */
+        rc |= expect_int(label, opts.scanner_mode == 0 && state.lcn_scan_resume_pending == 1, 1);
     } else {
         /* The reopen dropped the row's tune; the engine loop's next pass settles the resume. */
         if (typed) {
@@ -16058,25 +16060,41 @@ test_pending_resume_taken_back(int typed, int taker) {
         }
         rc |= expect_pending_resume_settled_paused(label, &opts, &state);
         char want[96];
-        DSD_SNPRINTF(want, sizeof want, "Scan stays paused: tune to %s MHz failed",
-                     typed ? "851.375000" : "853.375000");
+        /* A typed row's ledger request is failed by the stop; an untyped row's tune is dropped unanswered, and the
+           reopened stream starts on the frequency it asked for (final re-review, Minor 2). */
+        if (typed) {
+            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: tune to %s MHz failed", "851.375000");
+        } else {
+            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: the resume to %s MHz was interrupted", "853.375000");
+        }
         rc |= expect_str(label, state.ui_msg, want);
     }
 
-    /* The row's tune lands late: nothing commits, the scan stays paused. */
+    /* The row's tune lands late: after a taker nothing commits and the scan stays paused; after a refused search the
+       resume it left waiting runs. */
     if (typed) {
         dsd_trunk_tuning_request_publish(row_request, DSD_TRUNK_TUNE_RESULT_OK);
         (void)dsd_engine_channel_scan_pending(&opts, &state);
-        rc |= expect_int(label, dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+        if (taker != PENDING_TAKEN_BY_SEARCH) {
+            rc |= expect_int(label, dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+        }
     } else {
         dsd_engine_manual_tune_completion(row_request, RTL_STREAM_TUNE_OK);
         (void)dsd_engine_scan_untyped_poll(&opts, &state);
         (void)dsd_engine_scan_untyped_poll(&opts, &state);
     }
-    rc |= expect_pending_resume_settled_paused(label, &opts, &state);
-    rc |= expect_int(label, state.lcn_freq_roll == (typed ? 0 : 2), 1);
-    if (typed) {
-        rc |= expect_stop_leaves_the_manual_session(label, &opts, &state);
+    if (taker == PENDING_TAKEN_BY_SEARCH) {
+        rc |= expect_int(label,
+                         opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                             && state.operator_tuned == 0,
+                         1);
+        opts.scanner_mode = 0;
+    } else {
+        rc |= expect_pending_resume_settled_paused(label, &opts, &state);
+        rc |= expect_int(label, state.lcn_freq_roll == (typed ? 0 : 2), 1);
+        if (typed) {
+            rc |= expect_stop_leaves_the_manual_session(label, &opts, &state);
+        }
     }
     g_fake_stop_fails_request = 0U;
     reset_config_rtl_wrap();

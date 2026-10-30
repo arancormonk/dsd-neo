@@ -416,6 +416,22 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
 #endif
 
 int
+dsd_engine_signal_search_start_refused(const dsd_opts* opts, const dsd_state* state,
+                                       const dsd_signal_search_config* config, char* error, size_t capacity) {
+#ifndef USE_RADIO
+    (void)opts;
+    (void)state;
+    (void)config;
+    if (error && capacity) {
+        DSD_SNPRINTF(error, capacity, "%s", "Signal search needs a radio-enabled build");
+    }
+    return -1;
+#else
+    return search_validate_start(opts, state, config, error, capacity) ? -1 : 0;
+#endif
+}
+
+int
 dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
                                dsd_signal_search_publish_fn observer, void* user, char* error, size_t capacity) {
 #ifndef USE_RADIO

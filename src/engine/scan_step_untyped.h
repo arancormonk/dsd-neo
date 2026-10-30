@@ -58,6 +58,7 @@ enum {
     DSD_SCAN_RESUME_FAILED_TUNE = 0,     /* Its tune was refused, or failed late. */
     DSD_SCAN_RESUME_FAILED_DEFERRED = 1, /* Its tune was deferred behind another owner's. */
     DSD_SCAN_RESUME_FAILED_SETUP = 2,    /* Its settings could not be set up, before its tune or after it landed. */
+    DSD_SCAN_RESUME_INTERRUPTED = 3,     /* Its tune was dropped unanswered: a newer tune, a stream reopen. */
 };
 
 /* A resume's row, on @p freq Hz, never landed (issue #671), for the reason @p why (DSD_SCAN_RESUME_FAILED_*). The scan

@@ -1581,7 +1581,8 @@ untyped_settle_stale_row(dsd_opts* opts, dsd_state* state, const dsd_manual_tune
     if (state->lcn_scan_resume_pending && !dsd_channel_modes_present(state)
         && settled->scan_session == state->lcn_scan_session) {
         dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled->requested_hz,
-                                              DSD_SCAN_RESUME_FAILED_TUNE);
+                                              polled == DSD_MANUAL_TUNE_DROPPED ? DSD_SCAN_RESUME_INTERRUPTED
+                                                                                : DSD_SCAN_RESUME_FAILED_TUNE);
     }
 }
 
@@ -1609,10 +1610,14 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
         dsd_engine_channel_scan_resume_landed(opts, state);
     } else if (state->lcn_scan_resume_pending) {
         /* Failed, or dropped (a newer tune, a stream reopen): the row never lands, so the resume never does. */
-        dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled.requested_hz, DSD_SCAN_RESUME_FAILED_TUNE);
-    } else {
+        dsd_engine_channel_scan_resume_failed(opts, state, (long int)settled.requested_hz,
+                                              polled == DSD_MANUAL_TUNE_DROPPED ? DSD_SCAN_RESUME_INTERRUPTED
+                                                                                : DSD_SCAN_RESUME_FAILED_TUNE);
+    } else if (polled == DSD_MANUAL_TUNE_FAILED) {
         no_carrier_rearm_abandoned_scan(opts, state, now);
     }
+    /* A step dropped while the scan runs (a newer tune, a stream reopen) failed nothing: what replaced it decides the
+       receiver, and the scan's windows stay as they are, as they did before a drop was reported. */
     return polled;
 }
 

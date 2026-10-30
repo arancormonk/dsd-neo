@@ -2320,6 +2320,34 @@ test_entry_late_failure_ends_a_synced_reception(void) {
     return rc;
 }
 
+/* Final re-review, Minor 1: a running scan's step dropped before it landed (a newer tune of the receiver, a stream
+   reopen) failed nothing. What replaced it decides the receiver, and the scan's windows stay as they are, as before a
+   drop was reported; only a step that failed reopens them. */
+static int
+test_running_step_dropped_keeps_the_windows(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 989012500, 990012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    opts->scan_voice_only = 1; /* the windows a failure would reopen */
+    (void)step_into_a_timed_out_tune(opts, state);
+    rc |= expect_true("dropped-step-pending", g_retune_in_flight.active && state->lcn_freq_roll == 0);
+    state->last_cc_sync_time -= 5;
+    const time_t deadline = state->last_cc_sync_time;
+    dsd_engine_manual_tune_supersede(state);
+    rc |= expect_true("dropped-step-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_DROPPED);
+    rc |= expect_true("dropped-step-keeps-the-windows", state->last_cc_sync_time == deadline);
+    rc |= expect_true("dropped-step-scan-runs", opts->scanner_mode == 1 && state->lcn_freq_roll == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Final review, Important 1: a -Y resume of an untyped list waits on its row's tune, noted by the manual-tune record.
    Another tune of the receiver supersedes that record (a ledger tune, an RR import, a request_manual_tune()); before,
    the record went silently and the resume waited for good, "Resuming scan" with no way to resume. The record now reports
@@ -2350,7 +2378,7 @@ test_untyped_resume_settles_when_its_row_tune_is_dropped(void) {
                                                          && state->lcn_scan_resume_pending == 0
                                                          && state->operator_tuned == 1 && state->lcn_freq_roll == 0);
     rc |= expect_true("dropped-resume-says-why",
-                      strcmp(state->ui_msg, "Scan stays paused: tune to 978.012500 MHz failed") == 0);
+                      strcmp(state->ui_msg, "Scan stays paused: the resume to 978.012500 MHz was interrupted") == 0);
     /* The row's late landing then commits nothing. */
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect_true("dropped-resume-late-landing", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE
@@ -8146,6 +8174,7 @@ main(void) {
     rc |= test_untyped_resume_waits_for_its_row();
     rc |= test_entry_late_failure_ends_a_synced_reception();
     rc |= test_untyped_resume_settles_when_its_row_tune_is_dropped();
+    rc |= test_running_step_dropped_keeps_the_windows();
     rc |= test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();

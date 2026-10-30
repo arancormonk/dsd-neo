@@ -1764,23 +1764,9 @@ svc_check_input_analog_width_at(const dsd_opts* opts, const dsd_state* state, in
     int kind = DSD_ANALOG_DEMOD_FM;
     int configured_hz = 0;
     (void)svc_configured_analog_width(opts, state, &kind, &configured_hz);
-    if (!svc_input_width_fits(kind, configured_hz, rate_hz, why, why_size)) {
-        return -1;
-    }
-    for (int row_kind = DSD_ANALOG_DEMOD_FM; row_kind <= DSD_ANALOG_DEMOD_AM; row_kind++) {
-        if (svc_scan_width_beside_preset(opts, state, kind, row_kind)
-            && !svc_input_width_fits(row_kind, dsd_scan_mode_configured_analog_width(opts, state, row_kind), rate_hz,
-                                     why, why_size)) {
-            return -1;
-        }
-    }
-    /* The switch is unscoped, so the stream it opens starts on the settings in force: while a scan row runs the analog
-       family with another width (an nfm or am row's own, issue #526), that width is held as well. */
-    const int in_force_hz = dsd_opts_analog_width_hz(opts);
-    if (!dsd_opts_is_analog_family(opts) || (in_force_hz == configured_hz && opts->analog_demod == kind)) {
-        return 0;
-    }
-    return svc_input_width_fits(opts->analog_demod, in_force_hz, rate_hz, why, why_size) ? 0 : -1;
+    /* Only the configured width: the radio rows refuse a switch while a scan is in force (ui_input_switch_refused(),
+       issue #671), so no scan row's width, and no row width in force, meets a switch. */
+    return svc_input_width_fits(kind, configured_hz, rate_hz, why, why_size) ? 0 : -1;
 }
 
 void

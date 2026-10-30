@@ -2821,10 +2821,13 @@ and try it again), in an untyped one any row with a frequency that is not avoide
 the manual session's calls, keeps trunking off, forgets the legacy tune caches, moves the session, and tunes the row as
 a step would. Until the row lands the scan is resume-pending (`lcn_scan_resume_pending`): still paused, `scanner_mode`
 0, no row named, so a call heard meanwhile keeps the manual attribution. It still owns the tuner
-(`dsd_channel_scan_owns_tuner()`): a frequency entry, a spectrum tap (`MANUAL_TUNE`) or a Signal search start takes it
-back through the entry's pause, so the scan stays paused and the row's tune, still in flight, commits nothing; a
-release pauses it in place. A row tune dropped under it (another tune, a stream reopen) is reported by the manual-tune
-record, and the untyped poll leaves the scan paused with the failure toast, as for a late failure. A typed row's tune and commit run with
+(`dsd_channel_scan_owns_tuner()`): a frequency entry, a spectrum tap (`MANUAL_TUNE`) or a Signal search start the
+engine would accept (`dsd_engine_signal_search_start_refused()`; a refused one changes nothing) takes it back through
+the entry's pause, so the scan stays paused and the row's tune, still in flight, commits nothing; a release pauses it
+in place. A row tune dropped under it (another tune, a stream reopen) is reported by the manual-tune record, and the
+untyped poll leaves the scan paused saying the resume was interrupted (`DSD_SCAN_RESUME_INTERRUPTED`: a reopened
+stream starts on the frequency the tune asked for, so nothing failed); a step dropped while the scan runs leaves its
+windows as they are. A typed row's tune and commit run with
 `scanner_mode` 1 for the duration (the dual-leg tune and the row's receive profile read it); no frame decodes while it
 is outstanding. The typed commit gate and the untyped landing poll accept a resume-pending scan as current. The landing
 runs the outgoing boundary, installs the row, and only then publishes the scan (`scanner_mode` 1, `lcn_scan_paused` and
@@ -2972,8 +2975,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     Airspy, `ui_cmd_handle_rtl_enable_input()`) refuse a switch while a scan is in force as the PCM rows do
     (`ui_input_switch_refused()`, the same `Unsupported: stop the scan first`; issue #671), so a running `-Y` list is
     never carried over to the radio; a paused one is stopped by a switch that runs (`ui_input_switch_ends_paused_scan()`)
-    and kept by one that is refused or rolled back. The row-width holds below (#526, #578) therefore meet no scan row or
-    running list from these rows; they stay the general rule for the widths a switch opens on. A config apply's
+    and kept by one that is refused or rolled back. So their width checks hold only the configured preset's width
+    (`svc_check_rtl_input_analog_width()`, `svc_check_airspy_input_analog_width()`). A config apply's
     same-type reopens (TCP, UDP, Pulse) go
     through the switch too, put back the input name the config wrote when they fail, and take the boundary for a
     restarted UDP input (`apply_cfg_note_reopen()`); its WAV reopen refuses a pipe or device. The queue answers the
@@ -10022,8 +10025,8 @@ External dependencies (resolved via CMake):
   whose DSP rate cannot filter that width, as well as the configured one (on RTL-SDR and rtl_tcp, where the bandwidth
   sets the rate), rather than let the start refuse it and leave no radio input; the toast names the scan row's width
   (`DSP BW 12 kHz cannot filter the scan row's NFM 12.5 kHz (max 9.6 kHz); keep a wider DSP bandwidth`), or gives
-  the width's own fix where the row runs the configured width. Input > Switch source > RTL-SDR
-  (`svc_check_rtl_input_analog_width()`), unscoped too, holds the same two widths. A config apply is scoped, so it holds
+  the width's own fix where the row runs the configured width. Input > Switch source > RTL-SDR is refused while a scan
+  is in force (issue #671), so it holds only the configured width. A config apply is scoped, so it holds
   a row's own width, of its kind, explicitly at a reopen (`cfg_check_scan_row_width()`). On a session whose preset runs
   another kind or none, the configured width of a kind counts as in use for all of these, and for the width command,
   while the scan has an analog row or target of that kind without a width of its own

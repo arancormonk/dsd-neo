@@ -1330,6 +1330,9 @@ dsd_engine_scan_toast_resume_failed(dsd_state* state, long freq, int why) {
         DSD_SNPRINTF(text, sizeof text, "Scan stays paused: tune to %s MHz deferred; retry", mhz);
     } else if (why == DSD_SCAN_RESUME_FAILED_SETUP) {
         DSD_SNPRINTF(text, sizeof text, "Scan stays paused: scan channel %s MHz could not be set up", mhz);
+    } else if (why == DSD_SCAN_RESUME_INTERRUPTED) {
+        /* Not a failure: a reopened stream starts on the frequency the tune asked for, so the receiver can be there. */
+        DSD_SNPRINTF(text, sizeof text, "Scan stays paused: the resume to %s MHz was interrupted", mhz);
     } else {
         DSD_SNPRINTF(text, sizeof text, "Scan stays paused: tune to %s MHz failed", mhz);
     }

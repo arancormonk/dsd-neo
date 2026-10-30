@@ -2027,10 +2027,17 @@ ui_cmd_pause_channel_scan_after_tune(dsd_opts* opts, dsd_state* state) {
 /* A Signal search start over a -Y resume still waiting on its row (issue #671): the search takes the receiver from it,
    as a frequency entry does, and the scan stays paused. Before the start, which captures the settings the search puts
    back when it stops, so a typed row's staged tune and scopes never become them. A running -Y scan refuses the search
-   instead (dsd_engine_signal_search_start()), so only a pending resume is taken back. */
+   instead (dsd_engine_signal_search_start()), so only a pending resume is taken back, and only for a start that goes
+   on: one the engine refuses changes nothing. */
 static void
 ui_cmd_search_takes_back_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (c->id == DSD_APP_CMD_SIGNAL_SEARCH_START && state && state->lcn_scan_resume_pending) {
+    if (c->id != DSD_APP_CMD_SIGNAL_SEARCH_START || !state || !state->lcn_scan_resume_pending
+        || c->n != sizeof(dsd_signal_search_config)) {
+        return;
+    }
+    dsd_signal_search_config config;
+    DSD_MEMCPY(&config, c->data, sizeof(config));
+    if (dsd_engine_signal_search_start_refused(opts, state, &config, NULL, 0U) == 0) {
         (void)ui_cmd_pause_channel_scan_after_tune(opts, state);
     }
 }

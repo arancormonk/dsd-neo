@@ -908,12 +908,8 @@ int svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state);
  * Asked before the switch rewrites the input and tears down the running stream. The configured analog preset's
  * explicit width, or the AM default (as RTL_SET_BW holds them, a typed digital scan row included), must fit the rate the
  * RTL DSP bandwidth (rtl_dsp_bw_khz) gives the device the switch opens (svc_rtl_row_destination()): an RTL-SDR from an
- * Airspy spec or "rtl", rtl_tcp from an rtl_tcp spec. The switch is unscoped, so the stream it opens starts on the
- * settings in force: while an analog scan row runs the analog family (issue #526), the width in force there, the row's
- * own width or, on a session whose preset runs another kind, the configured width of the row's kind, must fit that rate
- * as well. On such a session the configured width of a kind is held while the scan has an analog row or target of that
- * kind without a width of its own to visit (dsd_engine_scan_runs_configured_nfm_width(), _am_width()), whichever row is
- * on air. A SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start holds only
+ * Airspy spec or "rtl", rtl_tcp from an rtl_tcp spec. The switch is refused while a scan is in force
+ * (ui_input_switch_refused(), issue #671), so no scan row's width meets it. A SoapySDR or I/Q replay input is reopened at a rate its device or capture sets, which its start holds only
  * the width it opens on to, the one in force (under a digital scan row, none). The unset NFM default is never
  * refused. An explicit width, or the AM default, is refused, whatever the rate, while DSD_NEO_CHANNEL_LPF=0 turns the
  * channel filter off. A rate refusal's reason names the width, the rate, the widest width it filters and the DSP
@@ -933,11 +929,9 @@ void svc_rtl_row_destination(const dsd_opts* opts, char* out, size_t out_size);
  * Asked before the switch rewrites the input and tears down the running one. The Airspy delivers a rate its sample rate
  * and the DSP bandwidth set, which its start holds the width it opens on to, so only the rules every rate shares apply
  * here: an explicit width, or the AM default, is refused while DSD_NEO_CHANNEL_LPF=0 turns the channel filter off. The
- * widths held are the ones svc_check_rtl_input_analog_width() holds: the configured analog preset's, the configured
- * width of a kind the scan runs beside it, and the width in force under an analog scan row. The unset NFM default is
- * never refused. The switch is unscoped, so its start opens on the settings in force and checks only the width in force
- * against the delivered rate: under a scan row that runs a digital protocol, none, and a configured width that rate
- * cannot filter is left to the scan (its leave's refused return to the monitor, and the analog rows that run it).
+ * width held is the one svc_check_rtl_input_analog_width() holds, the configured analog preset's (the switch is refused
+ * while a scan is in force, issue #671). The unset NFM default is never refused. Its start checks the width it opens on
+ * against the delivered rate.
  *
  * @return 0 when the switch may go ahead, -1 otherwise (reason in @p why, may be NULL).
  */
