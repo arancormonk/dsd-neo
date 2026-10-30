@@ -55,6 +55,14 @@ main(int argc, char** argv) {
     check(model.neighbours()[0].toMap()["wacn"].toUInt() == 0xabcde);
     check(model.patches()[0].toMap()["sgid"].toUInt() == 42);
     check(model.affiliations().size() == 100);
+    /* Issue #782: last-seen times that move without changing the order change nothing shown, so no row list changes
+     * (a change rebuilt the Network sheet's rows). */
+    for (int i = 0; i < 256; ++i) {
+        s.p25_aff_last_seen[i] = i + 1000;
+    }
+    s.p25_nb_entries[0].last_seen = 1234;
+    model.refresh(&s);
+    check(changes == 1 && nbChanges == 1 && affChanges == 1);
     s.p25_aff_rid[255] = 999;
     check(model.radios()[0].toMap()["rid"].toUInt() == 256); // Owned copy.
     model.setActive(false);

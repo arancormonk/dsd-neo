@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Issue #782: a closed sheet whose list follows a live reading must not build that list while nobody can see it.
 //
@@ -21,6 +22,21 @@ Item {
         id: siteLoader
         anchors.fill: parent
         source: uiDir + "/SiteSheet.qml"
+    }
+    // The P25 network the Network sheet reads, as P25NetworkModel publishes it: a new list on every refresh.
+    QtObject {
+        id: fakeNet
+        property bool active: false
+        property var neighbours: []
+        property var patches: []
+        property var affiliations: []
+        property var radios: []
+    }
+    Loader {
+        id: networkLoader
+        anchors.fill: parent
+        source: uiDir + "/NetworkSheet.qml"
+        onLoaded: item.network = fakeNet
     }
     Component {
         id: spyComponent
@@ -105,6 +121,9 @@ Item {
             siteSheet.visible = false;
         }
         function cleanup() {
+            // A case that changed the screen reader's pace puts the app's back, whatever it failed on.
+            Ui.Navigation.speechPeriodMs = 5000;
+            Ui.Navigation.speechStepFloorMs = 1000;
             testContext.stopAccessibilityCount();
             for (var spy of spies)
                 spy.destroy();
@@ -177,6 +196,10 @@ Item {
         // not once per row. A hop to another protocol hides the group of fields that protocol does not have, one per
         // change, as it hid the P25-only network button before: content that differs, not churn.
         function test_open_site_sheet_on_hops() {
+            // Each hop is a step heard on its own here (the step floor off); tst_a11y_paced_names.qml holds a
+            // flapping step to the floor.
+            var floor = Ui.Navigation.speechStepFloorMs;
+            Ui.Navigation.speechStepFloorMs = 1;
             testContext.publishTarget(site(0));
             siteSheet.visible = true;
             waitForRendering(siteSheet);
@@ -219,8 +242,100 @@ Item {
                 if (/^ObjectHide siteFields /.test(key))
                     hides += mixed.chains[key];
             }
+            Ui.Navigation.speechStepFloorMs = floor;
             compare(hides, changes, "one field group leaves per protocol change: " + JSON.stringify(mixed.chains));
             compare(testContext.accessibilityCountWithin(siteSheet, "ObjectShow"), 0, churn());
+        }
+
+        // Issue #782: an open Network sheet reads each entry as its own row, and a refresh that hands a new list with
+        // the same entries (the engine's last-seen times moved) rebuilds nothing: no row shows or hides, and none is
+        // renamed. A changed entry renames its row only; a new entry adds one row.
+        function neighbours(n, seen, site) {
+            var rows = [];
+            for (var i = 0; i < n; ++i)
+                rows.push({freqHz: 851000000 + i * 12500, sysid: 291, rfss: 1, site: i === 3 ? site : i, wacn: 1,
+                    wacnValid: true, lra: 0, lraValid: false, isCurrentCc: i === 0, isCandidate: false, cfvaText: "valid",
+                    lastSeen: seen});
+            return rows;
+        }
+        function test_open_network_sheet_refreshes() {
+            var sheet = networkLoader.item;
+            verify(sheet !== null);
+            fakeNet.neighbours = neighbours(10, 0, 3);
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(20);
+            var rows = [];
+            (function collect(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    var child = item.children[k];
+                    // A neighbour row: a text that starts with its frequency.
+                    if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text) && child.visible)
+                        rows.push(child);
+                    collect(child);
+                }
+            })(sheet);
+            compare(rows.length, 10, "a row per neighbour");
+            for (var r of rows)
+                compare(testContext.accessibleNode(r).name, r.text, "each row is read as itself");
+            testContext.startAccessibilityCount();
+            for (var refresh = 1; refresh <= 10; ++refresh) {
+                fakeNet.neighbours = neighbours(10, refresh, 3);
+                wait(20);
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(showHide(sheet), 0, "last-seen refreshes rebuild no row: " + JSON.stringify(counts.chains));
+            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 0, JSON.stringify(counts.chains));
+            // A neighbour's site changes: that row is renamed, in place.
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = neighbours(10, 11, 42);
+            wait(20);
+            counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(showHide(sheet), 0, JSON.stringify(counts.chains));
+            compare(testContext.accessibilityCountWithin(sheet, "NameChanged"), 1, JSON.stringify(counts.chains));
+            verify(testContext.accessibleNode(rows[3]).name.indexOf("Site:42") >= 0, testContext.accessibleNode(rows[3]).name);
+            // A new neighbour adds its row and touches no other.
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = neighbours(11, 12, 42);
+            wait(20);
+            counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(testContext.accessibilityCountWithin(sheet, "ObjectHide"), 0, JSON.stringify(counts.chains));
+            verify(testContext.accessibilityCountWithin(sheet, "ObjectShow") <= 1, JSON.stringify(counts.chains));
+            verify(testContext.accessibilityCountWithin(sheet, "NameChanged") <= 1, "only the new row is named: "
+                   + JSON.stringify(counts.chains));
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.neighbours = [];
+        }
+
+        // Issue #782: the open key sheet keeps a row per slot while the count holds; each call publishes a new list,
+        // and the rows read it in place rather than being rebuilt with their buttons.
+        function test_open_key_sheet_keeps_its_slot_rows() {
+            testContext.publishTarget({decryptionSlots: slots(0)});
+            keySheet.open();
+            keySheet.visible = true;
+            Ui.Navigation.modals = [keySheet];
+            var rows = findChild(keySheet, "keySheetSlots");
+            waitForRendering(keySheet);
+            wait(20);
+            compare(rows.count, 2);
+            testContext.startAccessibilityCount();
+            for (var i = 2; i <= 2 * changes; i += 2) {
+                testContext.publishTarget({decryptionSlots: slots(i)});
+                wait(20);
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(rows.count, 2);
+            compare(showHide(keySheet), 0, "new slot lists rebuild no row: " + JSON.stringify(counts.chains));
+            var text = rows.itemAt(0).children[0].text;
+            verify(text.indexOf("Call key ID: " + slots(2 * changes)[0].keyId) >= 0, text);
+            compare(testContext.accessibleNode(rows.itemAt(0).children[0]).name, text);
+            Ui.Navigation.modals = [];
         }
     }
 }

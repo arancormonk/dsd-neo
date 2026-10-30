@@ -45,12 +45,19 @@ ModalSheet {
                 font.family: Theme.sans
                 color: Theme.textSubdued
             }
+            // Issue #782: one row per entry, kept across refreshes (StableRows): a
+            // refresh hands a new list, and a list model would rebuild every row
+            // a screen reader is told about. Each row reads its entry in place and
+            // is renamed only when its words change.
             Repeater {
-                model: section.rows
+                model: StableRows {
+                    size: section.rows.length
+                }
                 ReadableText {
-                    required property var modelData
+                    required property int index
+                    readonly property var row: section.rows[index]
                     width: parent.width
-                    text: sheet.rowText(section.index, modelData)
+                    text: row ? sheet.rowText(section.index, row) : ""
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     font.family: Theme.mono

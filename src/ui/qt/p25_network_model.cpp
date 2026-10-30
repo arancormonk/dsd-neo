@@ -38,6 +38,9 @@ P25NetworkModel::clear() {
     }
 }
 
+/* Issue #782: a row carries only what the Network sheet shows. The engine's last-seen times order the rows but are
+ * not shown, and kept in the rows they made every refresh a change (each second some row's time moves), which made
+ * the sheet rebuild rows a screen reader is told about. */
 void
 P25NetworkModel::refresh(const dsd_state* snapshot) {
     if (!m_active) {
@@ -59,8 +62,7 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
                                          {"lraValid", bool(r.lra_valid)},
                                          {"isCurrentCc", bool(r.is_current_cc)},
                                          {"isCandidate", bool(r.is_candidate)},
-                                         {"cfvaText", QString::fromLatin1(r.cfva_text)},
-                                         {"lastSeen", QVariant::fromValue<qlonglong>(r.last_seen)}});
+                                         {"cfvaText", QString::fromLatin1(r.cfva_text)}});
     }
     dsd_app_p25_patch patch[8];
     count = dsd_app_p25_patches(snapshot, patch, 8);
@@ -73,22 +75,17 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
         for (int j = 0; j < r.radio_count; ++j) {
             units.append(r.radios[j]);
         }
-        patchRows.append(QVariantMap{{"sgid", r.sgid},
-                                     {"isPatch", bool(r.is_patch)},
-                                     {"groups", groups},
-                                     {"radios", units},
-                                     {"lastSeen", QVariant::fromValue<qlonglong>(r.last_seen)}});
+        patchRows.append(
+            QVariantMap{{"sgid", r.sgid}, {"isPatch", bool(r.is_patch)}, {"groups", groups}, {"radios", units}});
     }
     dsd_app_p25_affiliation aff[cap];
     count = dsd_app_p25_group_affiliations(snapshot, aff, cap);
     for (int i = 0; i < count; ++i) {
-        affiliationRows.append(QVariantMap{
-            {"rid", aff[i].rid}, {"tg", aff[i].tg}, {"lastSeen", QVariant::fromValue<qlonglong>(aff[i].last_seen)}});
+        affiliationRows.append(QVariantMap{{"rid", aff[i].rid}, {"tg", aff[i].tg}});
     }
     count = dsd_app_p25_affiliated_rids(snapshot, aff, cap);
     for (int i = 0; i < count; ++i) {
-        radioRows.append(
-            QVariantMap{{"rid", aff[i].rid}, {"lastSeen", QVariant::fromValue<qlonglong>(aff[i].last_seen)}});
+        radioRows.append(QVariantMap{{"rid", aff[i].rid}});
     }
     if (m_neighbours != neighbourRows) {
         m_neighbours = neighbourRows;

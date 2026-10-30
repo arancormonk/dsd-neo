@@ -223,16 +223,32 @@ ModalSheet {
     // Closed, the slots stay unbuilt (issue #782): they change with every call
     // and scan hop, and each row created under the hidden sheet raises an
     // accessibility event. Opening fills them from the readings as they are.
+    //
+    // Open, a row per slot is kept across publications (issue #782,
+    // StableRows): each call and hop publishes a new list, and a list model
+    // would rebuild every row and its buttons a screen reader is told about.
+    // Each row reads its slot in place.
     Repeater {
+        id: slotRepeater
         objectName: "keySheetSlots"
-        model: sheet.visible ? (metrics.decryptionSlots || []) : []
+        readonly property var slots: sheet.visible ? (metrics.decryptionSlots || []) : []
+        model: StableRows {
+            size: slotRepeater.slots.length
+        }
         Column {
-            required property var modelData
+            id: slotRow
+            required property int index
+            // The rows' reading of a slot, an empty one while the count shrinks under it.
+            readonly property var slotData: slotRow.index < slotRepeater.slots.length ? slotRepeater.slots[slotRow.index]
+                : ({slot: 0, status: "", lastObserved: false, algorithm: "", keyId: "", source: "", effectiveId: "",
+                    availability: "", fallback: "", privateCall: false, dmr: false, group: false, blockReason: "",
+                    profileRef: "", protocol: "", materialKind: "", targetId: ""})
             width: parent.width
             spacing: 6
             ReadableText {
                 width: parent.width
-                text: qsTr("Slot %1 · %2%3").arg(modelData.slot).arg(modelData.status).arg(modelData.lastObserved ? qsTr(" · last observed") : "") + (modelData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(modelData.algorithm) : "") + (modelData.keyId.length ? qsTr("\nCall key ID: %1").arg(modelData.keyId) : "") + "\n" + modelData.source + (modelData.effectiveId.length ? " · " + modelData.effectiveId : "") + "\n" + modelData.availability + (modelData.fallback.length ? "\n" + modelData.fallback : "") + (modelData.privateCall && modelData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (modelData.blockReason.length ? qsTr("\nListening policy: %1").arg(modelData.blockReason) : "")
+                // Guarded: a new row's bindings can run before its slot is read.
+                text: !slotData ? "" : qsTr("Slot %1 · %2%3").arg(slotData.slot).arg(slotData.status).arg(slotData.lastObserved ? qsTr(" · last observed") : "") + (slotData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(slotData.algorithm) : "") + (slotData.keyId.length ? qsTr("\nCall key ID: %1").arg(slotData.keyId) : "") + "\n" + slotData.source + (slotData.effectiveId.length ? " · " + slotData.effectiveId : "") + "\n" + slotData.availability + (slotData.fallback.length ? "\n" + slotData.fallback : "") + (slotData.privateCall && slotData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (slotData.blockReason.length ? qsTr("\nListening policy: %1").arg(slotData.blockReason) : "")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.textPrimary
@@ -240,23 +256,23 @@ ModalSheet {
             }
             OutlineButton {
                 width: parent.width
-                visible: modelData.keyId.length > 0 && typeof decryptionProfiles !== "undefined"
+                visible: !!slotData && slotData.keyId.length > 0 && typeof decryptionProfiles !== "undefined"
                 text: qsTr("Manage matching key")
                 enabled: !applyFlow.pending
                 onClicked: {
                     sheet.savingDraft = false;
-                    var profile = decryptionProfiles.forRuntimeReference(modelData.profileRef);
-                    matchingEditor.openMatching(profile.uid || "", modelData.protocol, parseInt(modelData.keyId, 16), modelData.materialKind);
+                    var profile = decryptionProfiles.forRuntimeReference(slotData.profileRef);
+                    matchingEditor.openMatching(profile.uid || "", slotData.protocol, parseInt(slotData.keyId, 16), slotData.materialKind);
                 }
             }
             OutlineButton {
                 width: parent.width
-                visible: modelData.dmr && modelData.group && sheet.selectedProfileUid.length > 0
+                visible: !!slotData && slotData.dmr && slotData.group && sheet.selectedProfileUid.length > 0
                 text: qsTr("Talkgroup key selection")
                 enabled: !applyFlow.pending
                 onClicked: {
                     sheet.savingDraft = false;
-                    matchingEditor.openTalkgroup(sheet.selectedProfileUid, "dmr", Number(modelData.targetId));
+                    matchingEditor.openTalkgroup(sheet.selectedProfileUid, "dmr", Number(slotData.targetId));
                 }
             }
         }
