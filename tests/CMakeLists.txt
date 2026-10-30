@@ -12369,6 +12369,15 @@ target_link_libraries(
 )
 add_test(NAME FEC_BPTC_CODEWORD COMMAND dsd-neo_test_fec_bptc_codeword)
 
+# BPTC(16,2): a Hamming row the decoder cannot correct keeps the received bits and reports the failure
+add_executable(dsd-neo_test_fec_bptc_16x2 fec/test_fec_bptc_16x2.c)
+target_include_directories(
+    dsd-neo_test_fec_bptc_16x2
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_fec_bptc_16x2 PRIVATE dsd-neo_fec)
+add_test(NAME FEC_BPTC_16X2 COMMAND dsd-neo_test_fec_bptc_16x2)
+
 # BCH(63,16,11) decoder unit tests
 add_executable(dsd-neo_test_fec_bch_63_16_unit fec/test_fec_bch_63_16_unit.cpp)
 target_include_directories(

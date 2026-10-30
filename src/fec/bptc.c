@@ -82,6 +82,10 @@ bptc_196x96_decode_rows(uint8_t matrix[13][15]) {
         }
         if (Hamming_15_11_decode(line_uncorrected, line_corrected, 1) == false) {
             errors++;
+            // The decoder leaves line_corrected unwritten on failure. Keep the received row rather than uninitialized
+            // or previous-row data. (Hamming(15,11) is perfect, so every syndrome corrects; this keeps it so if the
+            // table ever changes.)
+            continue;
         }
         for (uint32_t j = 0; j < 11; j++) {
             matrix[i][j] = line_corrected[j];
@@ -437,14 +441,15 @@ BPTC_16x2_Extract_Data(uint8_t InputInterleavedData[32], uint8_t DMRDataExtracte
         LineUncorrected[i] = DataMatrix[i] & 1;
     }
 
-    /* Apply Hamming (16,11,4) code correction */
+    /* Apply Hamming (16,11,4) code correction. The decoder leaves LineCorrected unwritten on failure: the output keeps
+     * the received bits copied above, and the failure counts in the return value, so the caller takes none of it. */
     if (Hamming_16_11_4_decode(LineUncorrected, LineCorrected, 1) == false) {
         HammingIrrecoverableErrorNb++;
-    }
-
-    /* Copy the corrected content to the output buffer */
-    for (i = 0; i < 11; i++) {
-        DMRDataExtracted[i] = LineCorrected[i] & 1;
+    } else {
+        /* Copy the corrected content to the output buffer */
+        for (i = 0; i < 11; i++) {
+            DMRDataExtracted[i] = LineCorrected[i] & 1;
+        }
     }
 
     /* Check Parity bits */
