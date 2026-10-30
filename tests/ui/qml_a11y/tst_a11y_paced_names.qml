@@ -512,6 +512,39 @@ Item {
             verify(nameOf(strip).indexOf("852.01") >= 0, "the hop is heard with its frequency: " + nameOf(strip));
         }
 
+        // The scan header names the target the scan is on, which a 300 ms dwell changes three times a second. Hops
+        // are read at the readings' pace; a hold is heard at once. Run at a fifth of the app's times (a 1 s period,
+        // hops 60 ms apart), 50 hops.
+        function test_h_scan_header_hops_are_paced() {
+            var period = 1000;
+            Ui.Navigation.speechPeriodMs = period;
+            Ui.Navigation.speechStepFloorMs = 200;
+            set({scanTargetCount: 50, scanTargetOrdinal: 1, scanHold: false});
+            var header = item(monitor, "scanTargetHeader");
+            wait(250);
+            testContext.startAccessibilityCount();
+            var hops = 50;
+            var start = Date.now();
+            for (var i = 1; i <= hops; ++i) {
+                testContext.publishTarget({scanTargetOrdinal: i, scanTargetId: "target-" + i,
+                    centerFreqHz: 851012500 + i * 12500});
+                wait(60);
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var renames = raised(counts, "NameChanged", "scanTargetHeader");
+            var most = Math.ceil(elapsed / period) + 1;
+            verify(renames <= most, "the header renamed " + renames + " times for " + hops + " hops in " + elapsed
+                   + " ms (at most " + most + "): " + JSON.stringify(counts.chains));
+            compare(header.text.indexOf("SCANNING · 50/50"), 0, "the text on screen follows every hop: " + header.text);
+            tryVerify(function () { return nameOf(header) === header.text; }, period + 500, nameOf(header));
+            // Held: at once.
+            set({scanHold: true});
+            tryVerify(function () { return nameOf(header).indexOf("HOLD") >= 0; }, 300, "a hold is heard at once: "
+                      + nameOf(header));
+        }
+
         // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.
         function test_g_hidden_monitor_stays_silent() {
             Ui.Navigation.speechPeriodMs = 30;

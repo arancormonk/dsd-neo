@@ -497,9 +497,14 @@ Item {
                     elide: Text.ElideRight
                 }
 
-                ReadableText {
+                // Paced (issue #782): a scan can hop every 300 ms, and a header named
+                // by its live text was read out on every hop. Heard at once when a
+                // scan starts or stops or is held or released; otherwise the target
+                // it is on is read at most every 5 s.
+                LiveText {
                     width: parent.width
                     objectName: "scanTargetHeader"
+                    step: screen.scanPaused ? "paused" : metrics.scanTargetCount > 0 ? ["scan", metrics.scanHold].join("|") : text
                     text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
