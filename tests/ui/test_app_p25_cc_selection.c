@@ -282,6 +282,8 @@ test_selection(dsd_opts* opts, dsd_state* state, int voice, int cc_type) {
 #ifdef USE_RADIO
     /* An accepted entry is a new channel whichever branch took it (issue #671): the tone heard on the old one goes. */
     assert(!received_tone_kept(state, tone_generation));
+    /* Selecting the system's control channel keeps the session: the calls heard next are still the system's. */
+    assert(state->operator_tuned == 0U);
     assert(state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0);
 #else
     (void)tone_generation;

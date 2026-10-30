@@ -609,6 +609,79 @@ Item {
             compare(app.currentTab, 2);
             compare(app.sessionDestination, "");
         }
+        // Issue #671: while the operator holds the tuner a saved system's scan had
+        // (paused by a frequency entered anywhere), the session is not that system:
+        // the monitor names it Exploring and the menu offers no edit that would
+        // push CSVs into it. Resume scan gives both back.
+        function heldTuner(held) {
+            testContext.setMetrics({operatorTuned: held, scanKind: 1, scanRotationActive: !held, scanPaused: held,
+                                    scanResumable: held, tunerControlled: !held, scannerMode: !held});
+        }
+        function menuOffersEdit() {
+            findChild(app, "monitorScreen").openSessionMenu();
+            var menu = findChild(app, "sessionMenu");
+            verify(menu.visible);
+            var row = findChild(menu, "sessionMenuEdit");
+            var offered = row !== null && row.visible;
+            menu.visible = false;
+            return offered;
+        }
+        function test_a_held_tuner_detaches_the_saved_system_until_resume() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Scanning site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"});
+            var row = savedSystems.count - 1;
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                testContext.setMetric("optionsKnown", true);
+                heldTuner(false);
+                compare(app.sessionRow, row);
+                verify(menuOffersEdit(), "the running saved system offered no edit");
+                compare(title(), "Scanning site");
+                heldTuner(true);
+                compare(app.sessionRow, -1);
+                verify(!menuOffersEdit(), "the menu offered to edit a system the session left");
+                compare(title(), "Exploring");
+                compare(app.sessionSavedSystemUid, "");
+                verify(!app.exploring, "a saved system's pause took taps");
+                heldTuner(false);
+                compare(app.sessionRow, row);
+                verify(menuOffersEdit(), "the resumed saved system offered no edit");
+                compare(title(), "Scanning site");
+                compare(app.sessionSavedSystemUid, savedSystems.get(row).uid);
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, scannerMode: false,
+                                        optionsKnown: false});
+                savedSystems.remove(row);
+            }
+        }
+        // A recreated Activity finds the tuner held: no session map came with it,
+        // so it names the session Exploring until the resume, then by the label
+        // the history kept.
+        function test_a_reattached_session_names_a_held_tuner() {
+            var title = function () { return findChild(findChild(app, "monitorScreen"), "monitorHeaderTitle").text; };
+            callHistory.sessionLabel = "Scan";
+            loader.active = false;
+            wait(0);
+            loader.active = true;
+            tryCompare(loader, "status", Loader.Ready);
+            try {
+                verify(app.monitorMode);
+                compare(title(), "Scan");
+                testContext.setMetric("optionsKnown", true);
+                heldTuner(true);
+                compare(title(), "Exploring");
+                heldTuner(false);
+                compare(title(), "Scan");
+            } finally {
+                testContext.setMetrics({operatorTuned: false, scanKind: 0, scanRotationActive: false, scanPaused: false,
+                                        scanResumable: false, tunerControlled: false, scannerMode: false,
+                                        optionsKnown: false});
+                callHistory.sessionLabel = "Test Site";
+            }
+        }
         function test_actual_history_instances_share_search_across_stop() {
             var idle = findChild(findChild(app, "idleHistoryScreen"), "historySearch");
             var live = findChild(findChild(app, "sessionHistoryScreen"), "historySearch");

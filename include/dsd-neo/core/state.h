@@ -411,7 +411,7 @@ typedef struct {
     uint32_t policy_target_id;
     // Who held the tuner when this row's call was first rendered; frozen with channel_label, so a
     // call a later release or resume ends keeps the identity it began with. operator_tuned: the
-    // operator held the receiver (a paused scan, a tuner release). scan_member: a scan was running,
+    // operator held the receiver (a paused scan, a tuner release, a manual tune). scan_member: a scan was running,
     // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
     uint8_t operator_tuned;
     uint8_t scan_member;
@@ -2467,8 +2467,9 @@ struct dsd_state {
     /* A -Y scan the operator paused (issue #671): its list, cursor, avoids and session edits are kept while
      * scanner_mode is 0, so the receiver stays where the operator put it until a resume
      * (dsd_engine_channel_scan_pause(), _resume()). lcn_scan_resume_pending: a resume's row tune timed out; until it
-     * lands the scan stays paused and no row is named. operator_tuned: the operator took the tuner from its automatic
-     * owner (a scan pause, a tuner release); a resume and a new session clear it, a stop does not. */
+     * lands the scan stays paused and no row is named. operator_tuned: the operator moved the receiver off its session
+     * (a scan pause, a tuner release of trunking, any accepted manual tune but a P25 control-channel selection); a
+     * resume and a new session clear it, a stop does not. */
     uint8_t lcn_scan_paused;
     uint8_t lcn_scan_resume_pending;
     uint8_t operator_tuned;

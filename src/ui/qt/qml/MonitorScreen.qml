@@ -143,7 +143,10 @@ Item {
     // It owns nothing until resumed, so the header says so in place of the
     // rotation, and the scan controls give way to Resume scan.
     readonly property bool scanPaused: metrics ? metrics.scanPaused : false
-    readonly property string pausedScanText: {
+    // The paused header that fits @a width, losing its noun before its number:
+    // "SCAN PAUSED · 12 channels", then "SCAN PAUSED · 12", then the state alone.
+    // The count is the line's reason to exist, and elision would cut it first.
+    function pausedScanText(width) {
         if (!screen.scanPaused)
             return "";
         // A -Y resume waits on its first channel's tune before the scan runs.
@@ -152,7 +155,19 @@ Item {
         if (n <= 0)
             return state;
         var size = metrics.scanKind === 2 ? (n === 1 ? qsTr("1 target") : qsTr("%1 targets").arg(n)) : (n === 1 ? qsTr("1 channel") : qsTr("%1 channels").arg(n));
-        return state + " · " + size;
+        // Read so a text-size change re-fits the line, as scanControls' cells do.
+        var font = scanHeaderMetrics.font;
+        for (var text of [state + " · " + size, state + " · " + n]) {
+            if (scanHeaderMetrics.advanceWidth(text) <= width)
+                return text;
+        }
+        return state;
+    }
+    FontMetrics {
+        id: scanHeaderMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(11)
+        font.letterSpacing: 0.8
     }
 
     // #647 D1a: the session's USB receiver, where the host brokers it (Android).
@@ -418,7 +433,7 @@ Item {
                 Text {
                     width: parent.width
                     objectName: "scanTargetHeader"
-                    text: screen.scanPaused ? screen.pausedScanText : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
+                    text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8

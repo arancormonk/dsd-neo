@@ -55,7 +55,7 @@ Item {
     // purpose wins over a scan (it pauses), where a tap or a drag does not. A
     // saved system's scan is still that system and stays watched until Explore
     // from here; anything else holding the tuner, or a replay, refuses it.
-    readonly property bool goToAllowed: !screen.replayInput && ((screen.exploring && !screen.tunerHeld) || (screen.scanList && screen.scanOwnsTuner) || (screen.scanPaused && !screen.tunerHeld))
+    readonly property bool goToAllowed: !screen.replayInput && ((screen.exploring && !screen.tunerHeld) || (screen.scanList && screen.scanOwnsTuner) || screen.scanPaused)
 
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.

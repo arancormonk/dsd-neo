@@ -9097,24 +9097,32 @@ Qt Quick frontend (`src/ui/qt`):
     waiting on its row), `scanEntryCount` and `operatorTuned`, and for the running predicate behind
     `tunerControlled`, `scanRotationActive` and the target fields; a paused `--trunk-scan` keeps `trunk_scan_enabled`,
     so no Qt reading may gate on that flag. Spectrum's "Go to" has its own predicate (`goToAllowed`:
-    `!replay && (exploring && !tunerHeld || scanList && scanRotationActive || scanPaused && !tunerHeld)`, where
+    `!replay && (exploring && !tunerHeld || scanList && scanRotationActive || scanPaused)`, where
     `scanList` is Main's `sessionScanList`) and sends `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that
     pauses a running scan); taps, drags and steps keep `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet
     says Tune pauses the scan while one runs, and closes with the reason when `goToAllowed` falls (a replay keeps its
     own). `CommandBridge::resumeScan()` (`SCAN_RESUME`) backs "Resume scan" on Spectrum and in the Monitor's scan
     controls row, which shows it in place of Hold/Avoid/Next while paused; the header reads `SCAN PAUSED · n
     targets|channels` (`RESUMING SCAN` while a -Y resume waits). Main names the session from the decoder, never from a
-    queued command: `syncOperatorHold()` swaps `sessionSystem` for an "Exploring" map while `operatorTuned` holds,
-    keeping the session's map and row in `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and
-    restoring them on the resume. Explore from here sends the release and waits for that answer; only an Explore with
-    no owner (options known, nothing controlling the tuner, no scan) relabels history at once, since no hold will be
-    reported. History rows take their identity from the call's own stamps (`Event_History::operator_tuned` ->
-    "Exploring", no UID; the saved-system UID only with `scan_member == 0`), so the call a release ends keeps the
-    session's name and nothing depends on when the UI reads a row. The post-initialization edge records
+    queued command: `syncOperatorHold()` (on the lifecycle's Running with options known) swaps `sessionSystem` for an
+    "Exploring" map while `operatorTuned` holds, keeping the session's map and row in
+    `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the resume; a scan
+    list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its spectrum takes
+    taps until Resume scan, or for good once the paused scan is stopped. The decoder sets `operator_tuned` on every
+    accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection, MANUAL_TUNE) and on a
+    TUNER_RELEASE that releases trunking or pauses a scan (`ui_mark_operator_tuned()`), so Explore from here never
+    relabels history: with an owner the session is named on the decoder's answer, and with none it only detaches
+    the session map and row (the calls before the first tune are still the system's). History rows take their
+    identity from the call's own stamps (`Event_History::operator_tuned` -> "Exploring", no UID; the saved-system UID
+    only with `scan_member == 0`), so the call a release or tune ends keeps the session's name and nothing depends on
+    when the UI reads a row. `HistoryDetailSheet` offers a history Hold TG only with no scan and no operator hold
+    (`scanKind === 0 && !operatorTuned`), since the session keeps its UID for the rows heard before. The
+    post-initialization edge records
     `sessionStartKind`/`sessionStartUid`, what was started, not what an early Explore made it. Tests:
     `UI_QT_METRICS_MODEL` (`test_scan_state()`), `UI_QT_CALL_HISTORY_MODEL`
     (`test_tuner_owner_stamps_set_row_identity()`), `UI_QT_QML_CALL_LISTS` (`tst_spectrum_screen.qml` 03j-03o,
-    `tst_monitor_scan_target.qml`, `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`).
+    `tst_monitor_scan_target.qml`, `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`,
+    `tst_history_hold.qml`, `tst_main_session_tools.qml`), `APP_COMMAND_QUEUE` (`test_manual_tunes_mark_the_operator()`).
   - Carrier identity (Spectrum strip): `SpectrumScreen.qml`'s status strip is two lines bounded by the Radio button
     (the strip edge when it is hidden). Line 1 (`spectrumSyncLabel`, SNR, `spectrumCfoLabel`, `spectrumCallLabel`)
     gives way talkgroup first (elided), then the offset (hidden); line 2 (`spectrumIdentityLabel`) is

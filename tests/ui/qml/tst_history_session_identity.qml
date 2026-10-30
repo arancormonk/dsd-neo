@@ -43,17 +43,12 @@ Item {
             testContext.setMetric("optionsKnown", false)
         }
 
-        // Issue #671: what the decoder reports about the tuner. One snapshot carries
-        // all of it; the fake publishes one reading at a time, so the hold goes first,
-        // as the release that changes the owner sets it in the same step.
+        // Issue #671: what the decoder reports about the tuner, published as one snapshot: Main reads the hold and the
+        // owner together when the metrics notify.
         function setOwner(controlled, trunking, scanKind, running, operatorTuned) {
-            testContext.setMetric("operatorTuned", operatorTuned)
-            testContext.setMetric("trunkingEnabled", trunking)
-            testContext.setMetric("scanKind", scanKind)
-            testContext.setMetric("scanRotationActive", running)
-            testContext.setMetric("scanPaused", scanKind !== 0 && !running)
-            testContext.setMetric("scanResumable", scanKind !== 0 && !running)
-            testContext.setMetric("tunerControlled", controlled)
+            testContext.setMetrics({operatorTuned: operatorTuned, trunkingEnabled: trunking, scanKind: scanKind,
+                                    scanRotationActive: running, scanPaused: scanKind !== 0 && !running,
+                                    scanResumable: scanKind !== 0 && !running, tunerControlled: controlled})
         }
         function monitorTitle() {
             return findChild(findChild(loader.item, "monitorScreen"), "monitorHeaderTitle").text
@@ -66,18 +61,43 @@ Item {
         }
 
         // Nothing was steering a conventional saved system, so the decoder has no
-        // hold to report: the session is Explore's from the tap.
+        // hold to report: the session detaches from the system at the tap, but
+        // history is not relabelled. The call the release ends, and the calls
+        // heard before the first tune, are still the system's; that tune stamps
+        // the ones after it Exploring (the rows' half is UI_QT_CALL_HISTORY_MODEL's
+        // test_tuner_owner_stamps_set_row_identity()).
         function test_saved_to_explore_from_here() {
             loader.item.startSystem(0)
             testContext.setLifecyclePhase(2)
             testContext.setMetric("optionsKnown", true)
-            compare(callHistory.sessionUid, savedSystems.get(0).uid)
+            var uid = savedSystems.get(0).uid
+            compare(callHistory.sessionUid, uid)
             exploreFromSpectrum()
             compare(testContext.releaseTunerCalls(), 1)
-            compare(callHistory.sessionUid, "")
-            compare(callHistory.sessionLabel, "Exploring")
+            compare(callHistory.sessionUid, uid, "history was relabelled at queue time")
+            compare(callHistory.sessionLabel, "Saved site", "history was relabelled at queue time")
             compare(monitorTitle(), "Exploring")
             verify(loader.item.exploring)
+            compare(loader.item.sessionRow, -1)
+            // The first tap lands: the decoder reports the operator's tuner. The session stays Explore's.
+            setOwner(false, false, 0, false, true)
+            compare(monitorTitle(), "Exploring")
+            verify(loader.item.exploring)
+            compare(callHistory.sessionLabel, "Saved site")
+        }
+
+        // An Explore-started session: its first tune hands the operator the tuner
+        // in the decoder's eyes, which changes nothing a reader can see.
+        function test_the_first_tune_of_an_explore_session() {
+            loader.item.startWithMap(loader.item.exploreSystem("rtltcp", "127.0.0.1", 1234, "851.5"), -1, false)
+            testContext.setLifecyclePhase(2)
+            testContext.setMetric("optionsKnown", true)
+            compare(monitorTitle(), "Exploring")
+            setOwner(false, false, 0, false, true)
+            compare(monitorTitle(), "Exploring")
+            verify(loader.item.exploring)
+            verify(loader.item.exploreRemembered, "an Explore session stopped remembering where it went")
+            compare(callHistory.sessionUid, "")
         }
 
         // B17: with an owner, the release ends the call on air, and that call began
@@ -136,16 +156,13 @@ Item {
             testContext.setMetric("optionsKnown", true)
             setOwner(true, false, 2, true, false)
             compare(monitorTitle(), "Scan")
-            // Paused from outside this screen: no Explore was asked for.
+            // Paused (here from outside this screen): the receiver is the operator's to tune by hand, the list waits.
             setOwner(false, false, 2, false, true)
             tryCompare(findChild(findChild(loader.item, "monitorScreen"), "monitorHeaderTitle"), "text", "Exploring")
-            verify(!loader.item.exploring, "a pause made the scan list free to tap-tune")
+            verify(loader.item.exploring, "a paused scan list stayed view-only")
+            verify(!loader.item.exploreRemembered, "a paused scan list's frequency would be remembered as Explore's")
+            verify(loader.item.sessionScanList, "the pause dropped the list")
             compare(loader.item.pausedScanSystem.name, "Scan")
-            // Explore from the paused list: still the list's, and not Explore's to remember.
-            exploreFromSpectrum()
-            verify(loader.item.exploring)
-            verify(loader.item.sessionScanList, "Explore over a paused scan dropped the list")
-            verify(!loader.item.exploreRemembered)
             compare(callHistory.sessionLabel, "Scan")
             compare(callHistory.sessionUid, "")
             // Resume scan lands.
@@ -153,12 +170,40 @@ Item {
             tryCompare(findChild(findChild(loader.item, "monitorScreen"), "monitorHeaderTitle"), "text", "Scan")
             verify(!loader.item.exploring, "the resumed scan list stayed free to tap-tune")
             compare(loader.item.pausedScanSystem, null)
-            // Paused, then stopped (an input switch, say): no resume comes, the name stays.
+            // Paused, then stopped (an input switch, say): no resume comes, the name and the hand tuning stay.
             setOwner(false, false, 2, false, true)
             tryCompare(findChild(findChild(loader.item, "monitorScreen"), "monitorHeaderTitle"), "text", "Exploring")
             setOwner(false, false, 0, false, true)
             wait(20)
             compare(monitorTitle(), "Exploring")
+            verify(loader.item.exploring, "a stopped pause went back to view-only")
+        }
+
+        // A call heard before an Explore that released trunking keeps the saved
+        // system's UID, but the receiver has left that system: its details offer
+        // no hold until a new session.
+        function test_no_history_hold_once_the_operator_holds_the_tuner() {
+            loader.item.startSystem(0)
+            testContext.setLifecyclePhase(2)
+            testContext.setMetric("optionsKnown", true)
+            setOwner(true, true, 0, false, false)
+            var uid = savedSystems.get(0).uid
+            var detail = findChild(findChild(loader.item, "monitorScreen"), "monitorHistoryDetail")
+            verify(detail !== null, "the monitor's details sheet is missing")
+            detail.open({name: "Dispatch", tg: 1001, systemUid: uid})
+            var button = findChild(detail, "historyHoldButton")
+            verify(button.enabled, "the fixture's own system row offers no hold")
+            detail.visible = false
+            exploreFromSpectrum()
+            setOwner(false, false, 0, false, true)
+            // Back on the monitor: the spectrum layer disables everything under it.
+            loader.item.spectrumOpen = false
+            verify(findChild(loader.item, "monitorScreen").enabled, "the monitor is still under another layer")
+            compare(callHistory.sessionUid, uid, "the session keeps its UID for the calls heard before the Explore")
+            detail.open({name: "Dispatch", tg: 1001, systemUid: uid})
+            verify(!button.enabled, "a pre-Explore row offered a hold while the operator explores")
+            compare(findChild(detail, "historyHoldReason").text, "Hold needs a single saved system")
+            detail.visible = false
         }
 
         // B18: an Explore taken while the scan list is still starting (no options

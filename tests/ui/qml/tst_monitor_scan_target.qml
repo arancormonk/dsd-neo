@@ -114,6 +114,30 @@ Item {
                 tryCompare(header, "text", "SCANNING · 2/" + data.count + " · Dispatch");
         }
 
+        // The count is what the paused line is for: on a narrow phone at large
+        // text the noun goes before the number does, and nothing is elided.
+        function test_paused_header_keeps_its_count() {
+            var header = findChild(screen, "scanTargetHeader");
+            testContext.setMetric("scanKind", 1);
+            testContext.setMetric("scanEntryCount", 12);
+            testContext.setMetric("scanResumable", true);
+            testContext.setMetric("scanPaused", true);
+            tryCompare(header, "text", "SCAN PAUSED · 12 channels");
+            // A 412 dp phone at 1.6x, where the whole line was elided inside its noun.
+            root.width = 412;
+            Ui.Theme.fontScale = 1.6;
+            tryCompare(header, "text", "SCAN PAUSED · 12");
+            verify(!header.truncated, "the count was elided");
+            // Narrower still, the count goes whole and the state stays.
+            root.width = 360;
+            tryCompare(header, "text", "SCAN PAUSED");
+            verify(!header.truncated, "the state was elided");
+            Ui.Theme.resetFontScale();
+            root.width = 420;
+            tryCompare(header, "text", "SCAN PAUSED · 12 channels");
+            verify(!header.truncated);
+        }
+
         // Issue #575: the tuned frequency is the signal strip's first reading in
         // every mode, plain, scanning and holding, while there is one. The header
         // is not where it goes, so the header reads exactly as it did.

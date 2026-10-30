@@ -3453,6 +3453,30 @@ test_tuner_owner_stamps_freeze_at_first_render(void) {
     rc |= expect_int("call with no scan is not a scan member", row->scan_member, 0);
     rc |= expect_int("call with no scan is not operator tuned", row->operator_tuned, 0);
     dsd_state_ext_free_all(&state);
+
+    // No scan, and a manual tune (a frequency entry, a tap) moves the receiver off the session mid-call: the call it
+    // ended began under the session and keeps 0; the next call is the operator's.
+    reset_fixture(&opts, &state, event_history);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    state.operator_tuned = 1U;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("call begun before a manual tune is not operator tuned", row->operator_tuned, 0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 101U, 202U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("manual-tune call commits", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_int("call begun after a manual tune is operator tuned", row->operator_tuned, 1);
+    rc |= expect_int("call begun after a manual tune is not a scan member", row->scan_member, 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

@@ -1439,6 +1439,17 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held) {
 }
 
 #ifdef USE_RADIO
+/* The operator moved the receiver off its session (issue #671): an accepted frequency entry or tap-to-tune, never a P25
+   control-channel selection, which keeps the session. Calls heard from here on are stamped with it at their first
+   render (dsd_events.c), which may run under the P25 SM tick guard, so it is written under it; only a resume or a new
+   session clears it. */
+static void
+ui_mark_operator_tuned(dsd_state* state) {
+    const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
+    state->operator_tuned = 1U;
+    ui_rxid_guard_leave(taken);
+}
+
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
    capture off to keep the recording (svc_rtl_restart_recovery_locked(), @p capture_stopped), a note of it if the whole
    fits the toast; the log says it either way. */
@@ -2095,6 +2106,7 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
     if (!over_trunk_scan) {
         *scan_paused = ui_cmd_pause_channel_scan_after_tune(opts, state);
     }
+    ui_mark_operator_tuned(state);
     return rc;
 }
 
@@ -2186,6 +2198,8 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         dsd_frame_sync_reset_mod_state();
         dsd_analog_rx_reset(state); // the tune itself ran the carrier boundary (svc_rtl_set_freq(), issue #575)
         reset_call_tracking(opts, state, 1);
+        ui_mark_operator_tuned(state); // after the calls the tap ended, which began under the session
+
         if (rc == 0) {
             /* The frequency the controller applied, as the frequency entry's toast names it. */
             ui_set_toast(state, 3, "Applied: tuned -> %s MHz", ui_toast_mhz(applied, mhz, sizeof mhz));

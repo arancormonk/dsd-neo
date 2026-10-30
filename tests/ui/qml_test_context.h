@@ -2312,6 +2312,28 @@ class Setup : public QObject {
      * it. Exposed to the tests as `testContext` so a case can drive a reading to
      * a value and back rather than asserting only whatever the fixture started at.
      */
+    /**
+     * @brief Set several metrics keys and notify once, as one decoder snapshot reaches the real model: a case that
+     * moves the tuner's owner and the scan together (issue #671) never shows a screen a state between the two.
+     */
+    Q_INVOKABLE void
+    setMetrics(const QVariantMap& values) {
+        bool tuner = false;
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            m_metrics[it.key()] = it.value();
+            if (m_engine != nullptr) {
+                m_metric_readings->insert(it.key(), it.value());
+            }
+            tuner = tuner || it.key() == QStringLiteral("centerFreqHz");
+        }
+        if (m_engine != nullptr) {
+            if (tuner) {
+                Q_EMIT m_metric_readings->tunerChanged();
+            }
+            Q_EMIT m_metric_readings->controlChanged();
+        }
+    }
+
     Q_INVOKABLE void
     setMetric(const QString& key, const QVariant& value) {
         m_metrics[key] = value;

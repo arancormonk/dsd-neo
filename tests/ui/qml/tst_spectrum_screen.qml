@@ -472,6 +472,31 @@ Item {
             }
         }
 
+        // A scan list Go to paused is the operator's to tune by hand (Main makes
+        // the session an Explore one for the hold): taps and drags work, the
+        // picture is no longer VIEW ONLY, there is nothing to Explore from, and
+        // Resume scan sits over the tuning controls.
+        function test_03p_a_paused_scan_list_tunes_by_hand() {
+            var screen = screenLoader.item
+            var pill = findChild(screen, "spectrumStatusPill")
+            var explore = findChild(screen, "spectrumExploreFromHere")
+            var resume = findChild(screen, "spectrumResumeScan")
+            try {
+                screen.scanList = true
+                screen.exploring = true
+                setScan(2, false, true, true)
+                tryVerify(function () { return !screen.viewOnly })
+                verify(pill.children[0].text !== "VIEW ONLY", "a paused scan list read VIEW ONLY")
+                verify(!explore.visible, "a paused scan list offered Explore from here")
+                verify(resume.visible, "a paused scan list offered no resume")
+                verify(screen.goToAllowed)
+                mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
+                tryVerify(function () { return testContext.manualTuneCalls() === 1 }, 5000, "the tap did not tune")
+            } finally {
+                clearScan()
+            }
+        }
+
         // B19: another owner taking the tuner under an open Go to closes it and
         // says why, rather than leaving a Tune that answers "Cannot tune to ...".
         function test_03l_go_to_closes_with_the_reason_when_trunking_takes_the_tuner() {

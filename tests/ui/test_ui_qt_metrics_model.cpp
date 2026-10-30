@@ -21,6 +21,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cmath>
+#include <cstring>
 #include <dsd-neo/core/receive_types.h>
 #include <initializer_list>
 #include <stdint.h>
@@ -28,6 +29,7 @@
 #include <stdlib.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
@@ -1597,7 +1599,7 @@ test_scan_state() {
     opts.rtl_gain_value = 30;
     dsd_qt::MetricsModel model;
     int controls = 0;
-    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++controls; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&] { ++controls; });
 
     /* A running trunk scan on a target: it owns the tuner. */
     opts.trunk_scan_enabled = 1;
@@ -1633,6 +1635,28 @@ test_scan_state() {
                                                             && model.scanPaused() && model.scanResumable()
                                                             && model.scanEntryCount() == 3);
     expect("the operator holds the tuner", model.operatorTuned());
+    /* N6: the gain controls still edit the retained scan's configured gain and autogain while it is paused, and the
+     * target's override (still published from the target it left) names nothing: the label, the edit notice and the
+     * autogain label the terminal shows come from the same view the model reads. */
+    {
+        opts.rtl_gain_value = 20; // the pause restored the configured gain
+        state.trunk_scan_configured_autogain = 1U;
+        dsd_app_rtl_gain_view gain{};
+        expect("paused gain view", dsd_app_rtl_gain_view_get(&opts, &state, &gain) == 0);
+        char text[96];
+        (void)dsd_app_rtl_gain_view_label(&gain, text, sizeof text);
+        expect("paused gain label names no target", std::strcmp(text, "Gain... [20]") == 0);
+        (void)dsd_app_rtl_gain_view_edit_notice(&gain, text, sizeof text);
+        expect("paused gain notice names no target", std::strcmp(text, "Applied: RTL gain -> 20") == 0);
+        (void)dsd_app_rtl_autogain_view_label(&gain, 0, text, sizeof text);
+        expect("paused autogain label is the scan's configured one",
+               std::strcmp(text, "Tuner autogain [On] (suspended: gain 20)") == 0);
+        (void)dsd_app_rtl_autogain_view_edit_notice(&gain, text, sizeof text);
+        expect("paused autogain toggle notice",
+               std::strcmp(text, "Default tuner autogain -> On; manual gain 20 suspends it") == 0);
+        state.trunk_scan_configured_autogain = 0U;
+        opts.rtl_gain_value = 30;
+    }
 
     /* A paused -Y list: scanner_mode 0 and lcn_scan_paused set. Its size is the list's rows. */
     opts.trunk_scan_enabled = 0;

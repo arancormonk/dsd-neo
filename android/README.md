@@ -1870,16 +1870,18 @@ offered, and the view says **An I/Q replay cannot retune.**
 A typed frequency wins over a scan; a tap or a drag does not. While a scan list runs,
 its Spectrum view stays **VIEW ONLY** for taps and drags, but **Go to** is offered and
 says that tuning pauses the scan; **Tune** pauses it and the receiver stays on the
-frequency until you resume. A saved system that scans its channel list stays view-only
-until **Explore from here**, whose confirmation says it pauses the scan rather than
-ending it. A paused scan, of either kind, takes **Go to** and stays paused. While a scan
-is paused, Spectrum and Monitor offer **Resume scan**: a channel list carries on from
-the channel it stopped on, a scan list returns to the target it left. Monitor's header
-reads **SCAN PAUSED · 3 targets** (or **channels**) instead of the scan position, the
-session is named **Exploring** until the resume, and **Resume scan** takes the place of
-**Hold scan**, **Avoid** and **Next**. A pause made from the terminal or the API shows
-the same way. If trunking or anything else takes the tuner while **Go to** is open, the
-sheet closes and says why.
+frequency until you resume. Once paused, the scan list's Spectrum view works as
+Explore does (tap, drag, step and **Go to** all tune, and the scan stays paused) until
+**Resume scan**, and for the rest of the session if the paused scan is stopped. A saved
+system that scans its channel list stays view-only until **Explore from here**, whose
+confirmation says it pauses the scan rather than ending it; paused, it still takes
+**Go to**. While a scan is paused, Spectrum and Monitor offer **Resume scan**: a channel
+list carries on from the channel it stopped on, a scan list returns to the target it
+left. Monitor's header reads **SCAN PAUSED · 3 targets** (or **channels**) instead of
+the scan position, the session is named **Exploring** until the resume, and **Resume
+scan** takes the place of **Hold scan**, **Avoid** and **Next**. A pause made from the
+terminal or the API shows the same way. If trunking or anything else takes the tuner
+while **Go to** is open, the sheet closes and says why.
 
 The line under the Spectrum view's sync and SNR names the system on the carrier
 being decoded, from the same received identity as the Monitor's site row: the
@@ -1915,9 +1917,12 @@ the effective session settings to arrive after startup. Rows heard during
 those sessions or saved before system identities were recorded remain ineligible,
 even after starting a single saved system. A running session can still release an
 existing hold, including from a different system's row with the same talkgroup ID.
-Calls heard while you hold the tuner a scan or trunking had (a paused scan, **Explore
-from here**) are filed under **Exploring**, however late History reads them; the call
-the pause or release cut off keeps the system it began on.
+Calls heard after you tune by hand (**Go to**, a tap or drag, or a frequency entered at
+the terminal or the API) or after **Explore from here** takes the tuner from a scan or
+trunking are filed under **Exploring**, however late History reads them; the call the
+tune or release cut off keeps the system it began on, and so do calls heard after an
+**Explore from here** that has not tuned anywhere yet. While you hold the tuner,
+History offers no **Hold TG**, even for calls heard before.
 
 The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
 menu with **Hold TG** (**Hold radio** on a private call) and **Avoid TG**/**Lock out** (off on a

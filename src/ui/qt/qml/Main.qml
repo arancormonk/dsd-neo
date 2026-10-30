@@ -672,14 +672,17 @@ Window {
         }
     }
 
-    // Issue #671: the operator holding the tuner its automatic owner had -- a
-    // scan paused by Go to (or by a frequency entered anywhere else), or any
-    // owner released by Explore from here -- as the decoder reports it, never as
-    // a command was queued. The session map the monitor names gives way to
-    // "Exploring" while the hold lasts and comes back when a resume ends it, so
-    // a pause or a resume made from the API or the terminal names the session
-    // the same way. History needs none of this: each call carries who held the
-    // tuner when it began.
+    // Issue #671: the operator holding the tuner -- a scan paused by Go to (or by
+    // a frequency entered anywhere else), an owner released by Explore from
+    // here, or any manual tune that moved the receiver off its session -- as the
+    // decoder reports it, never as a command was queued. The session map the
+    // monitor names gives way to "Exploring" while the hold lasts and comes back
+    // when a resume ends it, so a pause or a resume made from the API or the
+    // terminal names the session the same way. A scan list's session becomes an
+    // Explore one for the hold: the receiver is the operator's to tune by hand,
+    // tap and drag included, until Resume scan (and for good if the paused scan
+    // is then stopped). History needs none of this: each call carries who held
+    // the tuner when it began.
     property bool operatorHolds: false
     // The session's own map and saved row while the operator holds the tuner:
     // what Resume scan returns to, and what names the targets once it has.
@@ -697,7 +700,8 @@ Window {
     }
 
     function syncOperatorHold() {
-        if (!decoderHost.running || !metrics.optionsKnown)
+        // The lifecycle's Running, which a reattached Activity finds as well as a start.
+        if (decoderHost.sessionState !== 2 || !metrics.optionsKnown)
             return;
         if (metrics.operatorTuned && !mainRoot.operatorHolds) {
             mainRoot.operatorHolds = true;
@@ -706,6 +710,11 @@ Window {
             mainRoot.sessionRow = -1;
             var held = mainRoot.sessionSystem;
             mainRoot.sessionSystem = mainRoot.exploreSystem(held ? held.sourceType : "usb", held ? held.host : "", held ? held.port : 0, metrics.centerFreqHz > 0 ? Util.mhzValueText(metrics.centerFreqHz) : "");
+            if (mainRoot.sessionScanList) {
+                // Not Explore's to remember: the list is coming back.
+                mainRoot.exploring = true;
+                mainRoot.exploreRemembered = false;
+            }
         } else if (!metrics.operatorTuned && mainRoot.operatorHolds) {
             // Resumed: the scan has the tuner again, and the session is what it
             // was started as.
@@ -729,8 +738,10 @@ Window {
     }
 
     // Explore from a session nothing was steering (a conventional saved system):
-    // the session is no longer that system, and the calls it logs from here on
-    // did not come from it, so history takes the Explore name now.
+    // the receiver has not moved yet, so the decoder has no hold to report, and
+    // the session detaches here. History is left alone: the calls heard until the
+    // first tune are still the system's, and that tune stamps the ones after it
+    // as the operator's.
     function exploreWithNoOwner() {
         var was = mainRoot.sessionSystem;
         mainRoot.sessionSystem = mainRoot.exploreSystem(was ? was.sourceType : "usb", was ? was.host : "", was ? was.port : 0, mainRoot.lastExploreFreqMhz);
@@ -738,8 +749,6 @@ Window {
         // session's edit action must not open -- and push CSVs into -- a system
         // the session detached from.
         mainRoot.sessionRow = -1;
-        uiController.flushHistory();
-        callHistory.setSessionSystem(qsTr("Exploring"), "");
     }
 
     // Suppresses a failure banner the user has read. Reset on the next start so a

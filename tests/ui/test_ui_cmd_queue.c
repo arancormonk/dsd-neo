@@ -22341,6 +22341,86 @@ test_frequency_entry_pauses_a_running_list(void) {
 }
 
 /*
+ * Issue #671: the operator moved the receiver off its session, so the calls heard from here on are filed as the
+ * operator's (Exploring in Qt's history), not the session's. Every accepted manual tune says so -- the frequency entry
+ * (terminal `=`, the menu row, the API's rtl_set_freq, Qt's Go to), applied or pending, and the tap-to-tune -- while a
+ * refused, deferred or failed one does not, and neither does a tuner release with nothing to release: Explore from a
+ * conventional system is only a promise to move, and the calls before the first tune are still the system's. A
+ * release of trunking does. Only a resume or a new session clears it (the P25 control-channel selection is in
+ * APP_P25_CC_SELECTION). On main only a release of trunking or a scan pause set it.
+ */
+static int
+test_manual_tunes_mark_the_operator(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    static const struct {
+        int result;
+        int marks;
+        const char* tag;
+    } entries[] = {
+        {RTL_STREAM_TUNE_OK, 1, "applied entry"},
+        {RTL_STREAM_TUNE_TIMEOUT, 1, "pending entry"},
+        {RTL_STREAM_TUNE_FAILED, 0, "failed entry"},
+        {RTL_STREAM_TUNE_DEFERRED, 0, "deferred entry"},
+    };
+
+    for (size_t i = 0; i < sizeof entries / sizeof entries[0]; i++) {
+        init_decode_mode_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_WAV;
+        arm_seam_tune(entries[i].result);
+        rc |= drain_entry(&opts, &state, 860000000U, entries[i].tag);
+        rc |= expect_int(entries[i].tag, state.operator_tuned, entries[i].marks);
+        freeState(&state);
+    }
+    dsd_app_command_test_set_tune_leg(NULL);
+
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("an invalid entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 0U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("an invalid entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("an invalid entry moves nothing", state.operator_tuned, 0);
+    freeState(&state);
+
+    static const struct {
+        int result;
+        int trunking;
+        int marks;
+        const char* tag;
+    } taps[] = {
+        {RTL_STREAM_TUNE_OK, 0, 1, "applied tap"},
+        {RTL_STREAM_TUNE_TIMEOUT, 0, 1, "pending tap"},
+        {RTL_STREAM_TUNE_FAILED, 0, 0, "failed tap"},
+        {RTL_STREAM_TUNE_OK, 1, 0, "tap refused under trunking"},
+    };
+
+    for (size_t i = 0; i < sizeof taps / sizeof taps[0]; i++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = taps[i].trunking;
+        reset_io_control_tune_stub(taps[i].result);
+        rc |= expect_int(taps[i].tag, post_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(taps[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(taps[i].tag, state.operator_tuned, taps[i].marks);
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+
+    /* A release with nothing to release moves nothing; a release of trunking hands the operator the tuner. */
+    init_test_context(&opts, &state);
+    rc |= expect_int("release with no owner queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release with no owner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release with no owner marks nothing", state.operator_tuned, 0);
+    opts.trunk_enable = 1;
+    rc |= expect_int("release of trunking queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release of trunking drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release of trunking marks the operator", state.operator_tuned, 1);
+    freeState(&state);
+    return rc;
+}
+
+/*
  * Issue #671: what a paused -Y scan does with the other controls (spec table 3.4). Hold, avoid, clear avoids and next
  * are refused until it resumes; a tap-to-tune is not; a tuner release pauses a running scan and leaves a paused one;
  * `y` and DSD_APP_CMD_SCAN_RESUME resume it (here onto a row audio input cannot tune, so it stays paused and says why);
@@ -22857,6 +22937,7 @@ main(void) {
     rc |= test_channel_scan_pause_services();
 #ifdef USE_RADIO
     rc |= test_frequency_entry_pauses_a_running_list();
+    rc |= test_manual_tunes_mark_the_operator();
     rc |= test_paused_list_controls_and_stops();
     rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();
     rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();

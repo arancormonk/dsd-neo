@@ -37,8 +37,17 @@ Item {
             testContext.setHostRunning(true)
             testContext.setMetric("heldTg", 0)
             testContext.setMetric("optionsKnown", true)
-            testContext.setMetric("scanRotationActive", false)
+            setScan(false, false, false)
             callHistory.sessionUid = "test-system"
+        }
+
+        // The session's scan, running or paused, and whether the operator holds the tuner (issue #671), as the
+        // decoder's scan-state view reports them.
+        function setScan(running, paused, operatorTuned) {
+            testContext.setMetric("scanKind", running || paused ? 1 : 0)
+            testContext.setMetric("scanRotationActive", running)
+            testContext.setMetric("scanPaused", paused)
+            testContext.setMetric("operatorTuned", operatorTuned)
         }
 
         function cleanup() {
@@ -46,7 +55,7 @@ Item {
             testContext.setHostRunning(false)
             testContext.setMetric("heldTg", 0)
             testContext.setMetric("optionsKnown", false)
-            testContext.setMetric("scanRotationActive", false)
+            setScan(false, false, false)
             callHistory.sessionUid = "test-system"
         }
 
@@ -93,7 +102,12 @@ Item {
                 {tag: "old-scan-row", running: true, uid: "", held: 0, enabled: false, reason: "Heard on another system"},
                 {tag: "legacy", running: true, held: 0, enabled: false, reason: "Heard on another system"},
                 {tag: "text-target", running: true, uid: "test-system", held: 0, tg: 0, enabled: false},
-                {tag: "release-in-scan", running: true, uid: "", scanning: true, held: 1001, enabled: true, send: 0}
+                {tag: "release-in-scan", running: true, uid: "", scanning: true, held: 1001, enabled: true, send: 0},
+                // Issue #671: the session keeps its UID for the calls heard before the operator took the tuner
+                // (Explore under -T, a frequency entry), but the receiver is no longer on that system.
+                {tag: "operator-holds-the-tuner", running: true, uid: "test-system", operatorTuned: true, held: 0, enabled: false, reason: "Hold needs a single saved system"},
+                {tag: "paused-scan", running: true, uid: "test-system", paused: true, operatorTuned: true, held: 0, enabled: false, reason: "Hold needs a single saved system"},
+                {tag: "release-while-the-operator-holds", running: true, uid: "test-system", operatorTuned: true, held: 1001, enabled: true, send: 0}
             ]
         }
 
@@ -110,7 +124,7 @@ Item {
             mouseClick(button, button.width / 2, button.height / 2)
             compare(testContext.holdCalls(), 0)
 
-            testContext.setMetric("scanRotationActive", true)
+            setScan(true, false, false)
             testContext.setMetric("optionsKnown", true)
             verify(!button.enabled)
             compare(reason.text, "Hold needs a single saved system")
@@ -118,7 +132,7 @@ Item {
             // A later single-system start must wait again, then become usable
             // once its effective options arrive, even without a live call.
             testContext.setMetric("optionsKnown", false)
-            testContext.setMetric("scanRotationActive", false)
+            setScan(false, false, false)
             verify(!button.enabled)
             testContext.setMetric("optionsKnown", true)
             verify(button.enabled)
@@ -130,7 +144,7 @@ Item {
         function test_hold(data) {
             testContext.setHostRunning(data.running)
             testContext.setMetric("heldTg", data.held)
-            testContext.setMetric("scanRotationActive", data.scanning === true)
+            setScan(data.scanning === true, data.paused === true, data.operatorTuned === true)
             if (data.sessionUid !== undefined)
                 callHistory.sessionUid = data.sessionUid
             var record = {name: "Dispatch", tg: data.tg === undefined ? 1001 : data.tg}

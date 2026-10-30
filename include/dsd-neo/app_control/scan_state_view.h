@@ -44,14 +44,14 @@ typedef struct {
     uint8_t paused;         /**< 1 = the operator paused it; it waits for a resume. */
     uint8_t resume_pending; /**< 1 = a -Y resume waits for its row's tune; still @c paused until it lands. */
     uint16_t target_count;  /**< The trunk scan's targets, or the -Y list's rows; 0 with no scan. */
-    uint8_t operator_tuned; /**< 1 = the operator took the tuner from its automatic owner (a pause, a tuner release). */
+    uint8_t operator_tuned; /**< 1 = the operator moved the receiver off its session (a pause, a release, a tune). */
 } dsd_app_scan_state_view;
 
 /**
  * @brief Fill @p out from decoder state or a frontend snapshot pair. Zeroes @p out first.
  *
  * A trunk scan wins when --trunk-scan is configured (the two scans exclude each other). @c operator_tuned is reported
- * whatever the kind: a tuner release with no scan (Explore under -T) sets it too.
+ * whatever the kind: a tuner release of trunking (Explore under -T) or a manual tune with no scan sets it too.
  *
  * @return 0, or -1 for NULL arguments.
  */
