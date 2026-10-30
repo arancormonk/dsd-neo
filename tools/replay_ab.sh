@@ -247,10 +247,15 @@ if [ ! -r "$capture" ]; then
   echo "error: cannot read capture '$capture'" >&2
   exit 1
 fi
-# A WAV recording (RIFF, RF64 or the big-endian RIFX) is replayed as it is. Replay reads its header, not a sidecar.
+# A WAV recording is replayed as it is: replay reads its header, not a sidecar. Replay's sniff (dsd_iq_wav_sniff())
+# takes a RIFF, RF64 or BW64 container with the WAVE form at byte 8, and names a big-endian RIFX one unsupported.
 capture_is_wav=0
 case "$(head -c 4 "$capture" 2> /dev/null | tr -d '\0')" in
-  RIFF | RF64 | RIFX) capture_is_wav=1 ;;
+  RIFF | RF64 | BW64 | RIFX)
+    if [ "$(tail -c +9 "$capture" 2> /dev/null | head -c 4 | tr -d '\0')" = "WAVE" ]; then
+      capture_is_wav=1
+    fi
+    ;;
 esac
 for ((i = 0; i < ${#builds[@]}; i++)); do
   b=${builds[$i]}

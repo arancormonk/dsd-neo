@@ -1232,16 +1232,22 @@ class ReplayAbTetraMetric(unittest.TestCase):
         self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "5")
 
     def test_wav_capture_is_one_realization_and_the_cu8_sidecar_is_unchanged(self):
-        wav = self.tmp / "tetra_426700000Hz.wav"
-        wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
-        log = bsch("00:00:02") + END
-        result = self.replay_ab({"host.a": log, "host.b": log}, capture=wav, reps="3")
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("WAV capture", result.stdout)
-        self.assertFalse((self.tmp / "out" / "realizations").exists())
-        rows = self.rows()
-        self.assertEqual({row["shift"] for row in rows.values()}, {"0"})
-        self.assertEqual(len(rows), 6)
+        # Every container replay reads as a WAV (dsd_iq_wav_sniff()): RIFF, and RF64 and BW64 with their 64-bit sizes
+        # (0xFFFFFFFF in the RIFF size), which used to be parsed as a JSON sidecar.
+        for head in (b"RIFF\x24\x00\x00\x00WAVEfmt ", b"RF64\xff\xff\xff\xffWAVEds64",
+                     b"BW64\xff\xff\xff\xffWAVEds64"):
+            with self.subTest(container=head[:4].decode()):
+                shutil.rmtree(self.tmp / "out", ignore_errors=True)
+                wav = self.tmp / "tetra_426700000Hz.wav"
+                wav.write_bytes(head)
+                log = bsch("00:00:02") + END
+                result = self.replay_ab({"host.a": log, "host.b": log}, capture=wav, reps="3")
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("WAV capture", result.stdout)
+                self.assertFalse((self.tmp / "out" / "realizations").exists())
+                rows = self.rows()
+                self.assertEqual({row["shift"] for row in rows.values()}, {"0"})
+                self.assertEqual(len(rows), 6)
 
     def test_wav_capture_without_a_start_time_reads_from_the_floor(self):
         wav = self.tmp / "tetra.wav"
