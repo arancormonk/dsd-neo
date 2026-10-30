@@ -36,7 +36,8 @@ Item {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.right: parent.right
@@ -59,7 +60,7 @@ Item {
         anchors.margins: Theme.screenPadding
         spacing: Theme.gap
 
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Current-process decoder and host diagnostics plus a bounded redacted persistent tail from previous runs, including how Android says recent app processes ended. No crash stacks.")
             wrapMode: Text.Wrap
@@ -105,10 +106,15 @@ Item {
         anchors.margins: Theme.screenPadding
         clip: true
         model: diagnosticsLog
-        delegate: Text {
+        // Each line is read once Pause holds the log (issue #782). While it
+        // streams, every refresh rebuilds the rows, and a row that a screen
+        // reader is told about costs the main thread each time; Copy and Share
+        // hand over the whole log either way.
+        delegate: ReadableText {
             required property string line
             width: list.width
             text: line
+            Accessible.ignored: !navigationAllowed || !visible || !diagnosticsLog.paused
             textFormat: Text.PlainText
             wrapMode: Text.WrapAnywhere
             color: Theme.textPrimary

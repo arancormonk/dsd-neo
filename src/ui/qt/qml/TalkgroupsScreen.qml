@@ -25,7 +25,7 @@ Item {
         id: bulkConfirm
         objectName: "talkgroupBulkConfirm"
         accessibleName: qsTr("Change matching talkgroups")
-        Text {
+        ReadableText {
             width: parent.width
             text: (screen.bulkListen ? qsTr("Listen to %1 matching rows?") : qsTr("Stop tuning %1 matching rows?")).arg(screen.bulkRows.length) + qsTr(" Both the search and category filters apply.")
             wrapMode: Text.Wrap
@@ -92,7 +92,8 @@ Item {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.right: parent.right
             anchors.leftMargin: 14
@@ -268,7 +269,7 @@ Item {
             onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record, tableIndex, pattern)
         }
 
-        Text {
+        ReadableText {
             anchors.centerIn: parent
             width: parent.width - 24
             visible: talkgroups.count === 0
@@ -316,14 +317,14 @@ Item {
         anchors.margins: Theme.screenPadding
         spacing: 8
 
-        Text {
+        ReadableText {
             width: parent.width
             text: talkgroups.persistenceScope === "scan" ? qsTr("This scan target · session changes; the source CSV is unchanged") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: metrics.uiMessage || screen.bulkMessage
             visible: text.length > 0
@@ -332,7 +333,7 @@ Item {
             font.pixelSize: Theme.fontSize(13)
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             text: screen.saveMessage
             visible: text.length > 0
@@ -340,7 +341,7 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Text {
+        ReadableText {
             objectName: "talkgroupCommandToast"
             width: parent.width
             text: metrics.uiMessage
@@ -350,7 +351,7 @@ Item {
             textFormat: Text.PlainText
         }
 
-        Text {
+        ReadableText {
             objectName: "sessionOnlyNote"
             width: parent.width
             visible: !talkgroups.persistent
@@ -361,7 +362,7 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             visible: talkgroups.allowListMode
             text: qsTr("Allow list on: talkgroups not on this list are never tuned.")

@@ -62,7 +62,8 @@ Item {
                              callHistory.count > 0 ? clearHistory.implicitHeight : 0)
             visible: height > 0
 
-            Text {
+            ReadableText {
+                heading: true
                 visible: screen.showTitle
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
@@ -379,7 +380,7 @@ Item {
         // hidden". Two strings also let the verb agree.
         readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
 
-        Text {
+        ReadableText {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
@@ -389,7 +390,7 @@ Item {
             color: Theme.textSecondary
         }
 
-        Text {
+        ReadableText {
             objectName: "logEmptyDetail"
 
             width: parent.width

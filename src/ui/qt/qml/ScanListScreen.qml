@@ -140,7 +140,7 @@ Rectangle {
         id: removeDialog
         objectName: "scanListRemoveDialog"
         accessibleName: qsTr("Remove scan list")
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Remove %1?").arg(screen.draft.name || "")
             wrapMode: Text.Wrap
@@ -429,7 +429,8 @@ Rectangle {
             onClicked: screen.requestClose()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.right: parent.right
@@ -617,7 +618,7 @@ Rectangle {
                         width: parent.width - 24
                         spacing: 6
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             text: targetCsvPicker.currentIndex > 0 ? targetCsvPicker.currentText : (screen.draft.targetsCsvPath || "").split("/").pop()
                             textFormat: Text.PlainText
@@ -630,7 +631,7 @@ Rectangle {
                         Row {
                             width: parent.width
                             spacing: 10
-                            Text {
+                            ReadableText {
                                 text: qsTr("%1 targets").arg(screen.targetRows.length)
                                 color: Theme.textSecondary
                                 font.family: Theme.sans
@@ -668,7 +669,7 @@ Rectangle {
                     text: qsTr("Import target CSV")
                     onClicked: screen.importTargets()
                 }
-                Text {
+                ReadableText {
                     width: parent.width
                     wrapMode: Text.Wrap
                     text: qsTr("Saving uses the CSV targets. Target settings override list defaults; blank fields inherit. Replace the imported file to change its targets.")
@@ -683,7 +684,7 @@ Rectangle {
                     clip: true
                     model: screen.targetRows
 
-                    delegate: Text {
+                    delegate: ReadableText {
                         required property var modelData
                         // An nfm- or am-conventional target (issue #526) takes no modulation: the parser
                         // refuses one there.
@@ -779,7 +780,7 @@ Rectangle {
                     screen.setDraft("airspy", settings);
                 }
             }
-            Text {
+            ReadableText {
                 width: parent.width
                 wrapMode: Text.Wrap
                 text: qsTr("This list's tuner settings replace each system's own source, host, port, PPM, bandwidth and bias tee.")
@@ -813,7 +814,8 @@ Rectangle {
                     activeFocusOnTab: Navigation.allows(advHeader) && enabled
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Advanced")
-                    Accessible.description: screen.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed")
+                    // What it holds, as its second line says, then its state.
+                    Accessible.description: advSubtitle.text + ". " + (screen.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
                     Accessible.ignored: !Navigation.allows(advHeader) || !visible
                     Accessible.onPressAction: toggle()
                     Keys.onSpacePressed: toggle()
@@ -842,6 +844,7 @@ Rectangle {
                             color: Theme.textSecondary
                         }
                         Text {
+                            id: advSubtitle
                             width: parent.width
                             text: qsTr("Tuner overrides, timing and aliases")
                             font.family: Theme.sans
@@ -881,7 +884,7 @@ Rectangle {
                     visible: screen.advancedOpen
                     onPositioningComplete: Qt.callLater(screen.revealValidation)
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: qsTr("System groups and keys stay isolated. Voice hang time uses the app default, including when a system has an override.")
                         color: Theme.textSecondary
@@ -908,7 +911,7 @@ Rectangle {
                                 screen.setDraft("gainDb", index === 0 ? -1 : index === 1 ? 0 : isNaN(gainField.parsedValue()) ? -1 : gainField.parsedValue());
                             }
                         }
-                        Text {
+                        ReadableText {
                             width: parent.width
                             visible: screen.gainMode === 0
                             text: qsTr("App default · %1").arg(prefs.gainDb === 0 ? qsTr("Automatic") : qsTr("%1 dB").arg(prefs.gainDb))
@@ -959,7 +962,7 @@ Rectangle {
                                 screen.setDraft("ppm", index && !isNaN(ppmField.parsedValue()) ? screen.ppmText : "");
                             }
                         }
-                        Text {
+                        ReadableText {
                             width: parent.width
                             visible: !screen.ppmSet
                             text: qsTr("App default · %1 ppm").arg(prefs.ppm)
@@ -1009,7 +1012,7 @@ Rectangle {
                                 screen.setDraft("bandwidthKhz", index && !isNaN(bandwidthField.parsedValue()) ? bandwidthField.parsedValue() : -1);
                             }
                         }
-                        Text {
+                        ReadableText {
                             width: parent.width
                             visible: !screen.bandwidthSet
                             text: qsTr("App default · %1 kHz").arg(prefs.bandwidthKhz)
@@ -1057,7 +1060,7 @@ Rectangle {
                             screen.setDraft("biasTee", index === 1 ? 1 : index === 2 ? 0 : -1);
                         }
                     }
-                    Text {
+                    ReadableText {
                         width: parent.width
                         visible: screen.draft.sourceType !== "airspy" && Number(screen.draft.biasTee) === -1
                         text: qsTr("App default · %1").arg(prefs.biasTee ? qsTr("On") : qsTr("Off"))
@@ -1144,7 +1147,7 @@ Rectangle {
                 }
             }
 
-            Text {
+            ReadableText {
                 id: validationMessage
                 objectName: "scanValidation"
                 width: parent.width

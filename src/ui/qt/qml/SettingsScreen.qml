@@ -333,7 +333,8 @@ Item {
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
-            Text {
+            ReadableText {
+                heading: true
                 visible: screen.showTitle
                 height: screen.showTitle ? implicitHeight : 0
                 text: qsTr("Settings")
@@ -374,7 +375,7 @@ Item {
                         }
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         visible: prefs.appearance === 0
                         text: qsTr("Follows your phone's dark mode schedule.")
@@ -448,7 +449,7 @@ Item {
                         width: parent.width
                         x: Theme.cardPadding
                         spacing: 6
-                        Text {
+                        ReadableText {
                             width: parent.width - 2 * Theme.cardPadding
                             text: qsTr("Audio output")
                             wrapMode: Text.Wrap
@@ -456,7 +457,7 @@ Item {
                             font.pixelSize: Theme.fontSize(14)
                             font.bold: true
                         }
-                        Text {
+                        ReadableText {
                             width: parent.width - 2 * Theme.cardPadding
                             text: decoderHost.audioRoute || qsTr("System default")
                             wrapMode: Text.Wrap
@@ -475,7 +476,7 @@ Item {
                         onToggled: function (value) { screen.setLockoutPersistence(value); }
                     }
 
-                    Text {
+                    ReadableText {
                         objectName: "tgLockoutError"
                         width: parent.width - 2 * Theme.cardPadding
                         x: Theme.cardPadding
@@ -603,7 +604,7 @@ Item {
 
                     // A scan row with its own -F or --strict-crc decides for the channel
                     // on air: the switch edits the default beneath it.
-                    Text {
+                    ReadableText {
                         id: relaxedCrcNote
                         objectName: "relaxedCrcChannelNote"
                         width: parent.width - 2 * Theme.cardPadding
@@ -617,7 +618,7 @@ Item {
                         bottomPadding: relaxedCrcErrorText.visible ? 4 : 12
                     }
 
-                    Text {
+                    ReadableText {
                         id: relaxedCrcErrorText
                         objectName: "relaxedCrcError"
                         width: parent.width - 2 * Theme.cardPadding

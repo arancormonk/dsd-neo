@@ -101,7 +101,8 @@ Item {
         requestedSource: screen.requestedSource
     }
 
-    component ListenTitle: Text {
+    component ListenTitle: ReadableText {
+        heading: true
         text: qsTr("Listen")
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(24)
@@ -278,10 +279,12 @@ Item {
                     y: Theme.cardPadding
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 12
+                    // Read as the status pill's description (issue #782).
                     Text {
                         objectName: "dongleStatusText"
                         width: parent.width
                         text: deviceStatus.detailText
+                        Accessible.ignored: true
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)
@@ -321,7 +324,7 @@ Item {
                     y: Theme.cardPadding
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 10
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: screen.completionMessage
                         wrapMode: Text.Wrap
@@ -357,7 +360,7 @@ Item {
                         text: qsTr("+ Add a system")
                         onClicked: radioReference.available ? addSystemMenu.open() : screen.addSystem()
                     }
-                    Text {
+                    ReadableText {
                         objectName: "addSystemHint"
                         width: parent.width
                         text: qsTr("USB, Airspy, network or file")
@@ -419,7 +422,7 @@ Item {
                         anchors.verticalCenterOffset: card.refreshHint ? -20 : -10
                         spacing: 4
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             objectName: "savedSystemTitle"
                             text: card.name
@@ -430,7 +433,7 @@ Item {
                             elide: Text.ElideRight
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             text: Util.systemMeta(card)
                             font.family: Theme.mono
@@ -439,7 +442,7 @@ Item {
                             elide: Text.ElideRight
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             // heardTick forces the minute-by-minute refresh.
                             objectName: "savedSystemMeta"
@@ -451,7 +454,7 @@ Item {
                         }
                     }
 
-                    Text {
+                    ReadableText {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
@@ -577,7 +580,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 4
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: qsTr("Explore the band")
                         font.family: Theme.sans
@@ -587,7 +590,7 @@ Item {
                         elide: Text.ElideRight
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         objectName: "homeExploreSubtitle"
                         text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
@@ -781,7 +784,8 @@ Item {
         anchors.margins: Theme.screenPadding
         width: 280
         PointerBarrier {}
-        Text {
+        ReadableText {
+            heading: true
             id: recentTitle
             anchors.top: parent.top
             anchors.left: parent.left
@@ -833,7 +837,7 @@ Item {
                     accessCodeText: model.accessCodeText
                 })
             }
-            Text {
+            ReadableText {
                 objectName: "homeRecentEmpty"
                 anchors.centerIn: parent
                 width: parent.width - 32

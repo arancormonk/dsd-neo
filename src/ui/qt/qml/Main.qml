@@ -1458,7 +1458,7 @@ Window {
         anchors.right: safeArea.right
         anchors.bottom: safeArea.bottom
         height: scanWarningText.implicitHeight + 32
-        Text {
+        ReadableText {
             id: scanWarningText
             anchors.fill: parent
             anchors.margins: 16
@@ -1793,7 +1793,8 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
                 onClicked: sessionToolsLayer.leave()
             }
-            Text {
+            ReadableText {
+                heading: true
                 objectName: "sessionToolsTitle"
                 anchors.left: sessionToolsBack.right
                 anchors.leftMargin: 14
@@ -2035,7 +2036,7 @@ Window {
         objectName: "failureDetails"
         anchors.fill: safeArea
         accessibleName: qsTr("Source failure details")
-        Text {
+        ReadableText {
             width: parent.width
             text: mainRoot.sourceLabel() + "\n\n" + mainRoot.failureText + (decoderHost.inputFailureCode ? qsTr("\nNative error: %1").arg(decoderHost.inputFailureCode) : "")
             textFormat: Text.PlainText
@@ -2060,7 +2061,7 @@ Window {
             prefs.notificationExplained = true;
             visible = false;
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Listening can continue when you leave the app. Allow notifications to keep playback status and Stop available outside the app. You can keep using the app if you decline.")
             wrapMode: Text.Wrap

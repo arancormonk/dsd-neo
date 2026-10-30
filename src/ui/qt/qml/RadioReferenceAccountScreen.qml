@@ -36,7 +36,8 @@ FocusScope {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.right: parent.right

@@ -366,7 +366,8 @@ Item {
             width: parent.width
             spacing: 12
             IconButton { objectName: "searchBack"; icon: "back"; accessibleName: qsTr("Back"); onClicked: screen.requestClose() }
-            Text {
+            ReadableText {
+                heading: true
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("Signal search")
                 font.family: Theme.sans
@@ -430,7 +431,7 @@ Item {
                 width: parent.width
                 visible: !screen.sessionActive
                 spacing: 12
-                Text { text: qsTr("Radio"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+                ReadableText { heading: true; text: qsTr("Radio"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
                 Flow {
                     width: parent.width
                     spacing: 10
@@ -446,7 +447,7 @@ Item {
                 }
                 PlexTextField { id: hostField; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Host"); text: screen.host; onTextChanged: screen.host = text }
                 PlexTextField { id: portField; objectName: "searchPort"; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Port"); text: String(screen.port); inputMethodHints: Qt.ImhDigitsOnly }
-                Text {
+                ReadableText {
                     width: parent.width
                     text: qsTr("RF strength is not a distance measurement. Search uses one radio; each detection is identified, then monitored before searching continues.")
                     color: Theme.textSecondary
@@ -729,6 +730,8 @@ Item {
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
                     Accessible.role: Accessible.AlertMessage
+                    // A role alone reads nothing (issue #782): the message is its name.
+                    Accessible.name: text
                 }
             }
             Loader {
@@ -737,7 +740,7 @@ Item {
                 visible: active
                 sourceComponent: recentDetections
             }
-            Text { visible: !screen.sessionActive; text: qsTr("Search ranges"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: !screen.sessionActive; text: qsTr("Search ranges"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             UiPanel {
                 width: parent.width
                 height: rangesToggle.height
@@ -763,7 +766,7 @@ Item {
                 width: parent.width
                 visible: !screen.sessionActive || screen.rangesShown
                 spacing: Theme.gap
-                Text {
+                ReadableText {
                     width: parent.width
                     visible: !screen.editable
                     text: qsTr("Pause to edit ranges. Changes apply when you restart the search.")
@@ -804,7 +807,7 @@ Item {
                 visible: active
                 sourceComponent: recentDetections
             }
-            Text { visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
                 model: screen.sessionActive && searchModel ? (searchModel.sessionAvoids || []) : []
                 OutlineButton {
@@ -815,7 +818,7 @@ Item {
                     onClicked: searchModel.removeSessionAvoid(Number(modelData))
                 }
             }
-            Text { visible: searchModel && searchModel.avoids.length > 0; text: qsTr("Permanent avoids"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: searchModel && searchModel.avoids.length > 0; text: qsTr("Permanent avoids"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
                 model: searchModel ? searchModel.avoids : []
                 OutlineButton {
@@ -834,8 +837,8 @@ Item {
         id: recentDetections
         Column {
             spacing: Theme.gap
-            Text { text: qsTr("Recent detections"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
-            Text {
+            ReadableText { heading: true; text: qsTr("Recent detections"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText {
                 width: parent.width
                 visible: !searchModel || searchModel.history.length === 0
                 text: qsTr("Detections appear here even when no digital content is decoded.")
@@ -858,7 +861,7 @@ Item {
                             id: rowText
                             width: parent.width - rowActions.width - 8
                             spacing: 5
-                            Text { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
+                            ReadableText { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
                                 width: parent.width
                                 objectName: "searchHistoryDetail"

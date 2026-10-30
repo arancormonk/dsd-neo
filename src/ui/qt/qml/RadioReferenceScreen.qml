@@ -558,7 +558,7 @@ Item {
             }
         }
 
-        Text {
+        ReadableText {
             objectName: "browseEmptyState"
             width: parent.width
             visible: browseSheet.filteredRows.length === 0
@@ -594,7 +594,8 @@ Item {
             onClicked: screen.requestClose()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.verticalCenter: parent.verticalCenter
@@ -609,7 +610,7 @@ Item {
 
     // One line for both the model's error and this screen's own outcome; the
     // model's wins, because it reports the thing that just failed.
-    Text {
+    ReadableText {
         id: noticeLine
 
         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
@@ -1059,7 +1060,7 @@ Item {
                     anchors.margins: Theme.cardPadding
                     spacing: 8
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: screen.systemName()
                         font.family: Theme.sans
@@ -1069,7 +1070,7 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: {
                             var details = radioReference.systemDetails;
@@ -1086,7 +1087,7 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         visible: radioReference.talkgroupSummary.count !== undefined
                         text: {
@@ -1149,7 +1150,7 @@ Item {
                         onClicked: screen.eachSite = !screen.eachSite
                     }
 
-                    Text {
+                    ReadableText {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceRepeaterCount"
 
@@ -1165,7 +1166,7 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         leftPadding: Theme.cardPadding
                         rightPadding: Theme.cardPadding
@@ -1196,6 +1197,8 @@ Item {
                             activeFocusOnTab: !radioReference.busy
                             Accessible.role: radioReference.conventional || screen.eachSite ? Accessible.CheckBox : Accessible.RadioButton
                             Accessible.name: modelData.site.descr
+                            // The site's lines as shown (issue #782): its number and its frequencies.
+                            Accessible.description: Util.shownText(siteLabels)
                             readonly property bool navigationAllowed: Navigation.allows(siteRow)
                             Accessible.ignored: !navigationAllowed
                             Accessible.checkable: true
@@ -1373,7 +1376,7 @@ Item {
                         text: qsTr("What gets imported")
                     }
 
-                    Text {
+                    ReadableText {
                         objectName: "radioReferencePlanSummary"
                         width: parent.width
                         visible: screen.planOk()
@@ -1397,7 +1400,7 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         visible: screen.planOk()
                         text: {
@@ -1419,7 +1422,7 @@ Item {
                     // site choice is the exception - it is a question, and it is
                     // also what a successful import leaves behind - so it is shown
                     // in the ordinary subdued text instead of the error colour.
-                    Text {
+                    ReadableText {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceBlockedBanner"
 
@@ -1432,7 +1435,7 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         visible: radioReference.systemDetails.hasCustomBandplan === true
                         text: qsTr("This system publishes a custom band plan, which this import does not carry. Import a P25 band plan CSV (Imports → P25 band plan) if grants do not tune.")
@@ -1445,7 +1448,7 @@ Item {
                     Repeater {
                         model: screen.planWarnings()
 
-                        Text {
+                        ReadableText {
                             id: warningLine
 
                             required property var modelData
@@ -1492,7 +1495,7 @@ Item {
         // The last step of an import (issue #718): only "Back to selection",
         // Back or Escape leaves it, never a stray tap beside it.
         closesOnOutsideTap: false
-        Text {
+        ReadableText {
             width: parent.width
             text: screen.systemName() + "\n" + screen.typeDescr + "\n" + screen.selectedSites.map(function (index) {
                 return screen.siteList[index] ? screen.siteList[index].descr : "";
@@ -1503,7 +1506,7 @@ Item {
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
         }
-        Text {
+        ReadableText {
             width: parent.width
             visible: screen.reviewedRevision !== screen.planRevision
             text: qsTr("The selection changed. Close this review and review the updated import.")
@@ -1579,7 +1582,7 @@ Item {
             if (screen.rrLive())
                 radioReference.cancel();
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: radioReference.statusText.length ? radioReference.statusText : qsTr("Talking to RadioReference…")
             font.family: Theme.sans

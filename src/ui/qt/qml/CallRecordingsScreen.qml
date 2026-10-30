@@ -245,7 +245,8 @@ Item {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.right: parent.right
@@ -278,7 +279,7 @@ Item {
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
-            Text {
+            ReadableText {
                 objectName: "callRecordingsUsage"
                 width: parent.width
                 visible: !screen.empty || !recordings.indexed
@@ -316,7 +317,7 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 10
 
-                    Text {
+                    ReadableText {
                         objectName: "callRecordingsExportText"
                         width: parent.width
                         text: decoderHost.recordingTransferTotalBytes > 0 ? qsTr("Exporting… %1 of %2").arg(Util.sizeText(decoderHost.recordingTransferBytes)).arg(Util.sizeText(decoderHost.recordingTransferTotalBytes)) : qsTr("Exporting…")
@@ -371,7 +372,7 @@ Item {
             // What the limit removed and the deletes the store could not do, since this
             // screen opened (taken from the store, see takeNotices()), and the ones
             // waiting for a hold.
-            Text {
+            ReadableText {
                 objectName: "callRecordingsRemovedByLimit"
                 width: parent.width
                 visible: screen.removedShown > 0
@@ -396,7 +397,7 @@ Item {
                 Accessible.name: text
             }
 
-            Text {
+            ReadableText {
                 objectName: "callRecordingsDeletesWaiting"
                 width: parent.width
                 visible: recordings.deletesWaiting > 0
@@ -471,7 +472,7 @@ Item {
                 topPadding: 48
                 spacing: 8
 
-                Text {
+                ReadableText {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     text: qsTr("No call recordings yet")
@@ -482,7 +483,7 @@ Item {
                     wrapMode: Text.Wrap
                 }
 
-                Text {
+                ReadableText {
                     objectName: "callRecordingsEmptyDetail"
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
