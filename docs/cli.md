@@ -1865,15 +1865,15 @@ is delayed.
   calls end under its name and keys, the configured decoder, receive settings and keys come back, and the receiver stays
   on your frequency (`Applied: frequency -> 154.000000 MHz; scan paused`); a refused or deferred tune changes nothing.
   With a rigctl peer under a typed row, the peer takes your frequency with the row's mode and passband, and the pause
-  then puts the configured ones back. The list, its place, the avoids and live per-channel edits wait for `y`
-  (Qt/Android **Resume scan**, the API's `scan_resume`), which carries on with the row the scan would have stepped to
-  next (`Scan resumed`, or `Resuming scan: waiting for the tune` until that row's tune lands; calls heard meanwhile stay
-  the operator's). A resume with no row to tune, or whose tune fails, leaves the scan paused and says why. While paused,
-  another entry or a spectrum tap only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused: resume it first`.
-  Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference import that replaces
-  the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so the next start runs
-  it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y` row reads
-  `[Paused]`.
+  then puts the configured ones back. The list, its place, the avoids and live per-channel edits (not a `Y` hold) wait
+  for `y` (Qt/Android **Resume scan**, the API's `scan_resume`), which carries on with the row the scan would have
+  stepped to next (`Scan resumed`, or `Resuming scan: waiting for the tune` until that row's tune lands; calls heard
+  meanwhile stay the operator's). A resume with no row to tune, or whose tune fails, leaves the scan paused and says
+  why. While paused, another entry or a spectrum tap only tunes; `Y`, `b`, `L` and "Clear avoids" answer `Scan paused:
+  resume it first`. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference
+  import that replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
+  row reads `[Paused]`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional

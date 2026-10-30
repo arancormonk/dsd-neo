@@ -740,9 +740,10 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
-While a scan is paused, `Y`, `b`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the hold and
-the avoids stay for the resume. Under `--trunk-scan`, running or paused, `t` is refused with
-`Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on stops the scan.
+While a scan is paused, `Y`, `b`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the avoids,
+and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or paused,
+`t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on
+stops the scan.
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them

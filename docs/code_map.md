@@ -2985,15 +2985,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `ui_cmd_handle_rtl_set_freq()` refuses a replay and 0 only. A running trunk scan comes first, before
     `manual_frequency_selects_p25_cc()`, since a parked trunked target has trunking on:
     `svc_pause_trunk_scan_for_tune()` takes the P25 SM tick guard (the entry is not apply-guarded), runs the tune leg
-    alone, and only on an accepted tune (applied or pending) pauses the coordinator, runs the `TUNE` boundary and
-    reconciles the monitor request the scope leave made; a refused tune leaves the scan as it was. Then `-T` P25
-    control-channel selection as before. Otherwise `svc_rtl_set_freq()` tunes with its boundary, and an accepted tune
-    pauses a running `-Y` scan, or takes back a resume still waiting on its row, through `svc_pause_channel_scan()`
-    under the guard: the tune came first, so the row's calls end under its label and keys. Every accepted entry marks
-    the operator's tuner (`ui_mark_operator_tuned()`) and its toast ends `; scan paused` when it paused one; an entry
-    over a paused scan only tunes. `ui_cmd_leaves_scanner_scope()` answers 0 while a `-Y` pause stands, so
-    `apply_cmd_scoped()`'s post-handler leave never drops one. `TUNER_RELEASE` (`apply_tuner_release()`) stops `-T` as
-    before, pauses a running `-Y` scan or trunk scan in place (`svc_pause_channel_scan(..., 1)`,
+    alone, and only on an accepted tune (applied or pending) pauses the coordinator
+    (`svc_trunk_scan_pause_and_record()`, which records the scope leave's monitor request for the command drain to
+    reconcile, issue #578), runs the `TUNE` boundary, and, when the target left ran a tuner gain of its own, reopens the
+    stream on the configured gain (`svc_trunk_scan_settle_gain()`, a stream restart the operator sees); a refused tune
+    leaves the scan as it was. Then `-T` P25 control-channel selection as before. Otherwise `ui_cmd_rtl_set_freq_tune()`
+    runs the tune leg (`ui_cmd_tune_leg()`: `svc_rtl_tune_only()`, or a test's stand-in) and the `TUNE` boundary itself,
+    and an accepted tune pauses a running `-Y` scan, or takes back a resume still waiting on its row, through
+    `svc_pause_channel_scan()` under the guard (`ui_cmd_pause_channel_scan_after_tune()`): the tune came first, so the
+    row's calls end under its label and keys. Every accepted tune on these two paths, not a P25 control-channel
+    selection, marks the operator's tuner (`ui_mark_operator_tuned()`), and its toast ends `; scan paused` when it
+    paused one; an entry over a paused scan only tunes. `ui_cmd_leaves_scanner_scope()` answers 0 while a `-Y` pause
+    stands, so `apply_cmd_scoped()`'s post-handler leave never drops one. `TUNER_RELEASE` (`apply_tuner_release()`)
+    stops `-T` as before, pauses a running `-Y` scan or trunk scan in place (`svc_pause_channel_scan(..., 1)`,
     `svc_pause_trunk_scan_in_place()`; `Automatic tuning paused`) and leaves a paused one alone; it sets
     `operator_tuned` itself whenever it releases trunking, and the pauses set it. `SCANNER_TOGGLE` (`y`) and
     `SCAN_RESUME` (219, API `scan_resume`, `CommandBridge::resumeScan()`) live in `actions/actions_trunk.c`: `y` resumes
@@ -3003,13 +3007,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     refused under a trunk-scan coordinator (`Trunk scan: each target sets its own trunking`): clearing trunking there
     stranded a target in a followed call (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one,
     and trunking off leaves the pause. Hold, avoid, clear avoids and Next channel on a paused scan answer `Scan paused:
-    resume it first` (a failed command; the hold and avoids stay), while `MANUAL_TUNE` is allowed. A paused `-Y` scan
-    ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
-    RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
-    `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
-    `operator_tuned` is cleared only by a resume and at session start, never by turning trunking or `-Y` on (an Explore
-    followed by "Follow this system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`,
-    `API_COMMANDS`.
+    resume it first` (a failed command that changes nothing: the avoids stay, and a paused trunk scan keeps its hold,
+    while a `-Y` pause already dropped the hold), while `MANUAL_TUNE` is allowed. A paused `-Y` scan ends at an input
+    switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a RadioReference adoption,
+    and survives a refused or rolled-back one; under a trunk scan those are refused as before. `y`, `SCAN_RESUME` and
+    `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part. `operator_tuned` is cleared
+    only by a resume and at session start, never by turning trunking or `-Y` on (an Explore followed by "Follow this
+    system" stays the operator's). Tests: `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN_PAUSE`, `API_COMMANDS`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Retained results: talkgroup export and decryption completions are kept as the latest result
@@ -9170,15 +9174,15 @@ Qt Quick frontend (`src/ui/qt`):
     also writes that pair to the device-local `prefs.acceptedStartKind/Uid` at once (`lastStarted*` stays the
     initialized record Home and auto-start read); a recreated Activity that finds a session Running and started nothing
     itself adopts it (`adoptReattachedSession()`): a scan list's list (`sessionScanList`, its map), Explore's
-    `exploring` (no map: the Monitor's receiver pill stays inert until its first tune makes the hold's map), a saved
-    system's map and row. The pair names the session only because every start goes through `startWithMap()`, which
-    writes it once the host accepts; a start added on another path must write it too. With no session map, the hold's
-    and a no-owner Explore's map take the running input's kind from `metrics.radioSource` (`heldReceiver()`), never an
-    assumed USB one. Tests: `UI_QT_METRICS_MODEL` (`test_scan_state()`), `UI_QT_CALL_HISTORY_MODEL`
-    (`test_tuner_owner_stamps_set_row_identity()`), `UI_QT_QML_CALL_LISTS` (`tst_spectrum_screen.qml` 03j-03o,
-    `tst_monitor_scan_target.qml`, `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`,
-    `tst_history_hold.qml`, `tst_main_session_tools.qml`), `APP_COMMAND_QUEUE`
-    (`test_manual_tunes_mark_the_operator()`).
+    `exploring` (no map: the Monitor's receiver pill stays inert until an operator tune, made before or after the
+    recreation, makes the hold's map), a saved system's map and row. The pair names the session only because every start
+    goes through `startWithMap()`, which writes it once the host accepts; a start added on another path must write it
+    too. With no session map, the hold's and a no-owner Explore's map take the running input's kind from
+    `metrics.radioSource` (`heldReceiver()`), never an assumed USB one. Tests: `UI_QT_METRICS_MODEL`
+    (`test_scan_state()`), `UI_QT_CALL_HISTORY_MODEL` (`test_tuner_owner_stamps_set_row_identity()`),
+    `UI_QT_QML_CALL_LISTS` (`tst_spectrum_screen.qml` 03j-03o, `tst_monitor_scan_target.qml`,
+    `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`, `tst_history_hold.qml`,
+    `tst_main_session_tools.qml`), `APP_COMMAND_QUEUE` (`test_manual_tunes_mark_the_operator()`).
   - Carrier identity (Spectrum strip): `SpectrumScreen.qml`'s status strip is two lines bounded by the Radio button
     (the strip edge when it is hidden). Line 1 (`spectrumSyncLabel`, SNR, `spectrumCfoLabel`, `spectrumCallLabel`)
     gives way talkgroup first (elided), then the offset (hidden); line 2 (`spectrumIdentityLabel`) is
@@ -9332,23 +9336,23 @@ Qt Quick frontend (`src/ui/qt`):
   desktop session, keep an inert pill (StaticText, no tab stop). A healthy session the Monitor reattaches to after an
   Activity recreation has its system map again (Main's `adoptReattachedSession()`, issue #671), so a USB or Airspy
   system or scan list opens the sheet as a fresh start does. A reattached Explore session, and one the UI cannot name,
-  has no map, so it keeps the inert pill until a manual tune gives it the operator hold's map (`heldReceiver()`); LOST
-  still shows there from `receiverHealth`. In tier 5, where the header scrolls with the list, a lost receiver also shows
-  as one fixed line above Stop (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session
-  finishing", ›) that opens the same sheet; hidden it has no height, and it sits outside the budget (it can appear only
-  where the budget already fixes only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the
-  actions the session would show (Sites, session options, Spectrum, and the pill at the widest label it can show,
-  `LIVE`, `LOST`, `STARTING…`, `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and
-  `headerActionsFit` requires it to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`,
-  `headerStacked` and the budget's `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to
-  the session menu as in tier 1 and tier 0 keeps the title-line header; a label change never changes which actions show.
-  A 360 dp phone at 1.0 with Sites and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…`
-  would overflow); 411 dp at 1.0 keeps all four (at 1.6 `STOPPING…` overflows there too). Every gate is
-  `!localDeviceBrokered ||`, so desktop geometry is unchanged; the one desktop change is the LIVE pill's accessible
-  name, which now names the receiver's state there too. Tests: `UI_QT_QML_MONITOR_RECEIVER`
-  (`tst_monitor_receiver.qml`), `tst_monitor_scan_target.qml` (`test_header_actions_fit_a_tall_phone`,
-  `test_header_geometry_unchanged_off_android`), `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier
-  rows).
+  has no map, so it keeps the inert pill until an operator tune, made before or after the recreation
+  (`metrics.operatorTuned` at adoption), gives it the operator hold's map (`heldReceiver()`); LOST still shows there
+  from `receiverHealth`. In tier 5, where the header scrolls with the list, a lost receiver also shows as one fixed line
+  above Stop (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens
+  the same sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already
+  fixes only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would
+  show (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
+  `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and `headerActionsFit` requires it
+  to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`, `headerStacked` and the budget's
+  `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to the session menu as in tier 1 and
+  tier 0 keeps the title-line header; a label change never changes which actions show. A 360 dp phone at 1.0 with Sites
+  and Spectrum therefore keeps both in the session menu even under LIVE (`STOPPING…` would overflow); 411 dp at 1.0
+  keeps all four (at 1.6 `STOPPING…` overflows there too). Every gate is `!localDeviceBrokered ||`, so desktop geometry
+  is unchanged; the one desktop change is the LIVE pill's accessible name, which now names the receiver's state there
+  too. Tests: `UI_QT_QML_MONITOR_RECEIVER` (`tst_monitor_receiver.qml`), `tst_monitor_scan_target.qml`
+  (`test_header_actions_fit_a_tall_phone`, `test_header_geometry_unchanged_off_android`),
+  `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier rows).
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
   (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
   checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does

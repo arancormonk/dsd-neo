@@ -283,8 +283,10 @@ for a paused `-Y` scan, and for a paused trunk scan `[trunk_scan] enabled = true
 (`[trunking] enabled`), not the one a parked target ran. A `-Y` scan stopped with `y` saves `scanner = false`. A config
 loaded over a paused `-Y` scan settles it last: without a `[trunking]` section the pause stays, trunking on (`enabled =
 true`) or `scanner = false` stops the scan, `scanner = true` resumes it, and a config whose input does not start keeps
-the pause. Under a trunk scan, running or paused, a loaded `[trunking] enabled` becomes the configured setting, which
-the scan puts back at shutdown and a save writes.
+the pause. Under a trunk scan, running or paused, a loaded `[trunking] enabled = true` becomes the configured setting,
+which the scan puts back at shutdown and a save writes. A loaded `enabled = false` leaves that setting as it was, as it
+leaves trunking on in any other session: only `[trunking] scanner = true` takes the tuner from trunking, and that is
+refused beside a trunk scan.
 
 Autosave is disabled when an explicit `--profile NAME` is loaded successfully, because saving the effective config would
 flatten the profile overlay back into the base file and remove profile sections.

@@ -71,9 +71,9 @@ decoding without it, as it does for the RTL UDP retune control.
   `"status":"queued"` means the queue admitted the command, not that the decoder
   accepted it: the decoder can still refuse it when it is applied, which it
   reports in the notice line (`status.message`). A command that needs the P25
-  state machine (`scanner_toggle`, `scan_resume`, `tuner_release`, and
-  `rtl_set_freq` under a trunk scan) waits for the frame or watchdog step it is
-  working on, then applies whole.
+  state machine (for example `scanner_toggle`, `scan_resume`, `tuner_release`,
+  `rtl_set_freq` and `config_apply`) waits for the frame or watchdog step it is
+  working on rather than run beside it.
 * A publication that meets a P25 watchdog step is put off, never dropped, and
   goes out at the next decoder pass with the state as it is then. On a silent
   UDP or RTL input that comes shortly after the step ends; on a connected TCP
@@ -679,9 +679,12 @@ field, and the decoder refuses the rest when it applies the command.
 
   Under a trunk scan, running or paused, `[trunking] enabled = true` is the
   setting the scan puts back at shutdown and a save writes, not the parked
-  target's. Over a paused `-Y` scan, a config without `[trunking]` keeps the
-  pause; trunking on or `scanner = false` stops it; `scanner = true` resumes it.
-  A config whose input does not start keeps the pause.
+  target's; `enabled = false` leaves that setting as it was, as it leaves
+  trunking on in any session (only `scanner = true` takes the tuner from
+  trunking, and that is refused beside a trunk scan). Over a paused `-Y` scan, a
+  config without `[trunking]` keeps the pause; trunking on or `scanner = false`
+  stops it; `scanner = true` resumes it. A config whose input does not start
+  keeps the pause.
 
   ```json
   {"cmd":"config_apply","params":{"sections":{
@@ -727,8 +730,9 @@ field, and the decoder refuses the rest when it applies the command.
 * **`scan_resume`**: resumes whichever scan is paused, and only that: a `-Y`
   scan on the row it would have stepped to next, a trunk scan on the target it
   left, with fresh timers. A running scan is left as it is (`Not paused: the
-  scan is running`), and with nothing paused nothing starts. A resume that finds no row
-  to tune, or whose tune is refused, leaves the scan paused and says why.
+  scan is running`), and with nothing paused nothing starts. A resume that
+  finds no row to tune, or whose tune is refused, leaves the scan paused and
+  says why.
 * **`manual_tune`**: a spectrum tap. It is refused while trunking, a `-Y` scan
   or a trunk scan owns the tuner (`status.message` says which); a paused scan
   does not refuse it, and it leaves the scan paused.
