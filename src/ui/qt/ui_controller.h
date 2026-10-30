@@ -118,7 +118,7 @@ class UiController : public QObject {
     void refreshModels();
     void pollTalkgroupExport();
     void pollDecryptionResult();
-    /** @brief Clear the target-scoped models when the scan target changed; true when it did. */
+    /** @brief Reset the target-scoped models when the scan target changed; true when it did. */
     bool invalidateForTarget(const dsd_state* snapshot);
     void onSessionStateChanged();
     void clearLiveModels();

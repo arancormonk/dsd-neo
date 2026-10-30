@@ -38,6 +38,12 @@ Item {
         source: uiDir + "/NetworkSheet.qml"
         onLoaded: item.network = fakeNet
     }
+    // The same sheet on the app's own P25NetworkModel, which testContext.hopNetwork() publishes a scan hop to.
+    Loader {
+        id: liveNetworkLoader
+        anchors.fill: parent
+        source: uiDir + "/NetworkSheet.qml"
+    }
     Component {
         id: spyComponent
         SignalSpy {
@@ -258,14 +264,8 @@ Item {
                     lastSeen: seen});
             return rows;
         }
-        function test_open_network_sheet_refreshes() {
-            var sheet = networkLoader.item;
-            verify(sheet !== null);
-            fakeNet.neighbours = neighbours(10, 0, 3);
-            sheet.visible = true;
-            Ui.Navigation.modals = [sheet];
-            waitForRendering(sheet);
-            wait(20);
+        // The neighbour rows @p sheet shows, in order.
+        function neighbourRows(sheet) {
             var rows = [];
             (function collect(item) {
                 for (var k = 0; k < item.children.length; ++k) {
@@ -276,6 +276,17 @@ Item {
                     collect(child);
                 }
             })(sheet);
+            return rows;
+        }
+        function test_open_network_sheet_refreshes() {
+            var sheet = networkLoader.item;
+            verify(sheet !== null);
+            fakeNet.neighbours = neighbours(10, 0, 3);
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(20);
+            var rows = neighbourRows(sheet);
             compare(rows.length, 10, "a row per neighbour");
             for (var r of rows)
                 compare(testContext.accessibleNode(r).name, r.text, "each row is read as itself");
@@ -310,6 +321,50 @@ Item {
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];
+        }
+
+        // Issue #782: a trunk scan's hops with the Network sheet open. Each hop publishes the new target's network
+        // as UiController does, and the sheet keeps every row both targets list: only a row for an entry count that
+        // came or went shows or hides, the row a listener is on stays, and each row ends on the new target's entry.
+        function test_open_network_sheet_on_hops() {
+            var sheet = liveNetworkLoader.item;
+            verify(sheet !== null);
+            var targets = [[0, 1, 2, 3, 4, 5, 6, 7], [3, 4, 5, 6, 7, 8]];
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            testContext.hopNetwork(targets[0]);
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, 8);
+            var row = rows[3];
+            testContext.startAccessibilityCount();
+            var hops = 10;
+            for (var hop = 1; hop <= hops; ++hop) {
+                testContext.hopNetwork(targets[hop % 2]);
+                wait(20);
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            // Two rows go on each hop to the six-neighbour target and come back on the next.
+            var changed = 2 * hops;
+            var shows = testContext.accessibilityCountWithin(sheet, "ObjectShow");
+            var hides = testContext.accessibilityCountWithin(sheet, "ObjectHide");
+            verify(shows <= changed / 2 && hides <= changed / 2, shows + " shows and " + hides + " hides for " + hops
+                   + " hops: " + JSON.stringify(counts.chains));
+            rows = neighbourRows(sheet);
+            compare(rows.length, targets[0].length);
+            verify(rows[3] === row, "the row a listener is on stays across the hops");
+            verify(testContext.accessibleNode(row).inTree);
+            verify(row.text.indexOf("Site:" + targets[0][3] + " ") >= 0, row.text);
+            tryVerify(function () {
+                return neighbourRows(sheet).every(function (shown) {
+                    return testContext.accessibleNode(shown).name === shown.text;
+                });
+            }, 2000, "each row is read as the new target's entry");
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            testContext.hopNetwork([]);
         }
 
         // Issue #782: the open key sheet keeps a row per slot while the count holds; each call publishes a new list,

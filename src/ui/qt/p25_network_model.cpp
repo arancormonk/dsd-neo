@@ -38,6 +38,15 @@ P25NetworkModel::clear() {
     }
 }
 
+void
+P25NetworkModel::replaceForTarget(const dsd_state* snapshot) {
+    if (m_active && snapshot != nullptr) {
+        refresh(snapshot);
+    } else {
+        clear();
+    }
+}
+
 /* Issue #782: a row carries only what the Network sheet shows. The engine's last-seen times order the rows but are
  * not shown, and kept in the rows they made every refresh a change (each second some row's time moves), which made
  * the sheet rebuild rows a screen reader is told about. */

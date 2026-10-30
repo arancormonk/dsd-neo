@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
 #include <QMap>
 #include <QMetaMethod>
 #include <QMetaObject>
@@ -23,6 +24,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
+#include <QVariant>
 #include <QVariantMap>
 #include <Qt>
 #include <cstdio>
@@ -1246,6 +1248,34 @@ main(int argc, char** argv) {
     check(metrics.syncLabel().isEmpty()); // Old target's sync hold must not survive.
     check(network.radios().isEmpty());
     network.setActive(true);
+    {
+        // Issue #782: with the Network sheet open, a hop publishes the new target's rows in one replacement, never
+        // passing through an empty list: the sheet then keeps the rows both targets list rather than rebuilding
+        // every one. The old target's rows still do not survive into the new one.
+        QList<int> published;
+        QMetaObject::Connection spy = QObject::connect(&network, &dsd_qt::P25NetworkModel::radiosChanged,
+                                                       [&]() { published.append(network.radios().size()); });
+        state.p25_aff_rid[1] = 456;
+        tick();
+        check(published == QList<int>{2});
+        published.clear();
+        state.trunk_scan_active_ordinal = 3;
+        tick();
+        check(published.isEmpty()); // The same rows on the next target: nothing to publish.
+        check(network.radios().size() == 2);
+        state.p25_aff_rid[0] = 0;
+        state.trunk_scan_active_ordinal = 4;
+        tick();
+        check(published == QList<int>{1});
+        check(network.radios().size() == 1 && network.radios().at(0).toMap().value("rid").toUInt() == 456U);
+        published.clear();
+        state.p25_aff_rid[1] = 0;
+        state.trunk_scan_active_ordinal = 5;
+        tick();
+        check(published == QList<int>{0}); // A target with no rows clears them, once.
+        QObject::disconnect(spy);
+        state.p25_aff_rid[0] = 123;
+    }
     diagnostics.submit("host", "info", "before next session");
     for (auto phase : {Host::Starting, Host::Idle, Host::Failed}) {
         host.setPhase(Host::Running);

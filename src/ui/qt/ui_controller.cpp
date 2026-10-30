@@ -205,8 +205,10 @@ UiController::invalidateForTarget(const dsd_state* snapshot) {
     // target's held sync/identity continue to caption this frequency. The metrics
     // are not cleared here: refreshModels() drops their latches inside the same
     // publication, so no reading passes through its default on a hop (#782).
+    // Nor does the network: an open sheet gets the new target's rows in one
+    // replacement (an empty list first would rebuild every row it shows).
     if (m_network) {
-        m_network->clear();
+        m_network->replaceForTarget(sessionIsLive() ? snapshot : nullptr);
     }
     if (m_talkgroups) {
         m_talkgroups->invalidateForTarget();
@@ -287,7 +289,7 @@ UiController::refreshModels() {
     if (!redraw) {
         return;
     }
-    if (live && m_network != nullptr) {
+    if (live && m_network != nullptr && !new_target) { // A hop has published this snapshot's network already.
         m_network->refresh(snapshot);
     }
     /* The call history is persistent by design, so unlike the metrics it is never

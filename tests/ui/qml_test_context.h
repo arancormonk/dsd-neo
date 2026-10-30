@@ -67,7 +67,9 @@
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
+#include <algorithm>
 #include <array>
+#include <ctime>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -75,6 +77,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <iterator>
@@ -2658,6 +2661,35 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Issue #782: a trunk-scan hop to a target whose control channel lists the neighbour sites @p sites, the
+     * network published to p25Network as UiController publishes it on a hop (P25NetworkModel::replaceForTarget). Site
+     * @c n is on 851 MHz plus @c n channels of 12.5 kHz; the list is in the order given, the first heard last.
+     */
+    Q_INVOKABLE void
+    hopNetwork(const QVariantList& sites) {
+        if (m_network == nullptr) {
+            return;
+        }
+        if (!m_network_state) {
+            m_network_state = std::make_unique<dsd_state>();
+        }
+        dsd_state* state = m_network_state.get();
+        DSD_MEMSET(state->p25_nb_entries, 0, sizeof(state->p25_nb_entries));
+        const int count = static_cast<int>(std::min<qsizetype>(sites.size(), P25_NB_MAX));
+        for (int i = 0; i < count; ++i) {
+            const int site = sites.at(i).toInt();
+            p25_nb_entry_t& entry = state->p25_nb_entries[i];
+            entry.freq = 851000000L + site * 12500L;
+            entry.sysid = 0x123;
+            entry.rfss = 1;
+            entry.site = static_cast<uint8_t>(site);
+            entry.last_seen = static_cast<time_t>(count - i);
+        }
+        state->p25_nb_count = count;
+        m_network->replaceForTarget(state);
+    }
+
+    /**
      * @brief Issue #782: publish a scan target's readings in one go, as MetricsModel does on a target change.
      *
      * Every key in @p readings is written in one batch and the reading groups are signalled once afterwards, with no
@@ -4255,7 +4287,8 @@ class Setup : public QObject {
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
         session_args->setSavedSystems(saved_systems);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
-        ctx->setContextProperty(QStringLiteral("p25Network"), new dsd_qt::P25NetworkModel(engine)); // WP-F2
+        m_network = new dsd_qt::P25NetworkModel(engine);
+        ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         auto* controller = new TestUiController(engine);
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);
@@ -4335,6 +4368,9 @@ class Setup : public QObject {
     /* The target table on show, or null for m_talkgroup_state. */
     const dsd_state* m_applied_table = nullptr;
     dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;
+    dsd_qt::P25NetworkModel* m_network = nullptr;
+    /* Issue #782: the snapshot hopNetwork() publishes, built on first use. */
+    std::unique_ptr<dsd_state> m_network_state;
 
     struct TableRow {
         uint32_t id;
