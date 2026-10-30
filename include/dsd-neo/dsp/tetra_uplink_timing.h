@@ -178,11 +178,21 @@ int dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase);
  * @brief Zero samples to push before every non-zero sample pushed so far has come out of the look-ahead.
  *
  * 0 when the look-ahead holds only zeros (or is not set up). Whenever the Gardner's input stops (a squelched block, the
- * end of a capture) the stage pushes this many zeros through, so a burst's last symbols reach the decoder then, not
- * after whatever comes next: full_demod() on a squelched block, dsd_demod_tetra_uplink_flush() at the end of a
- * replay.
+ * end of a capture) the stage pushes zeros through until this and the Gardner's own delay are out
+ * (dsd_tetra_ul_timing_held_through()), so a burst's last symbols reach the decoder then, not after whatever comes
+ * next: full_demod() on a squelched block, dsd_demod_tetra_uplink_flush() at the end of a replay.
  */
 size_t dsd_tetra_ul_timing_held(const dsd_tetra_ul_timing* t);
+
+/**
+ * @brief Zero samples to push before every non-zero sample pushed so far has come out of the look-ahead and @p tail
+ * samples more have followed it.
+ *
+ * The stage behind the look-ahead (the Gardner TED's delay line) holds a sample @p tail more pushes before the last
+ * symbol that reads it is out. 0 when no non-zero sample was pushed since the reset (or it is not set up);
+ * dsd_tetra_ul_timing_held() is this with @p tail 0.
+ */
+size_t dsd_tetra_ul_timing_held_through(const dsd_tetra_ul_timing* t, size_t tail);
 
 #ifdef __cplusplus
 }

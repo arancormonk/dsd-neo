@@ -424,9 +424,16 @@ dsd_tetra_ul_timing_carrier(dsd_tetra_ul_timing* t, float* phase) {
 }
 
 size_t
-dsd_tetra_ul_timing_held(const dsd_tetra_ul_timing* t) {
-    if (!t || t->sps < DSD_TETRA_UL_MIN_SPS || t->held_until <= t->pushed) {
+dsd_tetra_ul_timing_held_through(const dsd_tetra_ul_timing* t, size_t tail) {
+    /* held_until is 0 until a non-zero sample is pushed, and at least delay + 1 from then on. */
+    if (!t || t->sps < DSD_TETRA_UL_MIN_SPS || t->held_until == 0U) {
         return 0U;
     }
-    return (size_t)(t->held_until - t->pushed);
+    const uint64_t until = t->held_until + (uint64_t)tail;
+    return until > t->pushed ? (size_t)(until - t->pushed) : 0U;
+}
+
+size_t
+dsd_tetra_ul_timing_held(const dsd_tetra_ul_timing* t) {
+    return dsd_tetra_ul_timing_held_through(t, 0U);
 }

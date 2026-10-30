@@ -4623,10 +4623,13 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
     on how the input is cut. `op25_gardner_cc()` and `op25_costas_loop_cc()` run separate template instantiations for
     it, so every other stream runs the loops unchanged; `ted_state_t::ul_lookahead_live`, cleared by every TED reset, every block off the
     stage and every block a signal search drops (what it held would reach the decoder after the gap), starts the
-    look-ahead over with the TED. The look-ahead holds signal back (`dsd_demod_tetra_uplink_held()`), so wherever the
-    Gardner's input stops it is pushed out as zeros through Gardner, differential, Costas and the phase demodulator: a
-    level-squelched block runs that way while signal is held (`full_demod()`), so a burst's end reaches the decoder
-    before the squelch's silence, and at the end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()`
+    look-ahead over with the TED, and the Gardner's delay line with it. The look-ahead, and the Gardner's delay line
+    behind it, hold signal back (`dsd_demod_tetra_uplink_held()`: the samples until the last signal sample has left the
+    look-ahead and `twice_sps` more have followed it, `dsd_tetra_ul_timing_held_through()`), so wherever the Gardner's
+    input stops exactly that many zeros are pushed through Gardner, differential, Costas and the phase demodulator: a
+    level-squelched block runs that many of its samples that way while signal is held and makes zero symbols for the
+    rest (`full_demod()`), so a burst's end reaches the decoder before the squelch's silence, never after the squelch
+    opens again, and the Gardner takes the same zeros however the closed stretch is cut; and at the end of a replay the demod thread publishes `dsd_demod_tetra_uplink_flush()`
     as a block of its own once the input ended and the decoder took every block (`demod_replay_flush_uplink()`);
     `replay_demod_flush_owed`, set after every replay block, keeps both drain decisions (`replay_demod_drain_decide()`,
     `replay_mark_input_drained()`) from counting the demod drained before that, so the end-of-capture notice still
@@ -4658,7 +4661,8 @@ reconcile (issue #703, `ENGINE_COLD_START_HUNT`, `ENGINE_TUNE_FAILURE_RECONCILE`
   - Tests: `DSP_TETRA_CHAIN` (predicate table, the design memo, transitions, warnings, the WIDE-identical fallback,
     pull-in from +6 kHz and +600 Hz, squelch, the symbols a block after a gap makes, partition invariance of the linear
     filters, P25 after a TETRA session through the leave transition, the uplink's channel filter alone, the uplink's
-    symbols under every cut, blocks spanning several bursts included),
+    symbols under every cut, blocks spanning several bursts included, a squelch closing in a burst under every cut of
+    the closed stretch and the end of a capture after it, and a restarted look-ahead forgetting the Gardner's delay),
     `IO_RTL_DEMOD_CONFIG` (TETRA opens, the installs, the 22.5 kHz width a TETRA open, downlink or uplink, publishes),
     `DSP_CHANNEL_FILTERS`, `DSP_FLL_BAND_EDGE`, and the `DECODE_IQ_TETRA_*` I/Q cases (`docs/testing.md`).
 - Streaming linear front end (issue #572): the half-band cascade and the channel FIR (`simd_hb_decim2_complex()`,

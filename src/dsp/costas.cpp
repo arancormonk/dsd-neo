@@ -1105,6 +1105,9 @@ op25_gardner_cc(struct demod_state* d) {
     if (dsd_demod_tetra_uplink_timing_runs(d, sps)) {
         dsd_tetra_ul_timing* ul = &d->tetra_ul_timing;
         if (!ted->ul_lookahead_live || ul->sps != sps) {
+            /* The delay line starts over with the look-ahead: what it held came before whatever started the look-ahead
+               over (a dropped block, a retune, a reset) and would land after it. A flush left it all zeros. */
+            DSD_MEMSET(ted->dl, 0, sizeof(ted->dl));
             dsd_tetra_ul_timing_reset(ul, sps);
             ted->ul_lookahead_live = 1;
         }

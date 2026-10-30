@@ -25,6 +25,7 @@
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
@@ -1380,6 +1381,215 @@ test_uplink_block_partitions(void) {
     return rc;
 }
 
+/* What an uplink session made around a squelch closing in a burst. */
+struct UplinkSquelchRun {
+    std::vector<float> tail;     /* the closed blocks' and the flush's symbols, the exact zeros left out */
+    std::vector<float> reopened; /* the symbols of the open blocks after them */
+    size_t held;                 /* dsd_demod_tetra_uplink_held() after the closed blocks and the flush */
+    int dl_clear;                /* 1 when the Gardner's delay line then holds only zeros */
+};
+
+/* 1 when the Gardner's delay line holds only zeros. */
+int
+ted_delay_line_clear(const demod_state* s) {
+    for (size_t k = 0; k < sizeof(s->ted_state.dl) / sizeof(s->ted_state.dl[0]); k++) {
+        if (std::fabs(s->ted_state.dl[k]) > 0.0f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The uplink session at @p rate: @p open pairs of @p iq open (1001-sample blocks), then the next pairs squelched, cut as
+ * @p closed, then (with @p flush) the look-ahead pushed out as at the end of a capture, then @p reopen pairs open
+ * (1001-sample blocks). The closed blocks take the stream's own samples, which the squelch zeroes. */
+void
+run_uplink_squelch(int rate, const std::vector<float>& iq, int open, const std::vector<int>& closed, bool flush,
+                   int reopen, UplinkSquelchRun* run) {
+    *run = UplinkSquelchRun{};
+    demod_state* s = new_demod();
+    if (!s) {
+        return;
+    }
+    configure_tetra(s, rate);
+    s->tetra_uplink = 1;
+    size_t pos = 0;
+    for (int n : cuts_of(open, 1001)) {
+        (void)run_block(s, iq.data() + pos * 2U, n);
+        pos += (size_t)n;
+    }
+    squelch_next_blocks(s, 1);
+    for (int n : closed) {
+        const std::vector<float> sym = run_block(s, iq.data() + pos * 2U, n);
+        pos += (size_t)n;
+        for (float v : sym) {
+            if (v != 0.0f) {
+                run->tail.push_back(v);
+            }
+        }
+    }
+    if (flush && dsd_demod_tetra_uplink_flush(s)) {
+        for (int k = 0; k < s->result_len; k++) {
+            if (s->result[k] != 0.0f) {
+                run->tail.push_back(s->result[k]);
+            }
+        }
+    }
+    run->held = dsd_demod_tetra_uplink_held(s);
+    run->dl_clear = ted_delay_line_clear(s);
+    squelch_next_blocks(s, 0);
+    if (reopen > 0) {
+        for (int n : cuts_of(reopen, 1001)) {
+            const std::vector<float> sym = run_block(s, iq.data() + pos * 2U, n);
+            pos += (size_t)n;
+            run->reopened.insert(run->reopened.end(), sym.begin(), sym.end());
+        }
+    }
+    free_demod(s);
+}
+
+/* @p got against @p want: the same length and every symbol within @p tol. */
+int
+expect_same_symbols(const char* what, const std::vector<float>& got, const std::vector<float>& want, double tol) {
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "%s: symbols", what);
+    int rc = expect_int(label, (int)got.size(), (int)want.size());
+    double worst = 0.0;
+    for (size_t k = 0; k < got.size() && k < want.size(); k++) {
+        worst = std::fmax(worst, std::fabs((double)got[k] - (double)want[k]));
+    }
+    DSD_SNPRINTF(label, sizeof label, "%s: worst symbol difference", what);
+    rc |= expect_near(label, worst, 0.0, tol);
+    return rc;
+}
+
+/* A squelch that closes in an uplink burst pushes out, before its silence, everything the uplink still holds of the
+ * burst: the look-ahead's 128 symbols and the Gardner TED's own delay behind it. However the closed stretch is cut
+ * into blocks (one block, a first block that empties the look-ahead exactly and then a short one, single samples,
+ * irregular cuts), the closed blocks make the same burst symbols, the uplink holds nothing after them, and the session
+ * makes the same symbols once the squelch opens again: none of the burst's comes out after the reopen. The end of a
+ * capture right at the close, or after a closed block that emptied only the look-ahead, pushes out the same symbols. */
+int
+uplink_squelch_tail_at(int rate) {
+    int rc = 0;
+    const int sps = rate / 18000;
+    const int lookahead = DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * sps;
+    int total = 0;
+    const std::vector<float> iq = make_uplink_stream(rate, &total);
+    /* In the second burst (a normal burst, symbols 343 to 577), then 300 symbols closed and 400 open again, which hold
+       the fourth burst. */
+    const int open = 443 * sps;
+    const int closed = 300 * sps;
+    const int reopen = 400 * sps;
+    if (open + closed + reopen > total) {
+        return fail("uplink squelch tail: stream too short");
+    }
+    UplinkSquelchRun ref;
+    run_uplink_squelch(rate, iq, open, {closed}, false, reopen, &ref);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz: the burst's tail comes out", rate);
+    if (ref.tail.size() < (size_t)DSD_TETRA_UL_LOOKAHEAD_SYMBOLS) {
+        rc |= fail(label);
+    }
+    DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz: symbols after the reopen", rate);
+    if (ref.reopened.empty()) {
+        rc |= fail(label);
+    }
+    const std::vector<std::vector<int>> partitions = {
+        {lookahead, 4 * sps, closed - lookahead - 4 * sps},
+        {lookahead, closed - lookahead},
+        {lookahead - 1, 2, closed - lookahead - 1},
+        {lookahead + 1, 1, 1, 1, closed - lookahead - 4},
+        cuts_of(closed, 1001),
+        cuts_of(closed, 1),
+        irregular_cuts(closed, 61, 5u),
+        irregular_cuts(closed, 7, 11u),
+    };
+    std::vector<UplinkSquelchRun> runs;
+    for (const std::vector<int>& cuts : partitions) {
+        int sum = 0;
+        for (int n : cuts) {
+            sum += n;
+        }
+        DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz, partition %d: closed samples", rate,
+                     (int)runs.size());
+        rc |= expect_int(label, sum, closed);
+        runs.emplace_back();
+        run_uplink_squelch(rate, iq, open, cuts, false, reopen, &runs.back());
+    }
+    /* The end of a capture: right at the close, after a block that emptied the look-ahead only, after a few samples. */
+    runs.emplace_back();
+    run_uplink_squelch(rate, iq, open, {}, true, 0, &runs.back());
+    runs.emplace_back();
+    run_uplink_squelch(rate, iq, open, {lookahead}, true, 0, &runs.back());
+    runs.emplace_back();
+    run_uplink_squelch(rate, iq, open, {lookahead + 3}, true, 0, &runs.back());
+    runs.push_back(ref);
+    for (size_t p = 0; p < runs.size(); p++) {
+        const UplinkSquelchRun& r = runs[p];
+        DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz, run %d: burst tail", rate, (int)p);
+        rc |= expect_same_symbols(label, r.tail, ref.tail, 1e-6);
+        DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz, run %d: nothing held after it", rate, (int)p);
+        rc |= expect_int(label, (int)r.held, 0);
+        DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz, run %d: Gardner delay line clear", rate, (int)p);
+        rc |= expect_int(label, r.dl_clear, 1);
+        if (p < partitions.size()) {
+            DSD_SNPRINTF(label, sizeof label, "uplink squelch at %d Hz, run %d: after the reopen", rate, (int)p);
+            rc |= expect_same_symbols(label, r.reopened, ref.reopened, 1e-6);
+        }
+    }
+    DSD_FPRINTF(stdout, "TETRA uplink squelch at %d Hz: %d tail symbols, %d after the reopen, %d runs\n", rate,
+                (int)ref.tail.size(), (int)ref.reopened.size(), (int)runs.size());
+    return rc;
+}
+
+int
+test_uplink_squelch_tail(void) {
+    int rc = 0;
+    rc |= uplink_squelch_tail_at(72000);
+    rc |= uplink_squelch_tail_at(36000);
+    rc |= uplink_squelch_tail_at(144000);
+    return rc;
+}
+
+/* A look-ahead that starts over (the signal search dropped a block, a retune or reset soft-reset the TED) forgets the
+ * Gardner TED's delay too: what it held came before the gap, and would land after it. Every symbol until the new
+ * look-ahead fills is 0. */
+int
+test_uplink_restart_forgets_ted_delay(void) {
+    int rc = 0;
+    const int rate = 72000;
+    const int sps = rate / 18000;
+    int total = 0;
+    const std::vector<float> iq = make_uplink_stream(rate, &total);
+    demod_state* s = new_demod();
+    if (!s) {
+        return fail("alloc");
+    }
+    configure_tetra(s, rate);
+    s->tetra_uplink = 1;
+    const int open = 443 * sps;
+    for (int pos = 0, n = 0; pos < open; pos += n) {
+        n = open - pos < 1001 ? open - pos : 1001;
+        (void)run_block(s, iq.data() + (size_t)pos * 2U, n);
+    }
+    rc |= expect_int("uplink restart: TED delay holds the burst", ted_delay_line_clear(s), 0);
+    /* What demod_drop_signal_search_block() does to a live look-ahead. */
+    s->ted_state.ul_lookahead_live = 0;
+    rc |= expect_int("uplink restart: nothing held", (int)dsd_demod_tetra_uplink_held(s), 0);
+    const std::vector<float> out = run_block(s, iq.data() + (size_t)open * 2U, 64 * sps);
+    if (out.empty()) {
+        rc |= fail("uplink restart: no symbols");
+    }
+    int nonzero = 0;
+    for (float v : out) {
+        nonzero += v != 0.0f ? 1 : 0;
+    }
+    rc |= expect_int("uplink restart: symbols before the look-ahead fills", nonzero, 0);
+    free_demod(s);
+    return rc;
+}
+
 /* A block that arrives in hb_workbuf without a half-band pass (the matched filter then writes the input's own buffer
  * behind its read cursor, as after an odd pass count) makes the same symbols as the same block in the input buffer. */
 int
@@ -1678,6 +1888,8 @@ main(void) {
     rc |= test_partition_invariance();
     rc |= test_block_partitions();
     rc |= test_uplink_block_partitions();
+    rc |= test_uplink_squelch_tail();
+    rc |= test_uplink_restart_forgets_ted_delay();
     rc |= test_block_in_workbuf();
     rc |= test_fll_gears();
     rc |= test_p25_after_tetra_session();

@@ -241,22 +241,23 @@ int dsd_demod_tetra_stage(const struct demod_state* d);
 int dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps);
 
 /**
- * @brief Samples of signal the uplink look-ahead still holds back (dsd_tetra_ul_timing_held()).
+ * @brief Samples of signal the uplink still holds back: its look-ahead and the Gardner's delay line behind it
+ * (dsd_tetra_ul_timing_held_through() with the delay line's twice_sps).
  *
  * 0 off the uplink burst timing (dsd_demod_tetra_uplink_timing_runs()) or before the Gardner fed the look-ahead.
  *
  * @param d Demodulator state (NULL reads 0).
- * @return Zero samples to push before the look-ahead holds only zeros.
+ * @return Zero samples to push before every symbol that reads signal is out of the Gardner.
  */
 size_t dsd_demod_tetra_uplink_held(const struct demod_state* d);
 
 /**
- * @brief The end of an uplink stream: push the look-ahead's held signal out.
+ * @brief The end of an uplink stream: push the held signal out.
  *
- * Runs enough zero samples through the uplink's Gardner, differential and Costas stages and the phase demodulator
- * that every symbol the look-ahead held back is in demod_state::result (result_len, 0 when it held nothing). The demod
- * thread publishes it as a block of its own once a replay's input ended (a squelched block drains the same way in
- * full_demod()).
+ * Runs exactly dsd_demod_tetra_uplink_held() zero samples through the uplink's Gardner, differential and Costas stages
+ * and the phase demodulator, so every symbol the look-ahead and the Gardner's delay line held back is in
+ * demod_state::result (result_len, 0 when it held nothing) and nothing is held after it. The demod thread publishes it
+ * as a block of its own once a replay's input ended (a squelched block drains the same samples in full_demod()).
  *
  * @param d Demodulator state.
  * @return 1 when it produced output, else 0.

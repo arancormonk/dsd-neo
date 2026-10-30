@@ -1475,7 +1475,11 @@ dsd_demod_tetra_uplink_held(const struct demod_state* d) {
         || !dsd_demod_tetra_uplink_timing_runs(d, dsd_cqpsk_timing_sps(d))) {
         return 0U;
     }
-    return dsd_tetra_ul_timing_held(&d->tetra_ul_timing);
+    /* A sample the look-ahead returns stays in the Gardner's delay line for twice_sps more samples, and each symbol
+       that reads it comes out only once the sample after its strobe is in: twice_sps samples after the last signal
+       sample left the look-ahead, every symbol that read it is out. */
+    const int twice_sps = d->ted_state.twice_sps;
+    return dsd_tetra_ul_timing_held_through(&d->tetra_ul_timing, twice_sps > 0 ? (size_t)twice_sps : 0U);
 }
 
 /* @p pairs zero samples at @p buf through the uplink's Gardner (and its look-ahead), differential and Costas stages and
@@ -1502,24 +1506,43 @@ dsd_demod_tetra_uplink_flush(struct demod_state* d) {
     if (held == 0U) {
         return 0;
     }
-    /* A few symbols more than it holds: the Gardner reads its last symbol a little past the sample it centres on. */
-    const size_t pairs = held + (size_t)(4 * dsd_cqpsk_timing_sps(d));
+    /* Exactly what it holds, the Gardner's delay included: a closed block drains the same samples, so the symbols and
+       the state after them do not depend on where the input stopped. */
     static_assert(sizeof(demod_state::timing_buf) / sizeof(float)
-                      >= 2U * ((size_t)DSD_TETRA_UL_LOOKAHEAD_SYMBOLS + 4U) * DSD_TETRA_UL_MAX_SPS,
-                  "the timing buffer holds a whole look-ahead of zeros");
-    tetra_uplink_drain_zeros(d, d->timing_buf, (int)pairs);
+                      >= 2U * ((size_t)DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * DSD_TETRA_UL_MAX_SPS + TED_DL_SIZE),
+                  "the timing buffer holds a whole look-ahead and the Gardner's delay of zeros");
+    const size_t cap = sizeof(d->timing_buf) / sizeof(float) / 2U;
+    tetra_uplink_drain_zeros(d, d->timing_buf, (int)(held < cap ? held : cap));
     return d->result_len > 0 ? 1 : 0;
 }
 
-/* A squelched block on the uplink burst timing while the look-ahead holds signal: the block runs as zeros through the
-   Gardner, so the burst the squelch closed on comes out now, whole, before the squelch's silence, and not after it
-   once the squelch opens again. The block makes about as many symbols as the zero symbols it stands for. */
+/* A squelched block on the uplink burst timing while the uplink holds signal (dsd_demod_tetra_uplink_held(): the
+   look-ahead and the Gardner's delay behind it): as many of the block's samples as it holds run as zeros through the
+   Gardner, so the burst the squelch closed on comes out now, whole, before the squelch's silence, and not after it once
+   the squelch opens again. The rest of the block makes zero symbols, as a closed block does. Whatever the cut, the
+   Gardner takes the same zeros, so the symbols the squelch's reopening finds do not depend on it either. The block
+   makes about as many symbols as the zero symbols it stands for. */
 static int
 full_demod_drain_uplink_on_squelch(struct demod_state* d) {
-    if (!d->cqpsk_enable || !d->channel_squelched || d->lp_len < 2 || dsd_demod_tetra_uplink_held(d) == 0U) {
+    if (!d->cqpsk_enable || !d->channel_squelched || d->lp_len < 2) {
         return 0;
     }
-    tetra_uplink_drain_zeros(d, d->lowpassed, d->lp_len >> 1);
+    const size_t held = dsd_demod_tetra_uplink_held(d);
+    if (held == 0U) {
+        return 0;
+    }
+    const int pairs = d->lp_len >> 1;
+    const int drained = held < (size_t)pairs ? (int)held : pairs;
+    tetra_uplink_drain_zeros(d, d->lowpassed, drained);
+    const int sps = dsd_cqpsk_timing_sps(d);
+    const int rest = pairs - drained;
+    int zeros = (rest > 0 && sps > 0) ? (rest + sps - 1) / sps : 0;
+    if (zeros > MAXIMUM_BUF_LENGTH - d->result_len) {
+        zeros = MAXIMUM_BUF_LENGTH - d->result_len;
+    }
+    for (int k = 0; k < zeros; k++) {
+        d->result[d->result_len++] = 0.0f;
+    }
     return 1;
 }
 

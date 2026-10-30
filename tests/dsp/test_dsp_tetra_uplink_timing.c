@@ -488,19 +488,23 @@ test_carrier_queue_overflow(void) {
 }
 
 /* The samples of signal the look-ahead holds: none before any, a whole look-ahead after one, counting down as zeros
-   push it out. */
+   push it out; with a tail behind the look-ahead (the Gardner's delay line), that many more after it came out, and
+   none before any signal whatever the tail. */
 static void
 test_held(void) {
     dsd_tetra_ul_timing_reset(&g_t, SPS);
     const size_t delay = (size_t)(DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * SPS);
+    const size_t tail = 12U;
     float out_r = 0.0f;
     float out_j = 0.0f;
     for (int i = 0; i < 10; i++) {
         dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
     }
     assert(dsd_tetra_ul_timing_held(&g_t) == 0U);
+    assert(dsd_tetra_ul_timing_held_through(&g_t, tail) == 0U);
     dsd_tetra_ul_timing_push(&g_t, 0.5f, -0.25f, &out_r, &out_j);
     assert(dsd_tetra_ul_timing_held(&g_t) == delay);
+    assert(dsd_tetra_ul_timing_held_through(&g_t, tail) == delay + tail);
     for (size_t i = 0; i + 1 < delay; i++) {
         dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
     }
@@ -508,7 +512,14 @@ test_held(void) {
     dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
     assert(fabsf(out_r - 0.5f) < 1e-9f && fabsf(out_j + 0.25f) < 1e-9f);
     assert(dsd_tetra_ul_timing_held(&g_t) == 0U);
+    assert(dsd_tetra_ul_timing_held_through(&g_t, tail) == tail);
+    for (size_t i = 0; i < tail; i++) {
+        assert(dsd_tetra_ul_timing_held_through(&g_t, tail) == tail - i);
+        dsd_tetra_ul_timing_push(&g_t, 0.0f, 0.0f, &out_r, &out_j);
+    }
+    assert(dsd_tetra_ul_timing_held_through(&g_t, tail) == 0U);
     assert(dsd_tetra_ul_timing_held(NULL) == 0U);
+    assert(dsd_tetra_ul_timing_held_through(NULL, tail) == 0U);
 }
 
 static void
