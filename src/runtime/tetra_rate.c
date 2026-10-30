@@ -15,15 +15,10 @@
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 
-int
-dsd_tetra_dsp_rate_runs(int rate_hz) {
-    return (rate_hz > 0 && rate_hz % DSD_TETRA_SYMBOL_RATE_HZ == 0) ? 1 : 0;
-}
-
-/* The fix for TETRA at a rate it cannot run, by what sets the rate: the RTL DSP bandwidth (in the spec form of the input
-   at hand), a SoapySDR or Airspy device, or an I/Q replay's capture. A replay re-plans its rate to TETRA's when TETRA
-   comes on (issue #701), so only a capture no plan resamples to a TETRA rate reaches its text. The brief form fits a
-   toast. */
+/* The fix for TETRA at a rate it cannot run, by what sets the rate: the RTL DSP bandwidth (in the spec form of the
+   input at hand), a SoapySDR or Airspy device, or an I/Q replay's capture. A replay re-plans its rate to TETRA's when
+   TETRA comes on (issue #701), so only a capture no plan resamples to a TETRA rate reaches its text. The brief form
+   fits a toast. */
 static const char*
 tetra_rate_fix(const dsd_opts* opts, int brief) {
     const char* dev = opts ? opts->audio_in_dev : NULL;
@@ -62,10 +57,14 @@ dsd_tetra_dsp_rate_advice(const dsd_opts* opts, int rate_hz, int brief, char* ou
     char rate_text[DSD_ANALOG_WIDTH_TEXT_MAX];
     (void)dsd_analog_width_format(rate_hz, rate_text, sizeof rate_text);
     if (brief) {
-        DSD_SNPRINTF(out, out_size, "DSP rate %s is no multiple of 18 kHz%s", rate_text, tetra_rate_fix(opts, 1));
+        /* Say which way the rate is wrong: a multiple of 18 kHz can still be out of range (18 or 162 kHz). */
+        DSD_SNPRINTF(out, out_size,
+                     rate_hz % DSD_TETRA_SYMBOL_RATE_HZ != 0 ? "DSP rate %s is no multiple of 18 kHz%s"
+                                                             : "DSP rate %s is outside 36 to 144 kHz%s",
+                     rate_text, tetra_rate_fix(opts, 1));
     } else {
-        DSD_SNPRINTF(out, out_size, "TETRA needs a DSP rate that is a multiple of 18 kHz, not %s%s", rate_text,
-                     tetra_rate_fix(opts, 0));
+        DSD_SNPRINTF(out, out_size, "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not %s%s",
+                     rate_text, tetra_rate_fix(opts, 0));
     }
     return 1;
 }

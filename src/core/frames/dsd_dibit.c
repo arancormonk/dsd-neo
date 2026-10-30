@@ -942,6 +942,15 @@ select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symb
         *used_cqpsk_slice = 0;
     }
 
+    /* TETRA's symbols, from the CQPSK demodulator or a capture of them, are arg(z) * 4/pi of the differential phasor:
+       the levels are +-1 and +-3 and the maximum-likelihood boundaries the quadrant edges, 0 and +-2. The adaptive
+       levels put the inner/outer edge near +-60 degrees. A TETRA sync type is never four-level negative here: the TETRA
+       decoder undoes the burst's polarity itself. Only on QPSK, as the hunt slices them
+       (dsd_tetra_quadrant_levels()). */
+    if (DSD_SYNC_IS_TETRA(state->synctype) && dsd_tetra_quadrant_levels(state)) {
+        return cqpsk_slice(symbol);
+    }
+
 #ifdef USE_RADIO
     if (want_cqpsk_p25_slice(opts, state, is_negative)) {
         int dibit = cqpsk_slice_aligned(symbol - state->center);
@@ -994,6 +1003,9 @@ digitize(const dsd_opts* opts, dsd_state* state, float symbol) {
     int stored_dibit = is_negative ? invert_dibit(dibit) : dibit;
 
     dsd_dibit_soft_t soft;
+    /* A TETRA dibit's sign comes from the fixed slicer and its magnitude from the adaptive ideals here; the TETRA
+       decoder never reads these LLRs (it takes cqpsk_soft_symbol_to_viterbi_cost() of the symbol), only a -c capture
+       records them. */
     compute_dibit_soft_metric(state, symbol, dibit, is_negative, used_cqpsk_slice, &soft);
     state->last_dibit = dibit;
     store_dibit_with_soft(state, stored_dibit, &soft);
@@ -1135,6 +1147,26 @@ min_sq_dist2(float x, float a, float b) {
     return (d2a < d2b) ? d2a : d2b;
 }
 
+/* Max-log MAP proxy of one bit of a four-level symbol against the ideal levels n3 < n1 < p1 < p3. */
+static inline uint16_t
+four_level_viterbi_cost(float symbol, float n3, float n1, float p1, float p3, float inv_2sigma2, int bit_position) {
+    bit_position &= 1;
+    float d0 = 0.0f;
+    float d1 = 0.0f;
+    if (bit_position == 0) {
+        /* MSB: positive cluster (0) vs negative cluster (1). */
+        d0 = min_sq_dist2(symbol, p1, p3);
+        d1 = min_sq_dist2(symbol, n1, n3);
+    } else {
+        /* LSB: inner levels (0) vs outer levels (1). */
+        d0 = min_sq_dist2(symbol, n1, p1);
+        d1 = min_sq_dist2(symbol, n3, p3);
+    }
+
+    float llr = (d1 - d0) * inv_2sigma2; /* log(P(bit=0)/P(bit=1)) proxy */
+    return llr_to_viterbi_cost(llr);
+}
+
 /**
  * \brief Convert a soft 4-level symbol to a Viterbi cost metric.
  *
@@ -1184,21 +1216,27 @@ soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_positi
     }
     float inv_2sigma2 = 0.5f / (sigma * sigma);
 
-    bit_position &= 1;
-    float d0 = 0.0f;
-    float d1 = 0.0f;
-    if (bit_position == 0) {
-        /* MSB: positive cluster (0) vs negative cluster (1). */
-        d0 = min_sq_dist2(symbol, p1, p3);
-        d1 = min_sq_dist2(symbol, n1, n3);
-    } else {
-        /* LSB: inner levels (0) vs outer levels (1). */
-        d0 = min_sq_dist2(symbol, n1, p1);
-        d1 = min_sq_dist2(symbol, n3, p3);
-    }
+    return four_level_viterbi_cost(symbol, n3, n1, p1, p3, inv_2sigma2, bit_position);
+}
 
-    float llr = (d1 - d0) * inv_2sigma2; /* log(P(bit=0)/P(bit=1)) proxy */
-    return llr_to_viterbi_cost(llr);
+int
+dsd_tetra_quadrant_levels(const dsd_state* state) {
+    return (state != NULL && state->rf_mod == 1) ? 1 : 0;
+}
+
+/**
+ * \brief Viterbi cost of a CQPSK symbol, arg(z) * 4/pi of the differential phasor, against its fixed levels.
+ *
+ * soft_symbol_to_viterbi_cost() evaluated at the decision regions [-4, -2, 0, 2, 4]: the ideal levels +-1 and +-3,
+ * the quadrant boundaries 0 and +-2, and sigma = 8/6. No adaptive level enters.
+ */
+uint16_t
+cqpsk_soft_symbol_to_viterbi_cost(float symbol, int bit_position) {
+    const float max_val = 4.0f;
+    const float min_val = -4.0f;
+    const float sigma = (max_val - min_val) / 6.0f;
+    const float inv_2sigma2 = 0.5f / (sigma * sigma);
+    return four_level_viterbi_cost(symbol, -3.0f, -1.0f, 1.0f, 3.0f, inv_2sigma2, bit_position);
 }
 
 /**

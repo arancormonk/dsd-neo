@@ -1630,6 +1630,23 @@ live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_op
     return rtl_stream_test_live_read(&req, got, waited_ms);
 }
 
+/* A block the signal search drops (it takes over the tuner) also forgets what a TETRA uplink look-ahead held: pushed
+ * out later, those symbols would reach the decoder after the gap, spliced to whatever follows it. A block the search
+ * does not drop leaves the look-ahead as it was. */
+static int
+test_signal_search_drop_forgets_uplink_lookahead(void) {
+    int failed = 0;
+    int dropped = -1;
+    int live = -1;
+    rtl_stream_test_signal_search_drop(1, &dropped, &live);
+    failed |= expect_int_eq("signal search drop: block dropped", dropped, 1);
+    failed |= expect_int_eq("signal search drop: uplink look-ahead forgotten", live, 0);
+    rtl_stream_test_signal_search_drop(0, &dropped, &live);
+    failed |= expect_int_eq("no signal search: block kept", dropped, 0);
+    failed |= expect_int_eq("no signal search: uplink look-ahead kept", live, 1);
+    return failed;
+}
+
 /* A live read on an input with no stream at all (a USB stall recovery runs: the read sees the device recovering) gives
  * way to a queued command with DSD_RTL_READ_YIELD, at once or as soon as one is queued while it waits, so commands
  * apply during the outage (B3). It never yields without a command: then it waits for the stream as it always has. A
@@ -2314,6 +2331,156 @@ test_soapy_gain_readback(void) {
     return failed;
 }
 
+/* The TETRA mixer bound at a DSP rate, 2*pi*8000/rate rad/sample. */
+static double
+tetra_pre_limit(int rate_hz) {
+    return 2.0 * 3.14159265358979323846 * 8000.0 / (double)rate_hz;
+}
+
+static double
+clamp_double(double x, double lo, double hi) {
+    return x > hi ? hi : (x < lo ? lo : x);
+}
+
+/* Every frequency decision a retune reset makes applies to the combined estimate pre_freq + freq, by the existing
+ * reset plan: a hop with no seed and a PPM correction or a rate jump of 4x clear both parts; a stream gap, a CQPSK
+ * reacquire, a retune that stays on its centre and rate (where a refused retune finalizes) and a moderate rate change
+ * keep the combined value (rescaled to the new rate) and split it again: up to the bound at the new rate in the
+ * mixer, the rest in the FLL. Off the TETRA chain the whole value goes to the FLL. Every reset but a CQPSK reacquire
+ * restarts the mixer phasor. */
+static int
+expect_fll_mixer_retune_policy(void) {
+    int failed = 0;
+    const uint32_t kCc = 770418750U;
+    const uint32_t kVc = 769668750U;
+    const double tol = 1e-6;
+
+    struct clear_case {
+        const char* label;
+        const char* reason;
+        uint32_t next_center;
+        int previous_rate;
+        int next_rate;
+    };
+
+    const clear_case clears[] = {
+        {"TETRA uncached hop clears both", "frequency", kVc, 72000, 72000},
+        {"TETRA PPM correction clears both", "ppm-correction", kCc, 72000, 72000},
+        {"TETRA fresh stream clears both", "fresh-stream", kCc, 72000, 72000},
+        {"TETRA rate x4 up clears both", "frequency", kCc, 36000, 144000},
+        {"TETRA rate x4 down clears both", "frequency", kCc, 144000, 36000},
+    };
+    for (const clear_case& c : clears) {
+        rtl_stream_test_fll_mixer_retune_result r = {};
+        const int rc = rtl_stream_test_fll_mixer_retune(c.reason, 1, 0.5f, 0.4f, kCc, c.next_center, c.previous_rate,
+                                                        c.next_rate, &r);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: helper rc", c.label);
+        failed |= expect_int_eq(label, rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s: plan resets", c.label);
+        failed |= expect_int_eq(label, r.reset_retained_fll, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s: mixer", c.label);
+        failed |= expect_double_near(label, r.pre_after, 0.0, 0.0);
+        DSD_SNPRINTF(label, sizeof label, "%s: FLL", c.label);
+        failed |= expect_double_near(label, r.freq_after, 0.0, 0.0);
+        DSD_SNPRINTF(label, sizeof label, "%s: phasor", c.label);
+        failed |=
+            expect_double_near(label, std::fabs(r.phasor_re_after - 1.0) + std::fabs(r.phasor_im_after), 0.0, 0.0);
+    }
+
+    struct keep_case {
+        const char* label;
+        const char* reason;
+        int tetra_chain;
+        int previous_rate;
+        int next_rate;
+        int phasor_kept;
+    };
+
+    const keep_case keeps[] = {
+        {"TETRA stream gap keeps the combined estimate", RTL_STREAM_GAP_REASON_USB_RECOVERY, 1, 72000, 72000, 0},
+        {"TETRA same-centre same-rate retune keeps the combined estimate", "frequency", 1, 72000, 72000, 0},
+        {"TETRA CQPSK reacquire keeps the combined estimate", "cqpsk-reacquire", 1, 72000, 72000, 1},
+        {"TETRA rate change rescales and splits at the new rate", "frequency", 1, 72000, 36000, 0},
+        {"TETRA rate change up rescales and splits", "frequency", 1, 72000, 144000, 0},
+        {"inactive stream gap puts the whole estimate in the FLL", RTL_STREAM_GAP_REASON_TCP_RECONNECT, 0, 72000, 72000,
+         0},
+    };
+    for (const keep_case& c : keeps) {
+        rtl_stream_test_fll_mixer_retune_result r = {};
+        const float pre = c.tetra_chain ? 0.5f : 0.3f;
+        const float freq = c.tetra_chain ? 0.4f : 0.2f;
+        const int rc = rtl_stream_test_fll_mixer_retune(c.reason, c.tetra_chain, pre, freq, kCc, kCc, c.previous_rate,
+                                                        c.next_rate, &r);
+        const double total = ((double)pre + (double)freq) * (double)c.previous_rate / (double)c.next_rate;
+        const double limit = c.tetra_chain ? tetra_pre_limit(c.next_rate) : 0.0;
+        const double want_pre = clamp_double(total, -limit, limit);
+        const double want_freq = clamp_double(total - want_pre, -1.0, 1.0);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: helper rc", c.label);
+        failed |= expect_int_eq(label, rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s: plan keeps", c.label);
+        failed |= expect_int_eq(label, r.reset_retained_fll, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s: total before", c.label);
+        failed |= expect_double_near(label, r.total_before, (double)pre + (double)freq, tol);
+        DSD_SNPRINTF(label, sizeof label, "%s: mixer", c.label);
+        failed |= expect_double_near(label, r.pre_after, want_pre, tol);
+        DSD_SNPRINTF(label, sizeof label, "%s: FLL", c.label);
+        failed |= expect_double_near(label, r.freq_after, want_freq, tol);
+        DSD_SNPRINTF(label, sizeof label, "%s: phasor", c.label);
+        if (c.phasor_kept) {
+            failed |= expect_double_near(label, std::fabs(r.phasor_re_after - 0.6) + std::fabs(r.phasor_im_after - 0.8),
+                                         0.0, tol);
+        } else {
+            failed |=
+                expect_double_near(label, std::fabs(r.phasor_re_after - 1.0) + std::fabs(r.phasor_im_after), 0.0, 0.0);
+        }
+    }
+
+    /* The seed cache holds the combined estimate: leave the control channel, hop to a voice channel with no seed (both
+     * parts clear), and come back at another DSP rate to the control channel's combined value, split at that rate. */
+    struct cache_case {
+        const char* label;
+        int tetra_chain;
+        float pre;
+        float freq;
+        int cc_rate;
+        int return_rate;
+    };
+
+    const cache_case caches[] = {
+        {"TETRA cached hop, same rate", 1, 0.5f, 0.4f, 72000, 72000},
+        {"TETRA cached hop, half rate", 1, 0.5f, 0.4f, 72000, 36000},
+        {"TETRA cached hop, double rate", 1, 0.5f, 0.4f, 72000, 144000},
+        {"inactive cached hop", 0, 0.0f, 0.3f, 48000, 48000},
+    };
+    for (const cache_case& c : caches) {
+        rtl_stream_test_fll_mixer_cache_result r = {};
+        const int rc =
+            rtl_stream_test_fll_mixer_cache_round_trip(c.tetra_chain, c.pre, c.freq, c.cc_rate, c.return_rate, &r);
+        const double total = ((double)c.pre + (double)c.freq) * (double)c.cc_rate / (double)c.return_rate;
+        const double limit = c.tetra_chain ? tetra_pre_limit(c.return_rate) : 0.0;
+        const double want_pre = clamp_double(total, -limit, limit);
+        const double want_freq = clamp_double(total - want_pre, -1.0, 1.0);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: helper rc", c.label);
+        failed |= expect_int_eq(label, rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s: uncached hop resets", c.label);
+        failed |= expect_int_eq(label, r.hop_reset, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s: uncached hop clears the mixer", c.label);
+        failed |= expect_double_near(label, r.hop_pre_after, 0.0, 0.0);
+        DSD_SNPRINTF(label, sizeof label, "%s: uncached hop clears the FLL", c.label);
+        failed |= expect_double_near(label, r.hop_freq_after, 0.0, 0.0);
+        DSD_SNPRINTF(label, sizeof label, "%s: return restores the seed", c.label);
+        failed |= expect_int_eq(label, r.return_restored, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s: restored mixer", c.label);
+        failed |= expect_double_near(label, r.return_pre_after, want_pre, tol);
+        DSD_SNPRINTF(label, sizeof label, "%s: restored FLL", c.label);
+        failed |= expect_double_near(label, r.return_freq_after, want_freq, tol);
+    }
+    return failed;
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(capture_error_log, NULL);
@@ -2605,6 +2772,7 @@ main(void) {
     failed |= expect_int_eq("near RF retune has no cold target seed", fll_retune.restored_cached_fll, 0);
     failed |= expect_int_eq("near RF retune keeps normal frequency reason", fll_retune.distant_frequency_reason, 0);
     failed |= expect_double_near("near RF retune clears prior-channel FLL", fll_retune.fll_freq_after, 0.0, 1e-7);
+    failed |= expect_double_near("near RF retune leaves the mixer off", fll_retune.fll_pre_after, 0.0, 0.0);
 
     fll_retune = {};
     rc = rtl_stream_test_fll_retune_policy(769668750U, 770418750U, 48000, 48000, &fll_retune);
@@ -2618,6 +2786,8 @@ main(void) {
     failed |= expect_int_eq("same RF rate change retains FLL", fll_retune.reset_retained_fll, 0);
     failed |= expect_double_near("same RF rate change scales FLL", fll_retune.fll_freq_after,
                                  fll_retune.fll_freq_before * 0.8, 1e-7);
+    failed |=
+        expect_double_near("same RF rate change off TETRA leaves the mixer off", fll_retune.fll_pre_after, 0.0, 0.0);
 
     rtl_stream_test_fll_retune_cache_result fll_cache = {};
     rc = rtl_stream_test_fll_retune_cache_round_trip(&fll_cache);
@@ -2630,6 +2800,8 @@ main(void) {
     failed |= expect_int_eq("return to VC restores VC-specific FLL", fll_cache.vc_restore_used_cache, 1);
     failed |= expect_double_near("return to VC uses prior VC FLL", fll_cache.vc_restore_fll_after,
                                  fll_cache.expected_vc_fll, 1e-7);
+
+    failed |= expect_fll_mixer_retune_policy();
 
     {
         int restored = -1;
@@ -3238,6 +3410,7 @@ main(void) {
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();
     failed |= test_live_read_without_stream();
+    failed |= test_signal_search_drop_forgets_uplink_lookahead();
 
     return failed ? 1 : 0;
 }

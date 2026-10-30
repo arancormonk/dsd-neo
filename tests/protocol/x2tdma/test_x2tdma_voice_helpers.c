@@ -416,6 +416,40 @@ test_superframe_mixes_only_synthesized_frames(void) {
     }
 }
 
+/* The frame sync accepted the superframe's first slot with the oldest of its 144 dibits read back not the stream's
+   (noCarrier() cleared dibit_buf fewer than 144 dibits before: dsd_state_sync_readback_invalid()). 60 reach its CACH,
+   which names the slot: nothing of that slot decodes, neither its three AMBE frames nor the call it would observe, and
+   the other five slots decode as before. 54 reach only the other slot's half the read skips: everything decodes. */
+static void
+test_voice_slot_not_read_back_whole_decodes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int dibits[144];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 2;
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    state.currentslot = 1;
+    dsd_state_note_sync_readback(&state, 60);
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 15);
+    assert(g_get_pos == g_get_len);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    reset_stubs();
+    prepare_voice_superframe(dibits);
+    state.dibit_buf_p = dibits + 144;
+    dsd_state_note_sync_readback(&state, 54);
+    processX2TDMAvoice(&opts, &state);
+    assert(g_mbe_calls == 18);
+}
+
 /* Issue #575: the carrier boundary moved the carrier count while the superframe was read (a replay read adopting a
    recorded retune). The call's encryption, assembled from the slots' signalling, is published only after the sixth slot,
    so signalling read whole before the move would label the carrier left's call after the boundary ended it; the slot
@@ -625,6 +659,7 @@ test_back_to_back_direct_mode_superframes_mark_two_slot_carrier(void) {
 
 int
 main(void) {
+    test_voice_slot_not_read_back_whole_decodes_nothing();
     test_slot_light_and_mute_helpers();
     test_signaling_extracts_lc_mi_and_encryption_fields();
     test_voice_frame_dispatch_gates_first_frame_and_mute();

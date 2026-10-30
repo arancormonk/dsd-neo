@@ -890,8 +890,8 @@ expect_tetra_advice(const char* label, const dsd_opts* opts, int rate_hz, int br
 static int
 test_tetra_rate_rules(void) {
     int rc = 0;
-    static const int runs[] = {18000, 54000, 72000, 144000};
-    static const int stalls[] = {0, -18000, 24000, 48000, 50000, 62500, 78125, 93750, 96000};
+    static const int runs[] = {36000, 54000, 72000, 144000};
+    static const int stalls[] = {0, -18000, 18000, 24000, 48000, 50000, 62500, 78125, 93750, 96000, 162000, 180000};
     for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
         if (!dsd_tetra_dsp_rate_runs(runs[i])) {
             DSD_FPRINTF(stderr, "TETRA should run at %d Hz\n", runs[i]);
@@ -908,37 +908,50 @@ test_tetra_rate_rules(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:420.1M:30:0:48");
-    rc |= expect_tetra_advice(
-        "rtl at 48 kHz", &opts, 48000, 0,
-        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 48 kHz: set the DSP bandwidth to 72 "
-        "kHz (-i rtl:dev:freq:gain:ppm:72)");
+    {
+        char range[DSD_TETRA_RATE_ADVICE_MAX];
+        if (dsd_tetra_dsp_rate_advice(&opts, 48000, 0, range, sizeof range) != 1
+            || !strstr(range, "a multiple of 18 kHz from 36 to 144 kHz")) {
+            DSD_FPRINTF(stderr, "the advice should name the 36 to 144 kHz range: \"%s\"\n", range);
+            rc = 1;
+        }
+    }
+    rc |= expect_tetra_advice("rtl at 48 kHz", &opts, 48000, 0,
+                              "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 48 kHz: "
+                              "set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)");
     rc |= expect_tetra_advice("rtl at 48 kHz, brief", &opts, 48000, 1,
                               "DSP rate 48 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
+    rc |= expect_tetra_advice("rtl at 162 kHz, brief", &opts, 162000, 1,
+                              "DSP rate 162 kHz is outside 36 to 144 kHz; set the DSP bandwidth to 72 kHz");
+    rc |= expect_tetra_advice("rtl at 18 kHz, brief", &opts, 18000, 1,
+                              "DSP rate 18 kHz is outside 36 to 144 kHz; set the DSP bandwidth to 72 kHz");
     rc |= expect_tetra_advice("rtl at 72 kHz", &opts, 72000, 0, "");
     rc |= expect_tetra_advice("rate not known yet", &opts, 0, 0, "");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
-    rc |= expect_tetra_advice(
-        "rtl_tcp at 24 kHz", &opts, 24000, 0,
-        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 24 kHz: set the DSP bandwidth to 72 "
-        "kHz (-i rtltcp:host:port:freq:gain:ppm:72)");
+    rc |= expect_tetra_advice("rtl_tcp at 24 kHz", &opts, 24000, 0,
+                              "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 24 kHz: "
+                              "set the DSP bandwidth to 72 kHz (-i rtltcp:host:port:freq:gain:ppm:72)");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=sdrplay");
-    rc |= expect_tetra_advice(
-        "SoapySDR at 62.5 kHz", &opts, 62500, 0,
-        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 62.5 kHz: set the DSP bandwidth to "
-        "72 kHz (-i soapy:args:freq:gain:ppm:72), which needs a device that delivers 1.152 MS/s");
+    rc |= expect_tetra_advice("SoapySDR at 62.5 kHz", &opts, 62500, 0,
+                              "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 62.5 kHz: "
+                              "set the DSP bandwidth to 72 kHz (-i soapy:args:freq:gain:ppm:72), which needs a device "
+                              "that delivers 1.152 MS/s");
     rc |= expect_tetra_advice("SoapySDR, brief", &opts, 62500, 1,
                               "DSP rate 62.5 kHz is no multiple of 18 kHz; set the DSP bandwidth to 72 kHz");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:serial=0123456789abcdef");
     rc |= expect_tetra_advice(
         "Airspy at 78.125 kHz", &opts, 78125, 0,
-        "TETRA needs a DSP rate that is a multiple of 18 kHz, not 78.125 kHz: no Airspy sample rate "
+        "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 78.125 kHz: no Airspy sample rate "
         "halves to one; use an RTL-SDR at a 72 kHz DSP bandwidth (-i rtl:dev:freq:gain:ppm:72)");
     rc |= expect_tetra_advice("Airspy, brief", &opts, 93750, 1,
                               "DSP rate 93.75 kHz is no multiple of 18 kHz, and no Airspy rate is one");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:/tmp/tetra.iq.json");
-    rc |= expect_tetra_advice("replay at 50 kHz", &opts, 50000, 0,
-                              "TETRA needs a DSP rate that is a multiple of 18 kHz, not 50 kHz: this replay's capture "
-                              "cannot be resampled to a TETRA rate");
+    rc |= expect_tetra_advice(
+        "replay at 50 kHz", &opts, 50000, 0,
+        "TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz, not 50 kHz: this replay's capture "
+        "cannot be resampled to a TETRA rate");
+    rc |= expect_tetra_advice("replay at 162 kHz, brief", &opts, 162000, 1,
+                              "DSP rate 162 kHz is outside 36 to 144 kHz, and this replay cannot be resampled to one");
     rc |= expect_tetra_advice("replay, brief", &opts, 50000, 1,
                               "DSP rate 50 kHz is no multiple of 18 kHz, and this replay cannot be resampled to one");
     rc |= expect_tetra_advice("no options read as an RTL-SDR", NULL, 48000, 1,

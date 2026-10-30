@@ -48,6 +48,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -355,6 +356,8 @@ typedef struct {
     float lmax;
     float lmin;
     unsigned int ready_windows;
+    /* Dibits of the history the call read itself (frame_sync_runtime_ctx::own_count). */
+    int own_symbols;
     char* modulation;
     char* synctest;
     char* synctest8;
@@ -390,6 +393,15 @@ static int
 frame_sync_match_window_ready(const frame_sync_match_ctx* ctx, int length) {
     const unsigned int flag = frame_sync_window_flag(length);
     return ctx && flag != 0 && (ctx->ready_windows & flag) != 0;
+}
+
+/* Whether the window of @p length was read whole by this call, none of it carried from the last
+ * (dsd_frame_sync_history_carry). A matcher whose decoder reads its burst back from the rolling dibit buffers, which
+ * the no-carrier reset after a no-sync exit clears, needs that: it would decode the carried part as the cleared
+ * buffer's zeros. */
+static int
+frame_sync_match_window_own(const frame_sync_match_ctx* ctx, int length) {
+    return frame_sync_match_window_ready(ctx, length) && ctx->own_symbols >= length;
 }
 
 static int
@@ -525,7 +537,8 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->rtl_fsk_sps_accum = 0;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
-    /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it. */
+    /* Nor do the sync join histories: an NXDN96 lock's flywheel or an FSW, or an M17 word, seen before it, and the
+       frame sync's history carried from its last no-sync exit. */
     dsd_state_forget_sync_join_histories(state);
     /* Nothing decoded since says the carrier is two-slot TDMA: a decoded frame of the next acquisition does. */
     state->tdma_carrier = 0U;
@@ -850,11 +863,16 @@ static int
 frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* label, int marks_first_frame) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    /* A voice burst's decoder reads 144 dibits back from dibit_buf_p, a data burst's 90. */
+    /* A voice burst's decoder reads 144 dibits back from dibit_buf_p, a data burst's 90. noCarrier() clears the buffer
+       (DSD_ROLLING_DIBIT_FLOOR), and what of them was not written since is the clear's zeros: the decoder decodes and
+       publishes nothing from it (dsd_state_note_sync_readback()). */
     const int voice = synctype == DSD_SYNC_X2TDMA_VOICE_POS || synctype == DSD_SYNC_X2TDMA_VOICE_NEG;
-    if (frame_sync_burst_settling(ctx, voice ? 144U : 90U)) {
+    const uint64_t lookback = voice ? 144U : 90U;
+    if (frame_sync_burst_settling(ctx, lookback)) {
         return DSD_SYNC_NONE;
     }
+    const long written = dsd_state_rolling_dibits(state->dibit_buf, state->dibit_buf_p);
+    dsd_state_note_sync_readback(state, written < (long)lookback ? (long)lookback - written : 0);
     frame_sync_set_basic_lock(ctx);
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
     if (opts->errorbars == 1) {
@@ -871,8 +889,9 @@ frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* la
 static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
+    /* The burst is decoded back from dibit_buf_p (frame_sync_accept_x2tdma()). */
     if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
-        || !frame_sync_match_window_ready(ctx, 24)) {
+        || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1639,6 +1658,54 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     return frame_sync_try_m17_join(ctx, sync_type, word, is_inverted);
 }
 
+/* The soft metrics of the dibits dmr_resample_cach() just re-read below the payload buffer's floor
+ * (frame_sync_dmr_resample_on_sync()). */
+static void
+frame_sync_dmr_refresh_cleared_soft(dsd_state* state, int readback) {
+    if (state->dmr_soft_buf == NULL || state->dmr_soft_p == NULL
+        || state->dmr_soft_p - state->dmr_soft_buf != state->dmr_payload_p - state->dmr_payload_buf
+        || state->dmr_payload_p - state->dmr_payload_buf < readback) {
+        return;
+    }
+    const int* dibits = state->dmr_payload_p - readback;
+    dsd_dibit_soft_t* soft = state->dmr_soft_p - readback;
+    const int* clear_floor = state->dmr_payload_buf + DSD_ROLLING_DIBIT_FLOOR;
+    for (int i = 0; i < DMR_RESAMPLE_SYMBOLS && dibits + i < clear_floor; i++) {
+        const float symbol = dsd_symbol_history_get_back(state, readback - 1 - i);
+        const int d = dibits[i] & 3;
+        const uint8_t rel = dmr_compute_reliability(state, symbol);
+        soft[i].reliability = rel;
+        soft[i].llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);
+        soft[i].llr[1] = (int16_t)((d & 1) ? rel : -(int)rel);
+    }
+}
+
+/* dmr_resample_on_sync(), and what of the 90 dibits the burst is decoded back from dmr_payload_p (its CACH, the first
+ * half of its payload, its slot type's first half or EMB, and the sync) is the stream's, for its decoder
+ * (dsd_state_note_sync_readback()). noCarrier() clears the buffer (DSD_ROLLING_DIBIT_FLOOR), and the clear's zeros pass
+ * Golay and Hamming as codewords. The dibits written since are the stream's; so are the 66 before the sync that
+ * dmr_resample_cach() re-reads from the soft symbol history, which the clear leaves, when it holds them. Their soft
+ * metrics below the floor are the clear's zeros or stale ones, so they get the re-read symbols' too, as
+ * frame_sync_store_dmr_payload_symbol() gives a dibit it writes; metrics written since stay as they were. What is
+ * neither (a cold start, an acquisition reset) stays as it is, and its decoder decodes nothing from it. */
+static void
+frame_sync_dmr_resample_on_sync(dsd_opts* opts, dsd_state* state) {
+    enum { READBACK = DMR_SYNC_SYMBOLS + DMR_RESAMPLE_SYMBOLS };
+
+    const long written = dsd_state_rolling_dibits(state->dmr_payload_buf, state->dmr_payload_p);
+    const int resampled = dmr_resample_on_sync(opts, state) == 0 && state->symbol_history != NULL
+                          && state->symbol_history_count >= READBACK && state->dmr_payload_buf != NULL
+                          && state->dmr_payload_p != NULL;
+    long invalid = 0;
+    if (written < READBACK) {
+        invalid = (resampled && written >= DMR_SYNC_SYMBOLS) ? 0 : READBACK - written;
+    }
+    dsd_state_note_sync_readback(state, invalid);
+    if (resampled) {
+        frame_sync_dmr_refresh_cleared_soft(state, READBACK);
+    }
+}
+
 static inline void
 frame_sync_prepare_dmr_sync(frame_sync_match_ctx* ctx) {
     ctx->state->dmr_dm_sync_slot = 0U;
@@ -1659,12 +1726,12 @@ frame_sync_try_dmr_ms_data(frame_sync_match_ctx* ctx) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR MS");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_DATA;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_VOICE;
 }
 
@@ -1680,12 +1747,12 @@ frame_sync_try_dmr_ms_voice(frame_sync_match_ctx* ctx) {
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR MS");
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_VOICE;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_DATA;
 }
 
@@ -1706,7 +1773,7 @@ frame_sync_try_dmr_bs_data(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_BS_DATA_POS;
     }
 
@@ -1715,7 +1782,7 @@ frame_sync_try_dmr_bs_data(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_NEG;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_BS_VOICE_NEG;
 }
 
@@ -1734,7 +1801,7 @@ frame_sync_try_dmr_dm_ts1_data(frame_sync_match_ctx* ctx) {
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_DATA;
     }
 
@@ -1743,7 +1810,7 @@ frame_sync_try_dmr_dm_ts1_data(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_VOICE;
 }
 
@@ -1762,7 +1829,7 @@ frame_sync_try_dmr_dm_ts2_data(frame_sync_match_ctx* ctx) {
     if (opts->inverted_dmr == 0) {
         state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_DATA;
     }
 
@@ -1771,7 +1838,7 @@ frame_sync_try_dmr_dm_ts2_data(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_VOICE;
 }
 
@@ -1792,7 +1859,7 @@ frame_sync_try_dmr_bs_voice(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_BS_VOICE_POS;
     }
 
@@ -1801,7 +1868,7 @@ frame_sync_try_dmr_bs_voice(frame_sync_match_ctx* ctx) {
     }
     state->lastsynctype = DSD_SYNC_DMR_BS_DATA_NEG;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_BS_DATA_NEG;
 }
 
@@ -1823,12 +1890,12 @@ frame_sync_try_dmr_dm_ts1_voice(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_VOICE;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_DATA;
 }
 
@@ -1850,13 +1917,13 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
         }
         state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
         dsd_mark_cc_sync(state);
-        dmr_resample_on_sync(opts, state);
+        frame_sync_dmr_resample_on_sync(opts, state);
         return DSD_SYNC_DMR_MS_VOICE;
     }
 
     state->lastsynctype = DSD_SYNC_DMR_MS_DATA;
     dsd_mark_cc_sync(state);
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_MS_DATA;
 }
 
@@ -1875,14 +1942,15 @@ frame_sync_try_dmr_rc_data(frame_sync_match_ctx* ctx) {
     frame_sync_prepare_dmr_sync(ctx);
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR RC");
     state->lastsynctype = DSD_SYNC_DMR_RC_DATA;
-    dmr_resample_on_sync(opts, state);
+    frame_sync_dmr_resample_on_sync(opts, state);
     return DSD_SYNC_DMR_RC_DATA;
 }
 
 static int
 frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
+    /* The burst is decoded back from dmr_payload_p (90 dibits, the sync's included). */
     if (ctx->opts->frame_dmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        || !frame_sync_match_window_ready(ctx, 24)) {
+        || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -2782,9 +2850,21 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* The level the hunt slices CQPSK symbols about. TETRA's (the 18000/4 profile, a candidate only when TETRA is the
+ * decode mode) are arg(z) * 4/pi of the differential phasor, cut at the quadrant edges 0 and +-2 as digitize() cuts
+ * their payload, both on QPSK only (rf_mod 1, the test dsd_tetra_quadrant_levels() makes for digitize()): the
+ * adaptive centre, the midpoint of the averaged extremes, does not enter. P25's CQPSK hunt keeps it. */
+static float
+frame_sync_cqpsk_slice_center(const dsd_state* state) {
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && state->rf_mod == 1) {
+        return 0.0f;
+    }
+    return state->center;
+}
+
 static int
 frame_sync_slice_cqpsk_dibit(const dsd_state* state, float symbol) {
-    float sym = symbol - state->center;
+    float sym = symbol - frame_sync_cqpsk_slice_center(state);
     int d = 0;
     if (sym >= 2.0f) {
         d = 1;
@@ -2887,7 +2967,7 @@ static void
 frame_sync_store_dmr_payload_symbol(dsd_state* state, float symbol, int cqpsk_4level) {
     int d = 0;
     if (cqpsk_4level) {
-        float sym = symbol - state->center;
+        float sym = symbol - frame_sync_cqpsk_slice_center(state);
         if (sym >= 2.0f) {
             d = 1;
         } else if (sym >= 0.0f) {
@@ -2928,6 +3008,13 @@ frame_sync_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float sym
     return dibit;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float symbol) {
+    return frame_sync_process_dibit_and_payload(opts, state, symbol);
+}
+#endif
+
 typedef struct frame_sync_runtime_ctx {
     int t;
     int dibit;
@@ -2938,6 +3025,24 @@ typedef struct frame_sync_runtime_ctx {
     int t_max;
     int history_head;
     int history_count;
+    /* Dibits of the history this call read itself, up to the capacity: the rest were carried from the last call. */
+    int own_count;
+    /* 1 for a test's sign-only window, which has no levels to read (dsd_frame_sync_test_try_protocol_matches()). */
+    int sign_only;
+    /* The SPS hunt profile and modulation the history was read under (the window's build): an exit that steps either
+       leaves a history the next call cannot use (frame_sync_history_keep()). */
+    int history_sps_idx;
+    int history_rf_mod;
+    /* dsd_frame_sync_history_carry::drops and the trunk tuning generation when the history began: a drop or a completed
+       tune since then (a release's tune in the no-sync hooks, say) leaves a history that is not kept. */
+    uint32_t history_drops;
+    uint64_t history_tune_gen;
+    /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
+       read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
+    int resumed;
+    uint64_t resume_clock;
+    uint32_t resume_epoch;
+    uint32_t resume_carrier_seq;
     /* The 79- and 119-symbol TETRA burst windows are only built when TETRA is enabled. */
     int tetra_windows;
     unsigned int ready_windows;
@@ -2956,13 +3061,16 @@ typedef struct frame_sync_runtime_ctx {
     char synctest16[17];
     char modulation[8];
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
-    float lbuf[48];
+    /* The level window, t_max levels; a carried history brings its levels (dsd_frame_sync_history_carry::levels). */
+    float lbuf[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
 } frame_sync_runtime_ctx;
 
 /* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
  * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). The levels are the
- * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels). With fewer
- * than ten to read -- a sign-only test window -- there is nothing to count, and the sign match stands. */
+ * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels), and which a
+ * carried history brings its levels into (frame_sync_history_resume()). A window with fewer than ten levels to read is
+ * not read clear: all 20 bits count as errors. Only a test's sign-only window, which has no levels at all, keeps the
+ * sign match. */
 /* A level read on four levels: +3, +1, -1 or -3 against the window's centre and its two mid thresholds. */
 static inline int
 frame_sync_four_level_slice(float x, float center, float umid, float lmid) {
@@ -2979,7 +3087,13 @@ static int
 frame_sync_nxdn96_fsw_bit_errors(const frame_sync_match_ctx* ctx, int synctype) {
     static const int fsw_levels[10] = {-3, 1, -3, 3, -3, -3, 3, 3, -1, 3};
     const frame_sync_runtime_ctx* rt = ctx->history;
-    if (!rt || rt->level_count < 10 || rt->t_max < 10 || ctx->lmax - ctx->lmin < 1e-6f) {
+    if (rt && rt->sign_only) {
+        return 0;
+    }
+    if (!rt || rt->level_count < 10 || rt->t_max < 10) {
+        return 20;
+    }
+    if (ctx->lmax - ctx->lmin < 1e-6f) {
         return 0;
     }
     const float center = (ctx->lmax + ctx->lmin) * 0.5f;
@@ -3007,6 +3121,10 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->lmin = state->min;
     rt->lmax = state->max;
     rt->tetra_windows = opts->frame_tetra == 1;
+    rt->history_sps_idx = state->sps_hunt_idx;
+    rt->history_rf_mod = state->rf_mod;
+    rt->history_drops = state->frame_sync_carry.drops;
+    rt->history_tune_gen = dsd_trunk_tuning_generation();
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -3041,12 +3159,142 @@ frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* 
     return 1;
 }
 
+_Static_assert(DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS == FRAME_SYNC_HISTORY_CAPACITY,
+               "the carried history is the whole history ring");
+
+/* The level window's levels, oldest first, into @p out (DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS); returns how many. */
+static int
+frame_sync_levels_unwrap(const frame_sync_runtime_ctx* rt, float* out) {
+    int n = rt->level_count;
+    if (rt->t_max < 1 || rt->t_max > DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS || n < 0) {
+        return 0;
+    }
+    if (n > rt->t_max) {
+        n = rt->t_max;
+    }
+    for (int i = 0; i < n; i++) {
+        out[i] = rt->lbuf[(rt->lidx - n + i + rt->t_max) % rt->t_max];
+    }
+    return n;
+}
+
+/* The last of @p count levels (oldest first) into the level window, as many as it holds: the next call's window can be
+ * another size than the last's (frame_sync_select_t_max()). */
+static void
+frame_sync_levels_rewrap(frame_sync_runtime_ctx* rt, const float* levels, int count) {
+    if (rt->t_max < 1) {
+        rt->level_count = 0;
+        rt->lidx = 0;
+        return;
+    }
+    int n = count < rt->t_max ? count : rt->t_max;
+    if (n < 0) {
+        n = 0;
+    }
+    for (int i = 0; i < n; i++) {
+        rt->lbuf[i] = levels[count - n + i];
+    }
+    rt->level_count = n;
+    rt->lidx = n % rt->t_max;
+}
+
+/* A no-sync exit: keep the history for the next call, with where the stream is (dsd_frame_sync_history_carry). Not when
+ * the history was dropped or a tune completed since it began: the exit's own hooks run first, and a P25 release there
+ * returns to the control channel, so the history is the carrier left's. */
+static void
+frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
+    dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
+    if (carry->drops != rt->history_drops || dsd_trunk_tuning_generation() != rt->history_tune_gen) {
+        carry->valid = 0;
+        return;
+    }
+    DSD_MEMCPY(carry->dibits, rt->symbol_history, sizeof(carry->dibits));
+    carry->head = rt->history_head;
+    carry->count = rt->history_count;
+    /* The levels the window was read on go with it: a matcher that reads them (the NXDN96 FSW) reads them whole. */
+    carry->level_count = frame_sync_levels_unwrap(rt, carry->levels);
+    carry->symbol_clock = state->symbol_clock;
+    carry->symbol_clock_epoch = state->symbol_clock_epoch;
+    carry->symbol_clock_input = state->symbol_clock_input;
+    carry->carrier_seq = state->carrier_seq;
+    /* The profile the history was read under: when the exit stepped the hunt or the modulation, the next call's
+       profile differs and frame_sync_history_resume() drops it. */
+    carry->sps_hunt_idx = rt->history_sps_idx;
+    carry->rf_mod = rt->history_rf_mod;
+    carry->tune_generation = rt->history_tune_gen;
+    carry->valid = 1;
+}
+
+/* Any other exit: the next call starts with no history. */
+static void
+frame_sync_history_drop(dsd_state* state) {
+    state->frame_sync_carry.valid = 0;
+}
+
+/* Whether the carried ring's head and counts lie within its buffers. */
+static int
+frame_sync_history_carry_in_range(const dsd_frame_sync_history_carry* carry) {
+    return carry->head >= 0 && carry->head < FRAME_SYNC_HISTORY_CAPACITY && carry->count >= 0
+           && carry->count <= FRAME_SYNC_HISTORY_CAPACITY && carry->level_count >= 0
+           && carry->level_count <= DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS;
+}
+
+/* A call's start: take up the history the last call kept when the stream went on from there unbroken, and drop it
+ * either way, so it is taken up once. An off-thread tune noted after this call applied the pending ones
+ * (dsd_frame_sync_apply_off_thread_tunes()) and not applied yet counts as a retune too. */
+static void
+frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
+    dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
+    const int unbroken = carry->valid && carry->symbol_clock == state->symbol_clock
+                         && carry->symbol_clock_epoch == state->symbol_clock_epoch
+                         && carry->symbol_clock_input == state->symbol_clock_input
+                         && carry->carrier_seq == state->carrier_seq && carry->sps_hunt_idx == state->sps_hunt_idx
+                         && carry->rf_mod == state->rf_mod && carry->tune_generation == rt->history_tune_gen
+                         && !dsd_frame_sync_off_thread_tune_pending() && frame_sync_history_carry_in_range(carry);
+    carry->valid = 0;
+    if (!unbroken) {
+        return;
+    }
+    DSD_MEMCPY(rt->symbol_history, carry->dibits, sizeof(rt->symbol_history));
+    rt->history_head = carry->head;
+    rt->history_count = carry->count;
+    frame_sync_levels_rewrap(rt, carry->levels, carry->level_count);
+    rt->resumed = 1;
+    rt->resume_clock = state->symbol_clock;
+    rt->resume_epoch = state->symbol_clock_epoch;
+    rt->resume_carrier_seq = state->carrier_seq;
+}
+
+/* The first symbol a call that took up a history reads: it must follow the history on the same stream (one symbol on
+ * the clock, the same epoch and carrier count, no tune completed or noted off the decoder thread, nothing dropped), or
+ * the history goes and the call starts from this symbol. */
+static void
+frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
+    if (!rt->resumed) {
+        return;
+    }
+    rt->resumed = 0;
+    const int unbroken =
+        state->symbol_clock == rt->resume_clock + 1U && state->symbol_clock_epoch == rt->resume_epoch
+        && state->carrier_seq == rt->resume_carrier_seq && state->frame_sync_carry.drops == rt->history_drops
+        && dsd_trunk_tuning_generation() == rt->history_tune_gen && !dsd_frame_sync_off_thread_tune_pending();
+    if (!unbroken) {
+        rt->history_head = 0;
+        rt->history_count = 0;
+        rt->lidx = 0;
+        rt->level_count = 0;
+    }
+}
+
 static void
 frame_sync_history_push(frame_sync_runtime_ctx* rt, char symbol) {
     rt->symbol_history[rt->history_head] = symbol;
     rt->history_head = (rt->history_head + 1) % FRAME_SYNC_HISTORY_CAPACITY;
     if (rt->history_count < FRAME_SYNC_HISTORY_CAPACITY) {
         rt->history_count++;
+    }
+    if (rt->own_count < FRAME_SYNC_HISTORY_CAPACITY) {
+        rt->own_count++;
     }
 }
 
@@ -3465,6 +3713,7 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .lmax = rt->lmax,
         .lmin = rt->lmin,
         .ready_windows = rt->ready_windows,
+        .own_symbols = rt->own_count,
         .modulation = rt->modulation,
         .synctest = rt->synctest,
         .synctest8 = rt->synctest8,
@@ -3506,6 +3755,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
     }
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    rt.sign_only = 1;
     for (int i = 0; i < symbol_count; i++) {
         frame_sync_history_push(&rt, symbols[i]);
     }
@@ -3519,6 +3769,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .lmax = state->max,
         .lmin = state->min,
         .ready_windows = rt.ready_windows,
+        .own_symbols = rt.own_count,
         .modulation = rt.modulation,
         .synctest = rt.synctest,
         .synctest8 = rt.synctest8,
@@ -4691,6 +4942,45 @@ frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state)
     }
 }
 
+/* After a symbol's window advanced: whether the call ends on a no-sync exit (the no-sync timeout or the hunt budget).
+ * A CQPSK mod-compare trial whose pass ended, or a hunt-chain handback, rebuilds the window in place instead and the
+ * call goes on. */
+static int
+frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now) {
+    if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt->synctest_pos)) {
+        frame_sync_runtime_init(rt, opts, state);
+        return 0;
+    }
+    const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, rt, now);
+    if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
+        frame_sync_runtime_init(rt, opts, state);
+        return 0;
+    }
+    if (timeout_step != 0) {
+        return 1;
+    }
+
+    /* The timeout above is the usual trigger, but it needs a whole matchless pass
+     * inside one call. Syncs arriving more often than that -- the permissive 4800/4
+     * matchers do, on signals belonging to another profile entirely -- would otherwise
+     * keep the hunt from ever running. The budget spans calls, so they cannot.
+     *
+     * One pass is the smallest dwell frame_sync_sps_hunt_dwell_symbols() can return, so
+     * the compare below is a necessary condition for the step and keeps the policy call
+     * out of the per-symbol path.
+     *
+     * This is a no-sync exit like the timeout above and owes the P25 SM the same
+     * accounting, in the same order (frame_sync_hunt_budget_exit()). A CQPSK trial's
+     * handback is not an exit: the window is rebuilt in place, as a new call would build it,
+     * and the hunt goes on in the same dwell. */
+    const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
+    if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
+        frame_sync_runtime_init(rt, opts, state);
+        return 0;
+    }
+    return budget_step != 0;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -4708,6 +4998,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
+    frame_sync_history_resume(&rt, state);
 
     frame_sync_publish_ui_throttled(opts, state);
     dsd_event_sync_slot(opts, state, 0);
@@ -4719,6 +5011,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             frame_sync_publish_ui_throttled(opts, state);
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+                frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;
             }
@@ -4729,9 +5022,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* The read left a silent input's wait for a queued command, the input ended (issue #634) or the read
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
+            frame_sync_history_drop(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
+        frame_sync_history_confirm(&rt, state);
         frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, &rt.level_count, rt.t_max);
         frame_sync_maybe_auto_switch_modulation(opts, state, rt.t_max, &rt.lastt);
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);
@@ -4741,6 +5036,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
                 g_unsynced_dmr_dump_symbols = 0;
+                frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return sync_type;
             }
@@ -4749,44 +5045,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
+            frame_sync_history_drop(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
 
         frame_sync_advance_sync_window(opts, state, &rt);
-        if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt.synctest_pos)) {
-            frame_sync_runtime_init(&rt, opts, state);
-            continue;
-        }
-        const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, &rt, now);
-        if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-            frame_sync_runtime_init(&rt, opts, state);
-            continue;
-        }
-        if (timeout_step != 0) {
-            frame_sync_sps_hunt_mark_return(state);
-            return -1;
-        }
-
-        /* The timeout above is the usual trigger, but it needs a whole matchless pass
-         * inside one call. Syncs arriving more often than that -- the permissive 4800/4
-         * matchers do, on signals belonging to another profile entirely -- would otherwise
-         * keep the hunt from ever running. The budget spans calls, so they cannot.
-         *
-         * One pass is the smallest dwell frame_sync_sps_hunt_dwell_symbols() can return, so
-         * the compare below is a necessary condition for the step and keeps the policy call
-         * out of the per-symbol path.
-         *
-         * This is a no-sync exit like the timeout above and owes the P25 SM the same
-         * accounting, in the same order (frame_sync_hunt_budget_exit()). A CQPSK trial's
-         * handback is not an exit: the window is rebuilt in place, as a new call would build it,
-         * and the hunt goes on in the same dwell. */
-        const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
-        if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-            frame_sync_runtime_init(&rt, opts, state);
-            continue;
-        }
-        if (budget_step != 0) {
+        if (frame_sync_pass_end_step(opts, state, &rt, now)) {
+            /* A matchless pass ends the call, not the stream: the next call goes on from this history. */
+            frame_sync_history_keep(&rt, state);
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }

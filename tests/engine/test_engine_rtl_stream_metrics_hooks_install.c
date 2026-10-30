@@ -79,7 +79,7 @@ rtl_stream_get_output_kind(void) {
 }
 
 int
-rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+rtl_stream_get_running_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
     ++g_symbol_profile_calls;
     if (out_symbol_rate_hz) {
         *out_symbol_rate_hz = 6000;

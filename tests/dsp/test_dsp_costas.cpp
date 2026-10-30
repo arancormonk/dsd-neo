@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -804,6 +805,136 @@ test_p25p2_tracking_gain_honors_runtime_override_after_lock(void) {
 }
 
 /*
+ * Test: the TETRA chain's Gardner keeps its own gain, 0.07, when none was set, and a set one when one was; it is not
+ * lowered once locked (a block's decision).
+ */
+static int
+expect_tetra_chain_gain(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
+    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_neo_config_init();
+    const int sps = 4;
+    const int pairs = 64 * sps;
+    std::vector<float> buf((size_t)pairs * 2U);
+    for (int k = 0; k < pairs; k++) {
+        buf[(size_t)k * 2U] = 0.6f;
+        buf[((size_t)k * 2U) + 1U] = 0.2f;
+    }
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->tetra_chain = 1;
+    s->lowpassed = buf.data();
+    s->lp_len = pairs * 2;
+    s->rate_out = 72000;
+    s->ted_sps = sps;
+    s->ted_gain = ted_gain;
+    s->ted_gain_is_set = ted_gain_is_set;
+    s->ted_state.lock_count = 240;
+    s->ted_state.lock_accum = 24.0f; /* locked: off the chain the gain would drop to 0.018 */
+    op25_gardner_cc(s);
+    const float got = s->ted_effective_gain;
+    dsd_neo_aligned_free(s);
+    if (fabsf(got - expected_gain) > 0.0001f) {
+        DSD_FPRINTF(stderr, "%s: got effective TED gain %.6f want %.6f\n", label, got, expected_gain);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_tetra_chain_gardner_gain(void) {
+    int rc = 0;
+    rc |= expect_tetra_chain_gain("TETRA chain default gain", 0.025f, 0, 0.07f);
+    rc |= expect_tetra_chain_gain("TETRA chain set gain", 0.031f, 1, 0.031f);
+    return rc;
+}
+
+/*
+ * Test: on the TETRA chain a Costas phase driven past its +-pi/2 rail steps a quarter turn back, to the same lock of the
+ * quarter-turn detector, and the loop settles there; it is not pinned at the rail with its frequency wound up. The
+ * symbols carry a differential rotation that ramps from 0 to 100 degrees, as a fast carrier pull-in sweeps it, and then
+ * holds. Off the chain the clamp is unchanged.
+ */
+static int
+costas_after_ramp(int tetra_chain, float* phase, float* freq, double* rms_err_deg) {
+    const int ramp = 3000;
+    const int hold = 6000;
+    const int total = ramp + hold;
+    std::vector<float> buf((size_t)total * 2U);
+    uint32_t lcg = 0x1234u;
+    for (int n = 0; n < total; n++) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const double quad = (double)((lcg >> 16) & 3u);
+        const double rot = (100.0 * M_PI / 180.0) * (n < ramp ? (double)n / (double)ramp : 1.0);
+        const double a = M_PI / 4.0 + quad * M_PI / 2.0 + rot;
+        buf[(size_t)n * 2U] = (float)(0.85 * cos(a));
+        buf[((size_t)n * 2U) + 1U] = (float)(0.85 * sin(a));
+    }
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "state alloc failed\n");
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->tetra_chain = tetra_chain;
+    const int block = 500;
+    double err2 = 0.0;
+    int counted = 0;
+    for (int b = 0; b < total; b += block) {
+        s->lowpassed = buf.data() + (size_t)b * 2U;
+        s->lp_len = block * 2;
+        op25_costas_loop_cc(s);
+        for (int k = 0; k < block && b >= total - 2000; k++) {
+            /* The output's distance from the nearest diagonal, over the last 2000 symbols. */
+            const float* o = s->lowpassed + (size_t)k * 2U;
+            const double ang = atan2((double)o[1], (double)o[0]);
+            double e = fmod(ang - M_PI / 4.0, M_PI / 2.0);
+            e = e > M_PI / 4.0 ? e - M_PI / 2.0 : (e < -M_PI / 4.0 ? e + M_PI / 2.0 : e);
+            err2 += e * e;
+            counted++;
+        }
+    }
+    *phase = s->costas_state.phase;
+    *freq = s->costas_state.freq;
+    *rms_err_deg = counted > 0 ? sqrt(err2 / counted) * 180.0 / M_PI : 1e9;
+    dsd_neo_aligned_free(s);
+    return 0;
+}
+
+static int
+test_tetra_chain_costas_steps_off_rail(void) {
+    float phase = 0.0f;
+    float freq = 0.0f;
+    double err = 0.0;
+    if (costas_after_ramp(1, &phase, &freq, &err) != 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stdout, "COSTAS TETRA rail: phase %.3f rad, freq %.5f rad/sym, rms error %.2f deg\n", phase, freq, err);
+    int rc = 0;
+    /* Settled a quarter turn back: 100 - 90 = 10 degrees. */
+    if (fabsf(phase - (float)(10.0 * M_PI / 180.0)) > 0.05f || fabsf(freq) > 0.002f || err > 5.0) {
+        DSD_FPRINTF(stderr, "COSTAS TETRA rail: phase %f freq %f rms %.2f deg\n", phase, freq, err);
+        rc = 1;
+    }
+    float p25_phase = 0.0f;
+    float p25_freq = 0.0f;
+    double p25_err = 0.0;
+    if (costas_after_ramp(0, &p25_phase, &p25_freq, &p25_err) != 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stdout, "COSTAS off the TETRA chain: phase %.3f rad, freq %.5f rad/sym, rms error %.2f deg\n",
+                p25_phase, p25_freq, p25_err);
+    if (fabsf(p25_phase - (float)(M_PI / 2.0)) > 0.001f) {
+        DSD_FPRINTF(stderr, "COSTAS off the TETRA chain: phase %f, want the pi/2 clamp\n", p25_phase);
+        rc = 1;
+    }
+    return rc;
+}
+
+/*
  * Test: diff phasor guard paths leave state untouched when there is no full
  * complex sample to process.
  */
@@ -1500,6 +1631,20 @@ test_fll_band_edge_redesigns_inconsistent_delay_line(void) {
     return 0;
 }
 
+/*
+ * Test: the CQPSK RMS AGC averages with OP25's alpha 0.45 on every chain but TETRA, which uses 0.1.
+ */
+static int
+test_cqpsk_agc_alpha_by_chain(void) {
+    const float p25 = dsd_cqpsk_agc_alpha(0);
+    const float tetra = dsd_cqpsk_agc_alpha(1);
+    if (std::fabs(p25 - 0.45f) > 1e-9f || std::fabs(tetra - 0.1f) > 1e-9f) {
+        DSD_FPRINTF(stderr, "CQPSK AGC alpha: P25 %.9f (want 0.45) TETRA %.9f (want 0.1)\n", p25, tetra);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     if (test_basic_passthrough() != 0) {
@@ -1541,6 +1686,12 @@ main(void) {
     if (test_p25p2_tracking_gain_honors_runtime_override_after_lock() != 0) {
         return 1;
     }
+    if (test_tetra_chain_gardner_gain() != 0) {
+        return 1;
+    }
+    if (test_tetra_chain_costas_steps_off_rail() != 0) {
+        return 1;
+    }
     if (test_diff_phasor_short_block_preserves_state() != 0) {
         return 1;
     }
@@ -1569,6 +1720,9 @@ main(void) {
         return 1;
     }
     if (test_gardner_out_of_range_samples_enter_as_zero() != 0) {
+        return 1;
+    }
+    if (test_cqpsk_agc_alpha_by_chain() != 0) {
         return 1;
     }
     return 0;

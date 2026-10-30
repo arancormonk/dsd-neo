@@ -33,6 +33,7 @@ target_sources(
         dmr_sync.c
         sync_calibration.c
         symbol_anchor.c
+        tetra_uplink_timing.c
         symbol_timing_debug.c
         analog_rx.c
         analog_ctcss.c

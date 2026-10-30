@@ -56,6 +56,7 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <limits.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdbool.h>
@@ -988,6 +989,273 @@ test_direct_return_after_hook_tune(void) {
     g_rigctl_setfreq_ok = 0;
     free_test_runtime(opts, state);
     return rc;
+}
+
+/* The direct control-channel return is a retune like one through the trunk tuning hooks: it forgets the sync join
+   histories, and with them the frame sync's history carried from its last no-sync exit, which is the voice channel's.
+   noCarrier runs inside the frame sync's no-sync hooks, before the exit keeps its history, and its raw rigctl tune
+   moves no carrier count, carries no tag and flushes no stream, so nothing else would tell the next call that the
+   carrier changed. A pass with no return forgets nothing: the carried history survives noCarrier. */
+static int
+test_direct_return_forgets_the_carried_history(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_trunk_tuning_requests_reset();
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long cc = 942062500L; // a frequency no other case uses: engine.c caches the last rigctl tune across cases
+
+    /* Trunking off: no return, nothing forgotten. */
+    opts->trunk_enable = 0;
+    state->frame_sync_carry.valid = 1U;
+    uint32_t drops = state->frame_sync_carry.drops;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    noCarrier(opts, state);
+    rc |= expect_true("no return keeps the carried history",
+                      state->frame_sync_carry.valid == 1U && state->frame_sync_carry.drops == drops);
+
+    /* An NXDN hangtime return on rigctl: the direct return tunes, and the carried history goes. */
+    opts->trunk_enable = 1;
+    g_rigctl_setfreq_calls = 0;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_vc_sync_time = 0;
+    state->frame_sync_carry.valid = 1U;
+    drops = state->frame_sync_carry.drops;
+    noCarrier(opts, state);
+    rc |= expect_true("the direct return tuned", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+    rc |= expect_true("the direct return forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A typed scanner step whose rigctl leg moved the radio before its RTL leg failed: the row did not land, but the
+   receiver left the carrier, so it is a carrier boundary (the carrier count moves, the sync histories and the frame
+   sync's carried history are forgotten). A step whose rigctl leg itself failed moved nothing: no boundary. */
+static int
+test_typed_scan_partial_move_is_a_carrier_boundary(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 941025000;
+    state->trunk_lcn_freq[1] = 941037500;
+    rc |= expect_true("typed row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NXDN48) == 0);
+    rc |= expect_true("typed row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NXDN48) == 0);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("first row committed", state->lcn_freq_roll == 1 && state->scan_row_index == 0);
+
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+
+    /* The rigctl leg fails first: nothing moved, no boundary. */
+    g_rigctl_setfreq_ok = 0;
+    uint32_t carrier_seq = state->carrier_seq;
+    state->frame_sync_carry.valid = 1U;
+    uint32_t drops = state->frame_sync_carry.drops;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("a failed rigctl leg is no boundary", state->carrier_seq == carrier_seq
+                                                                && state->frame_sync_carry.valid == 1U
+                                                                && state->frame_sync_carry.drops == drops);
+
+    /* The rigctl leg moves, the RTL leg fails: a boundary. */
+    g_rigctl_setfreq_ok = 1;
+    carrier_seq = state->carrier_seq;
+    state->frame_sync_carry.valid = 1U;
+    drops = state->frame_sync_carry.drops;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("the partial move left the row unlanded", state->scan_row_index == 0);
+    rc |= expect_true("a partial move is a carrier boundary", state->carrier_seq != carrier_seq);
+    rc |= expect_true("a partial move forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rigctl_setfreq_ok = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* Starts a typed scanner step whose RTL leg times out (PENDING), and returns its request. The carrier count and the
+   frame sync's carried history are read after the start, so a case sees only what the completion does. */
+static uint64_t
+start_pending_typed_step(dsd_opts* opts, dsd_state* state, uint32_t* carrier_seq, uint32_t* drops) {
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    *carrier_seq = state->carrier_seq;
+    state->frame_sync_carry.valid = 1U;
+    *drops = state->frame_sync_carry.drops;
+    return dsd_engine_channel_scan_waiting(state) ? request : 0U;
+}
+
+/* A typed scanner step that moved the receiver and then ends unlanded later, when its request completes: the receiver
+   is on another carrier all the same, so the completion is a carrier boundary. Three ways:
+   - the rigctl leg moved and the RTL leg, which timed out (PENDING), completes FAILED;
+   - the tune completes OK after its row went out of date (the channel map changed under it);
+   - the tune completes OK, its row is restaged (a key change while it was outstanding), and the retry is abandoned
+     because the row went out of date.
+   An RTL-only tune that completes FAILED moved nothing: no boundary. */
+static int
+test_typed_scan_async_move_is_a_carrier_boundary(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    opts->setmod_bw = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = 941050000;
+    state->trunk_lcn_freq[1] = 941062500;
+    rc |= expect_true("async typed row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NXDN48) == 0);
+    rc |= expect_true("async typed row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NXDN48) == 0);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("async first row committed", state->lcn_freq_roll == 1 && state->scan_row_index == 0);
+
+    uint32_t carrier_seq = 0U;
+    uint32_t drops = 0U;
+
+    /* RTL only, the RTL leg completes FAILED: nothing moved, no boundary. */
+    uint64_t request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
+    rc |= expect_true("rtl-only step pending", request != 0U);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |= expect_true("a failed rtl-only completion is no boundary", state->carrier_seq == carrier_seq
+                                                                         && state->frame_sync_carry.valid == 1U
+                                                                         && state->frame_sync_carry.drops == drops);
+    rc |= expect_true("the failed rtl-only step left the row unlanded",
+                      !dsd_engine_channel_scan_waiting(state) && state->scan_row_index == 0);
+
+    /* The rigctl leg moves, the RTL leg times out and later completes FAILED: a boundary at the completion. */
+    opts->use_rigctl = 1;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
+    rc |= expect_true("partial step pending after the rigctl move", request != 0U && g_rigctl_setfreq_calls == 1);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |= expect_true("the failed async partial move left the row unlanded",
+                      !dsd_engine_channel_scan_waiting(state) && state->scan_row_index == 0);
+    rc |= expect_true("a failed async partial move is a carrier boundary", state->carrier_seq != carrier_seq);
+    rc |= expect_true("a failed async partial move forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+    opts->use_rigctl = 0;
+    g_rigctl_setfreq_ok = 0;
+
+    /* The tune completes OK after the channel map changed under it: the row does not land, the receiver moved. */
+    request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
+    rc |= expect_true("out-of-date step pending", request != 0U);
+    state->trunk_chan_map_seq++;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |= expect_true("the out-of-date completion left the row unlanded",
+                      !dsd_engine_channel_scan_waiting(state) && state->scan_row_index == 0);
+    rc |= expect_true("an out-of-date completion is a carrier boundary", state->carrier_seq != carrier_seq);
+    rc |= expect_true("an out-of-date completion forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+
+    /* The tune completes OK, the row is restaged (a key change while it was outstanding), and the retry is abandoned
+       when the map changes: the row does not land, the receiver moved. */
+    request = start_pending_typed_step(opts, state, &carrier_seq, &drops);
+    rc |= expect_true("restaged step pending", request != 0U);
+    state->enc_lockout_key_epoch++;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |= expect_true("the restaged row waits for its retry", dsd_engine_channel_scan_waiting(state)
+                                                                  && dsd_trunk_tuning_pending_request() == 0U
+                                                                  && state->scan_row_index == 0);
+    carrier_seq = state->carrier_seq;
+    state->frame_sync_carry.valid = 1U;
+    drops = state->frame_sync_carry.drops;
+    state->trunk_chan_map_seq++;
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    rc |= expect_true("the abandoned retry left the row unlanded",
+                      !dsd_engine_channel_scan_waiting(state) && state->scan_row_index == 0);
+    rc |= expect_true("an abandoned retry after a move is a carrier boundary", state->carrier_seq != carrier_seq);
+    rc |= expect_true("an abandoned retry after a move forgets the carried history",
+                      state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* A scanner tune refused before any backend runs (a frequency past the tuner's uint32_t range) moved nothing, even
+   right after a tune whose rigctl leg did move the radio: it must not report that earlier move as its own. */
+static int
+test_refused_scan_tune_reports_no_stale_move(void) {
+#if LONG_MAX > UINT32_MAX
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->scanner_mode = 1;
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    rc |= expect_true("the rigctl scanner tune lands",
+                      dsd_engine_scan_tune_to_freq(opts, state, 941075000L, state->samplesPerSymbol, NULL)
+                              == DSD_TRUNK_TUNE_RESULT_OK
+                          && dsd_engine_scan_tune_moved() == 1);
+    const long past_limit = (long)UINT32_MAX + 1L;
+    rc |= expect_true("a tune past the tuner limit is refused",
+                      dsd_engine_scan_tune_to_freq(opts, state, past_limit, state->samplesPerSymbol, NULL)
+                          == DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("the refused tune reports no move", dsd_engine_scan_tune_moved() == 0);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+#else
+    return 0;
+#endif
 }
 
 /* An NXDN call's hangtime return on an RTL input tunes the stream directly: the tuner frequency the decoder reads
@@ -7063,6 +7331,10 @@ main(void) {
     rc |= test_typed_scan_analog_rows_hold_on_carrier();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_direct_return_after_hook_tune();
+    rc |= test_direct_return_forgets_the_carried_history();
+    rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
+    rc |= test_typed_scan_async_move_is_a_carrier_boundary();
+    rc |= test_refused_scan_tune_reports_no_stale_move();
     rc |= test_stale_dmr_rest_channel_under_nxdn_owner();
     rc |= test_direct_rtl_return_records_the_tuner_frequency();
     rc |= test_no_carrier_drops_dmr_precall_pi();

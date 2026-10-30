@@ -22,10 +22,12 @@
 #include <dsd-neo/core/safe_api.h>
 #endif
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
+#include <dsd-neo/dsp/tetra_uplink_timing.h>
 #include <dsd-neo/platform/threading.h>
 
 /* Buffer sizing constants shared by the demodulator and radio front-end. */
@@ -46,6 +48,12 @@
  * input samples. Its windows reach pending + c samples back, with pending at most the largest c (143, for the
  * largest odd tap count) and c at most that too, so a tap change without a reset always finds its history. */
 #define DSD_CHANNEL_LPF_HIST_LEN (DSD_CHANNEL_LPF_MAX_TAPS - 1)
+
+/* The TETRA receive chain's matched filter (root-raised-cosine, dsd_tetra_rrc_design()): taps for sps up to 8, and a
+ * streaming history (simd_fir_complex_apply()) of one less than that, which holds every look-ahead the longest design
+ * needs. The filter is redesigned (and its history reset) only when the sps changes, so pending + c never exceeds
+ * it. */
+#define DSD_TETRA_RRC_HIST_LEN   (DSD_TETRA_RRC_MAX_TAPS - 1)
 
 /* The channel LPF's output work buffers (hb_workbuf, timing_buf), in floats: a call makes at most N + 143 complex
  * outputs for N in (N + c_old - c_new on a tap shrink), and N is at most MAXIMUM_BUF_LENGTH / 2 complex. */
@@ -73,6 +81,7 @@ enum DSD_ATTR_PACKED {
     DSD_CH_LPF_PROFILE_PROVOICE = 3,  /* ProVoice: protects the 6250 Hz channel edge */
     DSD_CH_LPF_PROFILE_P25_C4FM = 4,  /* P25 C4FM: protects the 6250 Hz channel edge */
     DSD_CH_LPF_PROFILE_P25_CQPSK = 5, /* P25 CQPSK/LSM: 12.5 kHz edge plus guard */
+    DSD_CH_LPF_PROFILE_TETRA = 6,     /* TETRA: protects the 11250 Hz edge while the TETRA chain runs, else WIDE */
 };
 
 enum DSD_ATTR_PACKED dsd_demod_output_kind {
@@ -130,6 +139,11 @@ struct demod_state {
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_i[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_hist_q[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_HIST_LEN)];
     alignas(DSD_DEMOD_BUF_ALIGN) float channel_lpf_plan_taps[DSD_DEMOD_ALIGNED_FLOATS(DSD_CHANNEL_LPF_MAX_TAPS)];
+    /* TETRA chain matched filter: its streaming history (DSD_TETRA_RRC_HIST_LEN complex samples, newest right-aligned)
+       and its taps. */
+    alignas(DSD_DEMOD_BUF_ALIGN) float tetra_rrc_hist_i[DSD_DEMOD_ALIGNED_FLOATS(DSD_TETRA_RRC_HIST_LEN)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float tetra_rrc_hist_q[DSD_DEMOD_ALIGNED_FLOATS(DSD_TETRA_RRC_HIST_LEN)];
+    alignas(DSD_DEMOD_BUF_ALIGN) float tetra_rrc_taps[DSD_DEMOD_ALIGNED_FLOATS(DSD_TETRA_RRC_MAX_TAPS)];
     /* The auto squelch's per-sample gate flags (DSD_SQUELCH_FLAG_CLOSED), parallel to result and to resamp_outbuf.
        Valid only while result_flags_active; otherwise every sample is open. */
     alignas(DSD_DEMOD_BUF_ALIGN) uint8_t result_flags[MAXIMUM_BUF_LENGTH];
@@ -233,6 +247,7 @@ struct demod_state {
     int channel_lpf_plan_rate_out; /* cached rate for channel_lpf_plan_taps */
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
     int channel_lpf_plan_width_hz; /* cached analog width for channel_lpf_plan_taps (0 = profile design) */
+    int channel_lpf_plan_tetra;    /* cached: 1 when channel_lpf_plan_taps is the TETRA chain's design */
     int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed, or the analog width is unrealizable */
     /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
        channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
@@ -240,6 +255,10 @@ struct demod_state {
     /* 1 for the M17 encoder's monitor (issue #625): the FM/WIDE front end the encoder reads, set when the stream
        opens. Not part of the analog family, but the dynamic squelch runs on it (dsd_demod_encoder_monitor_active()). */
     int m17_encoder_monitor;
+    /* 1 for a trunked mode TETRA uplink session (--tetra-uplink), set when the stream opens. Its bursts keep the
+       receive path TETRA ran on before it had a chain of its own, apart from the TETRA channel filter: the TETRA chain
+       never activates for it (dsd_demod_tetra_chain_wanted(), dsd_demod_tetra_channel_runs()). */
+    int tetra_uplink;
     int analog_demod; /* dsd_analog_demod (runtime/analog_channel.h); 0 = FM */
     /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
        0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
@@ -330,7 +349,8 @@ struct demod_state {
 
     /* OP25-compatible CQPSK carrier recovery.
      * Signal flow: FLL band-edge (coarse freq) -> Gardner TED -> diff_phasor -> Costas (fine freq)
-     * Total CFO for metrics = fll_band_edge_state.freq + costas_state.freq/sps */
+     * Total CFO for metrics = dsd_fll_band_edge_total_freq(&fll_band_edge_state) + costas_state.freq/sps, where the
+     * band-edge total is the TETRA mixer's pre_freq plus the FLL's residual freq. */
     dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
     dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
     dsd_fsk_modem_state fsk_modem_state;           /* FSK discriminator state */
@@ -351,6 +371,9 @@ struct demod_state {
 
     /* TED module state */
     ted_state_t ted_state;
+    /* The Gardner's look-ahead and training search on a TETRA uplink session (dsd_demod_tetra_uplink_timing_runs());
+       starts over with the TED (ted_state_t::ul_lookahead_live). */
+    dsd_tetra_ul_timing tetra_ul_timing;
 
     /* Minimal 2-thread worker pool bookkeeping */
     int mt_enabled;
@@ -366,6 +389,30 @@ struct demod_state {
     int output_kind;    /* dsd_demod_output_kind */
     int symbol_rate_hz; /* FSK/CQPSK protocol symbol rate */
     int symbol_levels;  /* 2 or 4 for FSK; 4 for SYMBOL_CQPSK */
+    /* 1 while the TETRA receive chain runs (DSD_CH_LPF_PROFILE_TETRA with the TETRA symbol profile); 0, the zeroed
+       default, runs every stream as before that chain existed, a TETRA-profile one with the legacy WIDE channel filter
+       (an uplink session with the TETRA one, dsd_demod_tetra_channel_runs()). Keys the channel-filter plan and the SNR
+       noise bandwidth (dsd_demod_tetra_stage()). full_demod() alone writes it: once per block, at the
+       block boundary, from dsd_demod_tetra_chain_wanted(), running the transition when the value changes. */
+    int tetra_chain;
+    /* The TETRA matched filter's state: outputs held back for look-ahead (0 after a reset), the tap count (0 = not
+       designed) and the sps the taps were designed for. */
+    int tetra_rrc_pending;
+    int tetra_rrc_taps_len;
+    int tetra_rrc_sps;
+    /* Where the TETRA chain's mixer input stands within its transfer sub-block (dsd_tetra_subblock_len()): the samples
+       it took since the last sub-block boundary, counted from the channel filter's last start over (0 after a reset).
+       The mixer takes the FLL's residual only at those boundaries, so where the transfer falls does not depend on how
+       the input was cut into blocks. */
+    int tetra_sub_pos;
+    /* The causes (DSD_TETRA_CHAIN_WARN_* bits, demod_pipeline.cpp) this stream has warned about once already: a TETRA
+       profile whose chain cannot run. The stream open clears them. */
+    int tetra_chain_warned;
+    /* Whether the TETRA channel design (dsd_tetra_channel_design()) is realizable at tetra_design_rate_out, the rate
+       it was last checked for (0: never). full_demod() refreshes it at a block boundary whose rate_out differs, and
+       dsd_demod_tetra_chain_wanted() reads it for that rate, so no block designs the filter just to ask. */
+    int tetra_design_rate_out;
+    int tetra_design_ok;
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;
@@ -438,6 +485,12 @@ static_assert(sizeof(demod_state::channel_lpf_hist_q) % DSD_DEMOD_BUF_ALIGN == 0
               "channel_lpf_hist_q must fill whole alignment blocks");
 static_assert(sizeof(demod_state::channel_lpf_plan_taps) % DSD_DEMOD_BUF_ALIGN == 0,
               "channel_lpf_plan_taps must fill whole alignment blocks");
+static_assert(sizeof(demod_state::tetra_rrc_hist_i) % DSD_DEMOD_BUF_ALIGN == 0,
+              "tetra_rrc_hist_i must fill whole alignment blocks");
+static_assert(sizeof(demod_state::tetra_rrc_hist_q) % DSD_DEMOD_BUF_ALIGN == 0,
+              "tetra_rrc_hist_q must fill whole alignment blocks");
+static_assert(sizeof(demod_state::tetra_rrc_taps) % DSD_DEMOD_BUF_ALIGN == 0,
+              "tetra_rrc_taps must fill whole alignment blocks");
 static_assert(sizeof(demod_state::result_flags) % DSD_DEMOD_BUF_ALIGN == 0,
               "result_flags must fill whole alignment blocks");
 static_assert(sizeof(demod_state::resamp_outflags) % DSD_DEMOD_BUF_ALIGN == 0,

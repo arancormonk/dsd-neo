@@ -188,7 +188,14 @@ dmr_rc_print(const dsd_opts* opts, int emb_ok, const uint8_t emb_bits[16], int r
 void
 dmrRC(dsd_opts* opts, dsd_state* state) {
     int dibits[DMR_RC_DIBIT_COUNT];
+    /* Read before any symbol is. The burst decodes from its last 36 dibits read back (RC_a, EMB_a, the sync): none may
+       be of what noCarrier() cleared and nothing re-read (dsd_state_sync_readback_invalid(), of the 90 back). */
+    const unsigned int invalid = dsd_state_sync_readback_invalid(state);
     if (dmr_rc_collect_dibits(opts, state, dibits) == 0) {
+        return;
+    }
+    if (invalid > 90U - DMR_RC_CACHED_COUNT) {
+        DSD_FPRINTF(stderr, "\n");
         return;
     }
     /* An input interruption cut the live dibits (a Signal search left the burst): they are erasures the reader stood

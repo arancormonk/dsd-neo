@@ -106,14 +106,18 @@ typedef struct {
  * manual C/C++ database can miss this local call chain and report all children.
  */
 static void DSD_ATTR_USED
-init_dmr_bs_ctx(const dsd_state* state, dmr_bs_ctx* ctx) {
+init_dmr_bs_ctx(const dsd_state* state, dmr_bs_ctx* ctx, int bootstrap_slot_known) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->cc = 25;
     ctx->power = 9;
     ctx->vc1 = 7;
     ctx->vc2 = 7;
     ctx->prev_slot = -1;
-    /* The bootstrap just read the slot's burst A, so the loop's first burst is the other slot's. */
+    /* The bootstrap just read the slot's burst A, so the loop's first burst is the other slot's. A bootstrap that could
+       not read the burst's CACH back names no slot: the loop's first burst is the slot its own TACT names. */
+    if (!bootstrap_slot_known) {
+        return;
+    }
     if (state->currentslot == 0) {
         ctx->vc1 = 2;
         ctx->prev_slot = 0;
@@ -1000,10 +1004,10 @@ HANDLE_ACTION:
     return DMR_BS_ACTION_CONTINUE;
 }
 
-void
-dmrBS(dsd_opts* opts, dsd_state* state) {
+static void
+dmr_bs_run(dsd_opts* opts, dsd_state* state, int bootstrap_slot_known) {
     dmr_bs_ctx ctx;
-    init_dmr_bs_ctx(state, &ctx);
+    init_dmr_bs_ctx(state, &ctx, bootstrap_slot_known);
 
     DSD_SNPRINTF(state->slot1light, sizeof(state->slot1light), " slot1 ");
     DSD_SNPRINTF(state->slot2light, sizeof(state->slot2light), " slot2 ");
@@ -1035,6 +1039,29 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
     finalize_dmr_bs(opts, state, &ctx);
 }
 
+void
+dmrBS(dsd_opts* opts, dsd_state* state) {
+    dmr_bs_run(opts, state, 1);
+}
+
+/* The burst's read-back is not all the stream's (dsd_state_sync_readback_invalid(): a cold start or an acquisition
+   reset left no soft history to re-read what noCarrier() cleared). Its CACH, which names the burst's slot, is among
+   what is not, so nothing of the burst decodes: its second half is read past and the loop takes the next burst, which
+   it reads whole. */
+static void
+dmr_bs_bootstrap_past_unread_burst(dsd_opts* opts, dsd_state* state) {
+    char frame[4][24];
+    const uint32_t carrier_seq = state->carrier_seq;
+    read_dmr_bs_ambe_segment_stream(opts, state, frame, 90, 18, 18, NULL);
+    read_dmr_bs_ambe_segment_stream(opts, state, frame, 108, 36, 0, NULL);
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        drop_dmr_bs_carrier_left(opts, state);
+        dmr_confidence_reset(state);
+        return;
+    }
+    dmr_bs_run(opts, state, 0);
+}
+
 //Process buffered half frame and 2nd half and then jump to full BS decoding
 void
 dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
@@ -1042,6 +1069,11 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     init_dmr_bs_bootstrap_ctx(&ctx);
     /* Two-slot decoding: each burst's own slot is the receive slot (issue #637). */
     dmr_mono_slot_forget(state);
+
+    if (dsd_state_sync_readback_invalid(state) != 0U) {
+        dmr_bs_bootstrap_past_unread_burst(opts, state);
+        return;
+    }
 
     seed_dmr_bs_bootstrap_payload(opts, state);
 

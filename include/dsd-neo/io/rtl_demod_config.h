@@ -251,11 +251,20 @@ int rtl_demod_landing_cqpsk(int requested_cqpsk, int requested_is_explicit);
  * DSD_NEO_CHANNEL_LPF=0, or the default rule below a 20 kHz DSP rate), an open on the FSK discriminator keeps the
  * WIDE profile whatever the mode. Where DSD_NEO_CQPSK moved the family off the request
  * (rtl_demod_open_cqpsk_request()), the requester's filter was chosen for the other family: an open filters CQPSK with
- * the P25 CQPSK profile, and a 4800 sym/s P25 CQPSK request turned onto the FSK discriminator with the P25 C4FM one.
- * Otherwise @p channel_profile stands unchanged.
+ * rtl_demod_cqpsk_channel_profile() (the TETRA profile at 18000 sym/s, the P25 CQPSK one otherwise), and a 4800 sym/s
+ * P25 CQPSK request turned onto the FSK discriminator with the P25 C4FM one. A TETRA profile on the FSK discriminator,
+ * requested there or turned onto it, filters with WIDE, as the stream then runs and publishes it. Otherwise
+ * @p channel_profile stands unchanged.
  */
 int rtl_demod_open_channel_profile(int landing_cqpsk, int requested_cqpsk, int channel_profile, int symbol_rate_hz,
                                    int channel_lpf_enabled);
+
+/**
+ * The channel profile CQPSK installs for @p symbol_rate_hz when it takes over the filter (an open on CQPSK, the CQPSK
+ * toggle, a TED change): DSD_CH_LPF_PROFILE_TETRA at TETRA's 18000 sym/s, whose receive chain the TETRA profile
+ * describes, and DSD_CH_LPF_PROFILE_P25_CQPSK at every other rate.
+ */
+int rtl_demod_cqpsk_channel_profile(int symbol_rate_hz);
 
 /**
  * Move a running front end to the digital family with fresh-open digital defaults (FSK discriminator output, no

@@ -51,6 +51,21 @@ struct rtl_replay_eof_state {
     std::atomic<uint64_t>* replay_last_submit_gen_at_eof;
     std::atomic<uint64_t>* replay_last_consume_gen;
     struct rtl_replay_chunk_meta* chunk; /* the chunk in the input ring (see struct rtl_replay_chunk_meta) */
+    /* A replay that reached the capture's end cleanly with no --iq-loop rewind after it: the end position its last
+       pass reached, in capture samples counted from the capture's start (the whole capture, also after a re-plan
+       resumed it partway), plus one, stored by the reader before it marks EOF; 0 for none. The stream's stop logs the
+       end-of-capture notice from it when the decoder read all the output (dsd_rtl_stream_soft_stop()), so the notice
+       follows every line the capture decoded to. */
+    std::atomic<uint64_t>* replay_end_notice;
+    /* 1 while the demod owes the decoder the symbols a TETRA uplink look-ahead holds back
+       (dsd_demod_tetra_uplink_held()); the demod counts as drained only once it pushed them out. */
+    std::atomic<int>* replay_demod_flush_owed;
+    /* 1 while the input stops at a boundary that starts the demod over and the reader waits for an idle pipeline: an
+       --iq-loop pass end before its rewind, or a RETUNE or RESET event (a retune, or a recorded stream gap). The demod
+       pushes an uplink look-ahead out (replay_demod_flush_owed) there, as it does at the capture's end, and the
+       boundary's idle wait waits for that flush, so a burst that ends just before the boundary is decoded before it
+       and not dropped by the reset after it. The reader writes it. */
+    std::atomic<int>* replay_input_boundary;
     dsd_mutex_t* eof_m;
     dsd_cond_t* eof_cond;
     rtl_replay_input_drained_cb on_input_drained;

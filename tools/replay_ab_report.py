@@ -39,6 +39,21 @@ printed its metrics first. Columns no build measured are left out; a build that
 has no value for a column another build measured gets an explicit NA row, and
 the exit status is 1 when a build produced no usable analog measurement in any
 repeat, since a report of the remaining builds would read like a clean result.
+
+TETRA runs (replay_ab.sh --metric tetra --tetra-wanted MCC/MNC/CC) report what the decode itself produced, since a
+TETRA receive chain is judged by the bursts it recovers rather than by voice-frame errors: BSCH identities of the
+wanted network, of other well-formed networks and of lines that did not parse, accepted and rejected speech frames,
+bursts whose AACH decoded, and the time to the first wanted BSCH (whole seconds from the capture's start), each paired
+per repeat against the baseline. The wanted identity is the one the run was given, the same for every build; the
+report never picks one by how often it occurs, and says so when another network outnumbers it. A run is complete only
+when the replay printed its end-of-capture notice and exited zero: an incomplete run (an early stop, a failed reader, a
+crash, a timeout) is left out of every column and named in a warning, while a complete run that decoded nothing keeps
+its zero row. The exit status is 1 when a build completed no run.
+
+A build from before replay printed that notice (origin/main before the TETRA receive chain, for one) completes no run
+by that rule. Name it with --no-end-notice BUILD, once per such build, and its runs are judged by their exit status
+alone: an early stop that still exits zero then counts as complete, so the report says so for that build. The flag is
+refused for a build that printed the notice in any run, and every build not named still needs the notice.
 """
 
 from __future__ import annotations
@@ -53,6 +68,7 @@ from pathlib import Path
 ANALOG_NUMERIC = ("tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "rms_dbfs", "probe_dbfs",
                   "probe_dbc", "tone_lock_ms", "tone_lock_pct")
 ANALOG_LABELS = ("tone",)
+TETRA_COUNTS = ("wanted_bsch", "other_bsch", "unknown_bsch", "tch_ok", "tch_bad", "aach_fec")
 # A probe level means something only at the probe's frequency (probe_hz).
 PROBE_COLUMNS = ("probe_dbfs", "probe_dbc")
 
@@ -321,6 +337,129 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
     return status
 
 
+def tetra_complete(row: dict[str, str], no_notice: frozenset[str] = frozenset()) -> bool:
+    """A TETRA run counts only when the replay printed its end-of-capture notice and exited zero; a run of a build in
+    @no_notice (one from before the notice, --no-end-notice) only when it exited zero."""
+    if run_flags(row):
+        return False
+    return row["variant"] in no_notice or row.get("completed") == "1"
+
+
+def tetra_no_notice_builds(rows: list[dict[str, str]], builds: list[str], named: list[str]) -> frozenset[str]:
+    """The builds --no-end-notice named, each checked to be in the summary and to have printed the notice in no run:
+    the flag excuses a build that cannot print it, never one that can and did not."""
+    for build in named:
+        if build not in builds:
+            raise SystemExit(f"--no-end-notice: build '{build}' not present; have: {', '.join(builds)}")
+        noticed = sum(1 for row in rows if row["variant"] == build and row.get("completed") == "1")
+        if noticed:
+            raise SystemExit(f"--no-end-notice: {build} printed the end-of-capture notice in {noticed} run(s), so it "
+                             "does not predate it; its runs without the notice are incomplete. Drop the flag for it.")
+    return frozenset(named)
+
+
+def load_tetra(rows: list[dict[str, str]],
+               no_notice: frozenset[str] = frozenset()) -> dict[str, dict[int, dict[str, float]]]:
+    """{column: {repeat: {build: value}}} over the complete runs, for every count and the acquisition time."""
+    columns: dict[str, dict[int, dict[str, float]]] = {name: defaultdict(dict)
+                                                      for name in TETRA_COUNTS + ("first_wanted_s",)}
+    for row in rows:
+        if not tetra_complete(row, no_notice):
+            continue
+        for name, by_rep in columns.items():
+            value = parse_number(row.get(name))
+            if value is not None:
+                by_rep[int(row["rep"])][row["variant"]] = value
+    return columns
+
+
+def print_tetra_incomplete(rows: list[dict[str, str]], builds: list[str], no_notice: frozenset[str]) -> None:
+    for build in builds:
+        mine = [row for row in rows if row["variant"] == build]
+        if build in no_notice:
+            print(f"\nnote: {build}: judged by exit status alone (--no-end-notice): it predates the end-of-capture "
+                  "notice, so a run that stopped early but exited zero counts as complete. Read its logs.")
+        bad = [row for row in mine if not tetra_complete(row, no_notice)]
+        if not bad:
+            continue
+        exited = sum(1 for row in bad if run_flags(row))
+        without = 0 if build in no_notice else sum(1 for row in bad if row.get("completed") != "1")
+        print(f"\nwarning: {build}: {len(bad)} of {len(mine)} runs incomplete and left out of the report "
+              f"({without} without an end-of-capture notice, {exited} exited non-zero). Read their logs.")
+        if build not in no_notice and not any(row.get("completed") == "1" for row in mine):
+            print(f"If {build} is a build from before replay printed the notice, report it with --no-end-notice "
+                  f"{build}.")
+
+
+def print_tetra_dominance(rows: list[dict[str, str]], builds: list[str], no_notice: frozenset[str]) -> None:
+    """Notes, never acts on, a build whose runs saw another network more often than the wanted one."""
+    for build in builds:
+        done = [row for row in rows if row["variant"] == build and tetra_complete(row, no_notice)]
+        dominated = sum(1 for row in done if (parse_number(row.get("other_bsch")) or 0)
+                        > (parse_number(row.get("wanted_bsch")) or 0))
+        if dominated:
+            print(f"\nnote: {build}: other identities outnumber the wanted one in {dominated} of {len(done)} runs. "
+                  "The wanted identity is the one given to replay_ab.sh; nothing is re-labelled by frequency.")
+
+
+def report_tetra(rows: list[dict[str, str]], baseline_arg: str | None, no_notice_arg: list[str] | None = None) -> int:
+    if not rows or "wanted_bsch" not in rows[0]:
+        raise SystemExit("no TETRA columns in the summary; was this run with replay_ab.sh --metric tetra "
+                         "--tetra-wanted?")
+    wanted = {row.get("wanted", "NA") for row in rows}
+    if len(wanted) != 1:
+        raise SystemExit("the summary mixes wanted identities (" + ", ".join(sorted(wanted)) + "); a comparison "
+                         "takes one --tetra-wanted identity, fixed for every build")
+    reps = sorted({int(row["rep"]) for row in rows})
+    builds = list(dict.fromkeys(row["variant"] for row in rows))
+    baseline = baseline_arg or builds[0]
+    if baseline not in builds:
+        raise SystemExit(f"baseline '{baseline}' not present; have: {', '.join(builds)}")
+    no_notice = tetra_no_notice_builds(rows, builds, no_notice_arg or [])
+    columns = load_tetra(rows, no_notice)
+
+    print(f"repeats: {len(reps)}   baseline: {baseline}   metric: tetra   wanted {wanted.pop()}"
+          f"{realizations_text(rows)}\n")
+    print(f"{'metric':<22} {'build':<24} {'n':>5} {'mean':>9} {'median':>9} {'sd':>7}  {'paired vs baseline':>20}  "
+          f"{'differ':>6}")
+    for name, by_rep in columns.items():
+        for build in builds:
+            vals = [by_rep[r][build] for r in reps if r in by_rep and build in by_rep[r]]
+            count = f"{len(vals)}/{len(reps)}"
+            if not vals:
+                print(f"{name:<22} {build:<24} {count:>5} {'NA':>9} {'NA':>9} {'NA':>7}  {'-':>20}  {'-':>6}")
+                continue
+            sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+            diff, differ = paired(by_rep, build, baseline)
+            print(f"{name:<22} {build:<24} {count:>5} {statistics.fmean(vals):9.2f} {statistics.median(vals):9.2f} "
+                  f"{sd:7.2f}  {diff:>20}  {differ:>6}")
+    status = 0
+    for build in builds:
+        done = sum(1 for row in rows if row["variant"] == build and tetra_complete(row, no_notice))
+        total = sum(1 for row in rows if row["variant"] == build)
+        print(f"{'completed':<22} {build:<24} {f'{done}/{total}':>5}")
+        if not done:
+            status = 1
+    print_tetra_incomplete(rows, builds, no_notice)
+    for build in builds:
+        if not any(tetra_complete(row, no_notice) for row in rows if row["variant"] == build):
+            print(f"\nwarning: {build} completed no run of {len(reps)}; its row above is empty, not a zero-decode "
+                  "result. Read its logs before trusting this report.")
+    print_tetra_dominance(rows, builds, no_notice)
+    print_realization_note(rows, reps)
+
+    print("\nPaired column is the mean per-repeat difference from the baseline with a 95% interval; 'differ' counts")
+    print("the repeats where the two builds disagreed at all, and the interval needs at least two paired repeats.")
+    print("Higher is better for the BSCH counts of the wanted identity, tch_ok and aach_fec, and lower for")
+    print("tch_bad and first_wanted_s (whole seconds from the capture's start: one-second resolution). other_bsch")
+    print("and unknown_bsch are not quality scores: they say what else was on the channel. 'n' counts the complete")
+    print("runs that measured the column; 'completed' counts runs that printed the end-of-capture notice and exited")
+    print("zero (exited zero, for a build named with --no-end-notice). A complete run that decoded nothing keeps its")
+    print("zero row; an incomplete one is left out.")
+    print("Run the baseline against a copy of itself first: that control must read +0.00 +/- 0.00.")
+    return status
+
+
 def digital_row(by_rep: dict[int, dict[str, tuple[float, int, int]]], reps: list[int], build: str,
                 baseline: str) -> str:
     """One build's line of the digital report."""
@@ -373,13 +512,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("summary", type=Path, help="summary.tsv written by tools/replay_ab.sh")
     parser.add_argument("--baseline", help="build to compare against (default: the first one seen)")
-    parser.add_argument("--metric", choices=("auto", "digital", "analog"), default="auto",
-                        help="which columns to report (default: analog when any analog column was measured)")
+    parser.add_argument("--metric", choices=("auto", "digital", "analog", "tetra"), default="auto",
+                        help="which columns to report (default: tetra when the summary has the TETRA columns, else "
+                             "analog when any analog column was measured)")
+    parser.add_argument("--no-end-notice", action="append", default=[], metavar="BUILD",
+                        help="TETRA: BUILD (its name in the summary) is from before replay printed its end-of-capture "
+                             "notice, so judge its runs by exit status alone; repeat for each such build. Refused for "
+                             "a build that printed the notice in any run")
     args = parser.parse_args()
 
     metric = args.metric
     if metric == "auto":
-        metric = "analog" if load_analog(read_rows(args.summary)) else "digital"
+        rows = read_rows(args.summary)
+        if rows and "wanted_bsch" in rows[0]:
+            metric = "tetra"
+        else:
+            metric = "analog" if load_analog(rows) else "digital"
+    if args.no_end_notice and metric != "tetra":
+        raise SystemExit("--no-end-notice only applies to the TETRA metric")
+    if metric == "tetra":
+        return report_tetra(read_rows(args.summary), args.baseline, args.no_end_notice)
     if metric == "analog":
         return report_analog(read_rows(args.summary), args.baseline)
     return report_digital(args.summary, args.baseline)

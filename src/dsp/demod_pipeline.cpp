@@ -22,17 +22,21 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
+#include "dsd-neo/dsp/tetra_uplink_timing.h"
 #ifdef DSD_NEO_TEST_HOOKS
 #include "demod_pipeline_test_support.h"
 #endif
@@ -127,6 +131,9 @@ clamp_float(float value, float lo, float hi) {
  *   - ProVoice: 6250 Hz protected passband edge.
  *   - P25 C4FM: 6250 Hz protected passband edge.
  *   - P25 CQPSK/LSM: 6250 Hz protected passband edge plus guard.
+ *   - TETRA: 11250 Hz protected passband edge (cutoff 12.5 kHz, 2.5 kHz transition) while the TETRA chain runs
+ *     (demod_state::tetra_chain) and on an uplink session (dsd_demod_tetra_channel_runs()); otherwise the legacy WIDE
+ *     design, exactly as TETRA ran before it had a profile.
  *
  * GNU Radio firdes::low_pass() interprets cutoff_freq as the center of the
  * transition band, not the last flat passband frequency. The design centers
@@ -191,6 +198,13 @@ static const double kChannelLpf12k5CutoffHz = kChannelEdge12k5Hz + kChannelLpfGu
 static const double kChannelLpfProvoiceCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
 static const double kChannelLpfP25C4fmCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
 static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
+/* TETRA's 25 kHz channel: GNU Radio's window design with the transition centred on 12.5 kHz, so the passband ends at
+ * 11.25 kHz and the stopband starts at 13.75 kHz. Its own transition, not the shared 1200 Hz one, and no clamp or
+ * fallback: 49 / 97 / 193 taps at 36 / 72 / 144 kHz, all within DSD_CHANNEL_LPF_MAX_TAPS (test_dsp_channel_filters.cpp
+ * designs each rate and pins those counts). */
+static const double kChannelEdgeTetraHz = 11250.0;
+static const double kChannelLpfTetraCutoffHz = 12500.0;
+static const double kChannelLpfTetraTransitionHz = 2500.0;
 /* Fixed fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
@@ -268,6 +282,7 @@ dsd_channel_lpf_protected_edge_hz(int profile) {
         case DSD_CH_LPF_PROFILE_PROVOICE:
         case DSD_CH_LPF_PROFILE_P25_C4FM:
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelEdge12k5Hz;
+        case DSD_CH_LPF_PROFILE_TETRA: return kChannelEdgeTetraHz;
         default: return kChannelEdgeWideHz;
     }
 }
@@ -566,6 +581,7 @@ channel_lpf_fallback_taps(int profile, int* taps_len) {
         case DSD_CH_LPF_PROFILE_PROVOICE:
         case DSD_CH_LPF_PROFILE_P25_C4FM:
         case DSD_CH_LPF_PROFILE_P25_CQPSK:
+        case DSD_CH_LPF_PROFILE_TETRA: /* inactive TETRA chain: the legacy WIDE plan */
         case DSD_CH_LPF_PROFILE_WIDE:
         default: *taps_len = kChannelLpfFallbackTaps; return channel_lpf_wide;
     }
@@ -579,14 +595,40 @@ channel_lpf_cutoff_for_profile(int profile) {
         case DSD_CH_LPF_PROFILE_PROVOICE: return kChannelLpfProvoiceCutoffHz;
         case DSD_CH_LPF_PROFILE_P25_C4FM: return kChannelLpfP25C4fmCutoffHz;
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelLpfP25CqpskCutoffHz;
+        case DSD_CH_LPF_PROFILE_TETRA: /* inactive TETRA chain: the legacy WIDE plan */
         case DSD_CH_LPF_PROFILE_WIDE:
         default: return kChannelLpfWideCutoffHz;
     }
 }
 
-/* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. */
+int
+dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps) {
+    if (rate_hz <= 0 || !taps_out || max_taps <= 0) {
+        return -1;
+    }
+    const double rate = (double)rate_hz;
+    /* The whole transition, up to the stopband edge, must sit below Nyquist. */
+    if (kChannelLpfTetraCutoffHz + kChannelLpfTetraTransitionHz * 0.5 >= rate * 0.5) {
+        return -1;
+    }
+    const int cap = max_taps < DSD_CHANNEL_LPF_MAX_TAPS ? max_taps : DSD_CHANNEL_LPF_MAX_TAPS;
+    return dsd_firdes_low_pass(1.0, rate, kChannelLpfTetraCutoffHz, kChannelLpfTetraTransitionHz, DSD_WIN_BLACKMAN,
+                               taps_out, cap);
+}
+
+/* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. The TETRA
+ * profile designs its own channel, with no cap below the plan array and no fallback, while the TETRA channel filter
+ * runs (dsd_demod_tetra_channel_runs(): the TETRA chain, or an uplink session); otherwise it runs the WIDE design. */
 static int
 channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out) {
+    if (profile == DSD_CH_LPF_PROFILE_TETRA) {
+        if (dsd_demod_tetra_channel_runs(d)) {
+            const int tetra_len =
+                dsd_tetra_channel_design(rate_out, d->channel_lpf_plan_taps, DSD_CHANNEL_LPF_MAX_TAPS);
+            return tetra_len > 0 ? tetra_len : 0;
+        }
+        profile = DSD_CH_LPF_PROFILE_WIDE;
+    }
     int taps_len = 0;
     if (rate_out > 0) {
         taps_len = channel_lpf_design_low_pass((double)rate_out, channel_lpf_cutoff_for_profile(profile),
@@ -627,12 +669,22 @@ dsd_channel_lpf_legacy_wide_width_hz(int rate_hz) {
     return width_hz > 0.0 ? (int)lround(width_hz) : 0;
 }
 
-/* The channel FIR starts over: no history, no pending outputs, so its next output is centred on its next input. */
+/* The channel FIR starts over: no history, no pending outputs, so its next output is centred on its next input. The
+   TETRA chain's transfer sub-blocks count from here (demod_state::tetra_sub_pos). */
 static void
 channel_lpf_reset_state(struct demod_state* d) {
     DSD_MEMSET(d->channel_lpf_hist_i, 0, sizeof(d->channel_lpf_hist_i));
     DSD_MEMSET(d->channel_lpf_hist_q, 0, sizeof(d->channel_lpf_hist_q));
     d->channel_lpf_pending = 0;
+    d->tetra_sub_pos = 0;
+}
+
+/* The TETRA matched filter starts over: no history, no pending outputs. Its taps stay; a new sps redesigns them. */
+static void
+tetra_rrc_reset_state(struct demod_state* d) {
+    DSD_MEMSET(d->tetra_rrc_hist_i, 0, sizeof(d->tetra_rrc_hist_i));
+    DSD_MEMSET(d->tetra_rrc_hist_q, 0, sizeof(d->tetra_rrc_hist_q));
+    d->tetra_rrc_pending = 0;
 }
 
 /* The half-band cascade starts over: no history and nothing pending in any stage, so each stage's next output is centred
@@ -653,6 +705,12 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     }
     halfband_reset_state(d);
     channel_lpf_reset_state(d);
+    tetra_rrc_reset_state(d);
+    if (d->tetra_chain) {
+        /* On the TETRA chain the AGC average starts over with the channel filter (the AGC runs on its output). Other
+           chains keep it, as they always have. */
+        d->cqpsk_agc_avg = 1.0f;
+    }
     post_decim_reset_state(d);
     /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor and starts its
        windows (and the coherence history) over, so none spans the reset; at another it moves the floor. The noise
@@ -661,13 +719,40 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     d->squelch_noise_ran = 0;
 }
 
+/* The analog width the channel plan is designed for, or 0 for the profile design. Gated on the analog family's monitor
+   output on its WIDE channel (dsd_demod_analog_monitor_active()), not on the profile alone: WIDE is also the digital
+   fallback profile, and the M17 encoder shares the analog front end without being part of that family. CQPSK toggled
+   on under -fA, or a typed digital scan row's symbol profile, keeps its own profile filter. */
+static int
+channel_lpf_plan_width_hz(const struct demod_state* d) {
+    return (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
+}
+
+/* Whether the TETRA channel filter runs keys only the TETRA profile's plan: no other profile's design depends on it. */
+static int
+channel_lpf_plan_tetra(const struct demod_state* d, int profile, int width_hz) {
+    return (width_hz == 0 && profile == DSD_CH_LPF_PROFILE_TETRA && dsd_demod_tetra_channel_runs(d)) ? 1 : 0;
+}
+
+/* Whether the cached plan is the one for this key. A profile plan that made no taps is never current, so an
+   unrealizable design is tried again every block. Not reachable for the TETRA key: dsd_demod_tetra_channel_runs() and
+   the chain's predicate admit a rate only where the TETRA design makes taps (memoized by rate,
+   tetra_design_memo_refresh()). */
+static int
+channel_lpf_plan_current(const struct demod_state* d, int rate_out, int profile, int width_hz, int tetra) {
+    const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
+    return planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
+           && d->channel_lpf_plan_width_hz == width_hz && d->channel_lpf_plan_tetra == tetra;
+}
+
 /**
  * @brief Ensure channel LPF taps are generated for this demodulator state.
  *
  * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
  * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
- * per-block profile dispatch. The plan is cached by (rate_out, profile, width): the analog
- * family's width-driven design when it has a width, the profile design otherwise.
+ * per-block profile dispatch. The plan is cached by (rate_out, profile, width, TETRA chain): the analog
+ * family's width-driven design when it has a width, the profile design otherwise (for the TETRA profile, the TETRA
+ * design while the TETRA chain runs and the WIDE design while it does not).
  *
  * A plan for another rate_out than the previous one starts the channel over, since its history holds samples at the
  * old rate. A width or profile change at the same rate keeps the history and pending outputs: the streaming FIR
@@ -680,15 +765,9 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     }
     const int profile = d->channel_lpf_profile;
     const int rate_out = d->rate_out;
-    /* Gated on the analog family's monitor output on its WIDE channel (dsd_demod_analog_monitor_active()), not on the
-       profile alone: WIDE is also the digital fallback profile, and the M17 encoder shares the analog front end
-       without being part of that family. CQPSK toggled on under -fA, or a typed digital scan row's symbol profile,
-       keeps its own profile filter. */
-    const int width_hz =
-        (dsd_demod_analog_monitor_active(d) && d->channel_lpf_width_hz > 0) ? d->channel_lpf_width_hz : 0;
-    const int planned = d->channel_lpf_plan_taps_len > 0 || d->channel_lpf_plan_width_hz > 0;
-    if (planned && d->channel_lpf_plan_rate_out == rate_out && d->channel_lpf_plan_profile == profile
-        && d->channel_lpf_plan_width_hz == width_hz) {
+    const int width_hz = channel_lpf_plan_width_hz(d);
+    const int tetra = channel_lpf_plan_tetra(d, profile, width_hz);
+    if (channel_lpf_plan_current(d, rate_out, profile, width_hz, tetra)) {
         return;
     }
 
@@ -709,6 +788,7 @@ channel_lpf_ensure_plan(struct demod_state* d) {
     d->channel_lpf_plan_rate_out = rate_out;
     d->channel_lpf_plan_profile = profile;
     d->channel_lpf_plan_width_hz = width_hz;
+    d->channel_lpf_plan_tetra = tetra;
     d->channel_lpf_plan_taps_len = taps_len;
 }
 
@@ -1198,6 +1278,11 @@ qpsk_differential_demod(struct demod_state* fm) {
     fm->result_len = pairs;
 }
 
+extern "C" float
+dsd_cqpsk_agc_alpha(int tetra_chain) {
+    return tetra_chain ? 0.1f : 0.45f;
+}
+
 /*
  * OP25-style RMS AGC for CQPSK path.
  *
@@ -1236,9 +1321,9 @@ cqpsk_rms_agc(struct demod_state* d) {
 
     /* OP25 parameters from p25_demodulator.py line 409:
      *   self.agc = rms_agc.rms_agc(0.45, 0.85)
-     * where alpha=0.45, reference=0.85 */
-    const float alpha = 0.45f;
-    const float beta = 1.0f - alpha; /* 0.55 */
+     * where alpha=0.45, reference=0.85. The TETRA chain averages longer (alpha 0.1). */
+    const float alpha = dsd_cqpsk_agc_alpha(d->tetra_chain);
+    const float beta = 1.0f - alpha; /* 0.55 off the TETRA chain */
     const float gain = 0.85f;        /* reference/k parameter */
 
     float* iq = d->lowpassed;
@@ -1275,6 +1360,371 @@ cqpsk_rms_agc(struct demod_state* d) {
     /* Save state for next block */
     d->cqpsk_agc_avg = avg;
 }
+
+/*
+ * The TETRA receive chain (demod_state::tetra_chain): the tracking mixer ahead of the channel LPF, the AGC at 0.1, the
+ * root-raised-cosine matched filter ahead of the band-edge FLL (which runs TETRA's parameters), and the transfer of
+ * the FLL's residual into the mixer after it. dsd_demod_tetra_chain_wanted() says when it can run; full_demod() keeps
+ * the answer per block and runs the transition when it changes.
+ */
+
+/* The causes a TETRA profile whose chain cannot run is warned about, each once per stream
+   (demod_state::tetra_chain_warned). */
+enum {
+    DSD_TETRA_CHAIN_WARN_RATE = 1,
+    DSD_TETRA_CHAIN_WARN_TED = 2,
+    DSD_TETRA_CHAIN_WARN_LPF = 4,
+};
+
+/* The samples per symbol the chain is timed at: a TED override when one is set, else the TED's own. */
+static int
+tetra_effective_sps(const struct demod_state* d) {
+    return d->ted_sps_override > 0 ? d->ted_sps_override : d->ted_sps;
+}
+
+/* Whether the mode asks for the TETRA chain: the TETRA profile on CQPSK at TETRA's symbol rate. */
+static int
+tetra_chain_requested(const struct demod_state* d) {
+    return (d->channel_lpf_profile == DSD_CH_LPF_PROFILE_TETRA && d->cqpsk_enable
+            && d->symbol_rate_hz == DSD_TETRA_SYMBOL_RATE_HZ)
+               ? 1
+               : 0;
+}
+
+/* Whether the TETRA channel design is realizable at @p rate (at least 3 taps), whatever plan is installed now: the plan
+   follows the chain, not the other way. */
+static int
+tetra_channel_design_realizable(int rate) {
+    float taps[DSD_CHANNEL_LPF_MAX_TAPS];
+    return dsd_tetra_channel_design(rate, taps, DSD_CHANNEL_LPF_MAX_TAPS) >= 3 ? 1 : 0;
+}
+
+/* Check the design once per rate (demod_state::tetra_design_rate_out); the block boundary calls this before it asks
+   the predicate, so the predicate reads the memo rather than designing. */
+static void
+tetra_design_memo_refresh(struct demod_state* d) {
+    if (!tetra_chain_requested(d) || !dsd_tetra_dsp_rate_runs(d->rate_out) || d->tetra_design_rate_out == d->rate_out) {
+        return;
+    }
+    d->tetra_design_ok = tetra_channel_design_realizable(d->rate_out);
+    d->tetra_design_rate_out = d->rate_out;
+}
+
+extern "C" int
+dsd_demod_tetra_chain_wanted(const struct demod_state* d) {
+    /* An uplink session never runs the chain: its short bursts, from radios at their own level and carrier, decode
+       better on the path TETRA ran before the chain, which keeps only the TETRA channel filter. */
+    if (!d || !tetra_chain_requested(d) || d->tetra_uplink) {
+        return 0;
+    }
+    const int rate = d->rate_out;
+    if (!dsd_tetra_dsp_rate_runs(rate) || !d->channel_lpf_enable) {
+        return 0;
+    }
+    /* The Gardner TED and the FLL time the chain at ted_sps (dsd_cqpsk_timing_sps()); an override reaches ted_sps only
+       at the next rate refresh. Both must give the rate's samples per symbol. */
+    const int sps = rate / DSD_TETRA_SYMBOL_RATE_HZ;
+    if (tetra_effective_sps(d) != sps || d->ted_sps != sps) {
+        return 0;
+    }
+    if (d->tetra_design_rate_out == rate) {
+        return d->tetra_design_ok ? 1 : 0;
+    }
+    return tetra_channel_design_realizable(rate);
+}
+
+extern "C" int
+dsd_demod_tetra_channel_runs(const struct demod_state* d) {
+    /* The chain flag first, as dsd_demod_tetra_stage() reads it: between a setter that leaves the TETRA profile and the
+       next block boundary the chain still runs, and its filter with it. */
+    if (d && d->tetra_chain) {
+        return 1;
+    }
+    if (!d || !tetra_chain_requested(d)) {
+        return 0;
+    }
+    const int rate = d->rate_out;
+    if (!d->tetra_uplink || !d->channel_lpf_enable || !dsd_tetra_dsp_rate_runs(rate)) {
+        return 0;
+    }
+    if (d->tetra_design_rate_out == rate) {
+        return d->tetra_design_ok ? 1 : 0;
+    }
+    return tetra_channel_design_realizable(rate);
+}
+
+extern "C" int
+dsd_demod_tetra_stage(const struct demod_state* d) {
+    if (d && d->tetra_chain) {
+        return DSD_SNR_TETRA_STAGE_CHAIN;
+    }
+    return dsd_demod_tetra_channel_runs(d) ? DSD_SNR_TETRA_STAGE_CHANNEL : DSD_SNR_TETRA_STAGE_WIDE;
+}
+
+extern "C" int
+dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps) {
+    if (!d || !d->tetra_uplink || d->tetra_chain || sps < DSD_TETRA_UL_MIN_SPS || sps > DSD_TETRA_UL_MAX_SPS) {
+        return 0;
+    }
+    return dsd_demod_tetra_channel_runs(d);
+}
+
+extern "C" size_t
+dsd_demod_tetra_uplink_held(const struct demod_state* d) {
+    if (!d || !d->cqpsk_enable || !d->ted_state.ul_lookahead_live
+        || !dsd_demod_tetra_uplink_timing_runs(d, dsd_cqpsk_timing_sps(d))) {
+        return 0U;
+    }
+    /* A sample the look-ahead returns stays in the Gardner's delay line for twice_sps more samples, and each symbol
+       that reads it comes out only once the sample after its strobe is in: twice_sps samples after the last signal
+       sample left the look-ahead, every symbol that read it is out. */
+    const int twice_sps = d->ted_state.twice_sps;
+    return dsd_tetra_ul_timing_held_through(&d->tetra_ul_timing, twice_sps > 0 ? (size_t)twice_sps : 0U);
+}
+
+/* @p pairs zero samples at @p buf through the uplink's Gardner (and its look-ahead), differential and Costas stages and
+   the phase demodulator: the symbols the look-ahead held come out into result, then the zeros' symbols, 0. The AGC
+   and the FLL do not run: zeros carry no level or frequency, and their state waits for the signal's return. */
+static void
+tetra_uplink_drain_zeros(struct demod_state* d, float* buf, int pairs) {
+    DSD_MEMSET(buf, 0, (size_t)pairs * 2U * sizeof(float));
+    d->lowpassed = buf;
+    d->lp_len = pairs * 2;
+    op25_gardner_cc(d);
+    op25_diff_phasor_cc(d);
+    op25_costas_loop_cc(d);
+    qpsk_differential_demod(d);
+}
+
+extern "C" int
+dsd_demod_tetra_uplink_flush(struct demod_state* d) {
+    if (!d) {
+        return 0;
+    }
+    d->result_len = 0;
+    const size_t held = dsd_demod_tetra_uplink_held(d);
+    if (held == 0U) {
+        return 0;
+    }
+    /* Exactly what it holds, the Gardner's delay included: a closed block drains the same samples, so the symbols and
+       the state after them do not depend on where the input stopped. */
+    static_assert(sizeof(demod_state::timing_buf) / sizeof(float)
+                      >= 2U * ((size_t)DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * DSD_TETRA_UL_MAX_SPS + TED_DL_SIZE),
+                  "the timing buffer holds a whole look-ahead and the Gardner's delay of zeros");
+    const size_t cap = sizeof(d->timing_buf) / sizeof(float) / 2U;
+    tetra_uplink_drain_zeros(d, d->timing_buf, (int)(held < cap ? held : cap));
+    return d->result_len > 0 ? 1 : 0;
+}
+
+/* A squelched block on the uplink burst timing while the uplink holds signal (dsd_demod_tetra_uplink_held(): the
+   look-ahead and the Gardner's delay behind it): as many of the block's samples as it holds run as zeros through the
+   Gardner, so the burst the squelch closed on comes out now, whole, before the squelch's silence, and not after it once
+   the squelch opens again. The rest of the block makes zero symbols, as a closed block does. Whatever the cut, the
+   Gardner takes the same zeros, so the symbols the squelch's reopening finds do not depend on it either. The block
+   makes about as many symbols as the zero symbols it stands for. */
+static int
+full_demod_drain_uplink_on_squelch(struct demod_state* d) {
+    if (!d->cqpsk_enable || !d->channel_squelched || d->lp_len < 2) {
+        return 0;
+    }
+    const size_t held = dsd_demod_tetra_uplink_held(d);
+    if (held == 0U) {
+        return 0;
+    }
+    const int pairs = d->lp_len >> 1;
+    const int drained = held < (size_t)pairs ? (int)held : pairs;
+    tetra_uplink_drain_zeros(d, d->lowpassed, drained);
+    const int sps = dsd_cqpsk_timing_sps(d);
+    const int rest = pairs - drained;
+    int zeros = (rest > 0 && sps > 0) ? (rest + sps - 1) / sps : 0;
+    if (zeros > MAXIMUM_BUF_LENGTH - d->result_len) {
+        zeros = MAXIMUM_BUF_LENGTH - d->result_len;
+    }
+    for (int k = 0; k < zeros; k++) {
+        d->result[d->result_len++] = 0.0f;
+    }
+    return 1;
+}
+
+/* What a stream with the TETRA profile on CQPSK decodes on when its TETRA stage cannot run: the downlink's chain, or
+   the uplink's TETRA channel filter (and the burst timing behind it, dsd_demod_tetra_channel_runs()). */
+static const char*
+tetra_inactive_what(const struct demod_state* d) {
+    return d->tetra_uplink ? "TETRA uplink channel filter inactive" : "TETRA receive chain inactive";
+}
+
+/* Says @p cause once per stream (demod_state::tetra_chain_warned): 0 when it was said already. */
+static int
+tetra_warn_once(struct demod_state* d, int cause) {
+    if (d->tetra_chain_warned & cause) {
+        return 0;
+    }
+    d->tetra_chain_warned |= cause;
+    return 1;
+}
+
+/* A TETRA profile on CQPSK whose chain cannot run decodes on the generic CQPSK path, as TETRA did before it had a
+   chain of its own; say why, once per cause and stream. An uplink session never runs the chain, but its TETRA channel
+   filter falls back the same way on a rate outside the domain or the channel filter off; the TED override does not
+   reach it. Nothing is said for a chain the mode does not ask for. */
+static void
+tetra_chain_warn_inactive(struct demod_state* d) {
+    if (!tetra_chain_requested(d)) {
+        return;
+    }
+    const char* what = tetra_inactive_what(d);
+    const int rate = d->rate_out;
+    if (rate > 0 && !dsd_tetra_dsp_rate_runs(rate) && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_RATE)) {
+        LOG_WARN("%s: DSP rate %d Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA decodes on the generic "
+                 "CQPSK path.\n",
+                 what, rate);
+    }
+    const int ted = d->ted_sps_override;
+    if (!d->tetra_uplink && ted > 0 && (rate % DSD_TETRA_SYMBOL_RATE_HZ != 0 || ted != rate / DSD_TETRA_SYMBOL_RATE_HZ)
+        && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_TED)) {
+        LOG_WARN("%s: the TED override of %d samples per symbol does not match the %d Hz DSP rate; TETRA decodes on "
+                 "the generic CQPSK path.\n",
+                 what, ted, rate);
+    }
+    if (!d->channel_lpf_enable && tetra_warn_once(d, DSD_TETRA_CHAIN_WARN_LPF)) {
+        LOG_WARN("%s: the channel filter is off (DSD_NEO_CHANNEL_LPF=0); TETRA decodes on the generic CQPSK path.\n",
+                 what);
+    }
+}
+
+/* What entering and leaving the chain start over: the mixer phasor, the channel LPF, the matched filter and the AGC
+   average. Each holds samples or a level from the other chain. */
+static void
+tetra_chain_reset_histories(struct demod_state* d) {
+    d->fll_band_edge_state.pre_re = 1.0f;
+    d->fll_band_edge_state.pre_im = 0.0f;
+    channel_lpf_reset_state(d);
+    tetra_rrc_reset_state(d);
+    d->cqpsk_agc_avg = 1.0f;
+}
+
+/*
+ * The block boundary (and a stream open, dsd_demod_update_tetra_chain()): evaluate the predicate and, when it changed
+ * since the last evaluation, run the transition.
+ * - Entering: the combined estimate is split into the mixer (up to its bound at this rate) and the FLL, which is
+ *   re-initialized with the TETRA parameters keeping its frequency.
+ * - Leaving: the FLL is re-initialized with the P25 parameters keeping its frequency, then the mixer is folded into
+ *   it (clamped to its +-1 rad/sample), so the TETRA profile runs the generic CQPSK path from this block on.
+ * The FLL is designed for the sps op25_fll_band_edge_cc() runs at, so it does not redesign again on the block.
+ */
+extern "C" void
+dsd_demod_update_tetra_chain(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    tetra_design_memo_refresh(d);
+    const int want = dsd_demod_tetra_chain_wanted(d);
+    if (!want) {
+        tetra_chain_warn_inactive(d);
+    }
+    if (want == (d->tetra_chain ? 1 : 0)) {
+        return;
+    }
+    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
+    const int fll_sps = dsd_cqpsk_timing_sps(d);
+    if (want) {
+        const float total = dsd_fll_band_edge_total_freq(f);
+        dsd_fll_band_edge_init_params(f, fll_sps, dsd_fll_band_edge_params_for(1));
+        dsd_fll_band_edge_split_total(f, total, dsd_tetra_pre_limit_rad(d->rate_out));
+    } else {
+        dsd_fll_band_edge_init_params(f, fll_sps, dsd_fll_band_edge_params_for(0));
+        dsd_fll_band_edge_fold(f);
+    }
+    tetra_chain_reset_histories(d);
+    d->tetra_chain = want;
+}
+
+/* The transfer sub-block in samples at the chain's sps (DSD_TETRA_SUBBLOCK_SYMBOLS). */
+static int
+tetra_subblock_len(const struct demod_state* d) {
+    return DSD_TETRA_SUBBLOCK_SYMBOLS * tetra_effective_sps(d);
+}
+
+/* The tracking mixer over a whole block, ahead of the channel LPF, on a block the chain runs whole (the raw CQPSK
+   demodulator's; full_demod_tetra_stream_block() runs the rest). The sub-block position advances with it, so the
+   boundaries stay on the input's sample count. */
+static void
+full_demod_tetra_premix(struct demod_state* d) {
+    if (!d->tetra_chain || !d->lowpassed || d->lp_len < 2) {
+        return;
+    }
+    const int pairs = d->lp_len >> 1;
+    dsd_tetra_premix_block(&d->fll_band_edge_state, d->lowpassed, pairs);
+    const int sub = tetra_subblock_len(d);
+    if (sub > 0 && d->tetra_sub_pos >= 0) {
+        d->tetra_sub_pos = (int)(((long long)d->tetra_sub_pos + (long long)pairs) % (long long)sub);
+    } else {
+        d->tetra_sub_pos = 0;
+    }
+}
+
+/* The matched filter for @p sps: designed on first use and when the sps changes, which starts it over (its history
+   holds samples timed for the old sps). Returns 0 when no design fits, which the predicate rules out. */
+static int
+tetra_rrc_ensure(struct demod_state* d, int sps) {
+    if (d->tetra_rrc_taps_len >= 3 && d->tetra_rrc_sps == sps) {
+        return 1;
+    }
+    const int len = dsd_tetra_rrc_design(sps, d->tetra_rrc_taps, DSD_TETRA_RRC_MAX_TAPS);
+    tetra_rrc_reset_state(d);
+    if (len < 3) {
+        d->tetra_rrc_taps_len = 0;
+        d->tetra_rrc_sps = 0;
+        return 0;
+    }
+    d->tetra_rrc_taps_len = len;
+    d->tetra_rrc_sps = sps;
+    return 1;
+}
+
+/*
+ * The matched filter, streaming like the channel FIR (simd_fir_complex_apply()): after the AGC, ahead of the FLL. Its
+ * first (taps - 1) / 2 samples after a reset make no output, and a block can make none. The output goes to the work
+ * buffer the input is not in. Without a design (not reachable while the chain runs) the block passes unfiltered.
+ */
+static void
+tetra_rrc_apply(struct demod_state* d) {
+    if (!d->lowpassed || d->lp_len < 0 || !tetra_rrc_ensure(d, tetra_effective_sps(d))) {
+        return;
+    }
+    const int n = d->lp_len >> 1;
+    const float* in = d->lowpassed;
+    float* out = (d->lowpassed == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    float* hi = assume_aligned_ptr(d->tetra_rrc_hist_i, DSD_NEO_ALIGN);
+    float* hq = assume_aligned_ptr(d->tetra_rrc_hist_q, DSD_NEO_ALIGN);
+    const int made = simd_fir_complex_apply(in, n, out, DSD_DEMOD_WORKBUF_LENGTH / 2, hi, hq, DSD_TETRA_RRC_HIST_LEN,
+                                            &d->tetra_rrc_pending, d->tetra_rrc_taps, d->tetra_rrc_taps_len);
+    if (made < 0) {
+        /* Not reachable: odd taps within the history, pending at most c (the taps change only with a reset), and a
+           block that fits the work buffer. Should it happen, the block passes unfiltered and the filter starts over. */
+        tetra_rrc_reset_state(d);
+        return;
+    }
+    d->lowpassed = out;
+    d->lp_len = made << 1;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+extern "C" void
+dsd_demod_test_tetra_linear_front_end(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    full_demod_tetra_premix(d);
+    channel_lpf_apply(d);
+    tetra_rrc_apply(d);
+}
+
+extern "C" void
+dsd_demod_test_cqpsk_rms_agc(struct demod_state* d) {
+    cqpsk_rms_agc(d);
+}
+#endif
 
 /**
  * @brief Apply post-demod deemphasis IIR filter.
@@ -1696,10 +2146,12 @@ squelch_cache_age(struct demod_state* d) {
     }
 }
 
+/* The block's channel power, squelch gates and floors, on the channel filter's output. A streamed TETRA block
+   (full_demod_tetra_stream_block()) measured its channel power before its AGC ran over that output. */
 static void
-full_demod_update_channel_state(struct demod_state* d) {
+full_demod_update_channel_state(struct demod_state* d, int streamed) {
     squelch_cache_age(d);
-    if (d->lowpassed && d->lp_len >= 2) {
+    if (!streamed && d->lowpassed && d->lp_len >= 2) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
         /* mean_power() pools I and Q and takes their common mean out. An AM carrier sits at 0 Hz, so that mean is the
            carrier itself and what is left swings with its phase, A²(1 - sin 2φ)/4, down to nothing: the squelch chopped
@@ -1751,7 +2203,7 @@ full_demod_emit_zero_cqpsk_symbols(struct demod_state* d) {
         return 0;
     }
     int in_pairs = d->lp_len >> 1;
-    int sps = (d->ted_sps > 0) ? d->ted_sps : 5;
+    int sps = dsd_cqpsk_timing_sps(d);
     int out_syms = (in_pairs + sps - 1) / sps;
     if (out_syms < 1) {
         out_syms = 1;
@@ -1762,19 +2214,23 @@ full_demod_emit_zero_cqpsk_symbols(struct demod_state* d) {
         d->result[k] = 0.0f;
     }
     d->result_len = out_syms;
+    if (d->tetra_chain) {
+        /* The matched filter does not run on a closed block, so at reopen its history would span the gap: it starts
+           over. Nothing runs it until then, so starting it over now is the same. */
+        tetra_rrc_reset_state(d);
+    }
     return 1;
 }
 
 static void
-full_demod_debug_post_agc(const demod_state* d) {
+full_demod_debug_post_agc(const float* iq, int len) {
     static int call_count = 0;
-    if (!debug_cqpsk_enabled() || (++call_count % 50) != 0 || d->lp_len < 8) {
+    if (!debug_cqpsk_enabled() || (++call_count % 50) != 0 || len < 8) {
         return;
     }
-    const float* iq = d->lowpassed;
     float mag_sum = 0.0f;
     float max_env = 0.0f;
-    int pairs = d->lp_len >> 1;
+    int pairs = len >> 1;
     int limit = (pairs < 100) ? pairs : 100;
     for (int k = 0; k < limit; k++) {
         float I = iq[(k << 1)];
@@ -1786,7 +2242,7 @@ full_demod_debug_post_agc(const demod_state* d) {
         }
     }
     float avg_mag = mag_sum / (float)limit;
-    DSD_FPRINTF(stderr, "[POST-AGC] avg_mag:%.3f max_env:%.3f samples:%d\n", avg_mag, max_env, d->lp_len / 2);
+    DSD_FPRINTF(stderr, "[POST-AGC] avg_mag:%.3f max_env:%.3f samples:%d\n", avg_mag, max_env, pairs);
 }
 
 static void
@@ -1823,19 +2279,225 @@ full_demod_debug_op25_state(const struct demod_state* d, int pre_len) {
     DSD_FPRINTF(stderr, "\n");
 }
 
+/* What a streamed TETRA block (full_demod_tetra_stream_block()) leaves: the channel filter's output (after the AGC) and
+   the FLL's, and the carrier loops' state from before the block, which a closed squelch gate puts back. */
+namespace {
+
+struct tetra_stream_block {
+    float* channel;
+    int channel_pairs;
+    float* out;
+    int out_pairs;
+    int in_pairs;
+    dsd_fll_band_edge_state_t fll_before;
+    float agc_before;
+};
+
+/* Where a streamed block stands: its input (x), the channel filter's output (y) and the matched filter's (z), how far
+   each has come, and the channel samples kept before the AGC for the block's channel power. */
+struct tetra_stream_cursor {
+    float* x;
+    float* y;
+    float* z;
+    int in_pos;
+    int y_len;
+    int z_len;
+    float probe[512];
+    int probe_len;
+};
+
+} // namespace
+
+/* Whether a block runs streamed (full_demod_tetra_stream_block()): the chain active on CQPSK with the FLL, a block with
+   samples, and the channel and matched filter designed (which the predicate checked). Leaves the transfer sub-block's
+   length in *sub. */
+static int
+tetra_stream_block_runs(struct demod_state* d, int* sub) {
+    if (!d->tetra_chain || !d->cqpsk_enable || d->mode_demod == &raw_demod || !d->lowpassed || d->lp_len < 2) {
+        return 0;
+    }
+    channel_lpf_ensure_plan(d);
+    *sub = tetra_subblock_len(d);
+    if (d->channel_lpf_plan_taps_len < 3 || *sub <= 0 || !tetra_rrc_ensure(d, tetra_effective_sps(d))) {
+        return 0; /* not reachable: the predicate checked the design and the sps */
+    }
+    if (d->tetra_sub_pos < 0 || d->tetra_sub_pos >= *sub) {
+        d->tetra_sub_pos = 0; /* not reachable: the position stays within its sub-block */
+    }
+    return 1;
+}
+
+/* The channel filter over one piece: the outputs it made at @p ys. */
+static int
+tetra_stream_channel(struct demod_state* d, const float* xs, int seg, float* ys, int out_cap) {
+    const int made = simd_fir_complex_apply(xs, seg, ys, out_cap, d->channel_lpf_hist_i, d->channel_lpf_hist_q,
+                                            DSD_CHANNEL_LPF_HIST_LEN, &d->channel_lpf_pending, d->channel_lpf_plan_taps,
+                                            d->channel_lpf_plan_taps_len);
+    if (made >= 0) {
+        return made;
+    }
+    /* Not reachable (channel_lpf_apply()): the filter starts over and the piece passes unfiltered. Its sub-block
+       position stays (channel_lpf_reset_state() would clear it). */
+    DSD_MEMSET(d->channel_lpf_hist_i, 0, sizeof(d->channel_lpf_hist_i));
+    DSD_MEMSET(d->channel_lpf_hist_q, 0, sizeof(d->channel_lpf_hist_q));
+    d->channel_lpf_pending = 0;
+    DSD_MEMCPY(ys, xs, (size_t)seg * 2U * sizeof(float));
+    return seg;
+}
+
+/* The matched filter over one piece's channel output: the outputs it made at @p zs. */
+static int
+tetra_stream_matched(struct demod_state* d, const float* ys, int made, float* zs, int out_cap) {
+    const int out =
+        simd_fir_complex_apply(ys, made, zs, out_cap, d->tetra_rrc_hist_i, d->tetra_rrc_hist_q, DSD_TETRA_RRC_HIST_LEN,
+                               &d->tetra_rrc_pending, d->tetra_rrc_taps, d->tetra_rrc_taps_len);
+    if (out >= 0) {
+        return out;
+    }
+    /* Not reachable (tetra_rrc_apply()): the matched filter starts over and the piece makes no samples. */
+    tetra_rrc_reset_state(d);
+    return 0;
+}
+
+/* One piece of @p seg samples: mixer, channel LPF, AGC, matched filter and FLL, each on what the stage before made. */
 static void
-full_demod_run_cqpsk_chain(struct demod_state* d) {
+tetra_stream_piece(struct demod_state* d, tetra_stream_cursor* c, int seg) {
+    const int cap = DSD_DEMOD_WORKBUF_LENGTH / 2;
+    float* xs = c->x + (size_t)c->in_pos * 2U;
+    dsd_tetra_premix_block(&d->fll_band_edge_state, xs, seg);
+    float* ys = c->y + (size_t)c->y_len * 2U;
+    const int made = tetra_stream_channel(d, xs, seg, ys, cap - c->y_len);
+    for (int k = 0; k < made * 2 && c->probe_len < 512; k++) {
+        c->probe[c->probe_len++] = ys[k];
+    }
+    d->lowpassed = ys;
+    d->lp_len = made * 2;
+    cqpsk_rms_agc(d);
+    /* The matched filter writing the input's own buffer stays behind what the block still has to read. */
+    float* zs = c->z + (size_t)c->z_len * 2U;
+    const int z_cap = (c->z == c->x) ? (c->in_pos + seg - c->z_len) : (cap - c->z_len);
+    const int made2 = tetra_stream_matched(d, ys, made, zs, z_cap);
+    d->lowpassed = zs;
+    d->lp_len = made2 * 2;
+    op25_fll_band_edge_cc(d);
+    c->y_len += made;
+    c->z_len += made2;
+    c->in_pos += seg;
+}
+
+/*
+ * The TETRA chain's block in pieces cut at its transfer sub-block boundaries (DSD_TETRA_SUBBLOCK_SYMBOLS, counted by
+ * demod_state::tetra_sub_pos): each piece runs the mixer, the channel LPF, the AGC, the matched filter and the FLL
+ * (tetra_stream_piece()), and a piece that ends on a boundary decides the FLL's gear (dsd_fll_band_edge_tetra_boundary())
+ * and moves its residual into the mixer (dsd_fll_band_edge_transfer()), which the next piece mixes with. Every stage
+ * streams with a fixed lag, so the FLL has taken the same samples at every boundary however the input was cut into
+ * blocks, and the chain's output does not depend on the cut. The rest of a block after its last boundary runs too; its
+ * transfer waits for the next boundary, in a later block.
+ *
+ * The squelch gate is still the block's: full_demod_update_channel_state() decides it on channel_pwr, which this
+ * measures as on a whole block, over the first 256 channel samples before the AGC. The pieces run first, as for an
+ * open gate; a closed one puts the loops back (tetra_stream_block_close()). It runs while the chain is active on CQPSK
+ * with the FLL; the raw CQPSK demodulator runs no FLL, so nothing transfers and its block runs whole.
+ *
+ * Returns 0, with nothing touched, for a block it does not run.
+ */
+static int
+full_demod_tetra_stream_block(struct demod_state* d, tetra_stream_block* r) {
+    /* Defined on every return, so the caller reads no indeterminate field whichever way the gate goes. */
+    r->channel = NULL;
+    r->channel_pairs = 0;
+    r->out = NULL;
+    r->out_pairs = 0;
+    r->in_pairs = 0;
+    r->agc_before = 0.0f;
+    int sub = 0;
+    if (!tetra_stream_block_runs(d, &sub)) {
+        return 0;
+    }
+    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
+    r->fll_before = *f;
+    r->agc_before = d->cqpsk_agc_avg;
+    const float pre_limit = dsd_tetra_pre_limit_rad(d->rate_out);
+    const int n = d->lp_len >> 1;
+    /* The channel filter writes the work buffer the input is not in, the matched filter the other one, as on a whole
+       block. When that is the input's own buffer it writes behind what the block still has to read (a filter makes no
+       more outputs than it took samples since the block began), and its output capacity holds it there. */
+    tetra_stream_cursor c;
+    c.x = d->lowpassed;
+    c.y = (c.x == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    c.z = (c.y == d->hb_workbuf) ? d->timing_buf : d->hb_workbuf;
+    c.in_pos = 0;
+    c.y_len = 0;
+    c.z_len = 0;
+    c.probe_len = 0;
+    while (c.in_pos < n) {
+        const int seg = (sub - d->tetra_sub_pos < n - c.in_pos) ? sub - d->tetra_sub_pos : n - c.in_pos;
+        tetra_stream_piece(d, &c, seg);
+        d->tetra_sub_pos += seg;
+        if (d->tetra_sub_pos >= sub) {
+            dsd_fll_band_edge_tetra_boundary(f);
+            dsd_fll_band_edge_transfer(f, pre_limit);
+            d->tetra_sub_pos = 0;
+        }
+    }
+    if (c.probe_len >= 2) {
+        d->channel_pwr = mean_power(c.probe, c.probe_len, 1);
+    }
+    r->channel = c.y;
+    r->channel_pairs = c.y_len;
+    r->out = c.z;
+    r->out_pairs = c.z_len;
+    r->in_pairs = n;
+    /* The block is the channel filter's output until the gate is decided. */
+    d->lowpassed = c.y;
+    d->lp_len = c.y_len * 2;
+    return 1;
+}
+
+/* A streamed block the gate opened goes on from the FLL's output. */
+static void
+tetra_stream_block_open(struct demod_state* d, const tetra_stream_block* r) {
+    full_demod_debug_post_agc(r->channel, r->channel_pairs * 2);
+    d->lowpassed = r->out;
+    d->lp_len = r->out_pairs * 2;
+}
+
+/* A streamed block the gate closed runs as a closed whole block does: the mixer and the channel LPF advanced, nothing
+   after them did. The FLL (its transfers with it) and the AGC average go back to where they were, the mixer's phasor
+   to the rotation a whole block makes at that frequency, and full_demod_emit_zero_cqpsk_symbols() starts the matched
+   filter over. */
+static void
+tetra_stream_block_close(struct demod_state* d, const tetra_stream_block* r) {
+    dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
+    *f = r->fll_before;
+    dsd_tetra_premix_skip(f, r->in_pairs);
+    d->cqpsk_agc_avg = r->agc_before;
+}
+
+static void
+full_demod_run_cqpsk_chain(struct demod_state* d, int streamed) {
     if (!d->cqpsk_enable || d->channel_squelched) {
         return;
     }
-    cqpsk_rms_agc(d);
-    full_demod_debug_post_agc(d);
-    if (d->mode_demod == &raw_demod) {
-        cqpsk_diff_phasor(d);
-        return;
-    }
     int pre_len = d->lp_len;
-    op25_fll_band_edge_cc(d);
+    if (!streamed) {
+        cqpsk_rms_agc(d);
+        full_demod_debug_post_agc(d->lowpassed, d->lp_len);
+        if (d->tetra_chain) {
+            tetra_rrc_apply(d);
+        }
+        if (d->mode_demod == &raw_demod) {
+            cqpsk_diff_phasor(d);
+            return;
+        }
+        pre_len = d->lp_len;
+        op25_fll_band_edge_cc(d);
+        if (d->tetra_chain) {
+            /* Not reachable: the chain's blocks with an FLL run streamed (full_demod_tetra_stream_block()). Should one
+               run whole, the FLL's residual moves into the mixer after it, up to its bound. */
+            dsd_fll_band_edge_transfer(&d->fll_band_edge_state, dsd_tetra_pre_limit_rad(d->rate_out));
+        }
+    }
     op25_gardner_cc(d);
     op25_diff_phasor_cc(d);
     op25_costas_loop_cc(d);
@@ -2154,15 +2816,28 @@ full_demod_apply_squelch_envelope(struct demod_state* d) {
 void
 full_demod(struct demod_state* d) {
     full_demod_apply_halfband_decimation(d);
-    channel_lpf_apply(d);
+    dsd_demod_update_tetra_chain(d);
+    tetra_stream_block streamed_block;
+    const int streamed = full_demod_tetra_stream_block(d, &streamed_block);
+    if (!streamed) {
+        full_demod_tetra_premix(d);
+        channel_lpf_apply(d);
+    }
     if (full_demod_front_end_empty(d)) {
         return;
     }
-    full_demod_update_channel_state(d);
-    if (full_demod_emit_zero_cqpsk_symbols(d)) {
+    full_demod_update_channel_state(d, streamed);
+    if (streamed) {
+        if (d->channel_squelched) {
+            tetra_stream_block_close(d, &streamed_block);
+        } else {
+            tetra_stream_block_open(d, &streamed_block);
+        }
+    }
+    if (full_demod_drain_uplink_on_squelch(d) || full_demod_emit_zero_cqpsk_symbols(d)) {
         return;
     }
-    full_demod_run_cqpsk_chain(d);
+    full_demod_run_cqpsk_chain(d, streamed);
     full_demod_run_non_cqpsk_chain(d);
     full_demod_apply_iq_balance(d);
     if (full_demod_handle_fsk_output(d)) {

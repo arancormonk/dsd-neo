@@ -89,6 +89,41 @@ void dsd_window_build(dsd_window_type_t window_type, int ntaps, float* taps_out)
 int dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, double transition_width,
                         dsd_window_type_t window_type, float* taps_out, int max_taps);
 
+/**
+ * @brief Design a root-raised-cosine FIR filter.
+ *
+ * Direct port of GNU Radio's firdes::root_raised_cosine(), including its
+ * t = 0 and |4 alpha t| = 1 cases. The length is forced odd (ntaps | 1) and
+ * the taps are normalized to sum to @p gain.
+ *
+ * @param gain          Filter gain (sum of the taps)
+ * @param sampling_freq Sampling frequency in Hz
+ * @param symbol_rate   Symbol rate in symbols/s
+ * @param alpha         Excess bandwidth (roll-off), 0 < alpha <= 1
+ * @param ntaps         Number of taps (made odd)
+ * @param taps_out      Output buffer for filter taps
+ * @param max_taps      Capacity of @p taps_out
+ * @return Number of taps written, or -1 on a bad argument or when the taps exceed @p max_taps (nothing written).
+ */
+int dsd_firdes_root_raised_cosine(double gain, double sampling_freq, double symbol_rate, double alpha, int ntaps,
+                                  float* taps_out, int max_taps);
+
+/** Taps of the longest TETRA matched filter: 2 x 8 x sps + 1 at sps 8. */
+#define DSD_TETRA_RRC_MAX_TAPS 129
+
+/**
+ * @brief Design the TETRA receive matched filter.
+ *
+ * Root-raised-cosine, alpha 0.35, spanning 8 symbols each side (2 x 8 x sps + 1
+ * taps), scaled so the sum of the squared taps is 1/sps.
+ *
+ * @param sps      Samples per symbol, 2..8
+ * @param taps_out Output buffer for filter taps
+ * @param max_taps Capacity of @p taps_out
+ * @return Number of taps written, or -1 when @p sps is outside 2..8 or the taps do not fit.
+ */
+int dsd_tetra_rrc_design(int sps, float* taps_out, int max_taps);
+
 #ifdef __cplusplus
 }
 #endif

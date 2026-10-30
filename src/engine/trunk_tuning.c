@@ -161,6 +161,10 @@ dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, i
 #endif
 /* Set on the thread a run decodes on (dsd_engine_set_decoder_thread()). */
 static DSD_ENGINE_THREAD_LOCAL int s_decoder_thread = 0;
+/* Whether the rigctl leg of the last backend tune on this thread moved the radio (dsd_engine_tune_with_backend()), and
+   whether the last scanner tune's did (dsd_engine_scan_tune_moved()). */
+static DSD_ENGINE_THREAD_LOCAL int s_backend_rigctl_moved = 0;
+static DSD_ENGINE_THREAD_LOCAL int s_scan_tune_moved = 0;
 
 void
 dsd_engine_set_decoder_thread(int is_decoder) {
@@ -867,6 +871,8 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
 
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    /* Nothing has moved yet: a refusal below must not report the last tune's rigctl move as this one's. */
+    s_backend_rigctl_moved = 0;
     /* Every backend below carries the frequency as uint32_t; one past it (possible where long is 64-bit) would wrap to
        an unrelated channel, so the tune fails instead. The callers have already refused freq <= 0. */
     if ((long long)freq > (long long)UINT32_MAX) {
@@ -878,6 +884,7 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         if (!dsd_engine_tune_rigctl(opts, state, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
+        s_backend_rigctl_moved = 1;
         opts->rtlsdr_center_freq = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
@@ -1373,6 +1380,11 @@ dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk
     dsd_trunk_tuning_request_complete(request_id, result);
 }
 
+int
+dsd_engine_scan_tune_moved(void) {
+    return s_scan_tune_moved;
+}
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -1383,6 +1395,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     if (out_request_id) {
         *out_request_id = 0U;
     }
+    s_scan_tune_moved = 0;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -1411,6 +1424,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 
     dsd_engine_maybe_drain_audio(opts, state);
     result = dsd_engine_tune_with_backend(opts, state, freq, tune_request_id);
+    s_scan_tune_moved = s_backend_rigctl_moved;
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);

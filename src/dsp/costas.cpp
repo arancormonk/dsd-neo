@@ -22,7 +22,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/dsp/costas.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/tetra_uplink_timing.h>
+#include <dsd-neo/platform/fp_opaque.h>
 #include <dsd-neo/runtime/config.h>
 #include <iterator>
 #include "dsd-neo/core/safe_api.h"
@@ -222,6 +225,15 @@ stored_float_is_finite(const float* value) {
     return (stored_float_bits(value) & kFloatExponentMask) != kFloatExponentMask;
 }
 
+/* A value the code just took as an argument or computed: under fast-math Clang treats such a float as never NaN or
+   infinite and would fold a bit test on it, so the value goes through a volatile round trip first (fp_opaque.h). For
+   per-block and per-setting values, not per-sample ones. */
+static bool
+computed_float_is_finite(float value) {
+    const float opaque = dsd_fp_opaque_f(value);
+    return stored_float_is_finite(&opaque);
+}
+
 static int
 cqpsk_symbol_rate_hz(const demod_state* d) {
     if (!d || d->rate_out <= 0 || d->ted_sps <= 0) {
@@ -230,8 +242,18 @@ cqpsk_symbol_rate_hz(const demod_state* d) {
     return (d->rate_out + (d->ted_sps / 2)) / d->ted_sps;
 }
 
+/* The TETRA chain's Gardner gain when none was set. OP25's 0.025 is a P25 gain; behind the TETRA matched filter it
+   recovered timing too slowly from a fast carrier pull-in and on real captures' sample clock errors (a 54 kHz capture
+   250 ppm off decoded 73 BSCH at 0.025, 79 at 0.07), and decoded less at every rate from 36 to 144 kHz. */
+static const float kTetraGardnerGain = 0.07f;
+
+/* The Gardner gain: the requested one (ted_gain, else 0.025), lowered to 0.018 at 5500 sym/s and above once 240 symbols
+   in the lock metric (@p lock_accum over @p lock_count) holds at 0.05, unless a gain was set. A block decides it from
+   the lock at its start, so where a block starts decides when it moves; the TETRA chain, whose output must not depend
+   on the cut, keeps its gain, a set one or kTetraGardnerGain (on TETRA captures the lowered one also decoded less),
+   and an uplink session decides it every DSD_TETRA_UL_GAIN_SYMBOLS symbols instead (gardner_run_loop()). */
 static float
-op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
+op25_gardner_gain_mu_for_lock(const demod_state* d, float lock_accum, int lock_count) {
     const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -241,20 +263,28 @@ op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
     if ((d && d->ted_gain_is_set) || (cfg && cfg->ted_gain_is_set)) {
         return requested;
     }
+    if (d && d->tetra_chain) {
+        return kTetraGardnerGain;
+    }
 
     if (cqpsk_symbol_rate_hz(d) < 5500) {
         return requested;
     }
-    if (!ted || ted->lock_count < 240) {
+    if (lock_count < 240) {
         return requested;
     }
 
-    float lock_metric = ted->lock_accum / (float)ted->lock_count;
+    float lock_metric = lock_accum / (float)lock_count;
     if (lock_metric < 0.05f) {
         return requested;
     }
 
     return 0.018f;
+}
+
+static float
+op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
+    return op25_gardner_gain_mu_for_lock(d, ted ? ted->lock_accum : 0.0f, ted ? ted->lock_count : 0);
 }
 
 /*
@@ -413,6 +443,8 @@ struct costas_loop_context_t {
     float min_phase;
     float error_smooth;
     float last_error;
+    /* On the TETRA chain: a phase past +-max_phase steps a quarter turn back (costas_process_symbol()). */
+    int rail_step;
     costas_metrics_acc_t metrics;
 };
 
@@ -472,6 +504,7 @@ gardner_reinit_state(demod_state* d, ted_state_t* ted, int sps, int is_first_ini
     ted->twice_sps = twice_sps_required;
     ted->dl_index = 0;
     ted->sps = sps;
+    ted->ul_lookahead_live = 0;
     ted->dl[0] = 0.0f;
     ted->dl[1] = 0.0f;
     return 1;
@@ -539,8 +572,11 @@ gardner_push_delay_sample(gardner_loop_context_t* ctx, float in_r, float in_j) {
     }
 }
 
+/* With kUplinkTiming each sample passes through the TETRA uplink look-ahead (tetra_uplink_timing.h) on its way into
+   the delay line. */
+template <bool kUplinkTiming>
 static inline int
-gardner_consume_until_ready(gardner_loop_context_t* ctx) {
+gardner_consume_until_ready(gardner_loop_context_t* ctx, dsd_tetra_ul_timing* ul) {
     while (ctx->mu > 1.0f && ctx->i < ctx->nc) {
         ctx->mu -= 1.0f;
 
@@ -548,6 +584,11 @@ gardner_consume_until_ready(gardner_loop_context_t* ctx) {
         float in_r = 0.0f;
         float in_j = 0.0f;
         load_pair_components_or_zero(ctx->iq_in + (size_t)ctx->i * 2, &in_r, &in_j);
+        if (kUplinkTiming) {
+            dsd_tetra_ul_timing_push(ul, in_r, in_j, &in_r, &in_j);
+        } else {
+            (void)ul;
+        }
 
         gardner_push_delay_sample(ctx, in_r, in_j);
         ctx->i++;
@@ -643,6 +684,7 @@ costas_prepare_loop_context(const dsd_costas_loop_state_t* c, costas_loop_contex
     ctx->min_freq = c->min_freq;
     ctx->error_smooth = stored_float_is_finite(&c->error_smooth) ? c->error_smooth : 0.0f;
     ctx->last_error = 0.0f;
+    ctx->rail_step = 0;
     ctx->metrics.err_abs_acc = 0.0f;
     ctx->metrics.err_raw_abs_acc = 0.0f;
     ctx->metrics.confidence_acc = 0.0f;
@@ -688,6 +730,16 @@ costas_process_symbol(costas_loop_context_t* ctx, const float* sample, float* ou
 
     ctx->freq += ctx->beta * error;
     ctx->phase += ctx->freq + ctx->alpha * error;
+    if (ctx->rail_step) {
+        /* The detector repeats every quarter turn, so a phase a quarter turn back is the same lock. Pinned at the rail
+           instead, the loop sees the symmetric noise clipped and winds its frequency up to its own clamp: a fast carrier
+           pull-in sweeps the differential rotation it tracks past the rail, and the loop never came back. */
+        if (ctx->phase > ctx->max_phase) {
+            ctx->phase -= kPi / 2.0f;
+        } else if (ctx->phase < ctx->min_phase) {
+            ctx->phase += kPi / 2.0f;
+        }
+    }
     ctx->phase = clampf_range(ctx->phase, ctx->min_phase, ctx->max_phase);
     ctx->freq = clampf_range(ctx->freq, ctx->min_freq, ctx->max_freq);
 
@@ -728,8 +780,14 @@ fll_delay_line_consistent(const dsd_fll_band_edge_state_t* f) {
     return f->n_taps >= 3 && f->n_taps <= FLL_BAND_EDGE_MAX_TAPS && f->delay_idx >= 0 && f->delay_idx < f->n_taps;
 }
 
+/* The parameters are fixed constants (dsd_fll_band_edge_params_for()), so any difference is a different chain. */
 static inline int
-fll_need_reinit(const dsd_fll_band_edge_state_t* f, int sps, int* is_first_init) {
+fll_params_differ(const dsd_fll_band_edge_state_t* f, dsd_fll_band_edge_params p) {
+    return (fabsf(f->rolloff - p.rolloff) > 1e-6f || fabsf(f->loop_bw_scale - p.loop_bw_scale) > 1e-6f) ? 1 : 0;
+}
+
+static inline int
+fll_need_reinit(const dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p, int* is_first_init) {
     const int first_init = !f->initialized;
     if (is_first_init) {
         *is_first_init = first_init;
@@ -737,29 +795,68 @@ fll_need_reinit(const dsd_fll_band_edge_state_t* f, int sps, int* is_first_init)
     if (first_init || !fll_delay_line_consistent(f)) {
         return 1;
     }
-    return (f->sps > 0 && f->sps != sps) ? 1 : 0;
+    return ((f->sps > 0 && f->sps != sps) || fll_params_differ(f, p)) ? 1 : 0;
 }
 
-static inline void
-fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps) {
-    const float loop_bw = kTwoPi / (float)sps / 350.0f;
+/* GNU Radio control_loop::update_gains() at loop bandwidth loop_bw_scale * 2*pi/sps/350 (OP25's FLL bandwidth for a
+ * scale of 1), critically damped. */
+static void
+fll_set_loop_gains(dsd_fll_band_edge_state_t* f, int sps, float loop_bw_scale) {
+    const float loop_bw = kTwoPi / (float)sps / 350.0f * loop_bw_scale;
     const float damping = 0.70710678118654752440f;
     const float denom = 1.0f + 2.0f * damping * loop_bw + loop_bw * loop_bw;
     f->loop_bw = loop_bw;
     f->alpha = (4.0f * damping * loop_bw) / denom;
     f->beta = (4.0f * loop_bw * loop_bw) / denom;
+}
+
+/* The TETRA gears start over, acquiring (dsd_fll_band_edge_tetra_boundary()). */
+static void
+fll_tetra_gear_reset(dsd_fll_band_edge_state_t* f) {
+    f->tetra_track = 0;
+    f->tetra_have_ref = 0;
+    f->tetra_ref_total = 0.0f;
+    for (int k = 0; k < DSD_TETRA_FLL_LOCK_WINDOW; k++) {
+        f->tetra_err[k] = 0.0f;
+    }
+    f->tetra_err_idx = 0;
+    f->tetra_err_count = 0;
+    f->tetra_lock_run = 0;
+}
+
+static void
+fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps, float loop_bw_scale) {
+    fll_set_loop_gains(f, sps, loop_bw_scale);
     f->max_freq = 1.0f;
     f->min_freq = -1.0f;
+    fll_tetra_gear_reset(f);
+}
+
+/* The one band-edge design both init paths run: filters at the parameters' rolloff with OP25's filter size 2*sps+1,
+ * then the loop gains. It records sps and the parameters, which key the next redesign. State handling (phase, delay
+ * line, frequency) stays with each caller.
+ *
+ * OP25 (p25_demodulator_dev.py line 403):
+ *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
+ * with excess_bw 0.2. Band-edge frequencies are SPS- and rolloff-dependent, ±(1+rolloff)/(2*sps), so a design for
+ * other parameters gives garbage band-edge energy estimates. */
+static void
+fll_design(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p) {
+    const int filter_size = 2 * sps + 1;
+    fll_band_edge_design_filter(f, sps, p.rolloff, filter_size);
+    fll_configure_loop_params(f, sps, p.loop_bw_scale);
+    f->rolloff = p.rolloff;
+    f->loop_bw_scale = p.loop_bw_scale;
 }
 
 static inline void
-fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, int is_first_init) {
-    /* Read before the redesign overwrites the state: it names the trigger in the debug log. */
+fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p,
+                 int is_first_init) {
+    /* Read before the redesign overwrites the state: they name the trigger in the debug log. */
     const int inconsistent = !is_first_init && !fll_delay_line_consistent(f);
-    const float excess_bw = 0.2f;
+    const int sps_change = f->sps != sps;
     const int filter_size = 2 * sps + 1;
-    fll_band_edge_design_filter(f, sps, excess_bw, filter_size);
-    fll_configure_loop_params(f, sps);
+    fll_design(f, sps, p);
 
     f->phase = 0.0f;
     if (is_first_init) {
@@ -776,9 +873,12 @@ fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, in
         } else if (inconsistent) {
             DSD_FPRINTF(stderr, "[FLL] inconsistent_state: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps,
                         filter_size, freq_hz);
-        } else {
+        } else if (sps_change) {
             DSD_FPRINTF(stderr, "[FLL] sps_change: sps=%d filter_size=%d freq=%.1fHz (preserved)\n", sps, filter_size,
                         freq_hz);
+        } else {
+            DSD_FPRINTF(stderr, "[FLL] params_change: sps=%d rolloff=%.2f loop_bw=%.6f freq=%.1fHz (preserved)\n", sps,
+                        f->rolloff, f->loop_bw, freq_hz);
         }
     }
 }
@@ -798,18 +898,24 @@ fll_prepare_loop_context(dsd_fll_band_edge_state_t* f, fll_loop_context_t* ctx) 
 }
 
 static inline void
-fll_convolve_band_edges(const dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx, float* lower_r,
-                        float* lower_i, float* upper_r, float* upper_i) {
+fll_convolve_band_edges(const dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx, float newest_r,
+                        float newest_i, float* lower_r, float* lower_i, float* upper_r, float* upper_i) {
     /* Accumulate the four real dot products once for both conjugate filters.
      * Independent sums let the compiler vectorize across taps; combining them
-     * afterward halves the products and coefficient loads in the convolution. */
+     * afterward halves the products and coefficient loads in the convolution.
+     * The newest sample (tap 0) comes from the caller's registers, not the delay line it was just stored in: a
+     * vectorized loop reading it back stalled on the store. The sums run in the same order either way. */
     float rr = 0.0f;
     float ii = 0.0f;
     float ri = 0.0f;
     float ir = 0.0f;
+    rr += newest_r * f->taps_upper_r[0];
+    ii += newest_i * f->taps_upper_i[0];
+    ri += newest_r * f->taps_upper_i[0];
+    ir += newest_i * f->taps_upper_r[0];
 
     const int delay_base = ctx->delay_idx + ctx->n_taps;
-    for (int k = 0; k < ctx->n_taps; k++) {
+    for (int k = 1; k < ctx->n_taps; k++) {
         const int idx = delay_base - k;
         const float dr = ctx->delay_r[idx];
         const float di = ctx->delay_i[idx];
@@ -866,7 +972,7 @@ fll_process_sample(const dsd_fll_band_edge_state_t* f, fll_loop_context_t* ctx, 
     float lower_i = 0.0f;
     float upper_r = 0.0f;
     float upper_i = 0.0f;
-    fll_convolve_band_edges(f, ctx, &lower_r, &lower_i, &upper_r, &upper_i);
+    fll_convolve_band_edges(f, ctx, *out_r, *out_i, &lower_r, &lower_i, &upper_r, &upper_i);
 
     ctx->delay_idx++;
     if (ctx->delay_idx == ctx->n_taps) {
@@ -885,6 +991,68 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
 }
 
 } // namespace
+
+/* An uplink session's Gardner gain, decided from the lock now (op25_gardner_gain_mu_for_lock()) and kept in @p ul
+   until the next decision. */
+static inline void
+gardner_uplink_decide_gain(gardner_loop_context_t* ctx, const demod_state* d, dsd_tetra_ul_timing* ul) {
+    ul->gain_mu = op25_gardner_gain_mu_for_lock(d, ctx->lock_accum, ctx->lock_count);
+    ctx->gain_mu = ul->gain_mu;
+    ctx->gain_omega = 0.1f * ul->gain_mu * ul->gain_mu;
+}
+
+/* The Gardner loop over a block. With kUplinkTiming the samples come through the TETRA uplink look-ahead, after each
+   symbol the next strobe moves onto the grid of a burst its training placed (dsd_tetra_ul_timing_align()), and the
+   gain is decided every DSD_TETRA_UL_GAIN_SYMBOLS symbols, not per block, so the symbols do not depend on the cut. */
+template <bool kUplinkTiming>
+static void
+gardner_run_loop(gardner_loop_context_t* ctx_ptr, const demod_state* d, const ted_state_t* ted,
+                 dsd_tetra_ul_timing* ul) {
+    gardner_loop_context_t& ctx = *ctx_ptr;
+    while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
+        if (!gardner_consume_until_ready<kUplinkTiming>(&ctx, ul)) {
+            break;
+        }
+
+        int half_sps = 0;
+        float half_mu = 0.0f;
+        gardner_compute_half_timing(ctx.mu, ctx.omega, &half_sps, &half_mu);
+
+        float mid_r = 0.0f;
+        float mid_j = 0.0f;
+        float sym_r = 0.0f;
+        float sym_j = 0.0f;
+        if (!gardner_interpolate_symbol(&ctx, half_sps, half_mu, &mid_r, &mid_j, &sym_r, &sym_j)) {
+            ctx.mu += ctx.omega;
+            continue;
+        }
+
+        const float symbol_error = gardner_compute_symbol_error(ctx.last_r, ctx.last_j, sym_r, sym_j, mid_r, mid_j);
+        gardner_update_lock_accum(&ctx, sym_r, sym_j, mid_r, mid_j);
+        gardner_update_loop(&ctx, ted, symbol_error, sym_r, sym_j);
+        if (kUplinkTiming) {
+            /* The next strobe reads x[3 + mu + omega/2] of the delay line once mu is consumed down to (0, 1]: from
+               the next sample taken, that is -twice_sps + 3 + mu + omega/2 (gardner_compute_half_timing()). */
+            const double next_strobe = (double)(3 - ctx.twice_sps) + (double)ctx.mu + 0.5 * (double)ctx.omega;
+            float move = 0.0f;
+            if (dsd_tetra_ul_timing_align(ul, next_strobe, ctx.omega, &move)) {
+                ctx.mu += move;
+            }
+        }
+        ctx.last_r = sym_r;
+        ctx.last_j = sym_j;
+        ctx.iq_out[ctx.o++] = sym_r;
+        ctx.iq_out[ctx.o++] = sym_j;
+        if (kUplinkTiming) {
+            ul->symbols_out++;
+            if (ul->symbols_out % DSD_TETRA_UL_GAIN_SYMBOLS == 0U) {
+                gardner_uplink_decide_gain(&ctx, d, ul);
+            }
+        } else {
+            (void)d;
+        }
+    }
+}
 
 /*
  * OP25-compatible Gardner timing recovery block.
@@ -916,6 +1084,12 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
  * block, so a stream gives the same symbols however it is cut; a block can make
  * none. Only the adaptive gain is decided per block.
  */
+/* Every burst the Gardner aligns in one block waits for the carrier loop (dsd_tetra_ul_timing_align()). A block holds
+   at most DSD_DEMOD_WORKBUF_LENGTH / 2 samples, so at 2 samples a symbol fewer control uplink bursts (103 symbols)
+   than the queue holds, one more waiting from the block before included. */
+static_assert((DSD_TETRA_UL_CARRIERS - 1) * 103 * DSD_TETRA_UL_MIN_SPS >= DSD_DEMOD_WORKBUF_LENGTH / 2,
+              "the uplink carrier queue holds every burst of the largest block");
+
 extern "C" void
 op25_gardner_cc(struct demod_state* d) {
     if (!d || !d->lowpassed || d->lp_len < 2 || !d->cqpsk_enable) {
@@ -923,7 +1097,7 @@ op25_gardner_cc(struct demod_state* d) {
     }
 
     ted_state_t* ted = &d->ted_state;
-    const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
+    const int sps = dsd_cqpsk_timing_sps(d);
     float omega = ted->omega;
     int is_first_init = 0;
     if (gardner_need_reinit(ted, sps, &is_first_init) && !gardner_reinit_state(d, ted, sps, is_first_init, &omega)) {
@@ -938,31 +1112,27 @@ op25_gardner_cc(struct demod_state* d) {
     gardner_init_loop_context(d, ted, gain_mu, gain_omega, &ctx);
     ctx.omega = omega;
 
-    while (ctx.o < ctx.out_cap && ctx.i < ctx.nc) {
-        if (!gardner_consume_until_ready(&ctx)) {
-            break;
+    if (dsd_demod_tetra_uplink_timing_runs(d, sps)) {
+        dsd_tetra_ul_timing* ul = &d->tetra_ul_timing;
+        if (!ted->ul_lookahead_live || ul->sps != sps) {
+            /* The delay line starts over with the look-ahead: what it held came before whatever started the look-ahead
+               over (a dropped block, a retune, a reset) and would land after it. A flush left it all zeros. */
+            DSD_MEMSET(ted->dl, 0, sizeof(ted->dl));
+            dsd_tetra_ul_timing_reset(ul, sps);
+            ted->ul_lookahead_live = 1;
         }
-
-        int half_sps = 0;
-        float half_mu = 0.0f;
-        gardner_compute_half_timing(ctx.mu, ctx.omega, &half_sps, &half_mu);
-
-        float mid_r = 0.0f;
-        float mid_j = 0.0f;
-        float sym_r = 0.0f;
-        float sym_j = 0.0f;
-        if (!gardner_interpolate_symbol(&ctx, half_sps, half_mu, &mid_r, &mid_j, &sym_r, &sym_j)) {
-            ctx.mu += ctx.omega;
-            continue;
+        /* The gain the last decision left, or the first decision, at the reset. */
+        if (ul->gain_mu > 0.0f) {
+            ctx.gain_mu = ul->gain_mu;
+            ctx.gain_omega = 0.1f * ul->gain_mu * ul->gain_mu;
+        } else {
+            gardner_uplink_decide_gain(&ctx, d, ul);
         }
-
-        const float symbol_error = gardner_compute_symbol_error(ctx.last_r, ctx.last_j, sym_r, sym_j, mid_r, mid_j);
-        gardner_update_lock_accum(&ctx, sym_r, sym_j, mid_r, mid_j);
-        gardner_update_loop(&ctx, ted, symbol_error, sym_r, sym_j);
-        ctx.last_r = sym_r;
-        ctx.last_j = sym_j;
-        ctx.iq_out[ctx.o++] = sym_r;
-        ctx.iq_out[ctx.o++] = sym_j;
+        gardner_run_loop<true>(&ctx, d, ted, ul);
+        d->ted_effective_gain = ctx.gain_mu;
+    } else {
+        ted->ul_lookahead_live = 0;
+        gardner_run_loop<false>(&ctx, d, ted, nullptr);
     }
 
     gardner_commit_loop_context(d, ted, &ctx);
@@ -1011,6 +1181,32 @@ op25_diff_phasor_cc(struct demod_state* d) {
     d->cqpsk_diff_prev_j = prev_j;
 }
 
+/* The Costas loop over a block's symbols. With kUplinkCarrier (a TETRA uplink session's burst timing,
+   tetra_uplink_timing.h) the loop takes a burst's rotation, measured on its training, at the burst's first symbol,
+   with its frequency and error smoothing started over. */
+template <bool kUplinkCarrier>
+static void
+costas_run_loop(costas_loop_context_t* ctx, float* iq, int pairs, dsd_tetra_ul_timing* ul) {
+    for (int n = 0; n < pairs; n++) {
+        const size_t nn = (size_t)n;
+        float out_r = 0.0f;
+        float out_j = 0.0f;
+        if (kUplinkCarrier) {
+            float phase = 0.0f;
+            if (dsd_tetra_ul_timing_carrier(ul, &phase)) {
+                ctx->phase = phase;
+                ctx->freq = 0.0f;
+                ctx->error_smooth = 0.0f;
+            }
+        } else {
+            (void)ul;
+        }
+        costas_process_symbol(ctx, iq + nn * 2, &out_r, &out_j);
+        iq[nn * 2] = out_r;
+        iq[nn * 2 + 1] = out_j;
+    }
+}
+
 /*
  * OP25-compatible Costas loop at symbol rate.
  *
@@ -1056,14 +1252,11 @@ op25_costas_loop_cc(struct demod_state* d) {
 
     costas_loop_context_t ctx;
     costas_prepare_loop_context(c, &ctx);
-
-    for (int n = 0; n < pairs; n++) {
-        const size_t nn = (size_t)n;
-        float out_r = 0.0f;
-        float out_j = 0.0f;
-        costas_process_symbol(&ctx, iq + nn * 2, &out_r, &out_j);
-        iq[nn * 2] = out_r;
-        iq[nn * 2 + 1] = out_j;
+    ctx.rail_step = d->tetra_chain ? 1 : 0;
+    if (d->ted_state.ul_lookahead_live) {
+        costas_run_loop<true>(&ctx, iq, pairs, &d->tetra_ul_timing);
+    } else {
+        costas_run_loop<false>(&ctx, iq, pairs, nullptr);
     }
 
     costas_commit_loop(c, &ctx);
@@ -1175,8 +1368,41 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
     f->initialized = 1;
 }
 
+extern "C" dsd_fll_band_edge_params
+dsd_fll_band_edge_params_for(int tetra_chain) {
+    dsd_fll_band_edge_params p;
+    if (tetra_chain) {
+        /* The TETRA pulse's rolloff; 4x the loop bandwidth, since behind the matched filter the band edges carry less
+         * energy and the default loop pulls in too slowly. */
+        p.rolloff = 0.35f;
+        p.loop_bw_scale = 4.0f;
+    } else {
+        p.rolloff = 0.2f; /* OP25 _def_excess_bw */
+        p.loop_bw_scale = 1.0f;
+    }
+    return p;
+}
+
+/* The DSD_NEO_DEBUG_CQPSK line for an FLL init: which of first init, sps change, parameter change or same-design retune
+ * reset it is. */
+static void
+fll_log_init(const dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p, int is_first_init,
+             int is_sps_change, int is_params_change) {
+    if (is_first_init) {
+        DSD_FPRINTF(stderr, "[FLL-INIT] first init sps=%d\n", sps);
+    } else if (is_sps_change) {
+        DSD_FPRINTF(stderr, "[FLL-INIT] sps change %d->%d (freq preserved)\n", f->sps, sps);
+    } else if (is_params_change) {
+        DSD_FPRINTF(stderr,
+                    "[FLL-INIT] params change sps=%d rolloff %.2f->%.2f loop_bw x%.0f->x%.0f (freq preserved)\n", sps,
+                    f->rolloff, p.rolloff, f->loop_bw_scale, p.loop_bw_scale);
+    } else {
+        DSD_FPRINTF(stderr, "[FLL-INIT] retune reset sps=%d (freq preserved)\n", sps);
+    }
+}
+
 /*
- * Initialize FLL band-edge filter for a given samples-per-symbol.
+ * Initialize FLL band-edge filter for a given samples-per-symbol and design parameters.
  *
  * Designs the band-edge filters and sets loop parameters upfront, avoiding
  * the lazy initialization in op25_fll_band_edge_cc() that can cause poor
@@ -1186,64 +1412,33 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
  * and the SPS is known.
  *
  * The initializer preserves the frequency estimate so callers can retain it
- * across same-frequency resets and SPS changes. Hardware retune policy remains
- * the caller's responsibility; rtl_sdr_fm clears the estimate or restores a
- * seed learned on the target frequency before invoking this initializer.
+ * across same-frequency resets, SPS changes and parameter changes. Hardware retune
+ * policy remains the caller's responsibility; rtl_sdr_fm clears the estimate or
+ * restores a seed learned on the target frequency before invoking this initializer.
  */
 extern "C" void
-dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
-    if (!f || sps < 1) {
+dsd_fll_band_edge_init_params(dsd_fll_band_edge_state_t* f, int sps, dsd_fll_band_edge_params p) {
+    if (!f || sps < 1 || !(p.rolloff > 0.0f && p.rolloff <= 1.0f) || !(p.loop_bw_scale > 0.0f)) {
         return;
     }
 
     int is_first_init = !f->initialized;
     int is_sps_change = f->initialized && f->sps != sps && f->sps > 0;
+    int is_params_change = f->initialized && !is_sps_change && fll_params_differ(f, p);
 
     /* Debug: log FLL init when DSD_NEO_DEBUG_CQPSK=1 */
     if (debug_cqpsk_enabled()) {
-        if (is_first_init) {
-            DSD_FPRINTF(stderr, "[FLL-INIT] first init sps=%d\n", sps);
-        } else if (is_sps_change) {
-            DSD_FPRINTF(stderr, "[FLL-INIT] sps change %d->%d (freq preserved)\n", f->sps, sps);
-        } else {
-            DSD_FPRINTF(stderr, "[FLL-INIT] retune reset sps=%d (freq preserved)\n", sps);
-        }
+        fll_log_init(f, sps, p, is_first_init, is_sps_change, is_params_change);
     }
 
-    /* Redesign filters only when SPS changes or on first init.
-     * On same-SPS retune, keep existing filters but reset phase/delay. */
-    if (is_first_init || is_sps_change) {
-        /* OP25 parameters from p25_demodulator_dev.py line 403:
-         *   self.fll = digital.fll_band_edge_cc(sps, excess_bw, 2*sps+1, TWO_PI/sps/350)
-         *
-         * excess_bw = 0.2 (from line ~60: _def_excess_bw = 0.2)
-         * filter_size = 2*sps+1 = 11 for sps=5, 9 for sps=4
-         * loop_bw = TWO_PI / sps / 350
-         */
-        float excess_bw = 0.2f;
-        int filter_size = 2 * sps + 1;
-        float loop_bw = kTwoPi / (float)sps / 350.0f;
-
-        /* Design the band-edge filters for the new SPS.
-         *
-         * GNU Radio's set_samples_per_symbol() redesigns filters but preserves
-         * the frequency estimate. This is critical because:
-         * 1. Band-edge frequencies are SPS-dependent: ±(1+rolloff)/(2*sps)
-         * 2. The LO offset (tracked by freq) is independent of symbol rate
-         *
-         * Filter redesign: 5 sps -> band-edges at ±0.12 normalized
-         *                  4 sps -> band-edges at ±0.15 normalized
-         * Using wrong filters causes garbage band-edge energy estimates. */
-        fll_band_edge_design_filter(f, sps, excess_bw, filter_size);
-
-        /* Set loop parameters using GNU Radio's control_loop update_gains() formula */
-        f->loop_bw = loop_bw;
-        float damping = 0.70710678118654752440f; /* sqrt(2)/2 - critically damped */
-        float denom = 1.0f + 2.0f * damping * loop_bw + loop_bw * loop_bw;
-        f->alpha = (4.0f * damping * loop_bw) / denom;
-        f->beta = (4.0f * loop_bw * loop_bw) / denom;
-        f->max_freq = 1.0f; /* rad/sample limit */
-        f->min_freq = -1.0f;
+    /* Redesign filters only on first init or when SPS or the parameters change.
+     * On a same-design retune, keep existing filters but reset phase/delay.
+     *
+     * GNU Radio's set_samples_per_symbol() redesigns filters but preserves
+     * the frequency estimate: the LO offset (tracked by freq) is independent
+     * of the symbol rate and of the filter design. */
+    if (is_first_init || is_sps_change || is_params_change) {
+        fll_design(f, sps, p);
     }
 
     /* State reset behavior - preserve the caller-provided frequency seed, then
@@ -1263,11 +1458,246 @@ dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
      *   - Phase: new samples have no phase relationship to old
      *   - Delay lines: must be cleared when filters are redesigned
      *   - Frequency: preserved exactly as seeded by the caller
+     *   - The TETRA gears: acquiring again, at the design's gains
      */
     f->phase = 0.0f;
     /* f->freq is caller-owned retune policy state. */
     f->delay_idx = 0;
     fll_band_edge_clear_delay(f);
+    if (f->tetra_track) {
+        fll_set_loop_gains(f, f->sps, f->loop_bw_scale);
+    }
+    fll_tetra_gear_reset(f);
+}
+
+extern "C" int
+dsd_cqpsk_timing_sps(const struct demod_state* d) {
+    return (d && d->ted_sps > 0) ? d->ted_sps : 5;
+}
+
+/* The P25 parameters, for callers without a demod to read the chain from. */
+extern "C" void
+dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
+    dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(0));
+}
+
+/* The TETRA tracking mixer and the combined carrier estimate (costas.h). The carrier estimate is pre_freq + freq: the
+ * mixer ahead of the channel filter carries up to its bound, and the FLL tracks the residual within its own clamp. */
+
+extern "C" float
+dsd_fll_band_edge_total_freq(const dsd_fll_band_edge_state_t* f) {
+    return f ? f->pre_freq + f->freq : 0.0f;
+}
+
+/* A bound that is not a positive finite value means no mixer. */
+static float
+tetra_premix_limit_or_zero(float pre_limit) {
+    return (computed_float_is_finite(pre_limit) && pre_limit > 0.0f) ? pre_limit : 0.0f;
+}
+
+extern "C" void
+dsd_fll_band_edge_split_total(dsd_fll_band_edge_state_t* f, float total, float pre_limit) {
+    if (!f) {
+        return;
+    }
+    if (!computed_float_is_finite(total)) {
+        f->pre_freq = 0.0f;
+        f->freq = 0.0f;
+        return;
+    }
+    const float limit = tetra_premix_limit_or_zero(pre_limit);
+    const float pre = clampf_range(total, -limit, limit);
+    f->pre_freq = pre;
+    f->freq = clampf_range(total - pre, f->min_freq, f->max_freq);
+}
+
+extern "C" void
+dsd_fll_band_edge_fold(dsd_fll_band_edge_state_t* f) {
+    if (!f) {
+        return;
+    }
+    float total = f->freq + f->pre_freq;
+    if (!computed_float_is_finite(total)) {
+        total = 0.0f;
+    }
+    f->freq = clampf_range(total, f->min_freq, f->max_freq);
+    f->pre_freq = 0.0f;
+    f->pre_re = 1.0f;
+    f->pre_im = 0.0f;
+}
+
+extern "C" void
+dsd_fll_band_edge_transfer(dsd_fll_band_edge_state_t* f, float pre_limit) {
+    if (!f) {
+        return;
+    }
+    const float pre = f->pre_freq;
+    const float freq = f->freq;
+    const float total = pre + freq;
+    if (!computed_float_is_finite(total)) {
+        return; /* a corrupt estimate stays where it is; the next reset clears it */
+    }
+    const float limit = tetra_premix_limit_or_zero(pre_limit);
+    const float want = clampf_range(total, -limit, limit);
+    f->freq = freq - (want - pre);
+    f->pre_freq = want;
+}
+
+/* The TETRA FLL's gears (dsd_fll_band_edge_tetra_boundary()). The tracking loop narrows in octave steps from the
+   design's 4x OP25's bandwidth to a quarter of it, one step every kTetraFllStepEvery sub-blocks, so each narrower loop
+   starts from an estimate the one before it had already averaged: locked straight from the wide loop, the narrow one
+   inherited the wide loop's jitter (tens of Hz) and took seconds to remove it. A quarter: behind the matched filter
+   the band-edge estimate wanders with the bursts' content (on the 72 kHz real-air call about 120 Hz over seconds while
+   the carrier holds within 3 Hz), and the steady estimate's spread was 62 Hz at 4x, 40 Hz at 1x and 12 Hz at a
+   quarter, decoding the same. The lock tests are in band-edge error summed over DSD_TETRA_FLL_LOCK_WINDOW sub-blocks
+   per sample per symbol. */
+static const int kTetraFllTrackSteps = 4; /* 4x -> 2x, 1x, 0.5x, 0.25x */
+static const int kTetraFllStepEvery = 4;
+static const float kTetraFllLockBelow = 8.0f;
+static const float kTetraFllUnlockAbove = 15.0f;
+static const int kTetraFllLockRun = 8;
+
+/* The loop gains at gear @p step: the design's bandwidth halved @p step times. */
+static void
+fll_tetra_set_gear(dsd_fll_band_edge_state_t* f, int step) {
+    float scale = f->loop_bw_scale;
+    for (int k = 0; k < step; k++) {
+        scale *= 0.5f;
+    }
+    fll_set_loop_gains(f, f->sps, scale);
+    f->tetra_track = step;
+    f->tetra_lock_run = 0;
+}
+
+/* Takes the boundary's step into the error window. Returns 1 with the window's summed magnitude in *size once the window
+   is full; the first boundary after a reset only takes its reference. */
+static int
+fll_tetra_window_take(dsd_fll_band_edge_state_t* f, float total, float* size) {
+    if (!f->tetra_have_ref || !stored_float_is_finite(&f->tetra_ref_total)) {
+        f->tetra_ref_total = total;
+        f->tetra_have_ref = 1;
+        return 0;
+    }
+    const float err = (total - f->tetra_ref_total) / (f->beta * (float)f->sps);
+    f->tetra_ref_total = total;
+    if (f->tetra_err_idx < 0 || f->tetra_err_idx >= DSD_TETRA_FLL_LOCK_WINDOW) {
+        f->tetra_err_idx = 0; /* not reachable: the index stays within the window */
+    }
+    f->tetra_err[f->tetra_err_idx] = err;
+    f->tetra_err_idx = (f->tetra_err_idx + 1) % DSD_TETRA_FLL_LOCK_WINDOW;
+    if (f->tetra_err_count < DSD_TETRA_FLL_LOCK_WINDOW) {
+        f->tetra_err_count++;
+        return 0;
+    }
+    float sum = 0.0f;
+    for (int k = 0; k < DSD_TETRA_FLL_LOCK_WINDOW; k++) {
+        sum += f->tetra_err[k];
+    }
+    *size = fabsf(sum);
+    return 1;
+}
+
+extern "C" void
+dsd_fll_band_edge_tetra_boundary(dsd_fll_band_edge_state_t* f) {
+    if (!f || !f->initialized || f->sps < 1 || !(f->beta > 0.0f)) {
+        return;
+    }
+    const float total = f->pre_freq + f->freq;
+    float size = 0.0f;
+    if (!computed_float_is_finite(total) || !fll_tetra_window_take(f, total, &size)) {
+        return;
+    }
+    if (f->tetra_track <= 0) {
+        f->tetra_lock_run = size < kTetraFllLockBelow ? f->tetra_lock_run + 1 : 0;
+        if (f->tetra_lock_run >= kTetraFllLockRun) {
+            fll_tetra_set_gear(f, 1);
+        }
+    } else if (size > kTetraFllUnlockAbove) {
+        fll_tetra_set_gear(f, 0);
+    } else if (f->tetra_track < kTetraFllTrackSteps && ++f->tetra_lock_run >= kTetraFllStepEvery) {
+        fll_tetra_set_gear(f, f->tetra_track + 1);
+    }
+}
+
+extern "C" void
+dsd_tetra_premix_block(dsd_fll_band_edge_state_t* f, float* iq, int pairs) {
+    if (!f || !iq || pairs <= 0) {
+        return;
+    }
+    if (!stored_float_is_finite(&f->pre_freq)) {
+        f->pre_freq = 0.0f;
+        f->pre_re = 1.0f;
+        f->pre_im = 0.0f;
+        return;
+    }
+    /* The phasor is renormalized once per call (a block, or a piece of one), here, so the stored float's rounding
+     * never accumulates into a gain; a zeroed phasor (a state never reset) or a corrupt one starts from (1, 0). Within
+     * the call the
+     * recurrence runs in double: a float recurrence drifts in magnitude and phase by ~1e-7 per sample, which over a
+     * long block would leave the -60 dB the mixer must hold. */
+    double pr = 1.0;
+    double pi = 0.0;
+    if (stored_float_is_finite(&f->pre_re) && stored_float_is_finite(&f->pre_im)) {
+        const double mag2 = (double)f->pre_re * (double)f->pre_re + (double)f->pre_im * (double)f->pre_im;
+        if (mag2 > 0.25 && mag2 < 4.0) {
+            const double inv = 1.0 / std::sqrt(mag2);
+            pr = (double)f->pre_re * inv;
+            pi = (double)f->pre_im * inv;
+        }
+    }
+    /* exp(+j * pre_freq), the FLL NCO's sign (fll_process_sample() multiplies by exp(+j * phase), phase advancing by
+     * freq): both estimates are minus the carrier offset, so pre_freq + freq is one estimate and a carrier at
+     * -pre_freq comes out at DC. */
+    const double step_r = std::cos((double)f->pre_freq);
+    const double step_i = std::sin((double)f->pre_freq);
+    for (int n = 0; n < pairs; n++) {
+        const size_t nn = (size_t)n;
+        const double xr = (double)iq[nn * 2];
+        const double xi = (double)iq[nn * 2 + 1];
+        iq[nn * 2] = (float)(xr * pr - xi * pi);
+        iq[nn * 2 + 1] = (float)(xr * pi + xi * pr);
+        const double next_r = pr * step_r - pi * step_i;
+        pi = pr * step_i + pi * step_r;
+        pr = next_r;
+    }
+    f->pre_re = (float)pr;
+    f->pre_im = (float)pi;
+}
+
+extern "C" void
+dsd_tetra_premix_skip(dsd_fll_band_edge_state_t* f, int pairs) {
+    if (!f || pairs <= 0) {
+        return;
+    }
+    if (!stored_float_is_finite(&f->pre_freq)) {
+        f->pre_freq = 0.0f;
+        f->pre_re = 1.0f;
+        f->pre_im = 0.0f;
+        return;
+    }
+    double pr = 1.0;
+    double pi = 0.0;
+    if (stored_float_is_finite(&f->pre_re) && stored_float_is_finite(&f->pre_im)) {
+        const double mag2 = (double)f->pre_re * (double)f->pre_re + (double)f->pre_im * (double)f->pre_im;
+        if (mag2 > 0.25 && mag2 < 4.0) {
+            const double inv = 1.0 / std::sqrt(mag2);
+            pr = (double)f->pre_re * inv;
+            pi = (double)f->pre_im * inv;
+        }
+    }
+    const double angle = std::fmod((double)f->pre_freq * (double)pairs, 2.0 * 3.14159265358979323846);
+    const double step_r = std::cos(angle);
+    const double step_i = std::sin(angle);
+    f->pre_re = (float)(pr * step_r - pi * step_i);
+    f->pre_im = (float)(pr * step_i + pi * step_r);
+}
+
+extern "C" float
+dsd_tetra_pre_limit_rad(int rate_out) {
+    if (rate_out <= 0) {
+        return 0.0f;
+    }
+    return (float)(2.0 * 3.14159265358979323846 * (double)DSD_TETRA_PREMIX_LIMIT_HZ / (double)rate_out);
 }
 
 /*
@@ -1286,11 +1716,12 @@ op25_fll_band_edge_cc(struct demod_state* d) {
     }
 
     dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
-    const int sps = d->ted_sps > 0 ? d->ted_sps : 5;
+    const int sps = dsd_cqpsk_timing_sps(d);
 
+    const dsd_fll_band_edge_params params = dsd_fll_band_edge_params_for(d->tetra_chain);
     int is_first_init = 0;
-    if (fll_need_reinit(f, sps, &is_first_init)) {
-        fll_reinit_state(d, f, sps, is_first_init);
+    if (fll_need_reinit(f, sps, params, &is_first_init)) {
+        fll_reinit_state(d, f, sps, params, is_first_init);
     }
 
     const int pairs = d->lp_len >> 1;

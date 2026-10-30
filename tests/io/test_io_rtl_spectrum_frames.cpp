@@ -69,6 +69,21 @@ test_noise_bin_copy_is_bit_exact(void) {
     }
 }
 
+/* Bit for bit under IEEE semantics. Under fast-math (GCC/Clang -ffast-math, MSVC /fp:fast) the compiler may vectorize
+   the span fold and this reference, or a fold in place and out of place, differently (GCC 16 does), so there the values
+   only have to agree within float rounding of a dB value. */
+bool
+same_fold_value(float want, float got) {
+#if defined(__FAST_MATH__) || defined(_M_FP_FAST)
+    return fabsf(want - got) <= 1e-5f * (1.0f + fabsf(want));
+#else
+    uint32_t want_bits = 0U, got_bits = 0U;
+    DSD_MEMCPY(&want_bits, &want, sizeof want_bits);
+    DSD_MEMCPY(&got_bits, &got, sizeof got_bits);
+    return want_bits == got_bits;
+#endif
+}
+
 /* The original bin walk, kept separate from the span implementation so its wrap and smoothing order are pinned. */
 void
 fold_reference(const float* z, int n, float weight, bool seed, const float* prev, float* out) {
@@ -101,18 +116,12 @@ test_fold_is_bit_exact(void) {
                 fold_reference(z.data(), n, weight, seed, previous.data(), want.data());
                 dsd_io::spectrum_fold_db(z.data(), n, weight, seed, previous.data(), got.data());
                 for (int k = 0; k < n; k++) {
-                    uint32_t want_bits = 0U, got_bits = 0U;
-                    DSD_MEMCPY(&want_bits, &want[(size_t)k], sizeof want_bits);
-                    DSD_MEMCPY(&got_bits, &got[(size_t)k], sizeof got_bits);
-                    check("fold: out-of-place bits", want_bits == got_bits);
+                    check("fold: out-of-place bits", same_fold_value(want[(size_t)k], got[(size_t)k]));
                 }
                 got = previous;
                 dsd_io::spectrum_fold_db(z.data(), n, weight, seed, got.data(), got.data());
                 for (int k = 0; k < n; k++) {
-                    uint32_t want_bits = 0U, got_bits = 0U;
-                    DSD_MEMCPY(&want_bits, &want[(size_t)k], sizeof want_bits);
-                    DSD_MEMCPY(&got_bits, &got[(size_t)k], sizeof got_bits);
-                    check("fold: in-place bits", want_bits == got_bits);
+                    check("fold: in-place bits", same_fold_value(want[(size_t)k], got[(size_t)k]));
                 }
             }
         }

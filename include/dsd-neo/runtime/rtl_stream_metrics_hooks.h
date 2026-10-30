@@ -105,6 +105,7 @@ typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
     DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE = 3,
     DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM = 4,
     DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
+    DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA = 6,
 } dsd_rtl_stream_channel_profile;
 
 void dsd_rtl_stream_metrics_hooks_set(const dsd_rtl_stream_metrics_hooks* hooks);

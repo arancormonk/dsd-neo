@@ -14,6 +14,7 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -212,7 +213,8 @@ expect_retune_preserves_active_profile(void) {
 
 /* A CQPSK retune that keeps the active profile keeps that profile's channel filter too. A stream that opened in another
  * mode and switched live to TETRA still holds the options it opened with, which describe the old mode: TETRA's 18 ksym/s
- * profile keeps its WIDE filter whatever they say, and a P25 CQPSK profile keeps the P25 CQPSK filter. */
+ * profile keeps the filter it runs whatever they say (its own TETRA profile, or WIDE where something left WIDE), and a
+ * P25 CQPSK profile keeps the P25 CQPSK filter. */
 static int
 expect_cqpsk_retune_keeps_profile_filter(const char* label, const dsd_opts* opts, int seed_rate, int seed_profile,
                                          int want_profile, int want_sps) {
@@ -254,6 +256,12 @@ expect_retune_keeps_tetra_filter(void) {
                                                    DSD_CH_LPF_PROFILE_WIDE, DSD_CH_LPF_PROFILE_WIDE, 4);
     rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps WIDE without options", NULL, 18000,
                                                    DSD_CH_LPF_PROFILE_WIDE, DSD_CH_LPF_PROFILE_WIDE, 4);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps its own profile under P25 options", &p25_opts, 18000,
+                                                   DSD_CH_LPF_PROFILE_TETRA, DSD_CH_LPF_PROFILE_TETRA, 4);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps its own profile under AUTO options", &auto_opts, 18000,
+                                                   DSD_CH_LPF_PROFILE_TETRA, DSD_CH_LPF_PROFILE_TETRA, 4);
+    rc |= expect_cqpsk_retune_keeps_profile_filter("TETRA keeps its own profile without options", NULL, 18000,
+                                                   DSD_CH_LPF_PROFILE_TETRA, DSD_CH_LPF_PROFILE_TETRA, 4);
     rc |= expect_cqpsk_retune_keeps_profile_filter("P25 CQPSK keeps its filter", &p25_opts, 4800,
                                                    DSD_CH_LPF_PROFILE_P25_CQPSK, DSD_CH_LPF_PROFILE_P25_CQPSK, 15);
     rc |= expect_cqpsk_retune_keeps_profile_filter("CQPSK off TETRA takes the P25 CQPSK filter", &auto_opts, 4800,
@@ -628,6 +636,79 @@ expect_cqpsk_toggle_restores_fsk_channel_profile(void) {
     return rc;
 }
 
+/* The CQPSK installs (the CQPSK toggle, both TED setters) give TETRA's symbol rate the TETRA profile, and every other
+ * rate the P25 CQPSK one, as before; CQPSK off from TETRA's profile returns to WIDE, the filter TETRA runs on the FSK
+ * discriminator, and the symbol-profile setter never stores the TETRA profile there. */
+static int
+expect_tetra_cqpsk_installs(void) {
+    int rc = 0;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    demod.symbol_rate_hz = 18000;
+    demod.symbol_levels = 4;
+    demod.rate_out = 72000;
+    rtl_stream_toggle_cqpsk(1);
+    rc |= expect_int_eq("TETRA: CQPSK on installs the TETRA profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_TETRA);
+    rtl_stream_toggle_cqpsk(0);
+    rc |= expect_int_eq("TETRA: CQPSK off returns to WIDE", demod.channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_TETRA;
+    demod.symbol_rate_hz = 18000;
+    demod.symbol_levels = 4;
+    demod.rate_out = 72000;
+    demod.ted_sps = 4;
+    rtl_stream_set_ted_sps_no_override(4);
+    rc |= expect_int_eq("TETRA: TED sps 4 at 72 kHz keeps the TETRA profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_TETRA);
+    rtl_stream_set_ted_sps(4);
+    rc |= expect_int_eq("TETRA: TED override 4 at 72 kHz keeps the TETRA profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_TETRA);
+    rtl_stream_clear_ted_sps_override();
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    rtl_stream_set_ted_sps_no_override(4);
+    rc |= expect_int_eq("TETRA: TED sps 4 at 72 kHz installs the TETRA profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_TETRA);
+
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    demod.rate_out = 48000;
+    rtl_stream_set_ted_sps_no_override(10);
+    rc |= expect_int_eq("P25: TED sps 10 at 48 kHz installs the P25 CQPSK profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_P25_CQPSK);
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+    rtl_stream_set_ted_sps(8);
+    rc |= expect_int_eq("P25: TED override 8 at 48 kHz installs the P25 CQPSK profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_P25_CQPSK);
+    rtl_stream_clear_ted_sps_override();
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_12K5;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    demod.rate_out = 48000;
+    rtl_stream_toggle_cqpsk(1);
+    rc |= expect_int_eq("P25: CQPSK on installs the P25 CQPSK profile", demod.channel_lpf_profile,
+                        DSD_CH_LPF_PROFILE_P25_CQPSK);
+
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    demod.rate_out = 72000;
+    rc |= expect_int_eq("TETRA profile on the FSK discriminator",
+                        rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
+    rc |= expect_int_eq("  stores WIDE", demod.channel_lpf_profile, DSD_CH_LPF_PROFILE_WIDE);
+    return rc;
+}
+
 static int
 expect_rtl_metrics_do_not_nudge_cqpsk_bandedge(void) {
     DSD_MEMSET(&demod, 0, sizeof(demod));
@@ -664,6 +745,67 @@ expect_rtl_metrics_do_not_nudge_cqpsk_bandedge(void) {
         return 1;
     }
     return 0;
+}
+
+/* Run the metrics block often enough for the lock heuristic's two stable blocks, on a steady loop state. */
+static int
+rtl_metrics_settled_lock(int rate_hz) {
+    static float iq[128];
+    for (int n = 0; n < 64; n++) {
+        iq[(size_t)(n << 1)] = 1.0f;
+        iq[(size_t)(n << 1) + 1] = 0.0f;
+    }
+    for (int i = 0; i < 4; i++) {
+        rtl_metrics_update_spectrum_from_iq(iq, 128, rate_hz);
+    }
+    return rtl_stream_get_carrier_lock();
+}
+
+/* The CFO the metrics publish (NCO total and the band-edge export) is the combined carrier estimate, the TETRA mixer
+ * included; the lock heuristic's saturation test reads only the FLL's residual, whose clamp the mixer does not
+ * share. */
+static int
+expect_rtl_metrics_combined_cfo(void) {
+    int rc = 0;
+    const double kTwoPi = 6.28318530717958647692;
+    const int rate_hz = 72000;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.cqpsk_enable = 1;
+    demod.rate_out = rate_hz;
+    demod.ted_sps = 4;
+    demod.fll_band_edge_state.initialized = 1;
+    demod.fll_band_edge_state.min_freq = -1.0f;
+    demod.fll_band_edge_state.max_freq = 1.0f;
+    demod.fll_band_edge_state.pre_freq = 0.3f;
+    demod.fll_band_edge_state.freq = 0.01f;
+    demod.costas_state.initialized = 1;
+    demod.costas_state.freq = 0.02f;
+    demod.ted_state.lock_count = 32;
+    demod.ted_state.lock_accum = 32.0f;
+
+    const int locked = rtl_metrics_settled_lock(rate_hz);
+    const double combined_rad = 0.3 + 0.01;
+    const double total_rad = combined_rad + 0.02 / 4.0;
+    rc |= expect_double_near("RTL metrics NCO CFO includes the TETRA mixer", rtl_stream_get_cfo_hz(),
+                             total_rad * (double)rate_hz / kTwoPi, 0.05);
+    rc |= expect_double_near("RTL metrics band-edge CFO includes the TETRA mixer",
+                             rtl_stream_get_fll_band_edge_freq_hz(), combined_rad * (double)rate_hz / kTwoPi, 0.05);
+    rc |= expect_int_eq("RTL metrics NCO q15 includes the TETRA mixer", rtl_stream_get_nco_q15(),
+                        (int)lrint(total_rad * (32768.0 / kTwoPi)));
+    rc |= expect_int_eq("RTL lock with a mixer and a small residual", locked, 1);
+
+    /* A combined estimate beyond the FLL's clamp is not saturation while the residual is small. */
+    demod.fll_band_edge_state.pre_freq = 1.2f;
+    demod.fll_band_edge_state.freq = 0.01f;
+    rc |= expect_int_eq("RTL lock reads the residual, not the combined estimate", rtl_metrics_settled_lock(rate_hz), 1);
+
+    /* A residual at the FLL's clamp is saturation whatever the mixer holds. */
+    demod.fll_band_edge_state.pre_freq = 0.2f;
+    demod.fll_band_edge_state.freq = 0.97f;
+    rc |= expect_int_eq("RTL lock refuses a saturated residual", rtl_metrics_settled_lock(rate_hz), 0);
+    demod.fll_band_edge_state.pre_freq = 0.0f;
+    rc |= expect_int_eq("RTL lock refuses a saturated residual with no mixer", rtl_metrics_settled_lock(rate_hz), 0);
+    return rc;
 }
 
 static int
@@ -988,14 +1130,22 @@ expect_capture_plan_for_every_dsp_bandwidth(void) {
     rc |=
         expect_int_eq("no bandwidth, no plan", rtl_stream_test_capture_plan(0, &capture_hz, &passes, &rate_out_hz), -1);
 
-    /* At 72 kHz TETRA's CQPSK timing runs at 4 samples per symbol, the channel filter keeps its WIDE profile, and the
-       channel filter of an explicit NFM or AM width fits. */
+    /* At 72 kHz TETRA opens on CQPSK with its own channel profile, which runs its receive chain; its CQPSK timing runs
+       at 4 samples per symbol, a rate refresh keeps the profile it finds, and the channel filter of an explicit NFM
+       or AM width fits. TETRA turned onto the FSK discriminator (-m c) filters with WIDE: the TETRA profile describes
+       the CQPSK chain, and no TETRA open stores it on the discriminator. */
     static dsd_opts tetra;
     DSD_MEMSET(&tetra, 0, sizeof(tetra));
     tetra.frame_tetra = 1;
     tetra.mod_qpsk = 1;
     rc |= expect_configured_mode("TETRA at the 72 kHz DSP bandwidth", tetra, 72000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK,
-                                 18000, 4, DSD_CH_LPF_PROFILE_WIDE);
+                                 18000, 4, DSD_CH_LPF_PROFILE_TETRA);
+    static dsd_opts tetra_fsk;
+    tetra_fsk = tetra;
+    tetra_fsk.mod_qpsk = 0;
+    tetra_fsk.mod_c4fm = 1;
+    rc |= expect_configured_mode("TETRA on the FSK discriminator at 72 kHz", tetra_fsk, 72000,
+                                 DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 18000, 4, DSD_CH_LPF_PROFILE_WIDE);
     rc |= expect_sps("TETRA times 4 samples per symbol at 72 kHz", tetra, 72000, 0, 4, DSD_CH_LPF_PROFILE_WIDE);
     rc |=
         expect_int_eq("NFM 25 kHz fits 72 kHz", dsd_analog_width_check(DSD_ANALOG_DEMOD_FM, 25000, 72000, NULL, 0U), 0);
@@ -1907,6 +2057,211 @@ expect_landing_cqpsk_truth_table(void) {
 }
 
 /*
+ * A TETRA stream opened at 72 kHz runs its receive chain from the open: the open evaluates the activation predicate
+ * once its configuration is final (dsd_demod_update_tetra_chain()), so the profile it publishes before any block runs
+ * is TETRA's and the channel width a frontend draws, twice the protected edge, is the 22.5 kHz TETRA channel rather
+ * than WIDE's 16 kHz. The first block's boundary then finds the chain entered and runs no transition again.
+ */
+static int
+expect_tetra_open_publishes_tetra_width(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_tetra = 1;
+    opts.mod_qpsk = 1;
+    output_state out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.rate = 72000U;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    rtl_demod_init_for_mode(&demod, &out, &opts, 72000);
+    rtl_demod_config_from_env_and_opts(&demod, &opts);
+    rtl_demod_select_defaults_for_mode(&demod, &opts, &out);
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &out, 72000);
+    rtl_stream_test_seed_open_profile(); /* what dsd_rtl_stream_open() publishes before any block runs */
+    int running = -1;
+    int rate = 0;
+    (void)rtl_stream_get_running_symbol_profile(&rate, nullptr, &running);
+    rc |= expect_int_eq("TETRA open at 72 kHz: chain runs", demod.tetra_chain, 1);
+    rc |= expect_int_eq("TETRA open at 72 kHz: running profile", running, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("TETRA open at 72 kHz: symbol rate", rate, 18000);
+    rc |= expect_int_eq("TETRA open at 72 kHz: channel width (Hz)",
+                        (int)lround(2.0 * dsd_channel_lpf_protected_edge_hz(running)), 22500);
+    rtl_demod_cleanup(&demod);
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    return rc;
+}
+
+/*
+ * A trunked mode uplink session (--tetra-uplink) at 72 kHz never runs the TETRA chain: its bursts keep the path
+ * TETRA ran before the chain, apart from the TETRA channel filter. The open records the session kind, the chain stays
+ * off, the running profile and the channel width a frontend draws are the TETRA filter's, and the SNR bias reads that
+ * filter's noise bandwidth.
+ */
+static int
+expect_tetra_uplink_open_keeps_channel_only(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_tetra = 1;
+    opts.mod_qpsk = 1;
+    opts.tetra_uplink = 1;
+    output_state out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.rate = 72000U;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    rtl_demod_init_for_mode(&demod, &out, &opts, 72000);
+    rtl_demod_config_from_env_and_opts(&demod, &opts);
+    rtl_demod_select_defaults_for_mode(&demod, &opts, &out);
+    rtl_demod_maybe_update_resampler_after_rate_change(&demod, &out, 72000);
+    rtl_stream_test_seed_open_profile();
+    int running = -1;
+    (void)rtl_stream_get_running_symbol_profile(nullptr, nullptr, &running);
+    rc |= expect_int_eq("uplink open: session kind", demod.tetra_uplink, 1);
+    rc |= expect_int_eq("uplink open: chain off", demod.tetra_chain, 0);
+    rc |= expect_int_eq("uplink open: TETRA channel filter", dsd_demod_tetra_channel_runs(&demod), 1);
+    rc |= expect_int_eq("uplink open: running profile", running, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("uplink open: channel width (Hz)",
+                        (int)lround(2.0 * dsd_channel_lpf_protected_edge_hz(running)), 22500);
+    const double want_bias = dsd_snr_bias_evm_db(72000, 4, DSD_CH_LPF_PROFILE_TETRA, DSD_SNR_TETRA_STAGE_CHANNEL);
+    if (!(fabs(rtl_stream_get_snr_bias_evm() - want_bias) <= 1e-9)) {
+        DSD_FPRINTF(stderr, "uplink open: SNR bias %.9f, want the TETRA channel filter's %.9f\n",
+                    rtl_stream_get_snr_bias_evm(), want_bias);
+        rc |= 1;
+    }
+    rtl_demod_cleanup(&demod);
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+
+    /* The next open without --tetra-uplink is a downlink session again: the global demod outlives a session. */
+    opts.tetra_uplink = 0;
+    rtl_demod_init_for_mode(&demod, &out, &opts, 72000);
+    rc |= expect_int_eq("downlink open after an uplink one: session kind", demod.tetra_uplink, 0);
+    rtl_demod_cleanup(&demod);
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    return rc;
+}
+
+/*
+ * The channel profile the stream publishes to frontends and decoder labels (the metrics hooks' symbol profile) follows
+ * the running chain: a TETRA profile reads TETRA only while the TETRA chain runs, and WIDE, the filter that runs, while
+ * it does not. The configured profile, which a restore puts back, stays TETRA either way.
+ */
+static int
+expect_tetra_published_profile_follows_chain(void) {
+    int rc = 0;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.cqpsk_enable = 1;
+    demod.rate_out = 72000;
+    demod.tetra_chain = 0;
+    rc |= expect_int_eq("TETRA profile set", rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
+    int configured = -1;
+    int running = -1;
+    int rate = 0;
+    int levels = 0;
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &configured);
+    (void)rtl_stream_get_running_symbol_profile(&rate, &levels, &running);
+    rc |= expect_int_eq("  chain inactive: configured profile", configured, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("  chain inactive: running profile", running, DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("  running symbol rate", rate, 18000);
+    rc |= expect_int_eq("  running levels", levels, 4);
+
+    demod.tetra_chain = 1; /* as full_demod() sets it at a block boundary, which publishes after the block */
+    rc |= expect_int_eq("TETRA profile republished", rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA),
+                        0);
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &configured);
+    (void)rtl_stream_get_running_symbol_profile(nullptr, nullptr, &running);
+    rc |= expect_int_eq("  chain active: configured profile", configured, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("  chain active: running profile", running, DSD_CH_LPF_PROFILE_TETRA);
+
+    demod.tetra_chain = 0;
+    rc |= expect_int_eq("P25 profile set", rtl_stream_set_symbol_profile(4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK), 0);
+    (void)rtl_stream_get_running_symbol_profile(nullptr, nullptr, &running);
+    rc |= expect_int_eq("  P25: running profile", running, DSD_CH_LPF_PROFILE_P25_CQPSK);
+    return rc;
+}
+
+/*
+ * The TETRA channel profile (6) passes every profile validator, and the first id past it does not: the symbol-profile
+ * setter keeps the previous profile and a digital-family switch falls back to WIDE. An open that lands on CQPSK keeps a
+ * TETRA filter (the TETRA chain is CQPSK), and one turned onto the FSK discriminator runs WIDE, the filter TETRA had
+ * before its own profile existed.
+ */
+static int
+expect_tetra_profile_validators(void) {
+    int rc = 0;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    demod.rate_out = 72000;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    int channel_profile = -1;
+    rc |= expect_int_eq("symbol profile accepts TETRA",
+                        rtl_stream_set_symbol_profile(18000, 4, DSD_CH_LPF_PROFILE_TETRA), 0);
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &channel_profile);
+    rc |= expect_int_eq("  TETRA channel profile", channel_profile, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("  TETRA demod profile", demod.channel_lpf_profile, DSD_CH_LPF_PROFILE_TETRA);
+    rc |= expect_int_eq("symbol profile past TETRA", rtl_stream_set_symbol_profile(18000, 4, 7), 0);
+    (void)rtl_stream_get_symbol_profile_full(nullptr, nullptr, &channel_profile);
+    rc |= expect_int_eq("  keeps TETRA", channel_profile, DSD_CH_LPF_PROFILE_TETRA);
+
+    const int profiles[] = {DSD_CH_LPF_PROFILE_TETRA, 7};
+    const int want[] = {DSD_CH_LPF_PROFILE_TETRA, DSD_CH_LPF_PROFILE_WIDE};
+    for (int i = 0; i < 2; i++) {
+        demod_state* d = alloc_zeroed_demod();
+        if (!d) {
+            DSD_FPRINTF(stderr, "TETRA digital family: allocation failed\n");
+            return 1;
+        }
+        output_state output;
+        DSD_MEMSET(&output, 0, sizeof(output));
+        d->rate_out = 72000;
+        output.rate = 72000U;
+        rtl_demod_enter_digital_family(d, &output, profiles[i], 1, 18000, 0);
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "digital family with profile %d", profiles[i]);
+        rc |= expect_int_eq(label, d->channel_lpf_profile, want[i]);
+        rtl_demod_cleanup(d);
+        dsd_neo_aligned_free(d);
+    }
+
+    static const struct {
+        int landing;
+        int requested;
+        int profile;
+        int symbol_rate_hz;
+        int lpf_enabled;
+        int want;
+    } rows[] = {
+        {1, 1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, -1, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_TETRA},
+        {0, 1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
+        {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 0, DSD_CH_LPF_PROFILE_WIDE},
+        {0, 0, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
+        {0, -1, DSD_CH_LPF_PROFILE_TETRA, 18000, 1, DSD_CH_LPF_PROFILE_WIDE},
+        /* A switch to TETRA's 18000 sym/s that DSD_NEO_CQPSK lands on CQPSK, whatever filter the request named (WIDE
+           for the FSK discriminator, or none chosen), runs the TETRA profile: every CQPSK install shares one rule
+           (rtl_demod_cqpsk_channel_profile()). */
+        {1, 0, DSD_CH_LPF_PROFILE_WIDE, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, -1, DSD_CH_LPF_PROFILE_WIDE, 18000, 1, DSD_CH_LPF_PROFILE_TETRA},
+        {1, 0, DSD_CH_LPF_PROFILE_12K5, 4800, 1, DSD_CH_LPF_PROFILE_P25_CQPSK},
+        {0, 1, DSD_CH_LPF_PROFILE_P25_CQPSK, 4800, 1, DSD_CH_LPF_PROFILE_P25_C4FM},
+    };
+
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "open profile: landing %d requested %d profile %d rate %d lpf %d",
+                     rows[i].landing, rows[i].requested, rows[i].profile, rows[i].symbol_rate_hz, rows[i].lpf_enabled);
+        rc |= expect_int_eq(label,
+                            rtl_demod_open_channel_profile(rows[i].landing, rows[i].requested, rows[i].profile,
+                                                           rows[i].symbol_rate_hz, rows[i].lpf_enabled),
+                            rows[i].want);
+    }
+    return rc;
+}
+
+/*
  * The analog family's monitor audio comes from the FM discriminator. DSD_NEO_CQPSK=1, or a QPSK modulation left on the
  * options, must not put a -fA open on the CQPSK path, which would hand the monitor differential phase symbols instead
  * of audio; a live switch to analog lands on FM the same way. A digital open under the override still runs CQPSK.
@@ -2034,6 +2389,34 @@ expect_tetra_rate_warning(void) {
     rtl_stream_test_reset_tetra_rate_warning();
     rc |= expect_int_eq("DMR at 50 kHz has no TETRA warning", rtl_stream_test_warn_low_dsp_bw(&dmr, 50000), 0);
     rc |= expect_int_eq("no TETRA warning for DMR", g_tetra_rate_warnings.load(std::memory_order_relaxed), 2);
+    return rc;
+}
+
+/* The rate-chain log's derived-SPS lines: a TETRA stream at 72 kHz reports TETRA's 4 samples per symbol and no advice
+   to enable a 48 kHz resampler (it would not help the CQPSK path); a P25 stream at 72 kHz still gets that warning. */
+static int
+expect_rate_chain_true(const char* label, bool cond) {
+    return expect_int_eq(label, cond ? 1 : 0, 1);
+}
+
+static int
+expect_rate_chain_sps_lines(void) {
+    int rc = 0;
+    char info[256];
+    char warn[256];
+    rtl_stream_test_compose_sps_lines(72000U, 1, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("TETRA at 72 kHz reports its sps",
+                                 strstr(info, "Derived SPS (@72000 Hz): TETRA") != NULL && strstr(info, "4.") != NULL
+                                     && strstr(info, "P25") == NULL);
+    rc |= expect_rate_chain_true("TETRA at 72 kHz gets no resampler advice",
+                                 warn[0] == '\0' && strstr(info, "Consider enabling resampler") == NULL);
+    rtl_stream_test_compose_sps_lines(72000U, 0, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("P25 at 72 kHz keeps the derived-SPS line",
+                                 strstr(info, "Derived SPS (@72000 Hz): P25P1") != NULL);
+    rc |= expect_rate_chain_true("P25 at 72 kHz keeps the resampler warning",
+                                 strstr(warn, "Consider enabling resampler") != NULL);
+    rtl_stream_test_compose_sps_lines(0U, 1, info, sizeof info, warn, sizeof warn);
+    rc |= expect_rate_chain_true("no output rate, no lines", info[0] == '\0' && warn[0] == '\0');
     return rc;
 }
 
@@ -2619,10 +3002,12 @@ main(void) {
     DSD_MEMSET(&tetra, 0, sizeof(tetra));
     tetra.frame_tetra = 1;
     tetra.mod_qpsk = 1;
+    /* TETRA opens on its own profile at any rate; outside 36-144 kHz in steps of 18 kHz its chain cannot run, and it
+       then filters and publishes WIDE (dsd_demod_tetra_chain_wanted(), with a warning). */
     rc |= expect_configured_mode("TETRA uses 18 ksps CQPSK symbols", tetra, 48000, DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 18000,
-                                 4, DSD_CH_LPF_PROFILE_WIDE);
+                                 4, DSD_CH_LPF_PROFILE_TETRA);
     rc |= expect_configured_mode("TETRA keeps 18 ksps CQPSK symbols at 96 kHz DSP BW", tetra, 96000,
-                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 18000, 4, DSD_CH_LPF_PROFILE_WIDE);
+                                 DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 18000, 4, DSD_CH_LPF_PROFILE_TETRA);
 
     static dsd_opts auto_all;
     DSD_MEMSET(&auto_all, 0, sizeof(auto_all));
@@ -2679,6 +3064,10 @@ main(void) {
     rc |= expect_m17_encoder_real_options();
     rc |= expect_analog_open_ignores_cqpsk();
     rc |= expect_landing_cqpsk_truth_table();
+    rc |= expect_tetra_profile_validators();
+    rc |= expect_tetra_published_profile_follows_chain();
+    rc |= expect_tetra_open_publishes_tetra_width();
+    rc |= expect_tetra_uplink_open_keeps_channel_only();
     rc |= expect_analog_am_open();
     rc |= expect_audio_monitor_reset_clears_am_carrier();
     rc |= expect_analog_kind_switch();
@@ -2690,8 +3079,10 @@ main(void) {
     rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_clears_output_contract_backlog();
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
+    rc |= expect_tetra_cqpsk_installs();
     rc |= expect_rtl_metrics_do_not_nudge_cqpsk_bandedge();
     rc |= expect_rtl_metrics_exports_and_toggles();
+    rc |= expect_rtl_metrics_combined_cfo();
     rc |= expect_public_control_wrapper_contracts();
     rc |= expect_fsk_snr_sps_uses_active_profile();
     rc |= expect_retune_preserves_active_profile();
@@ -2702,6 +3093,7 @@ main(void) {
     rc |= expect_passes_for_device_rate();
     rc |= expect_capture_plan_for_every_dsp_bandwidth();
     rc |= expect_tetra_rate_warning();
+    rc |= expect_rate_chain_sps_lines();
     rc |= expect_digital_resample_policy();
     rc |= expect_resampler_publishes_the_rate_it_delivers();
     rc |= expect_private_policy_matrices();

@@ -6,6 +6,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -83,6 +84,94 @@ test_tetra_inverted_sync_patterns_flip_only_dibit_msb(void) {
             assert(inverted[pattern][i] == (char)('0' + expected));
         }
     }
+}
+
+#ifdef USE_RADIO
+static int
+hunt_slice_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
+    *out_cqpsk_enable = 1;
+    *out_cqpsk_timing_active = 1;
+    return 0;
+}
+#endif
+
+/* Slices @p symbol through the hunt and returns its dibit after checking dibit_buf and dmr_payload_buf agree. */
+static int
+hunt_slice(dsd_opts* opts, dsd_state* state, float symbol) {
+    state->dibit_buf_p = state->dibit_buf + 200;
+    state->dmr_payload_p = state->dmr_payload_buf + 200;
+    state->dmr_soft_p = state->dmr_soft_buf + 200;
+    const int got = dsd_frame_sync_test_process_dibit_and_payload(opts, state, symbol) - '0';
+    assert(state->dibit_buf[200] == got);
+    assert(state->dmr_payload_buf[200] == got);
+    return got;
+}
+
+/* The hunt slices TETRA's symbols, arg(z) * 4/pi of the differential phasor, at the quadrant edges 0 and +-2 whatever
+ * the adaptive centre holds: the history it fills gives block 1, AACH half 1 and the training match their dibits, as
+ * digitize() gives the payload its own. P25's CQPSK hunt still slices about the centre. */
+static void
+test_tetra_hunt_slices_at_the_quadrant_edges(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    state->dibit_buf = (int*)calloc(1000001, sizeof(int));
+    state->dmr_payload_buf = (int*)calloc(1000001, sizeof(int));
+    state->dmr_soft_buf = (dsd_dibit_soft_t*)calloc(1000001, sizeof(dsd_dibit_soft_t));
+    assert(state->dibit_buf != NULL && state->dmr_payload_buf != NULL && state->dmr_soft_buf != NULL);
+
+    opts->frame_tetra = 1;
+    state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    const float centers[] = {-0.3f, 0.0f, 0.3f};
+
+    const struct {
+        float symbol;
+        int dibit;
+    } cases[] = {{0.1f, 0}, {-0.1f, 2}, {1.9f, 0}, {2.1f, 1}, {-1.9f, 2}, {-2.1f, 3}, {1.0f, 0}, {-3.0f, 3}};
+
+    for (size_t c = 0; c < sizeof(centers) / sizeof(centers[0]); c++) {
+        state->center = centers[c];
+        state->umid = centers[c] + 0.5f;
+        state->lmid = centers[c] - 0.5f;
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            assert(hunt_slice(opts, state, cases[i].symbol) == cases[i].dibit);
+        }
+    }
+
+    /* Off QPSK (-fT -mc) the hunt keeps the adaptive levels for TETRA, as digitize() does
+       (dsd_tetra_quadrant_levels()): 0.1 below a centre of 0.3 is a -1 there, not the quadrants' +1. */
+    state->rf_mod = 0;
+    state->center = 0.3f;
+    state->umid = 0.8f;
+    state->lmid = -0.2f;
+    state->dibit_buf_p = state->dibit_buf + 200;
+    state->dmr_payload_p = state->dmr_payload_buf + 200;
+    state->dmr_soft_p = state->dmr_soft_buf + 200;
+    (void)dsd_frame_sync_test_process_dibit_and_payload(opts, state, 0.1f);
+    assert(state->dmr_payload_buf[200] == 2);
+    state->rf_mod = 1;
+
+#ifdef USE_RADIO
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {
+        .cqpsk_status = hunt_slice_cqpsk_status,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->frame_p25p1 = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->center = 0.3f;
+    assert(hunt_slice(opts, state, 2.1f) == 0);
+    assert(hunt_slice(opts, state, 0.1f) == 2);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+#endif
+
+    free(state->dibit_buf);
+    free(state->dmr_payload_buf);
+    free(state->dmr_soft_buf);
+    free(state);
+    free(opts);
 }
 
 /* Pseudo-random data dibits for the TETRA burst windows. */
@@ -2906,7 +2995,13 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
     assert(tetra.symbol_rate_hz == 18000);
     assert(tetra.levels == 4);
     assert(tetra.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    /* TETRA's filter is its own on the CQPSK family, which runs its receive chain; the TETRA profile describes that
+     * chain, so a request for the FSK discriminator (C4FM or GFSK) asks for WIDE, the filter TETRA runs there. */
     assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 1)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 0)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
+    assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 2)
            == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
     /* AUTO's whole promise is that the hunt may visit every profile, and a config file selects
@@ -4955,6 +5050,7 @@ int
 main(void) {
     test_tetra_soft_history_capture();
     test_tetra_inverted_sync_patterns_flip_only_dibit_msb();
+    test_tetra_hunt_slices_at_the_quadrant_edges();
     test_tetra_uplink_control_burst_is_not_a_normal_burst();
     test_tetra_bursts_wait_for_their_own_look_back();
     test_scan_class_matchers_and_no_sync();

@@ -65,6 +65,34 @@ set -euo pipefail
 # The default --rate stays realtime, which runs each replay in the capture's own
 # time; fast decodes the same thing sooner.
 #
+# TETRA metric (--metric tetra --tetra-wanted MCC/MNC/CC): counts what each run printed, in these summary.tsv columns
+# after shift. Voice-frame errors say little about a TETRA receive chain that decodes weak signals, so the columns are
+# the decoded content itself, each from CRC- or FEC-gated lines:
+#
+#   wanted_bsch    BSCH identity lines (CRC-gated) equal to --tetra-wanted
+#   other_bsch     BSCH identity lines of another, well-formed identity
+#   unknown_bsch   "[TETRA BSCH] MCC=" lines whose MCC, MNC and CC do not parse; never counted as either of the above
+#   tch_ok         accepted speech: "[TETRA TCH/FS] ... dec_bits=274 crc=ok mismatches=m" with m <= 28
+#                  (TETRA_TCH_MAX_MISMATCH in src/protocol/tetra/tetra.c)
+#   tch_bad        every other TCH/FS line: a bad CRC, more mismatches, another bit count or an unparsable line
+#   aach_fec       bursts whose AACH decoded ("AACH a/b/c]", not "AACH ?]")
+#   first_wanted_s the first wanted BSCH's time from the capture's start, in whole seconds, or NA when no wanted BSCH
+#                  follows the log's first time stamp
+#   completed      1 when the replay printed "IQ replay: end of capture after <N> samples", else 0; a run without it
+#                  stopped early or lost its reader, which is not a run that decoded nothing. A build from before
+#                  replay printed the notice reads 0 in every run: name it to the report with --no-end-notice <build>
+#                  and its runs are judged by exit status alone
+#   samples        N from that notice, or NA
+#   wanted         the --tetra-wanted identity as MCC/MNC/0xCC, repeated per row so the report can check that one
+#                  identity was fixed for every build
+#
+# An identity is never promoted by how often it occurs: a capture dominated by another network reads as
+# wanted_bsch 0 and a large other_bsch. first_wanted_s uses the decode clock's HH:MM:SS stamp of the line that
+# printed the BSCH (a replay's stamps start at the capture's capture_started_utc, or 2000-01-01T00:00:00Z when it has
+# none, a WAV's start time (a WAV-backed sidecar's too, from --iq-info), or no usable one), less the capture's start,
+# in the local time zone both use. Its resolution is therefore one second (a stamp is the whole second the BSCH fell
+# in), and it assumes the capture starts and ends within one day and one UTC offset.
+#
 # Report errors per decoded voice frame, never the raw error total: a build that
 # loses sync decodes fewer frames and accrues fewer errors without being better.
 #
@@ -77,17 +105,26 @@ set -euo pipefail
 # wrapper script that execs one with per-variant flags; docs/testing.md has both.
 #
 # Options:
-#   --capture <path>   I/Q capture sidecar JSON to replay (required)
+#   --capture <path>   I/Q capture to replay (required): a sidecar JSON, or a WAV recording. A WAV is replayed
+#                      as it is, one realization: it has no events to shift. So is a sidecar whose data_file is a
+#                      WAV: replay reads that WAV and ignores the sidecar's other fields, its start time and events
+#                      included
 #   --mode <flags>     Decoder flags, e.g. "-fi" (required; quote if several)
 #   --reps <n>         Repeats per build, each its own realization of the
 #                      capture (default 12)
 #   --no-realizations  Replay every repeat as recorded: the determinism
 #                      control, where every repeat must decode alike
 #   --rate <mode>      --iq-replay-rate value: realtime (default) or fast
-#   --metric <kind>    digital (default) or analog: also score the host's
+#   --metric <kind>    digital (default), analog or tetra. analog also scores the host's
 #                      ANALOG METRIC / ANALOG PROBE lines. Give the host no
 #                      --analog-* bounds: summary.tsv records each run's exit
-#                      status, and the report leaves non-zero ones out
+#                      status, and the report leaves non-zero ones out. tetra
+#                      counts what a TETRA decode (run it with -fT -Z) printed:
+#                      see the TETRA metric below
+#   --tetra-wanted <MCC/MNC/CC>
+#                      The network and colour code the capture carries
+#                      (--metric tetra, required there), e.g. 228/8889/0x01 or
+#                      228/8889/1. Fix it for every build in a comparison
 #   --out <dir>        Where to write logs, summary.tsv and the realizations'
 #                      sidecars (default: mktemp -d)
 #
@@ -110,6 +147,7 @@ realizations=1
 rate=realtime
 metric=digital
 out=""
+tetra_wanted=""
 builds=()
 
 while [ $# -gt 0 ]; do
@@ -142,6 +180,10 @@ while [ $# -gt 0 ]; do
       out="${2:-}"
       shift 2
       ;;
+    --tetra-wanted)
+      tetra_wanted="${2:-}"
+      shift 2
+      ;;
     -h | --help) usage 0 ;;
     --)
       shift
@@ -163,8 +205,42 @@ if [ -z "$capture" ] || [ -z "$mode" ] || [ "${#builds[@]}" -lt 2 ]; then
   echo "error: --capture, --mode and at least two builds are required" >&2
   usage 1
 fi
-if [ "$metric" != digital ] && [ "$metric" != analog ]; then
-  echo "error: --metric must be digital or analog, not '$metric'" >&2
+if [ "$metric" != digital ] && [ "$metric" != analog ] && [ "$metric" != tetra ]; then
+  echo "error: --metric must be digital, analog or tetra, not '$metric'" >&2
+  usage 1
+fi
+if [ "$metric" = tetra ]; then
+  if [ -z "$tetra_wanted" ]; then
+    echo "error: --metric tetra needs --tetra-wanted MCC/MNC/CC" >&2
+    usage 1
+  fi
+  if ! command -v python3 > /dev/null 2>&1; then
+    echo "error: --metric tetra needs python3" >&2
+    exit 1
+  fi
+  # Normalized to MCC/MNC/0xCC, the form summary.tsv records.
+  if ! tetra_wanted=$(
+    python3 - "$tetra_wanted" << 'PY'
+import re
+import sys
+
+text = sys.argv[1]
+match = re.fullmatch(r"([0-9]{1,4})/([0-9]{1,5})/(0[xX][0-9a-fA-F]{1,2}|[0-9]{1,2})", text)
+if match:
+    mcc, mnc = int(match.group(1)), int(match.group(2))
+    cc = int(match.group(3), 16 if match.group(3)[:2] in ("0x", "0X") else 10)
+    if mcc <= 1023 and mnc <= 16383 and cc <= 63:
+        print(f"{mcc}/{mnc}/0x{cc:02x}")
+        sys.exit(0)
+sys.exit(1)
+PY
+  ); then
+    echo "error: --tetra-wanted must be MCC/MNC/CC (MCC 0-1023, MNC 0-16383, CC 0-63, decimal or 0x hex), not" \
+      "'$tetra_wanted'" >&2
+    exit 1
+  fi
+elif [ -n "$tetra_wanted" ]; then
+  echo "error: --tetra-wanted only applies to --metric tetra" >&2
   usage 1
 fi
 if ! [[ $reps =~ ^[1-9][0-9]*$ ]]; then
@@ -174,6 +250,59 @@ fi
 if [ ! -r "$capture" ]; then
   echo "error: cannot read capture '$capture'" >&2
   exit 1
+fi
+# A WAV recording is replayed as it is: replay reads its header, not a sidecar. Replay's sniff (dsd_iq_wav_sniff())
+# takes a RIFF, RF64 or BW64 container with the WAVE form at byte 8, and names a big-endian RIFX one unsupported.
+capture_is_wav=0
+case "$(head -c 4 "$capture" 2> /dev/null | tr -d '\0')" in
+  RIFF | RF64 | BW64 | RIFX)
+    if [ "$(tail -c +9 "$capture" 2> /dev/null | head -c 4 | tr -d '\0')" = "WAVE" ]; then
+      capture_is_wav=1
+    fi
+    ;;
+esac
+# A sidecar whose data_file is a WAV replays as that WAV (replay_data_file_decides() in src/io/iq/iq_replay.c): the
+# WAV's header and name describe the capture, its start time included, and the sidecar's other fields, its events
+# among them, are ignored. Such a sidecar is a WAV capture here too. Prints 1 for one, else 0.
+sidecar_data_is_wav() {
+  python3 - "$1" << 'PY'
+import json
+import sys
+
+capture = sys.argv[1]
+
+
+def is_absolute(path):
+    """path_is_absolute() in src/io/iq/iq_replay.c."""
+    return path[:1] in ("/", "\\") or (path[:1].isascii() and path[:1].isalpha() and path[1:2] == ":")
+
+
+try:
+    with open(capture, encoding="utf-8", errors="surrogateescape") as handle:
+        data_file = json.load(handle).get("data_file")
+except (OSError, ValueError, AttributeError):
+    data_file = None
+if not isinstance(data_file, str) or not data_file:
+    print(0)
+    sys.exit(0)
+# resolve_data_path(): a relative data_file is appended to the sidecar path up to its last separator.
+if not is_absolute(data_file):
+    cut = max(capture.rfind("/"), capture.rfind("\\"))
+    data_file = capture[:cut + 1] + data_file
+try:
+    with open(data_file, "rb") as handle:
+        head = handle.read(12)
+except OSError:
+    head = b""
+# dsd_iq_wav_sniff() in src/io/iq/iq_wav.c, as for a WAV given directly.
+print(1 if head[:4] in (b"RIFF", b"RF64", b"BW64", b"RIFX") and head[8:12] == b"WAVE" else 0)
+PY
+}
+capture_wav_note="a WAV capture"
+if [ "$capture_is_wav" -eq 0 ] && command -v python3 > /dev/null 2>&1 &&
+  [ "$(sidecar_data_is_wav "$capture" 2> /dev/null || echo 0)" = 1 ]; then
+  capture_is_wav=1
+  capture_wav_note="a sidecar whose data_file is a WAV (replay reads the WAV and ignores the sidecar's other fields)"
 fi
 for ((i = 0; i < ${#builds[@]}; i++)); do
   b=${builds[$i]}
@@ -343,6 +472,10 @@ for r in $(seq 1 "$reps"); do
 done
 if [ "$realizations" -eq 0 ]; then
   realization_note="off (--no-realizations): every repeat replays the capture as recorded, the determinism control"
+elif [ "$capture_is_wav" -eq 1 ]; then
+  echo "warning: $capture_wav_note has no events to shift: every repeat replays the same realization; compare it" \
+    "across captures" >&2
+  realization_note="none: $capture_wav_note is one realization, so every repeat replays it as recorded"
 else
   if ! command -v python3 > /dev/null 2>&1; then
     echo "error: per-repeat realizations need python3; pass --no-realizations to replay without them" >&2
@@ -401,7 +534,100 @@ printf 'variant\tcase\trep\terrs\tvoice\tsync' > "$summary"
 # shift is last, so readers of the earlier columns by position still find them.
 printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc \
   tone tone_lock_ms tone_lock_pct rc off_path shift >> "$summary"
+if [ "$metric" = tetra ]; then
+  printf '\t%s' wanted_bsch other_bsch unknown_bsch tch_ok tch_bad aach_fec first_wanted_s completed samples \
+    wanted >> "$summary"
+fi
 printf '\n' >> "$summary"
+
+# The decode clock's start in the local time zone, as seconds into the day: replay stamps its lines with the
+# capture's start time plus the capture time elapsed, as HH:MM:SS local time (src/engine/engine.c, anchor).
+tetra_origin_sod() {
+  local start=""
+  if [ "$capture_is_wav" -eq 1 ]; then
+    # What the first build reads from the recording's auxi chunk or its name; given a sidecar whose data_file is a
+    # WAV, --iq-info resolves it to that WAV as replay does, and the sidecar's capture_started_utc goes unread.
+    start=$("${builds[0]}" --iq-info "$capture" 2> /dev/null | sed -n 's/^  Start time: *\([0-9TZ:-]*\) (.*/\1/p' |
+      head -n 1 || true)
+  else
+    start=$(python3 -c 'import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+        value = json.load(handle).get("capture_started_utc", "")
+    print(value if isinstance(value, str) else "")
+except (OSError, ValueError, AttributeError):
+    print("")' "$capture" 2> /dev/null || true)
+  fi
+  python3 - "$start" << 'PY'
+import calendar
+import sys
+import time
+
+FLOOR, CEILING = 946684800, 18000000000
+anchor = 0
+try:
+    anchor = calendar.timegm(time.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ"))
+except ValueError:
+    pass
+anchor = min(max(anchor, FLOOR), CEILING)
+local = time.localtime(anchor)
+print(local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec)
+PY
+}
+
+# Prints the TETRA metric fields of one log, tab separated, in summary.tsv's order from wanted_bsch to samples.
+# Arguments: log, wanted identity (MCC/MNC/0xCC), origin (seconds into the day the capture starts at).
+tetra_log_metrics() {
+  python3 - "$@" << 'PY'
+import bisect
+import re
+import sys
+
+log, wanted, origin = sys.argv[1], sys.argv[2], int(sys.argv[3])
+mcc, mnc, cc = wanted.split("/")
+wanted_id = (int(mcc), int(mnc), int(cc, 16))
+MAX_MISMATCH = 28  # TETRA_TCH_MAX_MISMATCH, src/protocol/tetra/tetra.c
+
+with open(log, "rb") as handle:
+    text = handle.read().decode("latin-1")
+
+# A decode-clock stamp opens each "Sync:" line. A BSCH belongs to the last stamp before it.
+stamps = [(m.start(), int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)))
+          for m in re.finditer(r"(?<![0-9:])([0-9]{2}):([0-9]{2}):([0-9]{2}) Sync:", text)]
+stamp_pos = [pos for pos, _ in stamps]
+
+BSCH = re.compile(r"\[TETRA BSCH\] MCC=([0-9]+) MNC=([0-9]+) CC=0x([0-9a-fA-F]+)(?=[ \n]|$)")
+n_wanted = n_other = n_unknown = 0
+first = None
+for m in re.finditer(r"\[TETRA BSCH\] MCC=", text):
+    full = BSCH.match(text, m.start())
+    if not full:
+        n_unknown += 1
+        continue
+    if (int(full.group(1)), int(full.group(2)), int(full.group(3), 16)) == wanted_id:
+        n_wanted += 1
+        if first is None:
+            index = bisect.bisect_right(stamp_pos, m.start()) - 1
+            if index >= 0:
+                first = (stamps[index][1] - origin) % 86400
+    else:
+        n_other += 1
+
+TCH = re.compile(r"\[TETRA TCH/FS\] CC=-?[0-9]+ +dec_bits=([0-9]+) +crc=(ok|bad) +mismatches=([0-9]+)")
+tch_ok = tch_bad = 0
+for m in re.finditer(r"\[TETRA TCH/FS\]", text):
+    full = TCH.match(text, m.start())
+    if full and full.group(1) == "274" and full.group(2) == "ok" and int(full.group(3)) <= MAX_MISMATCH:
+        tch_ok += 1
+    else:
+        tch_bad += 1
+
+aach = len(re.findall(r"AACH [0-9]+/[0-9]+/[0-9]+\]", text))
+ends = re.findall(r"IQ replay: end of capture after ([0-9]+) samples", text)
+print("\t".join([str(n_wanted), str(n_other), str(n_unknown), str(tch_ok), str(tch_bad), str(aach),
+                 "NA" if first is None else str(first), "1" if ends else "0", ends[-1] if ends else "NA"]))
+PY
+}
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
 # that starts with prefix, or NA. The line is split on spaces, so no value may
@@ -419,6 +645,11 @@ line_value() {
 
 # Quoted flags are several arguments, not one.
 read -r -a mode_args <<< "$mode"
+tetra_origin=0
+if [ "$metric" = tetra ] && ! tetra_origin=$(tetra_origin_sod); then
+  echo "error: could not read the capture's start time for the TETRA metric" >&2
+  exit 1
+fi
 nbuilds=${#builds[@]}
 
 echo "replaying $(basename "$capture") through $nbuilds builds, $reps repeats each, $rate pacing, $metric metric"
@@ -469,10 +700,18 @@ for r in $(seq 1 "$reps"); do
     if grep -qF 'CQPSK symbols instead of monitor samples' "$log"; then
       off_path=1
     fi
+    tetra_fields=""
+    if [ "$metric" = tetra ] && ! tetra_fields=$(tetra_log_metrics "$log" "$tetra_wanted" "$tetra_origin"); then
+      echo "error: could not score the TETRA metric of $log" >&2
+      exit 1
+    fi
     {
       printf '%s\t%s\t%s\t%s\t%s\t%s' \
         "$name" "$(basename "$capture")-$rate" "$r" "${errs:-NA}" "$voice" "$sync"
       printf '\t%s' "${analog[@]}" "$rc" "$off_path" "${shifts[r]}"
+      if [ "$metric" = tetra ]; then
+        printf '\t%s\t%s' "$tetra_fields" "$tetra_wanted"
+      fi
       printf '\n'
     } >> "$summary"
     exit_note=$([ "$rc" -ne 0 ] && echo " (exit $rc)" || true)
@@ -482,7 +721,16 @@ for r in $(seq 1 "$reps"); do
     if [ "${same_as[r]}" -ne "$r" ]; then
       exit_note="$exit_note (same realization as r${same_as[r]})"
     fi
-    if [ "$metric" = analog ]; then
+    if [ "$metric" = tetra ]; then
+      IFS=$'\t' read -r t_wanted t_other t_unknown t_ok t_bad t_aach t_first t_done _ <<< "$tetra_fields"
+      # No end-of-capture notice: the replay stopped early or lost its reader, which is not a run that decoded nothing.
+      if [ "$t_done" = 0 ]; then
+        exit_note="$exit_note (incomplete: no end-of-capture notice)"
+      fi
+      printf '  r%-3s %-24s shift=%-5s wanted=%-5s other=%-5s unknown=%-4s ' \
+        "$r" "$name" "${shifts[r]}" "$t_wanted" "$t_other" "$t_unknown"
+      printf 'tch_ok=%-5s tch_bad=%-5s aach=%-5s first=%-5s%s\n' "$t_ok" "$t_bad" "$t_aach" "$t_first" "$exit_note"
+    elif [ "$metric" = analog ]; then
       # analog[] follows the summary header: snr inband clip audible first rms probe_hz probe_dbfs ...
       printf '  r%-3s %-24s shift=%-5s snr=%-8s inband=%-8s audible_ms=%-9s rms=%-8s probe_dbfs=%-8s%s\n' \
         "$r" "$name" "${shifts[r]}" "${analog[0]}" "${analog[1]}" "${analog[3]}" "${analog[5]}" "${analog[7]}" \

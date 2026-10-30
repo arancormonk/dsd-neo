@@ -414,6 +414,12 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()). */
+int
+dsd_engine_scan_tune_moved(void) {
+    return 0;
+}
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
     if (out_request_id) {

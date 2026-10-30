@@ -21,7 +21,9 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/log.h>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -72,6 +74,110 @@ expect_u64_ge(const char* label, uint64_t got, uint64_t want_min) {
         return 1;
     }
     return 0;
+}
+
+/* The replay's end-of-capture notices and --iq-loop rewind lines, as the log tap main() installs saw them, in order.
+ * The tap runs on whichever thread logs, so the list is locked. */
+static const char kEndNoticePrefix[] = "IQ replay: end of capture after ";
+static const char kLoopRewindPrefix[] = "IQ replay: --iq-loop rewound";
+
+namespace {
+struct EndNotices {
+    std::mutex m;
+    std::vector<std::string> lines;
+};
+} // namespace
+
+static EndNotices g_end_notices;
+
+static void
+record_end_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    EndNotices* notices = static_cast<EndNotices*>(ctx);
+    if (!text
+        || (std::strncmp(text, kEndNoticePrefix, sizeof(kEndNoticePrefix) - 1U) != 0
+            && std::strncmp(text, kLoopRewindPrefix, sizeof(kLoopRewindPrefix) - 1U) != 0)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(notices->m);
+    notices->lines.emplace_back(text);
+}
+
+static void
+clear_end_notices(void) {
+    std::lock_guard<std::mutex> lock(g_end_notices.m);
+    g_end_notices.lines.clear();
+}
+
+/* The end-of-capture notices and loop rewind lines, in the order they were logged. */
+static std::vector<std::string>
+end_and_rewind_lines(void) {
+    std::lock_guard<std::mutex> lock(g_end_notices.m);
+    return g_end_notices.lines;
+}
+
+static int
+is_end_notice(const std::string& line) {
+    return line.compare(0, sizeof(kEndNoticePrefix) - 1U, kEndNoticePrefix) == 0 ? 1 : 0;
+}
+
+/* The rewind lines among @p lines: counted from one snapshot, since a notice logged between two would make their
+ * difference wrap. */
+static size_t
+rewind_line_count(const std::vector<std::string>& lines) {
+    size_t rewinds = 0U;
+    for (const std::string& line : lines) {
+        if (!is_end_notice(line)) {
+            rewinds++;
+        }
+    }
+    return rewinds;
+}
+
+/* The end-of-capture notices alone. */
+static std::vector<std::string>
+end_notices(void) {
+    std::vector<std::string> notices;
+    for (const std::string& line : end_and_rewind_lines()) {
+        if (is_end_notice(line)) {
+            notices.push_back(line);
+        }
+    }
+    return notices;
+}
+
+/* No end-of-capture notice since the last clear_end_notices(). */
+static int
+expect_no_end_notice(const char* label) {
+    const std::vector<std::string> lines = end_notices();
+    if (!lines.empty()) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %zu end-of-capture notice(s), the first: %s", label, lines.size(),
+                    lines.front().c_str());
+        return 1;
+    }
+    return 0;
+}
+
+/* Every end-of-capture notice since the last clear_end_notices() names @p samples, and there are @p want_min to
+ * @p want_max of them. */
+static int
+expect_end_notices(const char* label, uint64_t samples, size_t want_min, size_t want_max) {
+    const std::vector<std::string> lines = end_notices();
+    int rc = 0;
+    if (lines.size() < want_min || lines.size() > want_max) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %zu end-of-capture notices, want %zu to %zu\n", label, lines.size(), want_min,
+                    want_max);
+        rc = 1;
+    }
+    char want[128];
+    DSD_SNPRINTF(want, sizeof(want), "%s%llu samples\n", kEndNoticePrefix, (unsigned long long)samples);
+    for (const std::string& line : lines) {
+        if (line != want) {
+            DSD_FPRINTF(stderr, "FAIL: %s: notice \"%s\", want \"%s\"\n", label, line.c_str(), want);
+            rc = 1;
+        }
+    }
+    return rc;
 }
 
 enum : uint8_t {
@@ -1899,6 +2005,7 @@ test_replay_read_error_ends_stream(void) {
     }
 
     dsd_input_failure_clear();
+    clear_end_notices();
     rtl_device_test_replay_inject_read_error(3, DSD_IQ_ERR_IO);
     std::unique_ptr<dsd_opts> opts;
     RtlSdrContext* ctx = NULL;
@@ -1929,6 +2036,7 @@ test_replay_read_error_ends_stream(void) {
     rc |= expect_int_eq("read error code reported", failure.native_code, DSD_IQ_ERR_IO);
 
     finish_replay(ctx, rescued);
+    rc |= expect_no_end_notice("read failure: no end-of-capture notice, the stream stopped");
     rtl_device_test_replay_inject_read_error(-1, 0);
     dsd_input_failure_clear();
     return rc;
@@ -3472,6 +3580,7 @@ test_replay_of_a_data_file_cut_short(void) {
         }
 
         dsd_input_failure_clear();
+        clear_end_notices();
         BlockLog& log = fresh_hook_context<BlockLog>();
         log.keep_samples = cf32;
         rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
@@ -3507,6 +3616,8 @@ test_replay_of_a_data_file_cut_short(void) {
         rc |= expect_int_eq(what, failure.kind, DSD_INPUT_FAILURE_FILE);
         DSD_SNPRINTF(what, sizeof(what), "%s: code reported", label);
         rc |= expect_int_eq(what, failure.native_code, DSD_IQ_ERR_IO);
+        DSD_SNPRINTF(what, sizeof(what), "%s: no end-of-capture notice", label);
+        rc |= expect_no_end_notice(what);
     }
     return rc;
 }
@@ -3528,6 +3639,7 @@ test_loop_pass_that_submits_nothing_ends(void) {
         const char* label = passes_delivered ? "loop, second pass submits nothing" : "loop, first pass submits nothing";
         char what[160];
         dsd_input_failure_clear();
+        clear_end_notices();
         BlockLog& log = fresh_hook_context<BlockLog>();
         rtl_stream_test_set_replay_block_hook(block_log_hook, &log);
         rtl_device_test_replay_override_conversion(passes_delivered, 0);
@@ -3563,6 +3675,11 @@ test_loop_pass_that_submits_nothing_ends(void) {
             DSD_SNPRINTF(what, sizeof(what), "%s: the first pass reached the decoder", label);
             rc |= expect_true(what, delivered > 0U);
         }
+        /* A pass that delivered nothing did not decode the capture to its end: only a delivering pass's rewind says
+           so. */
+        DSD_SNPRINTF(what, sizeof(what), "%s: end-of-capture notices", label);
+        rc |= expect_end_notices(what, (uint64_t)kReplayChunkBytes / 2U, (size_t)passes_delivered,
+                                 (size_t)passes_delivered);
     }
     return rc;
 }
@@ -3684,6 +3801,166 @@ test_replay_keeps_tuner_autogain_off(void) {
     return rc;
 }
 
+/* A replay read to its end says so once, with the capture's sample count: complex samples at its own rate, 2 bytes
+ * each in cu8 and 8 in cf32. */
+static int
+test_replay_end_notice_counts_capture_samples(void) {
+    int rc = 0;
+    for (int cf32 = 0; cf32 <= 1; cf32++) {
+        const char* label = cf32 ? "cf32 end notice" : "cu8 end notice";
+        const size_t bytes = cf32 ? 2U * kCf32ChunkBytes : 3U * kReplayChunkBytes;
+        const uint64_t samples = cf32 ? (uint64_t)bytes / 8U : (uint64_t)bytes / 2U;
+        char metadata_path[DSD_TEST_PATH_MAX];
+        if (make_replay_fixture(metadata_path, sizeof(metadata_path), cf32 ? DSD_IQ_FORMAT_CF32 : DSD_IQ_FORMAT_CU8,
+                                cf32 ? "post_driver_cf32_pre_ring" : "post_mute_pre_widen", 1, bytes)
+            != 0) {
+            return 1;
+        }
+        clear_end_notices();
+        std::unique_ptr<dsd_opts> opts;
+        RtlSdrContext* ctx = NULL;
+        if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+            stop_and_destroy_stream(ctx);
+            return 1;
+        }
+        uint64_t delivered = 0U;
+        int rescued = 0;
+        rc |= read_replay_to_end(ctx, 5000U, label, &delivered, &rescued);
+        (void)wait_for_reader_exited(2000U);
+        finish_replay(ctx, rescued);
+        rc |= expect_true(label, delivered > 0U);
+        rc |= expect_end_notices(label, samples, 1U, 1U);
+    }
+    return rc;
+}
+
+namespace {
+/* test_replay_stop_prints_no_end_notice(): a stop requested once the reader has found the capture's end, while the
+ * decoder still has the last output to read. */
+struct StopAfterEnd {
+    std::atomic<int> stopped{0};
+};
+} // namespace
+
+static void
+stop_after_end_stage(int stage, size_t count, void* ctx) {
+    (void)count;
+    StopAfterEnd* stop = static_cast<StopAfterEnd*>(ctx);
+    if (stage != RTL_STREAM_TEST_REPLAY_DECODER_OUTPUT_FOUND || stop->stopped.load(std::memory_order_acquire)) {
+        return;
+    }
+    /* The capture is one chunk: the reader reads past it to the end with nothing to wait for, while the decoder holds
+       the chunk's output here. */
+    for (unsigned int waited = 0U; waited < 2000U; waited++) {
+        rtl_stream_test_replay_state state;
+        DSD_MEMSET(&state, 0, sizeof(state));
+        if (dsd_rtl_stream_test_get_replay_state(&state) == 0 && state.replay_input_eof) {
+            dsd_exitflag_store(1);
+            stop->stopped.store(1, std::memory_order_release);
+            return;
+        }
+        dsd_sleep_ms(1U);
+    }
+}
+
+/* A replay stopped before the decoder read it to the end does not say the capture ended: one stopped after the reader
+ * found the capture's end, and one stopped while nothing reads it, a few chunks in. */
+static int
+test_replay_stop_prints_no_end_notice(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            kReplayChunkBytes)
+        != 0) {
+        return 1;
+    }
+
+    clear_end_notices();
+    StopAfterEnd& stop = fresh_hook_context<StopAfterEnd>();
+    rtl_stream_test_set_replay_stage_hook(stop_after_end_stage, &stop);
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    uint64_t delivered = 0U;
+    int rescued = 0;
+    rc |= read_replay_to_end(ctx, 5000U, "stop after the end", &delivered, &rescued);
+    (void)wait_for_reader_exited(2000U);
+    stop_and_destroy_stream(ctx);
+    rtl_stream_test_set_replay_stage_hook(NULL, NULL);
+    dsd_exitflag_store(0);
+    rc |= expect_true("stop after the end: the stop was requested after the reader's EOF", stop.stopped.load());
+    rc |= expect_no_end_notice("stop after the end");
+
+    clear_end_notices();
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            8U * kReplayChunkBytes)
+        != 0) {
+        return 1;
+    }
+    if (start_replay_stream(metadata_path, &opts, &ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    float audio[256];
+    int got = 0;
+    (void)rtl_stream_read(ctx, audio, sizeof(audio) / sizeof(audio[0]), &got);
+    stop_and_destroy_stream(ctx);
+    rc |= expect_no_end_notice("stop mid-replay");
+    return rc;
+}
+
+/* A looping replay reaches the capture's end once a pass, and says so each time with that pass's sample count, after
+ * the decoder read the pass and before the rewind. */
+static int
+test_loop_replay_end_notice_each_pass(void) {
+    int rc = 0;
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (make_replay_fixture(metadata_path, sizeof(metadata_path), DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1,
+                            2U * kReplayChunkBytes)
+        != 0) {
+        return 1;
+    }
+    clear_end_notices();
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    LoopReader reader;
+    if (start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx) != 0 || start_loop_reader(&reader, ctx) != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+    size_t rewinds = 0U;
+    for (unsigned int waited = 0U; waited < 5000U && rewinds < 3U; waited++) {
+        dsd_sleep_ms(1U);
+        rewinds = rewind_line_count(end_and_rewind_lines());
+    }
+    stop_loop_reader(&reader);
+    stop_and_destroy_stream(ctx);
+    if (reader.rescued) {
+        dsd_exitflag_store(0);
+    }
+    /* The reader has left. Each rewind line follows its pass's notice; a stop can land between the last notice and its
+       rewind. */
+    const std::vector<std::string> lines = end_and_rewind_lines();
+    rewinds = 0U;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (is_end_notice(lines[i])) {
+            rc |= expect_true("loop end notices: a notice follows a rewind or opens the replay",
+                              i == 0U || !is_end_notice(lines[i - 1U]));
+        } else {
+            rewinds++;
+            rc |= expect_true("loop end notices: each rewind follows its pass's notice",
+                              i > 0U && is_end_notice(lines[i - 1U]));
+        }
+    }
+    rc |= expect_true("loop end notices: three passes rewound", rewinds >= 3U);
+    rc |= expect_end_notices("loop end notices", (uint64_t)(2U * kReplayChunkBytes) / 2U, rewinds, rewinds + 1U);
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CU8, 1536000U) != kReplayChunkBytes
@@ -3695,8 +3972,12 @@ main(void) {
                     dsd_iq_replay_chunk_bytes(DSD_IQ_FORMAT_CF32, 1536000U), kReplayChunkBytes, kCf32ChunkBytes);
         return 1;
     }
+    dsd_neo_log_set_tap(record_end_notice, &g_end_notices);
     int rc = 0;
     rc |= test_replay_eof_drain_delivers_final_block();
+    rc |= test_replay_end_notice_counts_capture_samples();
+    rc |= test_replay_stop_prints_no_end_notice();
+    rc |= test_loop_replay_end_notice_each_pass();
     rc |= test_replay_reports_the_recorded_tuner_gain();
     rc |= test_replay_read_survives_clear_at_eof();
     rc |= test_replay_read_error_ends_stream();

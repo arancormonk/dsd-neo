@@ -72,10 +72,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         dsp/test_dsp_costas.cpp
         dsp/test_dsp_demod_segmentation.cpp
         dsp/test_dsp_firdes.c
+        dsp/test_dsp_fll_band_edge.cpp
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
@@ -107,10 +109,12 @@ elseif(MSVC)
         dsp/test_dsp_costas.cpp
         dsp/test_dsp_demod_segmentation.cpp
         dsp/test_dsp_firdes.c
+        dsp/test_dsp_fll_band_edge.cpp
         dsp/test_dsp_simd_widen.cpp
         dsp/test_dsp_snr_estimator.cpp
         dsp/test_dsp_simd_stats.cpp
         dsp/test_dsp_squelch_floor.c
+        dsp/test_dsp_tetra_chain.cpp
         dsp/test_dsp_nfm_noise_squelch.c
         dsp/test_dsp_noise_squelch_bank.c
         dsp/test_dsp_pcm_noise_squelch.c
@@ -6402,6 +6406,24 @@ target_link_libraries(
 )
 add_test(NAME DSP_SYMBOL_ANCHOR COMMAND dsd-neo_test_dsp_symbol_anchor)
 
+add_executable(
+    dsd-neo_test_dsp_tetra_uplink_timing
+    dsp/test_dsp_tetra_uplink_timing.c
+)
+target_include_directories(
+    dsd-neo_test_dsp_tetra_uplink_timing
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dsp_tetra_uplink_timing
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DSP_TETRA_UPLINK_TIMING
+    COMMAND dsd-neo_test_dsp_tetra_uplink_timing
+)
+set_tests_properties(DSP_TETRA_UPLINK_TIMING PROPERTIES LABELS "tetra")
+
 add_executable(dsd-neo_test_dsp_symbol_replay dsp/test_dsp_symbol_replay.c)
 target_include_directories(
     dsd-neo_test_dsp_symbol_replay
@@ -10381,6 +10403,15 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
 
+# Root-raised-cosine design against the closed form, and the TETRA matched filter built on it.
+add_executable(dsd-neo_test_dsp_firdes_rrc dsp/test_dsp_firdes_rrc.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_firdes_rrc
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes_rrc ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_FIRDES_RRC COMMAND dsd-neo_test_dsp_firdes_rrc)
+
 # CTCSS detection (issue #522) through the pure analog receive core, in sample time: every
 # tone's lock bound at four rates and two SNRs, adjacent and unsupported frequencies, loss
 # and reverse burst, speech and noise that must never lock, and scale invariance.
@@ -10757,6 +10788,22 @@ add_test(
     NAME DSP_SQUELCH_AUTO_DEMOD
     COMMAND dsd-neo_test_dsp_squelch_auto_demod
 )
+
+# The TETRA receive chain inside full_demod(): its activation predicate and the
+# transitions between blocks, the chain's order, the squelch and the symbols a block
+# after a gap makes, the once-per-stream fallback warnings, the pull-in on a clean stream,
+# and a P25 stream after a TETRA session, through the leave transition, running as a
+# fresh one seeded with its estimate.
+add_executable(dsd-neo_test_dsp_tetra_chain dsp/test_dsp_tetra_chain.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_tetra_chain
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_tetra_chain
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_TETRA_CHAIN COMMAND dsd-neo_test_dsp_tetra_chain)
 
 # The NFM noise squelch inside full_demod() (issue #518 follow-up): on the discriminator's
 # output with the channel filter's plan, flags instead of zeroing, the tracker standing in
@@ -12326,6 +12373,15 @@ target_link_libraries(
 )
 add_test(NAME FEC_BPTC_CODEWORD COMMAND dsd-neo_test_fec_bptc_codeword)
 
+# BPTC(16,2): a Hamming row the decoder cannot correct keeps the received bits and reports the failure
+add_executable(dsd-neo_test_fec_bptc_16x2 fec/test_fec_bptc_16x2.c)
+target_include_directories(
+    dsd-neo_test_fec_bptc_16x2
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_fec_bptc_16x2 PRIVATE dsd-neo_fec)
+add_test(NAME FEC_BPTC_16X2 COMMAND dsd-neo_test_fec_bptc_16x2)
+
 # BCH(63,16,11) decoder unit tests
 add_executable(dsd-neo_test_fec_bch_63_16_unit fec/test_fec_bch_63_16_unit.cpp)
 target_include_directories(
@@ -13108,6 +13164,27 @@ add_test(
     COMMAND dsd-neo_test_dibit_rtl_fsk_reliability
 )
 
+# TETRA slices its pi/4-DQPSK symbols at the quadrant boundaries and takes its
+# soft costs against the fixed levels, never the adaptive four-level slicer's
+add_executable(
+    dsd-neo_test_dibit_tetra_quadrant_slicer
+    core/test_dibit_tetra_quadrant_slicer.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/call_state_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_dibit_tetra_quadrant_slicer
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dibit_tetra_quadrant_slicer
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DIBIT_TETRA_QUADRANT_SLICER
+    COMMAND dsd-neo_test_dibit_tetra_quadrant_slicer
+)
+
 # These standalone slicer tests supply their own clock/config/radio stubs.
 # Pull only the statistics objects from the DSP archive without adding the
 # full DSP test support or inheriting its radio feature definitions.
@@ -13116,6 +13193,7 @@ foreach(
     dsd-neo_test_dibit_symbol_bin_soft
     dsd-neo_test_dibit_two_level_reliability
     dsd-neo_test_dibit_rtl_fsk_reliability
+    dsd-neo_test_dibit_tetra_quadrant_slicer
 )
     if(MSVC)
         target_link_options(
@@ -13216,6 +13294,42 @@ add_test(
     NAME FRAME_SYNC_SPS_HUNT_FALSE_SYNC
     COMMAND dsd-neo_test_frame_sync_sps_hunt_false_sync
 )
+
+# The frame sync's history across a no-sync exit: a TETRA control uplink burst that straddles the end of a matchless
+# pass locks in the next call when the stream went on unbroken, and not across a carrier, epoch, read or modulation
+# change. The levels go with the dibits: an NXDN96 FSW straddling the exit is read on them (a sign-only one does not
+# acquire, a clear one does). DMR and X2-TDMA syncs match only on windows the call read itself, and each accept notes
+# how much of what their decoders read back is not the stream's (not written since the rolling buffers' last clear,
+# nor, for DMR, re-read from the soft symbol history).
+add_executable(
+    dsd-neo_test_frame_sync_history_carry
+    dsp/test_frame_sync_history_carry.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_history_carry
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_history_carry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_history_carry
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_HISTORY_CARRY
+    COMMAND dsd-neo_test_frame_sync_history_carry
+)
+set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
 
 # Frame sync level-window estimator parity with the established sync scanner.
 add_executable(
@@ -13852,6 +13966,33 @@ add_test(
     COMMAND dsd-neo_test_io_iq_replay_rate_plan
 )
 
+# Why a replay path cannot be opened: a symbolic link, a missing or unreadable file, a sniff read that fails (through
+# a seam built with DSD_NEO_TEST_HOOKS, on both the path's and a sidecar's data_file sniff), short input, and the
+# sidecar fallback. iq_replay.c is compiled in again with DSD_NEO_TEST_HOOKS for those seams, and dsd-neo_io_iq links
+# for the rest of the reader (iq_wav.c, iq_capture.c): the test's object already defines every replay symbol, so the
+# linker never pulls the library's own iq_replay.c object, which has no seams.
+add_executable(
+    dsd-neo_test_io_iq_replay_open_errors
+    io/test_io_iq_replay_open_errors.c
+    ${PROJECT_SOURCE_DIR}/src/io/iq/iq_replay.c
+)
+target_include_directories(
+    dsd-neo_test_io_iq_replay_open_errors
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/iq
+)
+target_compile_definitions(
+    dsd-neo_test_io_iq_replay_open_errors
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_io_iq_replay_open_errors
+    PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
+)
+add_test(
+    NAME IO_IQ_REPLAY_OPEN_ERRORS
+    COMMAND dsd-neo_test_io_iq_replay_open_errors
+)
+
 # WAV I/Q recordings (issue #701): the parser, the replay reader's cf32 conversion and partial reads, seeking, the
 # centre and start time sources, --iq-info, and a sidecar beside a WAV.
 add_executable(dsd-neo_test_io_iq_wav io/test_io_iq_wav.c)
@@ -13944,6 +14085,26 @@ target_link_libraries(
     PRIVATE dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
+
+# A writerless FIFO is refused at once, never waited on (POSIX only: needs mkfifo and fork).
+if(UNIX)
+    add_executable(
+        dsd-neo_test_platform_file_compat_fifo
+        platform/test_platform_file_compat_fifo.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_file_compat_fifo
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_file_compat_fifo
+        PRIVATE dsd-neo_platform dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(
+        NAME PLATFORM_FILE_COMPAT_FIFO
+        COMMAND dsd-neo_test_platform_file_compat_fifo
+    )
+endif()
 
 # Test temp files never default to the working directory.
 add_executable(
@@ -16111,6 +16272,18 @@ if(DSD_HAS_RADIO)
         -fT
         "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
     )
+    # The same capture's count: at least the 74 identities the receiver before the TETRA chain decoded. The capture
+    # runs 250 ppm off in sample rate and starts 2.2 kHz off frequency at 3 samples per symbol; the chain decoded 63
+    # while its mixer took the carrier once per block and its Gardner timing loop ran OP25's P25 gain, lowered once
+    # locked.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_SCBS_COUNT
+        tetra_scbs_real_air_54k
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+        ""
+        74
+    )
     # Airspy on_cc_sync_loss recording from the same network: ~10 dB
     # in-channel SNR with visibly ISI-smeared pi/4-DQPSK. Require sustained
     # recovery, not one lucky CRC, from the unmodified 144 kHz CS16 bytes.
@@ -16204,7 +16377,7 @@ if(DSD_HAS_RADIO)
     )
 
     # The unmodified 50 kHz source of tetra_scbs_real_air_54k, under a hand-written sidecar: TETRA cannot time its
-    # symbols at 50 kHz, so the replay resamples it to 72 kHz. It decodes 51 identities in the dev-debug build.
+    # symbols at 50 kHz, so the replay resamples it to 72 kHz. It decodes 79 identities in the dev-debug build.
     add_test(
         NAME DECODE_IQ_TETRA_REAL_AIR_SCBS_50K
         COMMAND
@@ -16391,10 +16564,30 @@ if(DSD_HAS_RADIO)
         ""
         40
     )
+    # The call's first 2 s at 144 kHz with base_decimation 2 (TETRA_HALFBAND_NAME in tools/build_iq_fixtures.py): the
+    # TETRA chain runs behind one half-band pass, as on an RTL-SDR at twice the DSP rate, and its matched filter writes
+    # the pass's buffer behind the chain's read cursor. It decodes what the 72 kHz call's first 2 s decode: 70
+    # identities and 24 speech frames; require 90% of each.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_HALFBAND_BSCH
+        tetra_call_halfband_144k
+        -fT
+        "\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01"
+        ""
+        63
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_HALFBAND_TCH_FS
+        tetra_call_halfband_144k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok"
+        ""
+        22
+    )
     # The AACH (ACCESS-ASSIGN, header/field 1/field 2 under -Z) tells the call's traffic from its signalling: every
     # speech burst decodes under its traffic usage marker 51, and no burst whose AACH says control or unallocated is
     # tried as speech. tetra_call_gap_noisy_72k is the stretch between the talkers with noise added (DERIVED_TETRA_GAP
-    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 21 of
+    # in tools/build_iq_fixtures.py), where SCH/F blocks of nearly all zero bits fail their CRC: the replay reads 14 of
     # them under an assigned control AACH and decodes none (before the AACH was read, 3 passed as speech).
     set(_dsd_tetra_aach_not_traffic
         "AACH (0/[0-9]+|[123]/[0-3])/[0-9]+\\]\\[TETRA TCH"
@@ -16416,6 +16609,238 @@ if(DSD_HAS_RADIO)
         8
     )
     unset(_dsd_tetra_aach_not_traffic)
+    # The TETRA stress set (TETRA_STRESS in tools/build_iq_fixtures.py): the real-air call next to a stronger
+    # synthetic neighbour of another network (MCC 460 / MNC 4242 / colour code 0x11), in noise, or tuned off its
+    # carrier, built at 144 kHz and decimated to 72 kHz. The counts in each comment are the receiver before the TETRA
+    # chain against the chain, on these bytes. A 60% threshold is 60% of the chain's count rounded to the nearest
+    # whole number (139.2 -> 139, 48.6 -> 49).
+    #
+    # The neighbour 25 kHz below at +30 dB (29.99 dB realized after decimation), receiver on frequency: 0 identities
+    # against 232. At least 139 wanted identities (60% of 232), the call's SYSINFO and channel allocation, and never
+    # the neighbour's identity.
+    set(_dsd_tetra_wanted_bsch "\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01")
+    add_test(
+        NAME DECODE_IQ_TETRA_CALL_ADJACENT
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_adjacent_72k.iq.json"
+            "-DEXPECTED=${_dsd_tetra_wanted_bsch}" -DMIN_MATCHES=139
+            "-DEXPECTED2=\\[TETRA SYSINFO\\] CC=1  carrier=1068  band=4"
+            "-DEXPECTED3=\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=3 carrier=1068 freq=426700000"
+            -DNOT_EXPECTED=MCC=460 -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_CALL_ADJACENT
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # AWGN at 3 dB SNR over the 72 kHz band: 3 identities and no speech against 81 and 20 TCH/FS bursts whose CRC
+    # passes (53 and 20 before TETRA sliced at the quadrant boundaries). At least 49 wanted identities (60% of 81)
+    # and one accepted TCH/FS. The chain now decodes 108 identities and 24 TCH/FS (its block-size fix, its Gardner
+    # gain and its narrowed FLL); the threshold stays at 60% of the 81 it was set from.
+    add_test(
+        NAME DECODE_IQ_TETRA_CALL_AWGN
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fT -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_call_awgn_72k.iq.json"
+            "-DEXPECTED=${_dsd_tetra_wanted_bsch}" -DMIN_MATCHES=49
+            "-DEXPECTED2=\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_CALL_AWGN
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # A rejection test: the receiver 10 kHz below the call, which puts the +20 dB neighbour (20.00 dB realized) at
+    # -15 kHz, 5 kHz inside the band the call's carrier left. The receiver before the chain decoded the neighbour's
+    # identity 36 times; the chain decodes neither carrier, which is acceptable here. What it must not do is name the
+    # neighbour, and the replay's end-of-capture notice, with all 468000 samples of the 936000-byte capture, shows it
+    # ran to the end rather than stopping early.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_CALL_NEIGHBOUR_REJECT
+        tetra_call_neighbour_reject_72k
+        -fT
+        "IQ replay: end of capture after 468000 samples"
+        MCC=460
+    )
+    # The control for the rejection test: the clean call with the receiver 10 kHz below it. The receiver before the
+    # chain decoded 217 identities, the chain 224, now 228; at least 207 (95% of 217).
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CALL_OFFSET_10K
+        tetra_call_offset_10k_72k
+        -fT
+        "${_dsd_tetra_wanted_bsch}"
+        ""
+        207
+    )
+    unset(_dsd_tetra_wanted_bsch)
+    # A trunked mode uplink (TETRA_UPLINK_BURSTS in tools/build_iq_fixtures.py, --tetra-uplink): 16 bursts, each from a
+    # radio of its own SSI (2001 to 2016), control uplink bursts (one SCH/HU) and normal uplink bursts (one SCH/F),
+    # with noise-only slots before most of them, each 20 dB above or below the one before it and 500 Hz away. Every
+    # burst's MAC PDU must decode, in order, the first burst after each gap included (2001 after the lead-in's noise,
+    # 2003, 2006, 2008, 2009, 2011, 2013, 2015 and 2016). Burst 2009 began 7 symbols before a matchless pass ended the
+    # frame sync's call, which used to start the next call with no history, too little for its 79-symbol window
+    # (FRAME_SYNC_HISTORY_CARRY). The receiver before the chain decoded 13 bursts (not 2001, 2009 and 2016); the
+    # TETRA chain, before uplink kept the earlier path with only the TETRA channel filter, decoded 7; with it, 15;
+    # with the history carried across the exit, all 16.
+    set(_dsd_tetra_ul_mode "-fT --tetra-uplink --tetra-net 460,4242,17")
+    set(_dsd_tetra_cb "\\[TETRA SCH/HU\\] CC=17 MAC-ACCESS enc=0 ssi=")
+    set(_dsd_tetra_nub "\\[TETRA SCH/F\\] CC=17 MAC-DATA enc=0 ssi=")
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_CONTROL_BURSTS
+        tetra_uplink_bursts_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_cb}2001.*${_dsd_tetra_cb}2003.*${_dsd_tetra_cb}2006.*${_dsd_tetra_cb}2007.*${_dsd_tetra_cb}2009.*${_dsd_tetra_cb}2012.*${_dsd_tetra_cb}2014.*${_dsd_tetra_cb}2016"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_NORMAL_BURSTS
+        tetra_uplink_bursts_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_nub}2002.*${_dsd_tetra_nub}2004.*${_dsd_tetra_nub}2005.*${_dsd_tetra_nub}2008.*${_dsd_tetra_nub}2010.*${_dsd_tetra_nub}2011.*${_dsd_tetra_nub}2013.*${_dsd_tetra_nub}2015"
+    )
+    # The same uplink with every burst 1 to 7 samples later and the noise unchanged, its lead-in and tail cut shorter
+    # (TETRA_UPLINK_PHASE_OFFSETS): with the fixture above as offset 0 each burst meets the receiver at every sampling
+    # phase, twice over. The symbol timing and the carrier loop free-run on noise between bursts and pull in too slowly
+    # for a burst; from half a symbol off the timing loop hangs for most of a normal burst. So an uplink session takes
+    # each burst's timing and carrier phase from its training sequence (tetra_uplink_timing.h), and every burst must
+    # decode, in order, at every offset. Before, each of offsets 1 to 7 lost one or two of them (2006 and 2009; 2016;
+    # 2001; 2015; 2009; 2016; 2001 and 2006): 119 of the 128.
+    set(_dsd_tetra_ul_each "")
+    set(_dsd_tetra_ul_ssi 2001)
+    foreach(
+        _kind
+        cb
+        nub
+        cb
+        nub
+        nub
+        cb
+        cb
+        nub
+        cb
+        nub
+        nub
+        cb
+        nub
+        cb
+        nub
+        cb
+    )
+        list(
+            APPEND _dsd_tetra_ul_each
+            "${_dsd_tetra_${_kind}}${_dsd_tetra_ul_ssi}"
+        )
+        math(EXPR _dsd_tetra_ul_ssi "${_dsd_tetra_ul_ssi} + 1")
+    endforeach()
+    list(JOIN _dsd_tetra_ul_each ".*" _dsd_tetra_ul_all)
+    foreach(
+        _offset
+        1
+        2
+        3
+        4
+        5
+        6
+        7
+    )
+        dsd_neo_add_iq_decode_test(
+            DECODE_IQ_TETRA_UPLINK_PHASE_O${_offset}
+            tetra_uplink_bursts_o${_offset}_72k
+            "${_dsd_tetra_ul_mode}"
+            "${_dsd_tetra_ul_all}"
+        )
+    endforeach()
+    # The uplink under a level squelch at -47 dB, which closes between bursts and on the weak burst 2007. The burst
+    # timing holds 128 symbols back; a squelched block pushes them out (as zeros through the uplink's Gardner) before
+    # the squelch's silence, or a burst's end would come only after it. The receiver before decoded 14 (not 2002 and
+    # 2007), the timing without that drain 4; every burst but 2007 must decode, in order.
+    set(_dsd_tetra_ul_squelched "${_dsd_tetra_ul_each}")
+    list(REMOVE_AT _dsd_tetra_ul_squelched 6)
+    list(JOIN _dsd_tetra_ul_squelched ".*" _dsd_tetra_ul_squelched)
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_SQUELCH
+        tetra_uplink_bursts_72k
+        "${_dsd_tetra_ul_mode} --squelch -47"
+        "${_dsd_tetra_ul_squelched}"
+    )
+    # The uplink's last two bursts with the capture ending 20 symbols after the last one
+    # (TETRA_UPLINK_SHORT_TAIL_NAME): at the end of the capture the uplink pushes the symbols its burst timing holds
+    # back out, so the last burst decodes and the end-of-capture notice still comes after it.
+    list(GET _dsd_tetra_ul_each 14 _dsd_tetra_ul_2015)
+    list(GET _dsd_tetra_ul_each 15 _dsd_tetra_ul_2016)
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_SHORT_TAIL
+        tetra_uplink_bursts_short_tail_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
+    )
+    # The same paced in real time: the demod waits for a chunk the capture's end never brings, and that wait must give
+    # way to the end-of-capture flush, or the replay never ends.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_REALTIME
+        tetra_uplink_bursts_short_tail_72k
+        "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
+        "${_dsd_tetra_ul_2015}.*${_dsd_tetra_ul_2016}.*IQ replay: end of capture after 17832 samples"
+    )
+    # The uplink with a recorded stream gap (a RETUNE and a RESET, as an RTL-SDR stall recovery records it) 20 symbols
+    # after burst 2005 (TETRA_UPLINK_GAP_NAME): the reset starts the burst timing over, so the uplink pushes what it
+    # holds back out before the gap, and every burst decodes, in order (before, the reset dropped 2005's last 108
+    # symbols). Fast and paced in real time, where the demod waits for a chunk the boundary holds back.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_GAP
+        tetra_uplink_bursts_gap_72k
+        "${_dsd_tetra_ul_mode}"
+        "${_dsd_tetra_ul_all}"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_UPLINK_GAP_REALTIME
+        tetra_uplink_bursts_gap_72k
+        "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
+        "${_dsd_tetra_ul_all}"
+    )
+    # The same capture under --iq-loop: each pass ends 20 symbols after the last burst, and the rewind pushes the
+    # look-ahead out as the capture's end does, so every pass decodes both bursts (before, the last one decoded on no
+    # pass).
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/iq_loop_passes_check.py
+                --dsd-bin $<TARGET_FILE:dsd-neo> --fixture
+                ${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_uplink_bursts_short_tail_72k.iq.json
+                --mode "${_dsd_tetra_ul_mode}" --passes 3 --count
+                "MAC-DATA enc=0 ssi=2015" --count "MAC-ACCESS enc=0 ssi=2016"
+                --min-count 1 --timeout 100
+        )
+        # The same paced in real time (0.25 s a pass), where the demod waits for the next chunk before the reader
+        # reaches the pass's end: the wait must give way to the look-ahead flush, or the rewind waits for it forever.
+        add_test(
+            NAME DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP_REALTIME
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/iq_loop_passes_check.py
+                --dsd-bin $<TARGET_FILE:dsd-neo> --fixture
+                ${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_uplink_bursts_short_tail_72k.iq.json
+                --mode "${_dsd_tetra_ul_mode} --iq-replay-rate realtime"
+                --passes 3 --count "MAC-DATA enc=0 ssi=2015" --count
+                "MAC-ACCESS enc=0 ssi=2016" --min-count 1 --timeout 30
+        )
+        set_tests_properties(
+            DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP
+            DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP_REALTIME
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endif()
+    unset(_dsd_tetra_ul_each)
+    unset(_dsd_tetra_ul_squelched)
+    unset(_dsd_tetra_ul_2015)
+    unset(_dsd_tetra_ul_2016)
+    unset(_dsd_tetra_ul_all)
+    unset(_dsd_tetra_ul_ssi)
+    unset(_dsd_tetra_ul_mode)
+    unset(_dsd_tetra_cb)
+    unset(_dsd_tetra_nub)
     # Complex-conjugated IQ reverses every differential phase step. Require
     # protected payloads after negative-polarity synchronization and dibit-MSB
     # normalization in both the BSCH and NDB paths.
@@ -19533,6 +19958,21 @@ if(Python3_Interpreter_FOUND)
             PROPERTIES TIMEOUT 120
         )
     endif()
+    # The synthetic TETRA fixtures' signal model in tools/build_iq_fixtures.py: the
+    # modulator's root-raised-cosine pulse and the two-ray helper's sample rate. The
+    # tool imports numpy; where the tests' Python has none the test says so and is
+    # reported skipped (77), rather than left unregistered.
+    add_test(
+        NAME TOOLS_BUILD_IQ_FIXTURES_TETRA
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_build_iq_fixtures_tetra.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_BUILD_IQ_FIXTURES_TETRA
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
@@ -19574,6 +20014,21 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(
             TOOLS_REPLAY_AB_DIGITAL_METRIC
+            PROPERTIES
+                ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+                TIMEOUT 120
+        )
+        # The TETRA metric and WAV captures, read from fake hosts' logs through the real script.
+        add_test(
+            NAME TOOLS_REPLAY_AB_TETRA_METRIC
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_replay_ab_report.py
+                ReplayAbTetraMetric
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(
+            TOOLS_REPLAY_AB_TETRA_METRIC
             PROPERTIES
                 ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
                 TIMEOUT 120

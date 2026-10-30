@@ -34,13 +34,21 @@ reproduce byte for byte on one numpy version.
 
 Usage:
     python3 tools/build_iq_fixtures.py [--out tests/fixtures/iq] [--cache .iq-cache]
+    python3 tools/build_iq_fixtures.py --verify [--out tests/fixtures/iq]
+
+--verify checks the committed set against the generator: it copies the --out directory to a fresh temporary
+directory, regenerates the derived fixtures there exactly as --derived-only does, and byte-compares every file
+against the original. It prints each file that differs, is missing or is new, and exits 1 on any difference, 0 when
+every derived fixture reproduces byte for byte. It never writes to --out.
 """
 
 import argparse
+import filecmp
 import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -336,12 +344,115 @@ DERIVED_NOISE = [
 # speech at all. The noise breaks the SCH/F CRC often enough that such a block, tried as speech, would pass the speech
 # CRC (all zero bits are a codeword of every linear code); the AACH keeps it out (docs/testing.md). Deterministic from
 # the seed; complex Gaussian noise added at the source's own level, sigma in LSB of the cu8 range. The sidecar keeps the
-# source's centre frequency.
+# source's centre frequency. Sigma and seed are set for the TETRA receive chain and its quadrant slicer: at 24 LSB it
+# decodes nearly every SCH/F block, leaving none to gate, and past about 46 LSB the AACH itself stops reading. Swept
+# over 36-41 LSB and seeds 24004-24063, seed 24013 at 40 LSB leaves 19 SCH/F CRC ok and 14 gated lines (12 to 17 from
+# 39 to 41 LSB), above DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE's 8, with no block tried as speech behind control.
 #
 # name, source, start_s, stop_s, seed, sigma (LSB of the cu8 range)
 DERIVED_TETRA_GAP = [
-    ("tetra_call_gap_noisy_72k", "tetra_call_real_air_72k", 1.6, 4.9, 24004, 24.0),
+    ("tetra_call_gap_noisy_72k", "tetra_call_real_air_72k", 1.6, 4.9, 24013, 40.0),
 ]
+
+# The TETRA stress set: the real-air call (tetra_call_real_air_72k, MCC 228 / MNC 8889 / colour code 0x01) received
+# next to a much stronger neighbour, in noise, or tuned off its carrier. The neighbour is an independent synthetic
+# downlink of another network (MCC 460 / MNC 4242 / colour code 0x11, tetra_synth_bursts()), shaped with the spec
+# root-raised-cosine and running continuously: each group of identity bursts is followed by nine slots of random
+# dibits, so its spectrum is a busy TETRA carrier's (EN 300 392-2 clause 6.6.2.3.0) rather than the spectral lines of
+# the zero-filled bursts. Both are built at 144 kHz, where a neighbour 25 kHz away still lies wholly inside the band,
+# and taken to 72 kHz by resample_to_fixture_rate(), whose ideal low-pass at 36 kHz stands for an RTL-SDR's decimation.
+#
+# Placement: the wanted carrier sits at +offset Hz and the neighbour at neighbour + offset Hz, so a positive offset is
+# a receiver whose LO sits that far below the wanted carrier; the sidecar's centre frequency says so. Levels are set
+# over each signal's whole 144 kHz content; the realized neighbour ratio after decimation is printed and written into
+# the sidecar's notes. The noise is complex Gaussian at the SNR given against the wanted carrier's power over the 72 kHz
+# band, seeded. The neighbour starts TETRA_NEIGHBOUR_LEAD_S into its own transmission, past its acquisition preamble.
+#
+# name, AWGN SNR dB over 72 kHz (None: none), neighbour dB re wanted (None: none), neighbour Hz, offset Hz, noise seed
+TETRA_STRESS = [
+    ("tetra_call_adjacent_72k", None, 30.0, -25000.0, 0.0, None),
+    ("tetra_call_awgn_72k", 3.0, None, 0.0, 0.0, 603),
+    ("tetra_call_neighbour_reject_72k", None, 20.0, -25000.0, 10000.0, None),
+    ("tetra_call_offset_10k_72k", None, None, 0.0, 10000.0, None),
+]
+TETRA_STRESS_SOURCE = "tetra_call_real_air_72k"
+# The real-air call's first TETRA_HALFBAND_STOP_S as an RTL-SDR running at twice the DSP rate records it: taken to
+# 144 kHz by resample_to_fixture_rate() and replayed with base_decimation 2, so the TETRA chain runs behind one half-band
+# pass, whose output the matched filter overwrites behind the chain's read cursor. The cut takes TETRA_HALFBAND_PAD_S
+# more on each side (zeros ahead of the capture's first sample), which keeps the circular resampler's join out of the
+# samples kept.
+TETRA_HALFBAND_NAME = "tetra_call_halfband_144k"
+TETRA_HALFBAND_STOP_S = 2.0
+TETRA_HALFBAND_PAD_S = 0.05
+TETRA_STRESS_SYNTH_RATE_HZ = 144000
+TETRA_NEIGHBOUR_SEED = 0x4E454947
+TETRA_NEIGHBOUR_LEAD_S = 2.0
+TETRA_NEIGHBOUR_RANDOM_SLOTS = 9
+TETRA_SLOT_SYMBOLS = 255  # one timeslot
+
+# A trunked mode uplink carrier as --tetra-uplink receives it (EN 300 392-2 clause 9.4.4.2): control uplink bursts
+# (103 symbols, one SCH/HU) and normal uplink bursts (231 symbols, one SCH/F under NTS1), each from a different radio,
+# on a 255-symbol slot grid with noise-only slots between some of them. One burst to the next the level steps by 20 dB,
+# up or down, and the carrier by 500 Hz, as different radios arrive. Each burst carries the MAC vectors of
+# tests/protocol/tetra/test_tetra_ul.c (a MAC-ACCESS or a MAC-DATA with a U-LOCATION UPDATE DEMAND) from an SSI of its
+# own, TETRA_UPLINK_SSI_BASE + its index, so a decode names the burst it came from. The cell is MCC 460 / MNC 4242 /
+# colour code 17 (--tetra-net 460,4242,17). Bursts start TETRA_UPLINK_GUARD_SYMBOLS into their slot with a random
+# carrier phase; the noise is complex Gaussian at TETRA_UPLINK_NOISE_LSB a component, and the levels are complex RMS
+# over the burst. Deterministic from the seed.
+#
+# burst kind, noise-only slots before it, level dB re TETRA_UPLINK_LEVEL_LSB, carrier offset Hz
+TETRA_UPLINK_NAME = "tetra_uplink_bursts_72k"
+TETRA_UPLINK_BURSTS = [
+    ("cb", 0, 0.0, 0.0),  # the first burst, after the lead-in's noise
+    ("nub", 0, 20.0, 500.0),
+    ("cb", 3, 0.0, 0.0),
+    ("nub", 0, 20.0, -500.0),
+    ("nub", 0, 0.0, 0.0),
+    ("cb", 18, 20.0, 500.0),  # a quarter second of noise
+    ("cb", 0, 0.0, 0.0),
+    ("nub", 1, 20.0, -500.0),
+    ("cb", 7, 0.0, 0.0),
+    ("nub", 0, 20.0, 500.0),
+    ("nub", 36, 0.0, 0.0),  # half a second of noise
+    ("cb", 0, 20.0, -500.0),
+    ("nub", 2, 0.0, 0.0),
+    ("cb", 0, 20.0, 500.0),
+    ("nub", 5, 0.0, 0.0),
+    ("cb", 12, 20.0, -500.0),
+]
+TETRA_UPLINK_SEED = 0x554C4E4B
+TETRA_UPLINK_RATE_HZ = 72000
+TETRA_UPLINK_CENTRE_HZ = 416700000
+TETRA_UPLINK_LEAD_S = 0.25
+TETRA_UPLINK_TAIL_S = 0.25
+TETRA_UPLINK_GUARD_SYMBOLS = 8
+TETRA_UPLINK_LEVEL_LSB = 4.8
+TETRA_UPLINK_NOISE_LSB = 0.6
+TETRA_UPLINK_SSI_BASE = 2001
+TETRA_UPLINK_NET = (460, 4242, 17)
+# The same uplink with every burst a whole number of samples later, the noise unchanged: offsets 1 to 7 at 72 kHz, with
+# the committed fixture as offset 0, put each burst at every sampling phase twice over (4 samples a symbol), whatever
+# phase the receiver's symbol timing free-runs to between bursts. Each keeps TETRA_UPLINK_PHASE_TRIM_S less of the
+# lead-in and the tail: the samples are the same draw, cut shorter.
+TETRA_UPLINK_PHASE_OFFSETS = tuple(range(1, 8))
+TETRA_UPLINK_PHASE_TRIM_S = 0.15
+# The uplink's last two bursts with the capture ending TETRA_UPLINK_SHORT_TAIL_SYMBOLS after the last one: a receiver
+# that holds symbols back must still hand the last burst over at the end of the capture. It starts
+# TETRA_UPLINK_SHORT_LEAD_SLOTS slots before the burst before the last gap.
+TETRA_UPLINK_SHORT_TAIL_NAME = "tetra_uplink_bursts_short_tail_72k"
+TETRA_UPLINK_SHORT_TAIL_SYMBOLS = 20
+TETRA_UPLINK_SHORT_LEAD_SLOTS = 4
+# The uplink with a recorded stream gap (an RTL-SDR stall recovery: a RETUNE and a RESET at the same offset, on the
+# centre in force) TETRA_UPLINK_GAP_TAIL_SYMBOLS after the end of burst TETRA_UPLINK_GAP_AFTER, the last before 18
+# noise-only slots: a receiver that holds symbols back must hand that burst over before the gap starts it over. A
+# sidecar alone, on the uplink fixture's data.
+TETRA_UPLINK_GAP_NAME = "tetra_uplink_bursts_gap_72k"
+TETRA_UPLINK_GAP_AFTER = 4
+TETRA_UPLINK_GAP_TAIL_SYMBOLS = 20
+# EN 300 392-2 clause 9.4.4.3: the tail bits 1100, and the control uplink burst's extended training sequence
+# (include/dsd-neo/core/sync_patterns.h TETRA_CB_SYNC).
+TETRA_TAIL_DIBITS = (3, 0)
+TETRA_ETS_SYNC = "213100322131003"
 
 # A capture whose input level reaches the cu8 rails only in its last replay chunk (issues #572, #626).
 # A replay hands the demod chunks of one live transfer's time, 256 pairs (5.33 ms) at 48 kHz, and
@@ -569,7 +680,7 @@ METADATA_TEMPLATE = """{{
   "ppm": 0,
   "tuner_gain_tenth_db": 270,
   "rtl_dsp_bw_khz": {bw_khz},
-  "base_decimation": 1,
+  "base_decimation": {base_decimation},
   "post_downsample": 1,
   "demod_rate_hz": {demod_rate},
   "offset_tuning_enabled": false,
@@ -586,7 +697,7 @@ METADATA_TEMPLATE = """{{
   "capture_drops": 0,
   "capture_drop_blocks": 0,
   "input_ring_drops": 0,
-  "notes": "generated by tools/build_iq_fixtures.py"{events}
+  "notes": {notes}{events}
 }}
 """
 
@@ -596,11 +707,13 @@ SIDECAR_DEFAULTS = {
     "version": 1,
     "sample_rate_hz": SAMPLE_RATE_HZ,
     "rtl_dsp_bw_khz": DSP_BW_KHZ,
+    "base_decimation": 1,
     "center_frequency_hz": 851375000,
     "capture_center_frequency_hz": 851375000,
     "contains_retunes": False,
     "capture_retune_count": 0,
     "capture_started_utc": "1970-01-01T00:00:00Z",
+    "notes": "generated by tools/build_iq_fixtures.py",
     "events": (),
 }
 
@@ -941,6 +1054,10 @@ def write_capture(out_dir, name, payload, data_file=None, **sidecar):
     if len(payload) % CU8_ALIGN_BYTES:
         raise ValueError(f"{name}: {len(payload)} bytes is not a whole number of I/Q pairs")
     check_replay_events(fields, len(payload))
+    # The replay reader keeps the notes in 256 bytes with the terminator (src/io/iq/iq_replay.c) and refuses longer.
+    notes = fields["notes"]
+    if len(notes.encode("utf-8")) > 255 or any(ord(ch) < 0x20 or ch in '"\\' for ch in notes):
+        raise ValueError(f"{name}: notes must be at most 255 bytes of plain text")
     written = len(payload)
     if data_file is None:
         data_name = name + ".iq"
@@ -958,12 +1075,14 @@ def write_capture(out_dir, name, payload, data_file=None, **sidecar):
         center_frequency_hz=fields["center_frequency_hz"],
         capture_center_frequency_hz=fields["capture_center_frequency_hz"],
         bw_khz=fields["rtl_dsp_bw_khz"],
-        demod_rate=fields["sample_rate_hz"],
+        base_decimation=fields["base_decimation"],
+        demod_rate=fields["sample_rate_hz"] // fields["base_decimation"],
         contains_retunes="true" if fields["contains_retunes"] else "false",
         capture_retune_count=fields["capture_retune_count"],
         capture_started_utc=fields["capture_started_utc"],
         data_file=data_name,
         data_bytes=len(payload),
+        notes=json.dumps(fields["notes"]),
         events=format_events(fields["events"]),
     )
     with open(os.path.join(out_dir, name + ".iq.json"), "w", encoding="utf-8") as handle:
@@ -992,14 +1111,14 @@ def load_cu8_fixture(path):
     return centered[0::2] + 1j * centered[1::2]
 
 
-def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2):
-    """Sum the signal with a delayed, attenuated, frequency-offset copy."""
+def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2, sample_rate=SAMPLE_RATE_HZ):
+    """Sum the signal with a delayed, attenuated copy cfo_hz off in frequency at sample_rate (48 kHz by default)."""
     if delay_samples > 0:
         delayed = np.concatenate([np.zeros(delay_samples, dtype=samples.dtype), samples[:-delay_samples]])
     else:
         delayed = samples
     n = np.arange(len(samples))
-    rotation = np.exp(1j * (2.0 * math.pi * cfo_hz * n / SAMPLE_RATE_HZ + phase2))
+    rotation = np.exp(1j * (2.0 * math.pi * cfo_hz * n / sample_rate + phase2))
     return samples + amp2 * delayed * rotation
 
 
@@ -1327,16 +1446,18 @@ def tetra_bsch_dibits(corrupt_crc=False):
     return [(scrambled[i] << 1) | scrambled[i + 1] for i in range(0, 120, 2)]
 
 
-def tetra_control_block_dibits(info, interleave_a, seed, transmitted_bits):
-    protected = None
-    for candidate in range(0x10000):
-        crc_bits = [(candidate >> (15 - bit)) & 1 for bit in range(16)]
-        trial = list(info) + crc_bits
-        if tetra_crc16(trial) == 0x1D0F:
-            protected = trial
-            break
-    if protected is None:
+def tetra_crc16_protect(info):
+    """info followed by its CRC-16 (EN 300 392-2 clause 8.2.3.2): the complement of the register over info, which leaves
+    the receiver's register over both at the 0x1D0F residue."""
+    crc = ~tetra_crc16(info) & 0xFFFF
+    protected = list(info) + [(crc >> (15 - bit)) & 1 for bit in range(16)]
+    if tetra_crc16(protected) != 0x1D0F:
         raise AssertionError("unable to synthesize TETRA control CRC")
+    return protected
+
+
+def tetra_control_block_dibits(info, interleave_a, seed, transmitted_bits):
+    protected = tetra_crc16_protect(info)
     mother = tetra_conv_encode(protected + [0, 0, 0, 0])
     p = (1, 2, 5)
     punctured = []
@@ -1481,16 +1602,28 @@ def modulate_tetra(dibits, sample_rate=54000):
     for symbol, dibit in enumerate(dibits):
         phase += TETRA_PHASE_STEP[dibit]
         impulses[symbol * sps] = complex(math.cos(phase), math.sin(phase))
+    return tetra_pulse_shape(impulses, sps)
 
-    alpha = 0.2
+
+def tetra_pulse_shape(impulses, sps):
+    """Shape a TETRA symbol impulse train at sps samples per symbol, 8 symbols of pulse each side.
+
+    EN 300 392-2 clause 5.5: the root-raised-cosine of roll-off 0.35, in closed form, with the limits at t = 0 and at
+    |4 alpha t| = 1. Unnormalized: write_fixture() scales the result.
+    """
+    alpha = 0.35
     half_span = 8 * sps
     taps = []
     for t in range(-half_span, half_span + 1):
         x = t / sps
-        sinc = 1.0 if abs(x) < 1e-9 else math.sin(math.pi * x) / (math.pi * x)
-        den = 1.0 - (2.0 * alpha * x) ** 2
-        taps.append(sinc * math.pi / 4.0 if abs(den) < 1e-7
-                    else sinc * math.cos(math.pi * alpha * x) / den)
+        if abs(x) < 1e-9:
+            taps.append(1.0 - alpha + 4.0 * alpha / math.pi)
+        elif abs(abs(4.0 * alpha * x) - 1.0) < 1e-9:
+            taps.append(alpha / math.sqrt(2.0) * ((1.0 + 2.0 / math.pi) * math.sin(math.pi / (4.0 * alpha))
+                                                  + (1.0 - 2.0 / math.pi) * math.cos(math.pi / (4.0 * alpha))))
+        else:
+            numerator = math.sin(math.pi * x * (1.0 - alpha)) + 4.0 * alpha * x * math.cos(math.pi * x * (1.0 + alpha))
+            taps.append(numerator / (math.pi * x * (1.0 - (4.0 * alpha * x) ** 2)))
     return np.convolve(impulses, np.asarray(taps), mode="same")
 
 
@@ -1566,7 +1699,7 @@ def build_tetra_synth(out_dir):
     print(f"{TETRA_THRESHOLD_PASS_NAME:28s} synth   {threshold_pass_written // 1024:6d} KiB")
     two_ray = simulcast_two_ray(samples, TETRA_TWO_RAY_DELAY_SAMPLES,
                                 TETRA_TWO_RAY_AMPLITUDE, TETRA_TWO_RAY_CFO_HZ,
-                                TETRA_TWO_RAY_PHASE_RAD)
+                                TETRA_TWO_RAY_PHASE_RAD, sample_rate=54000)
     two_ray_written = write_fixture(out_dir, TETRA_MULTIPATH_NAME, two_ray,
                                     sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_MULTIPATH_NAME:28s} synth   {two_ray_written // 1024:6d} KiB")
@@ -1651,6 +1784,336 @@ def build_tetra_gap(out_dir):
         total += written
         print(f"{name:28s} derived {written // 1024:6d} KiB")
     return total
+
+
+def tetra_neighbour_samples(count, sample_rate):
+    """count samples of the stress set's neighbour (TETRA_STRESS): a continuous synthetic downlink, MCC 460 / MNC 4242 /
+    colour code 0x11, from TETRA_NEIGHBOUR_LEAD_S into its transmission. Unnormalized."""
+    sps = sample_rate // TETRA_SYMBOL_RATE
+    lead = int(round(TETRA_NEIGHBOUR_LEAD_S * sample_rate))
+    need = -(-(lead + count) // sps) + 1
+    rng = np.random.default_rng(TETRA_NEIGHBOUR_SEED)
+    bursts = tetra_synth_bursts()
+    dibits = []
+    while len(dibits) < need:
+        dibits += bursts + rng.integers(0, 4, TETRA_SLOT_SYMBOLS * TETRA_NEIGHBOUR_RANDOM_SLOTS).tolist()
+    # modulate_tetra() puts its own acquisition preamble ahead, which the lead skips with room to spare.
+    return modulate_tetra(dibits[:need], sample_rate=sample_rate)[lead : lead + count]
+
+
+def tetra_stress_samples(wanted, snr_db, neighbour_db, neighbour_hz, offset_hz, seed):
+    """The wanted 72 kHz call with the stress applied (TETRA_STRESS); returns (samples at 72 kHz, realized neighbour
+    ratio in dB after decimation, or None)."""
+    rate = TETRA_STRESS_SYNTH_RATE_HZ
+    # Unpadded: the circular resampler joins the call's end to its start, and the ringing at that join, which fades
+    # within about a millisecond of each end, is part of the committed bytes. Padding here now would change every
+    # fixture of the set; no case depends on those first and last bursts.
+    up = resample_to_fixture_rate(wanted, TETRA_EXCERPT_RATE_HZ, rate)
+    n = np.arange(len(up))
+    shifted = up * np.exp(2j * math.pi * offset_hz * n / rate)
+    wanted_out = resample_to_fixture_rate(shifted, rate, TETRA_EXCERPT_RATE_HZ)[: len(wanted)]
+    wanted_power = np.mean(np.abs(wanted_out) ** 2)
+    out = wanted_out
+    realized = None
+    if neighbour_db is not None:
+        neighbour = tetra_neighbour_samples(len(up), rate)
+        gain = math.sqrt(np.mean(np.abs(up) ** 2) / np.mean(np.abs(neighbour) ** 2)) * 10.0 ** (neighbour_db / 20.0)
+        placed = neighbour * gain * np.exp(2j * math.pi * (neighbour_hz + offset_hz) * n / rate)
+        neighbour_out = resample_to_fixture_rate(placed, rate, TETRA_EXCERPT_RATE_HZ)[: len(wanted)]
+        realized = 10.0 * math.log10(np.mean(np.abs(neighbour_out) ** 2) / wanted_power)
+        out = out + neighbour_out
+    if snr_db is not None:
+        sigma = math.sqrt(wanted_power / (10.0 ** (snr_db / 10.0)) / 2.0)
+        rng = np.random.default_rng(seed)
+        out = out + rng.normal(0.0, sigma, len(out)) + 1j * rng.normal(0.0, sigma, len(out))
+    return out, realized
+
+
+def build_tetra_halfband(out_dir):
+    """Write the real-air call's start at 144 kHz for a replay through one half-band pass (TETRA_HALFBAND_NAME)."""
+    source = os.path.join(out_dir, TETRA_STRESS_SOURCE)
+    wanted = load_cu8_fixture(source + ".iq")
+    wanted = wanted - np.mean(wanted)
+    with open(source + ".iq.json", encoding="utf-8") as handle:
+        centre_hz = json.load(handle)["center_frequency_hz"]
+    rate = TETRA_EXCERPT_RATE_HZ
+    stop = int(round(TETRA_HALFBAND_STOP_S * rate))
+    pad = int(round(TETRA_HALFBAND_PAD_S * rate))
+    # The capture has nothing before its first sample: zeros stand in for the pad there, so the circular join falls
+    # between the source's pad and the zeros, both cut away.
+    cut = np.concatenate([np.zeros(pad, dtype=np.complex128), wanted[: stop + pad]])
+    up = resample_to_fixture_rate(cut, rate, 2 * rate)[2 * pad : 2 * (pad + stop)]
+    written = write_fixture(
+        out_dir,
+        TETRA_HALFBAND_NAME,
+        up,
+        sample_rate=2 * rate,
+        dsp_bw_khz=rate // 1000,
+        base_decimation=2,
+        center_frequency_hz=centre_hz,
+        capture_center_frequency_hz=centre_hz,
+        notes=f"generated by tools/build_iq_fixtures.py: {TETRA_STRESS_SOURCE}, first {TETRA_HALFBAND_STOP_S:g} s, "
+        f"resampled to {2 * rate} Hz",
+    )
+    print(f"{TETRA_HALFBAND_NAME:28s} derived {written // 1024:6d} KiB")
+    return written
+
+
+def build_tetra_stress(out_dir):
+    """Write the TETRA stress set (TETRA_STRESS) from the committed real-air call."""
+    source = os.path.join(out_dir, TETRA_STRESS_SOURCE)
+    # The capture's DC (its cu8 offset and the receiver's own) goes first: shifted with the call, it would be a tone.
+    wanted = load_cu8_fixture(source + ".iq")
+    wanted = wanted - np.mean(wanted)
+    with open(source + ".iq.json", encoding="utf-8") as handle:
+        carrier_hz = json.load(handle)["center_frequency_hz"]
+    total = 0
+    for name, snr_db, neighbour_db, neighbour_hz, offset_hz, seed in TETRA_STRESS:
+        samples, realized = tetra_stress_samples(wanted, snr_db, neighbour_db, neighbour_hz, offset_hz, seed)
+        notes = (
+            f"generated by tools/build_iq_fixtures.py: {TETRA_STRESS_SOURCE} at {offset_hz:+.0f} Hz"
+            + (f", AWGN {snr_db:g} dB SNR over 72 kHz (seed {seed})" if snr_db is not None else "")
+            + (
+                f", MCC 460 neighbour at {neighbour_hz + offset_hz:+.0f} Hz, {neighbour_db:+g} dB set, "
+                f"{realized:+.2f} dB realized after decimation"
+                if realized is not None
+                else ""
+            )
+        )
+        # The receiver's LO sits offset_hz below the wanted carrier.
+        centre_hz = int(carrier_hz - offset_hz)
+        written = write_fixture(
+            out_dir,
+            name,
+            samples,
+            sample_rate=TETRA_EXCERPT_RATE_HZ,
+            dsp_bw_khz=TETRA_EXCERPT_RATE_HZ // 1000,
+            center_frequency_hz=centre_hz,
+            capture_center_frequency_hz=centre_hz,
+            notes=notes,
+        )
+        total += written
+        ratio = f"  neighbour realized {realized:+.2f} dB" if realized is not None else ""
+        print(f"{name:28s} derived {written // 1024:6d} KiB{ratio}")
+    return total
+
+
+def tetra_ul_put(bits, value, width):
+    """Append value's width bits, MSB first (test_tetra_ul.c put())."""
+    bits.extend((value >> (width - 1 - bit)) & 1 for bit in range(width))
+
+
+def tetra_ul_cipher_params(ksg, class3, tail):
+    """The ciphering parameters of EN 300 392-7 table A.46 (test_tetra_ul.c cipher_params())."""
+    return (ksg << 6) | (class3 << 5) | (tail & 0x1F)
+
+
+def tetra_ul_lu_demand(bits, control, params, extra):
+    """MLE protocol discriminator MM and a U-LOCATION UPDATE DEMAND, ITSI attach (test_tetra_ul.c put_lu_demand())."""
+    tetra_ul_put(bits, 1, 3)
+    tetra_ul_put(bits, 2, 4)
+    tetra_ul_put(bits, 3, 3)
+    tetra_ul_put(bits, 0, 1)
+    tetra_ul_put(bits, control, 1)
+    if control:
+        tetra_ul_put(bits, params, 10)
+    tetra_ul_put(bits, 0, extra)
+
+
+def tetra_ul_pad(bits, count, fill):
+    """Pad to count bits: a 1 then zeros when fill (clause 23.4.3.2), else zeros (test_tetra_ul.c pad())."""
+    if fill and len(bits) < count:
+        bits.append(1)
+    bits.extend([0] * (count - len(bits)))
+
+
+def tetra_ul_access_bits(ssi):
+    """The 92 SCH/HU bits of a clear MAC-ACCESS from ssi carrying a BL-ADATA with a U-LOCATION UPDATE DEMAND that
+    proposes TEA1 (test_tetra_ul.c access_lu())."""
+    bits = []
+    tetra_ul_put(bits, 0, 1)  # MAC-ACCESS
+    tetra_ul_put(bits, 1, 1)  # fill bits
+    tetra_ul_put(bits, 0, 1)  # clear
+    tetra_ul_put(bits, 0, 2)  # SSI
+    tetra_ul_put(bits, ssi, 24)
+    tetra_ul_put(bits, 0, 1)  # no optional field
+    tetra_ul_put(bits, 0, 4)  # BL-ADATA
+    tetra_ul_put(bits, 0, 2)  # N(R), N(S)
+    tetra_ul_lu_demand(bits, 1, tetra_ul_cipher_params(0, 0, 2), 8)
+    tetra_ul_pad(bits, 92, True)
+    return bits
+
+
+def tetra_ul_data_bits(ssi):
+    """The 268 SCH/F bits of a clear MAC-DATA from ssi with a capacity request, carrying a BL-ADATA with a U-LOCATION
+    UPDATE DEMAND that proposes TEA3 (test_tetra_ul.c test_mac_data())."""
+    bits = []
+    tetra_ul_put(bits, 0, 2)  # MAC-DATA
+    tetra_ul_put(bits, 1, 1)  # fill bits
+    tetra_ul_put(bits, 0, 1)  # clear
+    tetra_ul_put(bits, 0, 2)  # SSI
+    tetra_ul_put(bits, ssi, 24)
+    tetra_ul_put(bits, 1, 1)  # capacity request
+    tetra_ul_put(bits, 0, 1)
+    tetra_ul_put(bits, 3, 4)  # reservation requirement
+    tetra_ul_put(bits, 1, 1)  # reserved
+    tetra_ul_put(bits, 0, 4)  # BL-ADATA
+    tetra_ul_put(bits, 0, 2)
+    tetra_ul_lu_demand(bits, 1, tetra_ul_cipher_params(2, 0, 31), 20)
+    tetra_ul_pad(bits, 268, True)
+    return bits
+
+
+def tetra_ul_seed(mcc, mnc, colour):
+    """The extended colour code scrambling seed (EN 300 392-2 clause 8.2.5.2)."""
+    return (((colour | (mnc << 6) | (mcc << 20)) << 2) | 3) & 0xFFFFFFFF
+
+
+def tetra_ul_burst_dibits(kind, ssi):
+    """One uplink burst as dibits, tail bits included: a control uplink burst (clause 9.4.4.2.1, 103 symbols) carrying
+    one SCH/HU (a = 13), or a normal uplink burst (clause 9.4.4.2.4, 231 symbols) carrying one SCH/F (a = 103) under
+    NTS1."""
+    seed = tetra_ul_seed(*TETRA_UPLINK_NET)
+    tail = list(TETRA_TAIL_DIBITS)
+    if kind == "cb":
+        coded = tetra_control_block_dibits(tetra_ul_access_bits(ssi), 13, seed, 168)
+        training = [int(char) for char in TETRA_ETS_SYNC]
+    elif kind == "nub":
+        coded = tetra_control_block_dibits(tetra_ul_data_bits(ssi), 103, seed, 432)
+        training = [int(char) for char in TETRA_NTS_SYNC]
+    else:
+        raise ValueError(f"unknown uplink burst kind {kind!r}")
+    half = len(coded) // 2
+    return tail + coded[:half] + training + coded[half:] + tail
+
+
+def tetra_uplink_phase_name(offset):
+    """The name of the uplink fixture with every burst offset samples later (TETRA_UPLINK_PHASE_OFFSETS)."""
+    return f"tetra_uplink_bursts_o{offset}_72k"
+
+
+def tetra_uplink_burst_starts(offset=0):
+    """The sample each uplink burst's first symbol starts at (TETRA_UPLINK_BURSTS), as tetra_uplink_samples() puts
+    it."""
+    sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
+    slot = TETRA_SLOT_SYMBOLS * sps
+    position = int(round(TETRA_UPLINK_LEAD_S * TETRA_UPLINK_RATE_HZ))
+    starts = []
+    for _kind, gap, _level, _freq in TETRA_UPLINK_BURSTS:
+        position += gap * slot
+        starts.append(position + TETRA_UPLINK_GUARD_SYMBOLS * sps + offset)
+        position += slot
+    return starts
+
+
+def tetra_uplink_samples(offset=0):
+    """The uplink fixture's samples (TETRA_UPLINK_BURSTS) in cu8 units over 127.5, and each burst's (kind, ssi).
+
+    offset delays every burst by that many samples; the length, the random draws and so the noise stay the same."""
+    rate = TETRA_UPLINK_RATE_HZ
+    sps = rate // TETRA_SYMBOL_RATE
+    slot = TETRA_SLOT_SYMBOLS * sps
+    lead = int(round(TETRA_UPLINK_LEAD_S * rate))
+    slots = sum(gap + 1 for _kind, gap, _level, _freq in TETRA_UPLINK_BURSTS)
+    count = lead + slots * slot + int(round(TETRA_UPLINK_TAIL_S * rate))
+    rng = np.random.default_rng(TETRA_UPLINK_SEED)
+    signal = np.zeros(count, dtype=np.complex128)
+    bursts = []
+    position = lead
+    for index, (kind, gap, level_db, freq_hz) in enumerate(TETRA_UPLINK_BURSTS):
+        ssi = TETRA_UPLINK_SSI_BASE + index
+        position += gap * slot
+        dibits = tetra_ul_burst_dibits(kind, ssi)
+        start = position + TETRA_UPLINK_GUARD_SYMBOLS * sps + offset
+        impulses = np.zeros(len(dibits) * sps, dtype=np.complex128)
+        phase = rng.uniform(0.0, 2.0 * math.pi)
+        for symbol, dibit in enumerate(dibits):
+            phase += TETRA_PHASE_STEP[dibit]
+            impulses[symbol * sps] = complex(math.cos(phase), math.sin(phase))
+        # Room for the pulse's eight symbols either side, so the burst ramps up and down through its own shaping.
+        pad = 8 * sps
+        shaped = tetra_pulse_shape(np.concatenate([np.zeros(pad), impulses, np.zeros(pad)]), sps)
+        rms = math.sqrt(np.mean(np.abs(shaped[pad : pad + len(impulses)]) ** 2))
+        shaped = shaped * (TETRA_UPLINK_LEVEL_LSB / 127.5 * 10.0 ** (level_db / 20.0) / rms)
+        n = np.arange(start - pad, start - pad + len(shaped))
+        signal[n] += shaped * np.exp(2j * math.pi * freq_hz * n / rate)
+        bursts.append((kind, ssi))
+        position += slot
+    sigma = TETRA_UPLINK_NOISE_LSB / 127.5
+    noise = rng.normal(0.0, sigma, count) + 1j * rng.normal(0.0, sigma, count)
+    return signal + noise, bursts
+
+
+def build_tetra_uplink(out_dir):
+    """Write the trunked mode uplink fixture (TETRA_UPLINK_BURSTS), its sampling-phase offsets
+    (TETRA_UPLINK_PHASE_OFFSETS) and its short-tail cut (TETRA_UPLINK_SHORT_TAIL_NAME)."""
+    sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
+    full, _bursts = tetra_uplink_samples()
+    starts = tetra_uplink_burst_starts()
+    last_kind = TETRA_UPLINK_BURSTS[-1][0]
+    last_symbols = len(tetra_ul_burst_dibits(last_kind, TETRA_UPLINK_SSI_BASE + len(TETRA_UPLINK_BURSTS) - 1))
+    short_begin = starts[-2] - TETRA_UPLINK_SHORT_LEAD_SLOTS * TETRA_SLOT_SYMBOLS * sps
+    short_end = starts[-1] + (last_symbols + TETRA_UPLINK_SHORT_TAIL_SYMBOLS) * sps
+    trim = int(round(TETRA_UPLINK_PHASE_TRIM_S * TETRA_UPLINK_RATE_HZ))
+    variants = [(TETRA_UPLINK_NAME, full)]
+    variants += [(tetra_uplink_phase_name(offset), tetra_uplink_samples(offset)[0][trim:-trim])
+                 for offset in TETRA_UPLINK_PHASE_OFFSETS]
+    variants.append((TETRA_UPLINK_SHORT_TAIL_NAME, full[short_begin:short_end]))
+    total = 0
+    for name, samples in variants:
+        peak = max(np.max(np.abs(samples.real)), np.max(np.abs(samples.imag)))
+        if peak >= 1.0:
+            raise ValueError(f"{name}: the strongest burst reaches the cu8 rails")
+        # to_cu8(normalize=False) scales by its default headroom; divide it back out (build_attenuated()).
+        written = write_fixture(
+            out_dir,
+            name,
+            samples / 0.9,
+            normalize=False,
+            sample_rate=TETRA_UPLINK_RATE_HZ,
+            dsp_bw_khz=TETRA_UPLINK_RATE_HZ // 1000,
+            center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+            capture_center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+        )
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+        total += written
+    return total
+
+
+def build_tetra_uplink_gap(out_dir):
+    """Write the uplink with a recorded stream gap just after a burst (TETRA_UPLINK_GAP_NAME), a sidecar on the uplink
+    fixture's data."""
+    sps = TETRA_UPLINK_RATE_HZ // TETRA_SYMBOL_RATE
+    index = TETRA_UPLINK_GAP_AFTER
+    if TETRA_UPLINK_BURSTS[index + 1][1] == 0:
+        raise ValueError(f"{TETRA_UPLINK_GAP_NAME}: burst {index} has no noise-only slots after it")
+    symbols = len(tetra_ul_burst_dibits(TETRA_UPLINK_BURSTS[index][0], TETRA_UPLINK_SSI_BASE + index))
+    gap_at = (tetra_uplink_burst_starts()[index] + (symbols + TETRA_UPLINK_GAP_TAIL_SYMBOLS) * sps) * CU8_ALIGN_BYTES
+    with open(os.path.join(out_dir, TETRA_UPLINK_NAME + ".iq"), "rb") as handle:
+        payload = handle.read()
+    gap = {
+        "byte_offset": gap_at,
+        "center_frequency_hz": TETRA_UPLINK_CENTRE_HZ,
+        "capture_center_frequency_hz": TETRA_UPLINK_CENTRE_HZ,
+        "sample_rate_hz": TETRA_UPLINK_RATE_HZ,
+        "reason": "usb_recovery",
+    }
+    written = write_capture(
+        out_dir,
+        TETRA_UPLINK_GAP_NAME,
+        payload,
+        data_file=TETRA_UPLINK_NAME + ".iq",
+        version=2,
+        sample_rate_hz=TETRA_UPLINK_RATE_HZ,
+        rtl_dsp_bw_khz=TETRA_UPLINK_RATE_HZ // 1000,
+        center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+        capture_center_frequency_hz=TETRA_UPLINK_CENTRE_HZ,
+        contains_retunes=True,
+        capture_retune_count=1,
+        events=(dict(gap, kind="RETUNE"), dict(gap, kind="RESET")),
+    )
+    print(f"{TETRA_UPLINK_GAP_NAME:28s} gap     sidecar on {TETRA_UPLINK_NAME}.iq")
+    return written
 
 
 def analog_voice_band(rng, count):
@@ -1921,6 +2384,11 @@ def derived_fixture_names():
             TETRA_72K_NAME,
         ]
         + [entry[0] for entry in DERIVED_TETRA_GAP]
+        + [entry[0] for entry in TETRA_STRESS]
+        + [TETRA_HALFBAND_NAME]
+        + [TETRA_UPLINK_NAME]
+        + [tetra_uplink_phase_name(offset) for offset in TETRA_UPLINK_PHASE_OFFSETS]
+        + [TETRA_UPLINK_SHORT_TAIL_NAME, TETRA_UPLINK_GAP_NAME]
     )
 
 
@@ -1942,6 +2410,81 @@ def check_only_names(only):
             raise SystemExit(f"--only {name}: no such fixture")
 
 
+def build_all_derived(out_dir, dmr_synth_gen, cache):
+    """Write every fixture derived from committed ones or synthesized (what --derived-only regenerates)."""
+    total = 0
+    total += build_derived(out_dir)
+    total += build_noise(out_dir)
+    total += build_clip(out_dir)
+    total += build_derived_retune(out_dir)
+    total += build_derived_gap(out_dir)
+    total += build_dpmr_synth(out_dir)
+    total += build_tetra_synth(out_dir)
+    total += build_tetra_gap(out_dir)
+    total += build_tetra_stress(out_dir)
+    total += build_tetra_halfband(out_dir)
+    total += build_tetra_uplink(out_dir)
+    total += build_tetra_uplink_gap(out_dir)
+    total += build_nfm_synth(out_dir)
+    total += build_am_synth(out_dir)
+    total += build_analog_synth(out_dir)
+    total += build_squelch_burst(out_dir)
+    if dmr_synth_gen:
+        total += build_dmr_voice_synth(out_dir, dmr_synth_gen, cache)
+    else:
+        print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+    return total
+
+
+def differing_files(committed, regenerated):
+    """Relative paths that differ between two fixture trees: changed bytes, or present in only one of them."""
+    def tree(root):
+        found = set()
+        for base, _dirs, files in os.walk(root):
+            for name in files:
+                found.add(os.path.relpath(os.path.join(base, name), root))
+        return found
+
+    before = tree(committed)
+    after = tree(regenerated)
+    differing = []
+    for rel in sorted(before | after):
+        if rel not in after:
+            differing.append((rel, "missing after regeneration"))
+        elif rel not in before:
+            differing.append((rel, "new"))
+        elif not filecmp.cmp(os.path.join(committed, rel), os.path.join(regenerated, rel), shallow=False):
+            differing.append((rel, "differs"))
+    return differing
+
+
+def verify_derived(args):
+    """--verify: regenerate the derived fixtures in a temporary copy of --out and compare it byte for byte."""
+    committed = os.path.abspath(args.out)
+    if not os.path.isdir(committed):
+        raise SystemExit(f"--verify: {committed} is not a directory")
+    with tempfile.TemporaryDirectory(prefix="iq-fixtures-verify-") as scratch:
+        copy = os.path.join(scratch, "iq")
+        shutil.copytree(committed, copy)
+        build_all_derived(copy, args.dmr_synth_gen, args.cache)
+        differing = differing_files(committed, copy)
+    if differing:
+        for rel, why in differing:
+            print(f"verify: {rel}: {why}")
+        print(f"verify: FAILED, {len(differing)} file(s) differ from {committed}")
+        return 1
+    count = sum(len(files) for _base, _dirs, files in os.walk(committed))
+    if args.dmr_synth_gen:
+        print(f"verify: OK, every derived fixture reproduces byte for byte ({count} files in {committed})")
+    else:
+        # Without the generator the copy keeps the committed dmr_voice_synth, so it compares equal unchecked.
+        print(
+            f"verify: OK, every derived fixture but {DMR_VOICE_SYNTH_NAME} reproduces byte for byte ({count} files in "
+            f"{committed}); {DMR_VOICE_SYNTH_NAME} was not verified (needs --dmr-synth-gen)"
+        )
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=os.path.join("tests", "fixtures", "iq"))
@@ -1960,7 +2503,17 @@ def main():
         action="append",
         help="regenerate just the named fixture(s); other fixtures and their downloads are skipped",
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="regenerate the derived fixtures into a temporary copy of --out and byte-compare them with it; "
+        "exit 1 on any difference (--out is never written)",
+    )
     args = parser.parse_args()
+    if args.verify:
+        if args.only:
+            raise SystemExit("--verify regenerates every derived fixture; it takes no --only")
+        return verify_derived(args)
     if args.only:
         check_only_names(args.only)
 
@@ -1971,22 +2524,7 @@ def main():
         total += build_upstream(args)
 
     if not args.only:
-        total += build_derived(args.out)
-        total += build_noise(args.out)
-        total += build_clip(args.out)
-        total += build_derived_retune(args.out)
-        total += build_derived_gap(args.out)
-        total += build_dpmr_synth(args.out)
-        total += build_tetra_synth(args.out)
-        total += build_tetra_gap(args.out)
-        total += build_nfm_synth(args.out)
-        total += build_am_synth(args.out)
-        total += build_analog_synth(args.out)
-        total += build_squelch_burst(args.out)
-        if args.dmr_synth_gen:
-            total += build_dmr_voice_synth(args.out, args.dmr_synth_gen, args.cache)
-        else:
-            print(f"{DMR_VOICE_SYNTH_NAME:28s} skipped (needs --dmr-synth-gen)")
+        total += build_all_derived(args.out, args.dmr_synth_gen, args.cache)
     else:
         for name in derived_fixture_names():
             if name in args.only:

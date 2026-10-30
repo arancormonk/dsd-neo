@@ -15,6 +15,7 @@
 #include <dsd-neo/dsp/simd_fir.h>
 #include <stddef.h>
 #include <vector>
+#include "dsd-neo/core/safe_api.h"
 #include "simd_fir_internal.h"
 #include "simd_x86_cpu.h"
 
@@ -66,10 +67,40 @@ extern "C" int simd_hb_decim2_real_neon(const float* in, int in_len, float* out,
 /* Scalar Reference Implementations                                           */
 /* -------------------------------------------------------------------------- */
 
+/*
+ * One output of the scalar complex FIR, centred at @p c of the contiguous window @p x (interleaved I/Q): the centre tap,
+ * then each symmetric pair from the outermost in, acc += tap[k] * (x[c-d] + x[c+d]), skipping zero taps.
+ */
+static inline void
+fir_complex_scalar_one(const float* x, int c, const float* taps, int center, float* out) {
+    float acc_i = 0.0f;
+    float acc_q = 0.0f;
+    const float* xc = x + ((size_t)c << 1);
+    acc_i += taps[center] * xc[0];
+    acc_q += taps[center] * xc[1];
+    for (int k = 0; k < center; k++) {
+        const float ce = taps[k];
+        if (ce == 0.0f) {
+            continue;
+        }
+        const size_t d = (size_t)(center - k) << 1;
+        const float* m = xc - d;
+        const float* p = xc + d;
+        acc_i += ce * (m[0] + p[0]);
+        acc_q += ce * (m[1] + p[1]);
+    }
+    out[0] = acc_i;
+    out[1] = acc_q;
+}
+
 /**
  * Scalar complex symmetric FIR filter (no decimation), streaming: output n is centred at logical index
  * hist_len - pending + n of [history | block], so a call makes only the outputs whose look-ahead it holds.
  * Exploits tap symmetry: acc += tap[k] * (x[center-d] + x[center+d]).
+ *
+ * The windows are read from one contiguous copy of the history's last pending + center samples and the block, and four
+ * outputs run side by side, each summed in the order a single one is (fir_complex_scalar_one()): the four independent
+ * sums overlap where one would wait on its own adds, and the results are the same bits.
  */
 int
 simd_fir_complex_apply_scalar(const float* in, int n_in, float* out, int out_cap, float* hist_i, float* hist_q,
@@ -81,48 +112,68 @@ simd_fir_complex_apply_scalar(const float* in, int n_in, float* out, int out_cap
     }
 
     const int center = (taps_len - 1) >> 1;
-    const int first_center = hist_len - *pending;
-
-    /* Lambda to fetch sample from history or input */
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < hist_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            const size_t rel = (size_t)(src_idx - hist_len);
-            xi = in[2 * rel];
-            xq = in[2 * rel + 1];
+    if (outputs > 0) {
+        /* Output n is centred at scratch index center + n; the last window ends on the block's last sample. */
+        const int take = *pending + center;
+        float* x = simd_fir_tls_scratch_iq(((size_t)take + (size_t)n_in) * 2U);
+        const int first = hist_len - take;
+        for (int k = 0; k < take; k++) {
+            x[(size_t)k * 2U] = hist_i[first + k];
+            x[((size_t)k * 2U) + 1U] = hist_q[first + k];
         }
-    };
-
-    for (int n = 0; n < outputs; n++) {
-        int center_idx = first_center + n;
-        float accI = 0.0f;
-        float accQ = 0.0f;
-
-        /* Center tap */
-        float ci, cq;
-        get_iq(center_idx, ci, cq);
-        float cc = taps[center];
-        accI += cc * ci;
-        accQ += cc * cq;
-
-        /* Symmetric pairs */
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
+        if (n_in > 0) {
+            DSD_MEMCPY(x + (size_t)take * 2U, in, (size_t)n_in * 2U * sizeof(float));
+        }
+        const float cc = taps[center];
+        int n = 0;
+        for (; n + 3 < outputs; n += 4) {
+            const float* x0 = x + ((size_t)(center + n) << 1);
+            float i0 = 0.0f;
+            float q0 = 0.0f;
+            float i1 = 0.0f;
+            float q1 = 0.0f;
+            float i2 = 0.0f;
+            float q2 = 0.0f;
+            float i3 = 0.0f;
+            float q3 = 0.0f;
+            i0 += cc * x0[0];
+            q0 += cc * x0[1];
+            i1 += cc * x0[2];
+            q1 += cc * x0[3];
+            i2 += cc * x0[4];
+            q2 += cc * x0[5];
+            i3 += cc * x0[6];
+            q3 += cc * x0[7];
+            for (int k = 0; k < center; k++) {
+                const float ce = taps[k];
+                if (ce == 0.0f) {
+                    continue;
+                }
+                const size_t d = (size_t)(center - k) << 1;
+                const float* m = x0 - d;
+                const float* p = x0 + d;
+                i0 += ce * (m[0] + p[0]);
+                q0 += ce * (m[1] + p[1]);
+                i1 += ce * (m[2] + p[2]);
+                q1 += ce * (m[3] + p[3]);
+                i2 += ce * (m[4] + p[4]);
+                q2 += ce * (m[5] + p[5]);
+                i3 += ce * (m[6] + p[6]);
+                q3 += ce * (m[7] + p[7]);
             }
-            int d = center - k;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
+            float* o = out + ((size_t)n << 1);
+            o[0] = i0;
+            o[1] = q0;
+            o[2] = i1;
+            o[3] = q1;
+            o[4] = i2;
+            o[5] = q2;
+            o[6] = i3;
+            o[7] = q3;
         }
-
-        out[n << 1] = accI;
-        out[(n << 1) + 1] = accQ;
+        for (; n < outputs; n++) {
+            fir_complex_scalar_one(x, center + n, taps, center, out + ((size_t)n << 1));
+        }
     }
 
     *pending += n_in - outputs;

@@ -185,6 +185,54 @@ typedef struct {
     uint8_t b2_lead_soft_valid;
 } dsd_tetra_sync_capture;
 
+/* Where every clear of the rolling dibit buffers (dibit_buf, dmr_payload_buf, dmr_soft_buf: initState(), noCarrier(),
+ * an NXDN reset) and every wrap puts the write pointer: the buffer plus this many entries. What lies before it is the
+ * clear's zeros or the dibits a wrap left, none of them the stream's latest, so a decoder that reads back from the
+ * pointer has real dibits only for what was written since (dsd_state_rolling_dibits()). */
+#define DSD_ROLLING_DIBIT_FLOOR             200
+
+/* Dibits of frame-sync history a getFrameSync() call hands the next (dsd_frame_sync_history_carry). */
+#define DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS 128
+/* Raw levels it hands on with them: the call's level window, at most this many. */
+#define DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS 48
+
+/* The dibit history the frame sync's windows are built from, and the raw levels of its last symbols (the call's
+ * level window, which the window's level estimate and the NXDN96 FSW's four-level reading read), as a getFrameSync()
+ * call left them on a no-sync exit, the timeout after a matchless pass or the hunt budget's, with where the stream
+ * was then. The next call starts from it when nothing came between: the symbol clock has not moved; neither the
+ * clock's epoch, the input, the carrier count, the trunk tuning generation, the SPS hunt profile nor the modulation
+ * changed; no tune off the decoder thread awaits reconciling; and no retune forgot the sync histories
+ * (dsd_state_forget_sync_join_histories(), which the decoder thread's trunk retunes run: a tune through the trunk
+ * tuning hooks, dsd_engine_rxid_trunk_tune(), and noCarrier's direct control-channel return; and so do every
+ * off-thread tune applied, every carrier boundary, a typed scanner row that moved the receiver yet ends unlanded
+ * included, and every acquisition reset) since the call began. The first symbol the next call reads is checked
+ * again, for a stream flush its read found. A sync matcher that reads only its window, or reads forward from its
+ * sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS), then matches a frame that began before the exit
+ * as one that did not; before, the new call started with no history, and a TETRA uplink burst whose training ended
+ * fewer than its window's symbols into the call was never matched. The levels go with the dibits under the same
+ * rules, so a window read on its levels (the NXDN96 FSW) is read whole. DMR and X2-TDMA decode their burst back from
+ * the rolling dibit buffers, which the no-carrier reset clears, so they match only on a window the call read itself,
+ * as before. Every other exit, a sync above all, drops it. Written and read by the frame sync alone
+ * (src/dsp/dsd_frame_sync.c), and dropped by dsd_state_forget_sync_join_histories(); decoder-thread private. */
+typedef struct {
+    char dibits[DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS]; /* the history ring, '0'..'3' */
+    int head;                                         /* the next slot to write */
+    int count;                                        /* dibits held, up to the capacity */
+    /* The raw levels of the last level_count symbols, oldest first: the level window's, unwrapped. */
+    float levels[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
+    int level_count;
+    uint64_t symbol_clock; /* dsd_state::symbol_clock at the exit */
+    uint32_t symbol_clock_epoch;
+    uint32_t symbol_clock_input;
+    uint32_t carrier_seq;
+    uint64_t tune_generation; /* dsd_trunk_tuning_generation() when the history began */
+    int sps_hunt_idx;
+    int rf_mod;
+    /* Bumped by every drop (dsd_state_forget_sync_join_histories()); a call that saw it move keeps nothing. */
+    uint32_t drops;
+    uint8_t valid;
+} dsd_frame_sync_history_carry;
+
 /* The highest frequency, in Hz, a trunking channel is stored or tuned at, the same on every platform: the largest value
  * a 32-bit long holds (long is 32-bit on Windows, and trunk frequencies are stored as long), which also fits the
  * uint32_t tuner path. No trunking band comes near it. A channel-map row, an over-the-air channel computation or a
@@ -2504,6 +2552,17 @@ struct dsd_state {
      * frame sync and read by the TETRA decoder for the same burst. Decoder-thread private; never published.
      * The rest of the TETRA decoder state lives in its state extension (src/protocol/tetra/tetra_state.h). */
     dsd_tetra_sync_capture tetra_sync;
+    /* The frame sync's history from its last no-sync exit, for the next call (dsd_frame_sync_history_carry). */
+    dsd_frame_sync_history_carry frame_sync_carry;
+
+    /* The oldest dibits of the read-back the burst the frame sync just accepted is decoded from that are not the
+     * stream's (DSD_ROLLING_DIBIT_FLOOR): DMR's 90 back from dmr_payload_p, X2-TDMA's 90 (data) or 144 (voice) back
+     * from dibit_buf_p. Set at every DMR and X2-TDMA accept, for the symbol clock and epoch it was accepted on; a decoder
+     * reads it before reading any symbol (dsd_state_sync_readback_invalid()) and decodes and publishes nothing from
+     * those dibits. 0 when the whole read-back is the stream's. */
+    uint16_t sync_readback_invalid;
+    uint64_t sync_readback_clock;
+    uint32_t sync_readback_epoch;
 
     /* 1 from initState() until an engine run starts on this state, which clears it (dsd_engine_run_with_lifecycle()).
      * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the
@@ -2544,6 +2603,10 @@ static inline void
 dsd_state_forget_sync_join_histories(dsd_state* state) {
     dsd_nxdn96_sync_clear(&state->nxdn96_sync);
     dsd_sync_hit_history_clear(&state->m17_join_hits);
+    /* The frame sync's own history from its last no-sync exit is the carrier left's too, and so is the history of a
+       call in progress, which may not be kept when that call ends (dsd_frame_sync_history_carry::drops). */
+    state->frame_sync_carry.valid = 0U;
+    state->frame_sync_carry.drops++;
 }
 
 static inline void
@@ -2563,6 +2626,36 @@ dsd_state_carrier_settling(const dsd_state* state, uint64_t lookback) {
     }
     const uint64_t last_left = state->carrier_change_symbol_clock;
     return (state->symbol_clock < last_left || state->symbol_clock - last_left < lookback) ? 1 : 0;
+}
+
+/* Entries written to the rolling buffer @p buf (dibit_buf or dmr_payload_buf) at @p p since its last clear or wrap
+ * (DSD_ROLLING_DIBIT_FLOOR): how far back from @p p a decoder reads real dibits. */
+static inline long
+dsd_state_rolling_dibits(const int* buf, const int* p) {
+    if (buf == NULL || p == NULL || p < buf + DSD_ROLLING_DIBIT_FLOOR) {
+        return 0;
+    }
+    return (long)(p - (buf + DSD_ROLLING_DIBIT_FLOOR));
+}
+
+/* Note @p invalid oldest dibits of the read-back of the burst the frame sync accepts now (dsd_state::sync_readback_invalid).
+ */
+static inline void
+dsd_state_note_sync_readback(dsd_state* state, long invalid) {
+    state->sync_readback_invalid = (uint16_t)(invalid > 0 ? (invalid < 0xFFFF ? invalid : 0xFFFF) : 0);
+    state->sync_readback_clock = state->symbol_clock;
+    state->sync_readback_epoch = state->symbol_clock_epoch;
+}
+
+/* For a decoder about to decode the burst the frame sync accepted, before it reads any symbol: how many of the oldest
+ * dibits of its read-back are not the stream's. 0 once a symbol was read since the accept, so a decoder further on in a
+ * burst loop never takes it. */
+static inline unsigned int
+dsd_state_sync_readback_invalid(const dsd_state* state) {
+    if (state->sync_readback_clock != state->symbol_clock || state->sync_readback_epoch != state->symbol_clock_epoch) {
+        return 0U;
+    }
+    return state->sync_readback_invalid;
 }
 
 static inline int

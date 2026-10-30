@@ -14,6 +14,8 @@
 #ifndef DSP_DEMOD_PIPELINE_H
 #define DSP_DEMOD_PIPELINE_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -170,6 +172,119 @@ float mean_power(const float* samples, int len, int step);
 void full_demod(struct demod_state* d);
 
 /**
+ * @brief The TETRA chain's transfer sub-block, in symbols of mixer input.
+ *
+ * The chain moves the FLL's residual into its tracking mixer (dsd_fll_band_edge_transfer()) only at multiples of this
+ * many symbols of mixer input since the channel filter last started over (demod_state::tetra_sub_pos), running a
+ * block in pieces cut at those boundaries, so the transfer falls on the same sample however the input is cut into
+ * blocks. 96 symbols is 5.33 ms, the block an I/Q replay reads at every rate in the TETRA domain.
+ */
+#define DSD_TETRA_SUBBLOCK_SYMBOLS 96
+
+/**
+ * @brief Whether the TETRA receive chain can run on a demodulator as it is configured now.
+ *
+ * True only when all of these hold: the channel profile is DSD_CH_LPF_PROFILE_TETRA; CQPSK is enabled; the symbol
+ * rate is 18000; the effective TED samples per symbol (ted_sps_override when above 0, else ted_sps) and ted_sps
+ * itself, which the Gardner TED and the FLL run at (dsd_cqpsk_timing_sps()), both equal rate_out / 18000 exactly;
+ * rate_out is in the TETRA rate domain (dsd_tetra_dsp_rate_runs(), 36 to 144 kHz); the channel LPF is enabled; and
+ * dsd_tetra_channel_design() succeeds at rate_out, whatever plan is installed now. That last answer is memoized by rate
+ * (demod_state::tetra_design_rate_out): full_demod() checks the design once per rate, and the predicate reads the memo
+ * for its rate, designing only when the memo is for another one.
+ *
+ * full_demod() evaluates it once per block, after the half-band decimation (dsd_demod_update_tetra_chain(), which a
+ * stream open also calls), and keeps the result in demod_state::tetra_chain, running the state transition when it
+ * changes: entering splits the carrier estimate into the TETRA mixer and re-initializes the band-edge FLL with the
+ * TETRA parameters; leaving folds the mixer back into the FLL and re-initializes it with the P25 parameters; either way
+ * the mixer phasor, the channel LPF, the matched filter and the CQPSK AGC average start over. Setters never evaluate
+ * it.
+ *
+ * @param d Demodulator state (NULL reads false).
+ * @return 1 when the chain can run, else 0.
+ */
+int dsd_demod_tetra_chain_wanted(const struct demod_state* d);
+
+/**
+ * @brief Whether the TETRA channel filter (dsd_tetra_channel_design()) runs on a demodulator as it is now.
+ *
+ * It runs with the TETRA chain (demod_state::tetra_chain), and on a trunked mode uplink session
+ * (demod_state::tetra_uplink), which never runs the chain but keeps its channel filter: the TETRA profile on
+ * CQPSK at 18000 sym/s with the channel LPF on, at a rate in the TETRA rate domain (dsd_tetra_dsp_rate_runs()) where
+ * the design succeeds (the memo dsd_demod_tetra_chain_wanted() reads). Otherwise a TETRA profile runs the legacy WIDE
+ * design, or with the channel LPF off none.
+ *
+ * @param d Demodulator state (NULL reads false).
+ * @return 1 when the TETRA channel filter is the plan, else 0.
+ */
+int dsd_demod_tetra_channel_runs(const struct demod_state* d);
+
+/**
+ * @brief The TETRA stage that bounds a demodulator's noise, for the SNR bias (dsd_snr_noise_bandwidth_hz()).
+ *
+ * @param d Demodulator state (NULL reads DSD_SNR_TETRA_STAGE_WIDE).
+ * @return DSD_SNR_TETRA_STAGE_CHAIN while the TETRA chain runs, DSD_SNR_TETRA_STAGE_CHANNEL while the TETRA channel
+ *         filter runs without it (dsd_demod_tetra_channel_runs()), else DSD_SNR_TETRA_STAGE_WIDE.
+ */
+int dsd_demod_tetra_stage(const struct demod_state* d);
+
+/**
+ * @brief Whether the Gardner TED takes a TETRA uplink session's burst timing from the training sequences
+ *        (tetra_uplink_timing.h).
+ *
+ * On a trunked mode uplink session (demod_state::tetra_uplink) off the TETRA chain while the TETRA channel filter runs
+ * (dsd_demod_tetra_channel_runs()), at @p sps from DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS. Nothing else runs it.
+ *
+ * @param d Demodulator state (NULL reads false).
+ * @param sps Samples per symbol the Gardner runs at (dsd_cqpsk_timing_sps()).
+ * @return 1 when the uplink burst timing runs, else 0.
+ */
+int dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps);
+
+/**
+ * @brief Samples of signal the uplink still holds back: its look-ahead and the Gardner's delay line behind it
+ * (dsd_tetra_ul_timing_held_through() with the delay line's twice_sps).
+ *
+ * 0 off the uplink burst timing (dsd_demod_tetra_uplink_timing_runs()) or before the Gardner fed the look-ahead.
+ *
+ * @param d Demodulator state (NULL reads 0).
+ * @return Zero samples to push before every symbol that reads signal is out of the Gardner.
+ */
+size_t dsd_demod_tetra_uplink_held(const struct demod_state* d);
+
+/**
+ * @brief The end of an uplink stream: push the held signal out.
+ *
+ * Runs exactly dsd_demod_tetra_uplink_held() zero samples through the uplink's Gardner, differential and Costas stages
+ * and the phase demodulator, so every symbol the look-ahead and the Gardner's delay line held back is in
+ * demod_state::result (result_len, 0 when it held nothing) and nothing is held after it. The demod thread publishes it
+ * as a block of its own once a replay's input ended (a squelched block drains the same samples in full_demod()).
+ *
+ * @param d Demodulator state.
+ * @return 1 when it produced output, else 0.
+ */
+int dsd_demod_tetra_uplink_flush(struct demod_state* d);
+
+/**
+ * @brief Evaluate the TETRA chain's activation predicate and run the state transition when the answer changed.
+ *
+ * full_demod() calls this at every block boundary, after the half-band decimation. A stream open calls it once its
+ * configuration is final, before any block runs, so a TETRA open runs the chain, and publishes the TETRA profile, from
+ * the start; the first block then finds demod_state::tetra_chain already set and runs no transition. With nothing
+ * changed since the last call it does nothing (it warns once per cause about a TETRA profile whose chain cannot run).
+ *
+ * @param d Demodulator state (NULL does nothing).
+ */
+void dsd_demod_update_tetra_chain(struct demod_state* d);
+
+/**
+ * @brief Averaging weight of the CQPSK RMS AGC (OP25 rms_agc alpha; the decay is 1 - alpha).
+ *
+ * @param tetra_chain demod_state::tetra_chain: nonzero for the TETRA receive chain.
+ * @return 0.1 for the TETRA chain, OP25's 0.45 for every other chain.
+ */
+float dsd_cqpsk_agc_alpha(int tetra_chain);
+
+/**
  * Return the filter state to a fresh stream's: each half-band stage's history and pending count (its look-ahead and
  * decimation phase), the channel FIR's history and pending outputs, and a replay's post-demod audio decimator on either
  * path (the polyphase history and phase; the fallback's one-pole and part-filled group). Every filter's next output is
@@ -186,7 +301,8 @@ void dsd_demod_reset_filter_state(struct demod_state* d);
  *
  * The half-width of the nominal channel — 12.5 kHz modes return 6250. This is
  * the channel, not the filter: DSD_CH_LPF_PROFILE_P25_CQPSK runs a roomier
- * 7250 Hz cutoff and still protects a 12.5 kHz channel.
+ * 7250 Hz cutoff and still protects a 12.5 kHz channel. DSD_CH_LPF_PROFILE_TETRA
+ * returns 11250, the edge its TETRA chain design protects.
  *
  * @param profile DSD_CH_LPF_PROFILE_* value.
  * @return Channel half-width in Hz; the wide/analog edge for unknown profiles.
@@ -213,6 +329,24 @@ double dsd_channel_lpf_protected_edge_hz(int profile);
  * @return Number of taps written, or -1 when the width cannot be designed.
  */
 int dsd_channel_lpf_design_analog(int rate_hz, int width_hz, float* taps_out, int max_taps);
+
+/**
+ * Design the TETRA chain's channel filter for a rate.
+ *
+ * GNU Radio's window design (firdes::low_pass()) with cutoff 12.5 kHz and a
+ * 2.5 kHz Blackman transition, so it protects the 11250 Hz channel edge: 49 / 97 /
+ * 193 taps at 36 / 72 / 144 kHz. The channel plan installs it for
+ * DSD_CH_LPF_PROFILE_TETRA only while demod_state::tetra_chain is set. There is
+ * no Nyquist clamp and no fallback prototype: a rate whose Nyquist frequency
+ * does not clear the 13750 Hz stopband edge, or a design longer than the
+ * capacity, is an error.
+ *
+ * @param rate_hz  Channel-filter sample rate (demod rate_out) in Hz.
+ * @param taps_out Output taps; must hold @p max_taps floats.
+ * @param max_taps Capacity of @p taps_out (at most DSD_CHANNEL_LPF_MAX_TAPS is used).
+ * @return Number of taps written, or -1 when the rate cannot be designed for (nothing written).
+ */
+int dsd_tetra_channel_design(int rate_hz, float* taps_out, int max_taps);
 
 /**
  * Channel width the legacy WIDE profile plan protects at a rate.

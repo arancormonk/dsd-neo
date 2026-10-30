@@ -998,6 +998,12 @@ struct RtlSdrInternals {
     std::atomic<uint64_t> replay_last_submit_gen{0U};
     std::atomic<uint64_t> replay_last_submit_gen_at_eof{0U};
     std::atomic<uint64_t> replay_last_consume_gen{0U};
+    std::atomic<uint64_t> replay_end_notice{0U}; /* see rtl_replay_eof_state::replay_end_notice */
+    /* See rtl_replay_eof_state::replay_demod_flush_owed; demod thread writes, both drain decisions read. */
+    std::atomic<int> replay_demod_flush_owed{0};
+    std::atomic<int> replay_input_boundary{0}; /* see rtl_replay_eof_state::replay_input_boundary */
+    /* The last chunk the demod took, which tags the output of its end-of-capture flush. Demod thread only. */
+    struct rtl_replay_chunk_meta replay_flush_chunk{};
     /* The capture chunk in the input ring: the replay reader writes it before the commit, the demod copies it at reserve
        (struct rtl_replay_chunk_meta). */
     struct rtl_replay_chunk_meta replay_chunk{};
@@ -1211,6 +1217,10 @@ stream_reset_replay_eof_state(struct RtlSdrInternals* s) {
     s->replay_last_submit_gen.store(0, std::memory_order_release);
     s->replay_last_submit_gen_at_eof.store(0, std::memory_order_release);
     s->replay_last_consume_gen.store(0, std::memory_order_release);
+    s->replay_end_notice.store(0U, std::memory_order_release);
+    s->replay_demod_flush_owed.store(0, std::memory_order_release);
+    s->replay_input_boundary.store(0, std::memory_order_release);
+    s->replay_flush_chunk = rtl_replay_chunk_meta{};
     s->replay_chunk = rtl_replay_chunk_meta{};
     /* The internals are calloc'ed, so the virtual block 0 is set here. */
     s->replay_out_written.store(1U, std::memory_order_release);
@@ -1326,7 +1336,8 @@ replay_demod_drain_decide(uint64_t consumed_gen) {
             s->replay_input_drained.store(1, std::memory_order_release);
             input_drained = 1;
         }
-        if (input_drained && consumed_at >= s->replay_last_submit_gen_at_eof.load(std::memory_order_acquire)) {
+        if (input_drained && consumed_at >= s->replay_last_submit_gen_at_eof.load(std::memory_order_acquire)
+            && !s->replay_demod_flush_owed.load(std::memory_order_acquire)) {
             s->replay_demod_drained.store(1, std::memory_order_release);
             demod_drained_now = 1;
         }
@@ -2145,7 +2156,9 @@ demod_prepare_fll_seed_for_retune(const struct demod_state* s, DemodRetuneResetP
         return;
     }
 
-    fll_retune_seed_cache_store(plan->previous_center_freq_hz, plan->previous_rate_out_hz, s->fll_band_edge_state.freq);
+    /* The seed is the combined estimate (the TETRA mixer's part included), in Hz, so it restores at any rate. */
+    fll_retune_seed_cache_store(plan->previous_center_freq_hz, plan->previous_rate_out_hz,
+                                dsd_fll_band_edge_total_freq(&s->fll_band_edge_state));
     float cached_fll_freq = 0.0f;
     if (fll_retune_seed_cache_lookup(plan->next_center_freq_hz, plan->next_rate_out_hz, &cached_fll_freq)) {
         plan->reset_retained_fll = false;
@@ -2365,22 +2378,31 @@ demod_reset_common_state_for_retune(struct demod_state* s) {
     }
 }
 
+/* The reset plan's frequency decision, applied to the combined estimate pre_freq + freq: clear both parts, or keep the
+ * combined value (rescaled to the new rate) and split it again. While the TETRA chain is active the TETRA mixer takes
+ * up to its bound at the new rate and the FLL the rest within its clamp; otherwise the FLL takes it all, clamped, and
+ * the mixer stays at 0. */
 static void
 demod_refresh_fll_band_edge_state(struct demod_state* s, int reset_retained_fll, float retained_fll_scale) {
     int sps = demod_effective_ted_sps(s);
+    dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;
     if (reset_retained_fll) {
-        s->fll_band_edge_state.freq = 0.0f;
-    } else {
-        s->fll_band_edge_state.freq *= retained_fll_scale;
-    }
-    dsd_fll_band_edge_init(&s->fll_band_edge_state, sps);
-    if (reset_retained_fll) {
+        f->pre_freq = 0.0f;
+        f->freq = 0.0f;
+        dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
         return;
     }
-    if (s->fll_band_edge_state.freq > s->fll_band_edge_state.max_freq) {
-        s->fll_band_edge_state.freq = s->fll_band_edge_state.max_freq;
-    } else if (s->fll_band_edge_state.freq < s->fll_band_edge_state.min_freq) {
-        s->fll_band_edge_state.freq = s->fll_band_edge_state.min_freq;
+    const float total = dsd_fll_band_edge_total_freq(f) * retained_fll_scale;
+    dsd_fll_band_edge_init_params(f, sps, dsd_fll_band_edge_params_for(s->tetra_chain));
+    const float pre_limit = s->tetra_chain ? dsd_tetra_pre_limit_rad(s->rate_out) : 0.0f;
+    dsd_fll_band_edge_split_total(f, total, pre_limit);
+    if (s->tetra_chain && debug_cqpsk_enabled()) {
+        const float kept = dsd_fll_band_edge_total_freq(f);
+        if (fabsf(kept - total) > 1e-6f) {
+            const float hz_per_rad = (float)s->rate_out / 6.28318530717958647692f;
+            DSD_FPRINTF(stderr, "[RETUNE] combined FLL estimate %.1fHz clamped to %.1fHz (mixer %.1fHz, FLL %.1fHz)\n",
+                        total * hz_per_rad, kept * hz_per_rad, f->pre_freq * hz_per_rad, f->freq * hz_per_rad);
+        }
     }
 }
 
@@ -2444,7 +2466,8 @@ demod_log_post_retune_state(const struct demod_state* s, const DemodRetuneResetP
     }
     const int previous_rate_out_hz = plan.previous_rate_out_hz > 0 ? plan.previous_rate_out_hz : s->rate_out;
     float fll_be_before_hz = fll_freq_before * ((float)previous_rate_out_hz / 6.28318530717958647692f);
-    float fll_be_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
+    float fll_be_freq_hz =
+        dsd_fll_band_edge_total_freq(&s->fll_band_edge_state) * ((float)s->rate_out / 6.28318530717958647692f);
     float costas_freq_hz =
         s->costas_state.freq
         * (((float)s->rate_out / (float)(s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
@@ -2494,7 +2517,8 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     if (!s) {
         return plan;
     }
-    const float fll_freq_before = s->fll_band_edge_state.freq;
+    /* The combined carrier estimate (the TETRA mixer's part included) is what every decision below acts on. */
+    const float fll_freq_before = dsd_fll_band_edge_total_freq(&s->fll_band_edge_state);
     demod_prepare_fll_seed_for_retune(s, &plan);
     DemodRetuneResetReason reason = plan.reason;
     if (reason != DemodRetuneResetReason::CqpskReacquire) {
@@ -2502,9 +2526,16 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     }
     demod_reset_common_state_for_retune(s);
     if (plan.restore_cached_fll) {
+        /* The seed is a combined value: it is split again at the new rate below. */
+        s->fll_band_edge_state.pre_freq = 0.0f;
         s->fll_band_edge_state.freq = plan.cached_fll_freq;
     }
     demod_refresh_fll_band_edge_state(s, plan.reset_retained_fll ? 1 : 0, plan.retained_fll_scale);
+    if (reason != DemodRetuneResetReason::CqpskReacquire) {
+        /* The mixer restarts its rotation with the filters; a CQPSK reacquire keeps the stream it rotates. */
+        s->fll_band_edge_state.pre_re = 1.0f;
+        s->fll_band_edge_state.pre_im = 0.0f;
+    }
     demod_reset_ted_delay_for_retune(s);
     if (reason != DemodRetuneResetReason::CqpskReacquire) {
         demod_apply_pending_ted_override(s);
@@ -2531,6 +2562,13 @@ static std::atomic<int> g_pub_output_kind{0};
 static std::atomic<int> g_pub_symbol_rate{4800};
 static std::atomic<int> g_pub_symbol_levels{4};
 static std::atomic<int> g_pub_channel_profile{0};
+/* The channel profile the front end runs: g_pub_channel_profile, except WIDE for a TETRA profile whose channel filter
+ * is not running (dsd_demod_tetra_channel_runs(): neither the chain nor an uplink session), since that stream runs the
+ * WIDE filter. Frontends, the metrics hooks and the replay batch tags read this one; the stream's own save-and-restore
+ * paths read the configured one above. */
+static std::atomic<int> g_pub_running_channel_profile{0};
+/* dsd_demod_tetra_stage(): what bounds the noise of a TETRA-profile stream, for the SNR bias. */
+static std::atomic<int> g_pub_tetra_stage{0};
 static std::atomic<int> g_pub_ted_sps{10};
 static std::atomic<int> g_pub_ted_sps_override{0};
 static std::atomic<int> g_pub_cqpsk_enable{0};
@@ -2574,16 +2612,19 @@ rtl_stream_publish_iq_controls(void) {
 }
 
 static void rtl_stream_publish_demod_profile_snapshot(void);
+static void rtl_stream_seed_open_profile(void);
 static void rtl_stream_publish_ted_bias(void);
 
 /* Main-thread SNR bias/estimator paths: read the published mirrors, not the
  * demod-thread-owned fields (rate_out/ted_sps/channel_lpf_profile are written
- * by the deferred profile consume and retune reconfigure). */
+ * by the deferred profile consume and retune reconfigure, the TETRA stage by the
+ * demod block). */
 static void
-rtl_stream_load_snr_bias_inputs(int* rate_out, int* ted_sps, int* channel_profile) {
+rtl_stream_load_snr_bias_inputs(int* rate_out, int* ted_sps, int* channel_profile, int* tetra_stage) {
     *rate_out = g_pub_rate_out.load(std::memory_order_relaxed);
     *ted_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
     *channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+    *tetra_stage = g_pub_tetra_stage.load(std::memory_order_relaxed);
 }
 
 std::atomic<double> g_snr_c4fm_db{-100.0};
@@ -2940,8 +2981,9 @@ rtl_stream_get_snr_bias_c4fm(void) {
     int rate_out;
     int ted_sps;
     int channel_profile;
-    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
-    return dsd_snr_bias_c4fm_db(rate_out, ted_sps, channel_profile);
+    int tetra_stage;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile, &tetra_stage);
+    return dsd_snr_bias_c4fm_db(rate_out, ted_sps, channel_profile, tetra_stage);
 }
 
 /**
@@ -2953,8 +2995,9 @@ rtl_stream_get_snr_bias_evm(void) {
     int rate_out;
     int ted_sps;
     int channel_profile;
-    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
-    return dsd_snr_bias_evm_db(rate_out, ted_sps, channel_profile);
+    int tetra_stage;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile, &tetra_stage);
+    return dsd_snr_bias_evm_db(rate_out, ted_sps, channel_profile, tetra_stage);
 }
 
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
@@ -3257,10 +3300,42 @@ demod_copy_wrapped_input_block(struct demod_state* d, const DemodInputSpan* span
     return (int)copied;
 }
 
+/* A replay demod that owes the decoder an uplink look-ahead flush (replay_demod_flush_owed) waits for input here, not
+   in the input ring: the ring's wait returns only with data or at exit, and the end of the capture, or a boundary the
+   input stops at (an --iq-loop pass end, a RETUNE or a RESET), brings none, so the flush the loop top runs
+   (demod_replay_flush_uplink()) would never come and the replay would neither end nor go past the boundary. Returns 1
+   to read the ring (there is input, or no flush is owed: the flag is the demod thread's own, so it cannot change
+   during the wait), 0 to go back to the loop top (the input ended or stopped at a boundary, or the stream stops). The
+   wait is 10 ms at a time, so a wake lost between the look and the wait costs at most that. */
+static int
+demod_replay_input_or_flush(void) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_demod_flush_owed.load(std::memory_order_acquire) || !stream_is_replay_active()) {
+        return 1;
+    }
+    for (;;) {
+        if (input_ring_used(&input_ring) != 0U) {
+            return 1;
+        }
+        if (s->replay_input_eof.load(std::memory_order_acquire)
+            || s->replay_input_boundary.load(std::memory_order_acquire) || demod_should_exit_requested()) {
+            return 0;
+        }
+        dsd_mutex_lock(&input_ring.ready_m);
+        if (input_ring_used(&input_ring) == 0U) {
+            (void)dsd_cond_timedwait(&input_ring.ready, &input_ring.ready_m, 10);
+        }
+        dsd_mutex_unlock(&input_ring.ready_m);
+    }
+}
+
 static int
 demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
     demod_input_span_init(span);
     if (!d || !span) {
+        return 0;
+    }
+    if (!demod_replay_input_or_flush()) {
         return 0;
     }
     span->got = input_ring_read_reserve(&input_ring, static_cast<size_t>(MAXIMUM_BUF_LENGTH), &span->ring_p1,
@@ -3347,7 +3422,8 @@ demod_log_retune_diag_block(const struct demod_state* d, int got, const DemodRet
     if (!d || !diag || diag->block <= 0) {
         return;
     }
-    float fll_be_freq_hz = d->fll_band_edge_state.freq * ((float)d->rate_out / 6.28318530717958647692f);
+    float fll_be_freq_hz =
+        dsd_fll_band_edge_total_freq(&d->fll_band_edge_state) * ((float)d->rate_out / 6.28318530717958647692f);
     float symbol_rate_hz = (float)d->rate_out / (float)(d->ted_sps > 0 ? d->ted_sps : 5);
     float costas_freq_hz = d->costas_state.freq * (symbol_rate_hz / 6.28318530717958647692f);
     double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
@@ -3778,7 +3854,7 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
         return;
     }
     double snr_raw = 10.0 * log10(ratio);
-    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile, dsd_demod_tetra_stage(d));
     double snr = snr_raw - bias;
     /* A NaN or infinite I/Q sample makes the ratio non-finite; publishing it would leave the EMA stuck there. */
     if (!dsd::io::radio::rtl_is_finite(snr)) {
@@ -3958,7 +4034,7 @@ demod_snr_update_c4fm_direct(const struct demod_state* d, const float* vals, int
     if (sig_var <= 1e-9) {
         return;
     }
-    double bias = dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+    double bias = dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile, dsd_demod_tetra_stage(d));
     double snr = 10.0 * log10(sig_var / noise_var) - bias;
     demod_snr_publish_c4fm_direct(snr, flags);
 }
@@ -4006,7 +4082,7 @@ demod_snr_update_gfsk_direct(const struct demod_state* d, const float* vals, int
     if (sig_var <= 1e-9) {
         return;
     }
-    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
+    double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile, dsd_demod_tetra_stage(d));
     double snr = 10.0 * log10(sig_var / noise_var) - bias;
     demod_snr_publish_gfsk_direct(snr, flags);
 }
@@ -4070,7 +4146,7 @@ demod_snr_update_fsk_discriminator_direct(const struct demod_state* d, DemodSnrU
         win = 1;
     }
 
-    double c4fm_bias = dsd_snr_bias_c4fm_db(d->rate_out, sps, d->channel_lpf_profile);
+    double c4fm_bias = dsd_snr_bias_c4fm_db(d->rate_out, sps, d->channel_lpf_profile, dsd_demod_tetra_stage(d));
     double c4fm_snr = dsd_snr_estimate_c4fm_real_db(d->result, d->result_len, sps, win, c4fm_bias);
     if (demod_snr_valid(c4fm_snr)) {
         demod_snr_publish_c4fm_direct(c4fm_snr, flags);
@@ -4080,7 +4156,7 @@ demod_snr_update_fsk_discriminator_direct(const struct demod_state* d, DemodSnrU
     }
 
     if (d->symbol_levels == 2) {
-        double gfsk_bias = dsd_snr_bias_evm_db(d->rate_out, sps, d->channel_lpf_profile);
+        double gfsk_bias = dsd_snr_bias_evm_db(d->rate_out, sps, d->channel_lpf_profile, dsd_demod_tetra_stage(d));
         double gfsk_snr = dsd_snr_estimate_gfsk_real_db(d->result, d->result_len, sps, win, gfsk_bias);
         demod_snr_publish_gfsk_direct(gfsk_snr, flags);
     }
@@ -4471,17 +4547,26 @@ demod_wait_for_replay_demand(struct output_state* o) {
  * only on a stop, a forced stop or the global exit. It waits on the demand condition, which the decoder's
  * acknowledgement and the demod's (replay_demod_drain_decide()) both broadcast. */
 
-/* Under output.ready_m: the pipeline is idle for an event. */
+/* Under output.ready_m: the pipeline is idle for an event. At a boundary that starts the demod over (an --iq-loop pass
+   end, a RETUNE or a RESET: replay_input_boundary) it is idle only once the demod pushed out what an uplink look-ahead
+   held (demod_replay_flush_uplink()) and the decoder read it, so a burst that ends just before the boundary is decoded
+   before it, not dropped by the reset or spliced to the next pass. */
 static int
 replay_pipeline_idle_locked(const struct RtlSdrInternals* s) {
-    return (input_ring_used(&input_ring) == 0U
-            && s->replay_last_consume_gen.load(std::memory_order_acquire)
-                   >= s->replay_last_submit_gen.load(std::memory_order_acquire)
-            && ring_is_empty(&output)
-            && s->replay_out_acked.load(std::memory_order_relaxed)
-                   == s->replay_out_written.load(std::memory_order_relaxed))
-               ? 1
-               : 0;
+    const int drained = (input_ring_used(&input_ring) == 0U
+                         && s->replay_last_consume_gen.load(std::memory_order_acquire)
+                                >= s->replay_last_submit_gen.load(std::memory_order_acquire)
+                         && ring_is_empty(&output)
+                         && s->replay_out_acked.load(std::memory_order_relaxed)
+                                == s->replay_out_written.load(std::memory_order_relaxed));
+    /* Read the flush flag only after the consume generation: the demod stores it before acknowledging that
+       generation (release), so an acknowledged block's flag is the one read here, never the block before's. */
+    if (!drained
+        || (s->replay_input_boundary.load(std::memory_order_acquire)
+            && s->replay_demod_flush_owed.load(std::memory_order_acquire))) {
+        return 0;
+    }
+    return 1;
 }
 
 /* rtl_replay_eof_state::wait_event_boundary: 1 once the pipeline is idle, 0 when the replay stops. */
@@ -4518,7 +4603,7 @@ demod_replay_batch_tag(const DemodInputSpan* span, const struct output_state* o)
     tag.chunk_sequence = span->chunk.sequence;
     tag.center_frequency_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     tag.output_kind = g_pub_output_kind.load(std::memory_order_relaxed);
-    tag.channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+    tag.channel_profile = g_pub_running_channel_profile.load(std::memory_order_relaxed);
     tag.symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
     tag.symbol_levels = g_pub_symbol_levels.load(std::memory_order_relaxed);
     tag.output_rate_hz = o->rate.load(std::memory_order_relaxed);
@@ -4805,6 +4890,125 @@ demod_feed_signal_search(const demod_state* d) {
     rtl_signal_measure_feed(d->lowpassed, (size_t)d->lp_len / 2, &search_capture);
 }
 
+/* Whether the demod still owes a replay's decoder the symbols an uplink look-ahead holds back
+   (dsd_demod_tetra_uplink_held()): set after every replay block, before its drain decision, which then waits for the
+   flush (replay_demod_drain_decide(), replay_mark_input_drained()). */
+static void
+demod_note_replay_flush_owed(const struct demod_state* d, int replay_active) {
+    if (!replay_active || !g_stream) {
+        return;
+    }
+    g_stream->replay_demod_flush_owed.store(dsd_demod_tetra_uplink_held(d) > 0U ? 1 : 0, std::memory_order_release);
+}
+
+/* The end of a replay, or a boundary its input stops at (an --iq-loop pass end, a RETUNE or a RESET), on an uplink
+   session: once the input ended (or stopped there, the boundary waiting) and the decoder took every block, push the
+   symbols the look-ahead holds out as a block of their own (dsd_demod_tetra_uplink_flush()), tagged as the last chunk
+   (so with the centre and stream gap count from before the boundary), then let the demod count as drained, or the
+   boundary find the pipeline idle. Returns 1 when it ran. */
+static int
+demod_replay_flush_uplink(struct demod_state* d, struct output_state* o) {
+    struct RtlSdrInternals* s = g_stream;
+    if (!s || !s->replay_demod_flush_owed.load(std::memory_order_acquire) || input_ring_used(&input_ring) != 0U) {
+        return 0;
+    }
+    if (!s->replay_input_eof.load(std::memory_order_acquire)
+        && !s->replay_input_boundary.load(std::memory_order_acquire)) {
+        return 0;
+    }
+    if (!demod_enter_processing_block(&controller)) {
+        return 0;
+    }
+    DemodInputSpan span = {};
+    span.replay = 1;
+    span.chunk = s->replay_flush_chunk;
+    if (dsd_demod_tetra_uplink_flush(d)) {
+        (void)demod_emit_output_block(d, o, &span, 1);
+    }
+    s->replay_demod_flush_owed.store(0, std::memory_order_release);
+    replay_demod_drain_decide(s->replay_flush_chunk.submit_gen);
+    demod_leave_processing_block(&controller);
+    return 1;
+}
+
+/* The profile, modem and reacquire requests queued for the demodulator, taken before its next block. */
+static void
+demod_consume_pending_requests(struct demod_state* d) {
+    rtl_stream_consume_demod_profile_request();
+    (void)rtl_stream_consume_fsk_modem_config_pending(d);
+    (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
+    int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
+    if (!consumed_fsk_reacquire) {
+        (void)rtl_stream_consume_fsk_modem_reset_pending(d);
+    }
+}
+
+/* Whether the signal search drops this block; when it does, the block is released here. What an uplink look-ahead held
+   from before such blocks would reach the decoder after the gap, spliced to whatever follows. It goes, as the frame
+   sync's history does. */
+static int
+demod_drop_signal_search_block(struct demod_state* d, DemodInputSpan* span, int replay_active) {
+    if (!rtl_signal_search_bypassed()) {
+        return 0;
+    }
+    d->ted_state.ul_lookahead_live = 0;
+    demod_note_replay_flush_owed(d, replay_active);
+    demod_input_span_release_direct(d, span);
+    demod_leave_processing_block(&controller);
+    return 1;
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_signal_search_drop(int bypass, int* out_dropped, int* out_lookahead_live) {
+    static struct demod_state test_demod;
+    DSD_MEMSET(&test_demod, 0, sizeof(test_demod));
+    test_demod.ted_state.ul_lookahead_live = 1;
+    DemodInputSpan span = {};
+    const int was_bypassed = rtl_signal_search_bypassed();
+    rtl_signal_search_bypass(bypass);
+    const int dropped = demod_drop_signal_search_block(&test_demod, &span, 0);
+    rtl_signal_search_bypass(was_bypassed);
+    if (out_dropped) {
+        *out_dropped = dropped;
+    }
+    if (out_lookahead_live) {
+        *out_lookahead_live = test_demod.ted_state.ul_lookahead_live;
+    }
+}
+#endif
+
+/* What a demodulated block publishes for the other threads: channel power, squelch status and the demod snapshots. */
+static void
+demod_publish_block_state(const struct demod_state* d) {
+    g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
+    demod_publish_squelch_status(d);
+    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_publish_ted_bias();
+    rtl_stream_publish_fsk_phase_cfo_snapshot(d);
+}
+
+/* A block that raised the demod's exit flag ends the program, waking a replay's waiters. */
+static void
+demod_note_exit_flag(const struct demod_state* d, int replay_active) {
+    if (d->exit_flag) {
+        dsd_exitflag_store(1);
+        if (replay_active) {
+            replay_wake_all();
+        }
+    }
+}
+
+/* A replay block's output is written: its chunk is the one an end-of-replay flush follows, and whether a flush is owed
+   is noted again. */
+static void
+demod_note_replay_chunk_written(const struct demod_state* d, const DemodInputSpan* span, int replay_active) {
+    if (replay_active && g_stream) {
+        g_stream->replay_flush_chunk = span->chunk;
+    }
+    demod_note_replay_flush_owed(d, replay_active);
+}
+
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 demod_thread_fn(void* arg) {
     struct demod_state* d = static_cast<demod_state*>(arg);
@@ -4816,6 +5020,9 @@ demod_thread_fn(void* arg) {
     while (!demod_should_exit_requested()) {
         if (replay_pull && !demod_wait_for_replay_demand(o)) {
             break;
+        }
+        if (replay_pull && demod_replay_flush_uplink(d, o)) {
+            continue;
         }
         DemodInputSpan span = {};
         DemodRetuneDiagBlock retune_diag = {};
@@ -4831,40 +5038,24 @@ demod_thread_fn(void* arg) {
         }
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
-        rtl_stream_consume_demod_profile_request();
-        (void)rtl_stream_consume_fsk_modem_config_pending(d);
-        (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
-        int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
-        if (!consumed_fsk_reacquire) {
-            (void)rtl_stream_consume_fsk_modem_reset_pending(d);
-        }
+        demod_consume_pending_requests(d);
         demod_feed_signal_search(d);
-        if (rtl_signal_search_bypassed()) {
-            demod_input_span_release_direct(d, &span);
-            demod_leave_processing_block(&controller);
+        if (demod_drop_signal_search_block(d, &span, replay_active)) {
             continue;
         }
         demod_feed_wideband_spectrum(d);
         demod_take_squelch_setting(d);
         full_demod(d);
-        g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
-        demod_publish_squelch_status(d);
-        rtl_stream_publish_demod_profile_snapshot();
-        rtl_stream_publish_ted_bias();
-        rtl_stream_publish_fsk_phase_cfo_snapshot(d);
+        demod_publish_block_state(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_realtime_mono_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
-        if (d->exit_flag) {
-            dsd_exitflag_store(1);
-            if (replay_active) {
-                replay_wake_all();
-            }
-        }
+        demod_note_exit_flag(d, replay_active);
         demod_maybe_signal_squelch_hop(d);
         uint64_t perf_output_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         size_t perf_output_samples = demod_emit_output_block(d, o, &span, replay_pull);
+        demod_note_replay_chunk_written(d, &span, replay_active);
         /* A replay chunk's generation is consumed only after its demodulated
          * output is committed. RESET/rewind boundaries use this generation to
          * avoid entering the reconfigure gate between DSP processing and the
@@ -7006,7 +7197,7 @@ rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
 static rtl_view_snr_inputs
 rtl_stream_view_snr_inputs(void) {
     rtl_view_snr_inputs in;
-    rtl_stream_load_snr_bias_inputs(&in.rate_out, &in.ted_sps, &in.channel_profile);
+    rtl_stream_load_snr_bias_inputs(&in.rate_out, &in.ted_sps, &in.channel_profile, &in.tetra_stage);
     return in;
 }
 
@@ -7959,9 +8150,9 @@ stream_open_reset_auto_ppm_state(const dsd_opts* opts) {
 /* The DSP rate the last TETRA rate warning named (stream_open_warn_tetra_dsp_rate()), 0 for none. */
 static int g_tetra_rate_warned_hz = 0;
 
-/* TETRA's symbol timing needs a DSP rate that is a multiple of 18 kHz (dsd_tetra_dsp_rate_runs()); at any other
-   it decodes nothing, so a stream that opens TETRA there says why and what to change. Logged once per rate: a reopen
-   at the rate already named stays quiet. */
+/* TETRA needs a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz (dsd_tetra_dsp_rate_runs()); at any other
+   rate it decodes nothing, or runs without its receive chain, so a stream that opens TETRA there says why and what to
+   change. Logged once per rate: a reopen at the rate already named stays quiet. */
 static int
 stream_open_warn_tetra_dsp_rate(const dsd_opts* opts, int dsp_rate_hz) {
     char advice[DSD_TETRA_RATE_ADVICE_MAX];
@@ -8106,6 +8297,9 @@ stream_open_fill_replay_eof_state(struct rtl_replay_eof_state* eof_state) {
     eof_state->replay_last_submit_gen_at_eof = &g_stream->replay_last_submit_gen_at_eof;
     eof_state->replay_last_consume_gen = &g_stream->replay_last_consume_gen;
     eof_state->chunk = &g_stream->replay_chunk;
+    eof_state->replay_end_notice = &g_stream->replay_end_notice;
+    eof_state->replay_demod_flush_owed = &g_stream->replay_demod_flush_owed;
+    eof_state->replay_input_boundary = &g_stream->replay_input_boundary;
     eof_state->eof_m = &g_stream->replay_eof_m;
     eof_state->eof_cond = &g_stream->replay_eof_cond;
     eof_state->on_input_drained = rtl_replay_on_input_drained;
@@ -8567,8 +8761,49 @@ stream_open_update_output_rates(void) {
     }
 }
 
+/* The derived-SPS lines of the rate-chain log for an output rate of @p out_hz: the info line in @p info and the
+   atypical-rate warning in @p warn, each empty when there is none. A TETRA stream reports TETRA's samples per symbol
+   (18 ksym/s) and no 48 kHz advice: the CQPSK path times symbols on its own and a resampler to 48 kHz would not help
+   it (dsd_tetra_dsp_rate_advice() says what a rate TETRA cannot run at needs). Other streams are judged against the
+   ~48 kHz rate the digital decoders assume. */
 static void
-stream_open_log_rate_chain_summary(void) {
+stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
+                              size_t warn_size) {
+    info[0] = '\0';
+    warn[0] = '\0';
+    if (out_hz == 0U) {
+        return;
+    }
+    const char* approx = dsd_unicode_or_ascii("≈", "~");
+    if (frame_tetra == 1) {
+        const int sps_tetra = (int)((out_hz + DSD_TETRA_SYMBOL_RATE_HZ / 2) / DSD_TETRA_SYMBOL_RATE_HZ);
+        DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): TETRA%s%d.\n", out_hz, approx, sps_tetra);
+        return;
+    }
+    int sps_p25p1 = (int)((out_hz + 2400) / 4800);
+    int sps_p25p2 = (int)((out_hz + 3000) / 6000);
+    int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
+    DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx,
+                 sps_p25p1, approx, sps_p25p2, approx, sps_nxdn48);
+    if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
+        || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
+        DSD_SNPRINTF(warn, warn_size,
+                     "WARNING: Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider "
+                     "enabling resampler to 48000 Hz.\n",
+                     out_hz);
+    }
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, char* info, size_t info_size, char* warn,
+                                  size_t warn_size) {
+    stream_open_compose_sps_lines(out_hz, frame_tetra, info, info_size, warn, warn_size);
+}
+#endif
+
+static void
+stream_open_log_rate_chain_summary(int frame_tetra) {
     unsigned int capture_hz = load_dongle_rate();
     int base_decim = (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1;
     int post = (demod.post_downsample > 0) ? demod.post_downsample : 1;
@@ -8597,19 +8832,14 @@ stream_open_log_rate_chain_summary(void) {
                  "Hz.\n",
                  capture_text, base_decim, post, demod_hz, out_hz);
     }
-    if (out_hz > 0) {
-        int sps_p25p1 = (int)((out_hz + 2400) / 4800);
-        int sps_p25p2 = (int)((out_hz + 3000) / 6000);
-        int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
-        const char* approx = dsd_unicode_or_ascii("≈", "~");
-        LOG_INFO("Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx, sps_p25p1, approx,
-                 sps_p25p2, approx, sps_nxdn48);
-        if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
-            || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
-            LOG_WARN("WARNING: Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider enabling "
-                     "resampler to 48000 Hz.\n",
-                     out_hz);
-        }
+    char sps_text[160];
+    char sps_warn[192];
+    stream_open_compose_sps_lines(out_hz, frame_tetra, sps_text, sizeof sps_text, sps_warn, sizeof sps_warn);
+    if (sps_text[0] != '\0') {
+        LOG_INFO("%s", sps_text);
+    }
+    if (sps_warn[0] != '\0') {
+        LOG_WARN("%s", sps_warn);
     }
 }
 
@@ -8808,7 +9038,7 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
     if (stream_open_finalize_demod_chain(opts) != 0) {
         return -1;
     }
-    stream_open_log_rate_chain_summary();
+    stream_open_log_rate_chain_summary(opts->frame_tetra == 1 ? 1 : 0);
     return 0;
 }
 
@@ -8984,7 +9214,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
      * teardown, so a stale request cannot override this session's startup
      * profile on the demod thread's first block. */
     rtl_stream_clear_demod_profile_request();
-    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_seed_open_profile();
     rtl_stream_publish_iq_controls();
     if (stream_open_start_io_pipeline(opts, source_kind) != 0) {
         // Pipeline initialization succeeded, so all teardown primitives exist.
@@ -8996,6 +9226,18 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     return 0;
 }
 
+/* A replay whose decoder read every output of a capture the reader read to its end: the stop comes once the decoder has
+   finished, so the notice follows every line the capture decoded to and starts a line of its own. */
+static void
+stream_log_replay_end_notice(void) {
+    if (g_stream && g_stream->replay_output_drained.load(std::memory_order_acquire)) {
+        const uint64_t end_notice = g_stream->replay_end_notice.exchange(0U, std::memory_order_acq_rel);
+        if (end_notice > 0U) {
+            LOG_INFO("IQ replay: end of capture after %llu samples\n", (unsigned long long)(end_notice - 1U));
+        }
+    }
+}
+
 /**
  * @brief Soft-stop the RTL stream without setting global exitflag.
  *
@@ -9005,6 +9247,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
  */
 extern "C" int
 dsd_rtl_stream_soft_stop(void) {
+    stream_log_replay_end_notice();
     LOG_INFO("soft stopping...\n");
     ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();
@@ -9822,7 +10065,22 @@ rtl_stream_publish_ted_bias(void) {
     g_pub_ted_bias_q14.store(bias_q14, std::memory_order_relaxed);
 }
 
+/* The profile mirrors a stream opens with, from its configured demod state before any thread starts. The TETRA chain's
+   predicate is evaluated first, as the first block's boundary would (dsd_demod_update_tetra_chain()), so a TETRA open
+   publishes the TETRA profile it runs from the start rather than WIDE until the first block, and that boundary finds
+   the chain entered and runs no transition again. */
+static void
+rtl_stream_seed_open_profile(void) {
+    dsd_demod_update_tetra_chain(&demod);
+    rtl_stream_publish_demod_profile_snapshot();
+}
+
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_seed_open_profile(void) {
+    rtl_stream_seed_open_profile();
+}
+
 extern "C" void
 rtl_stream_test_publish_demod_snapshot(void) {
     rtl_stream_publish_demod_profile_snapshot();
@@ -9890,6 +10148,12 @@ rtl_stream_publish_demod_profile_snapshot(void) {
     g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
     g_pub_symbol_levels.store(demod.symbol_levels, std::memory_order_relaxed);
     g_pub_channel_profile.store(demod.channel_lpf_profile, std::memory_order_relaxed);
+    g_pub_running_channel_profile.store(
+        (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_TETRA && !dsd_demod_tetra_channel_runs(&demod))
+            ? (int)DSD_CH_LPF_PROFILE_WIDE
+            : demod.channel_lpf_profile,
+        std::memory_order_relaxed);
+    g_pub_tetra_stage.store(dsd_demod_tetra_stage(&demod), std::memory_order_relaxed);
     g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
     g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
     g_pub_rate_out.store(demod.rate_out, std::memory_order_relaxed);
@@ -10020,6 +10284,37 @@ rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int
 }
 
 extern "C" int
+rtl_stream_get_running_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    /* The same independent reads as rtl_stream_get_symbol_profile_full(), with the profile the front end runs. */
+    const int rc = rtl_stream_get_symbol_profile_full(out_symbol_rate_hz, out_levels, NULL);
+    if (out_channel_profile) {
+        *out_channel_profile = g_pub_running_channel_profile.load(std::memory_order_relaxed);
+    }
+    return rc;
+}
+
+/* The channel profile rtl_stream_set_symbol_profile() installs for a requested @p channel_profile: the request when it
+   names a profile, else the current one, with WIDE wherever the stream does not run the chain it names. */
+static int
+rtl_stream_symbol_channel_profile(int channel_profile) {
+    int next_channel_profile = demod.channel_lpf_profile;
+    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_TETRA) {
+        next_channel_profile = channel_profile;
+    }
+    if (next_channel_profile == DSD_CH_LPF_PROFILE_TETRA && demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+        /* The TETRA profile describes the CQPSK chain; off CQPSK TETRA filters with WIDE
+           (rtl_demod_open_channel_profile()), so the profile a restore puts back never names a chain the stream does
+           not run. */
+        next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
+    }
+    if (rtl_stream_runs_m17_encoder()) {
+        /* The M17 encoder's monitor keeps its WIDE channel whatever profile is published (issue #625). */
+        next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
+    }
+    return next_channel_profile;
+}
+
+extern "C" int
 rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
     if (symbol_rate_hz <= 0) {
         return -1;
@@ -10027,14 +10322,7 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
     if (levels != 2 && levels != 4) {
         return -1;
     }
-    int next_channel_profile = demod.channel_lpf_profile;
-    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
-        next_channel_profile = channel_profile;
-    }
-    if (rtl_stream_runs_m17_encoder()) {
-        /* The M17 encoder's monitor keeps its WIDE channel whatever profile is published (issue #625). */
-        next_channel_profile = DSD_CH_LPF_PROFILE_WIDE;
-    }
+    const int next_channel_profile = rtl_stream_symbol_channel_profile(channel_profile);
     int changed = (demod.symbol_rate_hz != symbol_rate_hz || demod.symbol_levels != levels
                    || demod.channel_lpf_profile != next_channel_profile);
     demod.symbol_rate_hz = symbol_rate_hz;
@@ -10086,6 +10374,18 @@ rtl_stream_request_cqpsk_reacquire(void) {
     return 1;
 }
 
+/* A TED change on CQPSK installs the CQPSK channel profile for the symbol rate @p sps gives at the demod rate (the
+   stream's own symbol rate before a rate is known): TETRA's at 18000 sym/s, the P25 CQPSK one otherwise
+   (rtl_demod_cqpsk_channel_profile()). Off CQPSK the profile is left alone. */
+static void
+rtl_stream_install_cqpsk_profile_for_sps(int sps) {
+    if (!demod.cqpsk_enable) {
+        return;
+    }
+    const int sym_rate = (demod.rate_out > 0 && sps > 0) ? (demod.rate_out + (sps / 2)) / sps : demod.symbol_rate_hz;
+    demod.channel_lpf_profile = rtl_demod_cqpsk_channel_profile(sym_rate);
+}
+
 extern "C" void
 rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
@@ -10124,9 +10424,7 @@ rtl_stream_set_ted_sps(int sps) {
         demod.costas_reset_pending = 1;
     }
     demod.ted_sps_override = sps;
-    if (demod.cqpsk_enable) {
-        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
-    }
+    rtl_stream_install_cqpsk_profile_for_sps(sps);
     if (demod.rate_out > 0) {
         int sym_rate = (demod.rate_out + (sps / 2)) / sps;
         if (sym_rate > 0) {
@@ -10176,9 +10474,7 @@ rtl_stream_set_ted_sps_no_override(int sps) {
         demod.costas_zero_conf_pct = 0;
     }
     demod.ted_sps = sps;
-    if (demod.cqpsk_enable) {
-        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
-    }
+    rtl_stream_install_cqpsk_profile_for_sps(sps);
     if (demod.rate_out > 0) {
         int sym_rate = (demod.rate_out + (sps / 2)) / sps;
         if (sym_rate > 0) {
@@ -10422,7 +10718,7 @@ rtl_stream_enable_cqpsk_mode(void) {
     demod.mode_demod = &qpsk_differential_demod;
     demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
-    demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    demod.channel_lpf_profile = rtl_demod_cqpsk_channel_profile(demod.symbol_rate_hz);
 }
 
 /* Whether a symbol profile without CQPSK runs the FSK discriminator for a digital decoder rather than monitor audio.
@@ -10452,6 +10748,10 @@ rtl_stream_disable_cqpsk_mode(void) {
         (demod.analog_family && demod.analog_demod == DSD_ANALOG_DEMOD_AM) ? &dsd_am_demod : &dsd_fm_demod;
     if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
         demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
+    } else if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_TETRA) {
+        /* The TETRA profile describes the CQPSK chain; on the discriminator TETRA filters with WIDE, as an open there
+           does (rtl_demod_open_channel_profile()). */
+        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     }
     if (rtl_stream_runs_digital_family()) {
         demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
@@ -14108,7 +14408,8 @@ cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk
     test_demod->ted_state.mu = 4.5f;
     test_demod->ted_state.dl[0] = 3.0f;
     test_demod->ted_state.dl_index = 7;
-    dsd_fll_band_edge_init(&test_demod->fll_band_edge_state, test_demod->ted_sps);
+    dsd_fll_band_edge_init_params(&test_demod->fll_band_edge_state, test_demod->ted_sps,
+                                  dsd_fll_band_edge_params_for(test_demod->tetra_chain));
     test_demod->fll_band_edge_state.freq = 0.125f;
     test_demod->fll_band_edge_state.phase = 0.75f;
     test_demod->costas_state.freq = 0.25f;
@@ -14245,6 +14546,85 @@ rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t nex
     out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
     out_result->distant_frequency_reason = plan.reason == DemodRetuneResetReason::DistantFrequencyRetune ? 1 : 0;
     out_result->fll_freq_after = test_demod.fll_band_edge_state.freq;
+    out_result->fll_pre_after = test_demod.fll_band_edge_state.pre_freq;
+    return 0;
+}
+
+/* A CQPSK test demod on the TETRA symbol rate (or P25's, off the chain) at @p rate_out_hz, its FLL holding @p pre_freq
+ * + @p freq behind a mixer phasor that is not (1, 0). */
+static void
+fll_mixer_test_init_demod(struct demod_state* test_demod, int tetra_chain, float pre_freq, float freq,
+                          int rate_out_hz) {
+    cqpsk_reacquire_test_init_demod(test_demod, 1, tetra_chain ? 18000 : 4800, 4);
+    test_demod->tetra_chain = tetra_chain ? 1 : 0;
+    test_demod->rate_out = rate_out_hz;
+    dsd_fll_band_edge_init_params(&test_demod->fll_band_edge_state, test_demod->ted_sps,
+                                  dsd_fll_band_edge_params_for(test_demod->tetra_chain));
+    test_demod->fll_band_edge_state.pre_freq = pre_freq;
+    test_demod->fll_band_edge_state.freq = freq;
+    test_demod->fll_band_edge_state.pre_re = 0.6f;
+    test_demod->fll_band_edge_state.pre_im = 0.8f;
+}
+
+extern "C" int
+rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_freq, float freq,
+                                 uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,
+                                 int previous_rate_out_hz, int next_rate_out_hz,
+                                 rtl_stream_test_fll_mixer_retune_result* out_result) {
+    if (!out_result || !reason || previous_rate_out_hz <= 0 || next_rate_out_hz <= 0) {
+        return -1;
+    }
+    *out_result = {};
+    fll_retune_seed_cache_clear();
+    static struct demod_state test_demod;
+    fll_mixer_test_init_demod(&test_demod, tetra_chain, pre_freq, freq, previous_rate_out_hz);
+    out_result->total_before = dsd_fll_band_edge_total_freq(&test_demod.fll_band_edge_state);
+    /* The device has moved to the new rate before the reset runs (controller_finalize_dsp_chain()). */
+    test_demod.rate_out = next_rate_out_hz;
+    DemodRetuneResetPlan plan = demod_retune_reset_plan(retune_reset_reason_from_name(reason), previous_center_freq_hz,
+                                                        next_center_freq_hz, previous_rate_out_hz, next_rate_out_hz);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->pre_after = test_demod.fll_band_edge_state.pre_freq;
+    out_result->freq_after = test_demod.fll_band_edge_state.freq;
+    out_result->phasor_re_after = test_demod.fll_band_edge_state.pre_re;
+    out_result->phasor_im_after = test_demod.fll_band_edge_state.pre_im;
+    out_result->reset_retained_fll = plan.reset_retained_fll ? 1 : 0;
+    out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
+    DSD_SNPRINTF(out_result->reason, sizeof(out_result->reason), "%s", retune_reset_reason_name(plan.reason));
+    fll_retune_seed_cache_clear();
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_fll_mixer_cache_round_trip(int tetra_chain, float pre_freq, float freq, int cc_rate_hz,
+                                           int return_rate_hz, rtl_stream_test_fll_mixer_cache_result* out_result) {
+    if (!out_result || cc_rate_hz <= 0 || return_rate_hz <= 0) {
+        return -1;
+    }
+    *out_result = {};
+    fll_retune_seed_cache_clear();
+    const uint32_t kCc = 770418750U;
+    const uint32_t kVc = 769668750U;
+    static struct demod_state test_demod;
+    fll_mixer_test_init_demod(&test_demod, tetra_chain, pre_freq, freq, cc_rate_hz);
+
+    DemodRetuneResetPlan plan =
+        demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, kCc, kVc, cc_rate_hz, cc_rate_hz);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->hop_reset = plan.reset_retained_fll ? 1 : 0;
+    out_result->hop_pre_after = test_demod.fll_band_edge_state.pre_freq;
+    out_result->hop_freq_after = test_demod.fll_band_edge_state.freq;
+
+    /* The voice channel learns an estimate of its own before the return. */
+    test_demod.fll_band_edge_state.pre_freq = tetra_chain ? -0.2f : 0.0f;
+    test_demod.fll_band_edge_state.freq = -0.05f;
+    test_demod.rate_out = return_rate_hz;
+    plan = demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, kVc, kCc, cc_rate_hz, return_rate_hz);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->return_restored = plan.restore_cached_fll ? 1 : 0;
+    out_result->return_pre_after = test_demod.fll_band_edge_state.pre_freq;
+    out_result->return_freq_after = test_demod.fll_band_edge_state.freq;
+    fll_retune_seed_cache_clear();
     return 0;
 }
 
@@ -14910,6 +15290,9 @@ family_test_capture(void) {
     f.costas_phase_urad = (int)lrintf(demod.costas_state.phase * 1e6f);
     f.fll_freq_urad = (int)lrintf(demod.fll_band_edge_state.freq * 1e6f);
     f.fll_phase_urad = (int)lrintf(demod.fll_band_edge_state.phase * 1e6f);
+    f.fll_pre_freq_urad = (int)lrintf(demod.fll_band_edge_state.pre_freq * 1e6f);
+    f.fll_pre_phase_urad =
+        (int)lrintf(atan2f(demod.fll_band_edge_state.pre_im, demod.fll_band_edge_state.pre_re) * 1e6f);
     /* The Gardner loop's first-initialisation test (gardner_need_reinit()), with a tolerance on omega_mid. */
     f.ted_awaiting_init = (fabsf(demod.ted_state.omega_mid) < 1e-12f || demod.ted_state.twice_sps < 2) ? 1 : 0;
     f.deemph_avg_u = family_test_micro(demod.deemph_avg);
@@ -14939,6 +15322,9 @@ family_test_seed_running_loops(void) {
     demod.costas_state.phase = 1.25f;
     demod.fll_band_edge_state.freq = 0.02f;
     demod.fll_band_edge_state.phase = 0.5f;
+    demod.fll_band_edge_state.pre_freq = 0.03f;
+    demod.fll_band_edge_state.pre_re = 0.6f;
+    demod.fll_band_edge_state.pre_im = 0.8f;
     demod.ted_state.omega_mid = 10.0f;
     demod.ted_state.twice_sps = 22;
     demod.ted_state.mu = 3.5f;

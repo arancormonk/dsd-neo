@@ -46,6 +46,7 @@ typedef enum DSD_ATTR_PACKED rtl_stream_channel_profile {
     RTL_STREAM_CHANNEL_PROFILE_PROVOICE = 3,
     RTL_STREAM_CHANNEL_PROFILE_P25_C4FM = 4,
     RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK = 5,
+    RTL_STREAM_CHANNEL_PROFILE_TETRA = 6,
 } rtl_stream_channel_profile;
 
 typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
@@ -392,7 +393,21 @@ int rtl_stream_is_active(void);
  * monitor paths return AUDIO_MONITOR.
  */
 int rtl_stream_get_output_kind(void);
+/**
+ * @brief Return the stream's symbol rate, levels and configured channel profile (published mirrors).
+ *
+ * The profile is the one the stream was set to, which a restore puts back: a TETRA profile reads TETRA whether or not
+ * its chain runs. Display and decoder labels read rtl_stream_get_running_symbol_profile().
+ */
 int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
+/**
+ * @brief Return the stream's symbol rate, levels and the channel profile the front end runs (published mirrors).
+ *
+ * As rtl_stream_get_symbol_profile_full(), except that a TETRA profile reads TETRA only while the TETRA receive chain
+ * runs (demod_state::tetra_chain) and WIDE otherwise, the filter that stream then runs. The metrics hooks publish this
+ * one, so the channel width frontends show and the replay batch labels follow the running chain.
+ */
+int rtl_stream_get_running_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 
 /**
  * @brief Update symbol modem profile for RTL-family digital modes.

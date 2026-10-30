@@ -37,37 +37,52 @@ static const double kNoiseBw12K5Hz = 6665.0;     /* 12.5 kHz modes, 6250 Hz prot
 static const double kNoiseBwProvoiceHz = 6665.0; /* ProVoice, 6250 Hz protected edge */
 static const double kNoiseBwP25C4fmHz = 6665.0;  /* P25 C4FM, 6250 Hz protected edge */
 static const double kNoiseBwP25CqpskHz = 7065.0; /* P25 CQPSK/LSM, 12.5 kHz edge plus guard */
+/* The TETRA chain: its RRC matched filter, not the wider channel filter ahead of it, bounds the noise. Its equivalent
+ * noise bandwidth is the 18000 sym/s symbol rate two-sided, so 9000 Hz one-sided, the convention of the figures above
+ * (Bn = (Fs/2) * sum(h^2) / sum(h)^2, which gives 9000 Hz for the RRC: sum(h^2) = 1/sps, sum(h) ~ 1). */
+static const double kNoiseBwTetraHz = 9000.0;
+/* The TETRA channel filter alone (dsd_tetra_channel_design(), 12.5 kHz cutoff, 2.5 kHz Blackman transition), which an
+ * uplink session runs without the chain's matched filter: the same Bn formula over its taps gives 12114 Hz at every
+ * rate of the TETRA domain (36, 54, 72 and 144 kHz checked; the design keeps its shape in Hz). */
+static const double kNoiseBwTetraChannelHz = 12114.0;
 
-static double
-dsd_snr_noise_bandwidth_hz(int lpf_profile) {
+double
+dsd_snr_noise_bandwidth_hz(int lpf_profile, int tetra_stage) {
     switch (lpf_profile) {
         case DSD_CH_LPF_PROFILE_6K25: return kNoiseBw6K25Hz;
         case DSD_CH_LPF_PROFILE_12K5: return kNoiseBw12K5Hz;
         case DSD_CH_LPF_PROFILE_PROVOICE: return kNoiseBwProvoiceHz;
         case DSD_CH_LPF_PROFILE_P25_C4FM: return kNoiseBwP25C4fmHz;
         case DSD_CH_LPF_PROFILE_P25_CQPSK: return kNoiseBwP25CqpskHz;
+        case DSD_CH_LPF_PROFILE_TETRA:
+            switch (tetra_stage) {
+                case DSD_SNR_TETRA_STAGE_CHAIN: return kNoiseBwTetraHz;
+                case DSD_SNR_TETRA_STAGE_CHANNEL: return kNoiseBwTetraChannelHz;
+                /* Neither stage runs: the WIDE channel plan. */
+                default: return kNoiseBwWideHz;
+            }
         default: return kNoiseBwWideHz;
     }
 }
 
 double
-dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile) {
+dsd_snr_bias_c4fm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_stage) {
     if (rate_out <= 0 || ted_sps <= 0) {
         return kC4fmEstimatorBiasDb + 2.2; /* fallback to original ~7.95 dB */
     }
     double symbol_rate = (double)rate_out / (double)ted_sps;
-    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile);
+    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile, tetra_stage);
     /* Total bias = estimator bias + bandwidth penalty */
     return kC4fmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
 }
 
 double
-dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile) {
+dsd_snr_bias_evm_db(int rate_out, int ted_sps, int lpf_profile, int tetra_stage) {
     if (rate_out <= 0 || ted_sps <= 0) {
         return kEvmEstimatorBiasDb + 0.5; /* fallback to original ~2.43 dB */
     }
     double symbol_rate = (double)rate_out / (double)ted_sps;
-    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile);
+    double noise_bw = dsd_snr_noise_bandwidth_hz(lpf_profile, tetra_stage);
     /* Total bias = estimator bias + bandwidth penalty */
     return kEvmEstimatorBiasDb + 10.0 * log10(noise_bw / symbol_rate);
 }

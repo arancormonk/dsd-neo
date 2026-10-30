@@ -11,9 +11,11 @@ fewer.
 """
 
 import argparse
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 
 REWIND = re.compile(r"IQ replay: --iq-loop rewound to the start of the capture \(pass (\d+)\)\.")
@@ -37,17 +39,35 @@ def main() -> int:
     cmd = [args.dsd_bin, "--frontend", "none", *args.mode.split(), "--iq-loop", "--iq-replay", args.fixture, "-o",
            "null"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # The lines come through a reader thread, so the deadline holds while dsd-neo prints nothing (a hung replay) as well
+    # as while it prints.
+    lines = queue.Queue()
+
+    def read_lines():
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            lines.put(raw)
+        lines.put(None)
+
+    threading.Thread(target=read_lines, daemon=True).start()
     passes = [[]]
     log = []
     deadline = time.monotonic() + args.timeout
     stopped = False
     try:
-        assert proc.stdout is not None
-        for raw in proc.stdout:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.append(f"iq_loop_passes_check: timed out after {args.timeout:g} s")
+                break
+            try:
+                raw = lines.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if raw is None:
+                break
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             log.append(line)
-            if time.monotonic() > deadline:
-                break
             # The rewind can land mid-line, after a sync prefix the decoder printed for the pass that ended.
             parts = REWIND.split(line)
             for i, part in enumerate(parts):

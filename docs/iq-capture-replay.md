@@ -56,6 +56,13 @@ Path handling:
 - A `.wav` path that holds no WAV header and has no sidecar is refused: `'x.wav' is not a WAV file (no RIFF, RF64 or
   BW64 WAVE header) and has no sidecar (tried 'x.wav.json' and 'x.wav.iq.json')`. A big-endian RIFX file is refused
   too.
+- A path that cannot be opened, and has no sidecar to name a capture through, is refused with the reason: a missing
+  file (`cannot open 'x.wav': No such file or directory, and it has no sidecar (tried ...)`), a symbolic link (`'x.wav'
+  is a symbolic link, or a path the system would not follow; replay opens regular files only`), a directory or other
+  non-regular file, or the system's error (`Permission denied`). A sidecar's `data_file` that is a symbolic link or
+  cannot be opened is refused the same way; one that is missing leaves the sidecar readable for `--iq-info`, and the
+  replay reports the missing file. A read of a file's first bytes that fails is reported as `failed to read`; a file
+  shorter than a WAV header is read as not a WAV.
 
 ## Format Notes
 
@@ -185,7 +192,21 @@ at 2000-01-01T00:00:00Z.
 The replay demodulates the channel at the recording's centre. A replay cannot be retuned, so a channel elsewhere in
 a wide recording is not decoded: set the recording program's centre (tuner) frequency on the carrier before recording,
 not only a VFO inside its band. A small offset, such as the +343 Hz the `tetra_call_real_air_72k` fixture's recording
-carries, is recovered as it is on air.
+carries, is recovered as it is on air (for TETRA, see the tuning tolerance under `-fT` in `docs/cli.md`).
+
+### SDR++ Baseband Recordings
+
+SDR++'s recorder, in baseband mode, writes the I/Q its tuner receives, centred on the tuner's centre frequency (the
+middle of the waterfall), not on the VFO. In SDR++'s usual tuning mode a click on the waterfall moves the VFO while
+the centre stays where it was, so a carrier under the VFO can sit tens of kHz from the recording's centre, and the
+replay does not decode it. Before recording:
+
+1. Turn on centre tuning with the toggle beside SDR++'s frequency display, so the frequency you tune is the centre
+   and the VFO stays on it.
+2. Tune to the carrier, then start the recording.
+
+The `NNNHz` in SDR++'s default file name is that centre frequency, and the replay takes it as the recording's centre
+(above). A carrier anywhere else in the recording is not decoded, whatever the VFO was on; record it again centred.
 
 Headers a recording program did not finish:
 
@@ -219,19 +240,19 @@ recording alike. The plan aims at a DSP rate D:
 - otherwise (a WAV recording, or a sidecar that recorded none) the mode's preset bandwidth (72 kHz under `-fT`, 24 kHz
   under the EDACS/ProVoice presets) or the 48 kHz default.
 
-Under TETRA a D that is not a multiple of 18 kHz becomes 72 kHz. TETRA's pi/4-DQPSK runs at 18 ksym/s, its symbols
-are timed at a whole number of samples each, and its CQPSK path skips the decimation after the demodulator
-(`post_downsample`), so the rate the half-band chain delivers must itself be a multiple of 18 kHz.
+Under TETRA a D that is not a multiple of 18 kHz from 36 to 144 kHz becomes 72 kHz. TETRA's pi/4-DQPSK runs at
+18 ksym/s, its symbols are timed at a whole number of samples each (2 to 8), and its CQPSK path skips the decimation
+after the demodulator (`post_downsample`), so the rate the half-band chain delivers must itself be one of those
+rates.
 
 The chain:
 
 - **Kept as recorded.** A sidecar capture with no DSP bandwidth asked for runs the chain it recorded
   (`base_decimation`, `post_downsample`, `demod_rate_hz`), exactly as before, unless the mode is TETRA and the chain
-  cannot run it: its rate after `base_decimation` is not a multiple of 18 kHz, or its `post_downsample` is above 1. A
-  TETRA chain that misses
-  only through a power-of-two `post_downsample` folds it into the half-band chain where that reaches a multiple of
-  18 kHz. Every committed fixture keeps its chain, and so does every committed TETRA fixture under TETRA but the
-  unmodified 50 kHz capture, which TETRA resamples.
+  cannot run it: its rate after `base_decimation` is not a multiple of 18 kHz from 36 to 144 kHz, or its
+  `post_downsample` is above 1. A TETRA chain that misses only through a power-of-two `post_downsample` folds it into
+  the half-band chain where that reaches one of those rates. Every committed fixture keeps its chain, and so does
+  every committed TETRA fixture under TETRA but the unmodified 50 kHz capture, which TETRA resamples.
 - **Otherwise** (a WAV recording, a DSP bandwidth asked for, or a recorded chain TETRA cannot run): a capture at
   D x 2^k (k from 0 to 10) is decimated by 2^k in the half-band chain with no resampling. Any other capture is
   resampled first, to R = D x 2^k, the largest such rate at or below its own (R = D when the capture is slower than
@@ -329,7 +350,7 @@ dsd-neo -fT -i rtltcp:192.168.1.10:1234:426.7M:22:0:72
 `-i tcp` and `-i udp` carry demodulated PCM audio, not I/Q (see `docs/network-audio.md`), so they cannot feed TETRA or
 any other mode that needs I/Q. dsd-neo has no input for headerless I/Q streamed over TCP or UDP (`cf32` or otherwise)
 from other SDR software. To decode TETRA from another SDR program, record a WAV I/Q recording there, centred on the
-carrier, and replay it with `--iq-replay`.
+carrier (in SDR++, see [SDR++ Baseband Recordings](#sdr-baseband-recordings)), and replay it with `--iq-replay`.
 
 ## Replay Pacing And The Decode Clock
 
@@ -406,14 +427,15 @@ or realtime. These replays are outside it altogether:
 
 The last 1.5 ms or so of a capture is never decoded. The front end's filters hold back their look-ahead (about 74
 samples at 48 kHz on the default 1.536 Msps chain, 67 on a 48 kHz capture), and nothing flushes it when the capture
-ends, so a frame that ends inside those samples is lost: the `edacs` fixture's last message fails its BCH check for
-this reason. A `RESET` drops what the filters held the same way, as a live retune does. On a real capture that is a
-small, steady cost at the dwell boundaries: a 593 s P25 Phase 1/2 capture with 36 retunes between the control channel
-and Phase 2 voice channels, replayed under `-f2 -mq -X` without `-T` over 16 realizations (`docs/testing.md`, "Replay
-determinism"), decodes 3.88 +/- 0.18 fewer of its 677 Phase 2 syncs and 2.44 +/- 0.75 fewer of its 1040 voice frames
-than the build before the streaming filters, with audio errors equal (+0.19 +/- 0.40). The whole loss comes from the
-channel filter's streaming change, whose held tail is 67 samples, 1.4 ms at 48 kHz; the half-band decimators add
-nothing measurable.
+ends, so a frame that ends inside those samples is lost: the `edacs` fixture's last message fails its BCH check for this
+reason. A `RESET` drops what the filters held the same way, as a live retune does. (A TETRA uplink session's burst
+timing, which holds 128 symbols back, about 7 ms, is pushed out before a `RETUNE`, a `RESET`, an `--iq-loop` rewind and
+the capture's end.) On a real capture that is a small, steady cost at the dwell boundaries: a 593 s P25 Phase 1/2
+capture with 36 retunes between the control channel and Phase 2 voice channels, replayed under `-f2 -mq -X` without `-T`
+over 16 realizations (`docs/testing.md`, "Replay determinism"), decodes 3.88 +/- 0.18 fewer of its 677 Phase 2 syncs and
+2.44 +/- 0.75 fewer of its 1040 voice frames than the build before the streaming filters, with audio errors equal (+0.19
++/- 0.40). The whole loss comes from the channel filter's streaming change, whose held tail is 67 samples, 1.4 ms at 48
+kHz; the half-band decimators add nothing measurable.
 
 - **At a dwell's end.** Diffing the two decodes at the recorded alignment, the missing lines are almost all frames that
   straddle a dwell's closing `RESET`, decoded partly from the old channel and partly from the new: `DUID ERR`,
@@ -500,7 +522,15 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
   CQPSK change it asked for, where a live stream discards the samples read across such a change.
 - `--iq-loop` rewinds the event cursor and replay timing so the event schedule repeats each pass. A pass that handed
   the demodulator no samples is not rewound: the replay logs a warning and ends there, as it does at the end without
-  `--iq-loop`.
+  `--iq-loop`, but without the end-of-capture notice below.
+- A pass that reads to the end of the capture with every chunk handed to the demodulator logs
+  `IQ replay: end of capture after N samples`, where N is the capture's end position in complex samples at its own
+  rate (before any resampling), counted from the capture's start: the whole capture, also for a replay that resumed
+  partway through after a re-plan. It is logged once the decoder has read everything the pass decoded to: when the
+  stream stops after a replay the decoder read to its end, just before `soft stopping...`, and under `--iq-loop` once
+  per pass, just before the `--iq-loop rewound` line. A replay that stops early, fails to read, or cannot hand a chunk
+  on does not log it, nor does an `--iq-loop` pass that handed the demodulator nothing, so a log without it did not
+  replay the whole capture.
 - Only the metadata-scheduled replay events retune a replay. The retunes a user asks for are refused during one, from
   the terminal, Qt/Android and the control API alike, with "An I/Q replay cannot retune.", as a failed command rather
   than a tune that never lands: a manual tune, a frequency entry, the tuner release, the return to the control

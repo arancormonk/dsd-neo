@@ -11,8 +11,8 @@
  * generate taps that match GNU Radio's firdes::low_pass() across platforms.
  */
 
+#include <cmath>
 #include <dsd-neo/dsp/firdes.h>
-#include <math.h>
 
 /* GNU Radio's M_PI definition */
 #ifndef GR_M_PI
@@ -361,5 +361,151 @@ dsd_firdes_low_pass(double gain, double sampling_freq, double cutoff_freq, doubl
         taps_out[i] *= (float)gain;
     }
 
+    return ntaps;
+}
+
+/* Bounds far beyond any real rate or gain, there only to refuse an infinity. */
+static const double kRrcMaxRateHz = 1e12;
+static const double kRrcMaxGain = 1e12;
+
+/* Whether dsd_firdes_root_raised_cosine() can design from these arguments. Bounded comparisons rather than isfinite(),
+   which the fast-math presets fold away (and Clang refuses there): under IEEE semantics a NaN fails every comparison
+   and an infinity the upper bounds. */
+static bool
+rrc_args_valid(double gain, double sampling_freq, double symbol_rate, double alpha, int ntaps, const float* taps_out) {
+    return taps_out && sampling_freq > 0.0 && sampling_freq < kRrcMaxRateHz && symbol_rate > 0.0
+           && symbol_rate < kRrcMaxRateHz && gain > -kRrcMaxGain && gain < kRrcMaxGain && alpha > 0.0 && alpha <= 1.0
+           && ntaps > 0;
+}
+
+/* Tap @p i of an @p ntaps root-raised-cosine before its gain normalisation: the loop body of GNU Radio's
+ * root_raised_cosine() quoted below. */
+static double
+rrc_tap_unscaled(int i, int ntaps, double spb, double alpha) {
+    const int centre = ntaps / 2;
+    double num = 0.0;
+    double den = 0.0;
+    const double xindx = (double)(i - centre);
+    const double x1 = GR_M_PI * xindx / spb;
+    double x2 = 4.0 * alpha * xindx / spb;
+    double x3 = x2 * x2 - 1.0;
+
+    if (fabs(x3) >= 0.000001) {
+        if (i != centre) {
+            num = cos((1.0 + alpha) * x1) + sin((1.0 - alpha) * x1) / (4.0 * alpha * xindx / spb);
+        } else {
+            num = cos((1.0 + alpha) * x1) + (1.0 - alpha) * GR_M_PI / (4.0 * alpha);
+        }
+        den = x3 * GR_M_PI;
+    } else {
+        if (fabs(alpha - 1.0) < 1e-12) {
+            return -1.0;
+        }
+        x3 = (1.0 - alpha) * x1;
+        x2 = (1.0 + alpha) * x1;
+        num = (sin(x2) * (1.0 + alpha) * GR_M_PI - cos(x3) * ((1.0 - alpha) * GR_M_PI * spb) / (4.0 * alpha * xindx)
+               + sin(x3) * spb * spb / (4.0 * alpha * xindx * xindx));
+        den = -32.0 * GR_M_PI * alpha * alpha * xindx / spb;
+    }
+    return 4.0 * alpha * num / den;
+}
+
+/* The @p ntaps (odd) taps of a root-raised-cosine at @p spb samples per symbol, normalised to a sum of @p gain. */
+static void
+rrc_fill(double gain, double spb, double alpha, int ntaps, float* taps_out) {
+    double scale = 0.0;
+    for (int i = 0; i < ntaps; i++) {
+        taps_out[i] = (float)rrc_tap_unscaled(i, ntaps, spb, alpha);
+        scale += taps_out[i];
+    }
+
+    for (int i = 0; i < ntaps; i++) {
+        taps_out[i] = (float)(taps_out[i] * gain / scale);
+    }
+}
+
+/*
+ * Direct port of GNU Radio's firdes::root_raised_cosine() from gr-filter/lib/firdes.cc:
+ *
+ *   ntaps |= 1; // ensure that ntaps is odd
+ *   double spb = sampling_freq / symbol_rate; // samples per bit/symbol
+ *   std::vector<float> taps(ntaps);
+ *   double scale = 0;
+ *   for (int i = 0; i < ntaps; i++) {
+ *       double x1, x2, x3, num, den;
+ *       double xindx = i - ntaps / 2;
+ *       x1 = GR_M_PI * xindx / spb;
+ *       x2 = 4 * alpha * xindx / spb;
+ *       x3 = x2 * x2 - 1;
+ *       if (fabs(x3) >= 0.000001) { // Avoid Rounding errors...
+ *           if (i != ntaps / 2)
+ *               num = cos((1 + alpha) * x1) + sin((1 - alpha) * x1) / (4 * alpha * xindx / spb);
+ *           else
+ *               num = cos((1 + alpha) * x1) + (1 - alpha) * GR_M_PI / (4 * alpha);
+ *           den = x3 * GR_M_PI;
+ *       } else {
+ *           if (alpha == 1) {
+ *               taps[i] = -1;
+ *               scale += taps[i];
+ *               continue;
+ *           }
+ *           x3 = (1 - alpha) * x1;
+ *           x2 = (1 + alpha) * x1;
+ *           num = (sin(x2) * (1 + alpha) * GR_M_PI -
+ *                  cos(x3) * ((1 - alpha) * GR_M_PI * spb) / (4 * alpha * xindx) +
+ *                  sin(x3) * spb * spb / (4 * alpha * xindx * xindx));
+ *           den = -32 * GR_M_PI * alpha * alpha * xindx / spb;
+ *       }
+ *       taps[i] = 4 * alpha * num / den;
+ *       scale += taps[i];
+ *   }
+ *   for (int i = 0; i < ntaps; i++)
+ *       taps[i] = taps[i] * gain / scale;
+ *
+ * The argument checks and the capacity are this port's: GNU Radio leaves them to the caller.
+ */
+int
+dsd_firdes_root_raised_cosine(double gain, double sampling_freq, double symbol_rate, double alpha, int ntaps,
+                              float* taps_out, int max_taps) {
+    if (!rrc_args_valid(gain, sampling_freq, symbol_rate, alpha, ntaps, taps_out)) {
+        return -1;
+    }
+    ntaps |= 1;
+    if (ntaps > max_taps) {
+        return -1;
+    }
+
+    rrc_fill(gain, sampling_freq / symbol_rate, alpha, ntaps, taps_out);
+    return ntaps;
+}
+
+/* TETRA's matched filter: the root-raised-cosine of ETSI EN 300 392-2's modulation filter (roll-off 0.35), 8 symbols
+ * each side. */
+static const double kTetraRrcAlpha = 0.35;
+static const int kTetraRrcHalfSpanSymbols = 8;
+
+int
+dsd_tetra_rrc_design(int sps, float* taps_out, int max_taps) {
+    if (sps < 2 || sps > 8 || !taps_out) {
+        return -1;
+    }
+    const int ntaps = 2 * kTetraRrcHalfSpanSymbols * sps + 1;
+    if (ntaps > max_taps) {
+        return -1;
+    }
+    /* dsd_firdes_root_raised_cosine(1.0, sps, 1.0, alpha, ntaps, ...): an odd count, at sps samples per symbol. */
+    rrc_fill(1.0, (double)sps, kTetraRrcAlpha, ntaps, taps_out);
+    /* Scale to an energy of 1/sps. */
+    double energy = 0.0;
+    for (int i = 0; i < ntaps; i++) {
+        energy += (double)taps_out[i] * (double)taps_out[i];
+    }
+    if (!(energy > 0.0)) {
+        return -1;
+    }
+    const double k = sqrt((1.0 / (double)sps) / energy);
+    for (int i = 0; i < ntaps; i++) {
+        taps_out[i] = (float)((double)taps_out[i] * k);
+    }
     return ntaps;
 }

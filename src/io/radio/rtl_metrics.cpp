@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
@@ -168,6 +169,7 @@ cqpsk_loop_lock_heuristic(float total_freq_rad, int out_rate_hz) {
 
     float ted_lock = ted->lock_accum / (float)ted->lock_count;
     float costas_err = (float)demod.costas_err_avg_q14 / 16384.0f;
+    /* Saturation is the FLL's own: its residual against its clamp. The TETRA mixer ahead of it is not clamped by it. */
     float fll_abs = fabsf(demod.fll_band_edge_state.freq);
     float fll_limit = fabsf(demod.fll_band_edge_state.max_freq);
     if (!dsd::io::radio::rtl_is_finite(fll_limit) || fll_limit <= 0.0f) {
@@ -402,7 +404,8 @@ rtl_metrics_compute_nco_metrics(int out_rate_hz) {
     if (!demod.cqpsk_enable) {
         return nco;
     }
-    float band_edge_freq = demod.fll_band_edge_state.freq;
+    /* The combined estimate: the TETRA mixer's frequency plus the FLL's residual. */
+    float band_edge_freq = dsd_fll_band_edge_total_freq(&demod.fll_band_edge_state);
     float costas_freq = demod.costas_state.freq;
     int sps = demod.ted_sps > 0 ? demod.ted_sps : 5;
     float costas_freq_sample_rate = costas_freq / static_cast<float>(sps);
@@ -455,7 +458,8 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     /* NCO CFO from CQPSK band-edge/Costas recovery (native float freq in rad/sample, scaled by Fs/(2π))
      *
      * For CQPSK (OP25-compatible flow), the total CFO is the sum of:
-     *   1. FLL band-edge frequency (coarse, at sample rate) - fll_band_edge_state.freq
+     *   1. FLL band-edge frequency (coarse, at sample rate) - dsd_fll_band_edge_total_freq(), the FLL's freq plus
+     *      the TETRA mixer's pre_freq ahead of it
      *   2. Costas frequency (fine, at symbol rate) - costas_state.freq
      *
      * The Costas operates at symbol rate (Fs/sps), so its frequency must be scaled
@@ -464,8 +468,9 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     rtl_metrics_nco_metrics nco = rtl_metrics_compute_nco_metrics(out_rate_hz);
     rtl_metrics_store_nco_metrics(nco, out_rate_hz);
 
-    /* Store FLL band-edge freq for UI access. */
-    g_fll_band_edge_freq_rad.store(static_cast<double>(demod.fll_band_edge_state.freq), std::memory_order_relaxed);
+    /* Store the combined band-edge estimate (TETRA mixer included) for UI access. */
+    g_fll_band_edge_freq_rad.store(static_cast<double>(dsd_fll_band_edge_total_freq(&demod.fll_band_edge_state)),
+                                   std::memory_order_relaxed);
 
     /* CQPSK lock is loop-health based, not an SNR proxy: require the carrier NCO
      * to be stable, the Gardner TED eye metric to be positive, and Costas phase

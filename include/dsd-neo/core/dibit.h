@@ -48,6 +48,19 @@ void write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, fl
 uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 void soft_symbol_frame_begin(dsd_state* state);
 uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);
+/**
+ * \brief Viterbi cost (0 = strong bit 0, 65535 = strong bit 1) of one bit of a CQPSK symbol in the demodulator's
+ * arg(z) * 4/pi domain, against the fixed levels +-1 and +-3 with the quadrant boundaries 0 and +-2. Bit 0 is the
+ * sign (0 for the positive pair), bit 1 inner (0) against outer (1). TETRA decodes with it.
+ */
+uint16_t cqpsk_soft_symbol_to_viterbi_cost(float symbol, int bit_position);
+/**
+ * \brief Whether TETRA's symbols are read at the fixed pi/4-DQPSK levels: sliced at the quadrant boundaries by the
+ * frame sync hunt and digitize(), and costed by cqpsk_soft_symbol_to_viterbi_cost() in the TETRA decoder. Only on
+ * QPSK (rf_mod 1), where they are the CQPSK demodulator's arg(z) * 4/pi. Under another modulation (-fT -mc, not a
+ * supported TETRA receiver) all three read them on the adaptive levels.
+ */
+int dsd_tetra_quadrant_levels(const dsd_state* state);
 uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
 /**
  * \brief Confidence (0 = none, 255 = full) in a two-level symbol's hard bit, for soft-decision vocoder FEC.

@@ -575,19 +575,59 @@ Notes
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
 - dPMR: `-fm`
 - TETRA: `-fT`. Like every `-f` selector it is replaced by a later one (`-fT -fp` decodes ProVoice alone). TETRA's
-  pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, so
-  it decodes only at a DSP rate that is a multiple of 18 kHz. `-fT` therefore sets the DSP bandwidth to 72 kHz
-  (4 samples per symbol), as `-fe` sets 24 kHz; a bandwidth field in the `-i` spec still names another, and a Qt
-  TETRA system without its own bandwidth uses 72 kHz too. A stream that opens
-  TETRA at another rate warns once, with the fix for its input (`TETRA needs a DSP rate that is a multiple of 18 kHz,
-  not 48 kHz: set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`): a SoapySDR device runs 72 kHz only
-  where it delivers 1.152 MS/s, and no Airspy sample rate halves to a multiple of 18 kHz. A switch to TETRA at run time
-  keeps the mode and says the same in its toast (`Decoding TETRA: DSP rate 48 kHz is no multiple of 18 kHz; set the DSP
-  bandwidth to 72 kHz`). An I/Q replay is resampled to a TETRA rate instead, at start and on a switch to TETRA (which
-  reopens it where it stopped, `Decoding TETRA: replay resampled to 72 kHz`); a sidecar capture whose recorded chain
-  already runs TETRA at a multiple of 18 kHz keeps it. Only a capture no plan can resample (below 8 kHz) is refused
-  (`...: this replay's capture cannot be resampled to a TETRA rate`). Leaving TETRA returns the replay to the chain its
-  DSP bandwidth plans.
+  pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, 2 to 8, so
+  it decodes only at a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz. `-fT` therefore sets the DSP
+  bandwidth to 72 kHz (4 samples per symbol), as `-fe` sets 24 kHz; a bandwidth field in the `-i` spec still names
+  another, and a Qt TETRA system without its own bandwidth uses 72 kHz too. A stream that opens
+  TETRA at another rate warns once, with the fix for its input (`TETRA needs a DSP rate that is a multiple of 18 kHz
+  from 36 to 144 kHz, not 48 kHz: set the DSP bandwidth to 72 kHz (-i rtl:dev:freq:gain:ppm:72)`): a SoapySDR device
+  runs 72 kHz only where it delivers 1.152 MS/s, and no Airspy sample rate halves to a multiple of 18 kHz. A switch to
+  TETRA at run time keeps the mode and says the same in its toast (`Decoding TETRA: DSP rate 48 kHz is no multiple of
+  18 kHz; set the DSP bandwidth to 72 kHz`, or `DSP rate 162 kHz is outside 36 to 144 kHz; ...` for a multiple of
+  18 kHz out of that range). An I/Q replay is resampled to a TETRA rate instead, at start and on a switch to TETRA
+  (which reopens it where it stopped, `Decoding TETRA: replay resampled to 72 kHz`); a sidecar capture whose recorded
+  chain already runs TETRA at a multiple of 18 kHz from 36 to 144 kHz keeps it. Only a capture no plan can resample
+  (below 8 kHz) is refused (`...: this replay's capture cannot be resampled to a TETRA rate`). Leaving TETRA returns
+  the replay to the chain its DSP bandwidth plans.
+  A TETRA downlink has a receive chain of its own. It follows the carrier with a tracking mixer that moves the signal
+  back towards the centre by up to 8 kHz either way, filters the 25 kHz TETRA channel (flat to ±11.25 kHz, about
+  28 dB down by ±13.75 kHz and 75 dB from ±15 kHz, shown as a 22.5 kHz channel width), levels the signal, and applies
+  the receive half of TETRA's root-raised-cosine pulse (roll-off 0.35, the matched filter for what TETRA transmitters
+  send). Then it corrects the carrier offset that is left, recovers the symbol timing, and slices the pi/4-DQPSK
+  symbols at their quadrant boundaries. The carrier loop pulls in wide and narrows once its estimate holds, so the
+  frequency error the receiver reports holds steady: on a clean real-air capture it varied by 12 Hz (standard
+  deviation) where a loop kept wide varied by 62 Hz. It cannot narrow sooner than about 0.13 s after the stream starts
+  or the carrier moves (25 steps of 96 symbols: one to start, 16 to fill its error window and 8 holding steady), and
+  on a noisy test signal (about 10 dB SNR) it narrowed after 0.23 s. The chain runs only at the DSP rates above, with
+  the channel filter on. When
+  TETRA is selected but the chain cannot run (a rate outside that range, a timing (TED) samples-per-symbol override
+  that does not match the DSP rate, or `DSD_NEO_CHANNEL_LPF=0`), the stream falls back to the generic CQPSK path,
+  which has neither the TETRA channel filter nor the matched filter, and logs the cause once per stream, for example
+  `TETRA receive chain inactive: DSP rate 162000 Hz is not a multiple of 18 kHz from 36 to 144 kHz; TETRA decodes on
+  the generic CQPSK path.`
+  Tuning tolerance: tune to the carrier's own frequency. These cases were measured on test signals at 72 kHz, the rate
+  `-fT` sets; other rates were not measured.
+  - On a clear channel, decoding held with the radio up to about ±10 kHz off the carrier. 12 kHz off, it held with
+    the radio above the carrier (228 of 232 identities) and decoded about a fifth with it below (49); 14 kHz below,
+    it was lost.
+  - Next to a much stronger carrier (another TETRA network 25 kHz away, 10 to 40 dB stronger), keep any tuning error
+    towards the stronger carrier within about 2 kHz: from 3 kHz towards it the decode was lost. Tuned up to 10 kHz the
+    other way, away from it, decoding held.
+  - In none of those cases did the decoder decode the stronger neighbour's network instead. Tuned 10 kHz towards a
+    carrier 20 dB stronger, it decoded neither carrier and never named the other network. That is how it behaved in
+    those cases, not a guarantee.
+
+  The frequency error the receiver reports for a TETRA stream (the terminal, Qt, the API and `--auto-ppm` read it) is
+  only accurate within about ±8 kHz, the tracking mixer's reach. Past it the rest of the offset is estimated behind
+  the matched filter, which cuts into the band edges the estimate reads, so the reported error falls short while
+  decoding still holds: a real-air call 10 kHz off read about 0.7 kHz short one way and 1.3 kHz short the other.
+  Within that range the estimate also carries a bias of a few hundred hertz that depends on what the carrier sends
+  (on that call, about 190 Hz above the carrier's own offset).
+
+  A receiver's own frequency error adds to how far off you tune, so correct it: give the receiver's error in parts per
+  million in the `ppm` field of the `-i` spec (`-i rtl:dev:freq:gain:ppm`, or `rtl_ppm` in a config), or let
+  `--auto-ppm` track an RTL-SDR's error (see Tools & Extras). TETRA base stations hold their frequency to within
+  0.2 ppm, so most of the offset a downlink shows is the receiver's.
   TETRA reads its symbols from an I/Q radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`) or from a symbol
   capture of them (`-c` writes one; `-i capture.bin`, `.raw` or `.sym` replays it; a float symbol file, `.raw` or
   `.sym`, holds them as the CQPSK demodulator recovered them, outer levels ±3 and inner ±1, and TETRA reads them as
@@ -617,13 +657,19 @@ Notes
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
   `--tetra-uplink` decodes a trunked mode uplink carrier, the radios' transmissions, instead of a downlink: its control
-  uplink bursts (random access) and its normal uplink bursts. An uplink carries no network identity, so give the one
-  its cell scrambles with as `--tetra-net mcc,mnc,colour` (MCC 0-1023, MNC 0-16383, colour code 0-63 in decimal or
-  `0x` hexadecimal; the downlink's Network row shows all three). `--tetra-net` also lets a downlink session descramble
-  before its first BSCH, whose identity replaces it; it shows on no row until a block descrambled with it passed its
-  CRC. On an uplink the TETRA row shows the uplink's air encryption, from the encrypted flag of its radios' MAC headers,
-  and the algorithm a radio's clear registration proposes (`radios propose TEA1`, see "Which TEA a network uses" under
-  Keys & Privacy).
+  uplink bursts (random access) and its normal uplink bursts. The uplink does not run the downlink's receive chain,
+  which lost bursts the generic CQPSK path decodes: it runs that path with the TETRA channel filter (at the same DSP
+  rates, with the channel filter on; otherwise it logs `TETRA uplink channel filter inactive: ...` once and decodes
+  without it), and takes each burst's symbol timing and carrier phase from the burst's training sequence, since every
+  burst comes from another radio, short and after silence or noise, too soon for the loops to pull in. That timing reads
+  128 symbols ahead, so a burst reaches the decoder about 7 ms after it ends (and still before a closing squelch's
+  silence, the end of a replay, an `--iq-loop` rewind, or a replayed retune or stream gap; a live retune or stall
+  recovery drops those 7 ms). An uplink carries no network identity, so give the one its cell scrambles with as
+  `--tetra-net mcc,mnc,colour` (MCC 0-1023, MNC 0-16383, colour code 0-63 in decimal or `0x` hexadecimal; the downlink's
+  Network row shows all three). `--tetra-net` also lets a downlink session descramble before its first BSCH, whose
+  identity replaces it; it shows on no row until a block descrambled with it passed its CRC. On an uplink the TETRA row
+  shows the uplink's air encryption, from the encrypted flag of its radios' MAC headers, and the algorithm a radio's
+  clear registration proposes (`radios propose TEA1`, see "Which TEA a network uses" under Keys & Privacy).
 
 Notes
 
@@ -2430,7 +2476,9 @@ from the active SPS hunt profile rather than from the front end's published symb
 Gardner/Costas/FLL-band-edge symbol chain.
 
 - `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override, 0.01 to 0.5 (the menu's range; a value
-  outside it is taken as the nearest end, and one that is not a number is ignored)
+  outside it is taken as the nearest end, and one that is not a number is ignored). Without it the gain is OP25's
+  0.025, and the TETRA receive chain's own 0.07 while that chain runs (`-fT`). The terminal's CQPSK timing gain menu
+  row and the DSP panel's `g:` show the gain set, or 0.025 when none is, also while the TETRA chain runs 0.07
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 

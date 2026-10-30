@@ -152,6 +152,16 @@ processX2TDMAdata(dsd_opts* opts, dsd_state* state) {
 
     cc[3] = 0;
     bursttype[4] = 0;
+    /* The burst decodes from the 90 dibits read back: its CACH first. When some of them are not the stream's
+       (dsd_state_sync_readback_invalid(): noCarrier() cleared the buffer fewer than 90 dibits before), nothing of the
+       burst decodes; the rest of it is read past as a decoded burst's is. */
+    if (dsd_state_sync_readback_invalid(state) != 0U) {
+        skipDibit(opts, state, 120);
+        if (opts->errorbars == 1) {
+            DSD_FPRINTF(stderr, "\n");
+        }
+        return;
+    }
     dibit_p = state->dibit_buf_p - 90;
 
     // CACH

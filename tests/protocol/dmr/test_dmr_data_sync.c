@@ -606,6 +606,46 @@ test_cach_failure_resets_without_dispatch(void) {
     assert(g_skip_calls == 0);
 }
 
+/* The frame sync accepted the burst with the 60 oldest of its 90 dibits read back not the stream's (a cold start or an
+   acquisition reset: dsd_state_sync_readback_invalid()). They hold its CACH and the first halves of its payload and
+   slot type, which the clear's zeros decode as codewords: nothing of the burst decodes or publishes, neither the slot
+   nor the colour code nor the payload, and its live half is read past as a decoded burst's is. */
+static void
+test_burst_not_read_back_whole_decodes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    state.dmr_stereo = 0;
+    state.currentslot = 0;
+    state.color_code = 9;
+    dsd_state_note_sync_readback(&state, 60);
+
+    dmr_data_sync(&opts, &state);
+
+    assert(g_handler_calls == 0);
+    assert(g_sm_calls == 0);
+    assert(g_cach_calls == 0);
+    assert(g_reset_calls == 0);
+    assert(g_confidence_calls == 0);
+    assert(state.currentslot == 0);
+    assert(state.color_code == 9);
+    assert(state.color_code_ok == 0);
+    assert(g_live_dibit_index == 0);
+    assert(g_skip_calls == 54 + 66);
+
+    /* A symbol read since the accept: the next burst, read whole, decodes. */
+    reset_fixture();
+    state.symbol_clock++;
+    state.dmr_stereo = 1;
+    dmr_data_sync(&opts, &state);
+    assert(g_handler_calls == 1);
+    assert(state.color_code == 5);
+}
+
 static void
 test_golay_failure_resets_and_skips_live_tail(void) {
     static dsd_opts opts;
@@ -915,6 +955,7 @@ main(void) {
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();
+    test_burst_not_read_back_whole_decodes_nothing();
     test_live_second_half_reliability_and_debug_output();
     test_live_half_split_by_a_carrier_boundary_is_dropped();
     test_live_half_cut_by_an_input_interruption_is_dropped();

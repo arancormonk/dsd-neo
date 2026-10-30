@@ -147,6 +147,9 @@ dsd_decode_mode_profile dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode);
  * The one copy of this mapping. A modulation the operator picks and one the SPS
  * hunt lands on have to ask the front end for the same filter, or the two
  * disagree about what the front end is doing every time the hunt re-runs.
+ * TETRA's 18000 sym/s profile gets its own filter on the CQPSK family
+ * (@p rf_mod 1), which runs its receive chain, and WIDE on the FSK
+ * discriminator.
  *
  * @param opts Decoder options, consulted for the wide-4800 profile override.
  * @param symbol_rate_hz Symbol rate in Hz.

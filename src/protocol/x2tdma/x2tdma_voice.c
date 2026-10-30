@@ -53,6 +53,9 @@ typedef struct {
     int msMode;
     /* The carrier count (state->carrier_seq) the superframe began on (issue #575). */
     uint32_t carrier_seq;
+    /* How many of the oldest of the 144 dibits the first slot is read back from are not the stream's
+       (dsd_state_sync_readback_invalid()). */
+    unsigned int readback_invalid;
     /* X2-TDMA sync words read in their places after the one that started the superframe: the other timeslot's bursts,
        and this timeslot's later ones. Nothing else in a superframe can fail a check, so they are what tells it from
        noise that passed one sync word (dsd_state::tdma_carrier). */
@@ -125,12 +128,12 @@ x2tdma_update_currentslot_from_cach(dsd_state* state, int dibit) {
 }
 
 static void
-x2tdma_read_cach_from_slot(dsd_opts* opts, dsd_state* state, int j, int** dibit_p, char cachdata[13]) {
+x2tdma_read_cach_from_slot(dsd_opts* opts, dsd_state* state, int j, int** dibit_p, char cachdata[13], int blind) {
     int i;
 
     for (i = 0; i < 12; i++) {
         cachdata[i] = x2tdma_read_slot_dibit(opts, state, j, dibit_p);
-        if (i == 2) {
+        if (i == 2 && !blind) {
             x2tdma_update_currentslot_from_cach(state, cachdata[i]);
         }
     }
@@ -512,11 +515,40 @@ x2tdma_note_corroborating_sync(x2tdma_voice_ctx* ctx, int j) {
     }
 }
 
+/* The first slot read back when the read-back's CACH is not the stream's (dsd_state_sync_readback_invalid(), of the 144:
+   the other slot's half, then the CACH): the CACH names the slot, so nothing of this one decodes, neither its voice
+   nor the call it would observe. Its sync is read and its live half read past. */
+static int
+x2tdma_process_blind_slot(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* ctx, int** dibit_p) {
+    x2tdma_fill_ambe_from_slot(opts, state, 0, dibit_p, ctx->ambe_fr, 0, 36);
+    x2tdma_fill_ambe_from_slot(opts, state, 0, dibit_p, ctx->ambe_fr2, 0, 18);
+    x2tdma_read_sync_from_slot(opts, state, 0, dibit_p, ctx->sync, ctx->syncdata);
+    x2tdma_update_ms_mode(ctx);
+    if (dsd_x2tdma_sync_is_voice(ctx->sync)) {
+        /* The frames before the first sync after no carrier are the ones the next burst need not skip: these were. */
+        state->firstframe = 0;
+    }
+    x2tdma_fill_ambe_from_stream(opts, state, ctx->ambe_fr2, 18, 18);
+    x2tdma_fill_ambe_from_stream(opts, state, ctx->ambe_fr3, 0, 36);
+    return !x2tdma_carrier_left(ctx, state);
+}
+
 /* One slot of the superframe; 0 once the carrier boundary moved the carrier count since the superframe began. */
 static int
 x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* ctx, int j, int** dibit_p) {
+    const int blind = j == 0 && ctx->readback_invalid > 54U;
     x2tdma_skip_prev_half(opts, state, j, dibit_p);
-    x2tdma_read_cach_from_slot(opts, state, j, dibit_p, ctx->cachdata);
+    x2tdma_read_cach_from_slot(opts, state, j, dibit_p, ctx->cachdata, blind);
+    if (blind && !x2tdma_process_blind_slot(opts, state, ctx, dibit_p)) {
+        return 0;
+    }
+    if (blind) {
+        x2tdma_read_cach_from_stream(opts, state, ctx->cachdata);
+        skipDibit(opts, state, 54);
+        x2tdma_read_sync_from_stream(opts, state, ctx->sync, ctx->syncdata);
+        x2tdma_note_corroborating_sync(ctx, -1);
+        return 1;
+    }
 
     x2tdma_fill_ambe_from_slot(opts, state, j, dibit_p, ctx->ambe_fr, 0, 36);
     x2tdma_fill_ambe_from_slot(opts, state, j, dibit_p, ctx->ambe_fr2, 0, 18);
@@ -623,6 +655,8 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
         state->x2tdma_superframe_valid != 0U && state->x2tdma_superframe_carrier_seq == ctx.carrier_seq
         && (uint32_t)(state->symbolcnt - state->x2tdma_superframe_end_symbol) == (uint32_t)X2TDMA_SUPERFRAME_CHAIN_GAP;
 
+    /* Read before any symbol is: how much of the 144 read back is not the stream's. */
+    ctx.readback_invalid = dsd_state_sync_readback_invalid(state);
     dibit_p = state->dibit_buf_p - 144;
     for (j = 0; j < 6; j++) {
         if (!x2tdma_process_slot_iteration(opts, state, &ctx, j, &dibit_p)) {

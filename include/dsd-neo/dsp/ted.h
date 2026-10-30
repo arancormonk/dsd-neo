@@ -42,6 +42,9 @@ typedef struct {
     int dl_index;                  /* current write position */
     int twice_sps;                 /* delay line wrap point: max(2*ceil(omega_max), ceil(omega_max/2)+9) */
     int sps;                       /* last initialized samples-per-symbol */
+    /* 1 while demod_state::tetra_ul_timing feeds this delay line; every reset of the TED (and a block without it)
+       sets 0, so the look-ahead starts over with the TED (dsd_demod_tetra_uplink_timing_runs()). */
+    int ul_lookahead_live;
 } ted_state_t;
 
 /**

@@ -2746,7 +2746,9 @@ replay_mark_input_drained(struct rtl_device* s) {
         && !s->replay_eof.replay_demod_drained->load(std::memory_order_acquire)) {
         uint64_t consumed_gen = s->replay_eof.replay_last_consume_gen->load(std::memory_order_acquire);
         uint64_t eof_gen = s->replay_eof.replay_last_submit_gen_at_eof->load(std::memory_order_acquire);
-        if (consumed_gen >= eof_gen) {
+        const int flush_owed = s->replay_eof.replay_demod_flush_owed
+                               && s->replay_eof.replay_demod_flush_owed->load(std::memory_order_acquire);
+        if (consumed_gen >= eof_gen && !flush_owed) {
             s->replay_eof.replay_demod_drained->store(1, std::memory_order_release);
             demod_drained_now = 1;
         }
@@ -2787,6 +2789,35 @@ replay_handle_eof_sequence(struct rtl_device* s) {
     replay_wait_for_demod_drain(s);
 }
 
+/* The input stopped at a boundary that starts the demod over (@p on 1: an --iq-loop pass end, a RETUNE or a RESET) or
+   the boundary passed (0): rtl_replay_eof_state::replay_input_boundary. Setting it wakes the demod, which may be
+   waiting for input that will not come before the boundary, to push out what it holds. */
+static void
+replay_set_input_boundary(struct rtl_device* s, int on) {
+    if (!s->replay_has_eof_state || !s->replay_eof.replay_input_boundary) {
+        return;
+    }
+    s->replay_eof.replay_input_boundary->store(on, std::memory_order_release);
+    if (on) {
+        replay_device_wake_all(s);
+    }
+}
+
+/* The idle wait before an event (replay_wait_for_event_boundary_drain()), with the input marked stopped at a boundary
+   (replay_set_input_boundary()) for the kinds that start the demod over. 1 once idle, 0 when the replay stops. */
+static int
+replay_wait_for_event_idle(struct rtl_device* s, dsd_iq_event_kind kind) {
+    const int starts_over = (kind == DSD_IQ_EVENT_RETUNE || kind == DSD_IQ_EVENT_RESET) ? 1 : 0;
+    if (starts_over) {
+        replay_set_input_boundary(s, 1);
+    }
+    const int idle = replay_wait_for_event_boundary_drain(s, (int)kind);
+    if (starts_over) {
+        replay_set_input_boundary(s, 0);
+    }
+    return idle;
+}
+
 static int
 replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uint64_t data_offset, int* phase,
                                int* have_carry, uint8_t* carry_byte, uint64_t* complex_written) {
@@ -2797,8 +2828,8 @@ replay_dispatch_pending_events(struct rtl_device* s, uint32_t* event_cursor, uin
            && s->replay_cfg.events[*event_cursor].byte_offset <= data_offset) {
         const dsd_iq_event* event = &s->replay_cfg.events[*event_cursor];
         /* Every event waits for an idle pipeline, even one at the offset of the event before it (the wait then returns
-           at once). */
-        if (!replay_wait_for_event_boundary_drain(s, (int)event->kind)) {
+           at once). A RETUNE or a RESET starts the demod over, so an uplink look-ahead is pushed out before it. */
+        if (!replay_wait_for_event_idle(s, event->kind)) {
             return 0;
         }
         replay_dispatch_event(s, event, phase, have_carry, carry_byte, complex_written);
@@ -2822,6 +2853,18 @@ replay_next_read_limit(const struct rtl_device* s, uint64_t data_offset, uint32_
     return read_limit;
 }
 
+/* A replay that ends at the capture's end, after a pass that read @p pass_samples capture samples: leave the
+ * end-of-capture notice for the stream's stop to log once the decoder has read all the output
+ * (rtl_replay_eof_state::replay_end_notice). Stored before the EOF sequence marks EOF, which the decoder sees before it
+ * can find the output drained. None on a stop: the decoder of a stopped replay never reads to the end. */
+static void
+replay_note_capture_end(struct rtl_device* s, uint64_t pass_samples) {
+    if (replay_forced_stop_requested(s) || !s->replay_has_eof_state || !s->replay_eof.replay_end_notice) {
+        return;
+    }
+    s->replay_eof.replay_end_notice->store(pass_samples + 1U, std::memory_order_release);
+}
+
 /* The capture's end on this pass: the replay's end, or, under --iq-loop, a rewind (CONTINUE, the next pass begun).
  * The reader's io state is checked whole before this (replay_thread_process_inputs_valid()). */
 static replay_step
@@ -2835,13 +2878,24 @@ replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io) {
     if (!replay_wait_for_timeline_position(s, *io->complex_written, *io->start_ns, io->realtime)) {
         return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
+    /* The one place a pass reaches the capture's end cleanly: the read found the end with no error pending (a failed
+       read, deferred or not, returns REPLAY_STEP_FAILED before this), and every chunk read on this pass was handed to
+       the demodulator (a chunk that could not be returns before the next read). The end-of-capture notice is decided
+       here, once a pass, and logged once the decoder has read everything the pass decoded to, so it never lands
+       among the decoder's lines: before an --iq-loop rewind, at its idle boundary, or by the stream's stop after the
+       decoder read the replay to its end (replay_note_capture_end()). A stop before then logs none, and neither does
+       an --iq-loop pass that handed the demod no chunk. */
+    const size_t align = dsd_iq_sample_format_alignment_bytes(s->replay_cfg.format);
+    const uint64_t pass_samples = align > 0U ? *io->data_offset / (uint64_t)align : 0U;
     if (!s->replay_cfg.loop) {
+        replay_note_capture_end(s, pass_samples);
         return REPLAY_STEP_EOF_DONE;
     }
     if (*io->chunk_sequence == *io->pass_start_sequence) {
         /* A pass that handed the demod no chunk hands it none the next time either: a rewind would only spin through
            the boundary, the reconfigure gate and a full finalize, pass after pass, with nothing reaching the decoder.
-           The replay ends here instead, as one without --iq-loop ends at the capture's end. */
+           The replay ends here instead, as one without --iq-loop ends at the capture's end, but with no
+           end-of-capture notice: nothing of this pass was decoded, and the warning says why it ended. */
         LOG_WARN("IQ replay: a pass over the capture delivered no samples to the demodulator; --iq-loop does not "
                  "rewind it, and the replay ends.\n");
         return REPLAY_STEP_EOF_DONE;
@@ -2850,10 +2904,19 @@ replay_handle_empty_read(struct rtl_device* s, replay_thread_io_state* io) {
      * the initial capture state while the demodulator still owns samples from
      * the completed pass, or the decoder has not read their output; the
      * reconfigure callback would otherwise purge that work and a short
-     * fast-mode capture could loop without ever publishing output. */
-    if (!replay_wait_for_event_boundary_drain(s, 0)) {
+     * fast-mode capture could loop without ever publishing output. The pass's
+     * input ends here as a capture's does at EOF, so an uplink look-ahead is
+     * pushed out before the boundary (rtl_replay_eof_state::replay_input_boundary). */
+    replay_set_input_boundary(s, 1);
+    const int boundary = replay_wait_for_event_boundary_drain(s, 0);
+    replay_set_input_boundary(s, 0);
+    if (!boundary) {
         return replay_step_stopped_or_failed(s, &io->failure_rc, kReplayPipelineFailureRc);
     }
+    /* Idle: the decoder has read the pass's last output and waits inside a read for more, so nothing it logs lands
+       among this pass's lines after this one. (A line it began before that read still ends after it, as around the
+       rewound line that follows.) */
+    LOG_INFO("IQ replay: end of capture after %llu samples\n", (unsigned long long)pass_samples);
     int rewind_rc = dsd_iq_replay_rewind(s->replay_src);
     if (rewind_rc != DSD_IQ_OK) {
         io->failure_rc = rewind_rc;

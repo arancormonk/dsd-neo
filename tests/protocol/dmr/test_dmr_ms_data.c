@@ -608,6 +608,74 @@ test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     assert(state.directmode == 0);
 }
 
+/* The frame sync accepted the burst with the oldest of its 90 dibits read back not the stream's (a cold start or an
+   acquisition reset: dsd_state_sync_readback_invalid()). 60 of them reach into the second AMBE frame's buffered part:
+   the first two frames are not decoded, nor the burst's late-entry fragments, its debug dump or its DSP output line,
+   which carry them; the third, read live, decodes, and the voice cycle goes on as before. 12 reach only the CACH, which
+   the bootstrap takes nothing from: every frame decodes, the late-entry fragments too. */
+static void
+test_ms_bootstrap_decodes_no_frame_it_did_not_read_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_voice_stream();
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 2;
+    opts.use_dsp_output = 1;
+    opts.dmr_debug_burst = 1;
+    state.dmr_color_code = 5;
+    dsd_state_note_sync_readback(&state, 60);
+
+    dmrMSBootstrap(&opts, &state);
+
+    assert(g_voice_sync_calls == 6);
+    assert(g_process_mbe_calls == 16);
+    assert(g_play_ss3_calls == 6);
+    assert(g_late_entry_calls == 5);
+    assert(g_debug_format_calls == 0);
+    assert(g_fopen_private_calls == 5);
+    assert(g_stream_index == 1704U);
+
+    reset_fixture();
+    prepare_state(&state, payload);
+    load_voice_stream();
+    state.dmr_color_code = 5;
+    dsd_state_note_sync_readback(&state, 12);
+
+    dmrMSBootstrap(&opts, &state);
+
+    assert(g_process_mbe_calls == 18);
+    assert(g_late_entry_calls == 6);
+    assert(g_debug_format_calls == 0);
+    assert(g_fopen_private_calls == 5);
+    assert(g_stream_index == 1704U);
+}
+
+/* A data burst accepted with any of its 90 dibits read back not the stream's: its CACH and the first halves of its
+   payload and slot type are among them, so nothing of it decodes; it is read past as a decoded burst is. */
+static void
+test_ms_data_not_read_back_whole_decodes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_live_half();
+    dsd_state_note_sync_readback(&state, 1);
+
+    dmrMSData(&opts, &state);
+
+    assert(g_data_sync_calls == 0);
+    assert(g_stream_index == 264U);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_ms_mode == 0);
+    assert(state.directmode == 0);
+}
+
 static void
 test_ms_bootstrap_plays_short_on_one_channel(void) {
     static dsd_opts opts;
@@ -872,6 +940,8 @@ main(void) {
     test_interrupted_cach_proves_no_slot();
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
     test_ms_bootstrap_plays_short_on_one_channel();
+    test_ms_bootstrap_decodes_no_frame_it_did_not_read_back();
+    test_ms_data_not_read_back_whole_decodes_nothing();
     test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();
     test_ms_embedded_colour_change_resets_ras();
     test_ms_voice_superframe_split_by_a_carrier_boundary_is_dropped();
