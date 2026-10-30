@@ -2823,7 +2823,7 @@ class Setup : public QObject {
      * `exists` is whether the item has an accessible interface. `inTree` is whether it can be reached from the top:
      * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
      * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
-     * and `value` are the interface's texts; `invisible` is its state flag.
+     * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
      */
     Q_INVOKABLE QVariantMap
     accessibleNode(QObject* item) const {
@@ -2838,6 +2838,8 @@ class Setup : public QObject {
                 {QStringLiteral("description"), iface->text(QAccessible::Description)},
                 {QStringLiteral("value"), iface->text(QAccessible::Value)},
                 {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
+                {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
+                {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
                 {QStringLiteral("childCount"), iface->childCount()}};
     }
 

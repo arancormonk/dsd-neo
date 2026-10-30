@@ -1217,6 +1217,7 @@ Item {
                 checkable: true
                 checked: screen.scanHeld
                 visible: !screen.scanPaused
+                commandToggle: true
                 enabled: decoderHost.running
                 onClicked: commands.toggleScanHold()
             }
@@ -2516,6 +2517,7 @@ Item {
                 accessibleName: qsTr("Mute audio")
                 checkable: true
                 checked: screen.muted
+                commandToggle: true
                 enabled: decoderHost.running
                 onClicked: commands.toggleMute()
             }
@@ -2533,6 +2535,7 @@ Item {
                 accessibleName: screen.heroPrivate ? qsTr("Hold calls with radio %1").arg(Util.idText(screen.heroTgId)) : qsTr("Hold this talkgroup")
                 checkable: true
                 checked: screen.holding
+                commandToggle: true
                 // Callsigns and dial strings have no numeric talkgroup to hold.
                 enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
                 onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
