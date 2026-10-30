@@ -3313,7 +3313,9 @@ test_unlabelled_row_string_is_unchanged(void) {
 
 // A reacquired segment is the same transmission on the same channel, so the label survives both
 // the ring shift that an interleaved notice causes and the merge that folds the segment in -- even
-// though the scanner has already rolled on to the next channel by then.
+// though the scanner has already rolled on to the next channel by then. So do the tuner-owner
+// stamps frozen with it (issue #671): a scan member, not the operator's, though the operator has
+// taken the tuner by the time the segment merges.
 static int
 test_channel_label_survives_push_and_merge(void) {
     static dsd_opts opts;
@@ -3332,9 +3334,14 @@ test_channel_label_survives_push_and_merge(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_has_substr("first segment is labelled", event_history[0].Event_History_Items[1].event_string,
                             "[Fire Dispatch] TEST");
+    rc |= expect_int("first segment is a scan member", event_history[0].Event_History_Items[1].scan_member, 1);
+    rc |= expect_int("first segment is not the operator's", event_history[0].Event_History_Items[1].operator_tuned, 0);
 
     // A system notice shifts the whole ring: the committed voice row moves to index 2.
     assert(dsd_event_emit_system_notice(&opts, &state, 0U, "System notice;") == 0);
+    rc |= expect_int("shifted row stays a scan member", event_history[0].Event_History_Items[2].scan_member, 1);
+    rc |= expect_int("shifted row stays not the operator's", event_history[0].Event_History_Items[2].operator_tuned, 0);
+    state.operator_tuned = 1U; // the operator takes the tuner before the segment merges
 
     // The scanner rolls on while the transmission is still flapping.
     rc |= expect_int("next scan list name stores", dsd_state_trunk_lcn_name_set(&state, 1U, "PD Tac"), 0);
@@ -3354,6 +3361,9 @@ test_channel_label_survives_push_and_merge(void) {
     rc |= expect_str_eq("shifted row keeps its label", merged->channel_label, "Fire Dispatch");
     rc |= expect_has_substr("merged row re-renders the original label", merged->event_string, "[Fire Dispatch] TEST");
     rc |= expect_no_substr("merged row does not adopt the new channel", merged->event_string, "[PD Tac]");
+    rc |= expect_int("merged row stays a scan member", merged->scan_member, 1);
+    rc |= expect_int("merged row stays not the operator's", merged->operator_tuned, 0);
+    state.operator_tuned = 0U;
 
     dsd_state_trunk_lcn_name_free(&state);
     dsd_state_ext_free_all(&state);
