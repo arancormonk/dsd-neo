@@ -389,6 +389,13 @@ Item {
     // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
     // readings the rows below already show; a fault is said here, never by
     // opening the rows.
+    // What makes a moving reading worth hearing at once (issue #782; SpeechPacer):
+    // a call starting or ending on either slot, a new scan target or carrier,
+    // and a change of lock or sync. Between these, readings are re-read at
+    // most every 5 s.
+    readonly property string speechStep: [metrics.scanTargetId, metrics.centerFreqHz, metrics.carrierLock,
+        metrics.syncedHere, metrics.syncLabel, heroSlot, heroTgId, otherSlot, otherTgId].join("|")
+
     readonly property var detailsSummary: {
         var tokens = [];
         if (metrics.radioInput && metrics.snrValid)
@@ -477,9 +484,12 @@ Item {
                 // decimal place -- so a reader moving between the two surfaces reads
                 // the same line. Which budgets appear at all was decided in
                 // app-control; a zero here means "the view withheld it".
-                ReadableText {
+                LiveText {
                     width: parent.width
                     objectName: "scanTimingRow"
+                    // The countdowns tick; why the scan stays, and its state, are heard at once.
+                    step: [screen.speechStep, metrics.scanTimingVisible, metrics.scanStayPhrase, metrics.scanDwellState,
+                        metrics.scanVisitLive].join("|")
                     // Kept for the whole rotation, blank between stays (#718): the view
                     // publishes and withdraws it with each followed call, and a line
                     // coming and going would move everything below the header.
@@ -802,9 +812,10 @@ Item {
                         color: Theme.textSubdued
                     }
 
-                    ReadableText {
+                    LiveText {
                         id: heroCompactDuration
                         objectName: "heroCompactDuration"
+                        step: screen.speechStep
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         visible: screen.heroCompact && screen.heroSlot !== 0
@@ -940,8 +951,9 @@ Item {
                 active: screen.heroActive
             }
 
-            ReadableText {
+            LiveText {
                 objectName: "heroDuration"
+                step: screen.speechStep
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.rightMargin: Theme.cardPadding
@@ -1448,6 +1460,16 @@ Item {
                 subtitleTextFormat: Text.StyledText
                 subtitleColor: Theme.textSecondary
                 accessibleDescription: screen.detailsSummary.plain
+                // The summary's SNR moves every tick: read at the readings' pace (issue #782).
+                Accessible.description: detailsSpeech.spoken
+                SpeechPacer {
+                    id: detailsSpeech
+                    shown: !detailsRow.Accessible.ignored
+                    step: screen.speechStep
+                    read: function () {
+                        return detailsRow.accessibleDescription;
+                    }
+                }
                 verticalPadding: 16
                 expandable: true
                 expanded: screen.detailsExpanded
@@ -1563,7 +1585,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(signalStripGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(signalStripGroup)
+                Accessible.name: signalStripGroupSpeech.spoken
+                SpeechPacer {
+                    id: signalStripGroupSpeech
+                    group: signalStripGroup
+                    shown: !signalStripGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
                 width: parent.width
                 visible: metrics.radioInput
                 spacing: 10
@@ -1631,6 +1659,8 @@ Item {
 
                 Row {
                     spacing: 5
+                    // The dot shows the lock by colour only; the strip says it (issue #782).
+                    readonly property string spokenText: metrics.carrierLock ? qsTr("Carrier lock") : qsTr("No carrier lock")
 
                     Text {
                         text: qsTr("LOCK")
@@ -1691,7 +1721,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(decodeQualityRowGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(decodeQualityRowGroup)
+                Accessible.name: decodeQualityRowGroupSpeech.spoken
+                SpeechPacer {
+                    id: decodeQualityRowGroupSpeech
+                    group: decodeQualityRowGroup
+                    shown: !decodeQualityRowGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
                 width: parent.width
                 visible: metrics.qualityValid
                 spacing: 10
@@ -1748,7 +1784,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorTetraGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraGroup)
+                Accessible.name: monitorTetraGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorTetraGroupSpeech
+                    group: monitorTetraGroup
+                    shown: !monitorTetraGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -1797,7 +1839,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorTetraSecurityGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraSecurityGroup)
+                Accessible.name: monitorTetraSecurityGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorTetraSecurityGroupSpeech
+                    group: monitorTetraSecurityGroup
+                    shown: !monitorTetraSecurityGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -1831,7 +1879,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorTetraChannelsGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraChannelsGroup)
+                Accessible.name: monitorTetraChannelsGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorTetraChannelsGroupSpeech
+                    group: monitorTetraChannelsGroup
+                    shown: !monitorTetraChannelsGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -1907,7 +1961,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorTetraMmStatusGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraMmStatusGroup)
+                Accessible.name: monitorTetraMmStatusGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorTetraMmStatusGroupSpeech
+                    group: monitorTetraMmStatusGroup
+                    shown: !monitorTetraMmStatusGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -1939,7 +1999,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorTetraCodecGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorTetraCodecGroup)
+                Accessible.name: monitorTetraCodecGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorTetraCodecGroupSpeech
+                    group: monitorTetraCodecGroup
+                    shown: !monitorTetraCodecGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -1986,7 +2052,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(encLockoutRowGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(encLockoutRowGroup)
+                Accessible.name: encLockoutRowGroupSpeech.spoken
+                SpeechPacer {
+                    id: encLockoutRowGroupSpeech
+                    group: encLockoutRowGroup
+                    shown: !encLockoutRowGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 spacing: 5
                 visible: metrics.encLockoutCount > 0
@@ -2028,7 +2100,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorRxToneGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorRxToneGroup)
+                Accessible.name: monitorRxToneGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorRxToneGroupSpeech
+                    group: monitorRxToneGroup
+                    shown: !monitorRxToneGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -2075,7 +2153,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorToneFilterGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorToneFilterGroup)
+                Accessible.name: monitorToneFilterGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorToneFilterGroupSpeech
+                    group: monitorToneFilterGroup
+                    shown: !monitorToneFilterGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -2169,7 +2253,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorSquelchGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorSquelchGroup)
+                Accessible.name: monitorSquelchGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorSquelchGroupSpeech
+                    group: monitorSquelchGroup
+                    shown: !monitorSquelchGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -2220,7 +2310,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(monitorPassbandGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(monitorPassbandGroup)
+                Accessible.name: monitorPassbandGroupSpeech.spoken
+                SpeechPacer {
+                    id: monitorPassbandGroupSpeech
+                    group: monitorPassbandGroup
+                    shown: !monitorPassbandGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 width: parent.width
                 spacing: 5
@@ -2270,7 +2366,13 @@ Item {
                 Accessible.role: Accessible.StaticText
                 readonly property bool navigationAllowed: Navigation.allows(scanAvoidRowGroup)
                 Accessible.ignored: !navigationAllowed || !visible
-                Accessible.name: Accessible.ignored ? "" : Util.shownText(scanAvoidRowGroup)
+                Accessible.name: scanAvoidRowGroupSpeech.spoken
+                SpeechPacer {
+                    id: scanAvoidRowGroupSpeech
+                    group: scanAvoidRowGroup
+                    shown: !scanAvoidRowGroup.Accessible.ignored
+                    step: screen.speechStep
+                }
 
                 spacing: 8
                 visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0

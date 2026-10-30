@@ -171,5 +171,56 @@ Item {
             testContext.publishTarget(site(1));
             compare(findChild(siteSheet, "siteNac").text, hex(site(1).p25Nac, 3));
         }
+
+        // Issue #782: open, the site sheet reads each protocol's identity as one node per field group. Hops between
+        // targets of one protocol show and hide nothing and rename the group once a hop, after its rows are rebuilt,
+        // not once per row. A hop to another protocol hides the group of fields that protocol does not have, one per
+        // change, as it hid the P25-only network button before: content that differs, not churn.
+        function test_open_site_sheet_on_hops() {
+            testContext.publishTarget(site(0));
+            siteSheet.visible = true;
+            waitForRendering(siteSheet);
+            wait(20);
+            testContext.startAccessibilityCount();
+            for (var i = 1; i <= changes; ++i) {
+                testContext.publishTarget(site(i));
+                wait(20);
+            }
+            var same = testContext.accessibilityCount();
+            compare(showHide(siteSheet), 0, churn());
+            var renames = 0;
+            for (var chain in same.chains) {
+                if (/^NameChanged siteFields /.test(chain))
+                    renames += same.chains[chain];
+            }
+            var groups = 0;
+            (function count(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    var child = item.children[k];
+                    if (child.objectName === "siteFields" && child.visible)
+                        ++groups;
+                    count(child);
+                }
+            })(siteSheet);
+            verify(groups > 0, "the P25 fields are shown");
+            // Each shown group renamed at most once a hop (before the pacing, the P25 groups renamed 500 times here).
+            verify(renames >= 1 && renames <= groups * changes, groups + " P25 groups renamed " + renames + " times in "
+                   + changes + " hops: " + JSON.stringify(same.chains));
+            testContext.stopAccessibilityCount();
+            testContext.startAccessibilityCount();
+            for (var j = 1; j <= changes; ++j) {
+                testContext.publishTarget(j % 2 ? {siteLine: "DMR " + j, siteProtocol: "DMR", dmrColorCode: j % 16}
+                                                : site(j));
+                wait(20);
+            }
+            var mixed = testContext.accessibilityCount();
+            var hides = 0;
+            for (var key in mixed.chains) {
+                if (/^ObjectHide siteFields /.test(key))
+                    hides += mixed.chains[key];
+            }
+            compare(hides, changes, "one field group leaves per protocol change: " + JSON.stringify(mixed.chains));
+            compare(testContext.accessibilityCountWithin(siteSheet, "ObjectShow"), 0, churn());
+        }
     }
 }

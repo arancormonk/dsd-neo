@@ -353,9 +353,10 @@ Item {
             monitor.setDetailsExpanded(false);
         }
 
-        // Readings that move on every tick rename the group that reads them, once per change, and nothing shows,
-        // hides or moves, whatever the values' widths; ticks that change nothing rename nothing.
-        function test_g_moving_readings_rename_their_group_only() {
+        // Readings that move on every tick are read at their pace (SpeechPacer, tst_a11y_paced_names.qml): a burst of
+        // them renames nothing at once, and nothing shows, hides or moves, whatever the values' widths; ticks that
+        // change nothing rename nothing. The strip then catches up with what it shows.
+        function test_g_moving_readings_wait_for_their_pace() {
             var monitor = findChild(app, "monitorScreen");
             var restore = {snrValid: metrics.snrValid, snrDb: metrics.snrDb, cfoHz: metrics.cfoHz};
             monitor.setDetailsExpanded(true);
@@ -375,21 +376,18 @@ Item {
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
+            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0, churn(counts));
+            compare(typed(counts, "LocationChanged"), 0, JSON.stringify(counts.chains));
+            compare(typed(counts, "NameChanged") + typed(counts, "DescriptionChanged"), 0,
+                    "a burst of readings renames nothing at once: " + JSON.stringify(counts.chains));
+            var strip = findChild(monitor, "signalStrip");
+            var last = Number(9 + (changes - 1) * 0.7).toFixed(1) + " dB";
+            tryVerify(function () {
+                return testContext.accessibleNode(strip).name.indexOf("SNR " + last) >= 0;
+            }, 6000, "the strip catches up: " + testContext.accessibleNode(strip).name);
             monitor.setDetailsExpanded(false);
             for (var key in restore)
                 testContext.setMetric(key, restore[key]);
-            compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0, churn(counts));
-            compare(typed(counts, "LocationChanged"), 0, JSON.stringify(counts.chains));
-            // Each rename by the item that raised it: the strip's own, two readings a change at most.
-            var renames = Object.keys(counts.chains).filter(function (chain) {
-                return /^NameChanged /.test(chain);
-            });
-            compare(JSON.stringify(renames.map(function (chain) {
-                return chain.split(" ")[1];
-            })), JSON.stringify(["signalStrip"]), "only the strip renames: " + JSON.stringify(counts.chains));
-            var stripRenames = counts.chains[renames[0]];
-            verify(stripRenames > 0 && stripRenames <= 2 * changes, "the strip follows its readings: "
-                   + JSON.stringify(counts.chains));
         }
     }
 }

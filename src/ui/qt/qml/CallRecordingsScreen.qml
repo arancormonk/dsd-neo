@@ -317,8 +317,9 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 10
 
-                    ReadableText {
+                    LiveText {
                         objectName: "callRecordingsExportText"
+                        step: String(decoderHost.recordingTransferActive)
                         width: parent.width
                         text: decoderHost.recordingTransferTotalBytes > 0 ? qsTr("Exporting… %1 of %2").arg(Util.sizeText(decoderHost.recordingTransferBytes)).arg(Util.sizeText(decoderHost.recordingTransferTotalBytes)) : qsTr("Exporting…")
                         wrapMode: Text.Wrap

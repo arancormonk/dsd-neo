@@ -786,7 +786,11 @@ function shownParts(item, sep) {
         var kid = kids[i]
         if (!kid.visible || kid.accessibleName !== undefined)
             continue
-        if (kid.textFormat !== undefined && kid.text !== undefined) {
+        // A part whose state only its colour shows gives the words it stands for.
+        if (kid.spokenText !== undefined) {
+            if (String(kid.spokenText).length > 0)
+                parts.push(String(kid.spokenText))
+        } else if (kid.textFormat !== undefined && kid.text !== undefined) {
             if (String(kid.text).length > 0)
                 parts.push(String(kid.text))
         } else {
@@ -796,4 +800,20 @@ function shownParts(item, sep) {
         }
     }
     return parts.join(sep)
+}
+
+// Which of a group's parts are shown, without reading their text: a key that
+// changes only when a reading appears or disappears (SpeechPacer's step).
+function shownKey(item) {
+    var key = ""
+    var kids = item ? item.children : []
+    for (var i = 0; i < kids.length; ++i) {
+        var kid = kids[i]
+        if (kid.accessibleName !== undefined)
+            continue
+        key += kid.visible ? "1" : "0"
+        if (kid.spokenText === undefined && kid.textFormat === undefined)
+            key += "(" + shownKey(kid) + ")"
+    }
+    return key
 }

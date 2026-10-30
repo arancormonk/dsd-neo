@@ -386,8 +386,10 @@ Item {
 
                 spacing: 6
 
-                ReadableText {
+                LiveText {
                     objectName: "spectrumCenterReadout"
+                    // A drag moves it on every frame; where the radio lands is heard at once.
+                    step: String(screen.tunedHz)
                     // Never elided: this is the frequency the radio is on, and a
                     // readout that drops a digit is worse than one that is tight.
                     text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
@@ -504,11 +506,20 @@ Item {
                 // focused; the line's own place never moves with them.
                 Row {
                     id: statusLine
+                    objectName: "spectrumStatusLine"
 
                     Accessible.role: Accessible.StaticText
                     readonly property bool navigationAllowed: Navigation.allows(statusLine)
                     Accessible.ignored: !navigationAllowed || !visible
-                    Accessible.name: Accessible.ignored ? "" : Util.shownText(statusLine)
+                    Accessible.name: statusSpeech.spoken
+                    SpeechPacer {
+                        id: statusSpeech
+                        group: statusLine
+                        shown: !statusLine.Accessible.ignored
+                        // A new sync or call is heard at once; the SNR and offset at the readings' pace.
+                        step: [metrics.syncedHere, metrics.syncLabel, metrics.carrierLock, metrics.centerFreqHz,
+                            callLabel.text].join("|")
+                    }
 
                     // Wider than the line, the talkgroup gives way first, then
                     // the offset; the sync and SNR are what the strip is for.

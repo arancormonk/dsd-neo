@@ -136,6 +136,8 @@ qt_add_resources(
         qml/LogoMark.qml
         qml/MicroLabel.qml
         qml/ReadableText.qml
+        qml/SpeechPacer.qml
+        qml/LiveText.qml
         qml/ModalSheet.qml
         qml/ActionMenu.qml
         qml/MonitorScreen.qml

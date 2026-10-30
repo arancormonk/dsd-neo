@@ -104,6 +104,7 @@ ModalSheet {
     // are.
     component FieldGrid: Grid {
         id: fieldGrid
+        objectName: "siteFields"
         property var fields: []
         property bool live: true
         width: parent.width
@@ -111,11 +112,19 @@ ModalSheet {
         spacing: 10
         // One item for a screen reader (issue #782): every shown field, label
         // and value, read where it is reached. The rows themselves are rebuilt
-        // with each change and stay plain, so a rebuild tells it nothing.
+        // with each change and stay plain, so a rebuild tells it nothing, and
+        // the name is taken once the rebuild is over (SpeechPacer), not once
+        // per row it adds or removes.
         Accessible.role: Accessible.StaticText
         readonly property bool navigationAllowed: Navigation.allows(fieldGrid)
         Accessible.ignored: !navigationAllowed || !visible
-        Accessible.name: Accessible.ignored ? "" : Util.shownText(fieldGrid)
+        Accessible.name: fieldSpeech.spoken
+        SpeechPacer {
+            id: fieldSpeech
+            group: fieldGrid
+            shown: !fieldGrid.Accessible.ignored
+            step: [metrics.scanTargetId, metrics.siteProtocol, metrics.siteConfirmed].join("|")
+        }
         Repeater {
             model: live ? fields : []
             delegate: Grid {
