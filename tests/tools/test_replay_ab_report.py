@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Optional
 import unittest
 
 
@@ -1171,7 +1172,7 @@ class ReplayAbTetraMetric(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def replay_ab(self, logs, *extra, capture=None, wanted=WANTED, reps="1"):
+    def replay_ab(self, logs, *extra, capture=None, wanted: Optional[str] = WANTED, reps="1"):
         builds = []
         for name, text in logs.items():
             path = self.tmp / name
@@ -1263,6 +1264,7 @@ class ReplayAbTetraMetric(unittest.TestCase):
         log = (bsch("00:00:03", mcc=250, mnc=13, cc="0x2c") + aach_only("00:00:05") + bsch("00:00:07")
                + bsch("00:00:09") + END)
         result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "7")
 
     def test_first_wanted_uses_the_sidecars_start_time(self):
@@ -1278,6 +1280,7 @@ class ReplayAbTetraMetric(unittest.TestCase):
         self.capture.write_text(json.dumps({"capture_started_utc": "2026-03-04T23:59:58Z"}) + "\n", encoding="utf-8")
         log = bsch("00:00:03") + END
         result = self.replay_ab({"host.a": log, "host.b": log})
+        self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "5")
 
     def test_wav_capture_is_one_realization_and_the_cu8_sidecar_is_unchanged(self):
@@ -1336,6 +1339,7 @@ class ReplayAbTetraMetric(unittest.TestCase):
         wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
         log = bsch("00:00:04") + END
         result = self.replay_ab({"host.a": log, "host.b": log}, capture=wav)
+        self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.rows()[("host.a", "1")]["first_wanted_s"], "4")
 
     def test_tetra_metric_requires_the_wanted_identity(self):
