@@ -21,6 +21,7 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <stdint.h>
@@ -153,14 +154,12 @@ manual_tune_settle(void) {
     manual_tune_keep_settled(&g_record);
 }
 
-int
-dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
-    if (g_displaced_unreported) {
-        /* The displaced step first: the record that displaced it is polled next. */
-        g_displaced_unreported = 0;
-        manual_tune_keep_settled(&g_displaced);
-        return DSD_MANUAL_TUNE_DROPPED;
-    }
+/* dsd_engine_manual_tune_poll() for a noted record, under the P25 SM tick guard: a watchdog retune (trunking on once
+   the scan the tune was for has left) supersedes the record and writes the cached centre under it, so the record's
+   state, its completion and the centre a failure puts back are read and written in one hold, never over a newer
+   tune's. */
+static int
+manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     const int noted = atomic_load(&g_record_pending);
     if (noted == MANUAL_TUNE_NONE_NOTED) {
         return DSD_MANUAL_TUNE_NONE;
@@ -204,6 +203,29 @@ dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
         state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
     }
     return DSD_MANUAL_TUNE_FAILED;
+}
+
+int
+dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
+    if (g_displaced_unreported) {
+        /* The displaced step first: the record that displaced it is polled next. */
+        g_displaced_unreported = 0;
+        manual_tune_keep_settled(&g_displaced);
+        return DSD_MANUAL_TUNE_DROPPED;
+    }
+    if (atomic_load(&g_record_pending) == MANUAL_TUNE_NONE_NOTED) {
+        return DSD_MANUAL_TUNE_NONE;
+    }
+    /* The guard is not re-entrant: a caller that holds it (a guarded command's pass) keeps its hold. */
+    const int take_guard = !p25_sm_tick_guard_held_by_caller();
+    if (take_guard) {
+        p25_sm_tick_guard_enter();
+    }
+    const int polled = manual_tune_poll_noted(opts, state);
+    if (take_guard) {
+        p25_sm_tick_guard_leave();
+    }
+    return polled;
 }
 
 void

@@ -27,6 +27,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -54,6 +55,30 @@ int
 test_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
     (void)ctx;
     return rtl_stream_test_manual_tune_standin_tune(g_stream_opts, center_freq_hz, request_id);
+}
+
+/* The P25 SM tick guard, which this test does not link (the P25 library), stood in for: how often a poll took it, and
+   whether the caller is taken to hold it already. */
+static int g_guard_enters;
+static int g_guard_leaves;
+static int g_guard_held;
+
+void
+p25_sm_tick_guard_enter(void) {
+    assert(!g_guard_held); /* not re-entrant */
+    g_guard_enters++;
+    g_guard_held = 1;
+}
+
+void
+p25_sm_tick_guard_leave(void) {
+    g_guard_leaves++;
+    g_guard_held = 0;
+}
+
+int
+p25_sm_tick_guard_held_by_caller(void) {
+    return g_guard_held;
 }
 
 /* The trunk-tuning hooks the installer sets; nothing here tunes through them. */
@@ -164,7 +189,11 @@ test_late_failure_reverts_the_cached_centre(fixture* f) {
 
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ) == 0);
+    /* Gate review: settled under the P25 SM tick guard, so the centre put back is never written over a newer watchdog
+       tune's. A poll with nothing noted takes none. */
+    const int enters = g_guard_enters;
     const int polled = dsd_engine_manual_tune_poll(f->opts, f->state);
+    assert(g_guard_enters == enters + 1 && g_guard_leaves == g_guard_enters && !g_guard_held);
     if (polled != DSD_MANUAL_TUNE_FAILED || f->opts->rtlsdr_center_freq != APPLIED_HZ) {
         DSD_FPRINTF(stderr, "late failure: poll %d, cached centre %u Hz (want %d, %u Hz)\n", polled,
                     f->opts->rtlsdr_center_freq, DSD_MANUAL_TUNE_FAILED, APPLIED_HZ);
@@ -177,6 +206,16 @@ test_late_failure_reverts_the_cached_centre(fixture* f) {
     f->state->ui_msg[0] = '\0';
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);
     assert(f->state->ui_msg[0] == '\0');
+    assert(g_guard_enters == enters + 1);
+
+    /* A caller that holds the guard keeps its hold: the poll takes it no second time. */
+    const uint64_t id_b = enter_frequency(f, ENTRY_B_HZ);
+    take_request(id_b, ENTRY_B_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, APPLIED_HZ) == 0);
+    g_guard_held = 1;
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_FAILED);
+    assert(g_guard_enters == enters + 1 && g_guard_held);
+    g_guard_held = 0;
     fixture_end();
 }
 

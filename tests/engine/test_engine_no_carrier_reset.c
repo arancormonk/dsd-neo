@@ -2470,8 +2470,9 @@ test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing(void)
     const int guard_enters = g_guard_enters;
     rc |= expect_true("in-place-landing-polled", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
     /* Gate review: the scan no longer owns the tuner, so trunking may (t), with the watchdog ticking: the landing's
-       boundary holds the P25 SM tick guard, as a tune's does, and lets it go. */
-    rc |= expect_true("in-place-landing-guarded", g_guard_enters == guard_enters + 1 && !p25_tick_guard_is_held());
+       boundary holds the P25 SM tick guard, as a tune's does, and lets it go: one hold for the record's settlement,
+       one for the boundary. */
+    rc |= expect_true("in-place-landing-guarded", g_guard_enters == guard_enters + 2 && !p25_tick_guard_is_held());
     rc |=
         expect_true("in-place-landing-commits-nothing", state->lcn_freq_roll == 0 && state->rkey_array[9] == 0ULL
                                                             && opts->scanner_mode == 0 && state->lcn_scan_paused == 1);

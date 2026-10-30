@@ -65,7 +65,8 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
 /**
  * @brief Take the noted tune's completion, if it has come.
  *
- * Costs a flag read and one atomic load while nothing is noted. A record whose stream session has ended (rtl_stream_session_generation())
+ * Costs a flag read and one atomic load while nothing is noted. A noted record is settled under the P25 SM tick guard
+ * (taken here unless the caller holds it), so a late failure never puts back a centre over a newer watchdog tune's. A record whose stream session has ended (rtl_stream_session_generation())
  * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
  * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
