@@ -384,11 +384,6 @@ Item {
             localDetailsExpanded = on;
     }
 
-    // The disclosure's one-line summary, most important first: the radio's SNR,
-    // decode quality (a codec fault in the alert colour ahead of it), the
-    // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
-    // readings the rows below already show; a fault is said here, never by
-    // opening the rows.
     // A group of readings read as one node, named by what it shows at the
     // readings' pace (issue #782, SpeechPacer); `speechStep` is what is heard
     // at once. The labels and values inside stay plain.
@@ -426,6 +421,11 @@ Item {
     readonly property string speechStep: [metrics.scanTargetId, metrics.centerFreqHz, metrics.carrierLock,
         metrics.syncedHere, metrics.syncLabel, heroSlot, heroTgId, heroSrc, otherSlot, otherTgId].join("|")
 
+    // The disclosure's one-line summary, most important first: the radio's SNR,
+    // decode quality (a codec fault in the alert colour ahead of it), the
+    // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
+    // readings the rows below already show; a fault is said here, never by
+    // opening the rows.
     readonly property var detailsSummary: {
         var tokens = [];
         if (metrics.radioInput && metrics.snrValid)
