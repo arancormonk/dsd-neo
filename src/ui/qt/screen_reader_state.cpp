@@ -12,8 +12,11 @@
 
 namespace dsd_qt {
 
-ScreenReaderState::ScreenReaderState(QObject* parent) : QObject(parent), m_active(QAccessible::isActive()) {
+ScreenReaderState::ScreenReaderState(QObject* parent) : QObject(parent) {
+    // Observe first, then read: an activation on Android's thread between a read and the install would otherwise be
+    // neither read nor told. One that lands after the install is both, and apply() takes the same state once.
     QAccessible::installActivationObserver(this);
+    m_active = QAccessible::isActive();
 }
 
 ScreenReaderState::~ScreenReaderState() { QAccessible::removeActivationObserver(this); }
