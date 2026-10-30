@@ -183,6 +183,16 @@ Item {
                 verify(Math.abs(cards.itemAtIndex(now).y - cards.contentY - offset) <= 2,
                        "at the same height: " + (cards.itemAtIndex(now).y - cards.contentY) + " vs " + offset);
 
+                // A search set while hidden is a new question, answered from the top, even though the reader's card
+                // still matches it.
+                verify(cards.contentY - cards.originY > 1, "the reader is still scrolled down");
+                screen.visible = false;
+                talkgroupView.filterText = "Unit";
+                screen.visible = true;
+                compare(cards.count, 30, "every card still matches");
+                verify(Math.abs(cards.contentY - cards.originY) < 1, "a new search starts from the top");
+                talkgroupView.filterText = "";
+
                 // A row added while hidden changes the table's bounds, which resets the list: from the top, even
                 // though the reader's card is still in it.
                 cards.contentY = cards.originY + 600;

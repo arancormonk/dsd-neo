@@ -90,9 +90,11 @@ TalkgroupFilterModel::snapshotSelection() const {
 }
 
 int
-TalkgroupFilterModel::rowForTalkgroup(qulonglong idStart) const {
+TalkgroupFilterModel::rowForTalkgroup(qulonglong idStart, qulonglong idEnd) const {
     for (int i = 0; i < rowCount(); ++i) {
-        if (data(index(i, 0), TalkgroupListModel::IdStartRole).toULongLong() == idStart) {
+        const QModelIndex at = index(i, 0);
+        if (data(at, TalkgroupListModel::IdStartRole).toULongLong() == idStart
+            && data(at, TalkgroupListModel::IdEndRole).toULongLong() == idEnd) {
             return i;
         }
     }

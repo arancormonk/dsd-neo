@@ -9367,15 +9367,18 @@ Qt Quick frontend (`src/ui/qt`):
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
   recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
-  them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at
-  its start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart`) and on-screen offset on hide,
-  unless the reader is at the start (History: `FollowLatest.atLatest`), and on show restores them in the same handler
-  (History: `callHistory.rowForUid()` and `historyView.mapFromSource()`; Talkgroups:
-  `TalkgroupFilterModel::rowForTalkgroup()`), so no frame shows the start first. A row gone meanwhile, or a model reset
-  while hidden (a Talkgroups table with new bounds), lands at the start, as a reset does while shown. Filters stay set.
-  Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`, `tst_a11y_talkgroups.qml`
-  `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml` `test_00`,
-  `test_08` to `test_10`; `tst_call_recording_rows.qml` `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
+  them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
+  start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
+  range can share a start) and on-screen offset on hide, unless the reader is at the start (History:
+  `FollowLatest.atLatest`), and on show restores them in the same handler (History: `callHistory.rowForUid()` and
+  `historyView.mapFromSource()`; Talkgroups: `TalkgroupFilterModel::rowForTalkgroup()`), so no frame shows the start
+  first. A row gone meanwhile, or a model reset while hidden (a Talkgroups table with new bounds), lands at the start,
+  as a reset does while shown. Filters stay set; a filter changed while hidden (History's is shared by both screens, and
+  a pending search is flushed on hide, after the log noted its place) drops the place through `KeepPlace.forget()`, so
+  the new result shows from the start. Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
+  `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
+  (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
+  `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
 - Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
   (`monitorLiveStrip`: the second-slot strip, then the scan controls, each only when the session has them), one
   `ListView` (`recentCallsList`), the call actions and Stop. The list is the only scrolling surface: its header

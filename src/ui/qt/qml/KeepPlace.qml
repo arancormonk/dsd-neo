@@ -55,6 +55,13 @@ Item {
         return null;
     }
 
+    // Drop the noted place, so the list shows again from the start: for a
+    // change made while hidden that makes the old place meaningless, such as a
+    // new search (the screen decides which changes those are).
+    function forget() {
+        root.held = null;
+    }
+
     function release() {
         if (!root.list.model)
             return;

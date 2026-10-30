@@ -558,5 +558,72 @@ Item {
             verify(first !== null)
             compare(first.name, newest)
         }
+
+        // Issue #782: with a filter that hides rows above the reader, the
+        // reader's row sits at a different index in the view than in the store,
+        // so the restore has to map it. The filter is set before the scroll-back,
+        // so no filter change happens while the log is hidden.
+        function test_08b_a_filtered_log_keeps_the_readers_place() {
+            var screen = screenLoader.item
+            callHistory.clearAll()
+            for (var i = 0; i < 30; i++) {
+                callHistory.pushEncrypted("TODAY")
+                callHistory.push("TODAY")
+            }
+            historyView.filterKind = 2
+            tryCompare(historyView, "count", 30)
+            tc.waitForRendering(tc.list)
+            tryVerify(function () { return tc.atTop() })
+            tc.scrollBack()
+            var anchorRow = tc.rowAtViewportTop()
+            var anchorName = anchorRow.name
+            var anchorScreenY = anchorRow.y - tc.list.contentY
+            screen.visible = false
+            for (var j = 0; j < 3; j++) {
+                callHistory.pushEncrypted("TODAY")
+                callHistory.push("TODAY")
+                tc.waitForRendering(screen.parent)
+            }
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            compare(tc.list.count, 33)
+            var row = tc.rowAtViewportTop()
+            compare(row.name, anchorName, "the reader's row is back at the top of the viewport")
+            verify(Math.abs((row.y - tc.list.contentY) - anchorScreenY) <= 2,
+                   "at the same height: " + (row.y - tc.list.contentY) + " vs " + anchorScreenY)
+        }
+
+        // A search set while the log is hidden is a new question, answered from
+        // the top, even when the reader's row still matches it: here through the
+        // filter both History screens share.
+        function test_11_a_filter_set_while_hidden_reopens_at_the_top() {
+            var screen = screenLoader.item
+            tc.scrollBack()
+            var anchorName = tc.rowAtViewportTop().name
+            screen.visible = false
+            historyView.filterText = "call"
+            tc.waitForRendering(screen.parent)
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            compare(historyView.count, 24, "the reader's row still matches")
+            verify(tc.atTop(), "a new search starts at the top, not at " + anchorName)
+        }
+
+        // The same for a search typed just before the log is hidden: the
+        // debounce has not applied it yet, and hiding flushes it, after the log
+        // has noted its place.
+        function test_12_a_search_flushed_on_hide_reopens_at_the_top() {
+            var screen = screenLoader.item
+            var field = findChild(screen, "historySearch")
+            tc.scrollBack()
+            field.input.text = "call"
+            compare(historyView.filterText, "", "still debounced")
+            screen.visible = false
+            compare(historyView.filterText, "call", "hiding applied the typed search")
+            tc.waitForRendering(screen.parent)
+            screen.visible = true
+            tc.waitForRendering(tc.list)
+            verify(tc.atTop(), "a new search starts at the top")
+        }
     }
 }

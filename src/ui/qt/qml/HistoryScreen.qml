@@ -347,7 +347,13 @@ Item {
         // does not survive them. Setting several filters at once (the empty
         // state's Clear filters button sets three) coalesces into one call, and
         // repositioning an already-topped list is a no-op either way.
+        //
+        // A hidden log has no rows to reposition, so the place it will come
+        // back to is dropped as well (issue #782). That covers the filter the
+        // other History screen shares, and a search flushed as this screen hides
+        // (flushPendingSearch), which runs after the log noted its place.
         function onFilterChanged() {
+            logPlace.forget();
             Qt.callLater(logList.positionViewAtBeginning);
         }
     }

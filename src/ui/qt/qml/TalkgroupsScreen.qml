@@ -289,11 +289,21 @@ Item {
         id: gridPlace
         list: grid
         model: talkgroupView
+        // A card is its bounds: an exact row and a range can share a start.
         keyOf: function (card) {
-            return card.idStart;
+            return {start: card.idStart, end: card.idEnd};
         }
-        rowOf: function (idStart) {
-            return talkgroupView.rowForTalkgroup(idStart);
+        rowOf: function (bounds) {
+            return talkgroupView.rowForTalkgroup(bounds.start, bounds.end);
+        }
+    }
+    // A search or category set while the grid is hidden is a new question:
+    // the grid shows its answer from the top, as History does.
+    Connections {
+        target: talkgroupView
+
+        function onFilterChanged() {
+            gridPlace.forget();
         }
     }
 
