@@ -2789,7 +2789,7 @@ static int
 expect_manual_tune_payload_refused(const char* tag, dsd_opts* opts, dsd_state* state, uint32_t hz, const char* toast) {
     int rc = 0;
     state->ui_msg[0] = '\0';
-    const long int center = opts->rtlsdr_center_freq;
+    const uint32_t center = opts->rtlsdr_center_freq;
     rc |= expect_int(tag, dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, hz), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int(tag, dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_contains(tag, state->ui_msg, toast);
@@ -8562,7 +8562,9 @@ test_config_restart_required_says_what_waits(void) {
                      "Config applied; restart to use the new frontend.\n");
     freeState(&state);
 
-    /* Round 5: an output reconfigure that fails fails the apply, restart or not; the restart note stays beside it. */
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* Round 5: an output reconfigure that fails fails the apply, restart or not; the restart note stays beside it. The
+       failing output is the wrapped one, so this step runs where GNU ld --wrap is linked. */
     init_test_context(&opts, &state);
     opts.frontend_kind = DSD_FRONTEND_NONE;
     g_reconfigure_output_fails = 1;
@@ -8575,6 +8577,7 @@ test_config_restart_required_says_what_waits(void) {
     rc |= expect_str("frontend, reconfigure fails: toast", state.ui_msg,
                      "Failed: audio output reconfigure; restart to use the new frontend");
     freeState(&state);
+#endif
 
     init_test_context(&opts, &state);
     DSD_MEMSET(&cfg, 0, sizeof cfg);
@@ -22795,6 +22798,8 @@ test_manual_tunes_mark_the_operator(void) {
     rc |= expect_int("an invalid entry moves nothing", state.operator_tuned, 0);
     freeState(&state);
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* The tap's tune result is the wrapped io/control stub's, so the taps run where GNU ld --wrap is linked. */
     static const struct {
         int result;
         int trunking;
@@ -22817,6 +22822,7 @@ test_manual_tunes_mark_the_operator(void) {
         freeState(&state);
     }
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+#endif
 
     /* A release with nothing to release moves nothing; a release of trunking hands the operator the tuner. */
     init_test_context(&opts, &state);
