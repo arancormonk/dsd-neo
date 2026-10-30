@@ -310,6 +310,8 @@ Item {
             return false;
         }
         // The unexplained unreached texts under @p scope, the subtrees of @p skipped left out, as failure lines.
+        // A heading TalkBack's swipes skip (not focusable) is unreached too: its section's lines would be heard without
+        // it, the "(none announced)" lines of the Network sheet among them.
         function unexplained(scope, skipped, where) {
             var problems = [];
             var found = testContext.unreachedTexts(scope, skipped);
@@ -317,7 +319,20 @@ Item {
                 if (!explained(found[i], problems))
                     problems.push(where + ": " + describe(found[i]));
             }
+            var headings = testContext.unfocusableHeadings(scope);
+            for (var h = 0; h < headings.length; ++h) {
+                if (!within(headings[h].item, skipped))
+                    problems.push(where + ": heading a swipe cannot reach: " + headings[h].file + " "
+                                  + JSON.stringify(headings[h].name));
+            }
             return problems;
+        }
+        function within(item, scopes) {
+            for (var at = item; at; at = at.parent) {
+                if (scopes.indexOf(at) >= 0)
+                    return true;
+            }
+            return false;
         }
         function build(spec) {
             var component = Qt.createComponent(uiDir + "/" + spec.file + ".qml");

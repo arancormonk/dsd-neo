@@ -17,6 +17,8 @@ Text {
     // A screen or sheet title, which TalkBack can move between as a heading.
     property bool heading: false
     Accessible.role: heading ? Accessible.Heading : Accessible.StaticText
+    // A heading is not focusable unless told (see MicroLabel); static text is.
+    Accessible.focusable: heading
     readonly property bool navigationAllowed: Navigation.allows(readable)
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible

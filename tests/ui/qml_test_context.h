@@ -2899,6 +2899,46 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Issue #782: the headings under @p root that TalkBack cannot move to: each visible item whose accessible
+     * node is in the tree with the Heading role and is not focusable. Qt reports a Heading node focusable only when the
+     * item takes Tab focus or sets `Accessible.focusable` (QAccessibleQuickItem::state(): text roles are focusable,
+     * Heading is not one), the Android bridge passes that on (setFocusable), and TalkBack's linear navigation skips a
+     * text node that is neither focusable nor clickable. Disabled items are left out. Each entry gives the item, its name
+     * and the declaring file.
+     */
+    Q_INVOKABLE QVariantList
+    unfocusableHeadings(QObject* root) const {
+        QVariantList out;
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectUnfocusableHeadings(item, out);
+        }
+        return out;
+    }
+
+    static void
+    collectUnfocusableHeadings(QQuickItem* item, QVariantList& out) {
+        if (!item->isVisible()) {
+            return;
+        }
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(item);
+        // A disabled item is never focusable (QAccessibleQuickItem::state()); the screens disable themselves under an
+        // open sheet, where the navigation gate takes them out of the tree on a phone.
+        if (iface != nullptr && iface->isValid() && iface->object() == item && item->isEnabled()
+            && iface->role() == QAccessible::Heading && accessibleInTree(iface) && !iface->state().focusable) {
+            const QQmlContext* context = qmlContext(item);
+            out.append(QVariantMap{
+                {QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
+            });
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectUnfocusableHeadings(child, out);
+        }
+    }
+
+    /**
      * @brief Issue #782: whether @p carrier is a node in the tree whose name, description or value holds every word
      * of @p text: the check behind an allowlist entry that says another item reads a text aloud.
      */
