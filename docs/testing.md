@@ -3165,14 +3165,16 @@ Reading it:
     build's incomplete runs are still caught.
   - `first_wanted_s` is the time of the first wanted BSCH from the capture's start. It reads the decode clock's
     `HH:MM:SS` stamp of the line that printed the BSCH, less the capture's start time as the replay anchored its clock
-    (`capture_started_utc`, a WAV's start time, else 2000-01-01T00:00:00Z) in the same local time zone, so the
+    (`capture_started_utc`, a WAV's start time, a WAV-backed sidecar's included, else 2000-01-01T00:00:00Z) in the same local time zone, so the
     resolution is one second, and the capture is taken to start and end within one day and one UTC offset. It is not
     measured from the first decoded line. A wanted BSCH printed before the log's first stamp has no time and is passed
     over; the column reads `NA` when no wanted BSCH has one.
   - `--capture` takes a WAV as well as a sidecar JSON. A WAV has no events to shift, so every repeat replays it as
-    recorded, one realization, and the run warns as for a capture with no events. The sidecar path is unchanged. Put
-    the centre frequency and the capture time in a WAV's name (`..._NNNHz.wav`) when it carries no `auxi` chunk;
-    replay reads them from there.
+    recorded, one realization, and the run warns as for a capture with no events. A sidecar whose `data_file` is a
+    WAV counts as that WAV: replay reads the WAV's header and name and ignores the sidecar's other fields, its
+    `capture_started_utc` and events included, so `first_wanted_s` takes the start time `--iq-info` gives for the
+    sidecar (the WAV's) and the run is one realization. Any other sidecar is unchanged. Put the centre frequency and
+    the capture time in a WAV's name (`..._NNNHz.wav`) when it carries no `auxi` chunk; replay reads them from there.
   - A control against a copy of the baseline reads `+0.00 +/- 0.00` in every column. Compare captures, not repeats:
     each capture, and each of its frequency-shifted copies, is one realization.
 - **Soft-decision error counts are not a quality score on their own.** mbelib's

@@ -1298,6 +1298,39 @@ class ReplayAbTetraMetric(unittest.TestCase):
                 self.assertEqual({row["shift"] for row in rows.values()}, {"0"})
                 self.assertEqual(len(rows), 6)
 
+    def test_sidecar_whose_data_file_is_a_wav_is_a_wav_capture(self):
+        # Replay reads such a sidecar's WAV and ignores its other fields (replay_data_file_decides()): the decode clock
+        # starts at the WAV's start time, here 10:20:30Z from its name, not at the sidecar's capture_started_utc, and
+        # the sidecar's events never move, so every repeat is one realization. --iq-info on the sidecar names the
+        # WAV's start; the fake host prints it only when asked about that sidecar. A stamp of 10:20:37 is 7 s in.
+        wav = self.tmp / "rec_20260304_102030Z_426700000Hz.wav"
+        wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        sidecar = self.tmp / "rec.iq.json"
+        sidecar.write_text(json.dumps({
+            "sample_format": "cu8", "sample_rate_hz": 72000, "data_file": wav.name, "data_bytes": 0,
+            "capture_started_utc": "2026-01-01T00:00:00Z",
+            "events": [{"kind": "RETUNE", "byte_offset": 4, "center_frequency_hz": 426700000}],
+        }) + "\n", encoding="utf-8")
+        log = bsch("10:20:37") + END
+        info = ("if [ \"$1\" = --iq-info ]; then\n"
+                f"  [ \"$2\" = '{sidecar}' ] && echo '  Start time:          2026-03-04T10:20:30Z (file name)'\n"
+                "  exit 0\nfi\n")
+        builds = []
+        for name in ("host.a", "host.b"):
+            path = self.tmp / name
+            write_script(path, "#!/usr/bin/env bash\n" + info + "cat <<'LOG_EOF'\n" + log + "LOG_EOF\nexit 0\n")
+            builds.append(str(path))
+        result = run([BASH, str(REPLAY_AB), "--capture", str(sidecar), "--mode", "-fT -Z", "--rate", "fast", "--reps",
+                      "3", "--metric", "tetra", "--tetra-wanted", self.WANTED, "--out", str(self.tmp / "out")]
+                     + builds, cwd=str(ROOT), env=self.env)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("data_file is a WAV", result.stdout)
+        self.assertFalse((self.tmp / "out" / "realizations").exists())
+        rows = self.rows()
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({row["shift"] for row in rows.values()}, {"0"})
+        self.assertEqual({row["first_wanted_s"] for row in rows.values()}, {"7"})
+
     def test_wav_capture_without_a_start_time_reads_from_the_floor(self):
         wav = self.tmp / "tetra.wav"
         wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")

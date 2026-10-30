@@ -89,9 +89,9 @@ set -euo pipefail
 # An identity is never promoted by how often it occurs: a capture dominated by another network reads as
 # wanted_bsch 0 and a large other_bsch. first_wanted_s uses the decode clock's HH:MM:SS stamp of the line that
 # printed the BSCH (a replay's stamps start at the capture's capture_started_utc, or 2000-01-01T00:00:00Z when it has
-# none, a WAV's start time, or no usable one), less the capture's start, in the local time zone both use. Its
-# resolution is therefore one second (a stamp is the whole second the BSCH fell in), and it assumes the capture
-# starts and ends within one day and one UTC offset.
+# none, a WAV's start time (a WAV-backed sidecar's too, from --iq-info), or no usable one), less the capture's start,
+# in the local time zone both use. Its resolution is therefore one second (a stamp is the whole second the BSCH fell
+# in), and it assumes the capture starts and ends within one day and one UTC offset.
 #
 # Report errors per decoded voice frame, never the raw error total: a build that
 # loses sync decodes fewer frames and accrues fewer errors without being better.
@@ -106,7 +106,9 @@ set -euo pipefail
 #
 # Options:
 #   --capture <path>   I/Q capture to replay (required): a sidecar JSON, or a WAV recording. A WAV is replayed
-#                      as it is, one realization: it has no events to shift
+#                      as it is, one realization: it has no events to shift. So is a sidecar whose data_file is a
+#                      WAV: replay reads that WAV and ignores the sidecar's other fields, its start time and events
+#                      included
 #   --mode <flags>     Decoder flags, e.g. "-fi" (required; quote if several)
 #   --reps <n>         Repeats per build, each its own realization of the
 #                      capture (default 12)
@@ -259,6 +261,49 @@ case "$(head -c 4 "$capture" 2> /dev/null | tr -d '\0')" in
     fi
     ;;
 esac
+# A sidecar whose data_file is a WAV replays as that WAV (replay_data_file_decides() in src/io/iq/iq_replay.c): the
+# WAV's header and name describe the capture, its start time included, and the sidecar's other fields, its events
+# among them, are ignored. Such a sidecar is a WAV capture here too. Prints 1 for one, else 0.
+sidecar_data_is_wav() {
+  python3 - "$1" << 'PY'
+import json
+import sys
+
+capture = sys.argv[1]
+
+
+def is_absolute(path):
+    """path_is_absolute() in src/io/iq/iq_replay.c."""
+    return path[:1] in ("/", "\\") or (path[:1].isascii() and path[:1].isalpha() and path[1:2] == ":")
+
+
+try:
+    with open(capture, encoding="utf-8", errors="surrogateescape") as handle:
+        data_file = json.load(handle).get("data_file")
+except (OSError, ValueError, AttributeError):
+    data_file = None
+if not isinstance(data_file, str) or not data_file:
+    print(0)
+    sys.exit(0)
+# resolve_data_path(): a relative data_file is appended to the sidecar path up to its last separator.
+if not is_absolute(data_file):
+    cut = max(capture.rfind("/"), capture.rfind("\\"))
+    data_file = capture[:cut + 1] + data_file
+try:
+    with open(data_file, "rb") as handle:
+        head = handle.read(12)
+except OSError:
+    head = b""
+# dsd_iq_wav_sniff() in src/io/iq/iq_wav.c, as for a WAV given directly.
+print(1 if head[:4] in (b"RIFF", b"RF64", b"BW64", b"RIFX") and head[8:12] == b"WAVE" else 0)
+PY
+}
+capture_wav_note="a WAV capture"
+if [ "$capture_is_wav" -eq 0 ] && command -v python3 > /dev/null 2>&1 &&
+  [ "$(sidecar_data_is_wav "$capture" 2> /dev/null || echo 0)" = 1 ]; then
+  capture_is_wav=1
+  capture_wav_note="a sidecar whose data_file is a WAV (replay reads the WAV and ignores the sidecar's other fields)"
+fi
 for ((i = 0; i < ${#builds[@]}; i++)); do
   b=${builds[$i]}
   if [ ! -x "$b" ]; then
@@ -428,9 +473,9 @@ done
 if [ "$realizations" -eq 0 ]; then
   realization_note="off (--no-realizations): every repeat replays the capture as recorded, the determinism control"
 elif [ "$capture_is_wav" -eq 1 ]; then
-  echo "warning: a WAV capture has no events to shift: every repeat replays the same realization; compare it across" \
-    "captures" >&2
-  realization_note="none: a WAV capture is one realization, so every repeat replays it as recorded"
+  echo "warning: $capture_wav_note has no events to shift: every repeat replays the same realization; compare it" \
+    "across captures" >&2
+  realization_note="none: $capture_wav_note is one realization, so every repeat replays it as recorded"
 else
   if ! command -v python3 > /dev/null 2>&1; then
     echo "error: per-repeat realizations need python3; pass --no-realizations to replay without them" >&2
@@ -500,7 +545,8 @@ printf '\n' >> "$summary"
 tetra_origin_sod() {
   local start=""
   if [ "$capture_is_wav" -eq 1 ]; then
-    # What the first build reads from the recording's auxi chunk or its name.
+    # What the first build reads from the recording's auxi chunk or its name; given a sidecar whose data_file is a
+    # WAV, --iq-info resolves it to that WAV as replay does, and the sidecar's capture_started_utc goes unread.
     start=$("${builds[0]}" --iq-info "$capture" 2> /dev/null | sed -n 's/^  Start time: *\([0-9TZ:-]*\) (.*/\1/p' |
       head -n 1 || true)
   else
