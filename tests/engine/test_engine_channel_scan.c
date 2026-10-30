@@ -182,6 +182,7 @@ int
 dsd_engine_scan_tune_moved(void) {
     return 0;
 }
+
 /* Whether slot 0's call was still open at the tune, and whether the scan ran as the tuner's owner then (issue #671:
    a resume tunes its row as the running scan does, after the manual session's calls have ended). */
 static int tune_saw_open_call;
