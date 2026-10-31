@@ -2417,13 +2417,12 @@ class MetricsModel : public QObject {
         bool
         scanControlEquals(const View& other) const {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
-                   && scan_target_label == other.scan_target_label
-                   && scan_target_ordinal == other.scan_target_ordinal && scan_target_count == other.scan_target_count
-                   && scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
-                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided
-                   && scan_kind == other.scan_kind && scan_paused == other.scan_paused
-                   && scan_resumable == other.scan_resumable && scan_entry_count == other.scan_entry_count
-                   && operator_tuned == other.operator_tuned;
+                   && scan_target_label == other.scan_target_label && scan_target_ordinal == other.scan_target_ordinal
+                   && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
+                   && scan_hold == other.scan_hold && scan_avoid_count == other.scan_avoid_count
+                   && scan_target_avoided == other.scan_target_avoided && scan_kind == other.scan_kind
+                   && scan_paused == other.scan_paused && scan_resumable == other.scan_resumable
+                   && scan_entry_count == other.scan_entry_count && operator_tuned == other.operator_tuned;
         }
 
         /* Countdown updates notify only the scan timing row. */
