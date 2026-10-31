@@ -110,9 +110,51 @@ bandplan_untyped_waits(const dsd_state* state, const p25_bandplan_row_t* row) {
 }
 
 static int
+bandplan_row_count(const dsd_state* state) {
+    return state->p25_bandplan_row_count < DSD_P25_BANDPLAN_MAX_ROWS ? state->p25_bandplan_row_count
+                                                                     : DSD_P25_BANDPLAN_MAX_ROWS;
+}
+
+/*
+ * A global row does not apply to a system that has its own row for the identifier and class, even while that row
+ * waits (an untyped row beside an applicable TDMA entry): the system's row names what the identifier is there.
+ */
+static int
+bandplan_global_shadowed(const dsd_state* state, int iden, int is_tdma) {
+    if (state->p2_wacn == 0ULL && state->p2_sysid == 0ULL) {
+        return 0;
+    }
+    const int count = bandplan_row_count(state);
+    for (int i = 0; i < count; i++) {
+        const p25_bandplan_row_t* row = &state->p25_bandplan_rows[i];
+        if (row->iden == iden && row->is_tdma == is_tdma && !bandplan_row_is_global(row)
+            && row->entry.wacn == state->p2_wacn && row->entry.sysid == state->p2_sysid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Drop global seeds a system's own row shadows, so the result does not depend on what was learned first. */
+static void
+bandplan_drop_shadowed_globals(dsd_state* state, uint16_t* mask) {
+    for (int iden = 0; iden < 16; iden++) {
+        for (int is_tdma = 0; is_tdma < 2; is_tdma++) {
+            p25_iden_entry_t* slot = is_tdma ? &state->p25_iden_tdma[iden] : &state->p25_iden_fdma[iden];
+            if (!slot->populated || !bandplan_slot_is_seeded_global(slot)
+                || !bandplan_global_shadowed(state, iden, is_tdma)) {
+                continue;
+            }
+            DSD_MEMSET(slot, 0, sizeof *slot);
+            state->p25_chan_tdma_explicit[iden] &= (uint8_t)~(is_tdma ? 0x02U : 0x01U);
+            *mask |= (uint16_t)(1U << iden);
+        }
+    }
+}
+
+static int
 bandplan_seed_pass(dsd_state* state, int is_tdma, int global, uint16_t* mask) {
-    const int count = state->p25_bandplan_row_count < DSD_P25_BANDPLAN_MAX_ROWS ? state->p25_bandplan_row_count
-                                                                                : DSD_P25_BANDPLAN_MAX_ROWS;
+    const int count = bandplan_row_count(state);
     int writes = 0;
     for (int i = 0; i < count; i++) {
         const p25_bandplan_row_t* row = &state->p25_bandplan_rows[i];
@@ -122,7 +164,7 @@ bandplan_seed_pass(dsd_state* state, int is_tdma, int global, uint16_t* mask) {
         if (!global && (row->entry.wacn != state->p2_wacn || row->entry.sysid != state->p2_sysid)) {
             continue;
         }
-        if (bandplan_untyped_waits(state, row)) {
+        if ((global && bandplan_global_shadowed(state, row->iden, is_tdma)) || bandplan_untyped_waits(state, row)) {
             continue;
         }
         p25_iden_entry_t* slot = is_tdma ? &state->p25_iden_tdma[row->iden] : &state->p25_iden_fdma[row->iden];
@@ -143,6 +185,7 @@ dsd_state_p25_bandplan_seed_mask(dsd_state* state, uint16_t* changed_idens) {
     uint16_t mask = 0;
     int writes = 0;
     if (state) {
+        bandplan_drop_shadowed_globals(state, &mask);
         writes += bandplan_seed_pass(state, 1, 0, &mask);
         writes += bandplan_seed_pass(state, 1, 1, &mask);
         for (int iden = 0; iden < 16; iden++) {

@@ -646,7 +646,8 @@ Notes:
   moment it arrives, and the table is re-seeded from the file whenever the receiver moves to another system (rows
   for the new system and rows without a system). When a file has both a row that names the current system and a
   row without one for the same identifier, the system's row wins, whether or not either row gives a `type`, and a
-  row without a system never displaces it. A typed row can replace an untyped fallback, including one learned
+  row without a system never displaces it. On that system the row without one does not apply at all, even while the
+  system's row waits for a TDMA definition (an empty `type` beside a TDMA identifier). A typed row can replace an untyped fallback, including one learned
   from an LCW; a typed OTA entry is never displaced by a seed. Untyped
   rows remain stored while TDMA applies, so they can still supply the fallback on another system.
 - Filling an empty identifier slot from a band plan or a peer preserves `-C` channel-map entries. Replacing a

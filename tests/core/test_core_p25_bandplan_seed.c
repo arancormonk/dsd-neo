@@ -317,9 +317,52 @@ test_seed_scope_beats_typedness(void) {
     return rc;
 }
 
+/*
+ * A typed global FDMA row and a system's empty-type row for one identifier, and a TDMA definition for it from the
+ * air: whether the TDMA definition or the system identity comes first, the identifier ends up TDMA only on that
+ * system (the system's row shadows the global one even while it waits beside the TDMA entry).
+ */
+static int
+test_shadowed_global_seed_either_order(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int rc = 0;
+    for (int tdma_first = 0; tdma_first < 2; tdma_first++) {
+        DSD_MEMSET(state, 0, sizeof(*state));
+        add_row(state, 4, 0, 153801250L, 100, 1, 0ULL, 0ULL);
+        add_row(state, 4, 0, 153801250L, 100, 1, 0xBEE00ULL, 0x3A1ULL);
+        state->p25_bandplan_rows[1].entry.flags = P25_IDEN_F_UNTYPED;
+        (void)dsd_state_p25_bandplan_seed(state);
+        for (int step = 0; step < 2; step++) {
+            if ((step == 0) == (tdma_first != 0)) {
+                p25_iden_entry_t* t = &state->p25_iden_tdma[4];
+                t->populated = 1;
+                t->base_freq = 153801250L;
+                t->chan_spac = 100;
+                t->chan_type = 3;
+                t->flags = P25_IDEN_F_OFF_SPACING;
+                t->trust = 2;
+                state->p25_chan_tdma_explicit[4] |= 0x02;
+                (void)dsd_state_p25_iden_reconcile(state, 4);
+            } else {
+                (void)p25_update_system_identity(state, 0xBEE00ULL, 0x3A1ULL);
+            }
+        }
+        rc |= check_value(tdma_first ? "shadowed: TDMA first, fdma empty" : "shadowed: identity first, fdma empty",
+                          state->p25_iden_fdma[4].populated, 0);
+        rc |= check_value(tdma_first ? "shadowed: TDMA first, hint" : "shadowed: identity first, hint",
+                          state->p25_chan_tdma_explicit[4], 0x02);
+    }
+    free(state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = test_typed_seed_replaces_untyped();
+    rc |= test_shadowed_global_seed_either_order();
     rc |= test_untyped_rows_wait_for_tdma();
     rc |= test_seed_cache_and_origin();
     rc |= test_seed_scope_beats_typedness();

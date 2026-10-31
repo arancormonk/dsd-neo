@@ -6475,7 +6475,8 @@ Notes:
   seed/share passes, and on identity learn. Untyped seed rows are suppressed before writing while TDMA applies,
   but remain in the stored plan for another system. Typed rows/peers may replace untyped entries. Scoped rows replace
   global seeds by the SEEDED flag, never by matching numbers, typed or not, and a global row never displaces a
-  system's seed (`bandplan_can_replace()`). Fills preserve the user's `-C` map; replacements and
+  system's seed (`bandplan_can_replace()`) nor applies on a system with its own row for that identifier and class,
+  even one that waits (`bandplan_global_shadowed()`, so arrival order does not matter). Fills preserve the user's `-C` map; replacements and
   drops purge the identifier once through `dsd_state_p25_invalidate_iden_chan_map()`, also the implementation of
   the protocol wrapper. `dsd_state_p25_bandplan_seed_mask()` reports changes without purging so first identity learn
   can coalesce foreign-entry drops and seed/reconcile changes. Known-system changes retain the full reset.
