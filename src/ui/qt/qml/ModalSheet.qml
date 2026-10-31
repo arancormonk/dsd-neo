@@ -38,8 +38,6 @@ Rectangle {
     // Issue #782: nameless while covered or closed, like the rest of it.
     Accessible.name: isTopModal && visible ? accessibleName : ""
     Accessible.ignored: !visible || !isTopModal
-    // Takes the keyboard focus when TalkBack lands on it (see PlexFlickable).
-    Accessible.focusable: visible && isTopModal
     z: 100 + Math.max(0, Navigation.modals.indexOf(sheet))
 
     // Subclasses with their own open(...) overload bypass this pre-visible focus capture.

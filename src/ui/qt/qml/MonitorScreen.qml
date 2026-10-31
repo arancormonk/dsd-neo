@@ -1308,8 +1308,7 @@ Item {
         // Scrollable by assistive technology, as the body it replaced was.
         Accessible.role: Accessible.Pane
         Accessible.name: qsTr("Recent calls")
-        // Takes the keyboard focus when TalkBack lands on it (see PlexFlickable).
-        Accessible.focusable: navigationAllowed && visible
+        Accessible.focusable: false
         readonly property bool navigationAllowed: Navigation.allows(recentList)
         Accessible.ignored: !navigationAllowed || !visible
         function scrollPage(direction) {

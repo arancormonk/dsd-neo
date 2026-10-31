@@ -6,13 +6,7 @@ Flickable {
     property string accessibleName: qsTr("Scrollable content")
     Accessible.role: Accessible.Pane
     Accessible.name: accessibleName
-    // Issue #782: takes the keyboard focus when TalkBack lands on it. Qt's
-    // Android bridge carries out TalkBack's focus with the node's set-focus
-    // action, and hears the focus landed only from the focus change it makes;
-    // a container with none left the control before it holding the keyboard
-    // focus, and TalkBack's focus back onto that control changed nothing and
-    // was never heard. Not a Tab stop.
-    Accessible.focusable: navigationAllowed && visible
+    Accessible.focusable: false
     readonly property bool navigationAllowed: Navigation.allows(viewport)
     Accessible.ignored: !navigationAllowed || !visible
     function scrollPage(direction) {
