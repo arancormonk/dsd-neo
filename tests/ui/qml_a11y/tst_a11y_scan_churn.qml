@@ -526,8 +526,22 @@ Item {
             verify(loader !== null, "the spectrum's loader");
             compare(loader.active, false, "the spectrum is not built yet");
             verify(!loader.asynchronous, "it is built at once with a screen reader on");
+            testContext.startAccessibilityCount();
             findChild(app, "monitorScreen").openSpectrum();
             compare(loader.status, Loader.Ready, "built in the same turn as the open");
+            wait(50);
+            var built = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            // Its sheets are built closed: none may raise a show or hide under the window, which the bridge reads as a
+            // change to the whole window (each sheet's refresh node is made only when it first takes the top).
+            var windowLevel = [];
+            for (var chain in built.chains) {
+                if ((chain.indexOf("ObjectShow") === 0 || chain.indexOf("ObjectHide") === 0)
+                        && (chain.indexOf("TreeRefresh") >= 0 || chain.indexOf("<unnamed>") >= 0
+                            || chain.indexOf(" tst_a11y_scan_churn") === chain.indexOf(" ")))
+                    windowLevel.push(chain + " x" + built.chains[chain]);
+            }
+            compare(windowLevel.length, 0, "shows or hides under the window on the first open: " + JSON.stringify(windowLevel));
             compare(loader.opacity, 1, "and shown at once");
             wait(50);
             var nodes = testContext.accessibleNodesUnder(loader.item).filter(function (node) { return node.inTree; });

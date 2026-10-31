@@ -11017,8 +11017,12 @@ ungated part over its ignored panel, and it stayed reachable under the top sheet
 Leaving the tree raises only ObjectDestroyed, which Android's bridge does not pass on, and a sheet opening raises no
 show (its parts are still out of the tree as they become visible), so each `ModalSheet` has a refresh node under the
 window's content item, never out of the tree, that shows and hides with the sheet's turn on top; the bridge passes that
-on as a change to the window's whole subtree, and TalkBack reads it again without the covered sheet. It has no size
-and no name. A covered panel is nameless, and headings and the controls that set `Accessible.focusable` are focusable
+on as a change to the window's whole subtree, and TalkBack reads it again without the covered sheet. It is made the
+first time its sheet takes the top with a screen reader on, never with the sheet: a new item starts out visible, so a
+node built hidden with each sheet raised a show and a hide under the window as its screen was built (three sheets
+doubled the Spectrum's first open under TalkBack; `tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`
+counts none). Its opacity is 0, so it is reported invisible (an item with no size is not: Qt measures it by its parent,
+the window), and it has no name. A covered panel is nameless, and headings and the controls that set `Accessible.focusable` are focusable
 only while in the tree, so a node TalkBack may still ask about offers nothing to stop on
 (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
 

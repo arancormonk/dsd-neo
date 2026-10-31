@@ -117,7 +117,11 @@ Rectangle {
         if (visible)
             Navigation.addModal(sheet);
     }
-    Component.onDestruction: Navigation.removeModal(sheet)
+    Component.onDestruction: {
+        Navigation.removeModal(sheet);
+        if (treeRefresh !== null)
+            treeRefresh.destroy();
+    }
     Keys.onEscapePressed: Navigation.back(sheet.Window.window)
     Keys.onBackPressed: Navigation.back(sheet.Window.window)
 
@@ -164,16 +168,34 @@ Rectangle {
     // sheet. This item, under the window's content item and never left out of
     // the tree, shows and hides with the sheet's turn on top; the bridge
     // passes a show or hide on as a change to the whole subtree under its
-    // parent, the window. It has no size, so it is reported invisible, and no
-    // name: nothing reads or reaches it.
-    Item {
-        objectName: sheet.objectName.length ? sheet.objectName + "TreeRefresh" : "modalSheetTreeRefresh"
-        parent: sheet.Window.contentItem
-        width: 0
-        height: 0
-        visible: sheet.visible && sheet.isTopModal
-        Accessible.role: Accessible.Grouping
-        Accessible.focusable: false
+    // parent, the window. Its opacity is 0, so it is reported invisible (an
+    // item with no size is not: Qt measures it by its parent, the window), and
+    // it has no name: nothing reads or reaches it.
+    //
+    // It is made the first time the sheet takes the top with a screen reader
+    // on, never before: a new item starts out visible, so one built hidden with
+    // each sheet raised a show and a hide under the window as its screen was
+    // built, each read by the bridge as a change to the whole window (three
+    // sheets made the Spectrum's first open about twice as long under TalkBack).
+    readonly property bool topTurn: visible && isTopModal
+    property Item treeRefresh: null
+    onTopTurnChanged: {
+        if (topTurn && treeRefresh === null && Window.contentItem !== null && typeof screenReader !== "undefined"
+                && screenReader.active)
+            treeRefresh = treeRefreshComponent.createObject(Window.contentItem, {
+                "objectName": objectName.length ? objectName + "TreeRefresh" : "modalSheetTreeRefresh"
+            });
+    }
+    Component {
+        id: treeRefreshComponent
+        Item {
+            width: 0
+            height: 0
+            opacity: 0
+            visible: sheet.topTurn
+            Accessible.role: Accessible.Grouping
+            Accessible.focusable: false
+        }
     }
 
     PointerBarrier {
