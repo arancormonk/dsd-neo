@@ -154,7 +154,7 @@ Notes:
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
-  air its `label` column, else its id, is the label instead, and the Scan Mode row shows no name. Traffic a service name labels
+  air its id is the label instead, and the Scan Mode row shows no name. Traffic a service name labels
   (`--dcc-name` and the other [naming options](cli.md#receive-filters-and-service-names)) carries that name in the
   event-row prefix instead; the `Channel:` line still names the row.
 - Every column is positional, so an empty middle field is an empty frequency: `1,,851000000` is a row with no
@@ -544,7 +544,7 @@ Columns:
 
 | Column | Required | Behavior |
 |--------|----------|----------|
-| `id` | Yes | Unique short name shown in the terminal status row and log messages, and, when the row has no `label`, in Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names) and as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists. Empty or too-long IDs are rejected. |
+| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Empty or too-long IDs are rejected. |
 | `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
 | `frequency_hz` | Yes | Decimal Hz only. Builds with a 64-bit `long` (Linux, macOS, Android) accept `1..4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX` (2147483647). Do not use `K`/`M`/`G` suffixes in CSV. |
 | `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
@@ -558,7 +558,7 @@ Columns:
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key: optional `0x`, whitespace ignored, exactly 10, 32, or 64 hex digits. May be combined with `single_key_dec`, but not either key-file column. |
 | `options` | No | Scoped switches described above; target `type` determines which protocol options apply. |
-| `label` | No | The name the channel being heard goes by while this target is parked, in place of the `id`: in Call Info, the event-history and `-J` prefix, the rdio `talkgroup_tag` fallback, a call's name when it has none of its own (the Qt/Android monitor, its scan header and history) and its call recordings. Empty uses the `id`; the terminal status row and log messages keep the `id`. Free text, never an error: a cell wrapped in double quotes with every quote inside doubled (a spreadsheet's `"Tower ""A"""`) reads each doubled quote as one, control characters become spaces, the ends are trimmed, and it is cut to 63 bytes on a character boundary. |
+| `label` | No | The name the Qt and Android app show for this target while it is parked: in the monitor's scan header and the key sheet's target line. Empty shows the `id`. Everywhere else (the terminal, Call Info, the event-history and `-J` prefix, the rdio `talkgroup_tag` fallback, call history and recordings) the target keeps its `id`, so two targets that share a label stay apart. Free text, never an error: a cell wrapped in double quotes with every quote inside doubled (a spreadsheet's `"Tower ""A"""`) reads each doubled quote as one, control characters become spaces, the ends are trimmed, and it is cut to 63 bytes on a character boundary. |
 | `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. Leave empty for conventional targets, including `p25-conventional`. The rows are parked in the trunk target's snapshot, so one exported multi-system file can be named on every `p25-trunk` row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:

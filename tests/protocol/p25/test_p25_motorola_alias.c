@@ -760,10 +760,10 @@ test_late_alias_renames_a_learned_name(void) {
 }
 
 /* Issue #782: a call is named the same while it is held as while it is on air. A talkgroup with no name of its own is
- * named for the channel it was heard on (a trunk-scan target's label), and a listed talkgroup by its group-list name;
- * both are read from the staged row while the call is active, and that row commits when the call ends, so the held
- * view reads the names the event layer cached on the call. Without them the headline flipped from the target's label to
- * "TG <n>" for the hold after every transmission. */
+ * named for the channel it was heard on (a trunk-scan target's id, which the Qt frontend names for display), and a
+ * listed talkgroup by its group-list name; both are read from the staged row while the call is active, and that row
+ * commits when the call ends, so the held view reads the names the event layer cached on the call. Without them the
+ * headline flipped from the target's name to "TG <n>" for the hold after every transmission. */
 static void
 test_held_call_keeps_its_names(void) {
     fixture f;
@@ -780,11 +780,13 @@ test_held_call_keeps_its_names(void) {
         exit(2);
     }
     dsd_app_slot_call_view(f.st, 0U, call.started_m + 0.5, &view);
-    expect_true("an active call with no name of its own is named for the target", strcmp(view.name, "M0D") == 0);
+    expect_true("an active call with no name of its own is named for the target",
+                strcmp(view.name, "f4c3562f-afab-49ee-bc0a-1f8df9845cb3") == 0);
     end_call_and_commit(&f, 0U);
     held_view(&f, 0U, &view);
     expect_true("the held call is still held", view.state == DSD_APP_CALL_LINE_ENDED);
-    expect_true("the held call keeps the target's name", strcmp(view.name, "M0D") == 0);
+    expect_true("the held call keeps the target's name",
+                strcmp(view.name, "f4c3562f-afab-49ee-bc0a-1f8df9845cb3") == 0);
 
     // A listed talkgroup keeps its group-list name while held.
     dsd_tg_policy_entry entry;

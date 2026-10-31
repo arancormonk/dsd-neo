@@ -29,7 +29,9 @@ channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_lab
     *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
     if (dsd_trunk_scan_owns_tuner(opts, state) && state->trunk_scan_active_id[0] != '\0') {
         *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
-        return state->trunk_scan_active_label[0] != '\0' ? state->trunk_scan_active_label : state->trunk_scan_active_id;
+        /* The id, not the target's display label: the label is the channel's identity in history, and two targets
+         * may share a display name (issue #782). Frontends name an id for display (the Qt channel-name map). */
+        return state->trunk_scan_active_id;
     }
     /* lcn_freq_roll is advanced past the row just tuned, so the row on air is roll - 1.
      * Bound it by lcn_freq_count the way every other scan-list consumer does: a protocol

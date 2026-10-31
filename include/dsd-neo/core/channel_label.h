@@ -27,7 +27,7 @@ extern "C" {
 /** Which scanner is naming the channel currently tuned. */
 typedef enum {
     DSD_CHANNEL_LABEL_SOURCE_NONE = 0,       /**< No scanner is naming a channel. */
-    DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN = 1, /**< The active `--trunk-scan` target's label, else its id. */
+    DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN = 1, /**< The active `--trunk-scan` target's id. */
     DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST = 2,  /**< The name of the `-Y` scan-list row on air. */
 } dsd_channel_label_source;
 
@@ -48,7 +48,8 @@ dsd_channel_label_source dsd_channel_label_current_source(const dsd_opts* opts, 
  * Resolve the label for the channel currently tuned.
  *
  * Trunk scan wins over the conventional scanner: with `--trunk-scan` enabled the
- * label is the active target's `label` column, else its id, and only when no target is selected does a
+ * label is the active target's id (its identity in history; the `label` column only names it for display), and
+ * only when no target is selected does a
  * `-Y` scan list get a say, contributing the name of the row it is parked on.
  * An unnamed row, an unnamed target and an idle receiver all report no label.
  *

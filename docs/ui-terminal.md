@@ -1143,8 +1143,8 @@ session-only and is not persisted to the config file.
 ## Event History Rows
 
 While scanning, an event history row names the channel it was heard on: the channel name from a
-`-Y` scan list, or the active `--trunk-scan` target's `label` (its id when it has none), in brackets
-between the row's timestamp and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; ...`. It answers
+`-Y` scan list, or the active `--trunk-scan` target's id, in brackets between the row's timestamp
+and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; ...`. It answers
 the question a bare `TGT: 00000000` row cannot, which is where encrypted traffic was heard. Data
 notices (SMS, LRRP, registrations) carry the same prefix. Traffic a service name labels (`--dcc-name 7=Hospital`
 and the other [naming options](cli.md#receive-filters-and-service-names)) carries that name in the brackets instead,

@@ -1635,11 +1635,10 @@ test_coordinator_publishes_active_target_label(void) {
 }
 
 /*
- * Issue #782: a target's optional `label` column names the channel being heard while it is parked there, so a list
- * whose ids are internal (the Qt/Android scan lists use entry UIDs) never names a call, history row or recording by
- * one: it is published beside the id, and dsd_channel_label_current() prefers it (CORE_CHANNEL_LABEL). A target
- * without a label publishes none and is named by its id, as before. The label is sanitized: a control character
- * becomes a space and the cell's padding is dropped.
+ * Issue #782: a target's optional `label` column gives it a display name, published beside the id for the frontends
+ * to show (the Monitor's scan header). The id stays the channel's identity (CORE_CHANNEL_LABEL): history merges calls
+ * by it, and two targets may share a label. A target without a label publishes none. The label is sanitized: a
+ * control character becomes a space and the cell's padding is dropped.
  */
 static int
 test_target_label_names_the_channel(void) {

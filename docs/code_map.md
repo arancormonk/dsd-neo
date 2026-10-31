@@ -1428,7 +1428,7 @@ suite runs under this compiler.
   and `cached_group_name()` names an ENDED call from it once the staged row no longer matches; a textual target keeps
   its text. The row's channel label is cached the same way (`channel_label`, keyed by `channel_label_epoch`; issue
   #782), so a held call with no name of its own is still named for the channel it was heard on (a held call on a
-  labelled trunk-scan target read "TG <n>" for the hold before). Tests: `APP_CONTROL_CALL_VIEW`
+  trunk-scan target read "TG <n>" for the hold before). Tests: `APP_CONTROL_CALL_VIEW`
   (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY` (`test_commit_caches_target_label`),
   `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`, `test_held_call_keeps_its_names`).
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
