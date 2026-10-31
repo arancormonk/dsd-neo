@@ -40,6 +40,9 @@ static atomic_int g_stop = 0;
 static atomic_int g_bad = 0;
 /* Reads each reader finished; the writer waits on them so every stretch of writes overlaps reads by every reader. */
 static atomic_int g_reads[READERS];
+/* Each reader's index, its thread argument: a pointer to an atomic counter would lose its _Atomic qualifier as a
+ * void * (MSVC C4090). */
+static int g_reader_ids[READERS];
 
 static int
 value_allowed(const char* v) {
@@ -59,7 +62,7 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     reader_main(void* arg) {
-    atomic_int* reads = (atomic_int*)arg;
+    atomic_int* reads = &g_reads[*(const int*)arg];
     while (atomic_load(&g_start) == 0) {
         dsd_thread_yield();
     }
@@ -119,7 +122,8 @@ main(void) {
     assert(dsd_test_setenv(kName, "process", 1) == 0);
     dsd_thread_t readers[READERS];
     for (int i = 0; i < READERS; i++) {
-        assert(dsd_thread_create(&readers[i], reader_main, &g_reads[i]) == 0);
+        g_reader_ids[i] = i;
+        assert(dsd_thread_create(&readers[i], reader_main, &g_reader_ids[i]) == 0);
     }
     atomic_store(&g_start, 1);
     /* Every reader makes a whole read before the first write and within every stretch of CHECKPOINT writes and the
