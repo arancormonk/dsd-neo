@@ -20,8 +20,9 @@ import QtQuick
 //   of the turn (an opacity raises no accessibility event);
 // - `live` is the rows holding an entry, at once on a shrink and at the end of
 //   the turn on emptying: a view names rows from `live` on as nothing;
-// - with `holdWhenEmpty`, an empty list keeps the rows as they are, `live` 0:
-//   the view leaves them out of the tree as well, and the next list reuses them.
+// - with `holdRows`, the rows past the end of the list stay, held, whether the
+//   list shrank or emptied: the view leaves rows from `live` on out of the tree
+//   as well, and a longer list later reuses them rather than adding rows.
 ListModel {
     id: rows
     property var entries: []
@@ -31,7 +32,7 @@ ListModel {
     property var lineOf: function (entry, index) {
         return "";
     }
-    property bool holdWhenEmpty: false
+    property bool holdRows: false
     property int live: 0
     property int shown: 0
     onEntriesChanged: sync()
@@ -93,11 +94,7 @@ ListModel {
     function trim() {
         var n = entries ? entries.length : 0;
         shown = n;
-        if (n === 0 && holdWhenEmpty) {
-            live = 0;
-            return;
-        }
-        if (count > n)
+        if (count > n && !holdRows)
             remove(n, count - n);
         live = n;
     }

@@ -85,26 +85,41 @@ ModalSheet {
             // renamed for it. A row is renamed only when its own entry's words
             // change, or a new entry takes the row of one that left.
             //
-            // A target with none of these entries (a hop to a DMR or analog
-            // target, or a P25 site that lists none) keeps the rows, out of the
-            // tree and out of sight, rather than removing them: removed or
-            // hidden, every row would raise a hide, and again a show on the way
-            // back, each a main-thread task with blocking calls into the Qt
-            // thread on Android. Leaving the tree raises only ObjectDestroyed,
-            // which Android's bridge does not send on. A held row, and a row past
-            // the end of a shrinking list until it goes, is transparent, so Qt
-            // reports it invisible, and unnamed, so a copy Android still holds,
-            // or keeps focus on, reads nothing. Unnaming a row is a call into
-            // Java that returns at once unless TalkBack is on that row.
+            // A target with fewer of these entries, or none (a hop between P25
+            // sites of other sizes, or to a DMR or analog target), keeps the
+            // rows past the end of its list, out of the tree and out of sight,
+            // rather than removing them: removed or hidden, every row would
+            // raise a hide, and again a show on the way back, each a
+            // main-thread task with blocking calls into the Qt thread on
+            // Android. Leaving the tree raises only ObjectDestroyed, which
+            // Android's bridge does not send on. A held row is transparent, so
+            // Qt reports it invisible, and unnamed, so a copy Android still
+            // holds, or keeps focus on, reads nothing. Unnaming a row is a call
+            // into Java that returns at once unless TalkBack is on that row.
             Column {
+                id: sectionList
+                // The bottom of the last row drawn. Held rows come last, below
+                // it, and keep their size, so holding one moves nothing.
+                property real shownBottom: 0
+                function place() {
+                    var last = sectionRows.shown > 0 ? sectionRepeater.itemAt(sectionRows.shown - 1) : null;
+                    shownBottom = last ? last.y + last.height : 0;
+                }
                 width: parent.width
                 spacing: 8
-                height: sectionRows.shown > 0 ? implicitHeight : 0
+                height: shownBottom
+                Connections {
+                    target: sectionRows
+                    function onShownChanged() {
+                        sectionList.place();
+                    }
+                }
                 Repeater {
+                    id: sectionRepeater
                     model: StableRows {
                         id: sectionRows
                         entries: section.rows
-                        holdWhenEmpty: true
+                        holdRows: true
                         keyOf: function (row) {
                             return sheet.entryKey(section.index, row);
                         }
@@ -119,7 +134,9 @@ ModalSheet {
                         text: line
                         // A row being removed has index -1 for an instant: it stays hidden and unnamed.
                         opacity: index >= 0 && index < sectionRows.shown ? 1 : 0
-                        Accessible.ignored: !navigationAllowed || !visible || sectionRows.live === 0
+                        onYChanged: sectionList.place()
+                        onHeightChanged: sectionList.place()
+                        Accessible.ignored: !navigationAllowed || !visible || index < 0 || index >= sectionRows.live
                         Accessible.name: navigationAllowed && visible && index >= 0 && index < sectionRows.live ? text : ""
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap

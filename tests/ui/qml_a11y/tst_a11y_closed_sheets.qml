@@ -618,9 +618,10 @@ Item {
             fakeNet.neighbours = [];
         }
 
-        // Issue #782: a shrinking list's departed rows go at the end of the turn, but are not drawn or read from the
-        // moment the list shrinks: each reports itself invisible and unnamed, and hides as it goes.
-        function test_open_network_sheet_shrink_hides_departed_rows_at_once() {
+        // Issue #782: a shrinking list's departed rows are held, not removed: from the moment the list shrinks each
+        // is out of the tree, reports itself invisible and unnamed, and takes no room, and none shows or hides. A
+        // longer list later reuses them, read as their new entries, and nothing shows or hides then either.
+        function test_open_network_sheet_shrink_holds_departed_rows() {
             var sheet = networkLoader.item;
             fakeNet.neighbours = neighbours(8, 0, 3);
             sheet.visible = true;
@@ -629,6 +630,9 @@ Item {
             wait(50);
             var rows = neighbourRows(sheet);
             compare(rows.length, 8);
+            var list = rows[0].parent;
+            var sixHigh = rows[5].y + rows[5].height;
+            var held = allNeighbourRows(sheet).length;
             testContext.startAccessibilityCount();
             fakeNet.neighbours = neighbours(6, 0, 3);
             // Before the event loop runs again.
@@ -637,19 +641,97 @@ Item {
                 var node = testContext.accessibleNode(rows[k]);
                 verify(node.invisible, "a departed row is not drawn: " + rows[k].text);
                 compare(node.name, "", "nor read");
+                verify(!node.inTree, "nor in the tree");
             }
             wait(20);
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
-            compare(allNeighbourRows(sheet).length, 6, "and goes at the end of the turn");
-            // A removed row has left the sheet when it hides, so it is counted by type, not within the sheet.
-            compare(counts.types.ObjectHide || 0, 2, "each departed row hides as it goes: " + JSON.stringify(counts.chains));
+            var type;
+            compare(allNeighbourRows(sheet).length, held, "the departed rows are held");
+            compare(list.height, sixHigh, "below the rows drawn, taking no room");
+            for (type of ["LocationChanged", "DescriptionChanged"])
+                compare(testContext.accessibilityCountWithin(list, type), 0, type + ": " + JSON.stringify(counts.chains));
+            compare(counts.types.ObjectHide || 0, 0, JSON.stringify(counts.chains));
             compare(counts.types.ObjectShow || 0, 0, JSON.stringify(counts.chains));
-            // Unnamed once as it leaves, and not named again as it goes: a row TalkBack is on would read it out.
+            // Unnamed once as it leaves, and not named again: a row TalkBack is on would read it out.
             compare(counts.types.NameChanged || 0, 2, "one rename a departed row: " + JSON.stringify(counts.chains));
+            testContext.startAccessibilityCount();
+            fakeNet.neighbours = neighbours(8, 1, 3);
+            wait(20);
+            counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(neighbourRows(sheet), rows, "the held rows come back");
+            compare(counts.types.ObjectHide || 0, 0, JSON.stringify(counts.chains));
+            compare(counts.types.ObjectShow || 0, 0, JSON.stringify(counts.chains));
+            for (var r of rows) {
+                node = testContext.accessibleNode(r);
+                verify(node.inTree && !node.invisible);
+                compare(node.name, r.text);
+            }
             sheet.visible = false;
             Ui.Navigation.modals = [];
             fakeNet.neighbours = [];
+        }
+
+        // Issue #782: hops between P25 targets of very different sizes (100 radios and 1), the Network sheet open. The
+        // rows the small target does not need are held, and the big target's next list takes them back, so no hop
+        // shows or hides a row, however many radios the targets list, and every drawn row reads its own radio.
+        function test_open_network_sheet_unequal_hops_hold_rows() {
+            var sheet = networkLoader.item;
+            var radios = function (n, base) {
+                var listed = [];
+                for (var i = 0; i < n; ++i)
+                    listed.push({rid: base + i});
+                return listed;
+            };
+            var radioRows = function (all) {
+                var found = [];
+                (function collect(item) {
+                    for (var k = 0; k < item.children.length; ++k) {
+                        var child = item.children[k];
+                        if (child.textFormat !== undefined && /^RID:[0-9]+$/.test(child.text) && (all || drawn(child)))
+                            found.push(child);
+                        collect(child);
+                    }
+                })(sheet);
+                return found;
+            };
+            fakeNet.radios = radios(100, 1000);
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            compare(radioRows(false).length, 100);
+            testContext.startAccessibilityCount();
+            var hops = 6;
+            for (var hop = 1; hop <= hops; ++hop) {
+                fakeNet.radios = hop % 2 === 1 ? radios(1, 7000 + hop) : radios(100, 1000 + hop);
+                wait(20);
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(counts.types.ObjectShow || 0, 0, JSON.stringify(counts.chains));
+            compare(counts.types.ObjectHide || 0, 0, JSON.stringify(counts.chains));
+            compare(radioRows(true).length, 100, "no row is added or removed");
+            var rows = radioRows(false);
+            compare(rows.length, 100);
+            var wrong = [];
+            for (var k = 0; k < rows.length; ++k) {
+                if (testContext.accessibleNode(rows[k]).name !== rows[k].text)
+                    wrong.push(k);
+            }
+            compare(wrong.length, 0, "rows read as another radio than they show: " + JSON.stringify(wrong));
+            fakeNet.radios = radios(1, 9000);
+            wait(20);
+            rows = radioRows(true);
+            var inTree = rows.filter(function (row) {
+                return testContext.accessibleNode(row).inTree;
+            });
+            compare(inTree.length, 1, "only the one radio's row is in the tree");
+            compare(inTree[0].text, "RID:9000");
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.radios = [];
         }
 
         // Issue #782: a list emptied and filled again in one turn (a publisher that clears first) keeps every row:
@@ -701,8 +783,8 @@ Item {
         }
 
         // Issue #782: a trunk scan's hops with the Network sheet open. Each hop publishes the new target's network
-        // as UiController does, and the sheet keeps every row both targets list: only a row for an entry count that
-        // came or went shows or hides, the row a listener is on stays, and each row ends on the new target's entry.
+        // as UiController does, and the sheet keeps every row both targets list: no row shows or hides, the row a
+        // listener is on stays, and each row ends on the new target's entry.
         function test_open_network_sheet_on_hops() {
             var sheet = liveNetworkLoader.item;
             verify(sheet !== null);
@@ -723,10 +805,10 @@ Item {
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
-            // Two rows go on each hop to the six-neighbour target and come back on the next. A removed row has left
-            // the sheet when it hides, so shows and hides are counted by type.
-            compare(counts.types.ObjectHide || 0, 2 * hops / 2, "two hides a shrink: " + JSON.stringify(counts.chains));
-            compare(counts.types.ObjectShow || 0, 2 * hops / 2, "two shows a grow: " + JSON.stringify(counts.chains));
+            // Two rows are held on each hop to the six-neighbour target and taken back on the next: none shows or
+            // hides.
+            compare(counts.types.ObjectHide || 0, 0, JSON.stringify(counts.chains));
+            compare(counts.types.ObjectShow || 0, 0, JSON.stringify(counts.chains));
             rows = neighbourRows(sheet);
             compare(rows.length, targets[0].length);
             verify(rows[3] === row, "the row a listener is on stays across the hops");

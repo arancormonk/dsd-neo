@@ -11084,9 +11084,11 @@ the top: a move raises a LocationChanged for each row that shifts and nothing el
 the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys
 (`NetworkSheet.readingOrder()`): Qt's bridge sends Android no event for a row that moves, and TalkBack swiped a
 reordering section in an order it had left, skipping, repeating and looping (the N-rotate check). Its rows are not
-paced. With `holdWhenEmpty` (the Network sheet) an empty list keeps the rows, `live` 0: they leave the tree
-(`Accessible.ignored`, which raises ObjectDestroyed, not sent on by Android's bridge), are transparent and unnamed, and
-their column takes no height; the next list reuses them. Nothing the rows raise then refreshes Android's cached copy of
+paced. With `holdRows` (the Network sheet) the rows past the end of a shorter or empty list stay, held (`live` is the
+rows holding an entry): they leave the tree (`Accessible.ignored`, which raises ObjectDestroyed, not sent on by
+Android's bridge), are transparent and unnamed, and keep their size below the last row drawn, where the column's height
+ends (`shownBottom`), so holding one moves nothing; a longer list later reuses them. A hop between P25 targets of 100
+radios and 1 removed and rebuilt 99 rows each way before, a hide and a show each. Nothing the rows raise then refreshes Android's cached copy of
 the sheet (only a show or hide does, `QtAccessibilityDelegate.java` `notifyObjectShow`/`notifyObjectHide`), so a held
 row must read as nothing there: transparent, Qt reports it invisible (`qaccessiblequickitem.cpp` `state()`), which
 Android passes on as not visible to the user, and unnamed it has no words, even with TalkBack's focus left on it.
@@ -11103,8 +11105,8 @@ Pause holds it: each refresh rebuilds the rows.
 `UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
 (`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
 details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
-SiteSheet and the open Network sheet across refreshes, reorders, capped arrivals, a clear and refill, and hops between
-P25 targets and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), and a hidden Talkgroups screen across two
+SiteSheet and the open Network sheet across refreshes, reorders, capped arrivals, a shrink, a clear and refill, and hops
+between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), and a hidden Talkgroups screen across two
 targets' tables (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
 node reads, against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their
 pace. How the harness works and how to add a case: `docs/testing.md` "Accessibility event counts".
