@@ -42,6 +42,22 @@ class TalkgroupFilterModel : public QSortFilterProxyModel {
     void setFilterText(const QString& text);
     void setFilterTag(const QString& tag);
     Q_INVOKABLE QVariantList snapshotSelection() const;
+    /**
+     * @brief The view row that lists the range @p idStart to @p idEnd, or -1 when none does.
+     *
+     * For the Talkgroups screen, which lets its model go while hidden (issue #782) and puts the reader back on the
+     * card they had at the top. Both bounds, since an exact row and a range can share a start. One pass over the
+     * filtered rows, once per show.
+     */
+    Q_INVOKABLE int rowForTalkgroup(qulonglong idStart, qulonglong idEnd) const;
+    /**
+     * @brief The view row of the card the Talkgroups screen kept its place on, or -1 when none lists it.
+     *
+     * A card is its bounds, its pattern and its table index, the token its edits carry: pattern rows all have the
+     * bounds 0-0, and a table can list the same bounds twice. A row whose bounds and pattern match but whose index
+     * moved (a row added or removed above it) is the next best, so the reader is put back near where they were.
+     */
+    Q_INVOKABLE int rowForCard(qulonglong idStart, qulonglong idEnd, const QString& pattern, int tableIndex) const;
 
   Q_SIGNALS:
     void countChanged();

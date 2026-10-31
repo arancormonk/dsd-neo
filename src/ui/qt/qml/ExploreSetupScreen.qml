@@ -107,7 +107,8 @@ Item {
             onClicked: screen.requestClose()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.verticalCenter: parent.verticalCenter
@@ -139,7 +140,7 @@ Item {
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
-            Text {
+            ReadableText {
                 width: parent.width
                 text: qsTr("Which radio?")
                 font.family: Theme.sans
@@ -213,7 +214,7 @@ Item {
                 }
             }
 
-            Text {
+            ReadableText {
                 width: parent.width
                 text: qsTr("Start where?")
                 font.family: Theme.sans
@@ -269,7 +270,7 @@ Item {
                         }
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: qsTr("Anywhere is fine — you can move around once the band is on screen.")
                         font.family: Theme.sans

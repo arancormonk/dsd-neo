@@ -27,6 +27,14 @@ class P25NetworkModel : public QObject {
 
     void setActive(bool enabled);
     void refresh(const dsd_state* snapshot);
+    /**
+     * @brief Publish a new scan target's network in one replacement (issue #782).
+     *
+     * With the sheet open, each list goes straight from the old target's rows to @p snapshot's, so the sheet keeps
+     * the rows both list rather than emptying and refilling. Closed, or with no @p snapshot (no live session), the
+     * lists are cleared: no old target's row survives into the new one either way.
+     */
+    void replaceForTarget(const dsd_state* snapshot);
     void clear();
 
     QVariantList

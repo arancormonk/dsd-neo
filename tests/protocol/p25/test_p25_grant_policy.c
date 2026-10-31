@@ -14,7 +14,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -28,6 +27,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_trunk_sm_internal.h"
+#include "test_env.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -176,8 +176,8 @@ main(void) {
     int id = 1;
     seed_fdma_iden(&st, id);
     int ch = (id << 12) | 0x000A;
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
 
     // Unknown group is blocked in allow-list mode.
     unsigned before = st.p25_sm_tune_count;
@@ -958,8 +958,8 @@ main(void) {
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     dsd_tg_policy_clear(&st);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     seed_fdma_iden(&st, 7);
     const int d1_channel = 0x7010;
     rc |= expect_true("seed D1 active", seed_exact(&st, 1600, "A", "D1 active", 25, 0) == 0);
@@ -1009,8 +1009,8 @@ main(void) {
     rc |= expect_true("D1 preempt canonical call replaced",
                       active_call_matches(&st, 0, DSD_CALL_KIND_GROUP_VOICE, 1601, 1601, 2601));
 
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
 
     // Patch-member priority/preempt displaces using the matched member policy, not the OTA SG's default priority.
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
@@ -1189,8 +1189,8 @@ main(void) {
         dsd_state_ext_free_all(&namespace_st);
     }
 
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
 
     dsd_state_ext_free_all(&st);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

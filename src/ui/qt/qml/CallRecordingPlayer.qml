@@ -76,7 +76,32 @@ Column {
     // The length rounds; the position floors, and reads the length once it
     // reaches the end, so a finished part reads 0:01 / 0:01, never 0:00 / 0:01.
     readonly property string lengthText: Util.playbackLengthText(durationMs)
-    readonly property string positionText: durationMs > 0 && positionMs >= durationMs ? lengthText : Util.playbackTimeText(positionMs)
+    readonly property string positionText: timeTextAt(positionMs)
+    function timeTextAt(ms) {
+        return durationMs > 0 && ms >= durationMs ? lengthText : Util.playbackTimeText(ms);
+    }
+    // Issue #782: what a screen reader is told of the position, which moves
+    // every tick while it plays: at most every few seconds (SpeechPacer), and
+    // at once on play, pause, stop, the end of the part, or a seek once the
+    // host reports a position near where it was asked to land (a position
+    // sent before the host applied the seek does not count).
+    property int seekLanded: 0
+    property real seekTargetMs: -1
+    // A seek the host never applied (it clamped or dropped it) is forgotten
+    // when playback stops or fails, or moves to another part: a later
+    // position passing near it is not a landing.
+    readonly property string seekScope: [loaded, part ? part.path : "", playState === 0 || playState === 4].join("|")
+    onSeekScopeChanged: seekTargetMs = -1
+    SpeechPacer {
+        id: positionSpeech
+        shown: Navigation.allows(player) && player.visible
+        step: [player.playState, player.loaded, player.part ? player.part.path : "", player.durationMs, player.seekLanded].join("|")
+        read: function () {
+            return String(player.positionMs);
+        }
+    }
+    readonly property real spokenPositionMs: positionSpeech.spoken.length > 0 ? Number(positionSpeech.spoken) : 0
+    readonly property string spokenTimeText: qsTr("%1 of %2").arg(timeTextAt(spokenPositionMs)).arg(lengthText)
 
     function partLabel(index) {
         return qsTr("Part %1 · %2").arg(index + 1).arg(Util.playbackLengthText(parts[index].durationMs));
@@ -294,6 +319,10 @@ Column {
         }
         function onPlaybackPositionChanged() {
             player.followHost();
+            if (player.seekTargetMs >= 0 && Math.abs(decoderHost.playbackPositionMs - player.seekTargetMs) < 1000) {
+                player.seekTargetMs = -1;
+                player.seekLanded++;
+            }
         }
         function onRecordingTransferFinished(selection, result, missing) {
             player.saveFinished(selection, result);
@@ -340,6 +369,7 @@ Column {
             spacing: 3
 
             Text {
+                id: recordingTimeText
                 objectName: "recordingTime"
                 width: parent.width
                 text: qsTr("%1 / %2").arg(player.positionText).arg(player.lengthText)
@@ -347,7 +377,8 @@ Column {
                 font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary
                 Accessible.role: Accessible.StaticText
-                Accessible.name: qsTr("%1 of %2").arg(player.positionText).arg(player.lengthText)
+                Accessible.name: player.spokenTimeText
+                Accessible.ignored: !Navigation.allows(recordingTimeText) || !visible
             }
 
             // The position under the time, and a seek by tap or drag while the
@@ -373,7 +404,9 @@ Column {
                     activeFocusOnTab: Navigation.allows(seekBar) && seekable
                     Accessible.role: Accessible.Slider
                     Accessible.name: qsTr("Position")
-                    Accessible.description: qsTr("%1 of %2").arg(player.positionText).arg(player.lengthText)
+                    Accessible.description: player.spokenTimeText
+                    // Read when asked (Android polls it); a plain Item's value raises no
+                    // ValueChanged, so it stays live (issue #782).
                     readonly property real value: player.positionMs / 1000
                     readonly property real minimumValue: 0
                     readonly property real maximumValue: player.durationMs / 1000
@@ -398,8 +431,10 @@ Column {
                         return Math.round(Math.max(0, Math.min(1, x / Math.max(1, track.width))) * player.durationMs);
                     }
                     function seekTo(ms) {
-                        if (seekable && Navigation.allows(seekBar))
-                            decoderHost.seekPlayback(Math.max(0, Math.min(player.durationMs, ms)));
+                        if (seekable && Navigation.allows(seekBar)) {
+                            player.seekTargetMs = Math.max(0, Math.min(player.durationMs, ms));
+                            decoderHost.seekPlayback(player.seekTargetMs);
+                        }
                     }
                     function nudge(delta) {
                         seekTo(player.positionMs + delta);
@@ -465,6 +500,7 @@ Column {
             }
 
             Text {
+                id: recordingStatusText
                 objectName: "recordingStatus"
                 width: parent.width
                 visible: text.length > 0
@@ -475,11 +511,13 @@ Column {
                 color: Theme.textSubdued
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
+                Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible
             }
         }
     }
 
     Text {
+        id: recordingProblemText
         objectName: "recordingProblem"
         width: parent.width
         visible: text.length > 0
@@ -490,6 +528,7 @@ Column {
         color: player.playState === 4 || player.storageAway ? Theme.alert : Theme.textSecondary
         Accessible.role: player.playState === 4 || player.storageAway ? Accessible.AlertMessage : Accessible.StaticText
         Accessible.name: text
+        Accessible.ignored: !Navigation.allows(recordingProblemText) || !visible
     }
 
     // A call heard in pieces: a chip per part, the one shown checked, and Play all
@@ -553,6 +592,7 @@ Column {
     }
 
     Text {
+        id: recordingNoticeText
         objectName: "recordingNotice"
         width: parent.width
         visible: text.length > 0
@@ -563,6 +603,7 @@ Column {
         color: player.noticeProblem ? Theme.alert : Theme.textSecondary
         Accessible.role: player.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText
         Accessible.name: text
+        Accessible.ignored: !Navigation.allows(recordingNoticeText) || !visible
     }
 
     FileDialog {

@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <stdio.h>
@@ -14,10 +13,11 @@
 #if DSD_PLATFORM_WIN_NATIVE
 #include <windows.h>
 #endif
+#include "test_env.h"
 
 static void
 set_env_flag(const char* name, const char* value) {
-    int rc = value ? dsd_setenv(name, value, 1) : dsd_unsetenv(name);
+    int rc = value ? dsd_test_setenv(name, value, 1) : dsd_test_unsetenv(name);
     assert(rc == 0);
 }
 

@@ -84,6 +84,9 @@ ModalSheet {
     // not stepped: neither segment is chosen, and dB (or Noise where an FM
     // channel takes it) replaces it.
     readonly property bool squelchHeld: squelchAuto || (squelchNoise && !squelchNoiseOffered)
+    // Issue #782: what makes a moving squelch reading worth hearing at once
+    // (SpeechPacer): the gate opening or closing, or the setting changing.
+    readonly property string squelchStep: [metrics.squelchGateOpen === true, squelchReading, squelchRowOverride].join("|")
     // The setting in force comes first; with a row override that is the row's,
     // and the default being edited is named below it.
     readonly property string squelchReading: (squelchRowOverride && !rowSquelch)
@@ -238,7 +241,7 @@ ModalSheet {
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: qsTr("A level mutes audio below it. Noise opens when the FM noise above voice quiets by its margin, as a radio's squelch does: feed it the discriminator or unfiltered FM audio.")
         textFormat: Text.PlainText
@@ -257,7 +260,7 @@ ModalSheet {
             sheet.chooseScope(index === 1);
         }
     }
-    Text {
+    ReadableText {
         objectName: "squelchScopeNote"
         width: parent.width
         visible: sheet.rowSquelch
@@ -282,15 +285,27 @@ ModalSheet {
         width: parent.width
         spacing: 10
         Text {
+            id: squelchValueText
             objectName: "squelchValue"
             width: parent.width - 116
             anchors.verticalCenter: parent.verticalCenter
             text: sheet.squelchReading
             // Read aloud as the terminal prints it, row note, default and status included.
             Accessible.role: Accessible.StaticText
-            Accessible.name: sheet.squelchRowOverride ? metrics.squelchReadout
-                : (sheet.squelchStatus !== "" ? sheet.squelchReading + " (" + sheet.squelchStatus + ")"
-                    : sheet.squelchReading)
+            Accessible.name: squelchSpeech.spoken
+            Accessible.ignored: !Navigation.allows(squelchValueText) || !visible
+            // The auto and noise squelch readings move every tick (issue #782): heard at
+            // once when the gate opens or closes or the setting changes, else at their pace.
+            SpeechPacer {
+                id: squelchSpeech
+                shown: Navigation.allows(squelchValueText) && squelchValueText.visible
+                step: sheet.squelchStep
+                read: function () {
+                    return sheet.squelchRowOverride ? metrics.squelchReadout
+                        : (sheet.squelchStatus !== "" ? sheet.squelchReading + " (" + sheet.squelchStatus + ")"
+                            : sheet.squelchReading);
+                }
+            }
             color: Theme.textPrimary
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(14)
@@ -315,8 +330,9 @@ ModalSheet {
     }
     // The squelch in force: "learning" until the noise squelch has a reference,
     // its quieting, or why it is off here.
-    Text {
+    LiveText {
         objectName: "squelchStatus"
+        step: sheet.squelchStep
         visible: sheet.squelchStatus !== ""
         width: parent.width
         text: sheet.squelchStatus
@@ -348,7 +364,7 @@ ModalSheet {
         }
     }
     // A row with its own squelch keeps it while on air: the controls edit the default.
-    Text {
+    ReadableText {
         objectName: "squelchRowNote"
         width: parent.width
         visible: sheet.squelchRowOverride && !sheet.rowSquelch

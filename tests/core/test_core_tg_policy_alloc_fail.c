@@ -17,6 +17,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 
 void dsd_tg_policy_test_alloc_reset(void);
 void dsd_tg_policy_test_alloc_fail_after(long fail_after);
@@ -110,12 +111,12 @@ test_snapshot_reuses_unchanged_policy_table(void) {
 
     init_route(&candidate_route, 200, 2, 851000000L, 10, 0);
     init_decision(&candidate_decision, 200, 2, 20, 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     rc |= expect_true("snapshot active state refreshed without policy clone",
                       dsd_tg_policy_should_preempt(NULL, dst, &candidate_route, &candidate_decision, 1.0) == 1);
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
 
     dsd_tg_policy_test_alloc_reset();
     free_test_state(dst);

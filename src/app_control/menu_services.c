@@ -35,6 +35,7 @@
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -2580,8 +2581,10 @@ svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on) {
         }
     }
     opts->rtltcp_autotune = requested;
-    /* Update env so future restarts inherit */
-    dsd_setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
+    /* A session override, so a stream restart and a saved config keep it */
+    if (dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0") != 0) {
+        LOG_WARN("Could not set DSD_NEO_TCP_AUTOTUNE for this session; a restart may not keep it\n");
+    }
     return 0;
 }
 
@@ -2591,8 +2594,10 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
         return -1;
     }
     opts->rtl_auto_ppm = on ? 1 : 0;
-    /* Update env for persistence */
-    dsd_setenv("DSD_NEO_AUTO_PPM", on ? "1" : "0", 1);
+    /* A session override, so a stream restart and a saved config keep it */
+    if (dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_AUTO_PPM", on ? "1" : "0") != 0) {
+        LOG_WARN("Could not set DSD_NEO_AUTO_PPM for this session; a restart may not keep it\n");
+    }
     if (state && state->rtl_ctx) {
         rtl_stream_set_auto_ppm(on ? 1 : 0);
     }

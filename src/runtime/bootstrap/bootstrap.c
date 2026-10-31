@@ -10,6 +10,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
@@ -661,7 +662,7 @@ bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effe
 
 static void
 bootstrap_apply_runtime_config_after_cli(dsd_opts* opts, dsd_state* state) {
-    /* Re-parse env-derived config after CLI mapping (CLI sets DSD_NEO_* env overrides). */
+    /* Re-parse env-derived config after CLI mapping (options set DSD_NEO_* session overrides). */
     dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
 }
@@ -761,7 +762,10 @@ bootstrap_maybe_run_interactive(const bootstrap_cli_args* args, int argc, int us
                                 dsd_state* state) {
     if (args->force_bootstrap_cli || (argc <= 1 && !user_cfg_loaded)) {
         if (args->force_bootstrap_cli) {
-            dsd_unsetenv("DSD_NEO_NO_BOOTSTRAP");
+            /* Hide an exported DSD_NEO_NO_BOOTSTRAP for this session; the process environment stays as it is. */
+            if (dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_NO_BOOTSTRAP", NULL) != 0) {
+                LOG_WARN("Could not hide DSD_NEO_NO_BOOTSTRAP for this session; the setup may be skipped\n");
+            }
             dsd_neo_config_init();
         }
         dsd_bootstrap_interactive(opts, state);
@@ -771,6 +775,10 @@ bootstrap_maybe_run_interactive(const bootstrap_cli_args* args, int argc, int us
 int
 dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc_effective,
                       int* out_exit_rc) {
+    /* A session starts from the process environment and the host's overrides: an embedding host bootstraps one
+       session after another in one process, and none may inherit the options, INI keys or toggles of the last
+       (#782). */
+    dsd_env_clear_layer(DSD_ENV_LAYER_SESSION);
     if (!opts || !state || argc < 0 || !argv) {
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;

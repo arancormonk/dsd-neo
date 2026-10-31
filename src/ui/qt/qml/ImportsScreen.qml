@@ -172,7 +172,8 @@ Item {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.verticalCenter: parent.verticalCenter
@@ -194,7 +195,7 @@ Item {
         text: importedFiles.count === 1 ? qsTr("1 file") : qsTr("%1 files").arg(importedFiles.count)
     }
 
-    Text {
+    ReadableText {
         id: noticeLine
 
         anchors.top: countLabel.bottom
@@ -260,7 +261,7 @@ Item {
                     width: parent.width
                     height: Math.max(fileName.implicitHeight, badge.implicitHeight)
 
-                    Text {
+                    ReadableText {
                         id: fileName
                         anchors.left: parent.left
                         anchors.right: badge.left
@@ -282,7 +283,7 @@ Item {
                     }
                 }
 
-                Text {
+                ReadableText {
                     width: parent.width
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
@@ -301,7 +302,7 @@ Item {
         }
 
         // Empty state: an invitation to act, not mood.
-        Text {
+        ReadableText {
             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
             objectName: "importsEmptyMessage"
 
@@ -370,7 +371,7 @@ Item {
             text: qsTr("Import file")
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("What does this file contain?")
             font.family: Theme.sans
@@ -428,7 +429,7 @@ Item {
         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
         objectName: "importsActionSheet"
 
-        Text {
+        ReadableText {
             width: parent.width
             text: screen.actionRow >= 0 ? importedFiles.get(screen.actionRow).name : ""
             font.family: Theme.sans
@@ -518,7 +519,7 @@ Item {
         property var rows: []
         property bool valid: true
         accessibleName: qsTr("Channel decryption profiles")
-        Text {
+        ReadableText {
             width: parent.width
             text: channelReview.valid ? qsTr("Configured row settings. Inherited values come from the session that starts this map.") : qsTr("This map or a companion file could not be read. Update the import before listening.")
             wrapMode: Text.Wrap
@@ -563,7 +564,7 @@ Item {
         readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsReferencingPath(importedFiles.get(screen.actionRow).path) : []
         readonly property var usedBy: visible && screen.actionRow >= 0 ? savedSystems.systemsReferencingPath(importedFiles.get(screen.actionRow).path) : []
 
-        Text {
+        ReadableText {
             width: parent.width
             text: screen.actionRow >= 0 ? qsTr("Remove %1?").arg(importedFiles.get(screen.actionRow).name) : ""
             font.family: Theme.sans
@@ -573,7 +574,7 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             visible: removeSheet.usedBy.length > 0
             text: removeSheet.usedBy.length === 1 ? qsTr("Used by %1 — removing clears it from that system.").arg(removeSheet.usedBy[0]) : qsTr("Used by %1 — removing clears it from those systems.").arg(removeSheet.usedBy.join(", "))
@@ -583,7 +584,7 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             visible: removeSheet.profilesUsingFile.length > 0
             text: qsTr("Used by decryption profiles: %1. Choose another file in those profiles before removing it.").arg(removeSheet.profilesUsingFile.join(", "))
@@ -591,7 +592,7 @@ Item {
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }
-        Text {
+        ReadableText {
             width: parent.width
             visible: removeSheet.listsUsingFile.length > 0
             text: qsTr("Used by scan lists: %1. Removing makes these lists drafts until another target CSV is selected.").arg(removeSheet.listsUsingFile.join(", "))

@@ -32,9 +32,11 @@ namespace dsd_qt {
  * @brief Make QML engines built after this call run each garbage collection to completion.
  *
  * Call it before the first QQmlEngine is constructed (each engine reads the limit once, in its
- * constructor), and before any other thread can read the environment. A QV4_GC_TIMELIMIT that Qt
- * would honour (an integer) is kept, so a developer can still bring the time slices back to look at
- * them; anything else, including unset, becomes 0.
+ * constructor), and before any other thread can read the environment. The Android app does not call
+ * it: its main() runs while the Android main thread reads the environment, so QmlGcPolicy.kt sets the
+ * limit before Qt starts (#782). A QV4_GC_TIMELIMIT that Qt would honour (an integer) is kept, so a
+ * developer can still bring the time slices back to look at them; anything else, including unset,
+ * becomes 0.
  *
  * @return true when this call set the limit to 0. false when the environment's own value was kept,
  *         or when Qt could not write the environment (then the collector keeps its time slices).

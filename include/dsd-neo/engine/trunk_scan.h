@@ -74,6 +74,8 @@ typedef enum {
 
 typedef struct {
     char id[64];
+    /** The optional `label` column, sanitized (dsd_channel_label_sanitize()): names the channel while parked here. */
+    char label[64];
     dsd_trunk_scan_target_type type;
     uint32_t frequency_hz;
     char chan_csv[1024];

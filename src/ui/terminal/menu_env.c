@@ -10,8 +10,9 @@
 
 #include "menu_env.h"
 #include <dsd-neo/core/parse.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <float.h> // IWYU pragma: keep
 #include <limits.h>
 #include <stddef.h>
@@ -46,13 +47,15 @@ parse_double_with_default(const char* text, double defv) {
 
 int
 env_get_int(const char* name, int defv) {
-    const char* v = dsd_neo_env_get(name);
+    char text[64];
+    const char* v = dsd_env_read(name, text, sizeof text);
     return parse_int_with_default(v, defv);
 }
 
 double
 env_get_double(const char* name, double defv) {
-    const char* v = dsd_neo_env_get(name);
+    char text[64];
+    const char* v = dsd_env_read(name, text, sizeof text);
     return parse_double_with_default(v, defv);
 }
 
@@ -60,7 +63,9 @@ void
 env_set_int(const char* name, int v) {
     char buf[64];
     DSD_SNPRINTF(buf, sizeof buf, "%d", v);
-    dsd_setenv(name, buf, 1);
+    if (dsd_env_set(DSD_ENV_LAYER_SESSION, name, buf) != 0) {
+        LOG_WARN("Could not set %s: too many variables changed\n", name);
+    }
 }
 
 void
@@ -68,7 +73,9 @@ env_set_double(const char* name, double v) {
     char buf[64];
     // limit precision just for display sanity
     DSD_SNPRINTF(buf, sizeof buf, "%.6g", v);
-    dsd_setenv(name, buf, 1);
+    if (dsd_env_set(DSD_ENV_LAYER_SESSION, name, buf) != 0) {
+        LOG_WARN("Could not set %s: too many variables changed\n", name);
+    }
 }
 
 void

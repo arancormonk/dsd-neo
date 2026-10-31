@@ -17,24 +17,21 @@
 #include <locale.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include "test_env.h"
 #include "ui_row.h"
 
 #if defined(NCURSES_VERSION)
 
+/* Through test_env.h, which tells the override store, so the Unicode check reads the flags again (#782). */
 static void
 set_env(const char* name, const char* value) {
-#if defined(_WIN32)
-    (void)_putenv_s(name, value ? value : "");
-#else
     if (value) {
-        (void)setenv(name, value, 1);
+        (void)dsd_test_setenv(name, value, 1);
     } else {
-        (void)unsetenv(name);
+        (void)dsd_test_unsetenv(name);
     }
-#endif
 }
 
 /* The text on screen row y, columns 0..cols-1, trailing blanks dropped; non-ASCII cells read as their code point in

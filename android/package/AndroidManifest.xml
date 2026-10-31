@@ -45,6 +45,20 @@
 
         <!-- QtActivity plus one override: it raises the Qt quit that Qt's own teardown
              waits for but does not send. See DsdNeoActivity. -->
+        <!-- One instance per process (#782): Qt 6.11.2 restarts the whole process, skipping
+             the app's teardown, when a second instance is created in a process it already
+             started. singleTask brings the running instance forward for a USB attachment
+             (to onNewIntent), the launcher icon and the decoding notification, where
+             singleTop could create a new one on top of a picker or permission dialog. The
+             cost: those three close a picker or permission dialog open in the app's task,
+             which then returns cancelled; the flows treat that as a cancel. configChanges
+             lists every configuration change the platform defines
+             (android-36, so compileSdk 36), assetsPaths (a runtime overlay turned on) included,
+             so none recreates the activity. resourcesUnused is left out on purpose: it is
+             for activities that use no resources, and this one uses the splash, the strings
+             and the notice dialog. The list is explicit rather than aapt2's allKnown so that
+             launch_policy in tests/android/run_jvm_tests.py can pin it. A recreation that
+             still happens is recorded by LaunchGuard. -->
         <!-- The launcher activity has to be exported: it carries the MAIN/LAUNCHER filter
              and the USB_DEVICE_ATTACHED filter, and both are delivered by the system from
              outside the app. The only app-specific input is a USB attachment, validated by deviceName
@@ -56,9 +70,9 @@
         <!-- nosemgrep: java.android.security.exported_activity.exported_activity -->
         <activity
             android:name="io.github.arancormonk.dsdneo.DsdNeoActivity"
-            android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|layoutDirection|colorMode|grammaticalGender|fontScale|fontWeightAdjustment|assetsPaths"
             android:label="-- %%INSERT_APP_NAME%% --"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:screenOrientation="unspecified"
             android:exported="true">
             <intent-filter>

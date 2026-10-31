@@ -106,6 +106,12 @@ set_property(
     PROPERTY QT_QML_ROOT_PATH "${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_TARGET_SDK_VERSION 36)
+# Pinned rather than whichever platform is installed newest: the manifest's
+# configChanges uses assetsPaths, which aapt2 knows only from android-36 (#782).
+# CI installs this platform from ANDROID_COMPILE_SDK in tools/ci-dependency-pins.env;
+# launch_policy in tests/android/run_jvm_tests.py keeps the two equal, and equal to
+# the platform the configChanges list was audited for (AUDITED_COMPILE_SDK).
+set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_COMPILE_SDK_VERSION 36)
 
 # Without these two androiddeployqt substitutes the CMake target name into
 # android:label and drops android:icon outright, so the app installs as
@@ -167,3 +173,18 @@ set_property(
     PROPERTY QT_ANDROID_VERSION_CODE "${dsd_neo_android_version_code}"
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_ABIS "arm64-v8a")
+
+# #782: once super.onCreate() starts Qt's main(), nothing in the app may add, remove or reallocate an environment
+# entry: on bionic an added variable can free the environ array under another thread's getenv(). Semgrep keeps the
+# writers out of our sources; this refuses a library that imports one from anywhere, vendored and static dependencies
+# included (ANDROID_LINK_ENV_WRITERS_* test the check itself on the host).
+add_custom_command(
+    TARGET dsd-neo-app
+    POST_BUILD
+    COMMAND
+        ${CMAKE_COMMAND} "-DNM=${CMAKE_NM}"
+        "-DLIBRARY=$<TARGET_FILE:dsd-neo-app>" -P
+        "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    COMMENT "Checking that the app library imports no environment writer"
+    VERBATIM
+)

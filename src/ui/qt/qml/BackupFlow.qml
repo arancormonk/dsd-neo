@@ -540,7 +540,7 @@ Item {
             font.weight: Font.Bold
             color: Theme.textPrimary
         }
-        Text {
+        ReadableText {
             objectName: "backupExportScope"
             width: parent.width
             text: qsTr("Includes your settings, saved systems, scan lists, imported files, decryption profiles with their keys, and search ranges. Call history, call recordings, and replay recordings stay on this phone.")
@@ -549,7 +549,7 @@ Item {
             font.pixelSize: Theme.fontSize(13)
             color: Theme.textSecondary
         }
-        Text {
+        ReadableText {
             objectName: "backupExportWarning"
             width: parent.width
             text: qsTr("Holds your keys. Without this passphrase the backup can't be restored. There is no recovery.")
@@ -603,6 +603,7 @@ Item {
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
+            Accessible.ignored: !Navigation.allows(exportError) || !visible
         }
         GradientButton {
             objectName: "backupEncryptButton"
@@ -635,7 +636,7 @@ Item {
             font.weight: Font.Bold
             color: Theme.textPrimary
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Keep DSD-neo open until the backup is saved.")
             wrapMode: Text.Wrap
@@ -668,7 +669,7 @@ Item {
             font.weight: Font.Bold
             color: Theme.textPrimary
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Enter the passphrase this backup was made with.")
             wrapMode: Text.Wrap
@@ -710,6 +711,7 @@ Item {
             color: Theme.alert
             Accessible.role: Accessible.AlertMessage
             Accessible.name: text
+            Accessible.ignored: !Navigation.allows(unlockError) || !visible
         }
         // The primary action: Unlock, or another file once this one is the problem.
         GradientButton {
@@ -764,7 +766,7 @@ Item {
             font.weight: Font.Bold
             color: Theme.textPrimary
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Open it again to finish restoring your backup.")
             wrapMode: Text.Wrap

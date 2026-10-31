@@ -62,7 +62,8 @@ Item {
                              callHistory.count > 0 ? clearHistory.implicitHeight : 0)
             visible: height > 0
 
-            Text {
+            ReadableText {
+                heading: true
                 visible: screen.showTitle
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
@@ -176,7 +177,8 @@ Item {
         // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
         // would also scroll the list under the overlay.
         enabled: !confirmClear.visible
-        model: historyView
+        // Set by logPlace below, only while the log is visible (issue #782).
+        model: null
 
         section.property: "dayLabel"
         section.delegate: MicroLabel {
@@ -198,6 +200,8 @@ Item {
             // ("851.0125 backup" heard on 460 MHz). Reading frequencyQuery
             // re-runs this on each search change.
             readonly property bool freqMatched: historyView.frequencyQuery && model.freqHz > 0 && historyView.frequencyMatches(model.freqHz)
+            // The row's identity, for logPlace.
+            readonly property var rowUid: model.uid
 
             interactive: true
             width: ListView.view.width
@@ -300,7 +304,28 @@ Item {
 
     // Keeps the newest call in view for a reader parked at the top of the log.
     FollowLatest {
+        id: follow
         list: logList
+    }
+
+    // Hidden, the log holds no rows (issue #782): a session runs on the monitor
+    // with this screen under it, and every row built for a call landing there is
+    // announced to accessibility clients as hidden. The search and filters live
+    // in historyView and stay set. Shown again, a reader who was on the latest
+    // call is on it again, and one reading further back is back on the same row
+    // at the same height.
+    KeepPlace {
+        id: logPlace
+        list: logList
+        model: historyView
+        atStart: follow.atLatest
+        keyOf: function (row) {
+            return row.rowUid;
+        }
+        rowOf: function (uid) {
+            var source = callHistory.rowForUid(uid);
+            return source < 0 ? -1 : historyView.mapFromSource(callHistory.index(source, 0)).row;
+        }
     }
 
     // A new search or filter is a new question, answered from the top — which is
@@ -323,7 +348,13 @@ Item {
         // does not survive them. Setting several filters at once (the empty
         // state's Clear filters button sets three) coalesces into one call, and
         // repositioning an already-topped list is a no-op either way.
+        //
+        // A hidden log has no rows to reposition, so the place it will come
+        // back to is dropped as well (issue #782). That covers the filter the
+        // other History screen shares, and a search flushed as this screen hides
+        // (flushPendingSearch), which runs after the log noted its place.
         function onFilterChanged() {
+            logPlace.forget();
             Qt.callLater(logList.positionViewAtBeginning);
         }
     }
@@ -332,9 +363,11 @@ Item {
     // into its contentItem, where `parent.count` is undefined and the empty state
     // would never show.
     Column {
+        objectName: "callLogEmptyState"
         anchors.centerIn: logList
         width: logList.width - 2 * Theme.screenPadding
-        visible: logList.count === 0
+        // The filter's count, not the view's: the view holds no rows while hidden.
+        visible: historyView.count === 0
         spacing: 8
 
         // An empty filtered view and an empty log are different situations: the
@@ -347,7 +380,7 @@ Item {
         // hidden". Two strings also let the verb agree.
         readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
 
-        Text {
+        ReadableText {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
@@ -357,7 +390,7 @@ Item {
             color: Theme.textSecondary
         }
 
-        Text {
+        ReadableText {
             objectName: "logEmptyDetail"
 
             width: parent.width

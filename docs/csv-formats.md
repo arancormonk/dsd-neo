@@ -33,8 +33,8 @@ shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose
 "No usable rows". While a session is running, open the monitor's session menu and choose **Edit saved system**; saving
 applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
 channel map, talkgroup list, keys, or source ID list from the running session. This action is available
-only for a session this app instance started (after the Activity is recreated while the service kept running, there is no
-saved-system row to write back to).
+only for a session this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the
+app and ends the session (`android/README.md` "Known limits").
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
 air is discarded along with the previous file's entries; a grant for a channel the new file omits stays unresolved
@@ -558,6 +558,7 @@ Columns:
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key: optional `0x`, whitespace ignored, exactly 10, 32, or 64 hex digits. May be combined with `single_key_dec`, but not either key-file column. |
 | `options` | No | Scoped switches described above; target `type` determines which protocol options apply. |
+| `label` | No | The name the Qt and Android app show for this target while it is parked: in the monitor's scan header and the key sheet's target line. Empty shows the `id`. Everywhere else (the terminal, Call Info, the event-history and `-J` prefix, the rdio `talkgroup_tag` fallback, call history and recordings) the target keeps its `id`, so two targets that share a label stay apart. Free text, never an error: a cell wrapped in double quotes with every quote inside doubled (a spreadsheet's `"Tower ""A"""`) reads each doubled quote as one, control characters become spaces, the ends are trimmed, and it is cut to 63 bytes on a character boundary. |
 | `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. Leave empty for conventional targets, including `p25-conventional`. The rows are parked in the trunk target's snapshot, so one exported multi-system file can be named on every `p25-trunk` row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:

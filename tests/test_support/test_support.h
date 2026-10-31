@@ -14,6 +14,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include "test_env.h"
 
 #include <errno.h>
 #include <stddef.h>
@@ -277,16 +278,6 @@ dsd_test_temp_cwd_leave(const dsd_test_temp_cwd* cwd) {
         return -1;
     }
     return dsd_test_rmdir(cwd->dir);
-}
-
-static inline int
-dsd_test_setenv(const char* name, const char* value, int overwrite) {
-    return dsd_setenv(name, value, overwrite);
-}
-
-static inline int
-dsd_test_unsetenv(const char* name) {
-    return dsd_unsetenv(name);
 }
 
 static inline const char*

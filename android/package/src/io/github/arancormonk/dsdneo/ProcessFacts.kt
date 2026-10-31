@@ -70,7 +70,10 @@ object ProcessFacts {
         return try {
             val manager = context.getSystemService(ActivityManager::class.java) ?: return emptyArray()
             val records = manager.getHistoricalProcessExitReasons(context.packageName, 0, ExitFacts.MAX_LINES).map {
-                ExitFacts.Record(it.timestamp, it.pid, it.reason, it.status, it.importance, it.pss, it.description)
+                ExitFacts.Record(
+                    it.timestamp, it.pid, it.reason, it.status, it.importance, it.pss, it.description,
+                    it.processStateSummary?.toString(Charsets.UTF_8),
+                )
             }
             val marker = File(context.noBackupFilesDir, EXITS_LOGGED_FILE)
             val logged = try {
@@ -96,6 +99,24 @@ object ProcessFacts {
      */
     @JvmStatic
     fun exitsMarker(): Array<String> = pendingMarker ?: emptyArray()
+
+    /**
+     * [LaunchGuard]'s record (#782): the state summary Android keeps with this process's exit, for the next start's
+     * [exitLines]. Android 11+; API 29 keeps none, so nothing is recorded there. One call into ActivityManager, made on
+     * the main thread just before Qt restarts the process. A failure is not recorded: the process is about to go, and
+     * the record could not be kept anywhere else.
+     */
+    fun setStateSummary(summary: ByteArray) {
+        val context = appContext ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return
+        }
+        try {
+            context.getSystemService(ActivityManager::class.java)?.setProcessStateSummary(summary)
+        } catch (_: RuntimeException) {
+            // A refused record must not fail the launch it describes.
+        }
+    }
 
     /** What a session start line says about the attempt: source, boot count and, for a dongle, which one. */
     @JvmStatic

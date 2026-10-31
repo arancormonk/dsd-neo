@@ -2455,6 +2455,9 @@ struct dsd_state {
     /* Which --trunk-scan target the receiver is parked on, published for the frontends.
      * Zeroed while trunk scan is off or before the first target is selected. */
     char trunk_scan_active_id[DSD_CHANNEL_LABEL_SIZE];
+    /* The parked target's `label` column, "" when it has none (issue #782): what names the channel being heard, so a
+     * target list whose ids are internal (the Qt/Android scan lists use entry UIDs) still names it for a person. */
+    char trunk_scan_active_label[DSD_CHANNEL_LABEL_SIZE];
     uint16_t trunk_scan_active_ordinal; /**< 1-based position in the target list; 0 = none */
     uint16_t trunk_scan_target_count;   /**< Targets in the list, for an "n of m" readout */
 

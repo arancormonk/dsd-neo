@@ -18,9 +18,10 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <errno.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -66,6 +67,7 @@ static char g_env_name[128];
 static char g_env_value[128];
 static int g_env_set_calls;
 static int g_env_unset_calls;
+static int g_env_set_fails;
 static char g_env_int_name[128];
 static int g_env_int_value;
 static char g_env_double_name[128];
@@ -272,26 +274,32 @@ env_reparse_runtime_cfg(dsd_opts* opts) {
     g_reparse_calls++;
 }
 
+/* The callbacks override a variable for the session only (#782): never the host layer, never the environment. */
 int
-dsd_setenv(const char* name, const char* value, int overwrite) {
+dsd_env_set(dsd_env_layer layer, const char* name, const char* value) {
+    assert(layer == DSD_ENV_LAYER_SESSION);
     DSD_SNPRINTF(g_env_name, sizeof g_env_name, "%s", name ? name : "");
-    DSD_SNPRINTF(g_env_value, sizeof g_env_value, "%s", value ? value : "");
+    if (g_env_set_fails) {
+        errno = g_env_set_fails; /* the errno the store sets: ENOMEM or EINVAL */
+        return -1;
+    }
+    if (value == NULL) {
+        g_env_unset_calls++;
+        return 0;
+    }
+    DSD_SNPRINTF(g_env_value, sizeof g_env_value, "%s", value);
     g_env_set_calls++;
-    (void)overwrite;
     return 0;
 }
 
-int
-dsd_unsetenv(const char* name) {
-    DSD_SNPRINTF(g_env_name, sizeof g_env_name, "%s", name ? name : "");
-    g_env_unset_calls++;
-    return 0;
-}
-
-const char*
-dsd_neo_env_get(const char* name) {
+size_t
+dsd_env_copy(const char* name, char* buf, size_t cap) {
     (void)name;
-    return g_env_get_value;
+    const char* v = g_env_get_value;
+    if (buf != NULL && cap > 0) {
+        DSD_SNPRINTF(buf, cap, "%s", v ? v : "");
+    }
+    return v ? strlen(v) + 1U : 0U;
 }
 
 int
@@ -354,6 +362,7 @@ reset_capture(void) {
     DSD_MEMSET(g_env_value, 0, sizeof g_env_value);
     g_env_set_calls = 0;
     g_env_unset_calls = 0;
+    g_env_set_fails = 0;
     DSD_MEMSET(g_env_int_name, 0, sizeof g_env_int_name);
     g_env_int_value = 0;
     DSD_MEMSET(g_env_double_name, 0, sizeof g_env_double_name);
@@ -1188,6 +1197,38 @@ test_env_editor_and_protocol_callbacks(void) {
     rc |= expect_int("env clear calls unset", g_env_unset_calls, 1);
     rc |= expect_int("env clear does not set an empty value", g_env_set_calls, 0);
     rc |= expect_int("env clear reparses", g_reparse_calls, 1);
+
+    /* A full override table refuses the edit, and the status says so rather than "Set". */
+    reset_capture();
+    g_env_set_fails = ENOMEM;
+    EnvEditCtx* full = (EnvEditCtx*)calloc(1, sizeof *full);
+    assert(full != NULL);
+    full->c = &ctx;
+    DSD_SNPRINTF(full->name, sizeof full->name, "%s", "DSD_NEO_TOO_MANY");
+    cb_env_edit_value(full, "1");
+    rc |= expect_str("env refused names a full table", g_status,
+                     "Could not set DSD_NEO_TOO_MANY: too many variables changed");
+
+    /* A name the store refuses says so, not that the table is full. */
+    reset_capture();
+    g_env_set_fails = EINVAL;
+    EnvEditCtx* bad_store = (EnvEditCtx*)calloc(1, sizeof *bad_store);
+    assert(bad_store != NULL);
+    bad_store->c = &ctx;
+    DSD_SNPRINTF(bad_store->name, sizeof bad_store->name, "%s", "DSD_NEO_REFUSED");
+    cb_env_edit_value(bad_store, "1");
+    rc |= expect_str("env refused names an invalid name", g_status,
+                     "Could not set DSD_NEO_REFUSED: invalid variable name");
+    g_env_set_fails = 0;
+
+    /* A name with '=' never reaches the prompt. */
+    reset_capture();
+    EnvEditCtx* equals = (EnvEditCtx*)calloc(1, sizeof *equals);
+    assert(equals != NULL);
+    equals->c = &ctx;
+    cb_env_edit_name(equals, "DSD_NEO_X=1");
+    rc |= expect_int("env name with = no prompt", g_prompt.calls, 0);
+    rc |= expect_str("env name with = status", g_status, "Variable name cannot contain =");
 
     reset_capture();
     cb_lr_custom(&ctx, "lrrp.txt");

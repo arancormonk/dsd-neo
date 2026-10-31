@@ -1173,6 +1173,16 @@ test_nearby() {
     h.model.lookupNearby();
     Q_EMIT h.host.locationResult(h.host.requested, false, 0, 0, 0, 0, false, "", "", "Location permission denied");
     expect("denial settles without replacing fix", !h.model.busy() && h.prefs.lastLat() == 42);
+    // #782: a permission prompt Android closed unanswered is a cancel, not a failure: it settles with nothing shown.
+    h.model.lookupNearby();
+    const qint64 interrupted = h.host.requested;
+    Q_EMIT h.host.locationCancelled(interrupted + 1);
+    expect("another request's cancel is ignored", h.model.busy());
+    Q_EMIT h.host.locationCancelled(interrupted);
+    expect("platform cancel settles quietly", !h.model.busy() && h.model.errorText().isEmpty()
+                                                  && h.model.statusText().isEmpty() && h.prefs.lastLat() == 42);
+    Q_EMIT h.host.locationResult(interrupted, true, 46, -96, 100, now, true, "52401", "US", "");
+    expect("a result after the cancel is ignored", h.prefs.lastLat() == 42 && !h.model.busy());
     h.model.lookupNearby();
     const qint64 old = h.host.requested;
     h.model.loadCountries();

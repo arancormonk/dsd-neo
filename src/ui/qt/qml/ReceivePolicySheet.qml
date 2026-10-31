@@ -126,7 +126,7 @@ ModalSheet {
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: sheet.namesEditor
             ? qsTr("Name a received identifier. Access codes and tones take priority over slot names. Names alone do not filter calls.")
@@ -164,7 +164,7 @@ ModalSheet {
         currentIndex: sheet.rowScope ? 1 : 0
         onSelected: function (index) { sheet.chooseScope(index === 1); }
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: sheet.rowScope
             ? qsTr("Session edit for %1. The imported list stays unchanged.").arg(sheet.rowContext.label || "")
@@ -174,7 +174,7 @@ ModalSheet {
         color: Theme.textSecondary
         font.pixelSize: Theme.fontSize(13)
     }
-    Text {
+    ReadableText {
         width: parent.width
         visible: sheet.rowScope && !sheet.rowCompatible
         text: qsTr("This identifier does not apply to the selected channel. Choose All channels or another identifier.")
@@ -212,7 +212,7 @@ ModalSheet {
         hint: qsTr("Block takes priority over Allow. Empty means none.")
         inputMethodHints: Qt.ImhNoPredictiveText
     }
-    Text {
+    ReadableText {
         width: parent.width
         visible: sheet.namesEditor && rules.count === 0
         text: qsTr("No service names. Calls use their channel label.")
@@ -269,7 +269,7 @@ ModalSheet {
         text: qsTr("Add service name")
         onClicked: sheet.addName()
     }
-    Text {
+    ReadableText {
         objectName: "receiveValidation"
         width: parent.width
         visible: text.length > 0

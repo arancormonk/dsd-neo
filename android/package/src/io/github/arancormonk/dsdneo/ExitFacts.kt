@@ -12,6 +12,8 @@ package io.github.arancormonk.dsdneo
  * records off ActivityManager. The lines are facts with times and pids, not a verdict: the reader
  * matches them against the session lines around them. Android keeps no record when the phone
  * itself restarts, which is why the process line also carries the boot count.
+ *
+ * A process that set a state summary ([LaunchGuard]) carries it in parentheses at the end of its line (#782).
  */
 object ExitFacts {
     /** Newest records read per process start; each is logged by the first start that reads it ([unlogged]). */
@@ -19,6 +21,9 @@ object ExitFacts {
 
     /** Longest description kept, in characters; the diagnostics record bound is 512 bytes. */
     const val MAX_DESCRIPTION = 160
+
+    /** Longest state summary kept, in characters: Android keeps at most [LaunchGuard.MAX_SUMMARY_BYTES] bytes. */
+    const val MAX_SUMMARY = LaunchGuard.MAX_SUMMARY_BYTES
 
     /** One `ApplicationExitInfo`, reduced to what a line shows. */
     data class Record(
@@ -29,6 +34,8 @@ object ExitFacts {
         val importance: Int,
         val pssKb: Long,
         val description: String?,
+        /** `ApplicationExitInfo.getProcessStateSummary()`, as UTF-8 text; null when the process set none. */
+        val summary: String? = null,
     )
 
     /** What tells one record from another across starts: its time and pid. */
@@ -70,11 +77,14 @@ object ExitFacts {
     fun line(record: Record, formatTime: (Long) -> String): String {
         val base = "exit: ${formatTime(record.timestampMs)} pid ${record.pid} ${reasonName(record.reason)} " +
             "status ${record.status} importance ${record.importance} pss ${record.pssKb} kB"
-        val description = record.description
-            ?.map { if (it.isISOControl()) ' ' else it }
-            ?.joinToString("")
-            ?.trim()
-            ?.take(MAX_DESCRIPTION)
-        return if (description.isNullOrEmpty()) base else "$base \"$description\""
+        val description = printable(record.description, MAX_DESCRIPTION)
+        val described = if (description.isEmpty()) base else "$base \"$description\""
+        // The summary is the exited process's own words (LaunchGuard.SUMMARY in the build that wrote it), shown as is.
+        val summary = printable(record.summary, MAX_SUMMARY)
+        return if (summary.isEmpty()) described else "$described ($summary)"
     }
+
+    /** [text] on one line, trimmed and cut to [max] characters; empty for null. */
+    private fun printable(text: String?, max: Int): String =
+        text?.map { if (it.isISOControl()) ' ' else it }?.joinToString("")?.trim()?.take(max) ?: ""
 }

@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <tuple>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 
@@ -217,6 +218,22 @@ test_policy_and_heard_rows() {
            view.count() == 1 && view.data(view.index(0, 0), TalkgroupListModel::IdStartRole).toULongLong() == 1300);
     view.setFilterTag(QStringLiteral("fire"));
     expect("category match remains exact", view.count() == 0);
+    expect("a range filtered away has no row", view.rowForTalkgroup(1300, 1399) == -1);
+    view.setFilterTag(QString());
+    view.setFilterText(QString());
+    expect("each listed range is found at its view row", [&view]() {
+        for (int i = 0; i < view.count(); ++i) {
+            const QModelIndex at = view.index(i, 0);
+            const qulonglong first = view.data(at, TalkgroupListModel::IdStartRole).toULongLong();
+            const qulonglong last = view.data(at, TalkgroupListModel::IdEndRole).toULongLong();
+            if (view.rowForTalkgroup(first, last) != i) {
+                return false;
+            }
+        }
+        return view.count() > 0;
+    }());
+    expect("a range that is not listed has no row", view.rowForTalkgroup(999999, 999999) == -1);
+    expect("a start with another end is another row", view.rowForTalkgroup(1300, 1300) == -1);
 
     changes = 0;
     DSD_SNPRINTF(fixture.opts->group_in_file, sizeof(fixture.opts->group_in_file), "groups.csv");
@@ -631,6 +648,80 @@ test_pattern_row_equality() {
     expect("another pattern resets the rows", resets == 1);
 }
 
+/* Issue #782: an exact row and a range can share a start ("Exact matches beat ranges"), so the Talkgroups screen
+ * finds the card it keeps the reader on by both bounds. */
+void
+test_filter_finds_a_row_by_both_bounds() {
+    Fixture fixture;
+    fixture.append(1200, 1299, "A", "Range", "");
+    fixture.append(1200, 1200, "A", "Exact", "");
+    fixture.append(1300, 1300, "A", "After", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    model.refresh(fixture.opts, fixture.state);
+    TalkgroupFilterModel view;
+    view.setSourceModel(&model);
+    expect("three listed rows", view.count() == 3);
+    const int exact = view.rowForTalkgroup(1200, 1200);
+    const int range = view.rowForTalkgroup(1200, 1299);
+    expect("the exact row and the range are different rows", exact >= 0 && range >= 0 && exact != range);
+    expect("the range is found at its own row",
+           view.data(view.index(range, 0), TalkgroupListModel::IdEndRole).toULongLong() == 1299
+               && view.data(view.index(range, 0), TalkgroupListModel::NameRole).toString() == QStringLiteral("Range"));
+    expect("the exact row is found at its own row",
+           view.data(view.index(exact, 0), TalkgroupListModel::IdEndRole).toULongLong() == 1200
+               && view.data(view.index(exact, 0), TalkgroupListModel::NameRole).toString() == QStringLiteral("Exact"));
+}
+
+/* Issue #782: every pattern row has the bounds 0-0 and a table can list the same bounds twice, so the card the
+ * Talkgroups screen keeps the reader on is found by its bounds, pattern and table index, the token its edits carry. */
+void
+test_filter_finds_a_card_by_its_row_token() {
+    Fixture fixture;
+    fixture.appendPattern("10*", "A", "Tens", "");
+    fixture.appendPattern("25*", "A", "Twenty-fives", "");
+    fixture.appendPattern("39*", "A", "Thirty-nines", "");
+    fixture.append(4000, 4000, "A", "First", "");
+    fixture.append(4000, 4000, "A", "Second", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    model.refresh(fixture.opts, fixture.state);
+    TalkgroupFilterModel view;
+    view.setSourceModel(&model);
+    expect("five listed rows", view.count() == 5);
+    auto token = [&view](int row) {
+        const QModelIndex at = view.index(row, 0);
+        return std::make_tuple(view.data(at, TalkgroupListModel::IdStartRole).toULongLong(),
+                               view.data(at, TalkgroupListModel::IdEndRole).toULongLong(),
+                               view.data(at, TalkgroupListModel::PatternRole).toString(),
+                               view.data(at, TalkgroupListModel::TableIndexRole).toInt());
+    };
+    expect("each card is found at its own row", [&view, &token]() {
+        for (int i = 0; i < view.count(); ++i) {
+            const auto t = token(i);
+            if (view.rowForCard(std::get<0>(t), std::get<1>(t), std::get<2>(t), std::get<3>(t)) != i) {
+                return false;
+            }
+        }
+        return true;
+    }());
+    int twentyFives = -1;
+    for (int i = 0; i < view.count(); ++i) {
+        if (std::get<2>(token(i)) == QStringLiteral("25*")) {
+            twentyFives = i;
+        }
+    }
+    expect("the 25* card is listed", twentyFives >= 0);
+    const auto t = token(twentyFives);
+    expect("a card whose index moved is found by its pattern",
+           view.rowForCard(std::get<0>(t), std::get<1>(t), std::get<2>(t), std::get<3>(t) + 7) == twentyFives);
+    expect("a pattern no row has is not found", view.rowForCard(0, 0, QStringLiteral("77*"), 0) == -1);
+}
+
 } // namespace
 
 int
@@ -656,6 +747,8 @@ main(int argc, char** argv) {
     test_heard_rows_read_history_storage_directly();
     test_overlapping_ranges_cover_heard_talkgroups();
     test_pattern_rows();
+    test_filter_finds_a_row_by_both_bounds();
+    test_filter_finds_a_card_by_its_row_token();
     test_catch_all_keeps_heard_talkgroups();
     test_catch_all_decides_heard_card_state();
     test_pattern_row_equality();

@@ -503,6 +503,302 @@ def usb_broker_contract():
     return None
 
 
+def method_body(text, signature):
+    """The body of the Kotlin method whose declaration line starts with `signature`, up to its closing brace at the same
+    indent; None when it is missing."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip().startswith(signature)), None)
+    if start is None:
+        return None
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].strip() == "}" and len(lines[i]) - len(lines[i].lstrip()) == indent),
+        None,
+    )
+    return None if end is None else "\n".join(lines[start + 1 : end])
+
+
+def a11y_bridge_order():
+    """#782: Qt reads QT_ANDROID_DISABLE_ACCESSIBILITY synchronously inside super.onCreate(), so the bridge's launch
+    decision comes immediately before it and the freeze immediately after; the notice follows the activity's resume,
+    pause, stop and destroy. LaunchGuard records a second instance first, before Qt can restart the process inside
+    super.onCreate(), and after ProcessFacts.attach, which gives it the context to record with; it learns that Qt
+    started right after super.onCreate() returns."""
+    path = REPO / APP_SOURCES / "DsdNeoActivity.kt"
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the activity: {error}"
+    body = method_body(text, "override fun onCreate(")
+    if body is None:
+        return f"{where}: no onCreate"
+    statements = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith("//")]
+    expected = [
+        "LaunchGuard.onCreate(ProcessFacts::setStateSummary)",
+        "AccessibilityBridge.effects = AccessibilityRestartNotice",
+        "QmlGcPolicy.beforeQt(HostDiagnostics::submit)",
+        "AccessibilityBridge.beforeQt(this)",
+        "super.onCreate(savedInstanceState)",
+        "AccessibilityBridge.afterQt(this)",
+        "LaunchGuard.afterQt()",
+    ]
+    prefixes = ("LaunchGuard.", "AccessibilityBridge.", "QmlGcPolicy.", "super.onCreate(")
+    found = [line for line in statements if line in expected or line.startswith(prefixes)]
+    if found != expected:
+        return f"{where}: onCreate must run exactly {expected}, in that order, with nothing of these elsewhere; found {found}"
+    start = statements.index(expected[0])
+    if statements[start : start + len(expected)] != expected:
+        return f"{where}: in onCreate, {expected} must be consecutive statements: the variable is read inside super.onCreate()"
+    attach = "ProcessFacts.attach(this)"
+    if attach not in statements[:start]:
+        return f"{where}: in onCreate, {attach} must come before {expected[0]}, which records through it"
+    for callback in ("onResume", "onPause", "onStop", "onDestroy"):
+        lifecycle = method_body(text, f"override fun {callback}(")
+        if lifecycle is None or f"AccessibilityBridge.{callback}(this)" not in lifecycle:
+            return f"{where}: {callback} must call AccessibilityBridge.{callback}(this)"
+    destroy = method_body(text, "override fun onDestroy(")
+    if destroy.find("AccessibilityBridge.onDestroy(this)") > destroy.find("super.onDestroy()"):
+        return f"{where}: AccessibilityBridge.onDestroy(this) must come before super.onDestroy(), which may not return"
+    return None
+
+
+# Every android:configChanges flag that android-36's attrs_manifest.xml defines, except resourcesUnused, which overrides
+# them all and is for activities that use no resources (#782). A flag missing here recreates the activity, and Qt 6.11.2
+# then restarts the process without the app's teardown. Audited for AUDITED_COMPILE_SDK only.
+PINNED_CONFIG_CHANGES = (
+    "mcc", "mnc", "locale", "touchscreen", "keyboard", "keyboardHidden", "navigation", "orientation", "screenLayout",
+    "uiMode", "screenSize", "smallestScreenSize", "density", "layoutDirection", "colorMode", "grammaticalGender",
+    "fontScale", "fontWeightAdjustment", "assetsPaths",
+)
+# The platform PINNED_CONFIG_CHANGES was audited against; assetsPaths, the newest flag, exists from it on. Android adds a
+# flag in most releases, so a compile SDK bump fails launch_policy until the list is audited for the new platform.
+AUDITED_COMPILE_SDK = 36
+# The heading in docs/code_map.md that lists the runs a Qt bump repeats.
+QT_UPGRADE_CHECKS = 'the "Qt upgrade checks" in docs/code_map.md'
+# An element's opening tag outside comments, and its android: attributes. The manifest is the app's own, so plain
+# patterns do; no XML parser is needed for it.
+XML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+ACTIVITY_TAG = re.compile(r"<activity\b([^>]*)>")
+ANDROID_ATTRIBUTE = re.compile(r'\bandroid:(\w+)\s*=\s*"([^"]*)"')
+
+
+def launch_policy():
+    """#782: Qt 6.11.2 restarts the process inside onCreate, without the app's teardown, when a second activity instance
+    is created in a process it started, so the manifest allows none: singleTask, and every configuration change handled
+    in place, against the compile SDK the list was audited for, the one CI installs. LaunchGuard's summary names the Qt
+    the restart path was audited on, so a Qt bump fails here until it is audited again; this proves only that the text
+    was edited, not that the checks ran. The record's plumbing (ProcessFacts) is pinned by source, since recreation
+    cannot be triggered on a fixed build."""
+    manifest_path = REPO / "android/package/AndroidManifest.xml"
+    cmake_path = REPO / "android/CMakeLists.txt"
+    pins_path = REPO / "tools/ci-dependency-pins.env"
+    try:
+        manifest = XML_COMMENT.sub(" ", manifest_path.read_text(encoding="utf-8"))
+        cmake = cmake_path.read_text(encoding="utf-8")
+        pins = pins_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the launch policy: {error}"
+    tags = (dict(ANDROID_ATTRIBUTE.findall(tag.group(1))) for tag in ACTIVITY_TAG.finditer(manifest))
+    activities = [tag for tag in tags if tag.get("name") == f"{PACKAGE}.DsdNeoActivity"]
+    if len(activities) != 1:
+        return f"AndroidManifest.xml: expected one DsdNeoActivity, found {len(activities)}"
+    activity = activities[0]
+    mode = activity.get("launchMode")
+    if mode != "singleTask":
+        return (
+            f"AndroidManifest.xml: DsdNeoActivity launchMode is {mode}; singleTask keeps a second instance out of the "
+            "process"
+        )
+    flags = activity.get("configChanges", "").split("|")
+    if len(flags) != len(set(flags)):
+        return f"AndroidManifest.xml: configChanges repeats a flag: {flags}"
+    missing = [flag for flag in PINNED_CONFIG_CHANGES if flag not in flags]
+    extra = [flag for flag in flags if flag not in PINNED_CONFIG_CHANGES]
+    if missing or extra:
+        return (
+            f"AndroidManifest.xml: configChanges must be exactly {'|'.join(PINNED_CONFIG_CHANGES)}; "
+            f"missing {missing}, extra {extra}"
+        )
+    compile_sdk = re.findall(
+        r"^\s*set_property\(TARGET dsd-neo-app PROPERTY QT_ANDROID_COMPILE_SDK_VERSION (\d+)\)", cmake, re.M
+    )
+    if len(compile_sdk) != 1:
+        return "android/CMakeLists.txt: pin the compile SDK once with QT_ANDROID_COMPILE_SDK_VERSION"
+    pinned = re.findall(r"^ANDROID_COMPILE_SDK=(\d+)$", pins, re.M)
+    if len(pinned) != 1:
+        return "tools/ci-dependency-pins.env: no single ANDROID_COMPILE_SDK"
+    if int(compile_sdk[0]) != AUDITED_COMPILE_SDK:
+        return (
+            f"android/CMakeLists.txt: compile SDK {compile_sdk[0]}, but configChanges was audited for "
+            f"android-{AUDITED_COMPILE_SDK}: compare the configChanges flags in platforms/android-{compile_sdk[0]}/data/"
+            "res/values/attrs_manifest.xml with PINNED_CONFIG_CHANGES (all but resourcesUnused), update the manifest and "
+            "the list, then AUDITED_COMPILE_SDK"
+        )
+    if compile_sdk[0] != pinned[0]:
+        return (
+            f"android/CMakeLists.txt compiles against android-{compile_sdk[0]}, but CI installs android-{pinned[0]} "
+            "(ANDROID_COMPILE_SDK in tools/ci-dependency-pins.env)"
+        )
+    try:
+        guard = (REPO / APP_SOURCES / "LaunchGuard.kt").read_text(encoding="utf-8")
+        facts = (REPO / APP_SOURCES / "ProcessFacts.kt").read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read LaunchGuard or ProcessFacts: {error}"
+    problem = launch_record_plumbing(facts)
+    if problem:
+        return f"{APP_SOURCES / 'ProcessFacts.kt'}: {problem}"
+    qt = re.findall(r"^ANDROID_QT_VERSION=(\S+)$", pins, re.M)
+    audited = re.findall(r'const val QT_RESTART = "Qt (\S+) restarts the process"', guard)
+    if len(qt) != 1 or len(audited) != 1:
+        return "cannot find ANDROID_QT_VERSION in tools/ci-dependency-pins.env or QT_RESTART in LaunchGuard.kt"
+    if qt[0] != audited[0]:
+        return (
+            f"Qt is pinned at {qt[0]}, but LaunchGuard.QT_RESTART was audited on {audited[0]}: run {QT_UPGRADE_CHECKS} "
+            "again, then update the text (or the record and the documented limit, if Qt no longer restarts the process)"
+        )
+    return None
+
+
+def launch_record_plumbing(facts):
+    """What is wrong with how ProcessFacts.kt carries LaunchGuard's record, or None: the summary is set on API 30+ and
+    read back into each exit record. Nothing else exercises this path."""
+    setter = method_body(facts, "fun setStateSummary(")
+    if setter is None:
+        return "no setStateSummary"
+    gate = re.search(r"if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.R\) \{\s*return\s*\}", setter)
+    call = setter.find("setProcessStateSummary(summary)")
+    if call < 0 or gate is None or gate.start() > call:
+        return "setStateSummary must call setProcessStateSummary(summary) after returning below API 30 (R)"
+    reader = method_body(facts, "fun exitLines(")
+    if reader is None or not re.search(r"ExitFacts\.Record\([^)]*it\.processStateSummary", reader, re.S):
+        return "exitLines must pass it.processStateSummary into each ExitFacts.Record"
+    return None
+
+
+# One left-to-right pass over C++ text: a string or character literal, a line comment or a block comment, whichever
+# starts first. Separate passes would let a "//" or "/*" inside a literal hide the code after it, or a quote inside a
+# comment hide a call.
+CPP_LITERAL_OR_COMMENT = re.compile(
+    r'"(?:[^"\\\n]|\\.)*"' + r"|'(?:[^'\\\n]|\\.)*'" + r"|//[^\n]*" + r"|/\*.*?\*/",
+    re.S,
+)
+# Any environment writer, the project's wrappers (dsd_setenv, dsd_unsetenv) and Qt's (qputenv, qunsetenv) included,
+# and the QML collector policy that writes one.
+CPP_ENVIRONMENT_WRITER = re.compile(r"\b(\w*(?:setenv|unsetenv|putenv)|applyQmlGcPolicy)\s*\(")
+
+
+def cpp_environment_writer(text):
+    """The first environment-writing call in C++ `text`, outside literals and comments, or None."""
+    code = CPP_LITERAL_OR_COMMENT.sub(lambda match: '""' if match.group(0)[0] in "\"'" else " ", text)
+    writer = CPP_ENVIRONMENT_WRITER.search(code)
+    return writer.group(1) if writer else None
+
+
+def cpp_environment_writer_probes():
+    """The scanner behind android_main_writes_no_environment, on the cases that once got past it (#782 T4 review)."""
+    caught = (
+        'dsd_setenv("X", "1", 1);',
+        'dsd_unsetenv("X");',
+        'qputenv("X", "1");',
+        'qunsetenv("X");',
+        '::setenv("X", "1", 1);',
+        'putenv(buffer);',
+        "dsd_qt::applyQmlGcPolicy();",
+        'const char* u = "http://x"; qputenv("X", "1");',
+        'const char* g = "*.cpp/*"; qputenv("X", "1"); /* end */',
+        "char q = '\"'; qputenv(\"X\", \"1\");",
+        "/* a comment */ setenv(\"X\", \"1\", 1);",
+    )
+    ignored = (
+        '// qputenv("X", "1");',
+        '/* dsd_setenv("X", "1", 1); */',
+        'const char* s = "qputenv(";',
+        'log("setenv(X) failed");',
+        "char c = '('; int setenvironment_count = 0;",
+        "int resetenv_count = 1; (void)resetenv_count;",
+    )
+    for text in caught:
+        if not cpp_environment_writer(text):
+            return f"the main.cpp environment scan misses a writer in: {text}"
+    for text in ignored:
+        found = cpp_environment_writer(text)
+        if found:
+            return f"the main.cpp environment scan reports {found}() in code that writes nothing: {text}"
+    return None
+
+
+def android_main_writes_no_environment():
+    """#782: once super.onCreate() starts Qt's main(), nothing may add, remove or reallocate an environment entry, so
+    android/main.cpp writes none, and QmlGcPolicy.kt sets the QML collector's variable, the one applyQmlGcPolicy()
+    writes, before super.onCreate()."""
+    main_path = REPO / "android/main.cpp"
+    header_path = REPO / "src/ui/qt/qml_gc_policy.h"
+    kotlin_path = REPO / APP_SOURCES / "QmlGcPolicy.kt"
+    try:
+        main = main_path.read_text(encoding="utf-8")
+        header = header_path.read_text(encoding="utf-8")
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the environment writers: {error}"
+    # Code only: comments and string literals may name the calls.
+    writer = cpp_environment_writer(main)
+    if writer:
+        return f"android/main.cpp: {writer}() writes the environment while the Android main thread reads it"
+    native = re.search(r'qputenv\("([^"]+)",\s*QByteArrayLiteral\("([^"]*)"\)\)', header)
+    jvm_name = re.search(r'const val VARIABLE = "([^"]+)"', kotlin)
+    jvm_value = re.search(r'Os\.setenv\(VARIABLE, "([^"]*)", true\)', kotlin)
+    if not native or not jvm_name or not jvm_value:
+        return "cannot find the collector's variable in qml_gc_policy.h or QmlGcPolicy.kt"
+    if (native.group(1), native.group(2)) != (jvm_name.group(1), jvm_value.group(1)):
+        return (
+            f"QmlGcPolicy.kt sets {jvm_name.group(1)}={jvm_value.group(1)}, but applyQmlGcPolicy() in "
+            f"src/ui/qt/qml_gc_policy.h sets {native.group(1)}={native.group(2)}"
+        )
+    return None
+
+
+# The vendored snapshots under android/third_party keep upstream code; the link check
+# (cmake/check_no_environment_writers.cmake) covers what they import.
+ANDROID_NATIVE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp")
+# The two Kotlin files that set Qt's own inputs, before super.onCreate() starts Qt (a11y_bridge_order pins the order).
+KOTLIN_ENVIRONMENT_WRITERS = ("QmlGcPolicy.kt", "AccessibilityBridge.kt")
+KOTLIN_ENVIRONMENT_WRITE = re.compile(r"\bOs\.(?:set|unset)env\s*\(")
+
+
+def android_native_writes_no_environment():
+    """#782: the app's native code runs on the Android main thread and the engine's threads while Qt's thread reads
+    the environment, so no C or C++ source under android/ writes it: nativeInit sets host overrides in the engine's
+    store (<dsd-neo/platform/env.h>) instead. Kotlin writes it only in the two files that set Qt's own inputs."""
+    for probe, writes in (
+        ('Os.setenv("X", "1", true)', True),
+        ("android.system.Os.unsetenv(name)", True),
+        ('val v = Os.getenv("X")', False),
+        ("resetenvCount()", False),
+    ):
+        if bool(KOTLIN_ENVIRONMENT_WRITE.search(probe)) != writes:
+            return f"the Kotlin environment scan gets {probe!r} wrong"
+    root = REPO / "android"
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(REPO)
+        if "third_party" in relative.parts or not path.is_file():
+            continue
+        try:
+            if path.suffix in ANDROID_NATIVE_SUFFIXES:
+                writer = cpp_environment_writer(path.read_text(encoding="utf-8"))
+                if writer:
+                    return f"{relative}: {writer}() writes the process environment; set a dsd_env_set() override"
+            elif path.suffix == ".kt" and path.name not in KOTLIN_ENVIRONMENT_WRITERS:
+                code = CPP_LITERAL_OR_COMMENT.sub(
+                    lambda match: '""' if match.group(0)[0] in "\"'" else " ", path.read_text(encoding="utf-8")
+                )
+                if KOTLIN_ENVIRONMENT_WRITE.search(code):
+                    return f"{relative}: writes the process environment; only {KOTLIN_ENVIRONMENT_WRITERS} may"
+        except OSError as error:
+            return f"cannot read {relative}: {error}"
+    return None
+
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -634,8 +930,8 @@ SUITES = {
         checks=(usb_broker_contract,),
     ),
     # How Android says recent app processes ended, as diagnostics lines. Plain Kotlin with no Android imports, so no
-    # stubs; ProcessFacts reads the records off ActivityManager.
-    "exit_facts": Suite(builds=(Build(sources=("ExitFacts.kt",), tests=("ExitFactsTest.kt",)),)),
+    # stubs; ProcessFacts reads the records off ActivityManager. LaunchGuard names the state summary it knows.
+    "exit_facts": Suite(builds=(Build(sources=("ExitFacts.kt", "LaunchGuard.kt"), tests=("ExitFactsTest.kt",)),)),
     # The reason mapping builds without Android; the actual service also runs against a deferred-intent transport.
     "engine_stop": Suite(
         builds=(
@@ -684,6 +980,40 @@ SUITES = {
             ),
         ),
         checks=(screen_golden_matches,),
+    ),
+    # Qt's accessibility bridge (#782): the gate's decisions in plain Kotlin with no stubs, then AccessibilityBridge and
+    # QmlGcPolicy against stubs of the accessibility manager (listeners fired in AOSP's order) and of the process
+    # environment, with Qt's own listener modelled in the test. Both are process state, so each test file runs in its
+    # own JVM. The checks pin the environment writes before super.onCreate(), none from android/main.cpp, and none from
+    # any other native source or Kotlin file of the app. The launch policy goes with it: the manifest that keeps a second
+    # activity instance out of the process (launch_policy), and LaunchGuard's record of one, with the exit line that
+    # prints it, in the first build.
+    "a11y_bridge": Suite(
+        builds=(
+            Build(
+                sources=("AccessibilityGate.kt", "ActivitySlot.kt", "LaunchGuard.kt", "ExitFacts.kt"),
+                tests=("AccessibilityGateTest.kt", "LaunchGuardTest.kt", "ExitFactsTest.kt"),
+            ),
+            Build(
+                sources=("AccessibilityGate.kt", "ActivitySlot.kt", "AccessibilityBridge.kt", "QmlGcPolicy.kt"),
+                tests=(
+                    "AccessibilityBridgeTest.kt",
+                    "AccessibilityBridgeLaunchTest.kt",
+                    "AccessibilityBridgeErrnoTest.kt",
+                    "AccessibilityBridgeErrnoOffTest.kt",
+                    "AccessibilityBridgeLeftoverTest.kt",
+                    "QmlGcPolicyTest.kt",
+                ),
+                stubs=("AccessibilityManager.kt", "AccessibilityServiceInfo.kt", "SystemOsEnv.kt", "A11yContext.kt", "A11yActivity.kt"),
+            ),
+        ),
+        checks=(
+            a11y_bridge_order,
+            launch_policy,
+            cpp_environment_writer_probes,
+            android_main_writes_no_environment,
+            android_native_writes_no_environment,
+        ),
     ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and

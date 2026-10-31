@@ -242,7 +242,7 @@ ModalSheet {
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: qsTr("The rigctl peer demodulates this input, so the width is the passband it is asked for. An unset NFM width asks for -B, or leaves the peer's own passband without it.")
         textFormat: Text.PlainText
@@ -261,7 +261,7 @@ ModalSheet {
             sheet.chooseScope(index === 1);
         }
     }
-    Text {
+    ReadableText {
         objectName: "passbandScopeNote"
         width: parent.width
         visible: sheet.rowWidth
@@ -278,7 +278,7 @@ ModalSheet {
         visible: sheet.nfmShown
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             objectName: "passbandNfmTitle"
             text: qsTr("NFM passband")
             color: Theme.textSecondary
@@ -287,7 +287,7 @@ ModalSheet {
         Row {
             width: parent.width
             spacing: 10
-            Text {
+            ReadableText {
                 objectName: "passbandNfmValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -332,7 +332,7 @@ ModalSheet {
         visible: sheet.amShown
         width: parent.width
         spacing: 8
-        Text {
+        ReadableText {
             objectName: "passbandAmTitle"
             text: qsTr("AM passband")
             color: Theme.textSecondary
@@ -341,7 +341,7 @@ ModalSheet {
         Row {
             width: parent.width
             spacing: 10
-            Text {
+            ReadableText {
                 objectName: "passbandAmValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -402,7 +402,7 @@ ModalSheet {
         }
     }
     // A row with its own width keeps it while on air: the controls edit the default.
-    Text {
+    ReadableText {
         objectName: "passbandRowNote"
         width: parent.width
         visible: sheet.rowOverride && !sheet.rowWidth

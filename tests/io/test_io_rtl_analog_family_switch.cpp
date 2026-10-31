@@ -94,7 +94,6 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -102,6 +101,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 
 static char g_last_error[512];
 static int g_error_count;
@@ -1840,7 +1840,7 @@ static int
 test_cqpsk_override_lands_like_open(const family_case* p25_c4fm_case, const family_case* p25_cqpsk_case,
                                     const family_case* dmr_case) {
     int rc = 0;
-    (void)dsd_setenv("DSD_NEO_CQPSK", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "0", 1);
     dsd_neo_config_init();
     rc |= expect_override_digital_leg(*p25_cqpsk_case, "0", 0, 0, 10);
     rc |= expect_override_digital_leg(*p25_cqpsk_case, "0", 0, 78125, 10);
@@ -1849,14 +1849,14 @@ test_cqpsk_override_lands_like_open(const family_case* p25_c4fm_case, const fami
     split.request.boundary_between_requests = 1;
     rc |= expect_override_digital_leg(split, "0", 0, 78125, 10);
 
-    (void)dsd_setenv("DSD_NEO_CQPSK", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "1", 1);
     dsd_neo_config_init();
     rc |= expect_override_digital_leg(*p25_c4fm_case, "1", 1, 0, 10);
     rc |= expect_override_digital_leg(*p25_c4fm_case, "1", 1, 78125, 16);
     rc |= expect_override_digital_leg(*dmr_case, "1", 1, 0, 10);
     rc |= expect_override_digital_leg(*p25_cqpsk_case, "1", 1, 78125, 16);
 
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return rc;
 }
@@ -1871,7 +1871,7 @@ test_lpf_off_lands_like_open(const family_case* cases, size_t n_cases) {
     static const char* const lpf_env_names[] = {"P25 C4FM, LPF off", "P25 CQPSK, LPF off", "DMR, LPF off",
                                                 "NXDN48, LPF off", "dPMR, LPF off"};
     int rc = 0;
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     for (size_t i = 0; i < n_cases && i < sizeof lpf_env_names / sizeof lpf_env_names[0]; i++) {
         family_case off = cases[i];
@@ -1883,7 +1883,7 @@ test_lpf_off_lands_like_open(const family_case* cases, size_t n_cases) {
     nxdn60.name = "NXDN48, LPF off";
     nxdn60.request.ted_sps = 25;
     rc |= run_case(nxdn60, 48000, 60000, 0);
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
 
     /* A 12 kHz DSP rate: the default rule leaves the filter off below 20 kHz. */

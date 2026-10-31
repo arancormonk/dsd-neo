@@ -24,7 +24,6 @@
 
 #include "decoder_host_android.h"
 #include "diagnostics_log.h"
-#include "qml_gc_policy.h"
 #include "qt_ui.h"
 #include "teardown_trace.h"
 
@@ -47,7 +46,9 @@ uptime_text(uint64_t ms) {
 
 int
 main(int argc, char* argv[]) {
-    dsd_qt::applyQmlGcPolicy();
+    /* Nothing here writes the environment: DsdNeoActivity's main thread may be reading it right now (#782), and adding
+     * an entry can free the array under it. QV4_GC_TIMELIMIT, which applyQmlGcPolicy() sets elsewhere, is set by
+     * QmlGcPolicy.kt before super.onCreate() starts this thread. */
     dsd_qt::ui_apply_style();
 
     QGuiApplication app(argc, argv);

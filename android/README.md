@@ -618,8 +618,22 @@ on), `drawable/splash.xml` and `values{,-v31}/themes.xml`.
 
 The NDK, SDK platform, build-tools and Qt versions CI builds against are pinned in
 `tools/ci-dependency-pins.env` (`ANDROID_NDK_VERSION`, `ANDROID_COMPILE_SDK`,
-`ANDROID_BUILD_TOOLS_VERSION`, `ANDROID_QT_VERSION`). Newer ones generally work;
-those are the combination the tree is known good with.
+`ANDROID_BUILD_TOOLS_VERSION`, `ANDROID_QT_VERSION`); that combination is the one
+the tree is known good with. Two of them are audited pins, not minimums (#782), and
+`ANDROID_A11Y_BRIDGE_JVM` fails as soon as either moves, until its audit is done:
+
+- **Compile SDK.** `android/CMakeLists.txt` compiles against exactly android-36
+  (`QT_ANDROID_COMPILE_SDK_VERSION`), the platform the activity's `configChanges`
+  list was audited for, and it must equal `ANDROID_COMPILE_SDK`. A new platform
+  usually defines a new configuration flag, and a flag missing from the list
+  restarts the app (see "Known limits"), so a bump starts by comparing the new
+  platform's flags with the list (`launch_policy` in `tests/android/run_jvm_tests.py`
+  says how).
+- **Qt.** The accessibility bridge gate and the launch policy depend on how Qt 6.11.2
+  reads its accessibility variable and restarts the process. A Qt bump re-audits
+  both: run the "Qt upgrade checks" in `docs/code_map.md` again, then make
+  `LaunchGuard.QT_RESTART` name the new version. The test reads the CI pin only; a
+  local build with another Qt kit has not been through those checks.
 
 ## Continuous integration
 
@@ -932,10 +946,11 @@ runs the usual USB access (a permission prompt if one is needed) and then starts
 the same system, scan list or Explore session; the RTL-SDR's open resets it first.
 With Signal search open, its screen says to plug the receiver back in and start
 the search again. **Dismiss** clears the notice and cancels a Reconnect still
-waiting. After the Activity is recreated (for example after Android reclaimed
-it in the background) the app names the running session again but holds no
-start to repeat, so Reconnect there only asks for access and the notice ends
-"…tap Reconnect, then start it again."
+waiting. A UI created over a service that is still running could not prove which
+saved system the service runs, so Reconnect there would only ask for access, and
+the notice would end "…tap Reconnect, then start it again." Under Qt 6.11.2 that
+never happens: closing the app, or Android reclaiming it, ends the process and the
+session with it, and a recreated Activity restarts the process (see "Known limits").
 
 A stop you ask for first wins: Stop and then an unplug while the session winds
 down shows no notice; an unplug and then Stop now keeps it. The receiver's own
@@ -944,23 +959,19 @@ sample-progress monitor" — with a 2 s grace that lets the detach broadcast own
 unplug, so an unplug reads "unplugged" rather than "stopped sending samples".
 
 An ending acknowledged by a new start, or by an access request (Reconnect, the
-pill) once its session ended, stays acknowledged after a recreation: the service
-keeps the mark (`DecoderService.acknowledgeReceiverEnding()`, published as
-`endingAcknowledged` in its lifecycle record), so the pill does not read `LOST`
+pill) once its session ended, is also kept by the service
+(`DecoderService.acknowledgeReceiverEnding()`, published as `endingAcknowledged` in
+its lifecycle record), so a UI created over the same service would not read `LOST`
 again over a receiver that is connected and ready.
 
-Known limits: the notice names only the receiver's kind, so after a recreation
-with two Airspys attached Reconnect may ask for the other one; the pill names, and
+Known limits: the notice names only the receiver's kind; the pill names, and
 Connect asks for, the last requested kind before the kind on the bus, so after an
 RTL-SDR request with only an Airspy plugged in it reads `NO RTL-SDR` and Retry
 answers "No RTL-SDR attached" until an Airspy system is started; **Dismiss** hides
-the notice for that Activity only, as it does any failure, so a recreated Activity
-shows a dismissed (but not acknowledged) notice again. A healthy session
-reattached after a recreation is named as it was started (its saved system, scan
-list or Explore session). A saved system's or scan list's receiver pill opens the
-receiver sheet as before; an Explore session's pill shows LIVE with no sheet until
-you have tuned somewhere, before or after the recreation. LOST still shows if the
-session ends.
+the notice without acknowledging the ending, as it does any failure.
+A saved system's or scan list's receiver pill opens the receiver sheet as before;
+an Explore session's pill shows LIVE with no sheet until you have tuned
+somewhere. LOST still shows if the session ends.
 
 ### What a failed start says
 
@@ -1170,8 +1181,9 @@ The Android-free Kotlin tracker reports each attachment as `<kind>:<device>` and
 runs on the JVM in `ANDROID_USB_BROKER_JVM`; verify the rest on a device:
 
 - Cold launch from the USB intent followed by the receiver's duplicate report
-  starts exactly once; an Activity recreation or duplicate new intent does not
-  restart it. Detach and reattach permits one new start.
+  starts exactly once; a duplicate new intent, which `singleTask` hands to the
+  running Activity's `onNewIntent`, does not restart it. Detach and reattach permits
+  one new start.
 - Mismatched deviceName or VID/PID, unknown devices, and a device removed before
   polling produce no start. With two devices, only the newest pending attachment
   is delivered; detaching it cancels the pending delivery.
@@ -1487,6 +1499,73 @@ module behind it, so androiddeployqt has nothing extra to package.
   paced by the blocking `AAudioStream_write`, but it does mean the pump plus the
   AAudio mixer stay resident for as long as a run lasts rather than only while a
   call is on air. This is the first thing to measure in the battery soak below.
+- **Screen readers: TalkBack only, and only from launch** (#782). Qt's accessibility
+  bridge, through which an accessibility service reads the app's screens and acts on
+  its controls, is on only when a screen reader's explore-by-touch (TalkBack's) was
+  on when the app opened (see "Navigation, accessibility and replay" for why):
+  - Unless the bridge is on, Switch Access, Voice Access and Select to Speak, and
+    TalkBack with explore-by-touch off, get no labels or named actions from the app.
+    Voice Access's "Show grid" and Switch Access's point scanning still work.
+  - UI automation that reads the accessibility tree sees no app content unless a
+    screen reader was on at launch.
+  - Turning TalkBack on while the app runs shows a notice, "Reopen DSD-neo to use
+    TalkBack": close DSD-neo from Recent apps, then open it again. Closing stops
+    decoding. The app never closes itself; OK or Back dismisses the notice, and it
+    does not come back until TalkBack is turned off and on again.
+  - Turning TalkBack off while the app runs leaves the bridge on until the app is
+    closed and reopened.
+- **TalkBack can stay on a text field after a system dialog** (#782). Qt carries out
+  TalkBack's "focus this" as a keyboard focus, and tells TalkBack it landed only when
+  the keyboard focus moves. After a system dialog (the USB permission prompt) closes,
+  Qt gives the keyboard focus back to the control that had it, so TalkBack, coming
+  back to that control, gets no answer and each swipe asks again. The app lets go of
+  a button's or a row's keyboard focus while the window is behind the dialog, so
+  TalkBack comes back at once; a text field keeps its focus for the keyboard, so on a
+  field TalkBack can still stay put until the screen is touched.
+- **TalkBack can stay on a control after a swipe onto a container** (#782). The same
+  Qt behaviour: a swipe from a control onto a node that is not a control (a sheet's
+  "Dialog", "Scrollable content", "Recent calls", or the unnamed node for the window
+  itself) leaves the control holding Qt's keyboard focus, so the swipe back onto it
+  gets no answer and TalkBack stays put until the screen is touched. This is a limit
+  of Qt 6.11.2's Android bridge; letting the containers take the focus made other
+  swipes stick.
+- **The first Spectrum open with TalkBack on stalls for a few seconds** (#782).
+  Building the screen makes Qt tell TalkBack about each hidden part, and Android's
+  main thread waits on the app for each answer: about 2 seconds on an emulator
+  (2.1–2.4 s), and earlier versions stall too. The first start after installing the
+  app on a freshly booted phone can wait much longer (26 s once on an emulator).
+  Later opens are quick. Building the screen a piece at a time did not shorten the
+  wait, so it is built at once.
+- **TalkBack can skip controls a disclosure has just shown** (#782). Right after
+  expanding a section (the key sheet's "Advanced: session direct override") or
+  adding a row, the first forward swipe can pass the new controls; Qt tells TalkBack
+  nothing when they appear. A second pass reaches them.
+- **TalkBack makes a silent stop at the start and end of a screen** (#782). Swiping
+  past the last item or back past the first lands once on the window itself, which
+  Qt's bridge gives no name.
+- **TalkBack reads the Network sheet in a fixed order** (#782). With TalkBack on,
+  each section lists its entries by frequency, SGID or radio ID rather than most
+  recent first: Qt tells TalkBack nothing when rows change places, and a list that
+  kept reordering under it made swiping skip, repeat or loop entries.
+- **A recreated Activity restarts the app.** Under Qt 6.11.2, a second instance of
+  the app's Activity in the running process makes Qt restart the whole process from
+  inside that instance's start, with none of the app's teardown: decoding stops at
+  once, as if the app had been killed. Android creates one when a configuration
+  change is not handled in place, or when a launch does not reach the running
+  instance. The app prevents both: it has one instance (`singleTask`), and it handles
+  every configuration change Android 16 defines (rotation, dark mode, font size and
+  weight, colour mode, a runtime overlay and the rest) without recreating the
+  Activity. A restart that happens anyway is recorded on Android 11 and later and
+  appears on the next start's `exit:` line (see "How the previous run ended");
+  Android 10 keeps no such record, so there it leaves nothing to report.
+- **One instance closes pickers and permission prompts.** Because of `singleTask`, a
+  USB attachment, a tap on the launcher icon and a tap on the decoding notification
+  all bring the running app forward, and each closes a file picker or a permission
+  prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
+  import, backup or recording picker ends with no error, and an interrupted location
+  prompt returns the site chooser to its idle text, with nothing reported as
+  denied; Android asks again on the next tap. Share sheets open in their own task
+  and are not affected.
 
 ## Diagnostics
 
@@ -1561,11 +1640,11 @@ Copy and Share start with these records under `--- host and session records ---`
 the previous run's first under `--- previous run ---`, then give the full log under
 `--- all records ---`. The records therefore appear twice when the ring still holds
 them. The screen shows the full log only. Clear removes this store with the rest.
-The watchdog, teardown and screen records below are host records too. Written
-from Kotlin, they can come before the native library is ready; up to 64 wait for
-it in order (later ones are counted and reported as `diagnostics: N host records
-dropped while waiting for native diagnostics`), and each also goes to logcat at
-once under the `dsd-neo` tag.
+The watchdog, teardown, screen and accessibility records below are host records
+too. Written from Kotlin, they can come before the native library is ready; up to
+64 wait for it in order (later ones are counted and reported as `diagnostics: N
+host records dropped while waiting for native diagnostics`), and each also goes to
+logcat at once under the `dsd-neo` tag.
 
 **Durable start.** A phone that restarts while listening loses whatever was not
 yet on flash. So a start records itself before it touches the device:
@@ -1589,12 +1668,23 @@ Android version, boot count (`Settings.Global.BOOT_COUNT`), manufacturer and
 model, app version. Android 11 and later add up to three `exit:` lines from
 `ActivityManager.getHistoricalProcessExitReasons()`, newest first, each with time,
 pid, reason (`CRASH_NATIVE`, `LOW_MEMORY`, `ANR`, `SIGNALED`, ...), importance,
-PSS and Android's description. Each exit is logged once: a launch skips the ones
-an earlier launch logged (their time and pid are kept in
-`noBackupFilesDir/exit-facts-logged`, written only once the write that carried
-the lines and a sync of the host store both succeeded, whichever flush ran them,
-so a launch that dies first or a store that failed does not lose them), so the host
-store does not fill with the same history. Each new
+PSS and Android's description. A process that recorded a state summary for Android
+to keep with its exit has it in parentheses at the end of its line. The app records
+one only for the restart under "Known limits", just before Qt restarts the process
+(#782):
+
+```
+exit: … EXIT_SELF status 0 … (activity: second instance in a running process; Qt 6.11.2 restarts the process)
+```
+
+The reason and the status are Android's; the summary names the Qt of the build that
+wrote it and says nothing about cleanup. Android 10 keeps no summary.
+
+Each exit is logged once: a launch skips the ones an earlier launch logged (their
+time and pid are kept in `noBackupFilesDir/exit-facts-logged`, written only once
+the write that carried the lines and a sync of the host store both succeeded,
+whichever flush ran them, so a launch that dies first or a store that failed does
+not lose them), so the host store does not fill with the same history. Each new
 segment starts again with the current `process:` and `session starting:` lines.
 The screen, Copy and Share keep the previous run's and this run's `process:` and
 `session starting:` lines at the top, however many records the 2000-row limit
@@ -1654,9 +1744,10 @@ process lives.
 
 ### Teardown markers
 
-When the app's activity is destroyed for good (closing the app, not a rotation or
-another configuration change), each stage of the teardown is recorded with how long
-it took, so a relaunch that waited for the old process shows which stage held it:
+When the app's activity is destroyed by closing the app (a rotation or another
+configuration change is handled in place and destroys nothing), each stage of the
+teardown is recorded with how long it took, so a relaunch that waited for the old
+process shows which stage held it:
 
 ```
 teardown: activity 2 destroying at uptime 1234.567 s
@@ -1713,6 +1804,35 @@ once every 5 s (the next record counts the ones left out): `screen: touch while
 dimmed: swallowed, dim off`, `passed on, dim still on`, or `not taken: the screen
 policy follows another activity`. A tap that reached the app but did not lift the
 dim leaves this record; a tap that never reached the app leaves none.
+
+### Accessibility records
+
+Each launch records whether Qt's accessibility bridge is on (#782; see "Known
+limits"), with flags and counts only, never another app's name:
+
+```
+accessibility: bridge off at launch (touch exploration off; accessibility on, 2 services bound)
+accessibility: bridge on at launch (touch exploration on; accessibility on, 1 service bound)
+```
+
+- `; restart notice pending` follows when touch exploration was on but Qt left the
+  bridge off, so the notice is owed: accessibility was not enabled yet, or the app
+  could not set Qt's variable and a value left over from elsewhere keeps it off.
+- `; not frozen, so Qt follows later changes` follows when the app could not set
+  Qt's variable and no value was left over: the record before it says
+  `accessibility: setting QT_ANDROID_DISABLE_ACCESSIBILITY failed (errno N); …`. Qt
+  then turns the bridge on and off with any accessibility service, as before #782,
+  and the edges below read `…; the bridge is not frozen, so Qt follows it`.
+
+Later changes are recorded as they happen: `accessibility: touch exploration turned
+on; the bridge stays off until the app restarts` (TalkBack turned on after launch),
+`… turned off; the bridge stays on until the app restarts`, or plain `… turned on` /
+`… turned off` where the bridge state already matches. The notice adds `accessibility:
+notice shown`, `acknowledged` (OK or Back), `dropped` (closed by the app leaving the
+screen; it shows again at the next return while TalkBack is still on) and `notice
+could not be shown; it waits for the next resume`. `qml: setting QV4_GC_TIMELIMIT
+failed (errno N); the collector keeps its time slices` is the one other launch
+record (see `docs/code_map.md` "QML garbage collector").
 
 ### Reading a shared report
 
@@ -1849,6 +1969,16 @@ adb. Remove the argument after testing to stop the log growing. Argument
 construction is also covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
+A screen reader reaches them through Qt's accessibility bridge, which the app turns
+on only when a screen reader's explore-by-touch (TalkBack's) is on at launch (#782).
+Unless the bridge is already on, no other accessibility service gets app content:
+Switch Access, Voice Access, Select to Speak, and apps that bind a service for other
+reasons, such as remote-control or call-recording apps. Qt 6.11.2 turns the bridge on
+for any of them, and each item it shows or hides then costs Android's main thread a
+task that makes 8 blocking round trips to Qt's thread. A scan hopping between targets
+raised dozens a second, so the main thread fell more than a minute behind: the dim,
+Stop and Start waited, and Android reported the app not responding. What that costs
+those services' users is under "Known limits".
 Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
 The app's effective theme controls system-bar icons. Expanded windows use a
 navigation rail; short Monitor windows keep frequent controls above Stop.

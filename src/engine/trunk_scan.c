@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dmr_key_map.h>
@@ -571,6 +572,7 @@ typedef struct {
     int single_key_dec_idx;
     int p25_bandplan_idx;
     int options_idx;
+    int label_idx;
     size_t header_fields; /* columns the header names */
     unsigned int row;
     char* err;
@@ -1103,6 +1105,47 @@ scan_field_wrapped(char** fields, size_t count, int idx) {
     return length >= 2 && cell[0] == '"' && cell[length - 1] == '"';
 }
 
+/* A spreadsheet saves a cell that holds a double quote wrapped in double quotes, each quote inside doubled (RFC 4180):
+   `"Tower ""A"""`. Read in place as the spreadsheet meant it, each doubled quote as one, when the cell was wrapped and
+   every quote inside it is doubled -- the rule the options cell reads such quoting by
+   (dsd_scan_options_cell_csv_quoted()); any other cell is left as it is. */
+static void
+scan_csv_unescape_doubled_quotes(char* text) {
+    const char* p = text;
+    while (*p) {
+        if (*p != '"') {
+            p++;
+        } else if (p[1] == '"') {
+            p += 2;
+        } else {
+            return;
+        }
+    }
+    char* w = text;
+    const char* r = text;
+    while (*r) {
+        *w++ = *r;
+        /* A doubled quote is written once. */
+        r += *r == '"' ? 2 : 1;
+    }
+    *w = '\0';
+}
+
+/* The optional `label` column (issue #782): free text that names the channel while parked here, never an error. */
+static void
+scan_parse_target_label(dsd_trunk_scan_target* target, char** fields, size_t count, int idx) {
+    if (idx < 0 || (size_t)idx >= count) {
+        target->label[0] = '\0';
+        return;
+    }
+    const int wrapped = scan_field_wrapped(fields, count, idx);
+    char* cell = scan_unquote(fields[idx]);
+    if (wrapped) {
+        scan_csv_unescape_doubled_quotes(cell);
+    }
+    dsd_channel_label_sanitize(cell, target->label, sizeof target->label);
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -1139,6 +1182,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
     target.csv_row = parse->row;
+    scan_parse_target_label(&target, fields, field_count, parse->label_idx);
     target.dwell_is_set = dwell_s[0] != '\0';
     target.activity_hold_is_set = hold_s[0] != '\0';
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
@@ -1183,7 +1227,7 @@ scan_match_optional_header(dsd_trunk_scan_row_parse* parse, const char* name, si
         {"keys_hex_csv", &parse->keys_hex_idx},         {"keys_dec_csv", &parse->keys_dec_idx},
         {"single_key_hex", &parse->single_key_hex_idx}, {"single_key_dec", &parse->single_key_dec_idx},
         {"p25_bandplan_csv", &parse->p25_bandplan_idx}, {"options", &parse->options_idx},
-        {"relevant_CLI_switches", &parse->options_idx},
+        {"relevant_CLI_switches", &parse->options_idx}, {"label", &parse->label_idx},
     };
 
     for (size_t k = 0; k < sizeof cols / sizeof cols[0]; k++) {
@@ -1237,6 +1281,7 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
     parse->single_key_dec_idx = -1;
     parse->p25_bandplan_idx = -1;
     parse->options_idx = -1;
+    parse->label_idx = -1;
     parse->header_fields = field_count;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
         if (scan_match_optional_header(parse, scan_unquote(fields[i]), i) != 0) {
@@ -2112,9 +2157,11 @@ trunk_scan_get(const dsd_state* state) {
     return (dsd_trunk_scan_coord*)dsd_engine_scan_owned(state, 0);
 }
 
-/* The published id is the target id verbatim, so the two buffers have to agree. */
+/* The published id and label are the target's verbatim, so the buffers have to agree. */
 _Static_assert(sizeof(((dsd_trunk_scan_target*)0)->id) <= DSD_CHANNEL_LABEL_SIZE,
                "a trunk scan target id must fit the published channel label");
+_Static_assert(sizeof(((dsd_trunk_scan_target*)0)->label) <= DSD_CHANNEL_LABEL_SIZE,
+               "a trunk scan target label must fit the published channel label");
 
 /* The options a target runs: its profile's -- its list options with any live decryption change over them -- or,
    without a profile, its list options, with the operator's session edit laid over them (issue #518). @p scratch holds
@@ -2162,6 +2209,7 @@ trunk_scan_clear_published_target(dsd_state* state) {
         return;
     }
     state->trunk_scan_active_id[0] = '\0';
+    state->trunk_scan_active_label[0] = '\0';
     state->trunk_scan_active_ordinal = 0U;
     state->trunk_scan_target_count = 0U;
     state->trunk_scan_hold = 0U;
@@ -2240,6 +2288,8 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     const size_t ordinal = coord->active + 1U;
     DSD_SNPRINTF(state->trunk_scan_active_id, sizeof state->trunk_scan_active_id, "%s",
                  coord->targets[coord->active].target.id);
+    DSD_SNPRINTF(state->trunk_scan_active_label, sizeof state->trunk_scan_active_label, "%s",
+                 coord->targets[coord->active].target.label);
     state->trunk_scan_active_ordinal = (uint16_t)(ordinal > UINT16_MAX ? UINT16_MAX : ordinal);
     trunk_scan_publish_configured(state, coord);
     state->trunk_scan_paused = 0U;

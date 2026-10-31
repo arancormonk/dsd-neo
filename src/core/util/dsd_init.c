@@ -1071,6 +1071,7 @@ init_state_p25p1_nid_learning(dsd_state* state) {
 static void
 init_state_trunk_scan_publication(dsd_state* state) {
     DSD_MEMSET(state->trunk_scan_active_id, 0, sizeof(state->trunk_scan_active_id));
+    DSD_MEMSET(state->trunk_scan_active_label, 0, sizeof(state->trunk_scan_active_label));
     state->trunk_scan_active_ordinal = 0;
     state->trunk_scan_target_count = 0;
     state->lcn_scan_hold = 0;

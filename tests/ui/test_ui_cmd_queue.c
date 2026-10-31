@@ -54,7 +54,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -116,6 +115,7 @@
 #include "manual_tune_pending.h"
 #include "scan_step_untyped.h"
 #include "services.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -17575,7 +17575,7 @@ test_nfm_width_changes_held_to_channel_lpf_off(void) {
     init_nfm_session(&opts, &state, (RtlSdrContext*)fake_ctx);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
     opts.rtl_dsp_bw_khz = 48;
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
 
     state.rtl_ctx = NULL;
@@ -17686,7 +17686,7 @@ test_nfm_width_changes_held_to_channel_lpf_off(void) {
     reset_config_rtl_wrap();
     opts.audio_in_type = AUDIO_IN_RTL;
 
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
@@ -18430,7 +18430,7 @@ test_am_held_to_channel_lpf_off(void) {
     static void* fake_ctx[2];
     int rc = 0;
     init_nfm_session_with_am_width(&opts, &state, (RtlSdrContext*)fake_ctx, 0);
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     state.ui_msg[0] = '\0';
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
@@ -18440,14 +18440,14 @@ test_am_held_to_channel_lpf_off(void) {
                        "Failed: AM -> AM needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off");
 
     /* An AM session on the running RTL-SDR, started before the variable was set. */
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
     reset_rx_family_wrap();
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AM);
     (void)dsd_app_drain_cmds(&opts, &state);
     demod_thread_lands(0);
     rc |= expect_int("lpf off: AM session", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     g_config_rtl_creates = 0;
     (void)post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT);
@@ -18459,7 +18459,7 @@ test_am_held_to_channel_lpf_off(void) {
     rc |= expect_toast("lpf off: AM to airspy toast", &state,
                        "Refused: AM needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off");
     rc |= expect_int("lpf off: AM to airspy: still AM", dsd_infer_decode_mode_preset(&opts) == DSDCFG_MODE_AM, 1);
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
     g_fake_analog_family = 0;
     state.rtl_ctx = NULL;
@@ -20054,13 +20054,13 @@ test_channel_map_import_names_rows_the_dsp_rate_skips(void) {
 
     /* Every explicit width needs the filter DSD_NEO_CHANNEL_LPF=0 turns off, whatever the rate. */
     opts.rtl_dsp_bw_khz = 48;
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     rc |= import_channel_map_text(&opts, &state, "nfm_map.csv", mixed, "lpf-off map drained");
     rc |= expect_toast("lpf-off names the rows", &state,
                        "Imported; scan channel 2 and 2 more are skipped at every visit: NFM 20 kHz needs the "
                        "filter DSD_NEO_CHANNEL_LPF=0 turns off");
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
 
     /* At 48 kHz every row runs. */

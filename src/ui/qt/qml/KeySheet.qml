@@ -68,11 +68,27 @@ ModalSheet {
         selectedProfileUid = materialProfile.uid || "";
         profileScope = (metrics.scanTargetId || "").length ? 1 : 0;
         context = commands.decryptionContext(metrics.scanTargetId || "", metrics.keyEpoch || "0");
+        // Only a real target has a name: the label source falls back to
+        // "Target <ordinal>" without one.
+        openedTargetName = (metrics.scanTargetId || "").length ? targetName : "";
+        targetLeft = false;
         advancedOpen = false;
         savingDraft = false;
         systemRevision++;
         openedChoice = choiceValue();
         visible = sessionRunning;
+    }
+    // The target as the sheet opened, which is the one a target-scope Apply
+    // addresses (context), by its name then.
+    property string openedTargetName: ""
+    // The scan has left that target while the sheet was open: a target-scope
+    // Apply is then refused as stale. Latched until the sheet opens again, so
+    // a rotating scan shows the note once instead of on every hop.
+    property bool targetLeft: false
+    readonly property string liveTargetId: metrics.scanTargetId || ""
+    onLiveTargetIdChanged: {
+        if (visible && liveTargetId !== (context.target || ""))
+            targetLeft = true;
     }
     // The profile and scope as the sheet opened: a different choice is an edit.
     property string openedChoice: ""
@@ -204,15 +220,43 @@ ModalSheet {
                 sheet.visible = false;
         }
     }
+    // Closed, the slots stay unbuilt (issue #782): they change with every call
+    // and scan hop, and each row created under the hidden sheet raises an
+    // accessibility event. Opening fills them from the readings as they are.
+    //
+    // Open, a row per slot is kept across publications (issue #782,
+    // StableRows): each call and hop publishes a new list, and a list model
+    // would rebuild every row and its buttons a screen reader is told about.
+    // Each row reads its slot in place.
     Repeater {
-        model: metrics.decryptionSlots || []
+        id: slotRepeater
+        objectName: "keySheetSlots"
+        readonly property var slots: sheet.visible ? (metrics.decryptionSlots || []) : []
+        model: StableRows {
+            id: slotRows
+            entries: slotRepeater.slots
+        }
         Column {
-            required property var modelData
+            id: slotRow
+            required property int index
+            // A row past the end of a shrinking list goes at the end of the turn;
+            // until then it is hidden, and keeps reading the slot it last read. Its
+            // index is -1 for an instant as it goes, and it stays hidden then too.
+            visible: slotRow.index >= 0 && slotRow.index < slotRows.shown
+            // The slot last read, kept where a binding does not follow it.
+            readonly property var read: ({})
+            onSlotDataChanged: read.slot = slotData
+            // The row's reading of its slot; an empty one only before it has read one.
+            readonly property var slotData: slotRow.index >= 0 && slotRow.index < slotRepeater.slots.length ? slotRepeater.slots[slotRow.index]
+                : slotRow.read.slot || ({slot: 0, status: "", lastObserved: false, algorithm: "", keyId: "", source: "", effectiveId: "",
+                    availability: "", fallback: "", privateCall: false, dmr: false, group: false, blockReason: "",
+                    profileRef: "", protocol: "", materialKind: "", targetId: ""})
             width: parent.width
             spacing: 6
-            Text {
+            ReadableText {
                 width: parent.width
-                text: qsTr("Slot %1 · %2%3").arg(modelData.slot).arg(modelData.status).arg(modelData.lastObserved ? qsTr(" · last observed") : "") + (modelData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(modelData.algorithm) : "") + (modelData.keyId.length ? qsTr("\nCall key ID: %1").arg(modelData.keyId) : "") + "\n" + modelData.source + (modelData.effectiveId.length ? " · " + modelData.effectiveId : "") + "\n" + modelData.availability + (modelData.fallback.length ? "\n" + modelData.fallback : "") + (modelData.privateCall && modelData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (modelData.blockReason.length ? qsTr("\nListening policy: %1").arg(modelData.blockReason) : "")
+                // Guarded: a new row's bindings can run before its slot is read.
+                text: !slotData ? "" : qsTr("Slot %1 · %2%3").arg(slotData.slot).arg(slotData.status).arg(slotData.lastObserved ? qsTr(" · last observed") : "") + (slotData.algorithm.length ? qsTr("\nAlgorithm in use: %1").arg(slotData.algorithm) : "") + (slotData.keyId.length ? qsTr("\nCall key ID: %1").arg(slotData.keyId) : "") + "\n" + slotData.source + (slotData.effectiveId.length ? " · " + slotData.effectiveId : "") + "\n" + slotData.availability + (slotData.fallback.length ? "\n" + slotData.fallback : "") + (slotData.privateCall && slotData.dmr ? qsTr("\nPrivate call: talkgroup overrides do not apply.") : "") + (slotData.blockReason.length ? qsTr("\nListening policy: %1").arg(slotData.blockReason) : "")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.textPrimary
@@ -220,23 +264,23 @@ ModalSheet {
             }
             OutlineButton {
                 width: parent.width
-                visible: modelData.keyId.length > 0 && typeof decryptionProfiles !== "undefined"
+                visible: !!slotData && slotData.keyId.length > 0 && typeof decryptionProfiles !== "undefined"
                 text: qsTr("Manage matching key")
                 enabled: !applyFlow.pending
                 onClicked: {
                     sheet.savingDraft = false;
-                    var profile = decryptionProfiles.forRuntimeReference(modelData.profileRef);
-                    matchingEditor.openMatching(profile.uid || "", modelData.protocol, parseInt(modelData.keyId, 16), modelData.materialKind);
+                    var profile = decryptionProfiles.forRuntimeReference(slotData.profileRef);
+                    matchingEditor.openMatching(profile.uid || "", slotData.protocol, parseInt(slotData.keyId, 16), slotData.materialKind);
                 }
             }
             OutlineButton {
                 width: parent.width
-                visible: modelData.dmr && modelData.group && sheet.selectedProfileUid.length > 0
+                visible: !!slotData && slotData.dmr && slotData.group && sheet.selectedProfileUid.length > 0
                 text: qsTr("Talkgroup key selection")
                 enabled: !applyFlow.pending
                 onClicked: {
                     sheet.savingDraft = false;
-                    matchingEditor.openTalkgroup(sheet.selectedProfileUid, "dmr", Number(modelData.targetId));
+                    matchingEditor.openTalkgroup(sheet.selectedProfileUid, "dmr", Number(slotData.targetId));
                 }
             }
         }
@@ -256,9 +300,13 @@ ModalSheet {
         }
     }
     Text {
+        id: outdatedProfileNote
         width: parent.width
         visible: sheet.materialProfile.outdated === true
         text: qsTr("The saved profile has changed since it was loaded. Apply the saved profile to use its current revision.")
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !Navigation.allows(outdatedProfileNote) || !visible
         color: Theme.alert
         wrapMode: Text.Wrap
         font.pixelSize: Theme.fontSize(13)
@@ -273,20 +321,64 @@ ModalSheet {
             sheet.selectedProfileUid = uid;
         }
     }
+    // A fixed pair (issue #782): a model carrying the target's name was rebuilt
+    // on every scan hop, which reset the choice to session defaults and, while
+    // the sheet was closed, sent accessibility events for each rebuilt option.
     PlexComboBox {
+        id: scopeChoice
+        objectName: "keySheetScope"
         width: parent.width
         visible: (metrics.scanTargetId || "").length > 0
         enabled: !applyFlow.pending
         Accessible.name: qsTr("Profile application scope")
-        model: [qsTr("Session defaults"), sheet.targetName.length ? qsTr("Active target: %1").arg(sheet.targetName) : qsTr("Active scan target")]
+        model: [qsTr("Session defaults"), qsTr("Active scan target")]
         currentIndex: sheet.profileScope
         onActivated: sheet.profileScope = currentIndex
+    }
+    // Where the target scope applies: the target the sheet opened on, which
+    // Apply addresses, not the scan's current one. One line, elided.
+    // A plain Text is not in the accessibility tree; these lines name
+    // themselves so a screen reader reaches them, and leave it while hidden.
+    Text {
+        id: targetNameLine
+        objectName: "keySheetTargetName"
+        width: parent.width
+        visible: scopeChoice.visible && sheet.profileScope === 1 && sheet.openedTargetName.length > 0
+        text: qsTr("Applies to %1").arg(sheet.openedTargetName)
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !Navigation.allows(targetNameLine) || !visible
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
+    // Read where it is reached, and with Apply below it, never announced on
+    // its own: it appears mid-scan, and Apply is where it matters.
+    Text {
+        id: targetLeftNote
+        objectName: "keySheetTargetLeft"
+        width: parent.width
+        // It promises no target to come: the scan may have stopped. The second
+        // sentence is the decoder's own refusal advice.
+        visible: sheet.profileScope === 1 && sheet.targetLeft
+        text: sheet.openedTargetName.length ? qsTr("The scan has left %1. Reopen the editor before applying.").arg(sheet.openedTargetName) : qsTr("The scan target changed. Reopen the editor before applying.")
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !Navigation.allows(targetLeftNote) || !visible
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.alert
     }
     GradientButton {
         width: parent.width
         visible: sheet.selectedProfileUid.length > 0
         enabled: sheet.sessionRunning && !applyFlow.pending
         text: sheet.profileScope === 1 ? qsTr("Apply profile to this target") : qsTr("Apply profile to session defaults")
+        Accessible.description: targetLeftNote.visible ? targetLeftNote.text : ""
         onClicked: {
             if (typeof decryptionProfiles !== "undefined" && decryptionProfiles.get(sheet.selectedProfileUid).mode === "vendor") {
                 sheet.notice = qsTr("Vendor keystream profiles require Stop and a new standalone session.");
@@ -323,9 +415,13 @@ ModalSheet {
         enabled: !applyFlow.pending
     }
     Text {
+        id: directOverrideText
         objectName: "directOverrideNote"
         width: parent.width
         text: qsTr("A direct override is for this session only and is cleared when you stop. It changes session defaults; an explicit scan profile stays effective until rotation restores them. Keys and listening policy are separate; excluded talkgroups remain blocked.")
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !Navigation.allows(directOverrideText) || !visible
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
@@ -344,9 +440,13 @@ ModalSheet {
         }
     }
     Text {
+        id: keySheetNotice
         width: parent.width
         visible: text.length > 0
         text: sheet.notice
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+        Accessible.ignored: !Navigation.allows(keySheetNotice) || !visible
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)

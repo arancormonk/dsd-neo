@@ -108,13 +108,14 @@ ModalSheet {
         }
     }
 
-    Text {
+    ReadableText {
+        heading: true
         objectName: "talkgroupEditHeading"
         text: qsTr("Talkgroup %1").arg(sheet.pattern.length > 0 ? sheet.pattern : sheet.idStart === sheet.idEnd ? Util.idText(sheet.idStart) : Util.idText(sheet.idStart) + "–" + Util.idText(sheet.idEnd))
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }
-    Text {
+    ReadableText {
         width: parent.width
         visible: sheet.observedCrypto.algorithm !== undefined
         text: sheet.observedCrypto.crypto === 1 ? qsTr("Last observed: unencrypted") : qsTr("Last observed algorithm: %1").arg(sheet.observedCrypto.algorithm || "") + (sheet.observedCrypto.keyId ? qsTr(" · key ID %1").arg(sheet.observedCrypto.keyId) : "")
@@ -157,7 +158,7 @@ ModalSheet {
         text: qsTr("Record")
         enabled: listenToggle.checked
     }
-    Text {
+    ReadableText {
         objectName: "recordHint"
         width: parent.width
         wrapMode: Text.Wrap
@@ -166,7 +167,7 @@ ModalSheet {
         text: !listenToggle.checked ? qsTr("Off while not tuned. Tuning it again turns Record back on.") : unknownOnly ? qsTr("This talkgroup's calls aren't saved while Only unknown talkgroups is on in Settings.") : qsTr("Saves this talkgroup's calls when call recording is on.")
         color: Theme.textSecondary
     }
-    Text {
+    ReadableText {
         text: qsTr("Priority · %1").arg(sheet.priorityValue)
         color: Theme.textPrimary
     }
@@ -208,7 +209,7 @@ ModalSheet {
         text: qsTr("Preempt")
         enabled: sheet.priorityValue > 0
     }
-    Text {
+    ReadableText {
         objectName: "preemptHint"
         width: parent.width
         wrapMode: Text.Wrap
@@ -251,14 +252,14 @@ ModalSheet {
         text: sheet.saveListText
         onClicked: sheet.saveListRequested()
     }
-    Text {
+    ReadableText {
         width: parent.width
         text: sheet.saveMessage
         visible: text.length > 0
         color: Theme.textSecondary
         wrapMode: Text.Wrap
     }
-    Text {
+    ReadableText {
         objectName: "talkgroupEditToast"
         width: parent.width
         text: sheet.backendMessage.length > 0 ? sheet.backendMessage : sheet.localMessage

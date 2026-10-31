@@ -18,7 +18,6 @@
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -30,6 +29,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 
 extern demod_state demod;
 extern std::atomic<double> g_snr_c4fm_db;
@@ -1495,9 +1495,9 @@ configure_and_finalize(demod_state* demod, dsd_opts* opts, int rtl_dsp_bw_hz, ch
 static void
 set_channel_lpf_env(const char* value) {
     if (value) {
-        (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", value, 1);
+        (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", value, 1);
     } else {
-        (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+        (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     }
     dsd_neo_config_init();
 }
@@ -1942,7 +1942,7 @@ expect_m17_encoder_real_options(void) {
     set_channel_lpf_env(NULL);
     for (int variant = 0; variant < 3; variant++) {
         if (variant == 2) {
-            (void)dsd_setenv("DSD_NEO_CQPSK", "1", 1);
+            (void)dsd_test_setenv("DSD_NEO_CQPSK", "1", 1);
             dsd_neo_config_init();
         }
         demod_state* demod = alloc_zeroed_demod();
@@ -1975,7 +1975,7 @@ expect_m17_encoder_real_options(void) {
         rtl_demod_cleanup(demod);
         dsd_neo_aligned_free(demod);
     }
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
 
     /* A -fA monitor and a digital open are not the encoder's. */
@@ -2041,9 +2041,9 @@ expect_landing_cqpsk_truth_table(void) {
     int rc = 0;
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         if (rows[i].env) {
-            (void)dsd_setenv("DSD_NEO_CQPSK", rows[i].env, 1);
+            (void)dsd_test_setenv("DSD_NEO_CQPSK", rows[i].env, 1);
         } else {
-            (void)dsd_unsetenv("DSD_NEO_CQPSK");
+            (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
         }
         dsd_neo_config_init();
         char label[128];
@@ -2051,7 +2051,7 @@ expect_landing_cqpsk_truth_table(void) {
                      rows[i].env ? rows[i].env : "unset", rows[i].requested, rows[i].is_explicit);
         rc |= expect_int_eq(label, rtl_demod_landing_cqpsk(rows[i].requested, rows[i].is_explicit), rows[i].want);
     }
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return rc;
 }
@@ -2270,7 +2270,7 @@ static int
 expect_analog_open_ignores_cqpsk(void) {
     int rc = 0;
     set_channel_lpf_env(NULL);
-    (void)dsd_setenv("DSD_NEO_CQPSK", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_CQPSK", "1", 1);
     dsd_neo_config_init();
     for (int mod_qpsk = 0; mod_qpsk <= 1; mod_qpsk++) {
         demod_state* demod = alloc_zeroed_demod();
@@ -2314,7 +2314,7 @@ expect_analog_open_ignores_cqpsk(void) {
         DSD_FPRINTF(stderr, "digital open under DSD_NEO_CQPSK=1: allocation failed\n");
         rc = 1;
     }
-    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    (void)dsd_test_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
     return rc;
 }
@@ -2322,9 +2322,9 @@ expect_analog_open_ignores_cqpsk(void) {
 static void
 set_iq_dc_block_env(const char* value) {
     if (value) {
-        (void)dsd_setenv("DSD_NEO_IQ_DC_BLOCK", value, 1);
+        (void)dsd_test_setenv("DSD_NEO_IQ_DC_BLOCK", value, 1);
     } else {
-        (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
+        (void)dsd_test_unsetenv("DSD_NEO_IQ_DC_BLOCK");
     }
     dsd_neo_config_init();
 }
@@ -2333,9 +2333,9 @@ set_iq_dc_block_env(const char* value) {
 static void
 set_iq_balance_env(const char* value) {
     if (value) {
-        (void)dsd_setenv("DSD_NEO_IQ_BALANCE", value, 1);
+        (void)dsd_test_setenv("DSD_NEO_IQ_BALANCE", value, 1);
     } else {
-        (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
+        (void)dsd_test_unsetenv("DSD_NEO_IQ_BALANCE");
     }
 }
 

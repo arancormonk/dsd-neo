@@ -180,3 +180,31 @@ cpp_named_domain_reads(const HistoryRow& row, Scheduler& scheduler) {
     auto when = row.time();
     consume(decoded_ms, real_ms, real_today, stamped, wait, queued, tick, when);
 }
+
+void
+cpp_environment_access(const char* name) {
+    // ruleid: dsd-neo.no-environment-write
+    qputenv("QV4_GC_TIMELIMIT", QByteArrayLiteral("0"));
+    // ruleid: dsd-neo.no-environment-write
+    qunsetenv("QT_ANDROID_DISABLE_ACCESSIBILITY");
+    // ruleid: dsd-neo.no-environment-write
+    ::setenv(name, "1", 1);
+    // ruleid: dsd-neo.env-read-through-store
+    const char* a = std::getenv(name);
+    // ruleid: dsd-neo.env-read-through-store
+    const char* b = ::getenv(name);
+    // ruleid: dsd-neo.env-read-through-store
+    const QByteArray c = qgetenv("DSD_NEO_AUTO_PPM");
+    // ruleid: dsd-neo.env-read-through-store
+    const QString d = qEnvironmentVariable("DSD_NEO_AUTO_PPM");
+    bool ok = false;
+    // ruleid: dsd-neo.env-read-through-store
+    const int e = qEnvironmentVariableIntValue("QV4_GC_TIMELIMIT", &ok);
+    // ruleid: dsd-neo.env-read-through-store
+    const bool f = qEnvironmentVariableIsSet("DSD_NEO_AUTO_PPM");
+    // ok: dsd-neo.env-read-through-store
+    const dsd_env_value g(name);
+    // ruleid: dsd-neo.no-environment-write
+    dsd_qt::applyQmlGcPolicy();
+    consume(a, b, c, d, e, f, g);
+}

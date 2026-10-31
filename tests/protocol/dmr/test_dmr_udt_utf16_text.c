@@ -27,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 #include "test_support.h"
 
 /* UTF-16BE: U+4739, U+1F600 as a surrogate pair, a lone high surrogate, then 'A'. */

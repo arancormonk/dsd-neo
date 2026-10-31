@@ -35,7 +35,6 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -64,6 +63,7 @@
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
 #include "scan_step_untyped.h"
+#include "test_env.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -778,6 +778,50 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
 
     dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+/* Issue #782: the `label` column as a spreadsheet saves it. A cell wrapped in quotes with every quote inside doubled
+ * reads each doubled quote as one, as the options cell does; a cell whose quotes are not all doubled keeps them; a
+ * plain cell is read as it is, and padding and control characters are dropped. */
+static int
+test_parser_reads_spreadsheet_quoted_labels(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,dmr-conventional,451000000,,,,,\"Tower \"\"A\"\", east\"\n"
+                                       "b,dmr-conventional,452000000,,,,,\"Bob\"s yard\"\n"
+                                       "c,dmr-conventional,453000000,,,,, County Fire \n"
+                                       "d,dmr-conventional,454000000,,,,,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int test_rc = 0;
+    if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) != 0 || list.count != 4) {
+        DSD_FPRINTF(stderr, "label parse rc count=%zu err=%s\n", list.count, err);
+        test_rc = 1;
+    } else {
+        static const char* const want[] = {"Tower \"A\", east", "Bob\"s yard", "County Fire", ""};
+        for (size_t i = 0; i < 4; i++) {
+            if (strcmp(list.targets[i].label, want[i]) != 0) {
+                DSD_FPRINTF(stderr, "label %zu '%s', want '%s'\n", i, list.targets[i].label, want[i]);
+                test_rc = 1;
+            }
+        }
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
@@ -1585,6 +1629,66 @@ test_coordinator_publishes_active_target_label(void) {
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     test_rc |= expect_published_target(&state, "shutdown", "", 0U, 0U);
 
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * Issue #782: a target's optional `label` column gives it a display name, published beside the id for the frontends
+ * to show (the Monitor's scan header). The id stays the channel's identity (CORE_CHANNEL_LABEL): history merges calls
+ * by it, and two targets may share a label. A target without a label publishes none. The label is sanitized: a
+ * control character becomes a space and the cell's padding is dropped.
+ */
+static int
+test_target_label_names_the_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file_with_header(dir, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n",
+                                       "f4c3562f-afab-49ee-bc0a-1f8df9845cb3,dmr-conventional,451000000,,250,,,"
+                                       "\" County\tDMR, east \"\n"
+                                       "b,p25-trunk,852000000,,250,,,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "label scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "init", "f4c3562f-afab-49ee-bc0a-1f8df9845cb3", 1U, 2U);
+    if (strcmp(state.trunk_scan_active_label, "County DMR, east") != 0) {
+        DSD_FPRINTF(stderr, "published label '%s', want the target's sanitized label 'County DMR, east'\n",
+                    state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_published_target(&state, "rotation to b", "b", 2U, 2U);
+    if (state.trunk_scan_active_label[0] != '\0') {
+        DSD_FPRINTF(stderr, "unlabelled target published label '%s'\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.trunk_scan_active_label[0] != '\0') {
+        DSD_FPRINTF(stderr, "label '%s' left published after shutdown\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -13055,7 +13159,7 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     }
     reset_scan_opts_state(&opts, &state);
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
-    (void)dsd_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
     dsd_neo_config_init();
     dsd_test_capture_stderr cap;
     char buf[16384] = {0};
@@ -13081,7 +13185,7 @@ test_nfm_target_width_skipped_under_channel_lpf_override(void) {
     (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
     g_scan_tune_refuses_unfit_width = 0;
     g_scan_dsp_rate_hz = 0;
-    (void)dsd_unsetenv("DSD_NEO_CHANNEL_LPF");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
     dsd_neo_config_init();
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -15011,6 +15115,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
+    rc |= run_with_default_tune_hook(test_target_label_names_the_channel);
+    rc |= test_parser_reads_spreadsheet_quoted_labels();
     rc |= run_with_default_tune_hook(test_target_chan_csv_names_are_discarded);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);

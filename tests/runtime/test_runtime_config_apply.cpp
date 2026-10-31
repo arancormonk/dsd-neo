@@ -39,6 +39,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -74,6 +75,7 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/platform/posix_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "test_env.h"
 #include "test_support.h"
 #include "ui_key_status.h"
 
@@ -2109,26 +2111,29 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     rc |= expect_int_eq("DSP CQPSK toggle enables mode", cq, 1);
 
     rtl_stream_toggle_iq_balance(0);
-    (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_BALANCE");
     dsp.op = DSD_APP_DSP_OP_TOGGLE_IQBAL;
     dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP IQ balance command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ balance toggles on", rtl_stream_get_iq_balance(), 1);
-    rc |= expect_true("DSP IQ balance publishes env", strcmp(dsd_neo_env_get("DSD_NEO_IQ_BALANCE"), "1") == 0);
+    char env_text[8];
+    const char* iq_balance = dsd_env_read("DSD_NEO_IQ_BALANCE", env_text, sizeof env_text);
+    rc |= expect_true("DSP IQ balance publishes env", iq_balance != NULL && strcmp(iq_balance, "1") == 0);
 
     rtl_stream_set_iq_dc(0, 4);
     int dc_shift = 0;
     (void)rtl_stream_get_iq_dc(&dc_shift);
     int dc_shift_before_toggle = dc_shift;
-    (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_DC_BLOCK");
     dsp.op = DSD_APP_DSP_OP_IQ_DC_TOGGLE;
     dsd_app_command_submit(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP IQ DC command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ DC toggles on", rtl_stream_get_iq_dc(&dc_shift), 1);
     rc |= expect_int_eq("DSP IQ DC toggle preserves shift", dc_shift, dc_shift_before_toggle);
-    rc |= expect_true("DSP IQ DC publishes env", strcmp(dsd_neo_env_get("DSD_NEO_IQ_DC_BLOCK"), "1") == 0);
+    const char* iq_dc = dsd_env_read("DSD_NEO_IQ_DC_BLOCK", env_text, sizeof env_text);
+    rc |= expect_true("DSP IQ DC publishes env", iq_dc != NULL && strcmp(iq_dc, "1") == 0);
 
     dsp.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA;
     dsp.a = 3;
@@ -2171,8 +2176,8 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     rc |= expect_int_eq("short DSP command still drains", applied, 1);
     rc |= expect_int_eq("short DSP command preserves IQ balance", rtl_stream_get_iq_balance(), 1);
 
-    (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
-    (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_BALANCE");
+    (void)dsd_test_unsetenv("DSD_NEO_IQ_DC_BLOCK");
     free_test_runtime(&runtime);
     return rc;
 }

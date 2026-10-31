@@ -218,6 +218,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QVariantList decryptionSlots READ decryptionSlots NOTIFY controlChanged)
     // WP-S1: copied from the tick's held snapshot.
     Q_PROPERTY(QString scanTargetId READ scanTargetId NOTIFY controlChanged)
+    /* Issue #782: the parked target's `label` column, "" when it has none: the name its calls are given. */
+    Q_PROPERTY(QString scanTargetLabel READ scanTargetLabel NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetOrdinal READ scanTargetOrdinal NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetCount READ scanTargetCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
@@ -314,6 +316,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool squelchNoiseOffered READ squelchNoiseOffered NOTIFY controlChanged)
     Q_PROPERTY(int effectiveSquelchMarginDb READ effectiveSquelchMarginDb NOTIFY controlChanged)
     Q_PROPERTY(QString squelchAutoStatus READ squelchAutoStatus NOTIFY controlChanged)
+    /* Issue #782: whether the dynamic squelch in force has its gate open (auto or noise; false for a level, whose gate
+     * the view does not report). A screen reader hears a moving squelch reading at once when this changes. */
+    Q_PROPERTY(bool squelchGateOpen READ squelchGateOpen NOTIFY controlChanged)
     /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
     Q_PROPERTY(bool configuredSquelchLevelOff READ configuredSquelchLevelOff NOTIFY controlChanged)
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
@@ -1180,6 +1185,12 @@ class MetricsModel : public QObject {
         return m_view.squelch_auto_status;
     }
 
+    /** @brief Whether the dynamic squelch in force has its gate open (auto_gate_open or noise_gate_open). */
+    bool
+    squelchGateOpen() const {
+        return m_view.squelch_gate_open;
+    }
+
     /**
      * @brief The dongle's crystal correction, in parts per million.
      *
@@ -1523,6 +1534,11 @@ class MetricsModel : public QObject {
     QString
     scanTargetId() const {
         return m_view.scan_target_id;
+    }
+
+    QString
+    scanTargetLabel() const {
+        return m_view.scan_target_label;
     }
 
     int
@@ -2002,6 +2018,11 @@ class MetricsModel : public QObject {
         return m_view.radio_source;
     }
 
+    QVariantMap
+    airspy() const {
+        return m_view.airspy;
+    }
+
     /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
@@ -2009,15 +2030,16 @@ class MetricsModel : public QObject {
      * one generation: fetching here as well would consume a second time, and a
      * publish in between would leave the readings and the call lines disagreeing.
      *
+     * On a new scan target the old target's latches go first, and the frame is still
+     * published once: clearing and then refreshing would swing every reading to its
+     * default and back on each hop, and each swing reaches accessibility as events
+     * (issue #782).
+     *
      * @param opts_snapshot Options snapshot, or nullptr before the first publish.
      * @param snapshot      State snapshot, or nullptr before the first publish.
+     * @param new_target    The scan rotation moved to another target since the last frame.
      */
-    QVariantMap
-    airspy() const {
-        return m_view.airspy;
-    }
-
-    void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool new_target = false);
 
     int
     configuredForce() const {
@@ -2063,14 +2085,6 @@ class MetricsModel : public QObject {
      * Showing nothing is honest; showing the readings from a minute ago is not.
      */
     void clear();
-    /**
-     * @brief What a trunk-scan target change clears: the readings that belong to the target left (sync, identity,
-     * quality), as clear() does, while who owns the tuner and the session's settings stay as they are. A target change
-     * does not change them, and clearing them for one frame would read as the scan stopping (issue #671: an open Go to
-     * closed, and the spectrum's ownership badge moved, on every hop).
-     */
-    void clearForTarget();
-
     /**
      * @brief Names for the scan channels a call can be heard on: a trunk-scan target's id (the app writes each entry's
      * uid) to the name the operator gave it. A call with no name of its own is named by its channel, and an id is not
@@ -2207,12 +2221,14 @@ class MetricsModel : public QObject {
         QString ui_message;
         QString squelch_readout;
         QString squelch_auto_status;
+        bool squelch_gate_open = false;
         QString analog_bandwidth_reading;
         QString nfm_bandwidth_unset_text;
         QString am_bandwidth_unset_text;
         QString key_profile_ref;
         QVariantList decryption_slots;
         QString scan_target_id;
+        QString scan_target_label;
         /* #508: the stay reason and the live window, copied from the app-control view. */
         QString scan_stay_phrase;
         /* #522/#523: the received tone or code and, separately, the configured policy. */
@@ -2401,12 +2417,12 @@ class MetricsModel : public QObject {
         bool
         scanControlEquals(const View& other) const {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
-                   && scan_target_ordinal == other.scan_target_ordinal && scan_target_count == other.scan_target_count
-                   && scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
-                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided
-                   && scan_kind == other.scan_kind && scan_paused == other.scan_paused
-                   && scan_resumable == other.scan_resumable && scan_entry_count == other.scan_entry_count
-                   && operator_tuned == other.operator_tuned;
+                   && scan_target_label == other.scan_target_label && scan_target_ordinal == other.scan_target_ordinal
+                   && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
+                   && scan_hold == other.scan_hold && scan_avoid_count == other.scan_avoid_count
+                   && scan_target_avoided == other.scan_target_avoided && scan_kind == other.scan_kind
+                   && scan_paused == other.scan_paused && scan_resumable == other.scan_resumable
+                   && scan_entry_count == other.scan_entry_count && operator_tuned == other.operator_tuned;
         }
 
         /* Countdown updates notify only the scan timing row. */
@@ -2508,7 +2524,7 @@ class MetricsModel : public QObject {
             return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
                    && squelch_readout == other.squelch_readout && squelch_noise_offered == other.squelch_noise_offered
                    && squelch_audio_input == other.squelch_audio_input
-                   && squelch_auto_status == other.squelch_auto_status;
+                   && squelch_auto_status == other.squelch_auto_status && squelch_gate_open == other.squelch_gate_open;
         }
 
         bool
@@ -2539,6 +2555,8 @@ class MetricsModel : public QObject {
 
     /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
+    /** @brief Drop what clear() resets apart from the published frame: the sync hold and the message expiry timer. */
+    void resetTargetLatches();
     static void fillPhase2Seed(SiteView& site, const dsd_state* snapshot);
     static void fillP25Site(SiteView& site, const dsd_received_identity& id);
     static void fillDmrSite(SiteView& site, const dsd_received_identity& id);

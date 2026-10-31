@@ -35,11 +35,14 @@
 #define DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_
 
 #include <QAbstractListModel>
+#include <QAccessible>
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QFocusEvent>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -47,18 +50,27 @@
 #include <QIODevice>
 #include <QInputMethodEvent>
 #include <QList>
+#include <QMetaEnum>
 #include <QMetaObject>
 #include <QMetaProperty>
+#include <QPoint>
+#include <QPointF>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlPropertyMap>
+#include <QQuickItem>
+#include <QQuickWindow>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
+#include <algorithm>
+#include <array>
+#include <ctime>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -66,9 +78,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <iterator>
 #include <memory>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
 
@@ -89,6 +104,7 @@
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
+#include "screen_reader_state.h"
 #include "session_args.h"
 #include "site_groups.h"
 #include "spectrum_model.h"
@@ -142,7 +158,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     /* The argv of the last start asked for, accepted or not: what the session-args builder made of the system. */
     QStringList lastArgv;
     qint64 locationRequested = 0;
-    qint64 locationCancelled = 0;
+    qint64 locationCancelRequested = 0;
 
     void
     requestCurrentLocation(qint64 id) override {
@@ -151,7 +167,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     void
     cancelLocationRequest(qint64 id) override {
-        locationCancelled = id;
+        locationCancelRequested = id;
     }
 
     qreal keyboardBoundary = -1;
@@ -563,9 +579,23 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE QString
-    applyDecryptionProfile(const QString&, int, const QVariantMap&) {
+    applyDecryptionProfile(const QString&, int scope, const QVariantMap& context) {
+        m_last_profile_scope = scope;
+        m_last_profile_target = context.value(QStringLiteral("target")).toString();
         m_last_key_request = QString::number(m_next_key_request++);
         return m_last_key_request;
+    }
+
+    /** @brief The scope the last applyDecryptionProfile() sent (0 session defaults, 1 scan target); -1 for none. */
+    Q_INVOKABLE int
+    lastProfileScope() const {
+        return m_last_profile_scope;
+    }
+
+    /** @brief The scan target ID in the context the last applyDecryptionProfile() sent; empty for none. */
+    Q_INVOKABLE QString
+    lastProfileTarget() const {
+        return m_last_profile_target;
     }
 
     Q_INVOKABLE QString
@@ -1034,6 +1064,8 @@ class CommandRecorder : public QObject {
         m_hold_calls = 0;
         m_last_hold_tg = 0;
         m_key_apply_calls = 0;
+        m_last_profile_scope = -1;
+        m_last_profile_target.clear();
         m_key_payload_valid = false;
         m_key_accepted = true;
         m_last_force_mode = -1;
@@ -1330,6 +1362,8 @@ class CommandRecorder : public QObject {
     int m_hold_calls = 0;
     double m_last_hold_tg = 0;
     int m_key_apply_calls = 0;
+    int m_last_profile_scope = -1;
+    QString m_last_profile_target;
     bool m_key_payload_valid = false;
     bool m_key_accepted = true;
     int m_last_force_mode = -1;
@@ -1915,6 +1949,9 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     seekPlayback(qint64 positionMs) {
         noteCall(QStringLiteral("seekPlayback"), {{QStringLiteral("ms"), positionMs}});
+        if (!seekApplied) {
+            return;
+        }
         insert(QStringLiteral("playbackPositionMs"), positionMs);
         Q_EMIT playbackPositionChanged();
     }
@@ -1959,6 +1996,8 @@ class ReadingMap : public QQmlPropertyMap {
 
     QVariantList calls;
     bool shareAccepted = true;
+    /* Issue #782: false for a host that ignores a seek (a platform player that clamps it or drops it). */
+    bool seekApplied = true;
 
   Q_SIGNALS:
     void playbackChanged();
@@ -1981,6 +2020,7 @@ class ReadingMap : public QQmlPropertyMap {
     void runResultChanged();
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postal, const QString& country, const QString& error);
+    void locationCancelled(qint64 requestId);
 
   private:
     void
@@ -2179,6 +2219,182 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
     void locationRequestAllocated(qint64 requestId);
 };
 
+/**
+ * @brief Issue #782: counts the accessibility events the screens raise, for the tests in tests/ui/qml_a11y.
+ *
+ * On Android every ObjectShow and ObjectHide costs the main thread a runnable that makes eight blocking calls into the
+ * Qt thread, so a screen that raises them on every metrics tick floods the platform bridge. The counter is a
+ * QAccessible update handler, which Qt calls for every event whether or not accessibility is active; it records the
+ * event and hands it on exactly as Qt would have, to the previous handler or else to the platform.
+ *
+ * Each event is counted by its type; by the objectName of the nearest named object, the emitter included (`owners`);
+ * by the named chain up from it, for failure messages (`chains`); and under every object on its parent chain, so a
+ * case can ask for the events raised anywhere inside a sheet, named or not (countWithin()). The walk reads only C++
+ * state (objectName, parentItem, parent): the handler runs inside object construction, where reading a QML property
+ * can run deferred creation and recurse.
+ *
+ * The per-object counts are keyed by address. A destroyed delegate's address can be reused by a later object, so ask
+ * them only for objects that outlive the count, such as a sheet.
+ *
+ * The handler is a plain function pointer, so the counts live in one process-wide record.
+ */
+class AccessibilityCounter {
+  public:
+    static void
+    start() {
+        Record& r = record();
+        if (!r.installed) {
+            r.previous = QAccessible::installUpdateHandler(&AccessibilityCounter::handle);
+            r.installed = true;
+        }
+        r.total = 0;
+        r.types.clear();
+        r.owners.clear();
+        r.scopes.clear();
+        r.chains.clear();
+    }
+
+    /** @brief Put the handler that was installed before start() back. The counts stay readable. */
+    static void
+    stop() {
+        Record& r = record();
+        if (!r.installed) {
+            return;
+        }
+        QAccessible::installUpdateHandler(r.previous);
+        r.previous = nullptr;
+        r.installed = false;
+    }
+
+    /**
+     * @brief The counts since start(): {total, types: {Type: n}, owners: {name: {Type: n}},
+     * chains: {"Type name < named ancestor < ...": n}}. Emitters with no named object on their chain count under
+     * "<unnamed>".
+     */
+    static QVariantMap
+    counts() {
+        const Record& r = record();
+        QVariantMap out;
+        out.insert(QStringLiteral("total"), r.total);
+        out.insert(QStringLiteral("types"), toMap(r.types));
+        out.insert(QStringLiteral("owners"), nested(r.owners));
+        out.insert(QStringLiteral("chains"), toMap(r.chains));
+        return out;
+    }
+
+    /** @brief How many events of @p type (an enum key such as "ObjectHide") @p scope or anything under it raised. */
+    static qint64
+    countWithin(const QObject* scope, const QString& type) {
+        const Record& r = record();
+        const auto it = r.scopes.constFind(scope);
+        return it == r.scopes.cend() ? 0 : it->value(type);
+    }
+
+  private:
+    struct Record {
+        bool installed = false;
+        QAccessible::UpdateHandler previous = nullptr;
+        qint64 total = 0;
+        QHash<QString, qint64> types;
+        QHash<QString, QHash<QString, qint64>> owners;
+        QHash<const QObject*, QHash<QString, qint64>> scopes;
+        QHash<QString, qint64> chains;
+    };
+
+    /* Distinct chains kept for failure messages; the totals above are never capped. */
+    static constexpr int kMaxChains = 2000;
+    /* Far deeper than any screen nests; it only bounds the walk. */
+    static constexpr int kMaxDepth = 256;
+
+    static Record&
+    record() {
+        static Record r;
+        return r;
+    }
+
+    static QVariantMap
+    toMap(const QHash<QString, qint64>& counts) {
+        QVariantMap out;
+        for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
+            out.insert(it.key(), it.value());
+        }
+        return out;
+    }
+
+    static QVariantMap
+    nested(const QHash<QString, QHash<QString, qint64>>& counts) {
+        QVariantMap out;
+        for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
+            out.insert(it.key(), toMap(it.value()));
+        }
+        return out;
+    }
+
+    static QString
+    typeName(QAccessible::Event type) {
+        const char* key = QMetaEnum::fromType<QAccessible::Event>().valueToKey(static_cast<int>(type));
+        return key != nullptr ? QString::fromLatin1(key) : QStringLiteral("0x%1").arg(static_cast<uint>(type), 0, 16);
+    }
+
+    /* The visual parent where there is one, else the object parent: a popup's content item has no parent item while
+     * closed, and its object parent leads back to the control that owns it. */
+    static QObject*
+    up(QObject* object) {
+        if (auto* item = qobject_cast<QQuickItem*>(object)) {
+            if (item->parentItem() != nullptr) {
+                return item->parentItem();
+            }
+        }
+        return object->parent();
+    }
+
+    static void
+    handle(QAccessibleEvent* event) {
+        Record& r = record();
+        const QString type = typeName(event->type());
+        ++r.total;
+        ++r.types[type];
+        QStringList names;
+        int depth = 0;
+        for (QObject* object = event->object(); object != nullptr && depth < kMaxDepth; object = up(object)) {
+            const QString name = object->objectName();
+            if (!name.isEmpty() && !names.contains(name)) {
+                names.append(name);
+            }
+            ++r.scopes[object][type];
+            ++depth;
+        }
+        ++r.owners[names.isEmpty() ? QStringLiteral("<unnamed>") : names.constFirst()][type];
+        const QString chain = type + QLatin1Char(' ')
+                              + (names.isEmpty() ? QStringLiteral("<unnamed>") : names.join(QStringLiteral(" < ")));
+        if (r.chains.contains(chain) || r.chains.size() < kMaxChains) {
+            ++r.chains[chain];
+        }
+        forward(event);
+    }
+
+    /* Qt's own path: with no handler installed, updateAccessibility() gives the event to the platform. Reaching the
+     * platform that way replays the whole call, including the part that ran before this handler: for
+     * TableModelChanged that part has already applied the change to the table interface, and a replay would apply it
+     * a second time. That event is not replayed, so while counting it does not reach the platform; the offscreen
+     * platform these tests run on has no bridge to tell. While a replay runs the counter is not installed, so an
+     * event raised synchronously from inside it goes to the platform uncounted; with no bridge, none is. */
+    static void
+    forward(QAccessibleEvent* event) {
+        Record& r = record();
+        if (r.previous != nullptr) {
+            r.previous(event);
+            return;
+        }
+        if (event->type() == QAccessible::TableModelChanged) {
+            return;
+        }
+        QAccessible::installUpdateHandler(nullptr);
+        QAccessible::updateAccessibility(event);
+        QAccessible::installUpdateHandler(&AccessibilityCounter::handle);
+    }
+};
+
 /** @brief Installs the context the screens expect before any QML is loaded. */
 class Setup : public QObject {
     Q_OBJECT
@@ -2188,7 +2404,14 @@ class Setup : public QObject {
      * is when the collector policy has to be in place. */
     Setup() { dsd_qt::applyQmlGcPolicy(); }
 
-    ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
+    ~Setup() override {
+        dsd_state_ext_free_all(m_talkgroup_state.get());
+        for (auto& table : m_target_tables) {
+            if (table) {
+                dsd_state_ext_free_all(table.get());
+            }
+        }
+    }
 
     Q_INVOKABLE bool
     retainedKeyMatches(const QString& uid, const QString& expected) const {
@@ -2213,6 +2436,7 @@ class Setup : public QObject {
         if (dsd_tg_policy_append_exact(m_talkgroup_state.get(), &entry) != 0) {
             return false;
         }
+        m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
     }
@@ -2235,10 +2459,67 @@ class Setup : public QObject {
         return true;
     }
 
+    /**
+     * @brief Issue #782: rename the fixture table's row for @p id in place, as an edit does: the rows keep their
+     * bounds, so the list changes that row's data and is not reset.
+     */
+    Q_INVOKABLE bool
+    renameFixtureTalkgroup(double id, const QString& mode, const QString& name, const QString& tags) {
+        dsd_tg_policy_entry entry{};
+        if (dsd_tg_policy_make_exact_entry(static_cast<uint32_t>(id), mode.toUtf8().constData(),
+                                           name.toUtf8().constData(), DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+            != 0) {
+            return false;
+        }
+        DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", tags.toUtf8().constData());
+        if (dsd_tg_policy_upsert_exact(m_talkgroup_state.get(), &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
+            return false;
+        }
+        m_applied_table = nullptr;
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: show scan target @p target's talkgroup table, as the poll tick does after a hop.
+     *
+     * Targets 0 and 1 are two prepared policy tables, A and B, each with its own policy context and with different
+     * rows and categories, so a switch between them resets the list and changes the categories. Any other value
+     * goes back to the fixture's own table, the one pushTalkgroup() fills.
+     */
+    Q_INVOKABLE bool
+    applyTalkgroupTable(int target) {
+        dsd_state* table = m_talkgroup_state.get();
+        if (target >= 0 && target < static_cast<int>(m_target_tables.size())) {
+            table = targetTable(static_cast<size_t>(target));
+            if (table == nullptr) {
+                return false;
+            }
+        }
+        m_applied_table = table == m_talkgroup_state.get() ? nullptr : table;
+        m_talkgroups->refresh(m_talkgroup_opts.get(), table);
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: whether the shown table takes an edit captured at (@p context, @p generation).
+     *
+     * The same check the decoder makes before any talkgroup edit (tg_edit_check_version()); false is the stale
+     * refusal.
+     */
+    Q_INVOKABLE bool
+    talkgroupEditVersionValid(const QString& context, unsigned int generation) const {
+        bool ok = false;
+        const qulonglong id = context.toULongLong(&ok);
+        const dsd_state* table = m_applied_table != nullptr ? m_applied_table : m_talkgroup_state.get();
+        return ok && dsd_tg_policy_edit_version_valid(table, id, generation) != 0;
+    }
+
     Q_INVOKABLE void
     setGroupFileConfigured(bool configured) {
         DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
                      configured ? "fixture-talkgroups.csv" : "");
+        m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
     }
 
@@ -2247,6 +2528,7 @@ class Setup : public QObject {
         if (dsd_tg_policy_clear(m_talkgroup_state.get()) != 0) {
             return false;
         }
+        m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
     }
@@ -2368,6 +2650,486 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Issue #782: a metrics tick that changes nothing, @p times over.
+     *
+     * Re-setting the `metrics` context property to the same object signals it every time, so every `metrics.*`
+     * binding re-evaluates with the values it already had: what each poll tick does to a binding whose notify signal
+     * is shared with a reading that moved. setMetric() cannot stand in, as a map signals nothing for an equal value.
+     */
+    Q_INVOKABLE void
+    tickMetrics(int times) {
+        if (m_engine == nullptr) {
+            return;
+        }
+        for (int i = 0; i < times; ++i) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("metrics"), m_metric_readings);
+        }
+    }
+
+    /**
+     * @brief Issue #782: a trunk-scan hop to a target whose control channel lists the neighbour sites @p sites, the
+     * network published to p25Network as UiController publishes it on a hop (P25NetworkModel::replaceForTarget). Site
+     * @c n is on 851 MHz plus @c n channels of 12.5 kHz; the list is in the order given, the first heard last.
+     */
+    Q_INVOKABLE void
+    hopNetwork(const QVariantList& sites) {
+        if (m_network == nullptr) {
+            return;
+        }
+        if (!m_network_state) {
+            m_network_state = std::make_unique<dsd_state>();
+        }
+        dsd_state* state = m_network_state.get();
+        DSD_MEMSET(state->p25_nb_entries, 0, sizeof(state->p25_nb_entries));
+        const int count = static_cast<int>(std::min<qsizetype>(sites.size(), P25_NB_MAX));
+        for (int i = 0; i < count; ++i) {
+            const int site = sites.at(i).toInt();
+            p25_nb_entry_t& entry = state->p25_nb_entries[i];
+            entry.freq = 851000000L + site * 12500L;
+            entry.sysid = 0x123;
+            entry.rfss = 1;
+            entry.site = static_cast<uint8_t>(site);
+            entry.last_seen = static_cast<time_t>(count - i);
+        }
+        state->p25_nb_count = count;
+        m_network->replaceForTarget(state);
+    }
+
+    /**
+     * @brief Issue #782: publish a scan target's readings in one go, as MetricsModel does on a target change.
+     *
+     * Every key in @p readings is written in one batch and the reading groups are signalled once afterwards, with no
+     * defaults in between: one publication per target change.
+     */
+    Q_INVOKABLE void
+    publishTarget(const QVariantMap& readings) {
+        if (m_engine == nullptr) {
+            return;
+        }
+        QVariantHash batch;
+        for (auto it = readings.cbegin(); it != readings.cend(); ++it) {
+            m_metrics[it.key()] = it.value();
+            batch.insert(it.key(), it.value());
+        }
+        m_metric_readings->insert(batch);
+        Q_EMIT m_metric_readings->tunerChanged();
+        Q_EMIT m_metric_readings->controlChanged();
+        Q_EMIT m_metric_readings->siteChanged();
+        Q_EMIT m_metric_readings->qualityChanged();
+    }
+
+    /** @brief Issue #782: every ancestor's interface lists the one below it, the walk the Android bridge makes. */
+    static bool
+    accessibleInTree(QAccessibleInterface* iface) {
+        QAccessibleInterface* child = iface;
+        for (QAccessibleInterface* parent = child->parent(); parent != nullptr; parent = parent->parent()) {
+            if (parent->indexOfChild(child) < 0) {
+                return false;
+            }
+            child = parent;
+        }
+        return true;
+    }
+
+    /** @brief Issue #782: the lower-case words (letters and digits) of @p text, markup and entities taken out. */
+    static QStringList
+    readableWords(QString text, bool markup) {
+        if (markup) {
+            static const QRegularExpression tag(QStringLiteral("<[^>]*>"));
+            text.replace(tag, QStringLiteral(" "));
+            text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+            text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+            text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+            text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+            text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+        }
+        static const QRegularExpression word(QStringLiteral("[\\p{L}\\p{N}]+"));
+        QStringList words;
+        for (auto it = word.globalMatch(text); it.hasNext();) {
+            words.append(it.next().captured(0).toLower());
+        }
+        return words;
+    }
+
+    static bool
+    containsAllWords(const QStringList& haystack, const QStringList& needles) {
+        for (const QString& needle : needles) {
+            if (!haystack.contains(needle)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @brief Issue #782: the words a platform bridge reads for @p iface: its name, description and value. */
+    static QStringList
+    spokenWords(QAccessibleInterface* iface) {
+        return readableWords(iface->text(QAccessible::Name) + QLatin1Char(' ') + iface->text(QAccessible::Description)
+                                 + QLatin1Char(' ') + iface->text(QAccessible::Value),
+                             false);
+    }
+
+    /** @brief Issue #782: whether some in-tree accessible node from @p item up carries all of @p words. */
+    static bool
+    wordsReachable(QQuickItem* item, const QStringList& words) {
+        for (QQuickItem* at = item; at != nullptr; at = at->parentItem()) {
+            QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(at);
+            if (iface == nullptr || !iface->isValid() || !accessibleInTree(iface)) {
+                continue;
+            }
+            if (containsAllWords(spokenWords(iface), words)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void
+    collectUnreachedTexts(QQuickItem* item, const QList<const QObject*>& skip, QVariantList& out) {
+        if (!item->isVisible() || qFuzzyIsNull(item->opacity()) || skip.contains(item)) {
+            return;
+        }
+        if (item->inherits("QQuickText")) {
+            const QString text = item->property("text").toString();
+            // Text.PlainText is 0; every other format may carry markup.
+            const bool markup = item->property("textFormat").toInt() != 0 && text.contains(QLatin1Char('<'));
+            const QStringList words = readableWords(text, markup);
+            if (!words.isEmpty() && !wordsReachable(item, words)) {
+                const QQmlContext* context = qmlContext(item);
+                out.append(QVariantMap{
+                    {QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                    {QStringLiteral("text"), text},
+                    {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
+                    {QStringLiteral("id"), context != nullptr ? context->nameForObject(item) : QString()},
+                    {QStringLiteral("objectName"), item->objectName()},
+                });
+            }
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectUnreachedTexts(child, skip, out);
+        }
+    }
+
+    /** @brief Issue #782: whether accessibility is active (DSD_QML_TEST_ACCESSIBILITY=1 turns it on at startup). */
+    Q_INVOKABLE bool
+    accessibilityActive() const {
+        return QAccessible::isActive();
+    }
+
+    /**
+     * @brief Issue #782: how the accessibility tree presents @p item, as a platform bridge reads it.
+     *
+     * `exists` is whether the item has an accessible interface. `inTree` is whether it can be reached from the top:
+     * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
+     * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
+     * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
+     */
+    Q_INVOKABLE QVariantMap
+    accessibleNode(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        if (iface == nullptr || !iface->isValid()) {
+            return {{QStringLiteral("exists"), false}, {QStringLiteral("inTree"), false}};
+        }
+        return {{QStringLiteral("exists"), true},
+                {QStringLiteral("inTree"), accessibleInTree(iface)},
+                {QStringLiteral("role"), static_cast<int>(iface->role())},
+                {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("description"), iface->text(QAccessible::Description)},
+                {QStringLiteral("value"), iface->text(QAccessible::Value)},
+                {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
+                {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
+                {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
+                {QStringLiteral("childCount"), iface->childCount()}};
+    }
+
+    /**
+     * @brief Issue #782: the node a screen reader's touch lands on at (@p x, @p y) in @p item: from the window's
+     * interface down through childAt(), the walk explore-by-touch makes. Gives the node's object, role, name and
+     * childCount, or `exists` false when nothing is there.
+     */
+    Q_INVOKABLE QVariantMap
+    accessibleNodeAt(QObject* item, qreal x, qreal y) const {
+        auto* quick = qobject_cast<QQuickItem*>(item);
+        if (quick == nullptr || quick->window() == nullptr) {
+            return {{QStringLiteral("exists"), false}};
+        }
+        const QPoint global = quick->window()->mapToGlobal(quick->mapToScene(QPointF(x, y))).toPoint();
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(quick->window());
+        while (iface != nullptr) {
+            QAccessibleInterface* child = iface->childAt(global.x(), global.y());
+            if (child == nullptr) {
+                break;
+            }
+            iface = child;
+        }
+        if (iface == nullptr || !iface->isValid()) {
+            return {{QStringLiteral("exists"), false}};
+        }
+        return {{QStringLiteral("exists"), true},
+                {QStringLiteral("object"), QVariant::fromValue(iface->object())},
+                {QStringLiteral("role"), static_cast<int>(iface->role())},
+                {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("childCount"), iface->childCount()}};
+    }
+
+    /**
+     * @brief Issue #782: the visible text under @p root that no screen reader can reach.
+     *
+     * A plain `Text` has no accessible interface, so the Android bridge makes no node for it; its words reach a
+     * screen reader only through an accessible node on its own ancestor chain: itself named, or a button, row or
+     * group whose name, description or value carries them. This walks every visible, unfaded `Text` (a Controls
+     * `Label` included) under @p root and reports each one whose words are not all among the words of a single such
+     * node that is in the tree (accessibleNode's `inTree`). A text with no letters or digits (a glyph, a separator)
+     * has nothing to read and is skipped. The subtrees of @p skipped (sheets checked on their own) are left out. Each
+     * entry gives the item, its text, the QML file that declares it, its id there and its objectName, for an allowlist
+     * key and a failure message.
+     */
+    Q_INVOKABLE QVariantList
+    unreachedTexts(QObject* root, const QVariantList& skipped = {}) const {
+        QVariantList out;
+        QList<const QObject*> skip;
+        for (const QVariant& entry : skipped) {
+            skip.append(entry.value<QObject*>());
+        }
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectUnreachedTexts(item, skip, out);
+        }
+        return out;
+    }
+
+    /**
+     * @brief Issue #782: every item under @p root that has an accessible interface, in or out of the tree, as
+     * {item, objectName, file, role, name, inTree, focusable, invisible}: what a platform bridge can still read of a
+     * node it learned of earlier, if nothing told it the node left the tree.
+     */
+    Q_INVOKABLE QVariantList
+    accessibleNodesUnder(QObject* root) const {
+        QVariantList out;
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectAccessibleNodes(item, out);
+        }
+        return out;
+    }
+
+    static void
+    collectAccessibleNodes(QQuickItem* item, QVariantList& out) {
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(item);
+        if (iface != nullptr && iface->isValid() && iface->object() == item) {
+            const QQmlContext* context = qmlContext(item);
+            out.append(
+                QVariantMap{{QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                            {QStringLiteral("objectName"), item->objectName()},
+                            {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
+                            {QStringLiteral("role"), static_cast<int>(iface->role())},
+                            {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                            {QStringLiteral("inTree"), accessibleInTree(iface)},
+                            {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
+                            {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)}});
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectAccessibleNodes(child, out);
+        }
+    }
+
+    /** @brief Issue #782: the role of @p item's accessible parent (QAccessible::Role), -1 when it has none. */
+    Q_INVOKABLE int
+    accessibleParentRole(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleInterface* parent = iface != nullptr && iface->isValid() ? iface->parent() : nullptr;
+        return parent != nullptr && parent->isValid() ? static_cast<int>(parent->role()) : -1;
+    }
+
+    /** @brief Issue #782: retune the canned spectrum frames to @p hz (0 puts back the default centre). */
+    Q_INVOKABLE void
+    setSpectrumCenterHz(double hz) const {
+        dsd_neo_qml_stub::set_spectrum_center_hz(hz > 0 ? static_cast<unsigned int>(hz)
+                                                        : dsd_neo_qml_stub::kSpectrumCenterHz);
+    }
+
+    /**
+     * @brief Issue #782: each focusable heading node in the tree under @p root, as {item, name}: what TalkBack's
+     * heading navigation and swipes stop on.
+     */
+    Q_INVOKABLE QVariantList
+    focusableHeadings(QObject* root) const {
+        QVariantList out;
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectFocusableHeadings(item, out);
+        }
+        return out;
+    }
+
+    static void
+    collectFocusableHeadings(QQuickItem* item, QVariantList& out) {
+        if (!item->isVisible()) {
+            return;
+        }
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(item);
+        if (iface != nullptr && iface->isValid() && iface->object() == item && iface->role() == QAccessible::Heading
+            && accessibleInTree(iface) && iface->state().focusable) {
+            out.append(QVariantMap{{QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                                   {QStringLiteral("name"), iface->text(QAccessible::Name)}});
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectFocusableHeadings(child, out);
+        }
+    }
+
+    /**
+     * @brief Issue #782: the headings under @p root that TalkBack cannot move to: each visible item whose accessible
+     * node is in the tree with the Heading role and is not focusable. Qt reports a Heading node focusable only when the
+     * item takes Tab focus or sets `Accessible.focusable` (QAccessibleQuickItem::state(): text roles are focusable,
+     * Heading is not one), the Android bridge passes that on (setFocusable), and TalkBack's linear navigation skips a
+     * text node that is neither focusable nor clickable. Disabled items are left out. Each entry gives the item, its name
+     * and the declaring file.
+     */
+    Q_INVOKABLE QVariantList
+    unfocusableHeadings(QObject* root) const {
+        QVariantList out;
+        if (auto* item = qobject_cast<QQuickItem*>(root)) {
+            collectUnfocusableHeadings(item, out);
+        }
+        return out;
+    }
+
+    static void
+    collectUnfocusableHeadings(QQuickItem* item, QVariantList& out) {
+        if (!item->isVisible()) {
+            return;
+        }
+        QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(item);
+        // A disabled item is never focusable (QAccessibleQuickItem::state()); the screens disable themselves under an
+        // open sheet, where the navigation gate takes them out of the tree on a phone.
+        if (iface != nullptr && iface->isValid() && iface->object() == item && item->isEnabled()
+            && iface->role() == QAccessible::Heading && accessibleInTree(iface) && !iface->state().focusable) {
+            const QQmlContext* context = qmlContext(item);
+            out.append(QVariantMap{
+                {QStringLiteral("item"), QVariant::fromValue(static_cast<QObject*>(item))},
+                {QStringLiteral("name"), iface->text(QAccessible::Name)},
+                {QStringLiteral("file"), context != nullptr ? context->baseUrl().fileName() : QString()},
+            });
+        }
+        const QList<QQuickItem*> children = item->childItems();
+        for (QQuickItem* child : children) {
+            collectUnfocusableHeadings(child, out);
+        }
+    }
+
+    /**
+     * @brief Issue #782: whether @p carrier is a node in the tree whose name, description or value holds every word
+     * of @p text: the check behind an allowlist entry that says another item reads a text aloud.
+     */
+    Q_INVOKABLE bool
+    nodeCarries(QObject* carrier, const QString& text) const {
+        QAccessibleInterface* iface = carrier != nullptr ? QAccessible::queryAccessibleInterface(carrier) : nullptr;
+        if (iface == nullptr || !iface->isValid() || !accessibleInTree(iface)) {
+            return false;
+        }
+        return containsAllWords(spokenWords(iface), readableWords(text, false));
+    }
+
+    /**
+     * @brief Issue #782: press @p item as a screen reader does: TalkBack's click on a node runs the interface's press
+     * action. Returns false, without acting, when the node offers no press action (Android then makes it unclickable,
+     * except for a Link).
+     */
+    Q_INVOKABLE bool
+    pressAccessible(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr || !actions->actionNames().contains(QAccessibleActionInterface::pressAction())) {
+            return false;
+        }
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: the window of @p item loses (@p in false) or regains the focus, as the platform tells Qt Quick
+     * when a system dialog takes the focus and gives it back (QQuickWindow::focusOutEvent/focusInEvent).
+     */
+    Q_INVOKABLE void
+    sendWindowFocus(QObject* item, bool in) const {
+        auto* quick = qobject_cast<QQuickItem*>(item);
+        if (quick == nullptr || quick->window() == nullptr) {
+            return;
+        }
+        QFocusEvent event(in ? QEvent::FocusIn : QEvent::FocusOut, Qt::ActiveWindowFocusReason);
+        QCoreApplication::sendEvent(quick->window(), &event);
+    }
+
+    /**
+     * @brief Issue #782: focus @p item as TalkBack does: Qt's Android bridge carries out ACTION_ACCESSIBILITY_FOCUS with
+     * the node's set-focus action (androidjniaccessibility.cpp focusAction_helper). Returns false when the node has
+     * none.
+     */
+    Q_INVOKABLE bool
+    focusAccessible(QObject* item) const {
+        QAccessibleInterface* iface = item != nullptr ? QAccessible::queryAccessibleInterface(item) : nullptr;
+        QAccessibleActionInterface* actions = iface != nullptr && iface->isValid() ? iface->actionInterface() : nullptr;
+        if (actions == nullptr || !actions->actionNames().contains(QAccessibleActionInterface::setFocusAction())) {
+            return false;
+        }
+        actions->doAction(QAccessibleActionInterface::setFocusAction());
+        return true;
+    }
+
+    /**
+     * @brief Issue #782: from now on, http and https URLs that QML opens (Qt.openUrlExternally) are recorded here
+     * rather than handed to a browser; openedUrls() lists them. releaseOpenedUrls() hands them back.
+     */
+    Q_INVOKABLE void
+    captureOpenedUrls() {
+        m_opened_urls.clear();
+        QDesktopServices::setUrlHandler(QStringLiteral("https"), this, "recordOpenedUrl");
+        QDesktopServices::setUrlHandler(QStringLiteral("http"), this, "recordOpenedUrl");
+    }
+
+    Q_INVOKABLE QStringList
+    openedUrls() const {
+        return m_opened_urls;
+    }
+
+    Q_INVOKABLE void
+    releaseOpenedUrls() {
+        QDesktopServices::unsetUrlHandler(QStringLiteral("https"));
+        QDesktopServices::unsetUrlHandler(QStringLiteral("http"));
+    }
+
+    /** @brief Issue #782: the URL handler captureOpenedUrls() installs. */
+    Q_INVOKABLE void
+    recordOpenedUrl(const QUrl& url) {
+        m_opened_urls.append(url.toString());
+    }
+
+    /** @brief Issue #782: count accessibility events from now on, forgetting earlier counts. */
+    Q_INVOKABLE void
+    startAccessibilityCount() {
+        AccessibilityCounter::start();
+    }
+
+    /** @brief Issue #782: the counts since startAccessibilityCount(); see AccessibilityCounter::counts(). */
+    Q_INVOKABLE QVariantMap
+    accessibilityCount() const {
+        return AccessibilityCounter::counts();
+    }
+
+    /** @brief Issue #782: how many events of @p type @p scope or anything under it raised since the count started. */
+    Q_INVOKABLE double
+    accessibilityCountWithin(QObject* scope, const QString& type) const {
+        return static_cast<double>(AccessibilityCounter::countWithin(scope, type));
+    }
+
+    /** @brief Issue #782: stop counting and put the earlier update handler back. */
+    Q_INVOKABLE void
+    stopAccessibilityCount() {
+        AccessibilityCounter::stop();
+    }
+
     /** @brief Set one recordingStatus reading (issue #708), as setMetric() does for metrics. */
     Q_INVOKABLE void
     setRecordingStatus(const QString& key, const QVariant& value) {
@@ -2411,6 +3173,7 @@ class Setup : public QObject {
     resetHostPlayback() {
         m_host_readings->calls.clear();
         m_host_readings->shareAccepted = true;
+        m_host_readings->seekApplied = true;
         m_host_readings->publishPlayback(QString(), 0, 0, 0, QString());
         setHostReading(QStringLiteral("recordingTransferActive"), false);
         setHostReading(QStringLiteral("recordingTransferBytes"), 0);
@@ -2427,6 +3190,12 @@ class Setup : public QObject {
     Q_INVOKABLE void
     setShareAccepted(bool accepted) {
         m_host_readings->shareAccepted = accepted;
+    }
+
+    /** @brief Issue #782: whether the decoderHost map's seekPlayback() moves the position (else it only records it). */
+    Q_INVOKABLE void
+    setSeekApplied(bool applied) {
+        m_host_readings->seekApplied = applied;
     }
 
     /** @brief End the running export or save of @p selection with @p result (DecoderHost::RecordingTransferResult). */
@@ -3129,6 +3898,29 @@ class Setup : public QObject {
               QStringLiteral("IBMPlexMono-Medium.ttf")}) {
             QFontDatabase::addApplicationFont(QStringLiteral(DSD_QML_FONT_DIR "/") + file);
         }
+
+        /* Issue #782: the qml_a11y cases measure what an accessibility client would receive, so accessibility has to
+         * be on before any engine or item exists. Controls attach their accessible objects only once it is on, and
+         * items raise LocationChanged only while it is on; with it off those cases would count nothing and pass. The
+         * offscreen platform's accessibility tells the activation observers, as a platform bridge would. */
+        if (qEnvironmentVariable("DSD_QML_TEST_ACCESSIBILITY") == QStringLiteral("1")) {
+            QAccessible::setActive(true);
+            if (!QAccessible::isActive()) {
+                qFatal("DSD_QML_TEST_ACCESSIBILITY=1: QAccessible::setActive(true) did not take on platform '%s'",
+                       qPrintable(QGuiApplication::platformName()));
+            }
+            m_accessibility_activated = true;
+        }
+    }
+
+    /** @brief Issue #782: undo what applicationAvailable() turned on, once every test file has run. */
+    void
+    cleanupTestCase() {
+        AccessibilityCounter::stop();
+        if (m_accessibility_activated) {
+            QAccessible::setActive(false);
+            m_accessibility_activated = false;
+        }
     }
 
     void
@@ -3363,6 +4155,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();
+        metrics[QStringLiteral("scanTargetLabel")] = QString();
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;
         metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
@@ -3453,6 +4246,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("effectiveSquelchAuto")] = false;
         metrics[QStringLiteral("effectiveSquelchMarginDb")] = 0;
         metrics[QStringLiteral("squelchAutoStatus")] = QString();
+        metrics[QStringLiteral("squelchGateOpen")] = false;
         metrics[QStringLiteral("configuredSquelchLevelOff")] = false;
         // #628: whether the session runs on audio input, where the monitor's Squelch row edits the squelch.
         metrics[QStringLiteral("squelchAudioInput")] = false;
@@ -3660,7 +4454,10 @@ class Setup : public QObject {
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
         session_args->setSavedSystems(saved_systems);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
-        ctx->setContextProperty(QStringLiteral("p25Network"), new dsd_qt::P25NetworkModel(engine)); // WP-F2
+        m_network = new dsd_qt::P25NetworkModel(engine);
+        ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
+        // Issue #782: the production state, following QAccessible (on in the DSD_QML_TEST_ACCESSIBILITY=1 run).
+        ctx->setContextProperty(QStringLiteral("screenReader"), new dsd_qt::ScreenReaderState(engine));
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         auto* controller = new TestUiController(engine);
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);
@@ -3710,6 +4507,10 @@ class Setup : public QObject {
     }
 
   private:
+    /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
+    bool m_accessibility_activated = false;
+    /* Issue #782: the URLs QML opened while captureOpenedUrls() held the handler. */
+    QStringList m_opened_urls;
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
     ReadingMap* m_metric_readings = nullptr;
     ReadingMap* m_host_readings = nullptr;
@@ -3731,7 +4532,56 @@ class Setup : public QObject {
     ImportOnlyHost* m_lifecycle_host = nullptr;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
+    /* Issue #782: two scan targets' policy tables (applyTalkgroupTable()), built on first use. */
+    std::array<std::unique_ptr<dsd_state>, 2> m_target_tables;
+    /* The target table on show, or null for m_talkgroup_state. */
+    const dsd_state* m_applied_table = nullptr;
     dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;
+    dsd_qt::P25NetworkModel* m_network = nullptr;
+    /* Issue #782: the snapshot hopNetwork() publishes, built on first use. */
+    std::unique_ptr<dsd_state> m_network_state;
+
+    struct TableRow {
+        uint32_t id;
+        const char* mode;
+        const char* name;
+        const char* tags;
+    };
+
+    /* Target 0 (A) and target 1 (B): no row bounds and no category in common. */
+    dsd_state*
+    targetTable(size_t target) {
+        if (m_target_tables[target]) {
+            return m_target_tables[target].get();
+        }
+        static const TableRow kTableA[] = {
+            {1001, "A", "Fire Dispatch", "FIRE"},
+            {1002, "B", "Fire Tactical", "FIRE"},
+            {2001, "A", "EMS Dispatch", "EMS"},
+        };
+        static const TableRow kTableB[] = {
+            {3001, "A", "Police Dispatch", "POLICE"},
+            {3002, "B", "Police Tactical", "POLICE"},
+            {4001, "A", "Public Works", "WORKS"},
+            {4002, "B", "Water Department", "WORKS"},
+        };
+        const TableRow* rows = target == 0 ? kTableA : kTableB;
+        const size_t count = target == 0 ? std::size(kTableA) : std::size(kTableB);
+        auto table = std::make_unique<dsd_state>();
+        for (size_t i = 0; i < count; ++i) {
+            dsd_tg_policy_entry entry{};
+            if (dsd_tg_policy_make_exact_entry(rows[i].id, rows[i].mode, rows[i].name, DSD_TG_POLICY_SOURCE_IMPORTED,
+                                               &entry)
+                    != 0
+                || DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", rows[i].tags) < 0
+                || dsd_tg_policy_append_exact(table.get(), &entry) != 0) {
+                dsd_state_ext_free_all(table.get());
+                return nullptr;
+            }
+        }
+        m_target_tables[target] = std::move(table);
+        return m_target_tables[target].get();
+    }
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */

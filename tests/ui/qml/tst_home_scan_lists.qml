@@ -252,6 +252,11 @@ Item {
                     ]
                 };
                 tryCompare(monitor, "scanTargetName", "Benton Simulcast");
+                // Issue #782: the engine's label (what the generated list gave the target, and what its calls are
+                // named) comes first, so the header and the calls agree.
+                testContext.setMetric("scanTargetLabel", "P25 · 769.76875 MHz");
+                tryCompare(monitor, "scanTargetName", "P25 · 769.76875 MHz");
+                testContext.setMetric("scanTargetLabel", "");
                 // A recreated Activity can recover the label from the last confirmed list.
                 prefs.lastStartedKind = "scan";
                 prefs.lastStartedUid = list.uid;
@@ -264,6 +269,7 @@ Item {
                 savedSystems.remove(row);
                 app.sessionSystem = previousSystem;
                 testContext.setMetric("scanTargetId", "");
+                testContext.setMetric("scanTargetLabel", "");
                 testContext.setMetric("scanTargetOrdinal", 0);
                 testContext.setMetric("scanTargetCount", 0);
             }
@@ -298,11 +304,17 @@ Item {
                 compare(app.scanTargetLabel(), "CSV target");
                 app.sessionSystem = null;
                 compare(app.scanTargetLabel(), "CSV target");
+                // Issue #782: a target CSV with a `label` column names the target by it, as its calls are named.
+                testContext.setMetric("scanTargetLabel", "County P25, north");
+                compare(app.scanTargetLabel(), "County P25, north");
+                var monitor = visualChild(app, "monitorScreen");
+                tryCompare(monitor, "scanTargetName", "County P25, north");
                 var card = visualChild(app, "scanListCard");
                 verify(card !== null);
                 compare(card.entryCount, 1);
             } finally {
                 testContext.setMetric("scanTargetId", "");
+                testContext.setMetric("scanTargetLabel", "");
                 decoderHost.stop();
                 importedFiles.remove(importedFiles.rowForPath(result.path));
             }

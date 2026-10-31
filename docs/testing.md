@@ -2569,13 +2569,14 @@ maintainer follow-up: record a transmitter with a known code in both polarities 
 ### Qt frontend and QML screen tests
 
 The `UI_QT_*` cases register only under `-DDSD_ENABLE_QT_UI=ON`. Most of them
-link `Qt6::Core` alone and run anywhere Qt 6 is installed. `UI_QT_QML_CALL_LISTS`
-(CTest label `qml`) is the exception: it drives the real `.qml` screens through Qt
-Quick Test, so it also needs the **QuickTest** module — both its CMake package
-and its QML plugin, which Debian and Ubuntu package separately as
-`qml6-module-qttest`. Both are probed, and the test is left unregistered with a
-configure-time `STATUS` message when either is missing, rather than failing the
-whole project's configure step.
+link `Qt6::Core` alone and run anywhere Qt 6 is installed. The `UI_QT_QML_*` cases,
+all but `UI_QT_QML_GC_POLICY`, are the exception: they run the `dsd-neo_test_ui_qt_qml`
+binary, which drives the real `.qml` screens through Qt Quick Test, so they also
+need the **QuickTest** module — both its CMake package and its QML plugin, which
+Debian and Ubuntu package separately as `qml6-module-qttest`. Both are probed, and
+those tests are left unregistered with a configure-time `STATUS` message when either
+is missing, rather than failing the whole project's configure step. Two of them,
+`UI_QT_QML_CALL_LISTS` and `UI_QT_QML_A11Y_CHURN`, carry the CTest label `qml`.
 
 ```sh
 cmake --preset dev-debug -DDSD_ENABLE_QT_UI=ON
@@ -2583,7 +2584,7 @@ cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_qml
 ctest --preset dev-debug -L qml --output-on-failure
 ```
 
-It carries its own headless environment (offscreen platform, software renderer)
+Each carries its own headless environment (offscreen platform, software renderer)
 in the CTest registration, so it needs no window server and no GPU.
 
 The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLLER`,
@@ -2630,6 +2631,159 @@ enforced (root). `UI_QT_BACKUP_MODEL` holds a job on the worker at a gate in its
 (`tests/ui/qml_backup_recorder.h`), so the QML tests cannot drift from the model. It runs each step with stderr captured
 so the libraries' expected log lines stay quiet, but its own `FAIL:` and `note:` lines go straight to the real stderr,
 so a step that crashes or hangs still shows them.
+
+#### Accessibility event counts
+
+`UI_QT_QML_A11Y_CHURN` (issue #782) counts the accessibility events the real screens raise: on Android, Qt's
+accessibility bridge turns each show or hide into blocking main-thread work (`docs/code_map.md`, "Qt QML editing
+convention"). It runs the same `dsd-neo_test_ui_qt_qml` binary over its own directory, `tests/ui/qml_a11y/`, with
+`DSD_QML_TEST_ACCESSIBILITY=1` added to the headless environment, so the other QML runs neither measure nor pay for it:
+
+```sh
+cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_qml
+ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
+```
+
+- **Activation.** With `DSD_QML_TEST_ACCESSIBILITY=1`, `Setup::applicationAvailable()` in
+  `tests/ui/qml_test_context.h` calls `QAccessible::setActive(true)` once the `QGuiApplication` exists and before any
+  engine, and stops the run (`qFatal`) unless `QAccessible::isActive()` then holds; `cleanupTestCase()` turns it off.
+  The offscreen platform tells Qt's activation observers as a platform bridge would, so Controls attach their accessible
+  objects and a move raises LocationChanged. `setActive()` is internal Qt API, used only here. Every file in the
+  directory checks `testContext.accessibilityActive()` first, so a file run without the variable fails instead of
+  passing on silence.
+- **Counting.** `testContext.startAccessibilityCount()` installs a `QAccessible` update handler
+  (`AccessibilityCounter`), which Qt calls for every event whether or not accessibility is active, and hands each event
+  on as Qt would; `stopAccessibilityCount()` puts the previous handler back. `accessibilityCount()` returns the counts
+  since the start: by event type (`types`), by the nearest named object, the emitter included (`owners`), and by the
+  named chain up from it (`chains`, for failure messages). `accessibilityCountWithin(scope, type)` counts what anything
+  inside `scope` raised, named or not. It is keyed by address, so ask it only about objects that outlive the count, such
+  as a sheet. ObjectCreated arrives before the new item has a parent, so it cannot be scoped: count a view's delegates
+  through the view (`count`, `itemAdded`) instead. The walk up reads only `objectName`, the parent item and the parent,
+  since the handler runs inside object construction, so give an item a case asserts on an `objectName`.
+- **Driving the screens.** `testContext.tickMetrics(n)` re-sets the `metrics` context property `n` times, so every
+  `metrics.*` binding re-evaluates with unchanged values, as a poll tick does to a binding whose notify signal a moving
+  reading shares; `setMetric()` cannot, since an equal value signals nothing. It re-evaluates every reading group at
+  once, more than production does. `publishTarget(map)` writes a whole target's readings in one batch and signals each
+  group once, as `MetricsModel` publishes a target change. The fixture's `metrics` is a property map, not
+  `MetricsModel`, so whether production publishes that way is `UI_QT_CONTROLLER`'s to catch
+  (`test_target_change_publishes_once()`). `applyTalkgroupTable(n)` refreshes the real `TalkgroupListModel` from one of
+  two prepared targets' policy tables (0 and 1, with different rows and categories; any other value goes back to the
+  fixture's own table), and `talkgroupEditVersionValid(context, generation)` makes the decoder's stale-edit check
+  against the table shown. `lastProfileScope()` is the scope the last KeySheet apply sent.
+- **Positive controls first.** `tst_a11y_harness.qml` numbers its cases so they run before anything relies on the
+  counter: accessibility is active; hiding and showing an accessible `Rectangle` counts exactly one ObjectHide and one
+  ObjectShow; a move counts LocationChanged; a Controls `Button` created after activation attaches its accessible
+  object (ObjectCreated and its role, because a Button raises ObjectShow even with accessibility off); `tickMetrics(10)`
+  re-evaluates a binding on `metrics` ten times; nothing is counted after the stop. Run without the variable, controls
+  1, 3 and 4 fail.
+- **The cases.** `tst_a11y_scan_churn.qml` loads `Main.qml` as `tst_main_session_tools.qml` does, checks every sheet is
+  closed by walking the tree, and asserts that steady ticks, scan hops and target name changes raise no show or hide
+  under the closed sheets, that two-slot hops leave the Monitor still, and that calls raise nothing under the hidden
+  Home and History screens. Its case C is the control: hops published through the defaults, the shape before #782, must
+  still flood the session menu and the radio and squelch sheets, so case B cannot pass because the hops stopped reaching
+  them. `tst_a11y_closed_sheets.qml` covers the closed KeySheet and SiteSheet; `tst_a11y_talkgroups.qml` the hidden
+  Talkgroups screen across two targets' tables, reopening at the reader's place, an edit keeping the version it opened
+  with, and a card's listening switch saying each of the card's lines once. A part known to churn whose fix has not
+  landed goes in the scan churn file's `pendingFix` list (sheet, part, how to find it, the fix): it is held as an
+  expected failure, and the fix turns that into an unexpected pass, which fails until the entry is removed. Its cases F
+  to H run the event loop between hops and ticks, so the pacer's renames 1 ms after a step and once a period are
+  counted. F opens the Monitor's details with the step floor off: each hop renames a changed reading group once (the
+  signal strip once a hop) and nothing shows, hides or moves, and nothing under the closed sheets renames. F2 hops
+  between a digital and an analog target and pins the hides that content which differs causes (one each per change of
+  the decode quality group, the received tone, the tone filter and its Edit button). G moves the readings 40 times at a
+  100 ms period: the strip renames at most once a period and once more, and catches up. H holds the closed sheets and
+  the screens hidden under the monitor to no event at all over time, at a 30 ms period with readings moving and hops.
+- **Monitor toggles, focus return.** `tst_a11y_monitor_controls.qml` presses Hold scan through the accessible press
+  action and reads its accessible checked state at once (held from the press), after the engine's state arrives, and
+  when it never does (back to the engine's state after 2 s). `tst_a11y_focus_return.qml` makes the window give up its
+  focus and take it back (`testContext.sendWindowFocus()`) and asks a button's set-focus action again
+  (`testContext.focusAccessible()`, what Qt's bridge does for TalkBack): without `ScreenReaderFocusRelease` no Focus
+  event follows (the control case, Qt's own behaviour), with it one does; a text field keeps its focus.
+  `test_recent_calls_pane_is_no_focus_target` holds the Monitor's recent calls pane to no focus target: in the tree,
+  not focusable, no set-focus action, its header's parts swipe stops, and TalkBack's focus on it leaves the header
+  holding the keyboard focus (a focusable pane trapped backward swipes on the device; `docs/code_map.md`).
+  `UI_QT_SCREEN_READER_STATE` checks the screen-reader state follows `QAccessible` on and off.
+- **Covered sheets, first Spectrum open.** `tst_a11y_closed_sheets.qml`'s `test_a_covered_sheet_leaves_the_tree`
+  opens the Network sheet over the Site sheet, closes it and opens it again: nothing of the Site sheet is in the tree,
+  focusable or named (`testContext.accessibleNodesUnder()` lists every node, in the tree or not), and each sheet's
+  refresh node raised its hide or show under the window (`testContext.accessibleParentRole()`). The text walk's
+  `test_3b_covered_sheet_leaves_the_tree` covers each sheet with another, every branch shown, and finds nothing of it
+  in the tree. `tst_a11y_scan_churn.qml`'s `test_j_first_spectrum_open_builds_at_once` opens the Spectrum through the
+  monitor for the first time with a screen reader on: the loader is not asynchronous, the screen is built and shown in
+  the same turn, and it puts at most 20 nodes in the tree. The first-open stall under TalkBack is a Qt limit, measured
+  on the emulator, not here. `P25_MOTOROLA_ALIAS`'s `test_held_call_keeps_its_names` holds an ended call on a
+  labelled trunk-scan target and on a listed talkgroup: each is named while held as it was while active.
+- **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
+  "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
+  under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not
+  all in the name, description and value of one accessible node on its own ancestor chain that is in the tree, the walk
+  the Android bridge makes; wordless text is skipped. `nodeCarries(item, text)` makes the same check against one item.
+  Each screen and sheet the harness builds on its own is checked as it opens, then with every item's `visible` forced
+  on, so text only some state shows is checked too; there each sheet nested inside is checked on its own as the top
+  layer. `test_4_monitor_in_a_call` adds a two-slot call with the details open; `test_5_model_rows` fills the models
+  the bare fixture leaves empty (a saved system, an imported CSV, RadioReference sites, a key slot, a diagnostics line
+  read while paused) and checks each screen shows the rows before walking it, and the wizard's CSV choices; the
+  `test_6` cases press the wizard's Advanced header and the RadioReference link as TalkBack does
+  (`testContext.pressAccessible()`, with `captureOpenedUrls()` recording what `Qt.openUrlExternally` opens; the link
+  through the node a touch on its words lands on, `testContext.accessibleNodeAt()`, which must have no child) and read
+  the Monitor's lock state. Text no node reads must be in the
+  file's one `allowlist` with a reason: an entry with `readBy` names the item that reads it instead (a field reads its
+  label), which the walk checks; one with `when` applies only where its check holds (the talkgroup card's "Listening"
+  line, which the switch's checked state says); one without either is text with nothing to read. The same walk reports
+  every enabled heading in the tree that is not focusable (`testContext.unfocusableHeadings()`), which TalkBack's swipes
+  would skip. `test_1` is the positive control, and
+  `test_9` fails on an entry nothing needs any more. A new component goes in `components`, with how it opens. Failure
+  messages list the first 25 problems: a run reporting every one, a message of several hundred lines, crashed at exit.
+- **Paced names.** `tst_a11y_paced_names.qml` checks that the app's period is 5 s, then sets
+  `Navigation.speechPeriodMs` to 100 ms and updates each moving reading 40 times a few milliseconds apart (as 4 Hz for
+  10 s is 40 updates over two 5 s periods): the Monitor's and Spectrum's readings, a recording's position, Signal
+  Search's lines and the squelch readouts. Each node renames at least once, at most once a period over the measured
+  time and once more, and at most a quarter as often as it is updated, then ends on the value on screen, while the text
+  on screen follows every update. The steps run at a 2 s period: a lost lock, a held scan, a sync change, a call
+  ending, play, pause, a seek, the end of a part, a new hit, the squelch gate and a new squelch setting each rename
+  within 100 ms. The harness cannot focus a node as TalkBack does, so every node is held to what a focused one needs.
+  Other QML tests that read a paced name shorten the period in `initTestCase()` and restore it in
+  `cleanupTestCase()`, since the files of one run share the singleton.
+  Case F flips the lock and a decode-quality reading 40 times at a 200 ms floor: the strip, the hero and the summary row
+  rename at most once a floor and once more, and end on the last state. Case F2 publishes one hop, whose keys change in
+  separate notifications, at a 300 ms floor and the app's 5 s period, then moves the SNR for two floors: the strip
+  renames once. Case C2 has the host leave a seek unapplied and playback stop, then plays past where the seek asked to
+  land: no rename until the period. Case G holds a hidden monitor to silence at a 30 ms period. Case H runs 50 scan hops
+  at a fifth of the app's times (60 ms apart, a 1 s period): the scan header renames at most once a period and once
+  more, ends on the current target, and a hold is heard at once. Case I retunes the canned spectrum
+  (`testContext.setSpectrumCenterHz()`) over ten scan hops at the app's period: no focusable heading on the Monitor or
+  the Spectrum is renamed, and no scale tick is in the tree. The site sheet's mixed-protocol hops
+  (`test_open_site_sheet_on_hops`) rename its heading 0 times. Case K runs 50 scan hops at a tenth of the app's times
+  (30 ms apart, a 500 ms period, a 100 ms floor): the strip, the countdown, the hero, the Spectrum's status line and
+  readout, and the Signal & site description rename at most once a period and once more, end on the value on screen,
+  and a hold and then a lock are each heard at once.
+  `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
+  a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the open Network sheet 10
+  refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename), then one changed entry
+  (one rename, at once), one new entry (one row added) and the same neighbours on another system (each row renamed once,
+  at once, and kept with its neighbour); `test_open_network_sheet_keeps_its_order_for_a_screen_reader` (this run has a
+  screen reader on) shows the neighbours in frequency order and moves one to the top of the model's list 16 times: no
+  row moves, shows, hides, is renamed or raises a LocationChanged, and every row is read as what it shows
+  (`tst_network_sheet.qml`'s `test_recent_first_without_a_screen_reader` checks the most recent first, rows moving with
+  their entries, without one); `test_open_network_sheet_capped_arrivals` has 20 radios register into a full section of
+  100: at most one rename each, none elsewhere, and the radio at row 50 keeping its row and name;
+  `test_open_network_sheet_clear_and_refill` empties and refills the list in one turn (nothing at all) and a turn apart
+  (the rows kept, out of the tree in between, and only "(none announced)" showing and hiding);
+  `test_open_network_sheet_hold_reads_nothing` empties the list: each held row reports itself invisible and unnamed, and
+  the section's "(none announced)" is in the tree and shows once;
+  `test_open_network_sheet_shrink_hides_departed_rows_at_once` shrinks 8 rows to 6 and, before the event loop runs
+  again, draws and names only the 6, the 2 hiding as they go; `test_open_key_sheet_drops_a_slot_at_once` drops the key
+  sheet's second slot: its row is hidden at once and never reads an empty slot; `test_open_network_sheet_on_hops`
+  publishes 10 hops between an eight- and a six-neighbour target to the app's own P25NetworkModel as UiController does
+  (`testContext.hopNetwork()`): two rows hide or show a hop, the row at index 3 stays the same item, and each row ends
+  on the new target's entry; `test_open_network_sheet_on_mixed_hops` hops 10 times between a P25 target and one with no
+  P25 network, for 8 and for 30 neighbours: the rows raise no show, hide, move or description change, only one rename
+  each a hop (unnamed as they are held, named as they come back), no row is shown or read on the other target, "(none
+  announced)" shows and hides once a hop, and the sheet's main-thread events are the same for both counts;
+  `test_open_key_sheet_keeps_its_slot_rows` publishes new slot lists to the open key sheet (no show or hide).
+
+The Android side, which no host test reaches, is checked by hand on an emulator: "Qt upgrade checks" in
+`docs/code_map.md`.
 
 #### Build-time constants that gate a branch
 
@@ -2755,6 +2909,19 @@ dsd_decode_clock_use_system(); /* on every return path */
 - A test that compiles protocol, core, app-control or terminal sources directly instead of linking `dsd-neo_runtime`
   gets the clock from `dsd-neo_test_decode_clock`: add its target to `_DSD_NEO_DECODE_CLOCK_TEST_TARGETS` in
   `tests/CMakeLists.txt`.
+
+### Environment variables in tests
+
+Production code never writes the process environment (#782): an option, an INI key or a menu sets a session
+override in `<dsd-neo/platform/env.h>`, and every reader copies values out through `dsd_env_read()` or
+`dsd_env_value`. A test that needs a user's exported variable seeds the real environment with `dsd_test_setenv()`/
+`dsd_test_unsetenv()` from `tests/test_support/test_env.h` (every test target can include it), before it starts a
+thread that reads it; those also move `dsd_env_generation()`, so a reader that caches by it (the Unicode check) reads
+again. An override wins over the environment, so a test that runs code which sets one (a parse, a bootstrap, a menu
+toggle) and then exports a new value calls `dsd_env_clear_layer(DSD_ENV_LAYER_SESSION)` first, or sets the override
+itself with `dsd_env_set()`. To prove that a path writes nothing, compare `environ` before and after, as
+`RUNTIME_ENV_NO_PROCESS_WRITES` does: neither ASan nor TSan intercepts `setenv()`/`getenv()`, so a sanitizer run cannot
+see the race itself.
 
 ### Temporary files and directories
 

@@ -37,7 +37,15 @@ if(MSVC)
     )
 endif()
 
-link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
+# Production code never writes the process environment (#782); tests seed it through test_support/test_env.h, which
+# every test can include.
+add_library(dsd-neo_test_env INTERFACE)
+target_include_directories(
+    dsd-neo_test_env
+    INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/test_support
+)
+
+link_libraries(dsd-neo_warnings dsd-neo_test_assertions dsd-neo_test_env)
 
 # A Windows main thread gets a 1 MiB stack where Linux gives 8 MiB, so a test
 # with a multi-megabyte local overflows only on Windows (CTest reports it as a
@@ -4154,6 +4162,37 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_frequency_query
     )
 
+    # Issue #782: the screen-reader state follows Qt's accessibility activation.
+    add_executable(
+        dsd-neo_test_ui_qt_screen_reader_state
+        ui/test_ui_qt_screen_reader_state.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PRIVATE Qt6::Core Qt6::Gui
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_screen_reader_state
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SCREEN_READER_STATE
+        COMMAND dsd-neo_test_ui_qt_screen_reader_state
+    )
+    set_tests_properties(
+        UI_QT_SCREEN_READER_STATE
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups
@@ -4710,6 +4749,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+            # Issue #782: whether a screen reader is on, as views read it.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
             # needs the CLI mapping behind it, and that translation unit is
@@ -4837,6 +4878,23 @@ if(DSD_ENABLE_QT_UI)
                         "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
             )
         endforeach()
+        # Issue #782: accessibility event churn. Its own directory and run,
+        # because accessibility has to be on before the first engine exists
+        # (DSD_QML_TEST_ACCESSIBILITY=1, see qml_test_context.h), and the other
+        # QML runs must not measure or pay for it.
+        add_test(
+            NAME UI_QT_QML_A11Y_CHURN
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml_a11y
+        )
+        set_tests_properties(
+            UI_QT_QML_A11Y_CHURN
+            PROPERTIES
+                LABELS qml
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
+        )
         qt_add_resources(
             dsd-neo_test_ui_qt_qml "test_license_notices"
             PREFIX "/dsdneo/notices"
@@ -7947,6 +8005,41 @@ else()
     )
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
+
+# #782: options, config and menus override variables inside the process and never write its environment, and a later
+# session in the same process does not inherit an earlier session's overrides.
+add_executable(
+    dsd-neo_test_runtime_env_overrides
+    runtime/test_runtime_env_overrides.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_env_overrides
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_runtime_env_overrides
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_runtime_env_overrides
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME RUNTIME_ENV_NO_PROCESS_WRITES
+    COMMAND dsd-neo_test_runtime_env_overrides no-process-writes
+)
+add_test(
+    NAME RUNTIME_SESSION_OVERRIDES_RESET
+    COMMAND dsd-neo_test_runtime_env_overrides session-reset
+)
 
 # Issue #708: the WAV recording commands through the real queue, the per-call writers' failure policy behind a
 # libsndfile seam, and the recording view.
@@ -14340,6 +14433,47 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_platform_nonce PRIVATE dsd-neo_platform)
 add_test(NAME PLATFORM_NONCE COMMAND dsd-neo_test_platform_nonce)
 
+# The environment override store (#782): every in-process reader goes through it and nothing writes the process
+# environment. The threads test races readers against a writer; run it under tsan-debug too.
+add_executable(
+    dsd-neo_test_platform_env_store
+    platform/test_platform_env_store.c
+)
+target_include_directories(
+    dsd-neo_test_platform_env_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_platform_env_store PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_ENV_STORE COMMAND dsd-neo_test_platform_env_store)
+
+add_executable(
+    dsd-neo_test_platform_env_store_threads
+    platform/test_platform_env_store_threads.c
+)
+target_include_directories(
+    dsd-neo_test_platform_env_store_threads
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_env_store_threads
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME PLATFORM_ENV_STORE_THREADS
+    COMMAND dsd-neo_test_platform_env_store_threads
+)
+
+add_executable(
+    dsd-neo_test_platform_env_value
+    platform/test_platform_env_value.cpp
+)
+target_include_directories(
+    dsd-neo_test_platform_env_value
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_platform_env_value PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_ENV_VALUE COMMAND dsd-neo_test_platform_env_value)
+
 if(DSD_AUDIO_BACKEND STREQUAL "none")
     add_executable(
         dsd-neo_test_platform_audio_null
@@ -20077,6 +20211,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             recording_share
     )
+    add_test(
+        NAME ANDROID_A11Y_BRIDGE_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            a11y_bridge
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -20090,6 +20231,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_PLAYER_JVM
         ANDROID_RECORDING_EXPORT_JVM
         ANDROID_RECORDING_SHARE_JVM
+        ANDROID_A11Y_BRIDGE_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90
@@ -20100,6 +20242,69 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
+    )
+    # #782: the Android build refuses an app library that imports an environment writer
+    # (cmake/check_no_environment_writers.cmake, run after every link of dsd-neo-app). These run its parser on the
+    # host, on llvm-nm output of the shape the NDK prints: libc's and Qt's writers fail it, a getenv() or qgetenv()
+    # import and a look-alike name do not.
+    set(_android_link_env_dir "${CMAKE_CURRENT_BINARY_DIR}/android_link_env")
+    file(
+        WRITE "${_android_link_env_dir}/writers.txt"
+        "                 U getenv@LIBC\n                 U setenv@LIBC\n                 U unsetenv@LIBC\n"
+    )
+    file(
+        WRITE "${_android_link_env_dir}/clean.txt"
+        "                 U getenv@LIBC\n                 U localtime_r@LIBC\n                 U dsd_test_setenv\n                 U setenvironment\n"
+    )
+    file(
+        WRITE "${_android_link_env_dir}/putenv.txt"
+        "                 U putenv\n"
+    )
+    file(
+        WRITE "${_android_link_env_dir}/qt.txt"
+        "                 U _Z7qputenvPKc14QByteArrayView\n                 U _Z9qunsetenvPKc\n                 U _Z7qgetenvPKc\n"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DNM_OUTPUT_FILE=${_android_link_env_dir}/writers.txt" -P
+            "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_QT_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND} "-DNM_OUTPUT_FILE=${_android_link_env_dir}/qt.txt"
+            -P "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_PUTENV_REFUSED
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DNM_OUTPUT_FILE=${_android_link_env_dir}/putenv.txt" -P
+            "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
+    )
+    # The refusal names exactly the writers it found (CTest then ignores the exit code, so a crash cannot pass).
+    set_tests_properties(
+        ANDROID_LINK_ENV_WRITERS_REFUSED
+        PROPERTIES
+            PASS_REGULAR_EXPRESSION "environment-writers=setenv,unsetenv\n"
+    )
+    set_tests_properties(
+        ANDROID_LINK_ENV_WRITERS_QT_REFUSED
+        PROPERTIES
+            PASS_REGULAR_EXPRESSION "environment-writers=qputenv,qunsetenv\n"
+    )
+    set_tests_properties(
+        ANDROID_LINK_ENV_WRITERS_PUTENV_REFUSED
+        PROPERTIES PASS_REGULAR_EXPRESSION "environment-writers=putenv\n"
+    )
+    add_test(
+        NAME ANDROID_LINK_ENV_WRITERS_CLEAN
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DNM_OUTPUT_FILE=${_android_link_env_dir}/clean.txt" -P
+            "${PROJECT_SOURCE_DIR}/cmake/check_no_environment_writers.cmake"
     )
     # Airspy dependency/packaging contracts: repin hashes, notices, installer modes,
     # overlay pin drift and the AUR template. Needs cmake, clang-format and bash.

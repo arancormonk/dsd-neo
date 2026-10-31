@@ -7,12 +7,12 @@
  * Unit tests for P25P2 soft-decision RS erasure marking.
  */
 
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
+#include "test_env.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -36,7 +36,7 @@ static void
 set_p25p2_threshold(int threshold) {
     char value[16];
     DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
-    dsd_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
+    dsd_test_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
     dsd_neo_config_init();
 }
 

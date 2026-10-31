@@ -445,6 +445,7 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
 
     if (m_host != nullptr) {
         connect(m_host, &DecoderHost::locationResult, this, &RadioReferenceModel::applyLocation);
+        connect(m_host, &DecoderHost::locationCancelled, this, &RadioReferenceModel::applyLocationCancelled);
     }
     if (m_prefs != nullptr) {
         connect(m_prefs, &AppPrefs::rrUsernameChanged, this, &RadioReferenceModel::credentialsChanged);
@@ -769,6 +770,17 @@ RadioReferenceModel::lookupNearby() {
     m_locationRequestId = nextLocationRequestId();
     Q_EMIT busyChanged();
     m_host->requestCurrentLocation(m_locationRequestId);
+}
+
+/* A lookup the platform ended unanswered (#782): it settles like a result, with no error, since nothing failed. */
+void
+RadioReferenceModel::applyLocationCancelled(qint64 id) {
+    if (id == 0 || id != m_locationRequestId || m_locationGeneration != m_generation) {
+        return;
+    }
+    m_locationRequestId = 0;
+    Q_EMIT busyChanged();
+    setStatus(QString());
 }
 
 void

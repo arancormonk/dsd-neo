@@ -161,7 +161,7 @@ Column {
             onClicked: editor.revealed = !editor.revealed
         }
     }
-    Text {
+    ReadableText {
         objectName: "encryptionValidity"
         width: parent.width
         visible: text.length > 0

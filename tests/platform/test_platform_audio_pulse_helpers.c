@@ -17,12 +17,25 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <dsd-neo/platform/env.h>
+#include <stdlib.h>
 #include "../../src/platform/audio_pulse.c"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/audio_concealment.h"
 #include "dsd-neo/platform/threading.h"
 #include "dsd-neo/platform/timing.h"
+
+/* The backend reads its variables through the override store (#782); this test links no platform library, and no
+   override is ever set here, so the process environment is the whole answer. */
+size_t
+dsd_env_copy(const char* name, char* buf, size_t cap) {
+    const char* v = getenv(name);
+    if (buf != NULL && cap > 0) {
+        DSD_SNPRINTF(buf, cap, "%s", v ? v : "");
+    }
+    return v ? strlen(v) + 1U : 0U;
+}
 
 static int g_pa_simple_new_fail;
 static int g_pa_simple_new_calls;

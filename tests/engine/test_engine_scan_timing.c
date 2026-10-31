@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_env.h"
 #include "test_support.h"
 
 static int g_typed;

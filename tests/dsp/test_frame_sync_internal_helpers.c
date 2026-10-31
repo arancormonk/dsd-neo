@@ -18,7 +18,6 @@
 #include <dsd-neo/dsp/tetra_training.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -39,6 +38,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_test_support.h"
+#include "test_env.h"
 
 static void
 reset(dsd_opts* opts, dsd_state* state) {
@@ -4562,7 +4562,7 @@ test_snr_squelch_only_applies_to_rtl_input(void) {
 
     set_fake_snr(-100.0, -100.0, -100.0, -100.0);
     install_fake_snr_hooks();
-    (void)dsd_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
+    (void)dsd_test_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
     dsd_neo_config_init();
 
     for (size_t i = 0; i < sizeof(non_radio_inputs) / sizeof(non_radio_inputs[0]); i++) {
@@ -4585,7 +4585,7 @@ test_snr_squelch_only_applies_to_rtl_input(void) {
     state.rf_mod = 2;
     assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 1);
 
-    (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
+    (void)dsd_test_unsetenv("DSD_NEO_SNR_SQL_DB");
     dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
@@ -4596,7 +4596,7 @@ test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
     static dsd_state state;
 
     install_fake_snr_hooks();
-    (void)dsd_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
+    (void)dsd_test_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
     dsd_neo_config_init();
 
     reset(&opts, &state);
@@ -4633,7 +4633,7 @@ test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
     assert(frame_sync_active_profile_snr_db(&opts, &state) == 20.0);
     assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
-    (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
+    (void)dsd_test_unsetenv("DSD_NEO_SNR_SQL_DB");
     dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }

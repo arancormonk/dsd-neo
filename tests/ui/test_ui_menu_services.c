@@ -186,14 +186,6 @@ dsd_mkdir(const char* path, int mode) {
     return -1;
 }
 
-int
-dsd_setenv(const char* name, const char* value, int overwrite) {
-    (void)name;
-    (void)value;
-    (void)overwrite;
-    return 0;
-}
-
 void
 parse_audio_output_string(dsd_opts* opts, char* input) {
     (void)opts;
@@ -1753,7 +1745,7 @@ test_describe_start_failure(void) {
         expect_str("AM default refusal names its 6 kHz", why,
                    "AM 6 kHz does not fit the 7.5 kHz DSP rate (max 5.55 kHz); use an 8, 12, 16, 24, 48 or 72 kHz DSP "
                    "bandwidth");
-    /* (The DSD_NEO_CHANNEL_LPF=0 text is covered by APP_COMMAND_QUEUE: dsd_setenv() is stubbed here.) */
+    /* (The DSD_NEO_CHANNEL_LPF=0 text is covered by APP_COMMAND_QUEUE.) */
 
     /* No refusal recorded: the input that did not start, as the stream classifies its device string. */
     g_start_refused = 0;
@@ -1800,7 +1792,7 @@ test_describe_start_failure(void) {
 
 /* Issue #578: Input > Switch source > Airspy is held only to the rules every rate shares, since the device sets its own
  * rate, which its start checks: DSD_NEO_CHANNEL_LPF=0 against an explicit width or the AM default (APP_COMMAND_QUEUE
- * covers that refusal: dsd_setenv() is stubbed here), never the RTL DSP bandwidth. */
+ * covers that refusal), never the RTL DSP bandwidth. */
 static int
 test_airspy_input_analog_width(void) {
     static dsd_opts opts;

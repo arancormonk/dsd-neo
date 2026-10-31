@@ -308,9 +308,12 @@ For the keys covered by this user config system:
 3. **CLI arguments** (highest priority)
 
 Environment variables are separate advanced runtime knobs (some CLI flags set
-`DSD_NEO_*` env vars). Most are not persisted in the user config file, but a
+`DSD_NEO_*` variables). Most are not persisted in the user config file, but a
 small subset is exposed as config keys for convenience (for example
-`[input] auto_ppm`, `[dsp] iq_balance`, `[dsp] iq_dc_block`).
+`[input] auto_ppm`, `[dsp] iq_balance`, `[dsp] iq_dc_block`). Those keys apply
+only when the variable is not exported and no option set it. Options, these
+keys and the terminal menus set the variable inside the process for the rest of
+the session; they never write the process environment.
 
 ---
 

@@ -57,6 +57,12 @@ Item {
     readonly property var hit: status.hit || ({})
     readonly property int phase: status.phase || 0
     readonly property bool receiving: receivingIn(status)
+    // Issue #782: what makes the search's moving lines worth hearing at once
+    // (SpeechPacer): a new hit or a change of state. Between these the
+    // channel count, the live level and the call details are re-read at most
+    // every few seconds.
+    readonly property string speechStep: [sessionActive, phase, receiving, status.identifying === true, status.pass || 0,
+        status.rangeName || "", hit.id || "", hit.freqMHz || "", hit.confirmed === true, hit.protocol || ""].join("|")
     readonly property bool editable: !sessionActive || phase === 6
     readonly property bool ownedSession: sessionActive && !!status.owned
     signal closed
@@ -366,7 +372,8 @@ Item {
             width: parent.width
             spacing: 12
             IconButton { objectName: "searchBack"; icon: "back"; accessibleName: qsTr("Back"); onClicked: screen.requestClose() }
-            Text {
+            ReadableText {
+                heading: true
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("Signal search")
                 font.family: Theme.sans
@@ -395,7 +402,15 @@ Item {
                 maximumLineCount: screen.sessionActive ? screen.statusLines : 1000
                 elide: Text.ElideRight
                 Accessible.role: Accessible.StaticText
-                Accessible.name: text
+                Accessible.name: statusSpeech.spoken
+                SpeechPacer {
+                    id: statusSpeech
+                    shown: Navigation.allows(statusText) && statusText.visible
+                    step: screen.speechStep
+                    read: function () {
+                        return statusText.text;
+                    }
+                }
             }
         }
     }
@@ -430,7 +445,7 @@ Item {
                 width: parent.width
                 visible: !screen.sessionActive
                 spacing: 12
-                Text { text: qsTr("Radio"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+                ReadableText { heading: true; text: qsTr("Radio"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
                 Flow {
                     width: parent.width
                     spacing: 10
@@ -446,7 +461,7 @@ Item {
                 }
                 PlexTextField { id: hostField; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Host"); text: screen.host; onTextChanged: screen.host = text }
                 PlexTextField { id: portField; objectName: "searchPort"; width: parent.width; visible: screen.sourceType === "rtltcp"; label: qsTr("Port"); text: String(screen.port); inputMethodHints: Qt.ImhDigitsOnly }
-                Text {
+                ReadableText {
                     width: parent.width
                     text: qsTr("RF strength is not a distance measurement. Search uses one radio; each detection is identified, then monitored before searching continues.")
                     color: Theme.textSecondary
@@ -530,6 +545,7 @@ Item {
                             }
                         }
                         Text {
+                            id: strengthText
                             objectName: "searchStrength"
                             // The cue's slot is kept for the whole visit, so the
                             // text does not move as a live level comes and goes.
@@ -544,10 +560,19 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: strengthSlot.lines
                             elide: Text.ElideRight
-                            readonly property string spoken: text.replace("\n", " · ")
+                            readonly property string spoken: strengthSpeech.spoken
                             Accessible.name: spoken
                             Accessible.description: spoken.length > 0 && (screen.hit.range || "").length > 0 ? spoken + " · " + screen.hit.range : spoken
                             Accessible.ignored: text.length === 0
+                            // The live level moves every tick (issue #782).
+                            SpeechPacer {
+                                id: strengthSpeech
+                                shown: Navigation.allows(strengthText) && strengthText.visible && strengthText.text.length > 0
+                                step: screen.speechStep
+                                read: function () {
+                                    return strengthText.text.replace("\n", " · ");
+                                }
+                            }
                         }
                     }
                     Text {
@@ -568,6 +593,7 @@ Item {
                         width: parent.width
                         height: 2 * Math.ceil(detailMetrics.lineSpacing)
                         Text {
+                            id: searchDetailText
                             objectName: "searchDetail"
                             width: parent.width
                             // The hint belongs to a search that is running or paused;
@@ -587,9 +613,18 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
-                            Accessible.name: fullText
-                            Accessible.description: fullText
+                            Accessible.name: detailSpeech.spoken
+                            Accessible.description: detailSpeech.spoken
                             Accessible.ignored: text.length === 0
+                            // A monitored call's talkgroup and source change with each call (issue #782).
+                            SpeechPacer {
+                                id: detailSpeech
+                                shown: Navigation.allows(searchDetailText) && searchDetailText.visible && searchDetailText.text.length > 0
+                                step: screen.speechStep
+                                read: function () {
+                                    return searchDetailText.fullText;
+                                }
+                            }
                         }
                     }
                     // Two names, then how many more: the names elide, the count
@@ -729,6 +764,8 @@ Item {
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
                     Accessible.role: Accessible.AlertMessage
+                    // A role alone reads nothing (issue #782): the message is its name.
+                    Accessible.name: text
                 }
             }
             Loader {
@@ -737,7 +774,7 @@ Item {
                 visible: active
                 sourceComponent: recentDetections
             }
-            Text { visible: !screen.sessionActive; text: qsTr("Search ranges"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: !screen.sessionActive; text: qsTr("Search ranges"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             UiPanel {
                 width: parent.width
                 height: rangesToggle.height
@@ -754,6 +791,8 @@ Item {
                     tapEnabled: !screen.editable
                     // Not a control while paused: the heading of the open ranges.
                     Accessible.role: screen.editable ? Accessible.Heading : Accessible.Button
+                    // A heading TalkBack can move to (see MicroLabel); it takes no Tab focus then.
+                    Accessible.focusable: screen.editable && rangesToggle.navigationAllowed && rangesToggle.visible
                     accessibleName: screen.editable ? qsTr("Search ranges, %1 enabled").arg(screen.enabledRanges) : screen.rangesExpanded ? qsTr("Hide search ranges") : qsTr("Show search ranges, %1 enabled").arg(screen.enabledRanges)
                     onTapped: screen.rangesExpanded = !screen.rangesExpanded
                 }
@@ -763,7 +802,7 @@ Item {
                 width: parent.width
                 visible: !screen.sessionActive || screen.rangesShown
                 spacing: Theme.gap
-                Text {
+                ReadableText {
                     width: parent.width
                     visible: !screen.editable
                     text: qsTr("Pause to edit ranges. Changes apply when you restart the search.")
@@ -804,7 +843,7 @@ Item {
                 visible: active
                 sourceComponent: recentDetections
             }
-            Text { visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
                 model: screen.sessionActive && searchModel ? (searchModel.sessionAvoids || []) : []
                 OutlineButton {
@@ -815,7 +854,7 @@ Item {
                     onClicked: searchModel.removeSessionAvoid(Number(modelData))
                 }
             }
-            Text { visible: searchModel && searchModel.avoids.length > 0; text: qsTr("Permanent avoids"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: searchModel && searchModel.avoids.length > 0; text: qsTr("Permanent avoids"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
                 model: searchModel ? searchModel.avoids : []
                 OutlineButton {
@@ -834,8 +873,8 @@ Item {
         id: recentDetections
         Column {
             spacing: Theme.gap
-            Text { text: qsTr("Recent detections"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
-            Text {
+            ReadableText { heading: true; text: qsTr("Recent detections"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText {
                 width: parent.width
                 visible: !searchModel || searchModel.history.length === 0
                 text: qsTr("Detections appear here even when no digital content is decoded.")
@@ -858,7 +897,7 @@ Item {
                             id: rowText
                             width: parent.width - rowActions.width - 8
                             spacing: 5
-                            Text { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
+                            ReadableText { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
                                 width: parent.width
                                 objectName: "searchHistoryDetail"

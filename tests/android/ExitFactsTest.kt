@@ -55,10 +55,37 @@ private fun eachExitIsLoggedOnce() {
     check(ExitFacts.unlogged(listOf(record(30, 6).copy(pid = 1)), logged).size == 1) { "pid tells exits apart" }
 }
 
+// #782: a process that set a state summary (LaunchGuard) carries it after the facts Android gave; one that set none
+// keeps the line above byte for byte.
+private fun aSummaryFollowsTheFacts() {
+    val second = record(7, 1).copy(status = 0, summary = LaunchGuard.SUMMARY)
+    check(
+        ExitFacts.line(second, format) == "exit: t7 pid 4007 EXIT_SELF status 0 importance 125 pss 51200 kB " +
+            "(activity: second instance in a running process; Qt 6.11.2 restarts the process)",
+    ) { "unexpected line: ${ExitFacts.line(second, format)}" }
+    val described = record(7, 1, "exit\tcode 0").copy(summary = LaunchGuard.SUMMARY)
+    check(ExitFacts.line(described, format).endsWith(" kB \"exit code 0\" (${LaunchGuard.SUMMARY})")) {
+        "the summary follows the description: ${ExitFacts.line(described, format)}"
+    }
+    // The summary is the writer's: one written under another Qt keeps its own version, and no reader adds to it.
+    val older = record(7, 1).copy(summary = "activity: second instance in a running process; Qt 6.9.0 restarts the process")
+    check(ExitFacts.line(older, format).endsWith("(activity: second instance in a running process; Qt 6.9.0 restarts the process)")) {
+        "the writer's Qt stays: ${ExitFacts.line(older, format)}"
+    }
+    check(ExitFacts.line(record(1, 2).copy(summary = " some\nstate "), format) ==
+        "exit: t1 pid 4001 SIGNALED status 9 importance 125 pss 51200 kB (some state)") { "a summary is shown as it is" }
+    check(ExitFacts.line(record(1, 2).copy(summary = " \n"), format) ==
+        ExitFacts.line(record(1, 2), format)) { "a blank summary is dropped" }
+    val long = ExitFacts.line(record(1, 4, "x".repeat(1000)).copy(summary = "y".repeat(1000)), format)
+    check(long.contains("(" + "y".repeat(ExitFacts.MAX_SUMMARY) + ")") && long.length < 512) { "summaries are bounded" }
+    check(record(1, 2).summary == null) { "a record carries no summary unless Android kept one" }
+}
+
 fun main() {
     everyReasonHasItsName()
     aLineCarriesTheFacts()
     theNewestThreeNewestFirst()
     eachExitIsLoggedOnce()
+    aSummaryFollowsTheFacts()
     println("ExitFactsTest: OK")
 }

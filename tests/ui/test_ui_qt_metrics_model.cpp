@@ -924,6 +924,49 @@ test_decode_clock_readings() {
     freeState(&state);
 }
 
+/* Issue #782: a new scan target drops the old target's sync hold inside the same refresh, so the frame that names the
+   new target never carries the old lock and never passes through the cleared view first. The same refresh without a
+   new target keeps the hold. */
+static void
+test_new_target_drops_sync_hold_in_one_publication() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.trunk_scan_enabled = 1;
+    dsd_qt::MetricsModel model;
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.trunk_scan_active_ordinal = 1U;
+    model.refresh(&opts, &state, false);
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state, false);
+    expect("an old target's sync is held across an unsynced poll", model.syncedHere());
+
+    int tuner = 0;
+    int control = 0;
+    bool lockedAtPublication = false;
+    bool defaultAtPublication = false;
+    QObject::connect(&model, &dsd_qt::MetricsModel::tunerChanged, [&]() {
+        ++tuner;
+        lockedAtPublication = lockedAtPublication || model.syncedHere();
+        defaultAtPublication = defaultAtPublication || !model.radioInput();
+    });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() {
+        ++control;
+        defaultAtPublication = defaultAtPublication || !model.optionsKnown();
+    });
+    state.trunk_scan_active_ordinal = 2U;
+    model.refresh(&opts, &state, true);
+    expect("a new target drops the held sync", !model.syncedHere() && model.syncLabel().isEmpty());
+    expect("a new target publishes the tuner rows once, unlocked", tuner == 1 && !lockedAtPublication);
+    expect("a new target publishes the controls once", control == 1);
+    expect("a new target never publishes the cleared view", !defaultAtPublication);
+    expect("a new target keeps the readings", model.radioInput() && model.optionsKnown());
+    freeState(&state);
+}
+
 static void
 test_options_readiness() {
     static dsd_opts opts;
@@ -2069,6 +2112,7 @@ test_block_label_radio_blocked() {
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_new_target_drops_sync_hold_in_one_publication();
     test_tetra_rows();
     test_slot_kind_and_labels();
     test_scan_row();
@@ -2349,6 +2393,14 @@ main(int argc, char** argv) {
     state.squelch_auto_floor_cdb = -7900;
     model.refresh(&opts, &state);
     expect("a moving floor reaches the panel", model.squelchAutoStatus() == QStringLiteral("floor -79.0 dB"));
+    /* Issue #782: the gate opening and closing, which a screen reader hears at once. */
+    expect("a closed auto gate reads closed", !model.squelchGateOpen());
+    state.squelch_auto_gate_open = 1;
+    model.refresh(&opts, &state);
+    expect("an open auto gate reaches the panel", model.squelchGateOpen());
+    state.squelch_auto_gate_open = 0;
+    model.refresh(&opts, &state);
+    expect("and closes again", !model.squelchGateOpen());
     /* The noise squelch: its flags, its quieting while it runs, and no Noise offered on the AM monitor on its own. */
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
     state.squelch_noise_active = 1;
@@ -2486,6 +2538,12 @@ main(int argc, char** argv) {
     expect("trunk scan hold on", model.scanHold());
     expect("scan target identity", model.scanTargetId() == QStringLiteral("dispatch") && model.scanTargetOrdinal() == 2
                                        && model.scanTargetCount() == 3);
+    expect("an unlabelled target has no label", model.scanTargetLabel().isEmpty());
+    // Issue #782: the target's label, the name its calls are given, beside its id.
+    DSD_SNPRINTF(state.trunk_scan_active_label, sizeof state.trunk_scan_active_label, "%s", "County Dispatch");
+    model.refresh(&opts, &state);
+    expect("scan target label", model.scanTargetLabel() == QStringLiteral("County Dispatch")
+                                    && model.scanTargetId() == QStringLiteral("dispatch"));
     /* Both flags set: --trunk-scan owns the tuner and the routing prefers it, so the
      * view reads the coordinator's fields, not the scan list's. */
     opts.scanner_mode = 1;
@@ -2566,8 +2624,8 @@ main(int argc, char** argv) {
     model.clear();
     expect("a cleared model reports no lock", !model.syncedHere());
     expect("a cleared model reports no tuner", !model.radioInput());
-    expect("clear removes scan identity",
-           model.scanTargetId().isEmpty() && model.scanTargetOrdinal() == 0 && model.scanTargetCount() == 0);
+    expect("clear removes scan identity", model.scanTargetId().isEmpty() && model.scanTargetLabel().isEmpty()
+                                              && model.scanTargetOrdinal() == 0 && model.scanTargetCount() == 0);
 
     /* The channel width rides the tuner group: it moves when the decoder changes
      * profile, not when the user changes a setting. It is also gated on a radio

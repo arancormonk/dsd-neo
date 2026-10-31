@@ -95,6 +95,45 @@ Item {
             compare(populated.active, false);
             sheet.item.network = p25Network;
         }
+        // Issue #782: without a screen reader the sections stay most recent first, as the model lists them: a
+        // neighbour heard again moves to the top, and its row moves with it.
+        function test_recent_first_without_a_screen_reader() {
+            compare(screenReader.active, false, "this run has no screen reader");
+            var order = [5, 2, 7, 0];
+            var listed = function () {
+                return order.map(function (i) {
+                    return {freqHz: 851000000 + i * 12500, sysid: 291, rfss: 1, site: i, wacn: 1, wacnValid: true,
+                        lra: 0, lraValid: false, isCurrentCc: false, isCandidate: false, cfvaText: "valid"};
+                });
+            };
+            retained.neighbours = listed();
+            sheet.item.network = retained;
+            sheet.item.open();
+            wait(20);
+            var rows = function () {
+                var found = [];
+                (function collect(item) {
+                    for (var k = 0; k < item.children.length; ++k) {
+                        var child = item.children[k];
+                        if (child.textFormat !== undefined && /^[0-9.]+ MHz/.test(child.text) && child.opacity > 0)
+                            found.push(child);
+                        collect(child);
+                    }
+                })(sheet.item);
+                return found;
+            };
+            var shown = rows();
+            compare(shown.map(function (r) { return /Site:([0-9]+)/.exec(r.text)[1]; }), ["5", "2", "7", "0"]);
+            var row0 = shown[3];
+            order = [0, 5, 2, 7];
+            retained.neighbours = listed();
+            wait(20);
+            shown = rows();
+            compare(shown.map(function (r) { return /Site:([0-9]+)/.exec(r.text)[1]; }), ["0", "5", "2", "7"]);
+            compare(shown[0], row0, "the row moves with its neighbour");
+            sheet.item.visible = false;
+            sheet.item.network = p25Network;
+        }
         function openSiteSheet() {
             // The site row is the first reading in the "Signal & site" disclosure (#718).
             monitor.item.detailsExpanded = true;

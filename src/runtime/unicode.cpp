@@ -9,16 +9,17 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <mutex>
-#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
+#include <stdlib.h> // atexit
 #include <windows.h>
 #endif
 
@@ -47,11 +48,32 @@ static UINT g_saved_console_input_cp = 0;
 
 static int
 env_truthy(const char* name) {
-    const char* v = getenv(name);
-    if (!v || !*v) {
+    char v[8]; /* only the first character decides; a longer value is cut, never refused */
+    if (dsd_env_copy(name, v, sizeof v) <= 1U) {
         return 0;
     }
     return (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+}
+
+/* The DSD_FORCE_* answers. dsd_unicode_supported() runs for every log line, so they are read again only when an
+   override changed (dsd_env_generation(), a lock-free load); the generation is taken before the reads, so a change
+   during them is seen next time. Guarded by g_unicode_mutex. */
+static unsigned int g_force_generation = 0;
+static int g_force_cached = 0;
+static int g_force_ascii = 0;
+static int g_force_utf8 = 0;
+
+static void
+force_flags_locked(int* ascii, int* utf8) {
+    const unsigned int generation = dsd_env_generation();
+    if (!g_force_cached || generation != g_force_generation) {
+        g_force_ascii = env_truthy("DSD_FORCE_ASCII");
+        g_force_utf8 = env_truthy("DSD_FORCE_UTF8");
+        g_force_generation = generation;
+        g_force_cached = 1;
+    }
+    *ascii = g_force_ascii;
+    *utf8 = g_force_utf8;
 }
 
 static int
@@ -82,8 +104,7 @@ str_icontains(const char* haystack, const char* needle) {
 #if DSD_PLATFORM_WIN_NATIVE
 static int
 env_nonempty(const char* name) {
-    const char* v = getenv(name);
-    return v && *v;
+    return dsd_env_copy(name, NULL, 0) > 1U;
 }
 
 static int
@@ -244,7 +265,10 @@ unicode_init_locale_locked(void) {
     /* Initialize locale from the user's environment first. */
     setlocale(LC_CTYPE, "");
 
-    if (env_truthy("DSD_FORCE_ASCII")) {
+    int force_ascii = 0;
+    int force_utf8 = 0;
+    force_flags_locked(&force_ascii, &force_utf8);
+    if (force_ascii) {
         return;
     }
 
@@ -298,12 +322,15 @@ dsd_unicode_init_locale(void) {
 int
 dsd_unicode_supported(void) {
     const std::lock_guard<std::mutex> lock(g_unicode_mutex);
-    if (env_truthy("DSD_FORCE_ASCII")) {
+    int force_ascii = 0;
+    int force_utf8 = 0;
+    force_flags_locked(&force_ascii, &force_utf8);
+    if (force_ascii) {
         g_unicode_supported = 0;
         g_unicode_cached = 1;
         return 0;
     }
-    if (env_truthy("DSD_FORCE_UTF8")) {
+    if (force_utf8) {
         g_unicode_supported = 1;
         g_unicode_cached = 1;
         return 1;
@@ -347,10 +374,16 @@ dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
 
 int
 dsd_unicode_block_glyphs_supported(void) {
-    if (env_truthy("DSD_FORCE_ASCII")) {
+    int force_ascii = 0;
+    int force_utf8 = 0;
+    {
+        const std::lock_guard<std::mutex> lock(g_unicode_mutex);
+        force_flags_locked(&force_ascii, &force_utf8);
+    }
+    if (force_ascii) {
         return 0;
     }
-    if (env_truthy("DSD_FORCE_UTF8")) {
+    if (force_utf8) {
         return 1;
     }
     if (!dsd_unicode_supported()) {

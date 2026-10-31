@@ -28,7 +28,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -41,6 +40,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 
 #define CLEAR_TG      40601
 #define CLEAR_SRC     600205
@@ -719,8 +719,8 @@ test_mac_release_stamps_the_countdown(void) {
 static int
 test_short_noisy_call_hold(void) {
     int rc = 0;
-    dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "5", 1);
-    dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", "20", 1);
+    dsd_test_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "5", 1);
+    dsd_test_setenv("DSD_NEO_P25P1_ERR_HOLD_S", "20", 1);
     dsd_neo_config_init();
     for (int count = 0; count <= 9; count += 9) {
         reset_test_state(10.0f, 1);
@@ -745,8 +745,8 @@ test_short_noisy_call_hold(void) {
             rc |= expect("noisy call releases after extended deadline", g_opts.trunk_is_tuned == 0);
         }
     }
-    dsd_unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
-    dsd_unsetenv("DSD_NEO_P25P1_ERR_HOLD_S");
+    dsd_test_unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
+    dsd_test_unsetenv("DSD_NEO_P25P1_ERR_HOLD_S");
     dsd_neo_config_init();
     return rc;
 }

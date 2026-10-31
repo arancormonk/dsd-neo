@@ -30,15 +30,32 @@ Rectangle {
     // default, so a plain button looks and reports as before.
     property bool checkable: false
     property bool checked: false
+    // A toggle whose `checked` reads back a command the decoder applies later
+    // (Hold scan, Hold TG, Mute): it shows and reports the state asked for from
+    // the moment it is pressed, until `checked` changes or a few seconds pass
+    // (issue #782). Android's bridge builds the click event TalkBack reads out
+    // as soon as the press returns, and the decoder's state reaches `checked`
+    // only on a later refresh, so TalkBack said the state before the press.
+    property bool commandToggle: false
+    property bool asked: false
+    readonly property bool shownChecked: pendingToggle.running ? asked : checked
+    onCheckedChanged: pendingToggle.stop()
+    Timer {
+        id: pendingToggle
+        interval: 2000
+    }
     // Held while the button has active focus: Qt refuses to drop activeFocusOnTab
     // from the active focus item (and warns), so a focused button that disables or
     // hides keeps it until the focus has moved, then the gate applies again.
     activeFocusOnTab: (Navigation.allows(control) && enabled && inputValid && visible) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
-    Accessible.focusable: true
+    // Issue #782: focusable only while in the tree, so a copy Android still
+    // holds of a covered or hidden control (no event tells it the control
+    // left the tree) is not a swipe stop.
+    Accessible.focusable: navigationAllowed && visible
     Accessible.checkable: checkable
-    Accessible.checked: checkable && checked
+    Accessible.checked: checkable && shownChecked
     readonly property bool navigationAllowed: Navigation.allows(control)
     // The navigation gate is read before visible, here and in activeFocusOnTab:
     // its walk up the parents can settle an ancestor's pending `parent:` binding
@@ -52,8 +69,13 @@ Rectangle {
         // Finish the keyboard's word and the field's editing before the action
         // reads the form; the validity bindings re-evaluate on the spot.
         Navigation.commitComposing(true);
-        if (inputValid)
-            clicked();
+        if (!inputValid)
+            return;
+        if (checkable && commandToggle) {
+            asked = !shownChecked;
+            pendingToggle.restart();
+        }
+        clicked();
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
@@ -63,9 +85,9 @@ Rectangle {
     implicitWidth: Math.max(Theme.minimumTouchSize, label.implicitWidth + 2 * Theme.cardPadding)
     implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
     radius: Theme.radiusButton
-    color: control.checked || (tap.pressed && control.enabled && control.inputValid) ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+    color: control.shownChecked || (tap.pressed && control.enabled && control.inputValid) ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
     border.width: 1
-    border.color: control.checked ? Theme.cyan : Theme.controlBorder
+    border.color: control.shownChecked ? Theme.cyan : Theme.controlBorder
     opacity: enabled && inputValid ? 1.0 : 0.5
 
     Behavior on color {

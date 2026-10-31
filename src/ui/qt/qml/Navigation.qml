@@ -8,6 +8,13 @@ QtObject {
     property var layers: []
     property var modals: []
     readonly property var topModal: modals.length ? modals[modals.length - 1] : null
+    // Issue #782: how stale a moving reading's accessible name may get, and the
+    // most often it renames between meaningful steps (SpeechPacer). Tests
+    // shorten it to keep real-time cases short; the app never changes it.
+    property int speechPeriodMs: 5000
+    // The least time between two steps a moving reading is heard at once for
+    // (SpeechPacer): a lock or gate that flaps is heard once a second at most.
+    property int speechStepFloorMs: 1000
 
     function addLayer(layer) {
         removeLayer(layer);

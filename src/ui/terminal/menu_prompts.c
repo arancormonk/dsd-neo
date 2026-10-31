@@ -259,6 +259,11 @@ ui_prompt_curs_set(int visibility) {
  * @param p Buffer to clear.
  * @param n Length in bytes.
  */
+#ifdef DSD_NEO_TEST_HOOKS
+/* Bytes the last close zeroed in the input buffer (ui_prompt_close_all()). */
+static size_t g_prompt_zeroed_on_close;
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
 #endif
@@ -287,9 +292,12 @@ ui_prompt_close_all(void) {
         g_prompt.win = NULL;
     }
     if (g_prompt.buf) {
-        if (g_prompt.mask) {
-            ui_prompt_secure_zero(g_prompt.buf, g_prompt.cap);
-        }
+        /* Every prompt, masked or not: the environment editor's value prompt shows its text, yet the value can be a
+           key or token (#782). One cap-sized pass per close. */
+        ui_prompt_secure_zero(g_prompt.buf, g_prompt.cap);
+#ifdef DSD_NEO_TEST_HOOKS
+        g_prompt_zeroed_on_close = g_prompt.cap;
+#endif
         free(g_prompt.buf);
         g_prompt.buf = NULL;
     }
@@ -563,7 +571,6 @@ ui_prompt_submit(void) {
     void* up = g_prompt.user;
     const int have_text = (g_prompt.len > 0 && g_prompt.buf != NULL);
     // Captured before close_all() zeroes g_prompt: the heap copy below outlives it.
-    const int masked = g_prompt.mask;
     const size_t copy_len = g_prompt.len;
     char* text_copy = NULL;
     if (have_text) {
@@ -578,7 +585,8 @@ ui_prompt_submit(void) {
     if (cb) {
         cb(up, have_text ? text_copy : "");
     }
-    if (masked && text_copy) {
+    // Zeroed for every prompt, as the input buffer is: a plain prompt can carry a key or token too.
+    if (text_copy) {
         ui_prompt_secure_zero(text_copy, copy_len + 1);
     }
     free(text_copy);
@@ -1744,6 +1752,13 @@ ui_prompt_view_for_test(const char* text, size_t cursor, int field_col, int fiel
 int
 ui_prompt_mask_active_for_test(void) {
     return g_prompt.mask;
+}
+
+size_t
+ui_prompt_zeroed_on_close_for_test(void) {
+    const size_t n = g_prompt_zeroed_on_close;
+    g_prompt_zeroed_on_close = 0;
+    return n;
 }
 
 int

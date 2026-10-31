@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -77,7 +78,11 @@ ModalSheet {
         }
     }
 
-    Text {
+    // Names the protocol, which a mixed scan changes on every hop: read at the
+    // readings' pace (issue #782); the field groups below are the content.
+    LiveText {
+        heading: true
+        objectName: "siteHeading"
         width: parent.width
         text: qsTr("Site identity") + " · " + metrics.siteProtocol
         textFormat: Text.PlainText
@@ -86,7 +91,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(20)
         color: Theme.textPrimary
     }
-    Text {
+    ReadableText {
         objectName: "siteRetained"
         width: parent.width
         visible: !metrics.siteConfirmed
@@ -96,13 +101,35 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSubdued
     }
+    // Closed, the rows stay unbuilt (issue #782): the fields follow readings
+    // that move with every scan hop, and each rebuild creates and destroys
+    // rows an accessibility client is told about. Opening fills them as they
+    // are.
     component FieldGrid: Grid {
+        id: fieldGrid
+        objectName: "siteFields"
         property var fields: []
+        property bool live: true
         width: parent.width
         columns: 1
         spacing: 10
+        // One item for a screen reader (issue #782): every shown field, label
+        // and value, read where it is reached. The rows themselves are rebuilt
+        // with each change and stay plain, so a rebuild tells it nothing, and
+        // the name is taken once the rebuild is over (SpeechPacer), not once
+        // per row it adds or removes.
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(fieldGrid)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: fieldSpeech.spoken
+        SpeechPacer {
+            id: fieldSpeech
+            group: fieldGrid
+            shown: !fieldGrid.Accessible.ignored
+            step: [Util.tuneStep(metrics), metrics.siteProtocol, metrics.siteConfirmed].join("|")
+        }
         Repeater {
-            model: fields
+            model: live ? fields : []
             delegate: Grid {
                 required property var modelData
                 width: parent.width
@@ -133,6 +160,7 @@ ModalSheet {
     }
 
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "P25"
         fields: [
             {
@@ -186,6 +214,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "DMR"
         fields: [
             {
@@ -233,6 +262,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "NXDN" || metrics.siteProtocol === "IDAS"
         fields: [
             {
@@ -262,6 +292,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "EDACS"
         fields: [
             {
@@ -291,6 +322,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "dPMR" || metrics.siteProtocol === "M17"
         fields: [
             {
@@ -302,6 +334,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: metrics.siteProtocol === "TETRA"
         fields: [
             {
@@ -331,6 +364,7 @@ ModalSheet {
         ]
     }
     FieldGrid {
+        live: sheet.visible
         visible: true
         fields: [
             {
@@ -348,7 +382,7 @@ ModalSheet {
         ]
     }
     // What RAS means for decoding, in the terminal notice's words.
-    Text {
+    ReadableText {
         objectName: "siteDmrRasNote"
         width: parent.width
         visible: sheet.rasShown
@@ -362,7 +396,7 @@ ModalSheet {
         color: Theme.textSecondary
     }
     // What the action changes: the app-wide setting, in the Settings row's words.
-    Text {
+    ReadableText {
         objectName: "siteRelaxedCrcHelp"
         width: parent.width
         visible: sheet.offerRelaxedCrc
@@ -374,7 +408,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSecondary
     }
-    Text {
+    ReadableText {
         objectName: "siteRelaxedCrcError"
         width: parent.width
         visible: sheet.rasShown && text.length > 0

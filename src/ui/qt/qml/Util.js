@@ -2,6 +2,20 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 .pragma library
 
+// The tuning part of a screen-reader step (issue #782; SpeechPacer). A scan
+// can hop every 300 ms, and each hop moves the target and its frequency: were
+// those a step, every reading paced by one would be read out at the step
+// floor for as long as the scan runs. So while a scan rotates its step is
+// whether it is held, as the scan header's; off a scan, a new frequency or
+// target is a step. "Rotates" is the running-scan predicate (a trunk scan or
+// a -Y channel scan, not a paused one), not the list's size: a -Y scan has no
+// target count, and a paused trunk scan keeps its count while the operator tunes.
+function tuneStep(m) {
+    if (m.scanRotationActive === true)
+        return "scan|" + (m.scanHold === true);
+    return "tune|" + m.scanTargetId + "|" + m.centerFreqHz;
+}
+
 // Only numeric talkgroups get the TG prefix; callsigns remain names in their own right.
 // An empty tgText is a target that has not decoded: no "TG " with nothing after it.
 function talkgroupHeadline(name, tgText, tgId) {
@@ -766,4 +780,54 @@ function deleteFailuresText(count, reason) {
     var text = count === 1 ? qsTr("1 recording couldn't be deleted.")
                            : qsTr("%1 recordings couldn't be deleted.").arg(countText(count))
     return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
+}
+
+// Issue #782: the words a group of plain Text items shows, for the one
+// accessible node that reads them (a reading's label and value, a strip of
+// readings). Each visible child's text in order, the parts of a nested row
+// joined by a space and the group's children by ", ". A child that names
+// itself (a button, with its accessibleName) is read on its own and adds
+// nothing here, nor do dots and other items without text. Read from a
+// binding, it follows each child's visibility and text.
+function shownText(item) {
+    return shownParts(item, ", ")
+}
+
+function shownParts(item, sep) {
+    var parts = []
+    var kids = item ? item.children : []
+    for (var i = 0; i < kids.length; ++i) {
+        var kid = kids[i]
+        if (!kid.visible || kid.accessibleName !== undefined)
+            continue
+        // A part whose state only its colour shows gives the words it stands for.
+        if (kid.spokenText !== undefined) {
+            if (String(kid.spokenText).length > 0)
+                parts.push(String(kid.spokenText))
+        } else if (kid.textFormat !== undefined && kid.text !== undefined) {
+            if (String(kid.text).length > 0)
+                parts.push(String(kid.text))
+        } else {
+            var inner = shownParts(kid, " ")
+            if (inner.length > 0)
+                parts.push(inner)
+        }
+    }
+    return parts.join(sep)
+}
+
+// Which of a group's parts are shown, without reading their text: a key that
+// changes only when a reading appears or disappears (SpeechPacer's step).
+function shownKey(item) {
+    var key = ""
+    var kids = item ? item.children : []
+    for (var i = 0; i < kids.length; ++i) {
+        var kid = kids[i]
+        if (kid.accessibleName !== undefined)
+            continue
+        key += kid.visible ? "1" : "0"
+        if (kid.spokenText === undefined && kid.textFormat === undefined)
+            key += "(" + shownKey(kid) + ")"
+    }
+    return key
 }

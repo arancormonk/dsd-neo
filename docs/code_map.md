@@ -749,6 +749,26 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   compatibility, run-time library loading)
   - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
     platform in `file_compat_posix.c` and `file_compat_win32.c`
+  - Environment overrides (#782): `include/dsd-neo/platform/env.h` (`src/platform/env.c`) is the program's only
+    reader of the process environment, and nothing in the program writes it. On Android's bionic, adding a variable
+    can free the `environ` array another thread's `getenv()` is walking, and every `localtime_r()` reads `TZ`.
+    `dsd_env_copy()`, `dsd_env_read()` (a caller's buffer; too long reads as unset with ERANGE) and the C++
+    `dsd_env_value` copy the session layer's value, else the host layer's, else the process environment's, so an
+    exported variable is still an input. No reader holds a pointer into the store, and names match as the platform's
+    environment matches them (without case on native Windows). `dsd_env_set()` sets a name in one layer or hides it (`NULL`: reads as unset), and `dsd_env_set_if_unset()` is `setenv(..., 0)` checked under the
+    store's lock; both fail with EINVAL or ENOMEM, and every caller logs or reports a refusal. The host layer is the
+    embedding host's for the life of the process (Android's `nativeInit`); the session layer is one session's
+    options, INI keys and menu toggles, and `dsd_runtime_bootstrap()` clears it. A replaced, hidden or cleared value
+    is zeroed (`DSD_SECURE_ZERO`) and freed at once, and a name with no override left frees its place, so the
+    256-name table counts live names. One mutex; read at cold sites (config init, a stream start or close, a menu
+    redraw, a talkgroup preempt that would displace a call), and the per-line Unicode check caches its
+    `DSD_FORCE_*` reads by `dsd_env_generation()`, a lock-free counter every change moves. Semgrep enforces it:
+    `dsd-neo.env-read-through-store` and `dsd-neo.no-environment-write` (C/C++, exempting only the store and
+    `src/ui/qt/qml_gc_policy.h`, whose `QV4_GC_TIMELIMIT` is Qt's own input, and banning `applyQmlGcPolicy()` calls
+    outside tests), and `dsd-neo.no-environment-write-kotlin` (only `QmlGcPolicy.kt` and `AccessibilityBridge.kt`,
+    before `super.onCreate()`); full scans include `android/`. Tests seed the real environment through
+    `tests/test_support/test_env.h` (`dsd_test_setenv()`, `dsd_test_unsetenv()`, which move the generation), never
+    through platform. Tests: `PLATFORM_ENV_STORE`, `PLATFORM_ENV_STORE_THREADS` (run it under tsan-debug too), `PLATFORM_ENV_VALUE`
   - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes of a folder's volume only (`statvfs()`,
     `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
     never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
@@ -1406,8 +1426,11 @@ suite runs under this compiler.
   the talker without a source-table search per render. The row's target label is cached beside it when the row
   commits (`target_label`, keyed by `target_label_id`, the call's OTA target else its policy target; issue #773 B11),
   and `cached_group_name()` names an ENDED call from it once the staged row no longer matches; a textual target keeps
-  its text. Tests: `APP_CONTROL_CALL_VIEW` (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY`
-  (`test_commit_caches_target_label`), `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`).
+  its text. The row's channel label is cached the same way (`channel_label`, keyed by `channel_label_epoch`; issue
+  #782), so a held call with no name of its own is still named for the channel it was heard on (a held call on a
+  trunk-scan target read "TG <n>" for the hold before). Tests: `APP_CONTROL_CALL_VIEW`
+  (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY` (`test_commit_caches_target_label`),
+  `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`, `test_held_call_keeps_its_names`).
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
@@ -2186,6 +2209,16 @@ suite runs under this compiler.
     locale-free; the caller picks the placeholder for 0): the terminal `FRQ:` field and `Frequency...` label, every tune
     toast, the `-Y` avoid toast and the analog event row. Tests: `RUNTIME_FREQ_PARSE`, fuzz `runtime_freq_parse`.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
+    - Environment overrides (#782): the CLI parser, the INI loader (`[input] auto_ppm`, `[dsp] iq_balance` and
+      `iq_dc_block`, each set only when unset, so an exported variable or an earlier option wins),
+      `--interactive-setup` (hides `DSD_NEO_NO_BOOTSTRAP`), the RTL services, the I/Q DSP toggles and the terminal
+      menus set session overrides (`<dsd-neo/platform/env.h>`), never the process environment; a refused one is
+      logged, or reported on the terminal's status line. `dsd_neo_config_init()`, the user-config snapshot and every
+      other reader copy values out of the store. `dsd_runtime_bootstrap()` clears the session layer (never the host
+      layer) before anything else, so a host's next session (the Android service's next Start) starts from the
+      process environment and the host's overrides and never inherits the last session's `--auto-ppm` or
+      extra-argument knobs. Tests: `RUNTIME_ENV_NO_PROCESS_WRITES` (with the `--interactive-setup` hide),
+      `RUNTIME_SESSION_OVERRIDES_RESET` (with a host override that survives), `UI_MENU_ENV`
     - In-memory user configs: `dsd_user_config_init()` resets a `dsdneoUserConfig` to the state the INI loader starts
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
@@ -3430,8 +3463,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   stream. A SoapySDR or Airspy device sets a rate no check could know up front, so one that refuses it (an nfm
   row's own 25 kHz at an Airspy's 19,531 Hz) fails the reopen as a failed start does, rolled back with `Config not
   applied: <why>`, rather than leave the decoder on the row's monitor over a front end on the configured settings. The
-  rest of the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the environment
-  defaults it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
+  rest of the config (output, trunking, logging, alerts, recording and DSP, an imported group list, the session
+  overrides it set) stays applied. The configured PPM never outlives a rollback: an RTL-SDR or rtl_tcp reopen
   opens with the request made before it, which the rollback puts back with the input, and the Airspy path requests it
   only once the reopened Airspy runs. With no stream running before the apply the config's input is still opened (the
   hot restart, or an Airspy source over a stopped Airspy through `svc_airspy_reopen_locked()` rather than the Airspy
@@ -8697,6 +8730,17 @@ Qt Quick frontend (`src/ui/qt`):
   deadlines were stamped with, so in a replay they freeze while samples stop; the sync hold is real time and expires
   either way. History, network and policy models still refresh on decoder redraws; session lifecycle clears live
   metrics and prevents stale snapshots from restoring them.
+- One metrics publication per scan-target change (issue #782): `UiController::invalidateForTarget()` returns whether
+  `trunk_scan_active_ordinal` moved (it still clears the P25 network model and invalidates the talkgroup model), and
+  `refreshModels()` passes that to `MetricsModel::refresh(opts, snapshot, new_target)`, which drops the old target's
+  latches (`resetTargetLatches()`: the sync hold and the message timer) and then builds and publishes the new target's
+  view once. With the session not live, a target change publishes the cleared view once (`clear()`). A `clear()` then
+  `refresh()` on each hop swung every reading to its default and back, so each binding on the radio input, scan
+  rotation or squelch gates rebuilt its controls twice per hop, under closed sheets too, and on Android each rebuilt
+  accessible item cost the main thread a blocking round trip to the Qt thread. Tests: `UI_QT_CONTROLLER`
+  (`test_target_change_publishes_once()`, which records five gates at every NOTIFY emission and checks every property's
+  signal is watched, `test_target_change_drops_sync_hold()`, `test_target_change_while_stopped_clears()`),
+  `UI_QT_METRICS_MODEL` (`test_new_target_drops_sync_hold_in_one_publication()`).
 - Two clocks: `MetricsModel` ages the call lines, the call-skip count and the scan countdown on the decode clock, and
   publishes its wall-clock now as `decodeNowMs` (read live; `decodeNowMsChanged` fires from `refresh()` when the decode
   second moves). QML compares decoded stamps only against it: `Util.shortAge(when, metrics.decodeNowMs)` for the
@@ -8719,8 +8763,8 @@ Qt Quick frontend (`src/ui/qt`):
     logged it, or that last extended it through a merge (`session` role, persisted per row and per seen entry).
   - Views: the monitor's recent calls (`monitorView.historySession`) and the heard talkgroups
     (`TalkgroupListModel::historySession`) select the running session's rows; 0 selects the whole log. A UI
-    reattaching to a running session (the service survived an Activity restart) takes the session the history kept,
-    so it sees the calls its predecessor logged in that session.
+    created over a running session takes the session the history kept, so it would see the calls its predecessor
+    logged in that session; on Qt 6.11.2 no UI is created over a running session (Android, "Launch policy").
   - Clear (`clearAll()`) names what it wiped by ring position: push_seq per slot as last read (`callHistory/clear/*`).
     It removes the rows (one `rowsRemoved`) rather than resetting the model: a list building a row in its cache buffer
     cancels it by index on a reset, after the model is already empty.
@@ -8886,8 +8930,9 @@ Qt Quick frontend (`src/ui/qt`):
     `recording_store_follow_host()` (wired in `qt_ui.cpp`) hands the store every host report
     (`hostSessionReport(DecoderHost::sessionStateKnown(), sessionActive(), sessionState() == Running)`, at load and on
     `sessionStateChanged()` / `sessionStateKnownChanged()`). The store starts holding every journal: Android knows its
-    state only after its first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder that
-    kept running while the UI was recreated reads as Idle until then. A first known state with no session, or a session
+    state only after its first poll of the decoder service (`sessionStateKnown()` is `m_primed`), and a decoder
+    already running when the host starts (a UI recreated over a live service, which Qt 6.11.2 never allows: Android,
+    "Launch policy") reads as Idle until then. A first known state with no session, or a session
     ending after the host saw it Running, frees every folder; a session that ends without ever running keeps its folders
     out of compaction for the rest of the process (`m_unproven`), until a later session runs and ends (one decoder at a
     time, starts taken in order): Android's start grace can show a start Failed while its intent still waits, and the
@@ -9300,17 +9345,22 @@ Qt Quick frontend (`src/ui/qt`):
   are hidden in their places and `Accessible.ignored`. Hero and strip headlines (issue #773, `Util.callHeadline()`): a
   talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
   `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
-  (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside the
-  strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
+  (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside
+  the strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
   and the ENC and EMERGENCY tags, so at phone width it can yield (decided limit; the headline still names the other
-  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
-  `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever
-  it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). The painted
-  hero headline (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name
-  the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a
-  private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio
-  (below). Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
-  (`test_slot_kind_and_labels()`). `twoSlotCarrier` mirrors `dsd_state::tdma_carrier`, the decoder's
+  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
+  alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
+  headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
+  (`heroHeadlineText`, a Canvas) carries it as its accessible name. On a private call the actions name the radio:
+  **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold matches either party of a private call,
+  and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a lockout whose target is a radio (below).
+  Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
+  (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
+  scan rotation that has visited a two-slot carrier (`rotationReservesStrip`, latched by handlers on
+  `scanRotationActive` and `twoSlotCarrier`, cleared when the rotation ends or the decoder's `running` changes) the host
+  stays, blank, on single-slot targets, so the hops never move Hold, Avoid and Next, the list or the tier (issue #782).
+  Only the panel follows the carrier, and `stripHeight` reads the same `stripPlaceHeld` the host shows. `twoSlotCarrier`
+  mirrors `dsd_state::tdma_carrier`, the decoder's
   own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
   bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
   RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,
@@ -9327,7 +9377,23 @@ Qt Quick frontend (`src/ui/qt`):
   cutting its label short. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `ENGINE_NO_CARRIER_RESET`, `APP_COMMAND_QUEUE`,
   `DMR_CONFIDENCE_GATE`, `DMR_LC_RS_VERDICT`, `P25_P2_RELIABILITY`, `P25_P1_SYNC_DISPATCH`, `X2TDMA_VOICE_HELPERS`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `UI_QT_METRICS_MODEL` (`test_two_slot_carrier_mirrors_the_decoder()`),
-  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`).
+  `UI_QT_QML_CALL_LISTS` (`tst_monitor_other_slot.qml`, `tst_monitor_layout_budget.qml` `test_two_slot_*`),
+  `UI_QT_QML_A11Y_CHURN` (`test_d_two_slot_hops_leave_the_monitor_still`).
+- Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
+  recent calls (`homeRecentList`) and the Talkgroups grid (`talkgroupGrid`) get their models from a `KeepPlace` only
+  while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
+  them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
+  start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
+  range can share a start) and on-screen offset on hide, unless the reader is at the start (History:
+  `FollowLatest.atLatest`), and on show restores them in the same handler (History: `callHistory.rowForUid()` and
+  `historyView.mapFromSource()`; Talkgroups: `TalkgroupFilterModel::rowForTalkgroup()`), so no frame shows the start
+  first. A row gone meanwhile, or a model reset while hidden (a Talkgroups table with new bounds), lands at the start,
+  as a reset does while shown. Filters stay set; a filter changed while hidden (History's is shared by both screens, and
+  a pending search is flushed on hide, after the log noted its place) drops the place through `KeepPlace.forget()`, so
+  the new result shows from the start. Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
+  `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
+  (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
+  `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
 - Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
   (`monitorLiveStrip`: the second-slot strip, then the scan controls, each only when the session has them), one
   `ListView` (`recentCallsList`), the call actions and Stop. The list is the only scrolling surface: its header
@@ -9379,11 +9445,12 @@ Qt Quick frontend (`src/ui/qt`):
   system or scan list opens the sheet as a fresh start does. A reattached Explore session, and one the UI cannot name,
   has no map, so it keeps the inert pill until an operator tune, made before or after the recreation
   (`metrics.operatorTuned` at adoption), gives it the operator hold's map (`heldReceiver()`); LOST still shows there
-  from `receiverHealth`. In tier 5, where the header scrolls with the list, a lost receiver also shows as one fixed line
-  above Stop (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens
-  the same sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already
-  fixes only Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would
-  show (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
+  from `receiverHealth` (on Qt 6.11.2 a recreation restarts the process instead, so none of this runs: Android, "Launch
+  policy"). In tier 5, where the header scrolls with the list, a lost receiver also shows as one fixed line above Stop
+  (`monitorReceiverLostLine` in `lostLineHost`: alert dot, `RTL-SDR LOST`, "Session finishing", ›) that opens the same
+  sheet; hidden it has no height, and it sits outside the budget (it can appear only where the budget already fixes only
+  Stop), so LOST never changes the tier. Width rule: `headerActionsWidth` sums the actions the session would show
+  (Sites, session options, Spectrum, and the pill at the widest label it can show, `LIVE`, `LOST`, `STARTING…`,
   `STOPPING…` or the current one, measured by a hidden probe plus constant padding), and `headerActionsFit` requires it
   to fit the row (less the title's 12 px at 500 dp and wider). `wideHeaderActions`, `headerStacked` and the budget's
   `headerBarHeight()` all require it, so when it does not fit Sites and Spectrum go to the session menu as in tier 1 and
@@ -9395,14 +9462,17 @@ Qt Quick frontend (`src/ui/qt`):
   (`test_header_actions_fit_a_tall_phone`, `test_header_geometry_unchanged_off_android`),
   `tst_monitor_layout_budget.qml` (`test_lost_line`, the `+brokered` tier rows).
 - Monitor call actions (`monitorLiveActions` in `qml/MonitorScreen.qml`): Mute · Hold TG · Skip · Avoid at every size
-  (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as
-  checked (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does
-  the scan controls' Hold scan. Four columns where a quarter of the row, less the 12 px either side of a label, fits the
-  longest word of any label (Mute, Hold TG, Skip, Avoid TG, Lock out) at the font scale in force, else two (a 360 px
-  phone takes four at 1.0, two at 1.6); one label line count and one height for every cell, at least
-  `Theme.minimumTouchSize`; labels wrap only at spaces (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's
-  border is never lost to the list's clip in tier 5. Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`,
-  `test_toggles_show_checked`), `tst_monitor_compact.qml`.
+  (the talkgroup list is the session menu's Talkgroups). The toggles keep one label each and show their state as checked
+  (`OutlineButton.checkable`/`checked`: `Theme.cyan` border and the pressed tint, `Accessible.checked`), as does the
+  scan controls' Hold scan. Mute, Hold TG and Hold scan read back a command the decoder applies later, so they set
+  `commandToggle` (issue #782): from the press they show and report the state asked for (`shownChecked`) until `checked`
+  changes or 2 s pass. Qt's Android bridge sends the click event TalkBack reads out as the press returns, with the
+  node's state then, before the engine's state reaches `checked` (`tst_a11y_monitor_controls.qml`). Four columns where a
+  quarter of the row, less the 12 px either side of a label, fits the longest word of any label (Mute, Hold TG, Skip,
+  Avoid TG, Lock out) at the font scale in force, else two (a 360 px phone takes four at 1.0, two at 1.6); one label
+  line count and one height for every cell, at least `Theme.minimumTouchSize`; labels wrap only at spaces
+  (`Text.WordWrap`). Cells are whole pixels, centred, so a cell's border is never lost to the list's clip in tier 5.
+  Tests: `tst_monitor_call_actions.qml` (`test_phone_grid`, `test_toggles_show_checked`), `tst_monitor_compact.qml`.
 - Typed input and sheet dismissal (issue #718): `qml/ModalSheet.qml` dismisses through `requestDismiss()` on Back,
   Escape and a real tap outside its panel: press and release both off the panel with no more movement than
   `Qt.styleHints.startDragDistance` (a press on the panel's padding that slides off, or a drag in the 18 px phone
@@ -9473,7 +9543,12 @@ Qt Quick frontend (`src/ui/qt`):
   provenance, while the add-system wizard stays the single writer of a saved system. See
   `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
   generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
-  acquisition and geocoding, with `decoder_host_android` polling terminal results.
+  acquisition and geocoding, with `decoder_host_android` polling terminal results. A permission prompt Android closed
+  unanswered (empty grants, as when the `singleTask` activity is brought forward; issue #782) is a cancel, not a
+  denial: the record carries `"cancelled": true`, `android/location_record.h` delivers it as
+  `DecoderHost::locationCancelled(requestId)` instead of `locationResult`, `RadioReferenceModel` settles the request
+  with no error and no change to the saved fix, and `SiteChooserSheet` returns to its idle text (`ANDROID_LOCATION_JVM`,
+  `UI_QT_ANDROID_HOST` `check_location_record()`, `UI_QT_RADIO_REFERENCE`, `tst_site_chooser_sheet.qml`).
   `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
   `DecoderHost::requestSiteLocation` shares request ownership and cancellation with nearby import but asks Android
   for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
@@ -9791,8 +9866,16 @@ Qt Quick frontend (`src/ui/qt`):
     starts" resolves the system again by UID at the tap, asks through `ConfirmDialog` before replacing another
     profile, refuses a removed system, and writes `decryptionProfileUid` with `update()`; Main then refreshes
     `sessionSystem`. "Save as profile…" opens the editor's `openDirect()` with the typed draft (QML fields only until
-    Save profile) and selects the saved profile. Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
-    `tst_history_session_identity.qml`.
+    Save profile) and selects the saved profile. During a trunk scan the scope combo (`keySheetScope`) is the fixed
+    pair "Session defaults" / "Active scan target" (issue #782): with the target's name in its model, every hop
+    replaced the model, which reset the choice to session defaults while the sheet was open and rebuilt the popup's
+    delegates while it was closed. The name has its own line, `keySheetTargetName` ("Applies to <name>"), which shows
+    the name captured at `open()` (`openedTargetName`, next to the decryption `context` a target-scope Apply sends),
+    not the scan's current target; once the scan leaves that target, `keySheetTargetLeft` says to reopen the editor,
+    since the decoder refuses that apply as stale. The slot rows (`keySheetSlots`) are built only while the sheet is
+    visible ("Qt QML editing convention"). Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
+    `tst_history_session_identity.qml`, `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`
+    `test_b2_target_names_leave_the_closed_key_sheet_quiet`, `tst_a11y_closed_sheets.qml`).
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
@@ -10453,6 +10536,216 @@ thread, which the rest of the interface never is.
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 
+#### Accessibility bridge (issue #782)
+
+Qt 6.11.2 turns its Android accessibility bridge on whenever any accessibility service is enabled, and with the bridge
+on each ObjectShow or ObjectHide becomes one Android main-thread task that makes 8 blocking round trips to the Qt
+thread. On phones with a remote-control or call-recording app bound, a scan stalled the main thread for over a minute
+(the dim, Stop and Start waited; Android reported an ANR). So the bridge runs only when touch exploration (TalkBack's
+explore-by-touch) is on at launch. User-facing limits are in `android/README.md` "Known limits", the records in its
+"Accessibility records"; the QML rules that keep the bridge's load down are under "Qt QML editing convention".
+
+- `AccessibilityGate.kt` (plain Kotlin, no `android.*`) decides. `A11yFacts` (accessibility enabled, touch
+  exploration, the count of bound services, which only the record reads); `bridgeWanted()` is touch exploration alone;
+  `LaunchPlan` holds the variable's launch value (`"1"` keeps the bridge off, `"0"` leaves Qt's default, since Qt keeps
+  it off only for `1` or `true`: `qtKeepsBridgeOff()`), `activated` (wanted and enabled) and `qtFollows` (the variable
+  could not be written and is absent). The gate is process state: the first `launch()` decides, and the notice it owes
+  belongs to the process, not an activity. Through `ActivitySlot` it is shown only to the attached activity while
+  resumed; a dialog closed by a stop or destroy goes back to pending (to idle once touch exploration is off), and after
+  OK nothing shows until the next rising edge. `record()` writes the launch record from flags and counts only (D-A7).
+- `AccessibilityBridge.kt` (an object; main thread only) carries it out around `DsdNeoActivity`'s
+  `super.onCreate()`, where Qt registers its accessibility listener, calls it at once when accessibility is enabled,
+  and reads `QT_ANDROID_DISABLE_ACCESSIBILITY` there and on every later change of the enabled state:
+  - `beforeQt(this)`, immediately before, on the process's first launch only: reads the facts, writes the plan's `"1"`
+    or `"0"` with `Os.setenv` (never unsets: the entry must exist before Qt's `main()` starts) and launches the gate.
+  - `afterQt(this)`, immediately after: freezes the variable at `1`, writing only into an entry that exists and is not
+    `1` yet (the one in-place swap of a TalkBack launch; the environment rule is in "QML garbage collector"), attaches
+    the gate, registers one `TouchExplorationStateChangeListener` per process, submits the launch record once and
+    re-reads the flags.
+  - Frozen because turning the bridge on mid-session crashes Qt 6.11.2 (QTBUG-144911: `setActive` runs on the Android
+    main thread) and turning it off would leave a screen reader with nothing to read. So touch exploration turned on
+    later gets a notice, never an in-place enable, and a bridge already on stays on until the process ends.
+  - `onResume` re-reads the flags and shows a pending notice; `onPause` marks the activity paused; `onStop` and
+    `onDestroy` close a notice shown on that activity (`dropped`), and `onDestroy` detaches it, before
+    `super.onDestroy()`.
+  - A failed `setenv` is recorded and leaves Qt's default, which the launch plan then reports (`qtFollows`, or Qt's
+    reading of a value left over from elsewhere).
+- `AccessibilityRestartNotice.kt` is the platform side: a native `AlertDialog` (the Qt UI cannot be heard with the
+  bridge off) with `a11y_restart_title`, `a11y_restart_message` and one OK. OK and Back acknowledge; a touch outside
+  does nothing, since explore-by-touch touches the screen to read it. The app never closes itself. It also routes the
+  records to `HostDiagnostics.submit()`.
+- No Qt internals and no new R8 keep rule (D-A5): public `AccessibilityManager` calls and `android.system.Os` only.
+
+`DsdNeoActivity.onCreate()` runs, after `ProcessFacts.attach(this)` and as consecutive statements:
+`LaunchGuard.onCreate(ProcessFacts::setStateSummary)`, `AccessibilityBridge.effects = AccessibilityRestartNotice`,
+`QmlGcPolicy.beforeQt(HostDiagnostics::submit)`, `AccessibilityBridge.beforeQt(this)`,
+`super.onCreate(savedInstanceState)`, `AccessibilityBridge.afterQt(this)`, `LaunchGuard.afterQt()`.
+
+#### Launch policy (issue #782)
+
+The Qt limit: Qt 6.11.2 cannot take a second instance of the activity in a process it already started. The new
+instance's `QtActivityBase.onCreate()` sees Qt started and calls `restartApplication()` (`startActivity`, `finish()`,
+`Runtime.exit(0)`) inside `super.onCreate()`, before any of the app's teardown; the session dies with the process. That
+stays as it is, with no cleanup fallback. The app prevents it and records what still gets through:
+
+- The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
+  attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
+  second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
+  permission prompt open in the app's task, which returns cancelled. The `FileDialog` flows end quietly on a reject,
+  and an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own
+  task.
+- `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
+  for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
+  change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
+  `android/CMakeLists.txt` pins `QT_ANDROID_COMPILE_SDK_VERSION` to 36, which CI installs (`ANDROID_COMPILE_SDK`). The
+  list is explicit rather than aapt2's `allKnown`, so a check can pin it.
+- `LaunchGuard.kt` (plain Kotlin) is a record only. `afterQt()` marks Qt started; a later `onCreate()` in the same
+  process hands `SUMMARY` ("activity: second instance in a running process; Qt 6.11.2 restarts the process", within
+  `ActivityManager`'s 128 bytes) to `ProcessFacts.setStateSummary()`, which calls `setProcessStateSummary()` on
+  API 30+ and does nothing on API 29. The next process's `exitLines()` reads `getProcessStateSummary()` into
+  `ExitFacts.Record.summary`, and `ExitFacts.line()` prints it in parentheses as it is. A Qt start that failed inside
+  `super.onCreate()` still marks Qt started; that window is accepted (`LaunchGuard`'s KDoc).
+- So on Qt 6.11.2 no activity, and no Qt UI, is ever created over a running decoder service: a second instance
+  restarts the process, every other destroy of the activity ends it (`QtActivityBase.onDestroy()` ends in
+  `System.exit(0)`, after the app's teardown), and `DecoderService` returns `START_NOT_STICKY`. The paths elsewhere in
+  this map that handle an Activity or host recreated over a running session (a host adopting the service's state and
+  its `endingAcknowledged` mark, Reconnect with no `attemptedSource`) do not run in the app today; they stay for a Qt
+  that keeps the process.
+
+Tests: `ANDROID_A11Y_BRIDGE_JVM` (`run_jvm_tests.py --suite a11y_bridge`):
+
+- Build 1, no stubs: `AccessibilityGateTest.kt` (the predicate table, an idempotent launch, the edges, pause and
+  resume, a notice carried to the next activity, stale callbacks, dropped against acknowledged, `qtFollows`, a record
+  with no service names), `LaunchGuardTest.kt`, `ExitFactsTest.kt`.
+- Build 2, against stubs of `AccessibilityManager` (state listeners, then touch listeners, as AOSP's `setStateLocked`
+  fires them) and of `android.system.Os` (an environment map with an injectable `ErrnoException`), with Qt 6.11.2's
+  listener modelled in the test: `AccessibilityBridgeTest.kt`, `AccessibilityBridgeLaunchTest.kt`,
+  `AccessibilityBridgeErrnoTest.kt`, `AccessibilityBridgeErrnoOffTest.kt`, `AccessibilityBridgeLeftoverTest.kt`,
+  `QmlGcPolicyTest.kt`. The bridge is process state, so each file runs in its own JVM.
+- `a11y_bridge_order()`: the seven launch statements above, consecutive, after `ProcessFacts.attach(this)`, with none of
+  them elsewhere in `onCreate()`; the four lifecycle callbacks forward to the bridge, and its `onDestroy` comes before
+  `super.onDestroy()`.
+- `launch_policy()`: one `DsdNeoActivity`, `singleTask`, `configChanges` exactly `PINNED_CONFIG_CHANGES`, the compile
+  SDK equal in `android/CMakeLists.txt`, in the CI pins and to `AUDITED_COMPILE_SDK`, `LaunchGuard.QT_RESTART` naming
+  `ANDROID_QT_VERSION`, and `ProcessFacts.kt` setting the summary only on API 30+ and reading it back
+  (`launch_record_plumbing()`). Recreation itself cannot be triggered on a fixed build without test-only code, and none
+  is added: the emulator runs below cover it.
+- The environment-writer checks are under "QML garbage collector". `UI_QT_DIAGNOSTICS_LOG` holds the
+  `accessibility:` record shapes and checks each survives redaction unchanged.
+
+#### Qt upgrade checks
+
+A Qt bump re-audits the bridge gate and the launch policy before it merges. They rest on Qt 6.11.2 behaviour read in
+its source:
+
+- `QtAccessibilityDelegate`'s listener reads `QT_ANDROID_DISABLE_ACCESSIBILITY` on every call and stays out only for
+  `1` or `true`;
+- it is registered, and called when accessibility is enabled, synchronously inside `super.onCreate()`;
+- enabling the bridge mid-session is unsafe (QTBUG-144911; fixed upstream in 6.12.1, not in 6.11.3);
+- a second activity instance restarts the process (`QtActivityBase.onCreate()` → `restartApplication()`);
+- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below).
+
+What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
+(`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below
+pass on the new Qt. If the new Qt no longer restarts the process (read `QtActivityBase.onCreate()` in its qtbase, and
+run L-dup on a scratch build with `launchMode` back at `singleTop`: a new pid means it still does), revise
+`LaunchGuard`'s record, `android/README.md` "Known limits" and this section instead. The first bump to 6.12.1 or later
+also decides whether the notice can give way to enabling the bridge in place. The tripwire's limit: it proves that the
+text was edited, not that the checks ran, and it reads the CI pin, not the Qt kit a local build uses. A compile SDK bump
+trips `launch_policy()` on its own, until `configChanges` is audited against the new platform's
+`attrs_manifest.xml` (then `PINNED_CONFIG_CHANGES` and `AUDITED_COMPILE_SDK`). The R8 keep rules have their own Qt
+re-audit (top of this section).
+
+The checks are `ANDROID_A11Y_BRIDGE_JVM` and these runs on an emulator (an API 36 AVD, a release APK of the bump, and
+decoding a trunk scan list for the scanning runs):
+
+- Toggle services with `adb shell settings put secure enabled_accessibility_services <component>` plus
+  `accessibility_enabled 1`; delete both to disable. TalkBack is `com.google.android.marvin.talkback/.TalkBackService`
+  on the image. The "do-nothing service" is any accessibility service that is not a screen reader (a minimal test
+  service), standing in for the remote-control and call-recording apps of the field reports.
+- Never use uiautomator or UiAutomation in these runs: a UiAutomation connection makes `isEnabled()` true by itself.
+  Tap at fixed coordinates.
+- Bridge state: in `adb shell dumpsys activity top`, Qt's bridge is the one plain `android.view.View` under the
+  activity's content root; present is on, absent is off. If a Qt bump changes that, the probe fails the runs rather
+  than passing them, since T1–T3 expect both states.
+- A crash is any of: a new pid, `am_crash` or `am_anr` in `logcat -b events`, a new tombstone, `FATAL EXCEPTION` or
+  `Abort message` in logcat, or QTBUG-144911's `QObject: Cannot create children for a parent that is in a different
+  thread`. The notice and launch records are the `accessibility:` lines in Settings → Diagnostics; stalls are the
+  watchdog's `watchdog: stall` records.
+
+Each run gives its setup, then what must hold:
+
+- **T1.** Launch with no service and start scanning; enable TalkBack, the first service; wait 120 s. The bridge stays
+  off throughout; the notice shows once and TalkBack reads it; OK records `notice acknowledged`; no crash.
+- **T2.** Enable TalkBack and launch (bridge on); disable it, leaving no service; wait 30 s; enable it again; wait
+  120 s. The bridge stays on throughout; no notice; no crash.
+- **T3.** Launch with no service and start scanning; bind the do-nothing service, the first service; wait 120 s. The
+  bridge stays off; no notice; no stall of 1.5 s or more; no crash.
+- **B.** The do-nothing service bound at launch; scan. The launch record says `bridge off at launch`; no stalls; the
+  dim lifts within 50 ms; Stop and Start are delivered within 100 ms; no ANR on Power.
+- **E.** The do-nothing service bound; turn TalkBack on mid-session with the volume-key shortcut. No crash; the notice
+  shows and TalkBack reads it; OK dismisses it and decoding goes on; a swipe from Recents writes the normal `teardown:`
+  records and no `DecoderService` respawns; a relaunch has the bridge on.
+- **L-overlay.** While scanning, `adb shell cmd overlay enable <overlay>` (any framework overlay `cmd overlay list`
+  shows), then `disable`. Same pid; the notice dialog and the notification still render correctly.
+- **L-dup.** With the in-app document picker open, deliver a USB attachment:
+
+  ```sh
+  adb shell am start -a android.hardware.usb.action.USB_DEVICE_ATTACHED \
+    -n io.github.arancormonk.dsdneo/.DsdNeoActivity
+  ```
+
+  Same pid; `onNewIntent` takes the attachment; the picker is cancelled.
+- **L-dup-launcher.** Cold-start through the USB intent (as in L-dup), start decoding, open Import CSV, press Home and
+  tap the launcher icon; then repeat with the location prompt open (Nearby or "Use my location", permission not yet
+  granted). Same pid; the import ends with no error; the cleared location prompt shows no "denied" text and the lookup
+  returns to idle.
+- **L-dup-notification.** As L-dup-launcher, tapping the decoding notification's body instead of the launcher icon.
+  The same must hold.
+- **N-rotate.** With TalkBack on, open Site → Network on a P25 control channel that cycles its neighbour broadcasts,
+  and park focus on a neighbour while the list reorders. TalkBack stays on that neighbour and says nothing as it
+  moves; swiping next and previous visits each entry once. Qt's bridge sends no reorder event, so TalkBack's cached
+  child order of the sheet may lag until a show, hide or scroll; if swiping skips or repeats an entry, record it here.
+- **N-hold.** As N-rotate, on a scan list that mixes that P25 system with a DMR or analog target. With focus on a
+  neighbour row, let the scan hop to the other target, then swipe through the sheet; hop back and swipe again. On the
+  other target no P25 row is reached or read, the row that had focus reads nothing, and each section's "(none
+  announced)" is reached and read; back on the P25 target the rows are read as shown. An old row read on the other
+  target fails the check.
+- **N-rotate swipe.** As N-rotate, then swipe next and previous through the Neighbours section several times while it
+  keeps reordering on the control channel: each neighbour is visited once a pass, in frequency order, with no skip,
+  repeat or loop (the screen-reader order holds the rows still).
+- **Headings.** With TalkBack on, swipe through Home, the Monitor and Site → Network: each section label and screen
+  title is reached and read as a heading, and each "(none announced)" right after its section's heading.
+- **Focus after a dialog.** With TalkBack on Connect RTL-SDR, raise the USB permission dialog and dismiss it with Back;
+  then swipe: focus moves on from Connect at once, with no touch needed (`ScreenReaderFocusRelease`).
+- **Hold scan.** With TalkBack on Hold scan during a scan, activate it six times: each time TalkBack says the new
+  state ("on" when it holds), matching the header's HOLD.
+- **Scan header.** With TalkBack on the scan header during a 300 ms dwell scan, it is read at most every 5 s, and at
+  once when the scan is held or released.
+- **Stacked sheets (R-1).** Monitor → site row → Site sheet → Network → Back → Network again, then swipe through the
+  Network sheet several times: only its own items are read, never the Site sheet's heading, buttons or lines.
+- **Strip pace.** With TalkBack on the signal strip during a 300 ms dwell scan (Local84), it is read at most every 5 s,
+  not every second; the same for the countdown, the hero and "Signal & site". A hold or a lock is heard at once.
+- **Recent calls pane.** On the Monitor with the details open, swipe forward from "Lock out talkgroup and save": the
+  list header ("Signal & site", the site row, Decryption, the strip) is reached in order; swipe back up from "Signal &
+  site": no stop sticks.
+
+Observation runs: Qt 6.11.2 limits (below, and `android/README.md` "Known limits"), recorded on each bump to see
+whether the new Qt lifts them. A change in what they show is a reason to revisit the app's handling, not a failure.
+
+- **Container round trips (R-2).** On Home, swipe back from the Listen heading (onto the unnamed window node or
+  "Scrollable content") and forward again; on the Monitor, from Stop listening onto "Recent calls" and back; on the
+  Network sheet, from Done onto "Dialog" and back. Record which ways back stick until a touch. On 6.11.2 the Home case
+  sticks (`179bc9529` recheck 2).
+- **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84, `log.looper.<uid>.main.slow=30`: open the
+  Spectrum for the first time in three fresh launches. Record the watchdog stall and the main thread's messages of
+  30 ms or more in the 15 s after. On 6.11.2: stalls of 2.09 s and 2.36 s, 41–48 messages, 5.6–5.9 s in total
+  (`0b4f38981`); the first start after an install on a cold boot stalled 26.4 s.
+- **Newly shown controls.** In the key sheet, expand "Advanced: session direct override", then swipe forward once.
+  Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once.
+- **Window node.** Swipe forward past a screen's last item and back past its first. Record whether a silent stop
+  comes at the wrap. On 6.11.2 Android's host view is one, unnamed.
+
 ### Android screen modes
 
 The Settings → Listening → Screen modes (issue #574; user-facing rules in `android/README.md` "Screen") are decided in
@@ -10604,15 +10897,22 @@ keys and sends the arguments directly to `DecoderHost` in C++, returning only va
 
 ### QML garbage collector
 
-Every process that builds a QML engine calls `dsd_qt::applyQmlGcPolicy()` (`src/ui/qt/qml_gc_policy.h`)
-before the first engine exists: `android/main.cpp`, the Qt Quick Test `Setup`, and the C++ tests that load
-production QML. It sets `QV4_GC_TIMELIMIT=0`, so each collection runs to completion instead of in Qt's
-default 5 ms time slices. Qt 6.11.2's incremental collector can free a QML object's function storage while the
-object is still being created. A `Connections` element's `function onX()` handler then crashes
-`QQmlConnections::connectSignalsToMethods()`. A Qt build with qtdeclarative 42c76d7acd (QTBUG-148459) skips
-the handler instead, without any error. On Qt 6.11.2 under load, the session-tools suite crashed 14 runs in 24
-with the default slices and none in 24 with the policy. The policy keeps a `QV4_GC_TIMELIMIT` that Qt parses as
-an integer.
+Every process that builds a QML engine sets `QV4_GC_TIMELIMIT=0` before the first engine exists. The Qt Quick Test
+`Setup` and the C++ tests that load production QML call `dsd_qt::applyQmlGcPolicy()` (`src/ui/qt/qml_gc_policy.h`). The
+Android app sets it from `QmlGcPolicy.kt` before `DsdNeoActivity`'s `super.onCreate()`, and no native code of the app
+writes the environment: once Qt's `main()` runs, adding an entry could free `environ` under the main thread's reads
+(#782). `nativeInit` sets `HOME`, `XDG_CONFIG_HOME` and `DSD_NEO_NO_SIGNAL_HANDLERS` as host overrides in the engine's
+store instead (it sets no `DSD_NEO_CACHE_DIR`: no Android build ever wrote the control-channel cache files that variable
+locates). `android_native_writes_no_environment` (`ANDROID_A11Y_BRIDGE_JVM`) scans every native source under `android/`,
+and every Kotlin file but `QmlGcPolicy.kt` and `AccessibilityBridge.kt`; after each link of `dsd-neo-app`,
+`cmake/check_no_environment_writers.cmake` refuses a library that imports `setenv`, `unsetenv`, `putenv`, `clearenv` or
+Qt's `qputenv`/`qunsetenv` from any code, vendored and static dependencies included (`ANDROID_LINK_ENV_WRITERS_*` test
+its parser on the host). With the limit at 0, each collection runs to completion instead of in Qt's default 5 ms time
+slices. Qt 6.11.2's incremental collector can free a QML object's function storage while the object is still being
+created. A `Connections` element's `function onX()` handler then crashes `QQmlConnections::connectSignalsToMethods()`. A
+Qt build with qtdeclarative 42c76d7acd (QTBUG-148459) skips the handler instead, without any error. On Qt 6.11.2 under
+load, the session-tools suite crashed 14 runs in 24 with the default slices and none in 24 with the policy. The policy
+keeps a `QV4_GC_TIMELIMIT` that Qt parses as an integer.
 
 ### Qt QML editing convention
 
@@ -10627,6 +10927,193 @@ binding loop. A size bound to a `Text` reads its `height`, not `implicitHeight`,
 changes itself under the binding reading it. Deferred work in a component that can be torn down with a call in flight
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
 tests pin these with `failOnWarning`.
+
+Accessibility churn (issue #782). On Android, Qt 6.11.2's accessibility bridge turns each ObjectShow or ObjectHide into
+a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
+items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration
+contracts", but TalkBack users still pay). Qt raises those events for delegates created under a hidden parent, and an
+item view refills its delegates even while invisible, so:
+
+- A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
+  `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
+  (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at
+  the reader's place (History, Home's recent calls, the Talkgroups grid; see "Hidden lists" under UI, Qt). Opening
+  fills it from the readings as they are then. A sheet whose content follows the snapshot can instead refresh only
+  while visible (`NetworkSheet`).
+- No changing text in a `ComboBox` model. A new model resets `currentIndex` to 0 and rebuilds every popup delegate,
+  open or closed; keep the model a fixed list and put the changing text beside the combo (KeySheet's scope pair and
+  its `keySheetTargetName` line).
+- No equal-list guards. Repeater and ComboBox already ignore an equal model, and typed QML properties and `Accessible.*`
+  setters notify only on a real change; a list that churns has a source to fix (one publication per target change,
+  under UI, Qt) or a hidden view to detach.
+
+Text a screen reader reaches (issue #782). In Qt 6.11.2 a plain QML `Text` has no accessible interface (only a
+Controls `Label` names itself), so the Android bridge makes no node for it and TalkBack never reads it. Every `Text`
+that carries meaning reaches a screen reader one of these ways:
+
+- `qml/ReadableText.qml`: static text named by its own words (`heading: true` for a screen, sheet or section title).
+  It leaves the tree while hidden or behind the top layer, as `MicroLabel` does, and holds an empty name there, so a
+  value that changes under a closed sheet renames nothing. Plain text only; a styled text sets its own name.
+- A group: one accessible parent named by what its plain `Text` children show, `Util.shownText(item)` (each visible
+  child's text; a child with its own `accessibleName` is read on its own and adds nothing). For a label and its value
+  or a strip of live readings: the Monitor's hero and reading groups, the Spectrum status line, SiteSheet's field
+  groups (whose rows are rebuilt on each change and stay plain).
+- The control it belongs to: a field reads its label as its name and its unit, placeholder example and helper line as
+  its description (`PlexTextField`, `PlexInput`, the Airspy fields); Qt withholds a password field's name
+  (`QQuickAccessibleAttached::name()` is empty while `passwordEdit`), so `PlexTextField` leads its description with the
+  label there. A switch reads its title and rule (ToggleRow, the wizard's Trunking), a talkgroup card's listening
+  switch the talkgroup in its name, whether it is listened to in its state and the card's other lines (rank, tags, an
+  avoid) in its description, a `CallRow` its meta line, tags and time in its description, a choice row its lines in
+  its description. Such a sibling-read `Text` says so with `Accessible.ignored: true` and a comment.
+- Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
+
+A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal search's paused ranges row) sets
+`Accessible.focusable`. Qt reports a node focusable only when its item takes Tab focus or has a text role
+(`QAccessibleQuickItem::state()`), and Heading is not one; the Android bridge passes that on (`setFocusable`), and
+TalkBack's linear navigation skips a text node that is neither focusable nor clickable, so without it every section and
+screen heading was skipped and a section's lines (the Network sheet's "(none announced)") were heard without it. The
+text walk reports any enabled heading in the tree that is not focusable. A heading is a swipe stop and Qt's bridge reads
+out each rename of the one TalkBack is on, so no heading follows a reading a scan moves on every hop: the Spectrum's
+scale ticks are plain text out of the tree (a scale, like BandRail's rail ends), its Go to caption is read in its
+field's name ("Go to frequency in MHz"), and the headings that do name a moving reading are paced (above).
+`tst_a11y_paced_names.qml` case I retunes the canned spectrum over ten hops and checks no Monitor or Spectrum heading is
+renamed.
+
+Whether a screen reader is on is `screen_reader_state.{h,cpp}` (`ScreenReaderState`, the `screenReader` context
+property): Qt's accessibility being active (`QAccessible::isActive()`), which on Android is the bridge being on, so
+TalkBack at launch (the gate). It follows Qt through `QAccessible::installActivationObserver()` (on Android the call
+comes from the main thread, so it is queued onto the object's thread) and polls nothing; a desktop has it off unless an
+assistive technology is attached (`UI_QT_SCREEN_READER_STATE`). Views read it to order (the Network sheet) or keep
+(`ScreenReaderFocusRelease`) what a screen reader is given.
+
+Qt's Android bridge carries out TalkBack's focus action as a keyboard focus (the set-focus action, `forceActiveFocus`,
+queued by `focusAction_helper` in `androidjniaccessibility.cpp`) and reports success at once; TalkBack hears the focus
+landed only from the Focus event a real focus change raises (`QQuickItem::focusInEvent`). After a system dialog (the
+USB permission prompt) takes the window's focus and gives it back, Qt Quick restores the keyboard focus to the same
+control (`QQuickWindow::focusInEvent`), so TalkBack's focus action on it changes nothing, raises nothing, and each swipe
+asks again until a touch. `qml/ScreenReaderFocusRelease.qml` (in `Main.qml`, on Android with a screen reader on) lets go
+of the keyboard focus when the window gives its focus up, so the next focus action is a real change; a text field keeps
+its focus for the keyboard, so a field focused when a dialog opens can still hold TalkBack until a touch
+(`android/README.md` "Known limits"; `tst_a11y_focus_return.qml`).
+
+The same bridge behaviour makes a swipe onto a container and back stick, and that is left as a Qt 6.11.2 limit
+(`android/README.md` "Known limits"; an observation run in "Qt upgrade checks"). On a node without the set-focus action
+(a container: a sheet's panel, "Scrollable content", the recent calls pane; Android's own host view for the window,
+unnamed) the bridge lands TalkBack's focus itself (`QtAccessibilityDelegate.performActionForVirtualViewId`'s fallback)
+and Qt's keyboard focus stays on the control TalkBack left, so the swipe back onto that control changes nothing, raises
+nothing, and TalkBack stays until a touch. Making the containers take the keyboard focus was tried and made it worse on
+a device: the recent calls list is a focus scope that already holds the focus while a part of its header has it, so a
+backward swipe stuck on the pane, and TalkBack skipped the header going forward; and the window's node cannot take
+Qt's focus at all. So containers are not focusable (`tst_a11y_monitor_controls.qml`
+`test_recent_calls_pane_is_no_focus_target`). Two more bridge limits stay: a part that becomes visible on a
+disclosure is skipped by the first forward swipe after it, as its gate lifting raises ObjectCreated (`setIgnored`),
+which the bridge does not pass on, and its visibility changed while it was still out of the tree, so no show; and
+Android's host view, which the bridge builds without Qt's name for the window (`getNodeForView`), is a silent stop at
+the wrap of a swipe.
+
+A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
+screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an
+ungated part over its ignored panel, and it stayed reachable under the top sheet (the text walk's covered-sheet case).
+Leaving the tree raises only ObjectDestroyed, which Android's bridge does not pass on, and a sheet opening raises no
+show (its parts are still out of the tree as they become visible), so each `ModalSheet` has a refresh node under the
+window's content item, never out of the tree, that shows and hides with the sheet's turn on top; the bridge passes that
+on as a change to the window's whole subtree, and TalkBack reads it again without the covered sheet. It is made the
+first time its sheet takes the top with a screen reader on, never with the sheet: a new item starts out visible, so a
+node built hidden with each sheet raised a show and a hide under the window as its screen was built (three sheets
+doubled the Spectrum's first open under TalkBack; `tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`
+counts none). Its opacity is 0, so it is reported invisible (an item with no size is not: Qt measures it by its parent,
+the window), and it has no name. A covered panel is nameless, and headings and the controls that set
+`Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
+stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
+
+Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
+`Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
+calls into the Qt thread made and waited on from Android's main thread, and TalkBack refetches nodes after them, so the
+Spectrum's first open under TalkBack during a scan stalls the main thread: 2.09 s and 2.36 s on the emulator
+(`0b4f38981`; 41–48 messages of 30 ms or more, 5.6–5.9 s in total, in the 15 s after the open; 26.4 s on the first
+start after an install on a cold boot), and `main` stalls too. A Qt 6.11.2 limit (`android/README.md` "Known limits").
+Building it a slice at a time (an asynchronous loader) did not shorten it (4.35–4.88 s, against 3.93–5.21 s built at
+once on the same build, both before the refresh node above was made only on a sheet's first top turn), so the Spectrum
+is built at once, screen reader or not (`tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`).
+
+A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node TalkBack
+has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an announcement, so a
+reading named by its live text would be read out on every tick. A reading that moves faster than every few seconds is
+named through `qml/SpeechPacer.qml`: its name catches up with the text on screen at most every 5 s, and at once on a
+meaningful step (a call starting or ending, a lock or sync change, the reading appearing or disappearing, a scan held or
+released; off a scan, a new frequency). The text on screen stays live, and nothing runs per tick: the pacer reads the
+reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
+`ReadableText` named that way (`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set.
+Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
+durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
+Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of
+each step, whether the scan is held while one rotates, as the scan header's, else the frequency and target), the
+recordings export progress text, SiteSheet's field groups (renamed once a rebuild is over, not once per row; a group's
+shown children are a step only when they settle unlike the ones last read, since each new NAC or site rebuilds the
+rows and a scan's hops would otherwise be heard at the step floor), a
+recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
+seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
+detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
+scan starting or stopping, held or released; a hop is not one, as a 300 ms dwell hops three times a second), two
+headings a scan renames on its hops (the Spectrum's title, which names what is tuned, and the site sheet's, which names
+the protocol; no steps), and the squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate
+opening or closing, `MetricsModel::squelchGateOpen`, or the setting changing). A step is heard 1 ms after it, once all
+its bindings have settled, so a step that moves several readings, or whose inputs change in several notifications (a
+hop's target, frequency and sync; a call's slot, talkgroup and source), renames once: a step that comes while that 1 ms
+is pending is part of it. Steps have a floor: a step input that flaps (a marginal lock, a gate, a reading coming and
+going) is heard at most once a floor (1 s), the last state at the end of it. `Navigation.speechPeriodMs` (5000) and
+`Navigation.speechStepFloorMs` (1000) are the period and the floor; only tests change them. A pacer runs only while its
+node is shown and the navigation gate allows it. Names that change only on a user action (a drag, a nudge, a choice), on
+a step itself (a new target, carrier, call, hit or identity), or no faster than every few seconds are not paced: the
+coarse tuning rail, the site row and Spectrum identity, the other-slot call, call and history rows, receiver pills, the
+radio gain and width values, the search's frequency, identification and saved names, the diagnostics lines (read only
+while paused). A Slider- or ProgressBar-role `Item` (the seek bar, the export bar, the coarse tuning rail) keeps its
+`value` live: Qt connects `valueChanged` only for an item that has a value interface when its `Accessible` object is
+made, which these do not, so a moving value raises no event, and Android reads the value when it reads the node.
+
+A part whose state only its colour shows gives its words as `spokenText` (the strip's LOCK: "Carrier lock" / "No carrier
+lock"). Readings sit inside a group whose own place does not move, so a value whose width changes moves no accessible
+node (a LocationChanged becomes a main-thread task). A list handed over whole on each refresh feeds its Repeater through
+`qml/StableRows.qml`, a row per entry (`keyOf`, by default its place) with its words in the `line` role (`lineOf`): an
+entry that stays keeps its row, moved to its new place, and is renamed only when its own words change; an arriving entry
+takes the row of one that left (one rename), else a new row; rows are added and renamed at once and let go at the end of
+the turn, so a list emptied and refilled in one turn keeps them. Until a row past the end goes, the view hides it at
+once: `shown`, the list's length now, draws rows from it on at no opacity (no event; Qt then reports the row invisible),
+and `live`, the rows holding an entry (at once on a shrink, at the end of the turn on emptying), names them as nothing;
+the key sheet hides a departed slot's row and keeps it reading its last slot, never an empty one. The Network sheet keys
+its rows by entry (neighbours by frequency, system, RFSS, site and WACN, as `p25_nb_record_update()` keeps them apart,
+since two sites may announce one frequency; patches by SGID, affiliations by RID and TG, radios by RID). Without a
+screen reader each section is most recent first, as P25NetworkModel lists it, so an entry heard again moves its row to
+the top: a move raises a LocationChanged for each row that shifts and nothing else, and every row is always named for
+the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys
+(`NetworkSheet.readingOrder()`): Qt's bridge sends Android no event for a row that moves, and TalkBack swiped a
+reordering section in an order it had left, skipping, repeating and looping (the N-rotate check). Its rows are not
+paced. With `holdRows` (the Network sheet) the rows past the end of a shorter or empty list stay, held (`live` is the
+rows holding an entry): they leave the tree (`Accessible.ignored`, which raises ObjectDestroyed, not sent on by
+Android's bridge), are transparent and unnamed, and keep their size below the last row drawn, where the column's height
+ends (`shownBottom`), so holding one moves nothing; a longer list later reuses them. A hop between P25 targets of 100
+radios and 1 removed and rebuilt 99 rows each way before, a hide and a show each. Nothing the rows raise then refreshes Android's cached copy of
+the sheet (only a show or hide does, `QtAccessibilityDelegate.java` `notifyObjectShow`/`notifyObjectHide`), so a held
+row must read as nothing there: transparent, Qt reports it invisible (`qaccessiblequickitem.cpp` `state()`), which
+Android passes on as not visible to the user, and unnamed it has no words, even with TalkBack's focus left on it.
+Unnaming is a NameChanged per row, one call into Java that returns at once unless TalkBack is on that row. Each
+section's "(none announced)" stays in the tree while hidden, so its show as the section empties refreshes Android's copy
+and a swipe reaches it, and its hide does so as the rows come back. A hop to a target with no P25 network therefore
+costs, in main-thread work on Android, one show or hide per section that empties or fills and the sheet's layout,
+whatever the number of rows. Hidden or removed instead, each row would raise a hide (and a show coming back).
+P25NetworkModel keeps the engine's last-seen times, which order its rows but are not shown, out of them. A scan hop
+publishes the new target's network in one replacement (`P25NetworkModel::replaceForTarget()`, cleared instead while the
+sheet is closed or the session is not live), never an empty list first. The Diagnostics log's lines are read only while
+Pause holds it: each refresh rebuilds the rows.
+
+`UI_QT_QML_A11Y_CHURN` pins this with accessibility really active and the events counted: positive controls first
+(`tst_a11y_harness.qml`), then a scan's steady ticks, hops, target names, two-slot hops, calls, hops with the Monitor's
+details open and readings that move every tick against `Main.qml` (`tst_a11y_scan_churn.qml`), closed KeySheet and
+SiteSheet and the open Network sheet across refreshes, reorders, capped arrivals, a shrink, a clear and refill, and hops
+between P25 targets (100 radios and 1 among them) and to targets with no P25 network (`tst_a11y_closed_sheets.qml`), and a hidden Talkgroups screen across two
+targets' tables (`tst_a11y_talkgroups.qml`). `tst_a11y_text_reach.qml` walks every screen and sheet for visible text no
+node reads, against one allowlist with a reason per entry, and `tst_a11y_paced_names.qml` holds moving readings to their
+pace. How the harness works and how to add a case: `docs/testing.md` "Accessibility event counts".
 
 #### Qt scan-list start path
 

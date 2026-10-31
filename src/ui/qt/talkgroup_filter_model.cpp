@@ -89,4 +89,36 @@ TalkgroupFilterModel::snapshotSelection() const {
     return rows;
 }
 
+int
+TalkgroupFilterModel::rowForTalkgroup(qulonglong idStart, qulonglong idEnd) const {
+    for (int i = 0; i < rowCount(); ++i) {
+        const QModelIndex at = index(i, 0);
+        if (data(at, TalkgroupListModel::IdStartRole).toULongLong() == idStart
+            && data(at, TalkgroupListModel::IdEndRole).toULongLong() == idEnd) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int
+TalkgroupFilterModel::rowForCard(qulonglong idStart, qulonglong idEnd, const QString& pattern, int tableIndex) const {
+    int same_bounds = -1;
+    for (int i = 0; i < rowCount(); ++i) {
+        const QModelIndex at = index(i, 0);
+        if (data(at, TalkgroupListModel::IdStartRole).toULongLong() != idStart
+            || data(at, TalkgroupListModel::IdEndRole).toULongLong() != idEnd
+            || data(at, TalkgroupListModel::PatternRole).toString() != pattern) {
+            continue;
+        }
+        if (data(at, TalkgroupListModel::TableIndexRole).toInt() == tableIndex) {
+            return i;
+        }
+        if (same_bounds < 0) {
+            same_bounds = i;
+        }
+    }
+    return same_bounds;
+}
+
 } // namespace dsd_qt

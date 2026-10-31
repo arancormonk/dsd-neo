@@ -481,17 +481,6 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
  */
 void dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* opts, dsd_state* state);
 
-/**
- * @brief Read an environment variable value via runtime wrappers.
- *
- * Intended for UI/debug tooling that needs generic env access without calling
- * `getenv()` directly outside runtime.
- *
- * @param name Environment variable name.
- * @return Pointer to value string (owned by the C library) or NULL if unset.
- */
-const char* dsd_neo_env_get(const char* name);
-
 /*
  * User configuration (INI file)
  *

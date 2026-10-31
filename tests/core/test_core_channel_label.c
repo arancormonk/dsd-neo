@@ -123,6 +123,13 @@ test_trunk_scan_target_wins(void) {
                       dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_NONE);
     st->trunk_scan_paused = 0U;
     opts->scanner_mode = 1;
+    // Issue #782: a target's display label never replaces its id, which is the channel's identity in history: two
+    // targets may share a label, and their calls must not merge.
+    DSD_SNPRINTF(st->trunk_scan_active_label, sizeof(st->trunk_scan_active_label), "%s", "County Fire");
+    rc |= expect_true("a labelled target is still named by its id",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 1
+                          && strcmp(out, st->trunk_scan_active_id) == 0);
+    st->trunk_scan_active_label[0] = '\0';
 
     // Trunk scan on but nothing selected yet, and no -Y underneath it.
     opts->scanner_mode = 0;

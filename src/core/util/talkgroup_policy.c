@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -2629,7 +2630,8 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
 
 static double
 tg_policy_get_env_ms_default(const char* name, double fallback_ms) {
-    const char* s = getenv(name);
+    char text[64];
+    const char* s = dsd_env_read(name, text, sizeof text);
     char* end = NULL;
     double v = 0.0;
     if (!s || s[0] == '\0') {
@@ -2750,8 +2752,6 @@ dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
     int displaced[2] = {-1, -1};
     int displaced_count = 0;
     int collect_result = 0;
-    double min_dwell_s = tg_policy_get_env_ms_default("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", 750.0) / 1000.0;
-    double cooldown_s = tg_policy_get_env_ms_default("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", 1000.0) / 1000.0;
 
     (void)opts;
     if (!ctx || !candidate_route || !candidate) {
@@ -2773,6 +2773,9 @@ dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
     if (displaced_count == 0) {
         return 0;
     }
+    /* Read only for a preempt that would displace a call: the store takes a lock (#782). */
+    const double min_dwell_s = tg_policy_get_env_ms_default("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", 750.0) / 1000.0;
+    const double cooldown_s = tg_policy_get_env_ms_default("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", 1000.0) / 1000.0;
     if (now_mono_s - ctx->active.last_global_preempt_mono_s < cooldown_s) {
         return 0;
     }

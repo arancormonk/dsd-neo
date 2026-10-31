@@ -112,8 +112,14 @@ object LocationSupport {
         permissionActivity = null
         val request = active ?: return true
         if (request.activity !== activity) return true
-        if (grants.isNotEmpty() && grants[0] == PackageManager.PERMISSION_GRANTED) locate(request)
-        else finish(request, false, "", "", "Location permission denied; use Browse.")
+        when {
+            // An interrupted prompt comes back with no answers, and Android says to treat it as a cancellation: the
+            // launcher icon or the notification brings the singleTask activity forward and closes the prompt (#782).
+            // The user denied nothing, so nothing is reported; the request just ends.
+            grants.isEmpty() -> finish(request, false, "", "", "", cancelled = true)
+            grants[0] == PackageManager.PERMISSION_GRANTED -> locate(request)
+            else -> finish(request, false, "", "", "Location permission denied; use Browse.")
+        }
         return true
     }
 
@@ -278,13 +284,17 @@ object LocationSupport {
         removeUpdates(request)
     }
 
-    private fun finish(request: Request, geocodeOk: Boolean, postal: String, country: String, error: String) {
+    /** The request's one result; [cancelled] marks a request that ended with nothing to report. */
+    private fun finish(
+        request: Request, geocodeOk: Boolean, postal: String, country: String, error: String, cancelled: Boolean = false,
+    ) {
         if (active !== request) return
         val fix = request.fix
         val record = JSONObject().put("id", request.id).put("fixOk", fix != null)
             .put("lat", fix?.latitude ?: 0.0).put("lon", fix?.longitude ?: 0.0)
             .put("accuracyM", fix?.accuracy?.toDouble() ?: 0.0).put("fixAtMs", fix?.time ?: 0L)
             .put("geocodeOk", geocodeOk).put("postalCode", postal).put("countryCode", country).put("error", error)
+            .put("cancelled", cancelled)
         release(request)
         synchronized(this) { result = record.toString() }
     }

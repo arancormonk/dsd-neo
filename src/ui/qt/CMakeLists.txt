@@ -59,6 +59,7 @@ target_sources(
         signal_search_model.cpp
         known_frequency_index.cpp
         spectrum_view_item.cpp
+        screen_reader_state.cpp # Issue #782
         session_args.cpp
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp
@@ -123,6 +124,7 @@ qt_add_resources(
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
+        qml/KeepPlace.qml
         qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
@@ -134,6 +136,11 @@ qt_add_resources(
         qml/LevelMeter.qml
         qml/LogoMark.qml
         qml/MicroLabel.qml
+        qml/ReadableText.qml
+        qml/SpeechPacer.qml
+        qml/LiveText.qml
+        qml/StableRows.qml
+        qml/ScreenReaderFocusRelease.qml
         qml/ModalSheet.qml
         qml/ActionMenu.qml
         qml/MonitorScreen.qml

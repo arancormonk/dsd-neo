@@ -34,6 +34,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 #include "test_support.h"
 
 #define CC_A 851000000L

@@ -33,20 +33,24 @@ main(int argc, char** argv) {
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}};
     auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
     sys["radioSettings"] = QVariantMap{{"modulation", 1}, {"squelch", "auto+12"}};
-    check(build().ok && build().csv.contains(",cqpsk,,--squelch auto+12"));
+    check(build().ok && build().csv.contains(",cqpsk,,\"Example\",--squelch auto+12"));
     entry["modulation"] = "c4fm";
     list["entries"] = QVariantList{entry};
-    check(build().ok && build().csv.contains(",c4fm,,--squelch auto+12"));
+    check(build().ok && build().csv.contains(",c4fm,,\"Example\",--squelch auto+12"));
     entry.remove("modulation");
     list["entries"] = QVariantList{entry};
     sys["decodeFlag"] = "-fA";
-    check(build().ok && build().csv.contains(",,,--squelch auto+12"));
+    check(build().ok && build().csv.contains(",,,\"Example\",--squelch auto+12"));
     sys["radioSettings"] = QVariantMap{{"modulation", 8}};
     check(!build().ok);
     sys.remove("radioSettings");
     sys["decodeFlag"] = "-ft";
     auto result = build();
     check(result.ok && result.targetCount == 1 && result.csv.contains("p25-conventional,851500000"));
+    // Issue #782: a saved system with no name is labelled by its protocol and frequency, never left to its UID.
+    sys["name"] = "  ";
+    check(build().ok && build().csv.contains(",\"P25 · 851.5 MHz\",") && !build().csv.contains("\"\","));
+    sys["name"] = "Example";
     for (const auto& flag :
          QStringList{"", "-Y", "-fd", "-fy", "-fm", "-fe", "-mq -Y", "-mq -^ --show-keys", "-fs -^"}) {
         sys["decodeFlag"] = flag;
@@ -84,7 +88,7 @@ main(int argc, char** argv) {
         list["entries"] = QVariantList{entry};
         const auto analogTargets = build();
         check(analogTargets.ok && analogTargets.paths.isEmpty());
-        check(analogTargets.csv.endsWith(analog.second + ",851500000,,,,,,,,,20,\n"));
+        check(analogTargets.csv.endsWith(analog.second + ",851500000,,,,,,,,,20,\"Example\",\n"));
         check(!analogTargets.csv.contains("-b") && !analogTargets.csv.contains("-G")
               && !analogTargets.csv.contains("gfsk") && !analogTargets.csv.contains("keys.csv")
               && !analogTargets.csv.contains("-4"));
@@ -139,10 +143,19 @@ main(int argc, char** argv) {
     list["entries"] = mixed;
     const auto mixedTargets = build();
     check(mixedTargets.ok && mixedTargets.targetCount == 4);
-    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,")
-          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,")
-          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,")
-          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,"));
+    check(mixedTargets.csv.contains("f0,p25-conventional,118300000,,,,,,,,c4fm,,\"P25 · 118.3 MHz\",")
+          && mixedTargets.csv.contains("f1,nfm-conventional,119300000,,,,,,,,,,\"NFM (analog) · 119.3 MHz\",")
+          && mixedTargets.csv.contains("f2,am-conventional,120300000,,,,,,,,,,\"AM (analog) · 120.3 MHz\",")
+          && mixedTargets.csv.contains("f3,dmr-conventional,121300000,,,,,,,,c4fm,,\"DMR · 121.3 MHz\","));
+    // Issue #782: the `label` column names each target as the scan list does, never by its internal entry UID: an
+    // entry by its name, else its protocol and frequency. A quote becomes an apostrophe (the parser does not unescape
+    // doubled quotes) and a line break a space; a comma stays, inside the quoted cell.
+    check(mixedTargets.csv.startsWith("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,"
+                                      "keys_dec_csv,p25_bandplan_csv,modulation,rtl_gain,label,options\n"));
+    QVariantMap named = mixed[0].toMap();
+    named["name"] = "Tower \"A\",\nnorth";
+    list["entries"] = QVariantList{named};
+    check(build().ok && build().csv.contains(",c4fm,,\"Tower 'A', north\","));
     list["entries"] = QVariantList{entry};
     sys["trunking"] = true;
     sys["decodeFlag"] = "-mq";

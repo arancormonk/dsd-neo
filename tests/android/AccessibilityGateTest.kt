@@ -1,0 +1,294 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package io.github.arancormonk.dsdneo
+
+/** Stands in for an Activity instance; equal by value, so identity is what the gate must go by. */
+private data class GateActivity(val name: String)
+
+private val OFF = A11yFacts(enabled = false, touchExploration = false, boundServices = 0)
+private val SERVICE_ONLY = A11yFacts(enabled = true, touchExploration = false, boundServices = 2)
+private val TALKBACK = A11yFacts(enabled = true, touchExploration = true, boundServices = 1)
+private val TALKBACK_AND_SERVICE = A11yFacts(enabled = true, touchExploration = true, boundServices = 3)
+
+private class Rig {
+    val records = mutableListOf<String>()
+    val gate = AccessibilityGate<GateActivity> { records += it }
+    val a = GateActivity("main")
+
+    /** Launches with [facts], attaches [a] and resumes it, as the activity's onCreate and onResume do. */
+    fun start(facts: A11yFacts): LaunchPlan {
+        val plan = gate.launch(facts)
+        gate.attach(a)
+        check(gate.resumed(a) == Notice.NONE) { "a launch never owes a notice to its first resume here" }
+        return plan
+    }
+
+    /** What the platform side does with SHOW: put the dialog up. */
+    fun show(notice: Notice, on: GateActivity = a) {
+        check(notice == Notice.SHOW) { "expected SHOW, got $notice" }
+        gate.noticeShown(on)
+        check(gate.showingOn(on))
+    }
+}
+
+private fun thePredicateIsTouchExplorationOnly() {
+    for (facts in listOf(OFF, SERVICE_ONLY, A11yFacts(enabled = true, touchExploration = false, boundServices = 0))) {
+        check(!bridgeWanted(facts))
+        check(LaunchPlan.of(facts) == LaunchPlan(wanted = false, activated = false, env = "1")) {
+            "touch exploration off keeps the bridge off, with or without services: $facts"
+        }
+    }
+    for (facts in listOf(TALKBACK, TALKBACK_AND_SERVICE)) {
+        check(bridgeWanted(facts))
+        check(LaunchPlan.of(facts) == LaunchPlan(wanted = true, activated = true, env = "0")) {
+            "touch exploration on writes 0, which Qt does not read as off, so Qt turns the bridge on: $facts"
+        }
+    }
+    // Not seen on Android (touch exploration implies enabled), but decided: wanted, Qt does not activate, so a notice.
+    val odd = A11yFacts(enabled = false, touchExploration = true, boundServices = 0)
+    check(LaunchPlan.of(odd) == LaunchPlan(wanted = true, activated = false, env = "0"))
+    val records = mutableListOf<String>()
+    val gate = AccessibilityGate<GateActivity> { records += it }
+    gate.launch(odd)
+    check(gate.noticePending) { "wanted but not activated owes the notice" }
+    val a = GateActivity("main")
+    gate.attach(a)
+    check(gate.resumed(a) == Notice.SHOW)
+}
+
+private fun theFirstLaunchDecidesForTheProcess() {
+    val gate = AccessibilityGate<GateActivity> {}
+    val first = gate.launch(SERVICE_ONLY)
+    check(gate.launch(TALKBACK) === first && gate.plan === first) { "a later launch returns the stored plan" }
+    check(gate.launch(OFF) == LaunchPlan(wanted = false, activated = false, env = "1"))
+}
+
+private fun qtsOwnReadingOfTheVariable() {
+    // QtAccessibilityDelegate.java:94-95 at v6.11.2: equalsIgnoreCase("true") || equals("1").
+    for (value in listOf("1", "true", "TRUE", "True", "tRuE")) check(qtKeepsBridgeOff(value)) { "Qt keeps off: $value" }
+    for (value in listOf(null, "", "0", "false", "yes", "11", " 1", "1 ", "truee")) {
+        check(!qtKeepsBridgeOff(value)) { "Qt does not keep off: $value" }
+    }
+}
+
+private fun anUnfrozenLaunchNeverAsks() {
+    // The write failed and nothing is set (#782 T4 r3 M1): Qt follows the enabled state by itself, mid-session too.
+    for (facts in listOf(OFF, SERVICE_ONLY, A11yFacts(enabled = false, touchExploration = true, boundServices = 0))) {
+        val rig = Rig()
+        val plan = LaunchPlan.of(facts).copy(activated = facts.enabled, qtFollows = true)
+        rig.gate.launch(facts, plan)
+        check(!rig.gate.noticePending) { "Qt turns the bridge on itself: nothing is owed at launch ($facts)" }
+        rig.gate.attach(rig.a)
+        check(rig.gate.resumed(rig.a) == Notice.NONE)
+        check(rig.gate.onFacts(TALKBACK) == Notice.NONE) { "no restart asked ($facts)" }
+        check(rig.gate.onFacts(OFF) == Notice.NONE && rig.gate.onFacts(TALKBACK) == Notice.NONE)
+        check(!rig.gate.noticePending)
+        check(rig.records.isNotEmpty() && rig.records.all {
+            it.endsWith("; the bridge is not frozen, so Qt follows it")
+        }) { "records: ${rig.records}" }
+    }
+    val gate = AccessibilityGate<GateActivity> {}
+    check(gate.record(OFF, LaunchPlan.of(OFF).copy(qtFollows = true)) ==
+        "accessibility: bridge off at launch (touch exploration off; accessibility off, 0 services bound); " +
+        "not frozen, so Qt follows later changes")
+}
+
+private fun aLaunchWhoseVariableWasNotWrittenFollowsQtsDefault() {
+    // The bridge could not write 1, so Qt's default turned the bridge on for the bound service: never ask.
+    val rig = Rig()
+    val plan = rig.gate.launch(SERVICE_ONLY, LaunchPlan.of(SERVICE_ONLY).copy(activated = SERVICE_ONLY.enabled))
+    check(plan.activated && rig.gate.plan === plan)
+    rig.gate.attach(rig.a)
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+    check(rig.gate.onFacts(TALKBACK_AND_SERVICE) == Notice.NONE) { "TalkBack can already read this process" }
+    check(rig.gate.record(SERVICE_ONLY, plan) ==
+        "accessibility: bridge on at launch (touch exploration off; accessibility on, 2 services bound)")
+}
+
+private fun aRisingEdgeWhileOffAsksOnce() {
+    val rig = Rig()
+    rig.start(SERVICE_ONLY)
+    check(rig.gate.onFacts(SERVICE_ONLY) == Notice.NONE) { "no change, no notice" }
+    rig.show(rig.gate.onFacts(TALKBACK_AND_SERVICE))
+    check(rig.gate.onFacts(TALKBACK_AND_SERVICE) == Notice.NONE) { "repeated facts do not ask again" }
+    check(rig.gate.onFacts(TALKBACK) == Notice.NONE) { "a service count change is no edge" }
+    check(rig.records.contains("accessibility: notice shown"))
+}
+
+private fun aFallingThenRisingEdgeAsksAgain() {
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    rig.gate.noticeAcknowledged()
+    check(rig.gate.onFacts(TALKBACK) == Notice.NONE)
+    check(rig.gate.onFacts(OFF) == Notice.NONE)
+    rig.show(rig.gate.onFacts(TALKBACK))
+}
+
+private fun aBridgeOnAtLaunchNeverAsks() {
+    val rig = Rig()
+    check(rig.start(TALKBACK).activated)
+    for (facts in listOf(OFF, TALKBACK, SERVICE_ONLY, TALKBACK_AND_SERVICE, OFF, TALKBACK)) {
+        check(rig.gate.onFacts(facts) == Notice.NONE) { "an activated bridge never asks: $facts" }
+    }
+    rig.gate.paused(rig.a)
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+    check(rig.records.none { it.startsWith("accessibility: notice") })
+    check(rig.records.contains("accessibility: touch exploration turned off; the bridge stays on until the app restarts"))
+}
+
+private fun aPausedOwnerGetsTheNoticeOnResume() {
+    val rig = Rig()
+    rig.start(OFF)
+    rig.gate.paused(rig.a)
+    check(rig.gate.onFacts(TALKBACK) == Notice.PENDING) { "never to a paused activity" }
+    check(rig.gate.noticePending)
+    rig.show(rig.gate.resumed(rig.a))
+    rig.gate.paused(rig.a)
+    check(rig.gate.resumed(rig.a) == Notice.NONE) { "a notice on screen is not shown twice" }
+}
+
+private fun aPendingNoticeOutlivesItsActivity() {
+    val rig = Rig()
+    rig.start(OFF)
+    rig.gate.paused(rig.a)
+    check(rig.gate.onFacts(TALKBACK) == Notice.PENDING)
+    rig.gate.detach(rig.a)
+    val b = GateActivity("main")
+    rig.gate.attach(b)
+    check(rig.gate.owner === b)
+    rig.show(rig.gate.resumed(b), on = b)
+}
+
+private fun staleCallbacksAreIgnored() {
+    val rig = Rig()
+    rig.start(OFF)
+    val b = GateActivity("main") // Equal to a, but a different instance.
+    rig.gate.attach(b) // B's onCreate before A's onDestroy.
+    check(rig.gate.onFacts(TALKBACK) == Notice.PENDING) { "B is not resumed yet" }
+    check(rig.gate.resumed(rig.a) == Notice.NONE) { "A's late resume is ignored" }
+    rig.gate.noticeShown(rig.a)
+    check(!rig.gate.showingOn(rig.a) && rig.gate.noticePending) { "A cannot take the notice" }
+    rig.gate.detach(rig.a)
+    check(rig.gate.owner === b) { "A's late destroy does not detach B" }
+    rig.show(rig.gate.resumed(b), on = b)
+    rig.gate.paused(rig.a)
+    check(rig.gate.showingOn(b))
+}
+
+private fun aDialogClosedWithoutOkComesBack() {
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    // onStop closes the dialog without the user.
+    rig.gate.paused(rig.a)
+    rig.gate.noticeDropped()
+    check(rig.gate.noticePending && !rig.gate.showingOn(rig.a))
+    rig.show(rig.gate.resumed(rig.a))
+    check(rig.records == listOf(
+        "accessibility: touch exploration turned on; the bridge stays off until the app restarts",
+        "accessibility: notice shown",
+        "accessibility: notice dropped",
+        "accessibility: notice shown",
+    )) { "records: ${rig.records}" }
+}
+
+private fun aDroppedNoticeIsMootOnceTouchExplorationIsOff() {
+    // TalkBack turned on by accident, the dialog shows, TalkBack goes off again, and the app is left (#782 T4 M1).
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    check(rig.gate.onFacts(OFF) == Notice.NONE)
+    check(rig.gate.showingOn(rig.a)) { "a notice on screen stays until its OK" }
+    rig.gate.paused(rig.a)
+    rig.gate.noticeDropped()
+    check(!rig.gate.noticePending) { "with touch exploration off, a dropped notice is not owed again" }
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+    rig.show(rig.gate.onFacts(TALKBACK)) // The next rising edge still asks.
+}
+
+private fun aDetachFollowsTheDropRule() {
+    // A showing notice detached without a drop (the bridge always drops first) follows noticeDropped()'s rule.
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    rig.gate.detach(rig.a)
+    check(rig.gate.noticePending) { "touch exploration still on: owed to the next activity" }
+    val b = GateActivity("main")
+    rig.gate.attach(b)
+    rig.show(rig.gate.resumed(b), on = b)
+    check(rig.gate.onFacts(OFF) == Notice.NONE)
+    rig.gate.detach(b)
+    check(!rig.gate.noticePending) { "touch exploration off: a detached notice is moot" }
+}
+
+private fun afterOkNothingUntilTheNextRisingEdge() {
+    val rig = Rig()
+    rig.start(OFF)
+    rig.show(rig.gate.onFacts(TALKBACK))
+    rig.gate.noticeAcknowledged()
+    check(!rig.gate.noticePending && !rig.gate.showingOn(rig.a))
+    rig.gate.noticeDropped()
+    check(!rig.gate.noticePending) { "a drop after OK owes nothing" }
+    rig.gate.paused(rig.a)
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+    check(rig.gate.onFacts(TALKBACK_AND_SERVICE) == Notice.NONE)
+    check(rig.records.last() == "accessibility: notice acknowledged")
+    // A notice waiting for a resume is moot once touch exploration goes off again.
+    rig.gate.paused(rig.a)
+    check(rig.gate.onFacts(OFF) == Notice.NONE)
+    check(rig.gate.onFacts(TALKBACK) == Notice.PENDING)
+    check(rig.gate.onFacts(OFF) == Notice.NONE && !rig.gate.noticePending)
+    check(rig.gate.resumed(rig.a) == Notice.NONE)
+}
+
+private fun theRecordHoldsFlagsAndCountsOnly() {
+    val gate = AccessibilityGate<GateActivity> {}
+    check(gate.record(SERVICE_ONLY, LaunchPlan.of(SERVICE_ONLY)) ==
+        "accessibility: bridge off at launch (touch exploration off; accessibility on, 2 services bound)")
+    check(gate.record(TALKBACK, LaunchPlan.of(TALKBACK)) ==
+        "accessibility: bridge on at launch (touch exploration on; accessibility on, 1 service bound)")
+    check(gate.record(OFF, LaunchPlan.of(OFF)) ==
+        "accessibility: bridge off at launch (touch exploration off; accessibility off, 0 services bound)")
+    val odd = A11yFacts(enabled = false, touchExploration = true, boundServices = 0)
+    check(gate.record(odd, LaunchPlan.of(odd)) ==
+        "accessibility: bridge off at launch (touch exploration on; accessibility off, 0 services bound); " +
+        "restart notice pending")
+    // The bound services' names are read nowhere: whatever apps are bound, only their number shows.
+    val names = listOf("com.anydesk.anydeskandroid", "com.catalinagroup.callrecorder", "AnyDesk", "Cube ACR")
+    val records = mutableListOf<String>()
+    val rig = AccessibilityGate<GateActivity> { records += it }
+    val facts = A11yFacts(enabled = true, touchExploration = false, boundServices = names.size)
+    records += rig.record(facts, rig.launch(facts))
+    val a = GateActivity("main")
+    rig.attach(a)
+    rig.resumed(a)
+    rig.onFacts(facts.copy(touchExploration = true))
+    rig.noticeShown(a)
+    rig.noticeAcknowledged()
+    check(records.first() ==
+        "accessibility: bridge off at launch (touch exploration off; accessibility on, 4 services bound)")
+    for (record in records) {
+        check(names.none { record.contains(it, ignoreCase = true) }) { "a record names an app: $record" }
+        check(record.length <= 512) { "over the host record limit: $record" }
+    }
+}
+
+fun main() {
+    thePredicateIsTouchExplorationOnly()
+    theFirstLaunchDecidesForTheProcess()
+    aLaunchWhoseVariableWasNotWrittenFollowsQtsDefault()
+    qtsOwnReadingOfTheVariable()
+    anUnfrozenLaunchNeverAsks()
+    aRisingEdgeWhileOffAsksOnce()
+    aFallingThenRisingEdgeAsksAgain()
+    aBridgeOnAtLaunchNeverAsks()
+    aPausedOwnerGetsTheNoticeOnResume()
+    aPendingNoticeOutlivesItsActivity()
+    staleCallbacksAreIgnored()
+    aDialogClosedWithoutOkComesBack()
+    aDroppedNoticeIsMootOnceTouchExplorationIsOff()
+    aDetachFollowsTheDropRule()
+    afterOkNothingUntilTheNextRisingEdge()
+    theRecordHoldsFlagsAndCountsOnly()
+    println("PASS: the accessibility gate decides once, and the notice reaches only a resumed activity, never lost")
+}

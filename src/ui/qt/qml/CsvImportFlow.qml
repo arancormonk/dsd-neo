@@ -155,7 +155,7 @@ Item {
             id: discard
             parent: sheet
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("This CSV references additional files. Choose an imported file or a file from your device for each companion to store a complete, private copy.")
             wrapMode: Text.Wrap
@@ -172,7 +172,7 @@ Item {
                 readonly property string kind: detail.kind || ""
                 width: parent.width
                 spacing: 8
-                Text {
+                ReadableText {
                     objectName: "csvCompanionLabel_" + slot.index
                     width: parent.width
                     text: qsTr("%1 · %2").arg(slot.kind.charAt(0).toUpperCase() + slot.kind.slice(1)).arg(flow.requiredLabels[slot.modelData] || slot.modelData)
@@ -180,7 +180,7 @@ Item {
                     color: Theme.textPrimary
                     font.pixelSize: Theme.fontSize(15)
                 }
-                Text {
+                ReadableText {
                     objectName: "csvCompanionWarning_" + slot.index
                     width: parent.width
                     text: slot.detail.warning || ""
@@ -211,7 +211,7 @@ Item {
                     text: qsTr("Choose a file…")
                     onClicked: flow.chooseFile(slot.modelData)
                 }
-                Text {
+                ReadableText {
                     width: parent.width
                     text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.companions[slot.modelData].split('/').pop()) : qsTr("No file selected")
                     wrapMode: Text.Wrap

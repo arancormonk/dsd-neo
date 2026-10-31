@@ -505,6 +505,30 @@ main(int argc, char** argv) {
                       {QStringLiteral("targetSource"), QStringLiteral("csv")},
                       {QStringLiteral("targetsCsvPath"), targets}}));
     assert(index.lookup(118302100, 12500).size() == 1);
+    assert(index.tunedNames(118300000, 12500) == QStringList{QStringLiteral("Imported list / Tower")});
+    // Issue #782: the tuned-frequency line names an entry as the scan header and the target's calls do: a target
+    // CSV's label, an unnamed scan-list entry by its protocol and frequency, an unnamed saved system likewise.
+    const QString labelled = temp.filePath(QStringLiteral("labelled.csv"));
+    f = dsd_fopen_private(labelled.toUtf8().constData(), "wb");
+    assert(f);
+    const char labelledCsv[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                               "f4c3562f,dmr-conventional,455500000,,,,,\"County, DMR\"\n";
+    assert(fwrite(labelledCsv, 1, sizeof(labelledCsv) - 1, f) == sizeof(labelledCsv) - 1);
+    fclose(f);
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Labelled")},
+                      {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                      {QStringLiteral("targetsCsvPath"), labelled}}));
+    assert(index.tunedNames(455500000, 12500) == QStringList{QStringLiteral("Labelled / County, DMR")});
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Mix6")},
+                      {QStringLiteral("entries"),
+                       QVariantList{QVariantMap{{QStringLiteral("uid"), QStringLiteral("e1")},
+                                                {QStringLiteral("kind"), QStringLiteral("freq")},
+                                                {QStringLiteral("protocol"), QStringLiteral("dmr")},
+                                                {QStringLiteral("freqMhz"), QStringLiteral("456.5000")}}}}}));
+    assert(index.tunedNames(456500000, 12500) == QStringList{QString::fromUtf8("Mix6 / DMR \u00b7 456.5000 MHz")});
+    assert(systems.add({{QStringLiteral("decodeFlag"), QStringLiteral("-ft")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("457.5000")}}));
+    assert(index.tunedNames(457500000, 12500) == QStringList{QString::fromUtf8("P25 \u00b7 457.5000 MHz")});
     assert(index.lookup(118304000, 12500).isEmpty());
     assert(index.lookup(464100000, 12500).size() == 1);
     assert(index.lookup(464000000, 12500).size() == 2); // saved map and nested target map

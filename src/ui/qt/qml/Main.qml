@@ -13,6 +13,8 @@ Window {
     height: 900
     title: qsTr("DSD-neo")
     color: Theme.bg
+    // The one platform read in this file (the QML tests stand in Android for it).
+    readonly property bool onAndroid: Qt.platform.os === "android"
 
     // The screen has two modes with one principle carried over from the old UI:
     // idle is for choosing what to hear, and the moment a session is asked for the
@@ -623,7 +625,7 @@ Window {
         mainRoot.awaitingSessionInitialized = false;
         // Accepted argv is only a request. These writes belong to the engine's
         // post-initialization edge, after file validation and tuner open.
-        if (Qt.platform.os === "android" && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
+        if (mainRoot.onAndroid && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
             notificationExplanation.visible = true;
         prefs.lastStartedKind = mainRoot.sessionStartKind;
         prefs.lastStartedUid = mainRoot.sessionStartUid;
@@ -1000,7 +1002,11 @@ Window {
         metrics.setChannelNames(mainRoot.scanChannelNames);
     }
 
+    // The scan header's name for the target on air (issue #782): the target CSV's `label`, which the generated lists fill
+    // with the entry's name, else what is known of the entry here, never its internal UID.
     function scanTargetLabel() {
+        if (metrics.scanTargetLabel)
+            return metrics.scanTargetLabel;
         // The session's own map while the operator holds the tuner, not the
         // Explore one standing in for it.
         var list = mainRoot.operatorHolds ? mainRoot.pausedScanSystem : mainRoot.sessionSystem;
@@ -1458,7 +1464,7 @@ Window {
         anchors.right: safeArea.right
         anchors.bottom: safeArea.bottom
         height: scanWarningText.implicitHeight + 32
-        Text {
+        ReadableText {
             id: scanWarningText
             anchors.fill: parent
             anchors.margins: 16
@@ -1520,8 +1526,16 @@ Window {
     // Built on first open, then kept. Its waterfall holds a full-resolution
     // history image, which is real memory to hand every user who never opens
     // the view — and rebuilding it on each visit would throw that history away.
+    //
+    // Built at once, screen reader or not (issue #782). Building it raises a
+    // hide for each part created hidden, and Qt's Android bridge answers each
+    // with calls into the Qt thread that Android's main thread waits on, so
+    // the first open under TalkBack stalls for a few seconds: a Qt limit
+    // (android/README.md "Known limits"). Building it a slice at a time did
+    // not shorten the stall on a device.
     Loader {
         id: spectrumLoader
+        objectName: "spectrumLoader"
 
         anchors.fill: safeArea
         active: false
@@ -1757,6 +1771,12 @@ Window {
         }
     }
 
+    // Issue #782: TalkBack stuck on a control after a system dialog (see the file).
+    ScreenReaderFocusRelease {
+        window: mainRoot
+        enabled: screenReader.active && mainRoot.onAndroid
+    }
+
     Item {
         id: sessionTools
         objectName: "sessionTools"
@@ -1793,7 +1813,8 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
                 onClicked: sessionToolsLayer.leave()
             }
-            Text {
+            ReadableText {
+                heading: true
                 objectName: "sessionToolsTitle"
                 anchors.left: sessionToolsBack.right
                 anchors.leftMargin: 14
@@ -2035,7 +2056,7 @@ Window {
         objectName: "failureDetails"
         anchors.fill: safeArea
         accessibleName: qsTr("Source failure details")
-        Text {
+        ReadableText {
             width: parent.width
             text: mainRoot.sourceLabel() + "\n\n" + mainRoot.failureText + (decoderHost.inputFailureCode ? qsTr("\nNative error: %1").arg(decoderHost.inputFailureCode) : "")
             textFormat: Text.PlainText
@@ -2060,7 +2081,7 @@ Window {
             prefs.notificationExplained = true;
             visible = false;
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: qsTr("Listening can continue when you leave the app. Allow notifications to keep playback status and Stop available outside the app. You can keep using the app if you decline.")
             wrapMode: Text.Wrap

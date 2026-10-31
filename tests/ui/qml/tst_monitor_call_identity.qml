@@ -199,6 +199,8 @@ Item {
                 waitForRendering(monitor);
                 compare(identity.text, "ID 2001234");
                 verify(!identity.truncated, "the name is cut");
+                // A screen reader still hears what kind of call it is (issue #782).
+                verify(identity.Accessible.name.indexOf("PRIVATE") >= 0, "the hidden tag is not read: " + identity.Accessible.name);
                 verify(findChild(monitor, "otherSlotPanel") !== null);
                 root.width = 420;
                 testContext.setMetric("slot2CallEnc", false);

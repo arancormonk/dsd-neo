@@ -456,13 +456,19 @@ MetricsModel::emitRxToneSignals(bool received, bool configured, bool verdict, bo
 }
 
 void
-MetricsModel::clear() {
+MetricsModel::resetTargetLatches() {
     m_messageTimer.stop();
     /* The latch is per-session state, not part of the published frame: a stopped
      * session that starts again on the same frequency must not inherit the old
-     * session's answer to "is there anything here". */
+     * session's answer to "is there anything here", nor a new scan target the old
+     * target's. */
     m_sync_type_here = DSD_SYNC_NONE;
     m_sync_seen_m = 0.0;
+}
+
+void
+MetricsModel::clear() {
+    resetTargetLatches();
     View cleared;
     /* The configured tone policy is not session state: stopping leaves it as configured, for the text and the
        editor. */
@@ -481,33 +487,6 @@ MetricsModel::setChannelNames(const QVariantMap& names) {
             m_channelNames.insert(it.key(), name);
         }
     }
-}
-
-void
-MetricsModel::clearForTarget() {
-    m_messageTimer.stop();
-    m_sync_type_here = DSD_SYNC_NONE;
-    m_sync_seen_m = 0.0;
-    View cleared;
-    cleared.rx_tone_configured_text = m_view.rx_tone_configured_text;
-    cleared.tone_filter_configured_mode = m_view.tone_filter_configured_mode;
-    cleared.tone_filter_configured_list = m_view.tone_filter_configured_list;
-    // Who owns the tuner and what the session is set to: the next snapshot republishes them unchanged.
-    cleared.options_known = m_view.options_known;
-    cleared.tuner_controlled = m_view.tuner_controlled;
-    cleared.replay_input = m_view.replay_input;
-    cleared.trunking_enabled = m_view.trunking_enabled;
-    cleared.scanner_mode = m_view.scanner_mode;
-    cleared.scan_kind = m_view.scan_kind;
-    cleared.scan_rotation_active = m_view.scan_rotation_active;
-    cleared.scan_paused = m_view.scan_paused;
-    cleared.scan_resumable = m_view.scan_resumable;
-    cleared.operator_tuned = m_view.operator_tuned;
-    cleared.scan_target_count = m_view.scan_target_count;
-    cleared.scan_hold = m_view.scan_hold;
-    cleared.audio_muted = m_view.audio_muted;
-    cleared.configured_squelch_off = m_view.configured_squelch_off;
-    publish(cleared);
 }
 
 /**
@@ -557,6 +536,7 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
     if (trunk_scan) {
         if (running) {
             next.scan_target_id = QString::fromUtf8(snapshot->trunk_scan_active_id);
+            next.scan_target_label = QString::fromUtf8(snapshot->trunk_scan_active_label);
             next.scan_target_ordinal = snapshot->trunk_scan_active_ordinal;
         }
         next.scan_target_count = snapshot->trunk_scan_target_count;
@@ -1030,6 +1010,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.effective_squelch_margin_db = 0;
         next.configured_squelch_level_off = false;
         next.squelch_auto_status.clear();
+        next.squelch_gate_open = false;
         return;
     }
     next.configured_squelch_db = dsd_app_squelch_db_or_off(squelch.configured_level);
@@ -1052,6 +1033,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     char status[40];
     (void)dsd_app_squelch_view_dynamic_status(&squelch, status, sizeof status);
     next.squelch_auto_status = QString::fromUtf8(status);
+    next.squelch_gate_open = squelch.auto_gate_open != 0U || squelch.noise_gate_open != 0U;
 }
 
 /* Issue #525: the analog width the Radio sheet shows and the configured one its control edits, as app_control's analog
@@ -1216,7 +1198,10 @@ MetricsModel::fillUiMessage(View& next, const dsd_state* snapshot) {
 }
 
 void
-MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool new_target) {
+    if (new_target) {
+        resetTargetLatches();
+    }
     dsd_frontend_metrics metrics;
     /* A missing snapshot is the real "nothing to show" case, and it has to be tested
      * for here: the fetch fills defaults for a NULL snapshot rather than failing, so
@@ -1270,7 +1255,8 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.replay_input = dsd_opts_input_is_iq_replay(opts_snapshot) != 0;
 
     /* Sync is held for a moment after the last synced frame rather than sampled;
-     * the hold decays on its own rather than being cleared on a retune. See
+     * the hold decays on its own rather than being cleared on a retune (a new scan
+     * target starts it over: refresh() with new_target). See
      * fillDecoderView(), which documents why a one-shot reset was a race. The hold
      * smooths what this poll sees, so it runs on real time: it has to decay while a
      * stalled input leaves the decode clock where it stopped. */

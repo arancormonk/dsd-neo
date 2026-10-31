@@ -127,7 +127,7 @@ Item {
         id: replayDetails
         property string details: ""
         accessibleName: qsTr("Replay file details")
-        Text {
+        ReadableText {
             width: parent.width
             text: replayDetails.details
             textFormat: Text.PlainText
@@ -647,7 +647,8 @@ Item {
             }
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.verticalCenter: parent.verticalCenter
@@ -713,7 +714,7 @@ Item {
                 visible: wizard.step === 0
                 spacing: Theme.gap
 
-                Text {
+                ReadableText {
                     text: qsTr("Where does the signal come from?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
@@ -768,7 +769,7 @@ Item {
                     }
                 }
 
-                Text {
+                ReadableText {
                     width: parent.width
                     visible: wizard.sourceType === "usb"
                     text: qsTr("An RTL-SDR dongle on a USB-OTG cable. Most public-safety listening starts here.")
@@ -800,7 +801,7 @@ Item {
                     visible: wizard.sourceType === "rtltcp" || wizard.sourceType === "udp" || wizard.sourceType === "tcp"
                     spacing: 10
 
-                    Text {
+                    ReadableText {
                         text: wizard.sourceType === "udp" ? qsTr("Listen port") : qsTr("Port")
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
@@ -831,7 +832,7 @@ Item {
                     visible: wizard.sourceType === "file"
                     spacing: 10
 
-                    Text {
+                    ReadableText {
                         text: qsTr("Audio or capture file")
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
@@ -924,7 +925,10 @@ Item {
                         anchors.margins: Theme.cardPadding
                         spacing: 8
 
+                        // Read in the field below, which carries the same words (issue #782).
                         Text {
+                            objectName: "wizardFrequencyCaption"
+                            Accessible.ignored: true
                             text: qsTr("Frequency")
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
@@ -946,7 +950,7 @@ Item {
                             onTextChanged: wizard.refreshTrunkingSuggestion()
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             // "Control channel" only while the trunking answer
                             // below says there is one — a conventional system
@@ -963,7 +967,7 @@ Item {
                     }
                 }
 
-                Text {
+                ReadableText {
                     text: qsTr("What should we decode?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
@@ -994,7 +998,7 @@ Item {
 
                 // Why the AM and TETRA chips are greyed out on a network or file
                 // source, rather than leaving a dead control (issue #524).
-                Text {
+                ReadableText {
                     objectName: "wizardDecodeIqNote"
                     visible: !wizard.radioSource
                     width: parent.width
@@ -1005,7 +1009,7 @@ Item {
                     wrapMode: Text.Wrap
                 }
 
-                Text {
+                ReadableText {
                     objectName: "wizardDecodeHint"
                     width: parent.width
                     text: Util.decodeHint(wizard.decodeFlag)
@@ -1017,7 +1021,7 @@ Item {
 
                 // AM on a radio whose bandwidth (Advanced, or the app default)
                 // cannot filter its channel: the step waits for a wider one.
-                Text {
+                ReadableText {
                     objectName: "wizardDecodeAmBandwidthNote"
                     visible: text.length > 0
                     width: parent.width
@@ -1040,8 +1044,12 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 3
 
+                        // Both lines are read with the switch (issue #782): its
+                        // name and its description.
                         Text {
+                            id: trunkTitle
                             width: parent.width
+                            Accessible.ignored: true
                             // The term, not a description: this audience knows
                             // trunking by name, and the subtitle carries the
                             // decision rule for anyone who does not.
@@ -1054,7 +1062,9 @@ Item {
                         }
 
                         Text {
+                            id: trunkRule
                             width: parent.width
+                            Accessible.ignored: true
                             // The decision rule, not the audience: a trunked
                             // utility system wants this on, a conventional fire
                             // channel wants it off. "Control channel" rather
@@ -1071,6 +1081,9 @@ Item {
 
                     PlexSwitch {
                         id: trunkSwitch
+                        objectName: "wizardTrunkSwitch"
+                        accessibleName: trunkTitle.text
+                        Accessible.description: trunkRule.text
                         anchors.right: parent.right
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
@@ -1166,7 +1179,7 @@ Item {
                             path: wizard.srcCsvPath
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             leftPadding: Theme.cardPadding
                             rightPadding: Theme.cardPadding
@@ -1179,7 +1192,7 @@ Item {
                             wrapMode: Text.Wrap
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             leftPadding: Theme.cardPadding
                             rightPadding: Theme.cardPadding
@@ -1210,8 +1223,27 @@ Item {
                     Item {
                         id: advHeader
 
+                        objectName: "wizardAdvancedHeader"
                         width: parent.width
                         height: 66
+                        // A button a screen reader can press (issue #782), as the scan list's
+                        // Advanced header is: its title is the name, its second line and
+                        // whether it is open the description.
+                        activeFocusOnTab: Navigation.allows(advHeader) && visible
+                        Accessible.role: Accessible.Button
+                        Accessible.name: advTitle.text
+                        Accessible.description: advSubtitle.text + ". " + (wizard.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
+                        readonly property bool navigationAllowed: Navigation.allows(advHeader)
+                        Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.onPressAction: toggle()
+                        Keys.onSpacePressed: toggle()
+                        Keys.onReturnPressed: toggle()
+                        Keys.onEnterPressed: toggle()
+                        function toggle() {
+                            if (enabled && Navigation.allows(advHeader))
+                                wizard.advancedOpen = !wizard.advancedOpen;
+                        }
+                        FocusFrame {}
 
                         Column {
                             anchors.left: parent.left
@@ -1222,6 +1254,7 @@ Item {
                             spacing: 3
 
                             Text {
+                                id: advTitle
                                 width: parent.width
                                 text: qsTr("Advanced")
                                 font.family: Theme.sans
@@ -1232,6 +1265,7 @@ Item {
                             }
 
                             Text {
+                                id: advSubtitle
                                 width: parent.width
                                 text: wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
@@ -1258,7 +1292,7 @@ Item {
                         }
 
                         TapHandler {
-                            onTapped: wizard.advancedOpen = !wizard.advancedOpen
+                            onTapped: advHeader.toggle()
                         }
                     }
 
@@ -1293,7 +1327,10 @@ Item {
                                 width: (parent.width - 20) / 3
                                 spacing: 6
 
+                                // Read in the field below, which carries the same words (issue #782).
                                 Text {
+                                    objectName: "wizardGainCaption"
+                                    Accessible.ignored: true
                                     text: qsTr("Gain dB")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)
@@ -1323,7 +1360,10 @@ Item {
                                 width: (parent.width - 20) / 3
                                 spacing: 6
 
+                                // Read in the field below, which carries the same words (issue #782).
                                 Text {
+                                    objectName: "wizardPpmCaption"
+                                    Accessible.ignored: true
                                     text: qsTr("PPM")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)
@@ -1352,7 +1392,7 @@ Item {
                                 width: (parent.width - 20) / 3
                                 spacing: 6
 
-                                Text {
+                                ReadableText {
                                     text: qsTr("BW kHz")
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)
@@ -1396,14 +1436,14 @@ Item {
                             // just as much as a local one.
                             visible: wizard.radioSource && wizard.sourceType !== "airspy"
 
-                            Text {
+                            ReadableText {
                                 text: qsTr("Bias tee")
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(14)
                                 color: Theme.textPrimary
                             }
 
-                            Text {
+                            ReadableText {
                                 text: qsTr("Powers an external LNA. Off wins over the app-wide setting.")
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(12)
@@ -1424,7 +1464,7 @@ Item {
                             width: parent.width
                             spacing: 6
 
-                            Text {
+                            ReadableText {
                                 text: qsTr("Extra CLI flags")
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(12)
@@ -1457,7 +1497,7 @@ Item {
                 visible: wizard.step === 2
                 spacing: Theme.gap
 
-                Text {
+                ReadableText {
                     text: qsTr("What should we call it?")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(15)
@@ -1472,7 +1512,7 @@ Item {
                     placeholderText: qsTr("e.g. Hamilton Co P25")
                 }
 
-                Text {
+                ReadableText {
                     width: parent.width
                     text: qsTr("The name is yours — county, agency, whatever you'll recognize on the home screen.")
                     font.family: Theme.sans
@@ -1588,6 +1628,8 @@ Item {
                         activeFocusOnTab: Navigation.allows(csvChoice)
                         Accessible.role: Accessible.RadioButton
                         Accessible.name: modelData.name
+                        // The file's lines as shown (issue #782): whether it is the one selected, and what it holds.
+                        Accessible.description: Util.shownText(csvChoiceLabels)
                         Accessible.checkable: true
                         Accessible.checked: modelData.path === csvSheet.currentPath
                         readonly property bool navigationAllowed: Navigation.allows(csvChoice)

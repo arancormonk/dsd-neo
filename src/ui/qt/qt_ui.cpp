@@ -43,6 +43,7 @@
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
+#include "screen_reader_state.h"
 #include "session_args.h"
 #include "signal_search_model.h"
 #include "site_groups.h"
@@ -240,6 +241,14 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     }
 }
 
+/* How the person reads and types: forms finish the keyboard's composing word before reading their fields (issue #718),
+   and views that order or keep what a screen reader is given ask whether one is on (issue #782). */
+static void
+publish_input_context(QQmlContext* context, QObject* owner) {
+    context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(owner));
+    context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
@@ -330,8 +339,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
-    // Issue #718: forms finish the keyboard's composing word before reading their fields.
-    context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(&engine));
+    publish_input_context(context, &engine);
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_env.h"
 
 #include "../test_support/radio_policy_test.h"
 
@@ -894,8 +895,8 @@ test_preemption_same_call_by_class(void) {
         free(opts);
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     for (int held_private = 0; held_private < 2; held_private++) {
         for (int slot = -1; slot <= 0; slot++) {
             rc |= expect_true("clear before class case", dsd_tg_policy_clear_active_call(st, -1) == 0);
@@ -918,8 +919,8 @@ test_preemption_same_call_by_class(void) {
                               dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 2.0) == 0);
         }
     }
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
     free_test_state(st);
     free(opts);
     return rc;
@@ -947,8 +948,8 @@ test_preemption_helpers(void) {
      * and cooldowns. This test walks those inputs in sequence so a failure points
      * to the exact condition that changed.
      */
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "500", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_data_calls = 1;
@@ -1055,8 +1056,8 @@ test_preemption_helpers(void) {
     rc |= expect_true("clear slot1", dsd_tg_policy_clear_active_call(st, 1) == 0);
     rc |= expect_true("reject invalid slot clear", dsd_tg_policy_clear_active_call(st, 2) == 1);
 
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
     free_test_state(st);
     free(opts);
     return rc;
@@ -1286,8 +1287,8 @@ test_followed_call_bookkeeping(void) {
         free(opts);
         return 1;
     }
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
 
     init_route(&held, 100, 1, 851000000L, 10, -1, 0);
     init_decision(&held_dec, 100, 1, 50, 1, 1);
@@ -1375,8 +1376,8 @@ test_followed_call_bookkeeping(void) {
         (void)remove(path_template);
     }
 
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
     free_test_state(st);
     free(opts);
     return rc;
@@ -3183,8 +3184,8 @@ test_priority_refresh_pattern_and_unknown(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_private_calls = 1;
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
-    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_test_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
     rc |= expect_true("pattern row", add_pattern_row(st, "12*", "A", "Twelve") == 0);
     dsd_tg_policy_call_route active, candidate;
     init_route(&active, 1234, 1, 851000000L, 1, 0, 0);
@@ -3235,8 +3236,8 @@ test_priority_refresh_pattern_and_unknown(void) {
                       dsd_tg_policy_set_fields(st, 0, 0, &values, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
     rc |= expect_true("src 0 private call ignores the 0 row",
                       dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 23.0));
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
-    (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
     free_test_state(st);
     return rc;
 }

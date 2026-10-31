@@ -20,7 +20,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -32,6 +31,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_env.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -892,8 +892,8 @@ dmr_run_config_override_case(void) {
     g_state.trunk_cc_freq = 851012500L;
 
     int rc = 0;
-    rc |= dmr_expect(dsd_setenv("DSD_NEO_DMR_HANGTIME", "1.25", 1) == 0, grant, flow, script, "set hangtime env");
-    rc |= dmr_expect(dsd_setenv("DSD_NEO_DMR_GRANT_TIMEOUT", "6.5", 1) == 0, grant, flow, script,
+    rc |= dmr_expect(dsd_test_setenv("DSD_NEO_DMR_HANGTIME", "1.25", 1) == 0, grant, flow, script, "set hangtime env");
+    rc |= dmr_expect(dsd_test_setenv("DSD_NEO_DMR_GRANT_TIMEOUT", "6.5", 1) == 0, grant, flow, script,
                      "set grant-timeout env");
     dsd_neo_config_init();
     dmr_sm_init_ctx(&g_ctx, &g_opts, &g_state);
@@ -902,8 +902,8 @@ dmr_run_config_override_case(void) {
                            "config grant timeout overrides default");
     rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant, flow, script, "config fixture starts on control channel");
 
-    dsd_unsetenv("DSD_NEO_DMR_HANGTIME");
-    dsd_unsetenv("DSD_NEO_DMR_GRANT_TIMEOUT");
+    dsd_test_unsetenv("DSD_NEO_DMR_HANGTIME");
+    dsd_test_unsetenv("DSD_NEO_DMR_GRANT_TIMEOUT");
     dsd_neo_config_init();
     return rc;
 }

@@ -25,7 +25,7 @@ Item {
         id: bulkConfirm
         objectName: "talkgroupBulkConfirm"
         accessibleName: qsTr("Change matching talkgroups")
-        Text {
+        ReadableText {
             width: parent.width
             text: (screen.bulkListen ? qsTr("Listen to %1 matching rows?") : qsTr("Stop tuning %1 matching rows?")).arg(screen.bulkRows.length) + qsTr(" Both the search and category filters apply.")
             wrapMode: Text.Wrap
@@ -53,6 +53,13 @@ Item {
     property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested
     signal closed
+    // Shown, fade included (issue #782). Hidden, the cards and category chips
+    // let their models go: a scan brings each target's own table, and every
+    // card or chip rebuilt under the hidden screen sends accessibility events.
+    // The filters live in talkgroupView and stay set; reopening lists the
+    // table as it is then, with the reader back on the card they had at the
+    // top (gridPlace), or from the top when the table was replaced meanwhile.
+    readonly property bool live: screen.visible
     onVisibleChanged: {
         if (!visible)
             editSheet.visible = false;
@@ -85,7 +92,8 @@ Item {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.right: parent.right
             anchors.leftMargin: 14
@@ -142,7 +150,7 @@ Item {
         clip: true
         implicitHeight: Math.max(48, Theme.fontSize(13) + 24)
         visible: talkgroups.categories.length > 0
-        model: [qsTr("All")].concat(talkgroups.categories)
+        model: screen.live ? [qsTr("All")].concat(talkgroups.categories) : []
 
         delegate: FilterPill {
             required property int index
@@ -241,7 +249,8 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         clip: true
-        model: talkgroupView
+        // Set by gridPlace below, only while the grid is visible (issue #782).
+        model: null
         spacing: 10
         enabled: decoderHost.running
 
@@ -260,7 +269,7 @@ Item {
             onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record, tableIndex, pattern)
         }
 
-        Text {
+        ReadableText {
             anchors.centerIn: parent
             width: parent.width - 24
             visible: talkgroups.count === 0
@@ -273,6 +282,34 @@ Item {
         }
     }
 
+    // Hands the grid its model only while it is shown and keeps the reader on
+    // the card they had at the top (issue #782; see `live` above). A table
+    // replaced while hidden resets the model, and the grid starts from the
+    // top, as it does on a reset while shown.
+    KeepPlace {
+        id: gridPlace
+        list: grid
+        model: talkgroupView
+        // A card is its bounds, pattern and table index, the token its edits
+        // carry: an exact row and a range can share a start, every pattern row
+        // has the bounds 0-0, and a table can list the same bounds twice.
+        keyOf: function (card) {
+            return {start: card.idStart, end: card.idEnd, pattern: card.pattern, table: card.tableIndex};
+        }
+        rowOf: function (key) {
+            return talkgroupView.rowForCard(key.start, key.end, key.pattern, key.table);
+        }
+    }
+    // A search or category set while the grid is hidden is a new question:
+    // the grid shows its answer from the top, as History does.
+    Connections {
+        target: talkgroupView
+
+        function onFilterChanged() {
+            gridPlace.forget();
+        }
+    }
+
     Column {
         id: footer
 
@@ -282,14 +319,14 @@ Item {
         anchors.margins: Theme.screenPadding
         spacing: 8
 
-        Text {
+        ReadableText {
             width: parent.width
             text: talkgroups.persistenceScope === "scan" ? qsTr("This scan target · session changes; the source CSV is unchanged") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }
-        Text {
+        ReadableText {
             width: parent.width
             text: metrics.uiMessage || screen.bulkMessage
             visible: text.length > 0
@@ -298,7 +335,7 @@ Item {
             font.pixelSize: Theme.fontSize(13)
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             text: screen.saveMessage
             visible: text.length > 0
@@ -306,7 +343,7 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Text {
+        ReadableText {
             objectName: "talkgroupCommandToast"
             width: parent.width
             text: metrics.uiMessage
@@ -316,7 +353,7 @@ Item {
             textFormat: Text.PlainText
         }
 
-        Text {
+        ReadableText {
             objectName: "sessionOnlyNote"
             width: parent.width
             visible: !talkgroups.persistent
@@ -327,7 +364,7 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             visible: talkgroups.allowListMode
             text: qsTr("Allow list on: talkgroups not on this list are never tuned.")

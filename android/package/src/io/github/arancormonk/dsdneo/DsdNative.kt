@@ -30,7 +30,7 @@ object DsdNative {
         HostDiagnostics.nativeReady()
     }
 
-    external fun nativeInit(configDir: String, cacheDir: String): Int
+    external fun nativeInit(configDir: String): Int
 
     external fun nativeConfigure(args: Array<String>, sessionId: Long): Int
 

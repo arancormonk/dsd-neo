@@ -369,9 +369,21 @@ Item {
             y: (header.titleHeight - height) / 2
             spacing: 2
 
+            // Names what the receiver is tuned to, which a scan changes on every
+            // hop: read at the readings' pace (issue #782, SpeechPacer).
             MicroLabel {
+                id: spectrumTitle
+                objectName: "spectrumTitle"
                 width: parent.width
                 elide: Text.ElideRight
+                Accessible.name: spectrumTitlePace.spoken
+                SpeechPacer {
+                    id: spectrumTitlePace
+                    shown: !spectrumTitle.Accessible.ignored
+                    read: function () {
+                        return spectrumTitle.text;
+                    }
+                }
                 text: {
                     if (typeof knownFrequencies === "undefined")
                         return qsTr("Spectrum");
@@ -386,8 +398,11 @@ Item {
 
                 spacing: 6
 
-                Text {
+                LiveText {
                     objectName: "spectrumCenterReadout"
+                    // A drag moves it on every frame; where the radio lands is heard at once,
+                    // except a scan's hop (Util.tuneStep), read at the readings' pace.
+                    step: metrics && metrics.scanRotationActive ? Util.tuneStep(metrics) : String(screen.tunedHz)
                     // Never elided: this is the frequency the radio is on, and a
                     // readout that drops a digit is worse than one that is tight.
                     text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
@@ -429,7 +444,7 @@ Item {
             border.width: 1
             border.color: screen.viewOnly ? Theme.encBorder : screen.sweeping ? Theme.cyan : Theme.panelBorder
 
-            Text {
+            ReadableText {
                 id: statusLabel
 
                 anchors.centerIn: parent
@@ -498,8 +513,27 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 2
 
+                // One item for a screen reader (issue #782): the sync, SNR, offset
+                // and talkgroup as shown, read where it is reached. Its readings
+                // rename it as they move, which Android speaks only while it is
+                // focused; the line's own place never moves with them.
                 Row {
                     id: statusLine
+                    objectName: "spectrumStatusLine"
+
+                    Accessible.role: Accessible.StaticText
+                    readonly property bool navigationAllowed: Navigation.allows(statusLine)
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.name: statusSpeech.spoken
+                    SpeechPacer {
+                        id: statusSpeech
+                        group: statusLine
+                        shown: !statusLine.Accessible.ignored
+                        // A new sync or call is heard at once; the SNR and offset at the readings' pace,
+                        // and a scan's hop too (Util.tuneStep).
+                        step: [metrics.syncedHere, metrics.syncLabel, metrics.carrierLock, Util.tuneStep(metrics),
+                            callLabel.text].join("|")
+                    }
 
                     // Wider than the line, the talkgroup gives way first, then
                     // the offset; the sync and SNR are what the strip is for.
@@ -624,6 +658,10 @@ Item {
                     color: live ? Theme.textPrimary : Theme.textSubdued
                     Accessible.role: Accessible.StaticText
                     Accessible.name: metrics.carrierIdentityText.length === 0 ? "" : live ? qsTr("System identity: %1").arg(metrics.carrierIdentityText) : qsTr("System identity, last heard: %1").arg(metrics.carrierIdentityText)
+                    // Out of the tree with nothing to say (issue #782): a nameless line
+                    // was a swipe stop that read nothing. And behind the top layer, as
+                    // every reading.
+                    Accessible.ignored: !Navigation.allows(identityLabel) || !visible || metrics.carrierIdentityText.length === 0
 
                     FontMetrics {
                         id: identityFont
@@ -699,11 +737,18 @@ Item {
                 // freshly built list destroys and recreates every label each time
                 // the viewport moves, which during a drag is fifteen times a
                 // second. The delegates stay put and only their bindings re-evaluate.
+                //
+                // The ticks are a scale, drawn in the section label's type and
+                // left out of the accessibility tree (issue #782): they move and
+                // rename on every retune, a scan's every hop, and the readout
+                // already says where the receiver is.
                 Repeater {
                     model: body.maxTicks
 
-                    MicroLabel {
+                    Text {
                         required property int index
+
+                        objectName: "spectrumScaleLabel"
 
                         readonly property var tick: index < body.ticks.length ? body.ticks[index] : null
 
@@ -713,7 +758,10 @@ Item {
                         x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth, (tick.xFraction * axis.width) - (implicitWidth / 2)))) : 0
                         y: Math.round((axis.height - implicitHeight) / 2)
                         text: tick ? tick.label : ""
-                        font.capitalization: Font.MixedCase
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        font.letterSpacing: Theme.fontSize(11) * 0.18
+                        color: Theme.textSubdued
                     }
                 }
             }
@@ -752,7 +800,7 @@ Item {
                 viewSpanHz: spectrum.viewSpanHz
             }
 
-            Text {
+            ReadableText {
                 anchors.centerIn: waterfall
                 visible: !spectrum.hasData
                 text: qsTr("Waiting for signal data…")
@@ -928,6 +976,8 @@ Item {
                             activeFocusOnTab: Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Start or stop frequency sweep")
+                            // The step it sweeps by, which its label shows.
+                            Accessible.description: sweepLabel.text
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
                             Keys.onSpacePressed: activate()
@@ -1225,7 +1275,7 @@ Item {
         // Where the way out would be, why there is none: a replay is a recording
         // of where the receiver went, and nothing here can move it. The engine's
         // own words, so this and a refused command never disagree.
-        Text {
+        ReadableText {
             id: replayReason
 
             objectName: "spectrumReplayReason"
@@ -1263,7 +1313,7 @@ Item {
             border.width: 1
             border.color: Theme.panelBorder
 
-            Text {
+            ReadableText {
                 id: toastLabel
 
                 anchors.centerIn: parent
@@ -1352,12 +1402,16 @@ Item {
                 screen.hint = qsTr("Cannot tune to %1 MHz").arg(Util.mhzText(mhz * 1.0e6));
         }
 
+        // Read in the field's name (issue #782), not as a heading of its own.
         MicroLabel {
+            objectName: "spectrumGoToCaption"
             text: qsTr("Go to")
+            Accessible.ignored: true
         }
 
         FrequencyField {
             id: goToField
+            accessibleName: qsTr("Go to frequency in MHz")
 
             width: parent.width
             fieldObjectName: "spectrumGoToField"
@@ -1390,7 +1444,7 @@ Item {
         }
 
         // What Tune costs while a scan has the tuner, said before it is paid.
-        Text {
+        ReadableText {
             objectName: "spectrumGoToScanNote"
             width: parent.width
             visible: screen.scanOwnsTuner
@@ -1430,7 +1484,8 @@ Item {
 
         objectName: "spectrumExploreConfirm"
 
-        Text {
+        ReadableText {
+            heading: true
             width: parent.width
             text: qsTr("Explore from here?")
             font.family: Theme.sans
@@ -1443,7 +1498,7 @@ Item {
         // Names what stops, and — the part people actually worry about —
         // what does not. A scan pauses rather than stops (issue #671), and
         // Resume scan is the way back.
-        Text {
+        ReadableText {
             objectName: "spectrumExploreConfirmText"
             width: parent.width
             text: metrics.scanKind === 2 ? qsTr("This pauses the scan. Resume scan picks it up again; the scan list itself is unchanged.") : metrics.scanKind === 1 ? qsTr("This pauses stepping through the channel list. Resume scan picks it up again; the saved system itself is unchanged.") : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")

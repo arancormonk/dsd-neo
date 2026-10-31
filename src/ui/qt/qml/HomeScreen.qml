@@ -101,7 +101,8 @@ Item {
         requestedSource: screen.requestedSource
     }
 
-    component ListenTitle: Text {
+    component ListenTitle: ReadableText {
+        heading: true
         text: qsTr("Listen")
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(24)
@@ -157,7 +158,8 @@ Item {
             Accessible.role: deviceStatus.canAct ? Accessible.Button : Accessible.StaticText
             Accessible.name: deviceStatus.accessibleName
             Accessible.description: deviceStatus.detailText
-            Accessible.focusable: true
+            // Issue #782: focusable only while in the tree (see OutlineButton).
+            Accessible.focusable: navigationAllowed && visible
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onReturnPressed: activate()
@@ -278,10 +280,12 @@ Item {
                     y: Theme.cardPadding
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 12
+                    // Read as the status pill's description (issue #782).
                     Text {
                         objectName: "dongleStatusText"
                         width: parent.width
                         text: deviceStatus.detailText
+                        Accessible.ignored: true
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)
@@ -321,7 +325,7 @@ Item {
                     y: Theme.cardPadding
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 10
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: screen.completionMessage
                         wrapMode: Text.Wrap
@@ -357,7 +361,7 @@ Item {
                         text: qsTr("+ Add a system")
                         onClicked: radioReference.available ? addSystemMenu.open() : screen.addSystem()
                     }
-                    Text {
+                    ReadableText {
                         objectName: "addSystemHint"
                         width: parent.width
                         text: qsTr("USB, Airspy, network or file")
@@ -419,7 +423,7 @@ Item {
                         anchors.verticalCenterOffset: card.refreshHint ? -20 : -10
                         spacing: 4
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             objectName: "savedSystemTitle"
                             text: card.name
@@ -430,7 +434,7 @@ Item {
                             elide: Text.ElideRight
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             text: Util.systemMeta(card)
                             font.family: Theme.mono
@@ -439,7 +443,7 @@ Item {
                             elide: Text.ElideRight
                         }
 
-                        Text {
+                        ReadableText {
                             width: parent.width
                             // heardTick forces the minute-by-minute refresh.
                             objectName: "savedSystemMeta"
@@ -451,7 +455,7 @@ Item {
                         }
                     }
 
-                    Text {
+                    ReadableText {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
@@ -577,7 +581,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 4
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         text: qsTr("Explore the band")
                         font.family: Theme.sans
@@ -587,7 +591,7 @@ Item {
                         elide: Text.ElideRight
                     }
 
-                    Text {
+                    ReadableText {
                         width: parent.width
                         objectName: "homeExploreSubtitle"
                         text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
@@ -781,7 +785,8 @@ Item {
         anchors.margins: Theme.screenPadding
         width: 280
         PointerBarrier {}
-        Text {
+        ReadableText {
+            heading: true
             id: recentTitle
             anchors.top: parent.top
             anchors.left: parent.left
@@ -801,8 +806,11 @@ Item {
             anchors.bottom: parent.bottom
             anchors.topMargin: 12
             clip: true
-            model: callHistory
+            // Set by recentPlace below, only while the list is visible (issue #782).
+            model: null
             delegate: CallRow {
+                // The row's identity, for recentPlace.
+                readonly property var rowUid: model.uid
                 width: recentList.width
                 name: model.name
                 metaText: model.systemName
@@ -830,14 +838,31 @@ Item {
                     accessCodeText: model.accessCodeText
                 })
             }
-            Text {
+            ReadableText {
+                objectName: "homeRecentEmpty"
                 anchors.centerIn: parent
                 width: parent.width - 32
-                visible: recentList.count === 0
+                // The store's count, not the view's: the view holds no rows while hidden.
+                visible: callHistory.count === 0
                 text: qsTr("Received activity will appear here.")
                 wrapMode: Text.Wrap
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSize(14)
+            }
+        }
+        // Hidden, the list holds no rows (issue #782): a session runs on the
+        // monitor with this screen under it, and every row built for a call
+        // landing there is announced to accessibility clients as hidden.
+        // Shown again, it lists the calls as they are then, and a reader who
+        // had scrolled down is back on the same row.
+        KeepPlace {
+            list: recentList
+            model: callHistory
+            keyOf: function (row) {
+                return row.rowUid;
+            }
+            rowOf: function (uid) {
+                return callHistory.rowForUid(uid);
             }
         }
     }

@@ -11,11 +11,11 @@
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <string>
 
 #include "rtl_perf.h"
+#include "test_env.h"
 #include "test_support.h"
 
 /* The logger's stream is a real file the test reads back by name, without
@@ -107,8 +107,8 @@ test_dsd_fstat(int fd, dsd_stat_t* st) {
 static void
 reset_fixture(void) {
     rtl_perf_shutdown();
-    (void)dsd_unsetenv("DSD_NEO_RTL_PERF_CSV");
-    (void)dsd_unsetenv("DSD_NEO_RTL_PERF_INTERVAL_MS");
+    (void)dsd_test_unsetenv("DSD_NEO_RTL_PERF_CSV");
+    (void)dsd_test_unsetenv("DSD_NEO_RTL_PERF_INTERVAL_MS");
     remove_csv_capture();
     g_csv_file = nullptr;
     g_open_count = 0;
@@ -133,8 +133,8 @@ test_disabled_without_env(void) {
 static void
 test_csv_logging_aggregates_and_resets(void) {
     reset_fixture();
-    (void)dsd_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
-    (void)dsd_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "1", 1);
 
     assert(rtl_perf_enabled() == 1);
     assert(g_open_count == 1);
@@ -183,8 +183,8 @@ static void
 test_existing_file_skips_header(void) {
     reset_fixture();
     g_stub_size = 99;
-    (void)dsd_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
-    (void)dsd_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "60001", 1);
+    (void)dsd_test_setenv("DSD_NEO_RTL_PERF_CSV", "1", 1);
+    (void)dsd_test_setenv("DSD_NEO_RTL_PERF_INTERVAL_MS", "60001", 1);
     assert(rtl_perf_enabled() == 1);
     std::string output = read_csv_capture();
     assert(output.find("time_ms,source") == std::string::npos);

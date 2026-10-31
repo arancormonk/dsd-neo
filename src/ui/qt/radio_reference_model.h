@@ -359,6 +359,7 @@ class RadioReferenceModel : public QObject {
     void cancelLocation();
     void applyLocation(qint64 id, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs, bool geocodeOk,
                        const QString& postal, const QString& country, const QString& error);
+    void applyLocationCancelled(qint64 id);
     void startBatch(const QString& status);
 
     /** @brief Build a request context, or report why one could not be made. */

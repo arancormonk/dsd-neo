@@ -22,7 +22,7 @@ UiPanel {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 5
 
-        Text {
+        ReadableText {
             width: parent.width
             text: card.listName
             elide: Text.ElideRight
@@ -31,7 +31,7 @@ UiPanel {
             font.pixelSize: Theme.fontSize(17)
         }
 
-        Text {
+        ReadableText {
             width: parent.width
             wrapMode: Text.Wrap
             text: card.isDraft ? qsTr("Not ready · draft") : qsTr("%1 entries").arg(card.entryCount)

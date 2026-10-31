@@ -745,6 +745,11 @@ class DecoderHost : public QObject {
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);
     /**
+     * @brief The request ended with nothing to report, in place of a locationResult: the platform cancelled it, as
+     *        Android does with a permission prompt it closes unanswered (#782). Not an error; callers settle quietly.
+     */
+    void locationCancelled(qint64 requestId);
+    /**
      * @brief A supported receiver was plugged in; each attachment is delivered once.
      *
      * @p attachment is "<kind>:<device name>": the kind is "usb" for an RTL-SDR or "airspy", and decides which

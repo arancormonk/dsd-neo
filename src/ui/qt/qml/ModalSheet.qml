@@ -35,7 +35,8 @@ Rectangle {
     property bool adjustingFocus: false
     readonly property bool isTopModal: Navigation.topModal === sheet
     Accessible.role: Accessible.Dialog
-    Accessible.name: accessibleName
+    // Issue #782: nameless while covered or closed, like the rest of it.
+    Accessible.name: isTopModal && visible ? accessibleName : ""
     Accessible.ignored: !visible || !isTopModal
     z: 100 + Math.max(0, Navigation.modals.indexOf(sheet))
 
@@ -116,7 +117,11 @@ Rectangle {
         if (visible)
             Navigation.addModal(sheet);
     }
-    Component.onDestruction: Navigation.removeModal(sheet)
+    Component.onDestruction: {
+        Navigation.removeModal(sheet);
+        if (treeRefresh !== null)
+            treeRefresh.destroy();
+    }
     Keys.onEscapePressed: Navigation.back(sheet.Window.window)
     Keys.onBackPressed: Navigation.back(sheet.Window.window)
 
@@ -154,6 +159,44 @@ Rectangle {
     anchors.fill: parent
     visible: false
     color: Qt.alpha("#000000", 0.5)
+
+    // Issue #782: tells Android's bridge to read the window's tree again each
+    // time this sheet becomes the top layer or stops being it (opened, covered
+    // by another sheet, uncovered, closed). Covered or closed, a sheet leaves
+    // the accessibility tree, and leaving it raises nothing the bridge passes
+    // on, so TalkBack went on swiping through the copy it held of a covered
+    // sheet. This item, under the window's content item and never left out of
+    // the tree, shows and hides with the sheet's turn on top; the bridge
+    // passes a show or hide on as a change to the whole subtree under its
+    // parent, the window. Its opacity is 0, so it is reported invisible (an
+    // item with no size is not: Qt measures it by its parent, the window), and
+    // it has no name: nothing reads or reaches it.
+    //
+    // It is made the first time the sheet takes the top with a screen reader
+    // on, never before: a new item starts out visible, so one built hidden with
+    // each sheet raised a show and a hide under the window as its screen was
+    // built, each read by the bridge as a change to the whole window (three
+    // sheets made the Spectrum's first open about twice as long under TalkBack).
+    readonly property bool topTurn: visible && isTopModal
+    property Item treeRefresh: null
+    onTopTurnChanged: {
+        if (topTurn && treeRefresh === null && Window.contentItem !== null && typeof screenReader !== "undefined"
+                && screenReader.active)
+            treeRefresh = treeRefreshComponent.createObject(Window.contentItem, {
+                "objectName": objectName.length ? objectName + "TreeRefresh" : "modalSheetTreeRefresh"
+            });
+    }
+    Component {
+        id: treeRefreshComponent
+        Item {
+            width: 0
+            height: 0
+            opacity: 0
+            visible: sheet.topTurn
+            Accessible.role: Accessible.Grouping
+            Accessible.focusable: false
+        }
+    }
 
     PointerBarrier {
         // A tap, not a click: MouseArea.clicked fires for any press and release

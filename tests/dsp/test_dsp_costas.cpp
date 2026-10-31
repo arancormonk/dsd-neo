@@ -23,7 +23,6 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
@@ -32,6 +31,7 @@
 #include <vector>
 
 #include "dsd-neo/core/safe_api.h"
+#include "test_env.h"
 
 static demod_state*
 alloc_state(void) {
@@ -741,7 +741,7 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
 
 static int
 expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
-    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
     dsd_neo_config_init();
 
     const int sps = 8;
@@ -810,7 +810,7 @@ test_p25p2_tracking_gain_honors_runtime_override_after_lock(void) {
  */
 static int
 expect_tetra_chain_gain(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
-    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
     dsd_neo_config_init();
     const int sps = 4;
     const int pairs = 64 * sps;
@@ -1397,7 +1397,7 @@ gardner_cold_start_ok(const char* label, const demod_state* s, int block, int ma
 
 static int
 test_gardner_short_blocks_match_whole_stream(void) {
-    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
     dsd_neo_config_init();
 
     const std::vector<float> stream = gardner_split_stream();
@@ -1476,7 +1476,7 @@ test_gardner_short_blocks_match_whole_stream(void) {
  */
 static int
 test_gardner_out_of_range_samples_enter_as_zero(void) {
-    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
     dsd_neo_config_init();
 
     std::vector<float> stream = gardner_split_stream();

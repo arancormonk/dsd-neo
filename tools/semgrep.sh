@@ -21,7 +21,7 @@ Options:
                     May be supplied multiple times.
 
 Arguments:
-  paths...          Optional paths to scan. Default: src include apps tests tools .github/workflows
+  paths...          Optional paths to scan. Default: src include apps tests tools android .github/workflows
 
 Environment:
   DSD_SEMGREP_JOBS       Optional Semgrep parallelism override.
@@ -93,14 +93,16 @@ if ! command -v semgrep > /dev/null 2>&1; then
 fi
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-  TARGETS=(src include apps tests tools .github/workflows)
+  # android/ holds project-owned JNI, Kotlin and build glue; its vendored
+  # snapshots are dropped from the expanded file list below.
+  TARGETS=(src include apps tests tools android .github/workflows)
 fi
 
 # Exercise the local guardrails before trusting a strict scan. Fixtures live
 # outside the scan targets because they intentionally contain violations.
 # semgrep --test takes one target, so each fixture runs on its own.
 if [[ $STRICT -eq 1 && $CUSTOM_CONFIGS -eq 0 ]]; then
-  for fixture in semgrep/dsd-neo.c semgrep/dsd-neo.cpp semgrep/dsd-neo.js; do
+  for fixture in semgrep/dsd-neo.c semgrep/dsd-neo.cpp semgrep/dsd-neo.js semgrep/dsd-neo.kt; do
     semgrep --test --metrics=off --disable-version-check --config semgrep/dsd-neo.yml "$fixture"
   done
 fi
@@ -116,6 +118,11 @@ if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
       while IFS= read -r path; do
         DIR_TARGETS+=("$path")
       done < <(git ls-files --cached --others --exclude-standard -- "$target" | while IFS= read -r path; do
+        # Vendored upstream snapshots keep upstream code; keep in step with
+        # tools/ci_changed_files.sh and .githooks/pre-push, which drop the same paths.
+        case "$path" in
+          src/third_party/* | android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*) continue ;;
+        esac
         if [[ -f "$path" ]]; then
           printf '%s\n' "$path"
         fi

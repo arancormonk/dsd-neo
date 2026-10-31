@@ -14,6 +14,7 @@
 #include <qcoreapplication_platform.h>
 #include "decoder_host_android.h"
 #include "diagnostics_log.h"
+#include "location_record.h"
 #include "run_status.h"
 
 #include <QCoreApplication>
@@ -735,17 +736,7 @@ DecoderHostAndroid::refreshLocation() {
     // WP-D3: drain a single terminal location result, independently of decoder state.
     const auto locationRecord =
         QJniObject::callStaticObjectMethod(kLocationClass, "pollResult", "()Ljava/lang/String;");
-    const auto location = QJsonDocument::fromJson(locationRecord.toString().toUtf8()).object();
-    if (!location.isEmpty()) {
-        Q_EMIT locationResult(
-            location.value(QStringLiteral("id")).toInteger(), location.value(QStringLiteral("fixOk")).toBool(),
-            location.value(QStringLiteral("lat")).toDouble(), location.value(QStringLiteral("lon")).toDouble(),
-            location.value(QStringLiteral("accuracyM")).toDouble(),
-            location.value(QStringLiteral("fixAtMs")).toInteger(), location.value(QStringLiteral("geocodeOk")).toBool(),
-            location.value(QStringLiteral("postalCode")).toString(),
-            location.value(QStringLiteral("countryCode")).toString(),
-            location.value(QStringLiteral("error")).toString());
-    }
+    deliver_location_record(*this, QJsonDocument::fromJson(locationRecord.toString().toUtf8()).object());
 }
 
 void

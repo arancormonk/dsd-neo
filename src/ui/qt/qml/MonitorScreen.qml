@@ -85,6 +85,33 @@ Item {
     // calls coming and going never move the screen below it, and shown for an active second call whatever the
     // carrier is known to be. With no call it stands for slot 2; with slot 2 leading, for slot 1.
     readonly property bool stripVisible: metrics.twoSlotCarrier || otherActive
+    // A scan rotation that mixes two-slot and single-slot carriers (issue #782): once it has visited a two-slot one,
+    // the strip's place stays reserved for the rest of the rotation, empty on a single-slot carrier, so the hops never
+    // move the scan buttons under it, the list or the tier. Set by the handlers below, never by a binding on itself;
+    // the rotation ending and a new session clear it. A new session is seen as an edge of decoderHost.running, the
+    // only session boundary the host publishes: a stop, then a start. A restart that kept running true would carry
+    // the reservation over, which costs at most a blank strip until that rotation ends.
+    property bool rotationReservesStrip: false
+    readonly property bool stripRotating: metrics.scanRotationActive
+    readonly property bool stripTwoSlot: metrics.twoSlotCarrier
+    function noteStripReserve() {
+        if (!stripRotating)
+            rotationReservesStrip = false;
+        else if (stripTwoSlot)
+            rotationReservesStrip = true;
+    }
+    onStripRotatingChanged: noteStripReserve()
+    onStripTwoSlotChanged: noteStripReserve()
+    Component.onCompleted: noteStripReserve()
+    Connections {
+        target: decoderHost
+        function onRunningChanged() {
+            screen.rotationReservesStrip = false;
+            screen.noteStripReserve();
+        }
+    }
+    // The strip's place in the layout: what the budget measures and what the scene shows, from this one value.
+    readonly property bool stripPlaceHeld: stripVisible || rotationReservesStrip
     readonly property bool stripIdle: !otherActive
     readonly property int stripSlot: heroSlot === 2 ? 1 : 2
     readonly property string otherName: otherSlot === 1 ? metrics.slot1CallName : otherSlot === 2 ? metrics.slot2CallName : ""
@@ -212,7 +239,9 @@ Item {
     //   5  even 4 leaves less than one row: only Stop stays put and everything
     //      else scrolls with the calls, so every control stays reachable.
     // Only the size, the fonts and which live-strip parts the session shows feed
-    // it, never call content, so traffic never moves the screen.
+    // it, never call content, so traffic never moves the screen. A scan's hops
+    // between two-slot and single-slot carriers do not move it either: the
+    // rotation keeps the slot strip's place (rotationReservesStrip).
     readonly property int tier: {
         var two = 2 * callRowHeight;
         for (var t = 0; t <= 4; ++t) {
@@ -242,8 +271,8 @@ Item {
     readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
     readonly property real stripHeight: {
         var parts = [];
-        if (stripVisible)
-            parts.push(otherSlotPanel.height);
+        if (stripPlaceHeld)
+            parts.push(otherSlotHost.height);
         if (metrics.scanRotationActive || screen.scanPaused)
             parts.push(scanControls.height);
         return columnHeight(parts);
@@ -355,6 +384,44 @@ Item {
             localDetailsExpanded = on;
     }
 
+    // A group of readings read as one node, named by what it shows at the
+    // readings' pace (issue #782, SpeechPacer); `speechStep` is what is heard
+    // at once. The labels and values inside stay plain.
+    component ReadingFlow: Flow {
+        id: readingFlow
+        property alias speechStep: readingFlowSpeech.step
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(readingFlow)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: readingFlowSpeech.spoken
+        SpeechPacer {
+            id: readingFlowSpeech
+            group: readingFlow
+            shown: !readingFlow.Accessible.ignored
+        }
+    }
+    component ReadingRow: Row {
+        id: readingRow
+        property alias speechStep: readingRowSpeech.step
+        Accessible.role: Accessible.StaticText
+        readonly property bool navigationAllowed: Navigation.allows(readingRow)
+        Accessible.ignored: !navigationAllowed || !visible
+        Accessible.name: readingRowSpeech.spoken
+        SpeechPacer {
+            id: readingRowSpeech
+            group: readingRow
+            shown: !readingRow.Accessible.ignored
+        }
+    }
+
+    // What makes a moving reading worth hearing at once (issue #782; SpeechPacer):
+    // a call starting or ending on either slot, a change of lock or sync, and a
+    // scan held or released (off a scan, a new frequency). A scan's hop alone
+    // is not one (Util.tuneStep). Between these, readings are re-read at most
+    // every 5 s.
+    readonly property string speechStep: [Util.tuneStep(metrics), metrics.carrierLock, metrics.syncedHere,
+        metrics.syncLabel, heroSlot, heroTgId, heroSrc, otherSlot, otherTgId].join("|")
+
     // The disclosure's one-line summary, most important first: the radio's SNR,
     // decode quality (a codec fault in the alert colour ahead of it), the
     // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
@@ -419,7 +486,8 @@ Item {
                 anchors.top: parent.top
                 spacing: 3
 
-                Text {
+                ReadableText {
+                    heading: true
                     width: parent.width
                     objectName: "monitorHeaderTitle"
                     text: screen.systemName
@@ -430,9 +498,14 @@ Item {
                     elide: Text.ElideRight
                 }
 
-                Text {
+                // Paced (issue #782): a scan can hop every 300 ms, and a header named
+                // by its live text was read out on every hop. Heard at once when a
+                // scan starts or stops or is held or released; otherwise the target
+                // it is on is read at most every 5 s.
+                LiveText {
                     width: parent.width
                     objectName: "scanTargetHeader"
+                    step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
                     text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
@@ -447,9 +520,12 @@ Item {
                 // decimal place -- so a reader moving between the two surfaces reads
                 // the same line. Which budgets appear at all was decided in
                 // app-control; a zero here means "the view withheld it".
-                Text {
+                LiveText {
                     width: parent.width
                     objectName: "scanTimingRow"
+                    // The countdowns tick; why the scan stays, and its state, are heard at once.
+                    step: [screen.speechStep, metrics.scanTimingVisible, metrics.scanStayPhrase, metrics.scanDwellState,
+                        metrics.scanVisitLive].join("|")
                     // Kept for the whole rotation, blank between stays (#718): the view
                     // publishes and withdraws it with each followed call, and a line
                     // coming and going would move everything below the header.
@@ -672,6 +748,27 @@ Item {
             width: parent.width
             height: screen.heroCompact ? screen.heroCompactHeight : screen.heroFullHeight
             readonly property int padding: screen.heroCompact ? 12 : 14
+            // The call it captions as one item for a screen reader (issue #782):
+            // the name the canvas draws, then its subline (ids, tags, algorithm,
+            // channel), or what it is waiting for. The duration reads on its
+            // own, so the seconds counting do not rename this.
+            Accessible.role: Accessible.StaticText
+            readonly property bool navigationAllowed: Navigation.allows(hero)
+            Accessible.ignored: !navigationAllowed || !visible
+            // Through a pacer (issue #782): its waiting line follows the lock, which
+            // can flap; a call starting or ending is a step and heard at once.
+            Accessible.name: heroSpeech.spoken
+            SpeechPacer {
+                id: heroSpeech
+                shown: !hero.Accessible.ignored
+                step: screen.speechStep
+                read: function () {
+                    return [screen.heroSlot === 0 ? heroWaitingText.text : screen.heroHeadline,
+                        heroSubline.visible ? Util.shownText(heroSubline) : ""].filter(function (part) {
+                        return part.length > 0;
+                    }).join(", ");
+                }
+            }
 
             // Faint diagonal cyan→magenta wash over the panel.
             Rectangle {
@@ -746,6 +843,7 @@ Item {
                     }
 
                     Text {
+                        id: heroWaitingText
                         objectName: "heroWaiting"
                         visible: screen.heroSlot === 0
                         width: parent.width
@@ -760,9 +858,10 @@ Item {
                         color: Theme.textSubdued
                     }
 
-                    Text {
+                    LiveText {
                         id: heroCompactDuration
                         objectName: "heroCompactDuration"
+                        step: screen.speechStep
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         visible: screen.heroCompact && screen.heroSlot !== 0
@@ -898,8 +997,9 @@ Item {
                 active: screen.heroActive
             }
 
-            Text {
+            LiveText {
                 objectName: "heroDuration"
+                step: screen.speechStep
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.rightMargin: Theme.cardPadding
@@ -919,7 +1019,6 @@ Item {
     // the session has them. Fixed under the hero in tiers 0-2; in the list header,
     // above the disclosure, from tier 3.
     Column {
-        id: stripGroup
         objectName: "monitorLiveStrip"
         parent: screen.stripInList ? stripSlot : stripHost
         width: parent ? parent.width : 0
@@ -929,110 +1028,127 @@ Item {
         // The concurrent TDMA call on the non-hero slot: identity plus its own
         // call controls, so a second conversation is never invisible or untouchable.
         // On a two-slot carrier the strip holds its place while that slot is idle.
-        UiPanel {
-            id: otherSlotPanel
+        // The host holds the place itself: while it is shown the scan controls
+        // below never move, and during a rotation that has visited a two-slot
+        // carrier it stays, blank, on a single-slot one (issue #782). A plain
+        // Item, so holding the place says nothing to an accessibility client;
+        // only the panel inside comes and goes with the slot.
+        Item {
+            id: otherSlotHost
+            objectName: "otherSlotHost"
             width: parent.width
-            objectName: "otherSlotPanel"
-            visible: screen.stripVisible
             height: 56
+            visible: screen.stripPlaceHeld
 
-            MicroLabel {
-                id: otherSlotLabel
-                objectName: "otherSlotLabel"
-                anchors.left: parent.left
-                anchors.leftMargin: Theme.cardPadding
-                anchors.verticalCenter: parent.verticalCenter
-                text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
-            }
+            UiPanel {
+                id: otherSlotPanel
+                anchors.fill: parent
+                objectName: "otherSlotPanel"
+                visible: screen.stripVisible
 
-            Text {
-                id: otherIdentityText
-                objectName: "otherSlotIdentity"
-                visible: !screen.stripIdle
-                anchors.left: otherSlotLabel.right
-                anchors.leftMargin: 10
-                anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                text: screen.otherIdentity
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-                elide: Text.ElideRight
-            }
+                MicroLabel {
+                    id: otherSlotLabel
+                    objectName: "otherSlotLabel"
+                    anchors.left: parent.left
+                    anchors.leftMargin: Theme.cardPadding
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+                }
 
-            // The call's name outranks its tag on this narrow line: the tag shows only
-            // where the whole identity still fits beside it and the ENC and EMERGENCY
-            // tags, which keep their places. Measured from the identity's natural
-            // width and the siblings' fixed edges, so no width binding loops.
-            PrivateTag {
-                id: otherPrivateTag
-                objectName: "otherPrivateTag"
-                readonly property real room: otherSkip.x - 10 - (otherEncTag.visible ? otherEncTag.width + 10 : 0) - (otherEmergencyTag.visible ? otherEmergencyTag.width + 10 : 0) - (otherSlotLabel.x + otherSlotLabel.width + 10)
-                visible: !screen.stripIdle && screen.otherPrivate && otherIdentityText.implicitWidth + 10 + implicitWidth <= room
-                anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                ReadableText {
+                    id: otherIdentityText
+                    objectName: "otherSlotIdentity"
+                    visible: !screen.stripIdle
+                    // With its tags, which sit beside it (issue #782); PRIVATE even where the line has no room
+                    // to draw it, since the kind of call is not something to drop for a screen reader.
+                    Accessible.name: Accessible.ignored ? "" : [text, screen.otherPrivate || otherPrivateTag.visible ? otherPrivateTag.label : "", otherEmergencyTag.visible ? Util.shownText(otherEmergencyTag) : "", otherEncTag.visible ? Util.shownText(otherEncTag) : ""].filter(function (part) {
+                        return part.length > 0;
+                    }).join(", ")
+                    anchors.left: otherSlotLabel.right
+                    anchors.leftMargin: 10
+                    anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: screen.otherIdentity
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(14)
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                    elide: Text.ElideRight
+                }
 
-            EmergencyTag {
-                id: otherEmergencyTag
-                objectName: "otherEmergencyTag"
-                visible: !screen.stripIdle && screen.otherEmergency
-                anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                // The call's name outranks its tag on this narrow line: the tag shows only
+                // where the whole identity still fits beside it and the ENC and EMERGENCY
+                // tags, which keep their places. Measured from the identity's natural
+                // width and the siblings' fixed edges, so no width binding loops.
+                PrivateTag {
+                    id: otherPrivateTag
+                    objectName: "otherPrivateTag"
+                    readonly property real room: otherSkip.x - 10 - (otherEncTag.visible ? otherEncTag.width + 10 : 0) - (otherEmergencyTag.visible ? otherEmergencyTag.width + 10 : 0) - (otherSlotLabel.x + otherSlotLabel.width + 10)
+                    visible: !screen.stripIdle && screen.otherPrivate && otherIdentityText.implicitWidth + 10 + implicitWidth <= room
+                    anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-            EncTag {
-                id: otherEncTag
-                visible: !screen.stripIdle && screen.otherEnc
-                anchors.right: otherSkip.left
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                EmergencyTag {
+                    id: otherEmergencyTag
+                    objectName: "otherEmergencyTag"
+                    visible: !screen.stripIdle && screen.otherEmergency
+                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-            TextMetrics {
-                id: otherSkipMetrics
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(15)
-                font.weight: Font.DemiBold
-                text: otherSkip.text
-            }
+                EncTag {
+                    id: otherEncTag
+                    visible: !screen.stripIdle && screen.otherEnc
+                    anchors.right: otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-            OutlineButton {
-                id: otherSkip
-                objectName: "otherSlotSkip"
-                anchors.right: otherMore.left
-                anchors.rightMargin: 4
-                anchors.verticalCenter: parent.verticalCenter
-                // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
-                width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
-                maximumLineCount: 1
-                implicitHeight: 48
-                height: 48
-                text: qsTr("Skip")
-                accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
-                // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
-                visible: !screen.stripIdle
-                enabled: decoderHost.running
-                onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
-            }
+                TextMetrics {
+                    id: otherSkipMetrics
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(15)
+                    font.weight: Font.DemiBold
+                    text: otherSkip.text
+                }
 
-            IconButton {
-                id: otherMore
-                objectName: "otherSlotMore"
-                anchors.right: parent.right
-                anchors.rightMargin: 4
-                anchors.verticalCenter: parent.verticalCenter
-                width: 48
-                height: 48
-                icon: "more"
-                accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
-                visible: !screen.stripIdle
-                enabled: decoderHost.running
-                onClicked: otherSlotMenu.openForOtherSlot()
+                OutlineButton {
+                    id: otherSkip
+                    objectName: "otherSlotSkip"
+                    anchors.right: otherMore.left
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    // Grows with large text rather than cutting "Skip" short (the label keeps 12 px a side).
+                    width: Math.max(70, Math.ceil(otherSkipMetrics.advanceWidth) + 32)
+                    maximumLineCount: 1
+                    implicitHeight: 48
+                    height: 48
+                    text: qsTr("Skip")
+                    accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                    // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
+                    visible: !screen.stripIdle
+                    enabled: decoderHost.running
+                    onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
+                }
+
+                IconButton {
+                    id: otherMore
+                    objectName: "otherSlotMore"
+                    anchors.right: parent.right
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 48
+                    height: 48
+                    icon: "more"
+                    accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    visible: !screen.stripIdle
+                    enabled: decoderHost.running
+                    onClicked: otherSlotMenu.openForOtherSlot()
+                }
             }
         }
 
@@ -1103,6 +1219,7 @@ Item {
                 checkable: true
                 checked: screen.scanHeld
                 visible: !screen.scanPaused
+                commandToggle: true
                 enabled: decoderHost.running
                 onClicked: commands.toggleScanHold()
             }
@@ -1218,7 +1335,7 @@ Item {
             width: recentList.width
             height: recentList.count === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
 
-            Text {
+            ReadableText {
                 id: emptyText
                 anchors.centerIn: parent
                 width: parent.width - 2 * Theme.cardPadding
@@ -1390,6 +1507,16 @@ Item {
                 subtitleTextFormat: Text.StyledText
                 subtitleColor: Theme.textSecondary
                 accessibleDescription: screen.detailsSummary.plain
+                // The summary's SNR moves every tick: read at the readings' pace (issue #782).
+                Accessible.description: detailsSpeech.spoken
+                SpeechPacer {
+                    id: detailsSpeech
+                    shown: !detailsRow.Accessible.ignored
+                    step: screen.speechStep
+                    read: function () {
+                        return detailsRow.accessibleDescription;
+                    }
+                }
                 verticalPadding: 16
                 expandable: true
                 expanded: screen.detailsExpanded
@@ -1400,7 +1527,7 @@ Item {
         // The engine's answer to the last command ("Output: Muted", "Output:
         // open failed") — without it a tap that failed inside the engine reads
         // as a button that did nothing.
-        Text {
+        ReadableText {
             width: parent.width
             visible: metrics.uiMessage.length > 0
             text: metrics.uiMessage
@@ -1410,6 +1537,12 @@ Item {
             elide: Text.ElideRight
         }
 
+        // Each group of readings below (a label and its value, a strip of
+        // them) is one item for a screen reader, named by the words it shows
+        // (issue #782); its buttons name themselves. A reading that moves
+        // renames its group, which Android speaks only while that group is
+        // focused; the labels and values inside stay plain, so a value whose
+        // width changes moves nothing a screen reader is told about.
         Column {
             id: detailsColumn
             objectName: "monitorDetails"
@@ -1493,8 +1626,9 @@ Item {
             // it. Each reading is one child, so a wrap drops a whole reading to the
             // next line and never splits a label from its value. Whitespace groups
             // them, as in the design — separator glyphs would strand at a line head.
-            Flow {
+            ReadingFlow {
                 objectName: "signalStrip"
+                speechStep: screen.speechStep
                 width: parent.width
                 visible: metrics.radioInput
                 spacing: 10
@@ -1562,6 +1696,8 @@ Item {
 
                 Row {
                     spacing: 5
+                    // The dot shows the lock by colour only; the strip says it (issue #782).
+                    readonly property string spokenText: metrics.carrierLock ? qsTr("Carrier lock") : qsTr("No carrier lock")
 
                     Text {
                         text: qsTr("LOCK")
@@ -1616,8 +1752,9 @@ Item {
             }
 
             // Decode quality also applies to PCM, network and file sources.
-            Flow {
+            ReadingFlow {
                 objectName: "decodeQualityRow"
+                speechStep: screen.speechStep
                 width: parent.width
                 visible: metrics.qualityValid
                 spacing: 10
@@ -1667,9 +1804,10 @@ Item {
             // the alert colour for a codec that cannot play speech. Flows, as the
             // rows below are, so a long reading moves under its label on a narrow
             // phone rather than running off it.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorTetra"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1712,8 +1850,9 @@ Item {
             // the loaded key that applies to the carrier being received; in
             // direct mode the transmission's security class. Magenta, as
             // encryption is on the rows around it.
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraSecurity"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1741,8 +1880,9 @@ Item {
 
             // Each label and its reading are children of the Flow, so a long
             // reading moves under its label rather than off the body.
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraChannels"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1812,8 +1952,9 @@ Item {
                 }
             }
 
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraMmStatus"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1839,8 +1980,9 @@ Item {
                 }
             }
 
-            Flow {
+            ReadingFlow {
                 objectName: "monitorTetraCodec"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1880,9 +2022,10 @@ Item {
             // Magenta, not cyan: cyan is signal health here, magenta is encryption,
             // same as the ENC tags on the rows below. Hidden at zero, so a site with
             // no encrypted traffic never carries a permanent 0.
-            Row {
+            ReadingRow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "encLockoutRow"
+                speechStep: screen.speechStep
 
                 spacing: 5
                 visible: metrics.encLockoutCount > 0
@@ -1917,9 +2060,10 @@ Item {
             // second spelling off the clipped body with no way to reach it. The value
             // then moves under the label whole; it wraps between its words only if
             // even it alone is wider than the body.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorRxTone"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -1959,9 +2103,10 @@ Item {
             // "off", so its Edit button can open the live editor. A Flow for the received
             // row's reason: a long list, its verdict and the button move under the label
             // on a narrow phone rather than run off it.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorToneFilter"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -2031,7 +2176,7 @@ Item {
                     onClicked: serviceNamesSheet.openEditor()
                 }
             }
-            Text {
+            ReadableText {
                 objectName: "monitorReceiveStatus"
                 width: parent.width
                 text: metrics.receiveStatus || ""
@@ -2048,9 +2193,11 @@ Item {
             // voice)"). On a radio input the Radio sheet has the squelch; here,
             // with no tuner, the monitor is where it is set. A Flow, as the
             // tone filter row is, so the button moves under a long reading.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorSquelch"
+                // The squelch opening or closing is heard at once too.
+                speechStep: screen.speechStep + "|" + (metrics.squelchGateOpen === true)
 
                 width: parent.width
                 spacing: 5
@@ -2094,9 +2241,10 @@ Item {
             // sheet has the width; here, with no tuner, the monitor is where it
             // is set. A Flow, as the squelch row is, so the button moves under a
             // long reading.
-            Flow {
+            ReadingFlow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "monitorPassband"
+                speechStep: screen.speechStep
 
                 width: parent.width
                 spacing: 5
@@ -2139,9 +2287,10 @@ Item {
             // and outside any rotation, so an idle session never carries a 0. The
             // [avoided] marker is the trunk-scan fallback: every alternate failed to
             // retune and the receiver stayed on a target that was avoided.
-            Row {
+            ReadingRow {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "scanAvoidRow"
+                speechStep: screen.speechStep
 
                 spacing: 8
                 visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0
@@ -2370,11 +2519,13 @@ Item {
                 accessibleName: qsTr("Mute audio")
                 checkable: true
                 checked: screen.muted
+                commandToggle: true
                 enabled: decoderHost.running
                 onClicked: commands.toggleMute()
             }
 
             OutlineButton {
+                id: holdTalkgroupButton
                 objectName: "holdTalkgroupButton"
                 x: liveActions.inset + (1 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
                 y: Math.floor(1 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
@@ -2387,9 +2538,12 @@ Item {
                 accessibleName: screen.heroPrivate ? qsTr("Hold calls with radio %1").arg(Util.idText(screen.heroTgId)) : qsTr("Hold this talkgroup")
                 checkable: true
                 checked: screen.holding
+                commandToggle: true
                 // Callsigns and dial strings have no numeric talkgroup to hold.
                 enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
-                onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
+                // The state the press asked for (issue #782), not the engine's: a second press before the engine's
+                // state arrives is read as a release, so it sends one.
+                onClicked: commands.holdTalkgroup(holdTalkgroupButton.shownChecked ? screen.heroTgId : 0)
             }
 
             OutlineButton {

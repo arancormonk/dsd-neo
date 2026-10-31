@@ -245,7 +245,8 @@ Item {
             onClicked: screen.closed()
         }
 
-        Text {
+        ReadableText {
+            heading: true
             anchors.left: back.right
             anchors.leftMargin: 14
             anchors.right: parent.right
@@ -278,7 +279,7 @@ Item {
             width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
-            Text {
+            ReadableText {
                 objectName: "callRecordingsUsage"
                 width: parent.width
                 visible: !screen.empty || !recordings.indexed
@@ -316,8 +317,9 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 10
 
-                    Text {
+                    LiveText {
                         objectName: "callRecordingsExportText"
+                        step: String(decoderHost.recordingTransferActive)
                         width: parent.width
                         text: decoderHost.recordingTransferTotalBytes > 0 ? qsTr("Exporting… %1 of %2").arg(Util.sizeText(decoderHost.recordingTransferBytes)).arg(Util.sizeText(decoderHost.recordingTransferTotalBytes)) : qsTr("Exporting…")
                         wrapMode: Text.Wrap
@@ -334,6 +336,8 @@ Item {
                         color: Theme.toggleOffTrack
                         Accessible.role: Accessible.ProgressBar
                         Accessible.name: qsTr("Export progress")
+                        // Read when asked (Android polls it); a plain Item's value raises no
+                        // ValueChanged, so it stays live (issue #782).
                         readonly property real value: decoderHost.recordingTransferBytes
                         readonly property real minimumValue: 0
                         readonly property real maximumValue: Math.max(0, decoderHost.recordingTransferTotalBytes)
@@ -371,7 +375,7 @@ Item {
             // What the limit removed and the deletes the store could not do, since this
             // screen opened (taken from the store, see takeNotices()), and the ones
             // waiting for a hold.
-            Text {
+            ReadableText {
                 objectName: "callRecordingsRemovedByLimit"
                 width: parent.width
                 visible: screen.removedShown > 0
@@ -396,7 +400,7 @@ Item {
                 Accessible.name: text
             }
 
-            Text {
+            ReadableText {
                 objectName: "callRecordingsDeletesWaiting"
                 width: parent.width
                 visible: recordings.deletesWaiting > 0
@@ -471,7 +475,7 @@ Item {
                 topPadding: 48
                 spacing: 8
 
-                Text {
+                ReadableText {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     text: qsTr("No call recordings yet")
@@ -482,7 +486,7 @@ Item {
                     wrapMode: Text.Wrap
                 }
 
-                Text {
+                ReadableText {
                     objectName: "callRecordingsEmptyDetail"
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter

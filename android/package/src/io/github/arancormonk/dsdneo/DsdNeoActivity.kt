@@ -53,6 +53,24 @@ import org.qtproject.qt.android.bindings.QtActivity
  *
  * For the diagnostics (#782) it tells [MainLooperWatchdog.activities] its lifecycle phase, each window attach and each
  * touch event, and records how long each step of its teardown took.
+ *
+ * The app writes the process environment only before `super.onCreate()` starts Qt's `main()` (#782): [QmlGcPolicy] and
+ * the accessibility bridge's variable, with one in-place exception documented in [AccessibilityBridge]. The native
+ * library writes none; it keeps its overrides in the engine's in-process store.
+ *
+ * Qt's accessibility bridge (#782) is decided around `super.onCreate()`, where Qt reads it:
+ * [AccessibilityBridge.beforeQt] immediately before keeps the bridge off unless touch exploration (TalkBack) is on,
+ * and [AccessibilityBridge.afterQt] immediately after freezes that for the process. The resume, pause, stop and
+ * destroy callbacks go to [AccessibilityBridge] too, so the notice for TalkBack turned on later reaches only a resumed
+ * activity and is never lost.
+ *
+ * Qt 6.11.2 restarts the whole process, with none of the teardown below, when a second instance of this activity is
+ * created in a process Qt already started (#782). The manifest keeps that from happening: `singleTask`, so a USB
+ * attachment (to [onNewIntent]), the launcher icon and the decoding notification all bring this one instance forward,
+ * and every configuration change handled in place. Those three also close a document picker or permission dialog open
+ * in the app's task, which comes back cancelled: the pickers' flows end quietly, and so does a location request
+ * ([LocationSupport]). One recreation that gets through anyway is recorded by [LaunchGuard], first among the launch
+ * statements, for the next process's `exit:` line.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -63,7 +81,13 @@ class DsdNeoActivity : QtActivity() {
         // Before Qt starts: native diagnostics ask it for the process facts as soon as they start.
         ProcessFacts.attach(this)
         trace.created(this)
+        LaunchGuard.onCreate(ProcessFacts::setStateSummary)
+        AccessibilityBridge.effects = AccessibilityRestartNotice
+        QmlGcPolicy.beforeQt(HostDiagnostics::submit)
+        AccessibilityBridge.beforeQt(this)
         super.onCreate(savedInstanceState)
+        AccessibilityBridge.afterQt(this)
+        LaunchGuard.afterQt()
         ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
             val callback = OnBackInvokedCallback { ScreenSupport.userInteraction(this); AppSupport.requestBack() }
@@ -87,6 +111,7 @@ class DsdNeoActivity : QtActivity() {
         super.onResume()
         trace.phase(this, "resumed")
         AppSupport.refreshNotificationPermission()
+        AccessibilityBridge.onResume(this)
     }
 
     // The screen modes: every lifecycle and input callback that matters to them goes to ScreenSupport.
@@ -101,13 +126,15 @@ class DsdNeoActivity : QtActivity() {
         super.onPause()
         trace.phase(this, "paused")
         ScreenSupport.onPause(this)
+        AccessibilityBridge.onPause(this)
     }
 
-    // A stop that is part of a configuration change is followed at once by a start; it is not a loss. Leaving the
-    // foreground pauses a call recording playing (#708 D10).
+    // A stop that is part of a recreation is not a loss of the foreground (on Qt 6.11.2 the process restarts right
+    // after it; see onDestroy). Leaving the foreground pauses a call recording playing (#708 D10).
     override fun onStop() {
         super.onStop()
         trace.phase(this, "stopped")
+        AccessibilityBridge.onStop(this)
         if (!isChangingConfigurations) {
             ScreenSupport.onStop(this)
             RecordingPlayback.setForeground(false)
@@ -181,6 +208,7 @@ class DsdNeoActivity : QtActivity() {
 
     override fun onDestroy() {
         trace.phase(this, "destroying")
+        AccessibilityBridge.onDestroy(this)
         ScreenSupport.detach(this)
         keyboardObserver?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
         keyboardObserver = null
@@ -189,9 +217,12 @@ class DsdNeoActivity : QtActivity() {
             backCallback = null
         }
         LocationSupport.onDestroy(this)
-        // Not on a configuration change: those destroy and immediately recreate the
-        // Activity, and Qt keeps the process across them (it skips its own teardown for
-        // exactly this case). Quitting there would take the UI down on a rotation.
+        // Not on a recreation. The manifest handles every configuration change in place
+        // (configChanges, pinned by launch_policy), so a change never destroys this
+        // activity. A recreation that happens anyway skips this teardown, as Qt skips
+        // its own, and on Qt 6.11.2 the new instance's super.onCreate() then restarts
+        // the whole process without it (#782; LaunchGuard records it, and docs/code_map.md
+        // "Launch policy" documents the limit).
         if (!isChangingConfigurations) {
             val uptime = HostRecordText.uptime(SystemClock.uptimeMillis())
             HostDiagnostics.submit("teardown: activity ${trace.snapshot.activity} destroying at uptime $uptime")
