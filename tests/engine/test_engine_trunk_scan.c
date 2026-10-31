@@ -8866,6 +8866,7 @@ test_peer_untyped_order(int reverse, int occupied) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, path, NULL);
     free(opts);
+    dsd_state_ext_free_all(state);
     free(state);
     return rc;
 }
@@ -8921,6 +8922,7 @@ test_peer_global_scopes(void) {
         dsd_engine_trunk_scan_shutdown(opts, state);
         trunk_scan_test_clear_now();
         cleanup_paths(dir, path, NULL);
+        dsd_state_ext_free_all(state);
         free(state);
         free(opts);
     }
@@ -8964,6 +8966,7 @@ test_export_untyped_scope(void) {
     cleanup_paths(dir, path, NULL);
     (void)remove(output);
     free(opts);
+    dsd_state_ext_free_all(state);
     free(state);
     free(back);
     return rc;
@@ -9052,6 +9055,7 @@ test_export_overflow_warning_case(int overflow) {
     cleanup_paths(dir, path, NULL);
     (void)remove(output);
     free(opts);
+    dsd_state_ext_free_all(state);
     free(state);
     return rc;
 }
