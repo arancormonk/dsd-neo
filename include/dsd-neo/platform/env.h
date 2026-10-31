@@ -123,8 +123,9 @@ class dsd_env_value {
             set_ = true;
             return;
         }
-        /* Longer than the stack buffer: size and copy again until the value stops changing under us. */
-        while (need > 0) {
+        /* Longer than the stack buffer: size and copy again until the value stops changing under us (each pass's
+           need is larger than the last, never 0). */
+        for (;;) {
             text_.assign(need, '\0');
             const size_t got = dsd_env_copy(name, &text_[0], text_.size());
             if (got == 0) {

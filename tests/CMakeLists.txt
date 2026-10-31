@@ -14463,6 +14463,17 @@ add_test(
     COMMAND dsd-neo_test_platform_env_store_threads
 )
 
+add_executable(
+    dsd-neo_test_platform_env_value
+    platform/test_platform_env_value.cpp
+)
+target_include_directories(
+    dsd-neo_test_platform_env_value
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_platform_env_value PRIVATE dsd-neo_platform)
+add_test(NAME PLATFORM_ENV_VALUE COMMAND dsd-neo_test_platform_env_value)
+
 if(DSD_AUDIO_BACKEND STREQUAL "none")
     add_executable(
         dsd-neo_test_platform_audio_null

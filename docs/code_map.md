@@ -768,7 +768,7 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     outside tests), and `dsd-neo.no-environment-write-kotlin` (only `QmlGcPolicy.kt` and `AccessibilityBridge.kt`,
     before `super.onCreate()`); full scans include `android/`. Tests seed the real environment through
     `tests/test_support/test_env.h` (`dsd_test_setenv()`, `dsd_test_unsetenv()`, which move the generation), never
-    through platform. Tests: `PLATFORM_ENV_STORE`, `PLATFORM_ENV_STORE_THREADS` (run it under tsan-debug too)
+    through platform. Tests: `PLATFORM_ENV_STORE`, `PLATFORM_ENV_STORE_THREADS` (run it under tsan-debug too), `PLATFORM_ENV_VALUE`
   - Free space: `dsd_path_free_bytes()` (issue #708) reads the free bytes of a folder's volume only (`statvfs()`,
     `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
     never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
