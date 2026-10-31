@@ -210,6 +210,8 @@ Item {
                 reason: "Beside the other slot's call, whose identity line reads its tags."},
             {file: "EmergencyTag.qml", name: "tag", readBy: otherSlotIdentity,
                 reason: "Beside the other slot's call, whose identity line reads its tags."},
+            {file: "PrivateTag.qml", name: "tag", readBy: otherSlotIdentity,
+                reason: "Beside the other slot's call, whose identity line reads its tags (PRIVATE even where the tag has no room)."},
             {file: "EncTag.qml", name: "tag", when: function (text) {
                     var row = text.parent ? text.parent.parent ? text.parent.parent.parent : null : null;
                     return row !== null && row.metaText !== undefined && /\bencrypted\b/.test(row.metaText);

@@ -1444,7 +1444,7 @@ Item {
         }
 
         // What Tune costs while a scan has the tuner, said before it is paid.
-        Text {
+        ReadableText {
             objectName: "spectrumGoToScanNote"
             width: parent.width
             visible: screen.scanOwnsTuner

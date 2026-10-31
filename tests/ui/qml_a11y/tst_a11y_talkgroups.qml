@@ -254,7 +254,7 @@ Item {
             item("talkgroupName").text = "Police Dispatch North";
             item("saveTalkgroup").activate();
             var edit = commands.lastTalkgroupEdit();
-            compare(edit.length, 5, JSON.stringify(edit));
+            compare(edit.length, 7, JSON.stringify(edit));
             compare(Number(edit[0]), tableB[0].id);
             compare(edit[2], context, "the edit carries the context it opened with");
             compare(Number(edit[3]), generation, "and the generation it opened with");
