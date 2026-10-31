@@ -656,6 +656,10 @@ Item {
                     color: live ? Theme.textPrimary : Theme.textSubdued
                     Accessible.role: Accessible.StaticText
                     Accessible.name: metrics.carrierIdentityText.length === 0 ? "" : live ? qsTr("System identity: %1").arg(metrics.carrierIdentityText) : qsTr("System identity, last heard: %1").arg(metrics.carrierIdentityText)
+                    // Out of the tree with nothing to say (issue #782): a nameless line
+                    // was a swipe stop that read nothing. And behind the top layer, as
+                    // every reading.
+                    Accessible.ignored: !Navigation.allows(identityLabel) || !visible || metrics.carrierIdentityText.length === 0
 
                     FontMetrics {
                         id: identityFont

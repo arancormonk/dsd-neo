@@ -22,6 +22,7 @@
 #include <utility>
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
+#include "scan_entry_name.h"
 #include "scan_lists_model.h"
 
 namespace dsd_qt {
@@ -118,7 +119,7 @@ KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
 
 namespace {
 struct CsvColumns {
-    int frequency = 1, name = -1, mode = -1, options = -1, channels = -1;
+    int frequency = 1, name = -1, mode = -1, options = -1, channels = -1, label = -1;
 };
 
 static CsvColumns
@@ -137,6 +138,8 @@ csvColumns(const QStringList& fields) {
             columns.options = i;
         } else if (name == QStringLiteral("chan_csv")) {
             columns.channels = i;
+        } else if (name == QStringLiteral("label")) {
+            columns.label = i;
         }
     }
     return columns;
@@ -247,7 +250,9 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
             continue;
         }
         QString name = label;
-        const QString channel = fields.value(columns.name);
+        // A target CSV's `label` names the target as its calls are named (issue #782), else its id names it.
+        const QString labelled = fields.value(columns.label);
+        const QString channel = labelled.isEmpty() ? fields.value(columns.name) : labelled;
         if (!channel.isEmpty()) {
             name += QStringLiteral(" / ") + channel;
         }
@@ -269,7 +274,10 @@ KnownFrequencyIndex::rebuild() {
     if (m_systems) {
         for (int i = 0; i < m_systems->count(); ++i) {
             auto s = m_systems->get(i);
-            add(s, s.value(QStringLiteral("name")).toString());
+            // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it.
+            add(s, scan_entry_name(s.value(QStringLiteral("name")).toString(),
+                                   scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
+                                   s.value(QStringLiteral("freqMhz")).toString()));
         }
     }
     if (m_lists) {
@@ -279,7 +287,10 @@ KnownFrequencyIndex::rebuild() {
             for (const QVariant& value : list.value(QStringLiteral("entries")).toList()) {
                 auto s = value.toMap();
                 if (s.value(QStringLiteral("kind")).toString() != QStringLiteral("system")) {
-                    add(s, name + QStringLiteral(" / ") + s.value(QStringLiteral("name")).toString());
+                    add(s, name + QStringLiteral(" / ")
+                               + scan_entry_name(s.value(QStringLiteral("name")).toString(),
+                                                 s.value(QStringLiteral("protocol")).toString(),
+                                                 s.value(QStringLiteral("freqMhz")).toString()));
                 }
             }
             addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500);

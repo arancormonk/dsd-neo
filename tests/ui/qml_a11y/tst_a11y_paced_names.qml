@@ -584,6 +584,21 @@ Item {
                 verify(!testContext.accessibleNode(tick).inTree, "a scale tick is not in the tree: " + tick.text);
         }
 
+        // The Spectrum's system identity line has nothing to say until a carrier names its system: then it is out of
+        // the tree, not a swipe stop that reads nothing. Named, it is read.
+        function test_j_empty_identity_line_is_no_swipe_stop() {
+            var line = item(spectrum, "spectrumIdentityLabel");
+            set({carrierIdentityText: "", carrierIdentityTokens: [], carrierIdentityLive: false});
+            wait(20);
+            verify(!testContext.accessibleNode(line).inTree, "an empty identity line is out of the tree: "
+                   + JSON.stringify(testContext.accessibleNode(line)));
+            set({carrierIdentityText: "SYS 3A0", carrierIdentityTokens: ["SYS 3A0"], carrierIdentityLive: true});
+            tryVerify(function () {
+                var node = testContext.accessibleNode(line);
+                return node.inTree && node.name.indexOf("SYS 3A0") >= 0;
+            }, 500, JSON.stringify(testContext.accessibleNode(line)));
+        }
+
         // A hidden screen's pacers stay silent over time: the monitor hidden at a short period, its readings moving.
         function test_g_hidden_monitor_stays_silent() {
             Ui.Navigation.speechPeriodMs = 30;
