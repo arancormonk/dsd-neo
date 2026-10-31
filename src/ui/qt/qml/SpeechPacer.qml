@@ -20,8 +20,12 @@ import "Util.js" as Util
 // that floor, with the state as it then is.
 //
 // The reading is `group`'s shown text (Util.shownText), whose children coming
-// and going is itself a step, else what `read()` returns. The period and the
-// floor are Navigation.speechPeriodMs and Navigation.speechStepFloorMs.
+// and going is itself a step, else what `read()` returns. A group's rows can
+// be rebuilt with every value (a Repeater over a new list): its children
+// change for an instant and come back the same, so a change of children is a
+// step only when the children have settled unlike the ones last read. The
+// period and the floor are Navigation.speechPeriodMs and
+// Navigation.speechStepFloorMs.
 Timer {
     id: pacer
     property Item group: null
@@ -31,6 +35,16 @@ Timer {
     property string spoken: ""
     property int period: Navigation.speechPeriodMs
     readonly property string groupKey: group ? Util.shownKey(group) : ""
+    // The group's children as last read.
+    property string heardKey: ""
+    // Right after the children change, once a rebuild has run its course.
+    readonly property Timer keyCheck: Timer {
+        interval: 1
+        onTriggered: {
+            if (pacer.groupKey !== pacer.heardKey)
+                pacer.stepped();
+        }
+    }
     // A step that came while the floor ran, heard when it ends.
     property bool stepPending: false
     readonly property Timer floor: Timer {
@@ -81,6 +95,7 @@ Timer {
     onTriggered: {
         if (interval !== period)
             interval = period;
+        heardKey = groupKey;
         var words = current();
         if (spoken !== words)
             spoken = words;
@@ -91,20 +106,23 @@ Timer {
             interval = period;
     }
     onStepChanged: stepped()
-    onGroupKeyChanged: stepped()
+    onGroupKeyChanged: keyCheck.restart()
     onShownChanged: {
         if (shown) {
+            heardKey = groupKey;
             spoken = current();
             settle();
         } else {
             stop();
             floor.stop();
+            keyCheck.stop();
             stepPending = false;
             spoken = "";
         }
     }
     Component.onCompleted: {
         if (shown) {
+            heardKey = groupKey;
             spoken = current();
             settle();
         }

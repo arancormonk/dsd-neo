@@ -69,11 +69,11 @@ Item {
             };
             return i % 2 === 0 ? [slot(1), slot(2)] : [slot(1)];
         }
-        // A P25 site whose identity moves with each change.
+        // A P25 site whose identity moves with each change, tuned to its control channel (a retune each change).
         function site(i) {
             return {siteLine: "Site " + i, siteConfirmed: true, siteProtocol: "P25", p25NacValid: true, p25Nac: 0x290 + i,
                 p25WacnValid: true, p25Wacn: 0xBEE00 + i, p25SysIdValid: true, p25SysId: 0x3A0 + i, p25Rfss: 1,
-                p25Site: i + 1, ccFreqHz: 851012500 + i * 12500, vcFreqHz: 0};
+                p25Site: i + 1, ccFreqHz: 851012500 + i * 12500, centerFreqHz: 851012500 + i * 12500, vcFreqHz: 0};
         }
         function hex(value, width) {
             return Number(value).toString(16).toUpperCase().padStart(width, "0");
@@ -201,6 +201,47 @@ Item {
         // targets of one protocol show and hide nothing and rename the group once a hop, after its rows are rebuilt,
         // not once per row. A hop to another protocol hides the group of fields that protocol does not have, one per
         // change, as it hid the P25-only network button before: content that differs, not churn.
+        // Issue #782: during a scan the hops are no steps, so the open Site sheet's field groups are read at the
+        // readings' pace even though each hop's new NAC and site rebuild their rows (each rebuild changes the group's
+        // children for an instant, which is no step). Timings scaled down by ten: a period of 500 ms, a floor of 100 ms.
+        function test_open_site_sheet_scan_hops_are_paced() {
+            if (!("scanRotationActive" in restore))
+                restore.scanRotationActive = metrics.scanRotationActive;
+            testContext.publishTarget({scanRotationActive: true});
+            testContext.publishTarget(site(0));
+            Ui.Navigation.speechPeriodMs = 500;
+            Ui.Navigation.speechStepFloorMs = 100;
+            siteSheet.visible = true;
+            waitForRendering(siteSheet);
+            wait(600);
+            testContext.startAccessibilityCount();
+            var start = Date.now();
+            for (var i = 1; i <= 50; ++i) {
+                testContext.publishTarget(site(i));
+                wait(30);
+            }
+            var elapsed = Date.now() - start;
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var groups = 0;
+            (function count(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    if (item.children[k].objectName === "siteFields" && item.children[k].visible)
+                        ++groups;
+                    count(item.children[k]);
+                }
+            })(siteSheet);
+            verify(groups > 0, "the P25 fields are shown");
+            var renames = 0;
+            for (var chain in counts.chains) {
+                if (/^NameChanged siteFields /.test(chain))
+                    renames += counts.chains[chain];
+            }
+            var most = groups * (Math.ceil(elapsed / 500) + 1);
+            verify(renames <= most, groups + " groups renamed " + renames + " times in " + elapsed + " ms (at most "
+                   + most + "): " + JSON.stringify(counts.chains));
+        }
+
         function test_open_site_sheet_on_hops() {
             // Each hop is a step heard on its own here (the step floor off); tst_a11y_paced_names.qml holds a
             // flapping step to the floor.

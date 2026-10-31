@@ -11048,7 +11048,9 @@ Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline componen
 durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
 Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of
 each step, whether the scan is held while one rotates, as the scan header's, else the frequency and target), the
-recordings export progress text, SiteSheet's field groups (renamed once a rebuild is over, not once per row), a
+recordings export progress text, SiteSheet's field groups (renamed once a rebuild is over, not once per row; a group's
+shown children are a step only when they settle unlike the ones last read, since each new NAC or site rebuilds the
+rows and a scan's hops would otherwise be heard at the step floor), a
 recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
 seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
 detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
