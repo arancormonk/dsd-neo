@@ -361,6 +361,7 @@ jobs:
             dsd-neo_test_ui_qt_qml_gc_policy \
             dsd-neo_test_ui_qt_android_host \
             dsd-neo_test_ui_qt_session_state \
+            dsd-neo_test_ui_qt_screen_reader_state \
             dsd-neo_test_ui_qt_diagnostics_log \
             dsd-neo_test_runtime_log_tap \
             dsd-neo_test_ui_qt_p25_network_model \
