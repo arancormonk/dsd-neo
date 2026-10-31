@@ -2404,8 +2404,9 @@ test_bandplan_offset_roundtrip_case(long offset_hz, int untyped) {
     FILE* fp = dsd_fopen_private(path, "r");
     assert(fp);
     char text[512] = {0};
-    (void)fread(text, 1, sizeof text - 1, fp);
+    const size_t text_len = fread(text, 1, sizeof text - 1, fp);
     fclose(fp);
+    rc |= fixture_check(text_len > 0U, "T14 export read");
     char want[128];
     DSD_SNPRINTF(want, sizeof want, "4,769006250,12500,%s,%ld,0,,", untyped ? "" : "1", offset_hz);
     rc |= fixture_check(strstr(text, want) != NULL, "T14 exported Hz and empty type");

@@ -630,8 +630,9 @@ iden_offset_csv_roundtrip(const dsd_state* state) {
     FILE* fp = dsd_fopen_private(path, "r");
     assert(fp);
     char text[512] = {0};
-    (void)fread(text, 1, sizeof text - 1, fp);
+    const size_t text_len = fread(text, 1, sizeof text - 1, fp);
     fclose(fp);
+    rc |= expect_eq_int("T14 wire CSV read", text_len > 0U, 1);
     rc |= expect_eq_int("T14 wire exported 1 MHz", strstr(text, "4,769006250,12500,1,1000000,0,,") != NULL, 1);
     dsd_state* back = (dsd_state*)calloc(1, sizeof *back);
     assert(back);
