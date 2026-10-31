@@ -754,8 +754,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     can free the `environ` array another thread's `getenv()` is walking, and every `localtime_r()` reads `TZ`.
     `dsd_env_copy()`, `dsd_env_read()` (a caller's buffer; too long reads as unset with ERANGE) and the C++
     `dsd_env_value` copy the session layer's value, else the host layer's, else the process environment's, so an
-    exported variable is still an input. No reader holds a pointer into the store. `dsd_env_set()` sets a name in one
-    layer or hides it (`NULL`: reads as unset), and `dsd_env_set_if_unset()` is `setenv(..., 0)` checked under the
+    exported variable is still an input. No reader holds a pointer into the store, and names match as the platform's
+    environment matches them (without case on native Windows). `dsd_env_set()` sets a name in one layer or hides it (`NULL`: reads as unset), and `dsd_env_set_if_unset()` is `setenv(..., 0)` checked under the
     store's lock; both fail with EINVAL or ENOMEM, and every caller logs or reports a refusal. The host layer is the
     embedding host's for the life of the process (Android's `nativeInit`); the session layer is one session's
     options, INI keys and menu toggles, and `dsd_runtime_bootstrap()` clears it. A replaced, hidden or cleared value

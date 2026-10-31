@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/platform.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -224,6 +225,22 @@ test_full_table(void) {
     assert(get("DSD_NEO_TEST_ENV_REFILL_0") == NULL);
 }
 
+/* Names are matched as the platform's environment matches them: on Windows, case-insensitively (an override set as
+ * dsd_neo_auto_ppm is the DSD_NEO_AUTO_PPM a reader asks for, as an exported variable is there); elsewhere exactly. */
+static void
+test_name_case(void) {
+    assert(dsd_env_set(DSD_ENV_LAYER_SESSION, "dsd_neo_test_env_case", "lower") == 0);
+#if DSD_PLATFORM_WIN_NATIVE
+    assert(streq(get("DSD_NEO_TEST_ENV_CASE"), "lower"));
+    assert(dsd_env_set(DSD_ENV_LAYER_SESSION, "DSD_NEO_TEST_ENV_CASE", "upper") == 0);
+    assert(streq(get("dsd_neo_test_env_case"), "upper"));
+#else
+    assert(get("DSD_NEO_TEST_ENV_CASE") == NULL);
+    assert(streq(get("dsd_neo_test_env_case"), "lower"));
+#endif
+    dsd_env_clear_layer(DSD_ENV_LAYER_SESSION);
+}
+
 int
 main(void) {
     test_layer_order();
@@ -231,6 +248,7 @@ main(void) {
     test_set_if_unset();
     test_copies();
     test_invalid_arguments();
+    test_name_case();
     test_full_table();
     printf("PLATFORM_ENV_STORE: OK\n");
     return 0;

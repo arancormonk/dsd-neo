@@ -17,6 +17,8 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <errno.h>
 #include <stddef.h>
@@ -86,11 +88,23 @@ env_free_text(char* text) {
     }
 }
 
+/* Whether two variable names are the same variable: case-insensitive on Windows, as the CRT environment the store
+ * falls back to (and the editor's name check) are there, so an override set as dsd_neo_auto_ppm is read as
+ * DSD_NEO_AUTO_PPM. */
+static int
+env_name_equal(const char* a, const char* b) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return dsd_strcasecmp(a, b) == 0;
+#else
+    return strcmp(a, b) == 0;
+#endif
+}
+
 /* Caller holds the lock. */
 static env_slot*
 env_find_locked(const char* name) {
     for (size_t i = 0; i < g_slot_count; i++) {
-        if (strcmp(g_slots[i].name, name) == 0) {
+        if (env_name_equal(g_slots[i].name, name)) {
             return &g_slots[i];
         }
     }
