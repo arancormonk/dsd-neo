@@ -9,11 +9,20 @@
  * buffer, and a variable that is unset or hidden.
  */
 
-#include <assert.h>
 #include <dsd-neo/platform/env.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
+
+/* Fails the test with @p what when @p ok is false. */
+static void
+require(bool ok, const char* what) {
+    if (!ok) {
+        fprintf(stderr, "PLATFORM_ENV_VALUE: %s\n", what);
+        abort();
+    }
+}
 
 int
 main() {
@@ -21,28 +30,28 @@ main() {
     dsd_env_clear_layer(DSD_ENV_LAYER_SESSION);
     {
         const dsd_env_value unset(kName);
-        assert(unset.c_str() == nullptr);
+        require(unset.c_str() == nullptr, "an unset variable reads as NULL");
     }
 
-    assert(dsd_env_set(DSD_ENV_LAYER_SESSION, kName, "short") == 0);
+    require(dsd_env_set(DSD_ENV_LAYER_SESSION, kName, "short") == 0, "set a short value");
     {
         const dsd_env_value value(kName);
-        assert(value.c_str() != nullptr && strcmp(value.c_str(), "short") == 0);
+        require(value.c_str() != nullptr && strcmp(value.c_str(), "short") == 0, "read a short value");
     }
 
     // Longer than the reader's 128-byte stack buffer: sized and copied from the store.
     static const size_t kLengths[] = {127U, 128U, 129U, 1000U};
     for (size_t length : kLengths) {
         const std::string text(length, 'v');
-        assert(dsd_env_set(DSD_ENV_LAYER_SESSION, kName, text.c_str()) == 0);
+        require(dsd_env_set(DSD_ENV_LAYER_SESSION, kName, text.c_str()) == 0, "set a long value");
         const dsd_env_value value(kName);
-        assert(value.c_str() != nullptr && text == value.c_str());
+        require(value.c_str() != nullptr && text == value.c_str(), "read a long value whole");
     }
 
-    assert(dsd_env_set(DSD_ENV_LAYER_SESSION, kName, nullptr) == 0);
+    require(dsd_env_set(DSD_ENV_LAYER_SESSION, kName, nullptr) == 0, "hide the variable");
     {
         const dsd_env_value hidden(kName);
-        assert(hidden.c_str() == nullptr);
+        require(hidden.c_str() == nullptr, "a hidden variable reads as NULL");
     }
     dsd_env_clear_layer(DSD_ENV_LAYER_SESSION);
 
