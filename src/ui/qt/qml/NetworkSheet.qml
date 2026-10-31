@@ -23,17 +23,19 @@ ModalSheet {
             return "SG:" + row.sgid + (row.isPatch ? " · Patch" : " · Simulselect") + (row.groups.length ? " · TG:" + row.groups.join(", ") : "") + (row.radios.length ? " · RID:" + row.radios.join(", ") : "");
         return "RID:" + row.rid + (section === 2 ? " · TG:" + row.tg : "");
     }
-    // Issue #782: with a screen reader on, each section in a fixed order of its
-    // entries: neighbours by frequency and site, patches by SGID, affiliations
-    // by RID and talkgroup, radios by RID. Most recent first moves a row with
-    // each entry heard again, and Qt's bridge tells Android nothing of a move,
-    // so TalkBack swiped the rows in an order they had left: it skipped,
-    // repeated and looped. Without a screen reader the most recent comes first.
+    // Issue #782: with a screen reader on, each section in a fixed order of
+    // its entries: neighbours by frequency and site identity, patches by
+    // SGID, affiliations by RID and talkgroup, radios by RID. Most recent
+    // first moves a row with each entry heard again, and Qt's bridge tells
+    // Android nothing of a move, so TalkBack swiped the rows in an order
+    // they had left: it skipped, repeated and looped. Without a screen
+    // reader the most recent comes first.
     function readingOrder(section, rows) {
         var ordered = rows.slice();
         ordered.sort(function (a, b) {
             if (section === 0)
-                return a.freqHz - b.freqHz || a.site - b.site;
+                return a.freqHz - b.freqHz || a.sysid - b.sysid || a.rfss - b.rfss || a.site - b.site
+                    || (a.wacnValid ? a.wacn : -1) - (b.wacnValid ? b.wacn : -1);
             if (section === 1)
                 return a.sgid - b.sgid;
             return a.rid - b.rid || (section === 2 ? a.tg - b.tg : 0);
@@ -41,9 +43,11 @@ ModalSheet {
         return ordered;
     }
     // What tells one entry from another, so its row follows it (StableRows).
+    // Neighbours are told apart as the decoder keeps them: two sites may
+    // announce one frequency.
     function entryKey(section, row) {
         if (section === 0)
-            return String(row.freqHz);
+            return [row.freqHz, row.sysid, row.rfss, row.site, row.wacnValid ? row.wacn : "-"].join(":");
         if (section === 1)
             return String(row.sgid);
         return row.rid + (section === 2 ? ":" + row.tg : "");

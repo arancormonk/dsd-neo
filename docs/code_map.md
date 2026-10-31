@@ -11079,7 +11079,8 @@ the turn, so a list emptied and refilled in one turn keeps them. Until a row pas
 once: `shown`, the list's length now, draws rows from it on at no opacity (no event; Qt then reports the row invisible),
 and `live`, the rows holding an entry (at once on a shrink, at the end of the turn on emptying), names them as nothing;
 the key sheet hides a departed slot's row and keeps it reading its last slot, never an empty one. The Network sheet keys
-its rows by entry (neighbours by frequency, patches by SGID, affiliations by RID and TG, radios by RID). Without a
+its rows by entry (neighbours by frequency, system, RFSS, site and WACN, as `p25_nb_record_update()` keeps them apart,
+since two sites may announce one frequency; patches by SGID, affiliations by RID and TG, radios by RID). Without a
 screen reader each section is most recent first, as P25NetworkModel lists it, so an entry heard again moves its row to
 the top: a move raises a LocationChanged for each row that shifts and nothing else, and every row is always named for
 the entry it shows. With a screen reader on (`screenReader.active`), each section is in a fixed order of those keys

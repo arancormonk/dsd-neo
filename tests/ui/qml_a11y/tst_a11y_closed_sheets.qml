@@ -505,6 +505,39 @@ Item {
             fakeNet.neighbours = [];
         }
 
+        // Issue #782: two neighbours may announce one frequency (the decoder keeps them apart by system, RFSS, site and
+        // WACN). Each keeps its own row and place as the model's most-recent-first order swaps them: nothing is raised.
+        function test_open_network_sheet_tells_shared_frequencies_apart() {
+            var sheet = networkLoader.item;
+            var neighbour = function (rfss) {
+                return {freqHz: 851500000, sysid: 291, rfss: rfss, site: 4, wacn: 1, wacnValid: true, lra: 0,
+                    lraValid: false, isCurrentCc: false, isCandidate: false, cfvaText: "valid"};
+            };
+            fakeNet.neighbours = [neighbour(1), neighbour(2)];
+            sheet.visible = true;
+            Ui.Navigation.modals = [sheet];
+            waitForRendering(sheet);
+            wait(50);
+            var rows = neighbourRows(sheet);
+            compare(rows.length, 2);
+            var texts = rows.map(function (r) { return r.text; });
+            var list = rows[0].parent;
+            testContext.startAccessibilityCount();
+            for (var refresh = 1; refresh <= 10; ++refresh) {
+                fakeNet.neighbours = refresh % 2 ? [neighbour(2), neighbour(1)] : [neighbour(1), neighbour(2)];
+                wait(20);
+            }
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            for (var type of ["ObjectShow", "ObjectHide", "NameChanged", "LocationChanged"])
+                compare(testContext.accessibilityCountWithin(list, type), 0, type + ": " + JSON.stringify(counts.chains));
+            compare(neighbourRows(sheet), rows);
+            compare(rows.map(function (r) { return r.text; }), texts, "each row keeps its neighbour");
+            sheet.visible = false;
+            Ui.Navigation.modals = [];
+            fakeNet.neighbours = [];
+        }
+
         // Issue #782: the affiliations and radios are the 100 heard last, so on a busy system a radio that registers
         // again enters the list and the 100th heard leaves. The row of the one that left is renamed for the new one,
         // and no other row: a listener on a radio that stays keeps its row and its name. (With a screen reader on, as
