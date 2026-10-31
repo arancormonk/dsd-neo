@@ -18,7 +18,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (dsd_strcasecmp on native Windows)
 #include <dsd-neo/platform/threading.h>
 #include <errno.h>
 #include <stddef.h>
