@@ -12,15 +12,21 @@
  * enabled and IDEN tables allow channel→frequency mapping.
  */
 
+#include <assert.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_iden_test_vectors.h"
 #include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -28,11 +34,15 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
+static long iden_tuned_hz;
+static int iden_tuned_sps;
+
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
-    (void)ted_sps;
+    iden_tuned_hz = freq;
+    iden_tuned_sps = ted_sps;
     (void)request_id;
     return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
@@ -91,6 +101,51 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)input;
     (void)src;
     (void)slot;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)len;
+    (void)input;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)lc_bits;
 }
 
 static int
@@ -166,6 +221,38 @@ test_extended_function_command_abbreviated(void) {
     return rc;
 }
 
+static int
+test_lcw_tdma_grant(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    state->p2_wacn = 0x1490E;
+    state->p2_sysid = 0xCFF;
+    state->p2_cc = state->nac = 0xCF1;
+    state->p25_cc_freq = 770956250;
+    state->synctype = 0;
+    state->p25_cc_is_tdma = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, opts, state);
+    iden_test_mac(opts, state, 0x73, 4, 3, 769006250 / 5, 100, 0x1490E, 0xCFF, 1);
+    iden_test_lcw(opts, state, 0x58, 769006250 / 5, 100);
+    unsigned long long mac[24] = {7, 0x40, 0, 0x41, 0x19, 0x45, 0x67, 0xAB, 0xCD, 0xEF};
+    iden_tuned_hz = 0;
+    iden_tuned_sps = 0;
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_SIGNAL, mac);
+    int rc = expect_eq("T17 tuned frequency", iden_tuned_hz, 770756250);
+    rc |= expect_eq("T17 TDMA timing", iden_tuned_sps, 8);
+    rc |= expect_eq("T17 TDMA grant", ctx->vc_is_tdma, 1);
+    rc |= expect_eq("T17 internal slot 1", ctx->slots[1].target_id, 0x4567);
+    rc |= expect_eq("T17 slot 0 idle", ctx->slots[0].grant_active, 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -217,6 +304,7 @@ main(void) {
     rc |= expect_eq("grant2 channel", ctx->vc_channel, 0x100A);
 
     rc |= test_extended_function_command_abbreviated();
+    rc |= test_lcw_tdma_grant();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;

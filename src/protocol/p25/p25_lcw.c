@@ -60,16 +60,30 @@ p25_lcw_signed_offset_units(int sign_bit, int raw_offset) {
 
 static void
 p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac,
-                        int trans_off, uint8_t bw_vu) {
-    if (!state || iden < 0 || iden >= 16 || base_freq == 0 || chan_spac == 0) {
+                        int trans_off, uint8_t bw_vu, uint8_t flags) {
+    if (!state || iden < 0 || iden >= 16) {
+        return;
+    }
+    if (!dsd_p25_iden_params_usable(base_freq, chan_spac)) {
+        DSD_FPRINTF(stderr, " (unusable; not applied)");
+        return;
+    }
+    if (dsd_state_p25_iden_tdma_applies(state, iden)) {
+        DSD_FPRINTF(stderr, "; TDMA identifier, kept");
         return;
     }
 
     p25_invalidate_chan_map_for_iden(state, iden);
 
     p25_iden_entry_t* e = &state->p25_iden_fdma[iden];
+    const int provenance_applies =
+        (e->wacn == 0ULL && e->sysid == 0ULL) || (e->wacn == state->p2_wacn && e->sysid == state->p2_sysid);
+    if (!e->populated || (e->flags & P25_IDEN_F_UNTYPED) || !provenance_applies) {
+        flags |= P25_IDEN_F_UNTYPED;
+        e->chan_type = 1;
+    }
+    e->flags = flags;
     e->base_freq = base_freq;
-    e->chan_type = 1;
     e->chan_spac = chan_spac;
     e->trans_off = trans_off;
     e->bw_vu = bw_vu;
@@ -560,7 +574,7 @@ p25_lcw_handle_format_58(p25_lcw_ctx* ctx) {
     int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
     DSD_FPRINTF(stderr, " Channel Identifier Update; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %lld;", iden,
                 bw, trans_off, chan_spac, (long long)base * 5LL);
-    p25_lcw_store_fdma_iden(ctx->opts, ctx->state, iden, (long int)base, chan_spac, trans_off, 0);
+    p25_lcw_store_fdma_iden(ctx->opts, ctx->state, iden, (long int)base, chan_spac, trans_off, 0, 0);
 }
 
 static void
@@ -574,7 +588,8 @@ p25_lcw_handle_format_59(p25_lcw_ctx* ctx) {
     int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
     DSD_FPRINTF(stderr, " Channel Identifier Update VU; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %lld;",
                 iden, bw_vu, trans_off, chan_spac, (long long)base * 5LL);
-    p25_lcw_store_fdma_iden(ctx->opts, ctx->state, iden, (long int)base, chan_spac, trans_off, bw_vu);
+    p25_lcw_store_fdma_iden(ctx->opts, ctx->state, iden, (long int)base, chan_spac, trans_off, bw_vu,
+                            P25_IDEN_F_OFF_SPACING);
 }
 
 static void

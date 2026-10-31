@@ -2646,6 +2646,8 @@ add_executable(
     dsd-neo_test_ui_menu_services
     test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_frequency.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
@@ -6059,6 +6061,7 @@ add_test(NAME CORE_CSV_VALIDATE COMMAND dsd-neo_test_core_csv_validate)
 add_executable(
     dsd-neo_test_core_p25_bandplan_seed
     core/test_core_p25_bandplan_seed.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/p25/p25_frequency.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
 )
 target_include_directories(

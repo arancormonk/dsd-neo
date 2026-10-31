@@ -315,7 +315,7 @@ test_decoder_labels(void) {
     state.rf_mod = 0;
     rc |= expect_str("p2 lock c4fm after second press", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
                      "P25 Phase 2 modulation lock [C4FM]");
-    /* The CLI's -f3 spelling sets the flag without the profile lock; still a lock. */
+    /* The CLI's -m3 spelling sets the flag without the profile lock; still a lock. */
     opts.mod_p25p2_profile_lock = 0;
     opts.mod_p25p2_c4fm = 1;
     state.rf_mod = 1;

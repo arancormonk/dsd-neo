@@ -2751,6 +2751,10 @@ p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
                     iden, bw_vu, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
 
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            if (!dsd_p25_iden_params_usable(base_freq, chan_spac)) {
+                DSD_FPRINTF(stderr, " (unusable; not applied)");
+                goto BLOCK_END;
+            }
             state->p25_chan_iden = iden;
             p25_invalidate_chan_map_for_iden(state, iden);
 
@@ -2761,6 +2765,7 @@ p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
             e->chan_spac = chan_spac;
             e->trans_off = trans_off;
             e->bw_vu = (uint8_t)bw_vu;
+            e->flags = P25_IDEN_F_OFF_SPACING;
             e->trust = (state->p25_cc_freq != 0 && opts->trunk_is_tuned == 0) ? 2 : 1;
             e->populated = 1;
             e->wacn = state->p2_wacn;
@@ -2812,6 +2817,10 @@ p25p2_vpdu_iter_block_30(p25p2_vpdu_ctx* ctx) {
                     iden, bw, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
 
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            if (!dsd_p25_iden_params_usable(base_freq, chan_spac)) {
+                DSD_FPRINTF(stderr, " (unusable; not applied)");
+                goto BLOCK_END;
+            }
             state->p25_chan_iden = iden;
             p25_invalidate_chan_map_for_iden(state, iden);
 
@@ -2822,6 +2831,7 @@ p25p2_vpdu_iter_block_30(p25p2_vpdu_ctx* ctx) {
             e->chan_spac = chan_spac;
             e->trans_off = trans_off;
             e->bw_vu = 0;
+            e->flags = 0;
             e->trust = (state->p25_cc_freq != 0 && opts->trunk_is_tuned == 0) ? 2 : 1;
             e->populated = 1;
             e->wacn = state->p2_wacn;
@@ -2873,6 +2883,10 @@ p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
                     iden, chan_type, trans_off, chan_spac, base_freq, (long long)base_freq * 5);
 
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            if (!dsd_p25_iden_params_usable(base_freq, chan_spac)) {
+                DSD_FPRINTF(stderr, " (unusable; not applied)");
+                goto BLOCK_END;
+            }
             state->p25_chan_iden = iden;
             p25_invalidate_chan_map_for_iden(state, iden);
 
@@ -2883,6 +2897,8 @@ p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
             e->chan_type = chan_type; // from MAC payload (4-bit)
             e->chan_spac = chan_spac;
             e->trans_off = trans_off;
+            e->bw_vu = 0;
+            e->flags = P25_IDEN_F_OFF_SPACING;
             e->trust = (state->p25_cc_freq != 0 && opts->trunk_is_tuned == 0) ? 2 : 1;
             e->populated = 1;
             e->wacn = state->p2_wacn;
@@ -2890,6 +2906,9 @@ p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            if (is_tdma) {
+                (void)dsd_state_p25_iden_reconcile(state, iden);
+            }
             p25_resolve_pending_announcements(opts, state);
         }
     }
@@ -2902,6 +2921,11 @@ BLOCK_END:
 
     ctx->len_b = len_b;
     ctx->iter_idx = i;
+}
+
+static int
+p25p2_iden_other_system(const dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    return (state->p2_wacn != 0ULL || state->p2_sysid != 0ULL) && (state->p2_wacn != wacn || state->p2_sysid != sysid);
 }
 
 static void
@@ -2937,6 +2961,14 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n  WACN [%04X] SYSID [%04X]", lwacn, lsysid);
 
         if (p25p2_vpdu_system_tables_writable(ctx)) {
+            if (!dsd_p25_iden_params_usable(base_freq, chan_spac)) {
+                DSD_FPRINTF(stderr, " (unusable; not applied)");
+                goto BLOCK_END;
+            }
+            if (p25p2_iden_other_system(state, (unsigned long long)lwacn, (unsigned long long)lsysid)) {
+                DSD_FPRINTF(stderr, " (other system; not applied)");
+                goto BLOCK_END;
+            }
             state->p25_chan_iden = iden;
             p25_invalidate_chan_map_for_iden(state, iden);
 
@@ -2947,6 +2979,8 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
             e->chan_type = chan_type; // from MAC payload (4-bit)
             e->chan_spac = chan_spac;
             e->trans_off = trans_off;
+            e->bw_vu = 0;
+            e->flags = P25_IDEN_F_OFF_SPACING;
             e->trust = (state->p25_cc_freq != 0 && opts->trunk_is_tuned == 0
                         && state->p2_wacn == (unsigned long long)lwacn && state->p2_sysid == (unsigned long long)lsysid)
                            ? 2
@@ -2957,6 +2991,9 @@ p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
             e->rfss = state->p2_rfssid;
             e->site = state->p2_siteid;
             state->p25_chan_tdma_explicit[iden] |= is_tdma ? 2 : 1;
+            if (is_tdma) {
+                (void)dsd_state_p25_iden_reconcile(state, iden);
+            }
             p25_resolve_pending_announcements(opts, state);
         }
     }

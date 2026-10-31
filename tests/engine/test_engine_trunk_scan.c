@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <assert.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
@@ -8806,6 +8807,263 @@ test_p25_bandplan_export_collects_every_target(void) {
 }
 
 static int
+iden_check(const char* tag, long got, long want) {
+    if (got == want) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "FAIL %s: got %ld want %ld\n", tag, got, want);
+    return 1;
+}
+
+static int
+test_peer_untyped_order(int reverse, int occupied) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    char dir[DSD_TEST_PATH_MAX], path[DSD_TEST_PATH_MAX];
+    const char* targets = "a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n"
+                          "d,p25-trunk,854000000,,250,,\n";
+    assert(init_two_p25_targets(opts, state, targets, dir, sizeof dir, path, sizeof path) == 0);
+    int rc = 0;
+    for (int peer = 0; peer < 3; peer++) {
+        const int kind = reverse ? 2 - peer : peer;
+        p25_iden_entry_t* e = kind == 2 ? &state->p25_iden_tdma[4] : &state->p25_iden_fdma[4];
+        seed_iden_entry(e, kind == 0 ? 100 : 200, kind == 2 ? 3 : 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+        e->flags = kind == 0 ? P25_IDEN_F_UNTYPED : 0;
+        state->p25_chan_tdma_explicit[4] = kind == 2 ? 2 : 1;
+        if (kind == 1) {
+            seed_iden_entry(&state->p25_iden_fdma[5], 300, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+            seed_iden_entry(&state->p25_iden_fdma[6], 400, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+        }
+        trunk_scan_test_set_now(0.26 * (peer + 1));
+        dsd_engine_trunk_scan_tick(opts, state);
+        rc |= iden_check("T15 peer parked", (long)dsd_engine_trunk_scan_active_index(state), peer + 1);
+    }
+    if (occupied) {
+        seed_iden_entry(&state->p25_iden_fdma[4], 100, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+        state->p25_iden_fdma[4].flags = P25_IDEN_F_UNTYPED;
+        state->p25_chan_tdma_explicit[4] = 1;
+    }
+    seed_iden_entry(&state->p25_iden_fdma[6], 100, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+    state->p25_iden_fdma[6].flags = P25_IDEN_F_UNTYPED;
+    state->trunk_chan_map[0x4119] = 111;
+    state->trunk_chan_map[0x5001] = 222;
+    state->trunk_chan_map[0x6001] = 333;
+    state->p2_wacn = k_sys_a_wacn;
+    state->p2_sysid = k_sys_a_sysid;
+    trunk_scan_test_set_now(0.80);
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= iden_check("T15 typed peer wins", state->p25_iden_fdma[4].base_freq, 200);
+    rc |= iden_check("T15 TDMA peer shared", state->p25_iden_tdma[4].populated, 1);
+    rc |= iden_check("T15 both typed hints", state->p25_chan_tdma_explicit[4], 3);
+    rc |= iden_check("T15 occupied replacement map", state->trunk_chan_map[0x4119], occupied ? 0 : 111);
+    rc |= iden_check("T15 empty fill map", state->trunk_chan_map[0x5001], 222);
+    rc |= iden_check("T15 typed replaces occupied without TDMA", state->p25_iden_fdma[6].base_freq, 400);
+    rc |= iden_check("T15 replacement purges map", state->trunk_chan_map[0x6001], 0);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_peer_untyped_destinations(void) {
+    int rc = 0;
+    for (int reverse = 0; reverse < 2; reverse++) {
+        for (int occupied = 0; occupied < 2; occupied++) {
+            rc |= test_peer_untyped_order(reverse, occupied);
+        }
+    }
+    return rc;
+}
+
+static int
+test_peer_global_scopes(void) {
+    int rc = 0;
+    for (int mode = 0; mode < 4; mode++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+        dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+        assert(opts && state);
+        char dir[DSD_TEST_PATH_MAX], path[DSD_TEST_PATH_MAX];
+        assert(init_two_p25_targets(opts, state,
+                                    "a,p25-trunk,851000000,,250,,\n"
+                                    "b,p25-trunk,852000000,,250,,\n",
+                                    dir, sizeof dir, path, sizeof path)
+               == 0);
+        const int peer_tdma = mode == 1 || mode == 2;
+        p25_iden_entry_t* peer = peer_tdma ? &state->p25_iden_tdma[4] : &state->p25_iden_fdma[4];
+        seed_iden_entry(peer, 200, peer_tdma ? 3 : 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+        peer->flags = mode == 3 ? P25_IDEN_F_UNTYPED : 0;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (!peer_tdma) {
+            seed_iden_entry(&state->p25_iden_tdma[4], 300, 3, 0, 0, 1);
+            state->p25_chan_tdma_explicit[4] = 2;
+        }
+        if (mode < 3) {
+            seed_iden_entry(&state->p25_iden_fdma[4], 100, 1, 0, 0, 1);
+            state->p25_iden_fdma[4].flags = mode == 2 ? 0 : P25_IDEN_F_UNTYPED;
+            state->p25_chan_tdma_explicit[4] |= 1;
+        }
+        state->p2_wacn = k_sys_a_wacn;
+        state->p2_sysid = k_sys_a_sysid;
+        state->trunk_chan_map[0x4119] = 12345;
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        const long want_fdma[] = {200, 0, 100, 0};
+        rc |= iden_check("T15 global/scoped FDMA", state->p25_iden_fdma[4].base_freq, want_fdma[mode]);
+        rc |= iden_check("T15 global/scoped TDMA", state->p25_iden_tdma[4].base_freq, peer_tdma ? 200 : 300);
+        rc |= iden_check("T15 global/scoped cache", state->trunk_chan_map[0x4119], mode < 2 ? 0 : 12345);
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, path, NULL);
+        free(state);
+        free(opts);
+    }
+    return rc;
+}
+
+static int
+test_export_untyped_scope(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    dsd_state* back = (dsd_state*)calloc(1, sizeof *back);
+    assert(opts && state && back);
+    char dir[DSD_TEST_PATH_MAX], path[DSD_TEST_PATH_MAX], output[DSD_TEST_PATH_MAX];
+    assert(init_two_p25_targets(opts, state,
+                                "a,p25-trunk,851000000,,250,,\n"
+                                "b,p25-trunk,852000000,,250,,\n",
+                                dir, sizeof dir, path, sizeof path)
+           == 0);
+    int fd = dsd_test_mkstemp(output, sizeof output, "p25scope");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    seed_iden_entry(&state->p25_iden_fdma[4], 769006250 / 5, 1, k_sys_a_wacn, k_sys_a_sysid, 1);
+    state->p25_iden_fdma[4].flags = P25_IDEN_F_UNTYPED;
+    seed_iden_entry(&state->p25_iden_fdma[5], 769006250 / 5, 1, 0, 0, 1);
+    state->p25_iden_fdma[5].flags = P25_IDEN_F_UNTYPED;
+    seed_iden_entry(&state->p25_iden_tdma[6], 769006250 / 5, 3, 0, 0, 1);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    seed_iden_entry(&state->p25_iden_tdma[4], 769006250 / 5, 3, k_sys_a_wacn, k_sys_a_sysid, 2);
+    seed_iden_entry(&state->p25_iden_tdma[5], 769006250 / 5, 3, k_sys_a_wacn, k_sys_a_sysid, 2);
+    seed_iden_entry(&state->p25_iden_fdma[6], 769006250 / 5, 1, k_sys_a_wacn, k_sys_a_sysid, 1);
+    state->p25_iden_fdma[6].flags = P25_IDEN_F_UNTYPED;
+    int rc = iden_check("T16 scoped suppression export", dsd_engine_p25_bandplan_export(opts, state, output), 5);
+    rc |= iden_check("T16 roundtrip import", csvP25BandplanImportPath(output, back), 0);
+    rc |= iden_check("T16 global fallback retained", back->p25_iden_fdma[5].populated, 1);
+    rc |= iden_check("T16 global fallback untyped", !!(back->p25_iden_fdma[5].flags & P25_IDEN_F_UNTYPED), 1);
+    rc |= iden_check("T16 pause", dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE), 0);
+    rc |= iden_check("T16 paused export", dsd_engine_p25_bandplan_export(opts, state, output), 5);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    (void)remove(output);
+    free(opts);
+    free(state);
+    free(back);
+    return rc;
+}
+
+static int
+test_export_full_collection(void) {
+    p25_bandplan_row_t rows[64] = {0};
+    p25_iden_entry_t fdma[16] = {0}, tdma[16] = {0};
+    int count = 0, skipped = 0, rc = 0;
+    for (int system = 1; system <= 4; system++) {
+        for (int iden = 0; iden < 16; iden++) {
+            seed_iden_entry(&fdma[iden], 769006250 / 5, 1, 1, (unsigned)system, 1);
+            fdma[iden].flags = P25_IDEN_F_UNTYPED;
+        }
+        count = dsd_p25_bandplan_append_tables(rows, count, 64, fdma, NULL, &skipped);
+    }
+    DSD_MEMSET(fdma, 0, sizeof fdma);
+    seed_iden_entry(&fdma[0], 850000000 / 5, 1, 1, 1, 1);
+    count = dsd_p25_bandplan_append_tables(rows, count, 64, fdma, NULL, &skipped);
+    rc |= iden_check("T16 full typed replacement", rows[0].entry.base_freq, 850000000 / 5);
+    seed_iden_entry(&tdma[1], 769006250 / 5, 3, 1, 1, 1);
+    count = dsd_p25_bandplan_append_tables(rows, count, 64, NULL, tdma, &skipped);
+    rc |= iden_check("T16 full TDMA replaces fallback", rows[63].is_tdma, 1);
+    rc |= iden_check("T16 replacements do not overflow", skipped, 0);
+    rc |= iden_check("T16 remains full", count, 64);
+    seed_iden_entry(&fdma[0], 850000000 / 5, 1, 1, 5, 1);
+    for (int peer = 0; peer < 2; peer++) {
+        count = dsd_p25_bandplan_append_tables(rows, count, 64, fdma, NULL, &skipped);
+    }
+    rc |= iden_check("T16 repeated overflow counts entries", skipped, 2);
+    return rc;
+}
+
+static int
+test_export_overflow_warning_case(int overflow) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts && state);
+    char dir[DSD_TEST_PATH_MAX], path[DSD_TEST_PATH_MAX], output[DSD_TEST_PATH_MAX];
+    assert(init_two_p25_targets(opts, state,
+                                "a,p25-trunk,851000000,,250,,\n"
+                                "b,p25-trunk,852000000,,250,,\n"
+                                "c,p25-trunk,853000000,,250,,\n"
+                                "d,p25-trunk,854000000,,250,,\n"
+                                "e,p25-trunk,855000000,,250,,\n",
+                                dir, sizeof dir, path, sizeof path)
+           == 0);
+    int fd = dsd_test_mkstemp(output, sizeof output, "p25overflow");
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    for (int peer = 0; peer < 4; peer++) {
+        const int entries = peer < 2 ? 16 : 1;
+        for (int iden = 0; iden < entries; iden++) {
+            const unsigned system = peer < 2 ? (unsigned)peer + 1 : (overflow ? 3U : 1U);
+            seed_iden_entry(&state->p25_iden_fdma[iden], 769006250 / 5, 1, 1, system, 1);
+            if (!overflow && peer == 0 && iden == 0) {
+                state->p25_iden_fdma[iden].flags = P25_IDEN_F_UNTYPED;
+                // A different scope keeps this fallback beside TDMA in the full collection.
+                state->p25_iden_fdma[iden].sysid = 3;
+            } else if (!overflow && peer >= 2) {
+                state->p25_iden_fdma[iden].sysid = 3;
+            }
+            if (peer < 2) {
+                seed_iden_entry(&state->p25_iden_tdma[iden], 769006250 / 5, 3, 1, (unsigned)peer + 1, 1);
+            }
+        }
+        trunk_scan_test_set_now(0.26 * (peer + 1));
+        dsd_engine_trunk_scan_tick(opts, state);
+    }
+    dsd_test_capture_stderr cap;
+    const int capture_rc = dsd_test_capture_stderr_begin(&cap, "p25overflowlog");
+    assert(capture_rc == 0);
+    int rows = dsd_engine_p25_bandplan_export(opts, state, output);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[1024];
+    assert(dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    int rc = iden_check("T16 capped export", rows, 64);
+    const char* warning = "WARNING: P25 band plan export: 64-row limit reached; 2 more entries not written";
+    rc |= iden_check("T16 exact overflow warning", strstr(log, warning) != NULL, overflow);
+    if (!overflow) {
+        rc |= iden_check("T16 stronger replacement does not warn", strstr(log, "WARNING") != NULL, 0);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    (void)remove(output);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_export_overflow_warning(void) {
+    int rc = test_export_overflow_warning_case(1);
+    rc |= test_export_overflow_warning_case(0);
+    return rc;
+}
+
+static int
 run_with_default_tune_hook(int (*test_fn)(void)) {
     dsd_trunk_tuning_hooks hooks = {0};
     hooks.tune_to_cc_request = counting_tune_to_cc;
@@ -14767,7 +15025,7 @@ test_paused_scan_gates_every_consumer(void) {
     /* The export carries the paused target's tables, which are no longer live. */
     static p25_bandplan_row_t rows[8];
     if (state.p25_iden_fdma[1].populated != 0
-        || dsd_engine_trunk_scan_append_p25_idens(&state, rows, 0, (int)(sizeof rows / sizeof rows[0])) != 1
+        || dsd_engine_trunk_scan_append_p25_idens(&state, rows, 0, (int)(sizeof rows / sizeof rows[0]), NULL) != 1
         || rows[0].entry.wacn != k_sys_a_wacn) {
         DSD_FPRINTF(stderr, "gates: the export lost the paused target's IDENs\n");
         test_rc = 1;
@@ -15221,6 +15479,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_iq_replay_input);
     rc |= run_with_default_tune_hook(test_peer_idens_shared_by_system_identity);
+    rc |= run_with_default_tune_hook(test_peer_untyped_destinations);
+    rc |= run_with_default_tune_hook(test_peer_global_scopes);
+    rc |= run_with_default_tune_hook(test_export_untyped_scope);
+    rc |= test_export_full_collection();
+    rc |= run_with_default_tune_hook(test_export_overflow_warning);
     rc |= run_with_default_tune_hook(test_parser_accepts_p25_bandplan_csv_column);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_global_p25_bandplan);
     rc |= run_with_default_tune_hook(test_target_p25_bandplan_loads_and_survives_rotation);

@@ -17,7 +17,8 @@
  * 5 Hz steps, spacing in 125 Hz steps, the transmit offset in channel-spacing
  * steps for a VHF/UHF row (one that gives a bandwidth) or a TDMA row (both
  * IDEN_UP_VU and IDEN_UP_TDMA carry a 13-bit offset in spacing units) and
- * 250 kHz steps for a standard FDMA row (8-bit), and the bandwidth as the
+ * 250 kHz steps for a standard FDMA row (8-bit), falling back to spacing units
+ * when the standard encoding cannot hold its offset, and the bandwidth as the
  * 4-bit VU code (6250 -> 4, 12500 -> 5).
  * A row that names a WACN/SYS seeds only when the receiver is on that system.
  */
@@ -48,7 +49,6 @@ typedef struct {
 
 /* IDEN_UP field limits: 32-bit base, 10-bit spacing, 8-bit (standard) or 13-bit (VU) offset. */
 #define BP_BASE_UNIT_HZ         5ULL
-#define BP_BASE_MAX_UNITS       0xFFFFFFFFULL
 #define BP_SPACING_UNIT_HZ      125ULL
 #define BP_SPACING_MAX_UNITS    1023ULL
 #define BP_STD_OFFSET_UNIT_HZ   250000L
@@ -166,8 +166,9 @@ bp_parse_required(char** fields, size_t n, unsigned long long* iden, unsigned lo
         return 0;
     }
     if (!parse_dec_u64_strict(bp_cell(fields, n, 1), base_hz) || *base_hz == 0ULL || *base_hz % BP_BASE_UNIT_HZ != 0ULL
-        || *base_hz / BP_BASE_UNIT_HZ > BP_BASE_MAX_UNITS) {
-        *why = "base_hz must be a multiple of 5 Hz below 21474836475";
+        || *base_hz > (unsigned long long)DSD_TRUNK_FREQ_MAX_HZ
+        || !dsd_p25_iden_params_usable((long)(*base_hz / BP_BASE_UNIT_HZ), 1)) {
+        *why = "base_hz must be a multiple of 5 Hz in the range 5-2147483645";
         return 0;
     }
     if (!parse_dec_u64_strict(bp_cell(fields, n, 2), spacing_hz) || *spacing_hz == 0ULL
@@ -200,7 +201,12 @@ bp_parse_type_and_bw(char** fields, size_t n, const bp_header_cols* cols, unsign
  * the standard IDEN_UP an 8-bit one in 250 kHz units.
  */
 static int
-bp_parse_offset(char** fields, size_t n, const bp_header_cols* cols, unsigned long long spacing_hz, int spacing_units,
+bp_offset_fits(long hz, long unit, long limit) {
+    return hz % unit == 0L && hz / unit <= limit && hz / unit >= -limit;
+}
+
+static int
+bp_parse_offset(char** fields, size_t n, const bp_header_cols* cols, unsigned long long spacing_hz, int* spacing_units,
                 int* trans_off, const char** why) {
     long offset_hz = 0L;
     const char* off_s = bp_cell(fields, n, cols->offset_idx);
@@ -208,15 +214,16 @@ bp_parse_offset(char** fields, size_t n, const bp_header_cols* cols, unsigned lo
         *why = "tx_offset_hz must be a signed decimal";
         return 0;
     }
-    const long offset_unit = spacing_units ? (long)spacing_hz : BP_STD_OFFSET_UNIT_HZ;
-    const long offset_max = spacing_units ? BP_VU_OFFSET_MAX_UNITS : BP_STD_OFFSET_MAX_UNITS;
-    if (offset_hz % offset_unit != 0L || offset_hz / offset_unit > offset_max
-        || offset_hz / offset_unit < -offset_max) {
-        *why = spacing_units ? "tx_offset_hz must be a multiple of spacing_hz (VHF/UHF or TDMA row) within 8191 steps"
-                             : "tx_offset_hz must be a multiple of 250000 Hz within 255 steps";
+    if (!*spacing_units && bp_offset_fits(offset_hz, BP_STD_OFFSET_UNIT_HZ, BP_STD_OFFSET_MAX_UNITS)) {
+        *trans_off = (int)(offset_hz / BP_STD_OFFSET_UNIT_HZ);
+        return 1;
+    }
+    if (!bp_offset_fits(offset_hz, (long)spacing_hz, BP_VU_OFFSET_MAX_UNITS)) {
+        *why = "tx_offset_hz must fit 255 steps of 250000 Hz or 8191 steps of spacing_hz (VU/TDMA: spacing only)";
         return 0;
     }
-    *trans_off = (int)(offset_hz / offset_unit);
+    *spacing_units = 1;
+    *trans_off = (int)(offset_hz / (long)spacing_hz);
     return 1;
 }
 
@@ -260,7 +267,8 @@ bp_parse_row_fields(char** fields, size_t n, const bp_header_cols* cols, p25_ban
     }
     // Same rule as p25_channel_type_slots_per_carrier(): types 0-2 are one slot per carrier.
     const int is_tdma = (type & 0xFULL) > 2ULL;
-    if (!bp_parse_offset(fields, n, cols, spacing_hz, bw_vu != 0 || is_tdma, &trans_off, why)
+    int spacing_units = bw_vu != 0 || is_tdma;
+    if (!bp_parse_offset(fields, n, cols, spacing_hz, &spacing_units, &trans_off, why)
         || !bp_parse_system(fields, n, cols, &wacn, &sysid, why)) {
         return 0;
     }
@@ -273,6 +281,8 @@ bp_parse_row_fields(char** fields, size_t n, const bp_header_cols* cols, p25_ban
     row->entry.chan_type = (int)type;
     row->entry.trans_off = trans_off;
     row->entry.bw_vu = bw_vu;
+    row->entry.flags = (uint8_t)((spacing_units ? P25_IDEN_F_OFF_SPACING : 0U)
+                                 | (bp_cell(fields, n, cols->type_idx)[0] == '\0' ? P25_IDEN_F_UNTYPED : 0U));
     row->entry.trust = 1;
     row->entry.populated = 1;
     row->entry.wacn = wacn;
@@ -397,15 +407,19 @@ bp_write_rows(FILE* fp, const p25_bandplan_row_t* rows, int count) {
         const p25_iden_entry_t* e = &row->entry;
         const long long base_hz = (long long)e->base_freq * (long long)BP_BASE_UNIT_HZ;
         const long spacing_hz = (long)e->chan_spac * (long)BP_SPACING_UNIT_HZ;
-        const long offset_unit = (e->bw_vu != 0 || row->is_tdma) ? spacing_hz : BP_STD_OFFSET_UNIT_HZ;
+        const long offset_unit = (e->flags & P25_IDEN_F_OFF_SPACING) ? spacing_hz : BP_STD_OFFSET_UNIT_HZ;
         const long long offset_hz = (long long)e->trans_off * (long long)offset_unit;
+        char type[4] = "";
+        if (!(e->flags & P25_IDEN_F_UNTYPED)) {
+            DSD_SNPRINTF(type, sizeof type, "%d", e->chan_type & 0xF);
+        }
         int n;
         if (e->wacn != 0ULL || e->sysid != 0ULL) {
-            n = DSD_FPRINTF(fp, "%u,%lld,%ld,%d,%lld,%ld,%05llX,%03llX\n", (unsigned)row->iden, base_hz, spacing_hz,
-                            e->chan_type & 0xF, offset_hz, bp_bw_hz_from_code(e->bw_vu), e->wacn, e->sysid);
+            n = DSD_FPRINTF(fp, "%u,%lld,%ld,%s,%lld,%ld,%05llX,%03llX\n", (unsigned)row->iden, base_hz, spacing_hz,
+                            type, offset_hz, bp_bw_hz_from_code(e->bw_vu), e->wacn, e->sysid);
         } else {
-            n = DSD_FPRINTF(fp, "%u,%lld,%ld,%d,%lld,%ld,,\n", (unsigned)row->iden, base_hz, spacing_hz,
-                            e->chan_type & 0xF, offset_hz, bp_bw_hz_from_code(e->bw_vu));
+            n = DSD_FPRINTF(fp, "%u,%lld,%ld,%s,%lld,%ld,,\n", (unsigned)row->iden, base_hz, spacing_hz, type,
+                            offset_hz, bp_bw_hz_from_code(e->bw_vu));
         }
         if (n < 0) {
             return -1;

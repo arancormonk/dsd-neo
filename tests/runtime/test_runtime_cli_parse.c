@@ -8750,6 +8750,39 @@ test_src_csv_allowed_with_trunk_scan(void) {
 }
 
 static int
+test_p25_bandplan_manual_identity(void) {
+    const char* contents = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
+                           "4,769006250,12500,1,0,0,,\n"
+                           "4,850000000,6250,1,0,0,00001,001\n"
+                           "4,860000000,12500,1,0,0,00002,002\n";
+    char path[1024];
+    if (test_create_temp_csv_with_contents(contents, path, sizeof path) != 0) {
+        return 1;
+    }
+    int failed = 0;
+    for (int repeated = 0; repeated < 2; repeated++) {
+        const char* const single[] = {"dsd-neo", "--p25-bandplan", path, "-X", "00001001001", NULL};
+        const char* const twice[] = {"dsd-neo", "--p25-bandplan", path, "-X", "00001001001", "-X", "00002002002", NULL};
+        am_cli_run run;
+        if (am_cli_parse(repeated ? twice : single, 0, &run) != 0) {
+            (void)remove(path);
+            return 1;
+        }
+        const p25_iden_entry_t* e = &run.state->p25_iden_fdma[4];
+        const long want = repeated ? 860000000L : 850000000L;
+        if (run.rc != DSD_PARSE_CONTINUE || e->wacn != (unsigned)(repeated + 1) || e->sysid != (unsigned)(repeated + 1)
+            || e->base_freq * 5 != want) {
+            DSD_FPRINTF(stderr, "FAIL X%d scoped seed: WACN=%llX SYS=%llX frequency=%ld want=%ld\n", repeated + 1,
+                        e->wacn, e->sysid, e->base_freq * 5, want);
+            failed = 1;
+        }
+        am_cli_free(&run);
+    }
+    (void)remove(path);
+    return failed;
+}
+
+static int
 test_p25_bandplan_long_option_parse(void) {
     int test_rc = 0;
 
@@ -11211,6 +11244,7 @@ main(void) {
     rc |= test_src_csv_missing_file_returns_error();
     rc |= test_src_csv_missing_value_returns_error();
     rc |= test_src_csv_allowed_with_trunk_scan();
+    rc |= test_p25_bandplan_manual_identity();
     rc |= test_p25_bandplan_long_option_parse();
     rc |= test_p25_bandplan_missing_file_returns_error();
     rc |= test_p25_bandplan_missing_value_returns_error();
