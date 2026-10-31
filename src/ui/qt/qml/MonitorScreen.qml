@@ -1061,7 +1061,7 @@ Item {
                     visible: !screen.stripIdle
                     // With its tags, which sit beside it (issue #782); PRIVATE even where the line has no room
                     // to draw it, since the kind of call is not something to drop for a screen reader.
-                    Accessible.name: Accessible.ignored ? "" : [text, screen.otherPrivate || otherPrivateTag.visible ? Util.shownText(otherPrivateTag) : "", otherEmergencyTag.visible ? Util.shownText(otherEmergencyTag) : "", otherEncTag.visible ? Util.shownText(otherEncTag) : ""].filter(function (part) {
+                    Accessible.name: Accessible.ignored ? "" : [text, screen.otherPrivate || otherPrivateTag.visible ? otherPrivateTag.label : "", otherEmergencyTag.visible ? Util.shownText(otherEmergencyTag) : "", otherEncTag.visible ? Util.shownText(otherEncTag) : ""].filter(function (part) {
                         return part.length > 0;
                     }).join(", ")
                     anchors.left: otherSlotLabel.right
