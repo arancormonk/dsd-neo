@@ -11022,9 +11022,9 @@ first time its sheet takes the top with a screen reader on, never with the sheet
 node built hidden with each sheet raised a show and a hide under the window as its screen was built (three sheets
 doubled the Spectrum's first open under TalkBack; `tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`
 counts none). Its opacity is 0, so it is reported invisible (an item with no size is not: Qt measures it by its parent,
-the window), and it has no name. A covered panel is nameless, and headings and the controls that set `Accessible.focusable` are focusable
-only while in the tree, so a node TalkBack may still ask about offers nothing to stop on
-(`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
+the window), and it has no name. A covered panel is nameless, and headings and the controls that set
+`Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
+stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
