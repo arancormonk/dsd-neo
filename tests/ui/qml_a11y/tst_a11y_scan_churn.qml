@@ -515,5 +515,25 @@ Item {
             compare(noisy.length, 0, "hidden or closed parts that raised events over time: " + JSON.stringify(noisy) + " "
                     + JSON.stringify(counts.chains));
         }
+
+        // Issue #782: the Spectrum is built at once on its first open, screen reader or not. Building it raises a hide
+        // for each part created hidden, and Qt's Android bridge answers each with calls the main thread waits on, so
+        // the first open under TalkBack stalls (a Qt limit, android/README.md "Known limits"). Building it a slice at a
+        // time made the stall longer on a device (TalkBack refetched after every slice), so it is not: open, it is
+        // built and shown in the same turn, and what it puts in the tree is small.
+        function test_j_first_spectrum_open_builds_at_once() {
+            var loader = findChild(app, "spectrumLoader");
+            verify(loader !== null, "the spectrum's loader");
+            compare(loader.active, false, "the spectrum is not built yet");
+            verify(!loader.asynchronous, "it is built at once with a screen reader on");
+            findChild(app, "monitorScreen").openSpectrum();
+            compare(loader.status, Loader.Ready, "built in the same turn as the open");
+            compare(loader.opacity, 1, "and shown at once");
+            wait(50);
+            var nodes = testContext.accessibleNodesUnder(loader.item).filter(function (node) { return node.inTree; });
+            verify(nodes.length > 0 && nodes.length <= 20, nodes.length + " nodes in the tree when it shows");
+            app.spectrumOpen = false;
+            wait(20);
+        }
     }
 }

@@ -1526,8 +1526,16 @@ Window {
     // Built on first open, then kept. Its waterfall holds a full-resolution
     // history image, which is real memory to hand every user who never opens
     // the view — and rebuilding it on each visit would throw that history away.
+    //
+    // Built at once, screen reader or not (issue #782). Building it raises a
+    // hide for each part created hidden, and Qt's Android bridge answers each
+    // with calls into the Qt thread that Android's main thread waits on, so
+    // the first open under TalkBack stalls for a few seconds: a Qt limit
+    // (android/README.md "Known limits"). Building it a slice at a time made
+    // the stall longer on a device, as TalkBack refetched after each slice.
     Loader {
         id: spectrumLoader
+        objectName: "spectrumLoader"
 
         anchors.fill: safeArea
         active: false
