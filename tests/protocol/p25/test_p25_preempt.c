@@ -29,8 +29,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "test_support.h"
 #include "test_env.h"
+#include "test_support.h"
 
 #define CH_HELD   0x100A /* 851.1250 MHz */
 #define CH_OTHER  0x100B /* 851.1375 MHz */
