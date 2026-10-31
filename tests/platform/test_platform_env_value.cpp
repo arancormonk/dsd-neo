@@ -9,6 +9,7 @@
  * buffer, and a variable that is unset or hidden.
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/env.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,7 @@
 static void
 require(bool ok, const char* what) {
     if (!ok) {
-        fprintf(stderr, "PLATFORM_ENV_VALUE: %s\n", what);
+        DSD_FPRINTF(stderr, "PLATFORM_ENV_VALUE: %s\n", what);
         abort();
     }
 }
