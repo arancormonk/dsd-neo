@@ -2699,19 +2699,19 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   focus and take it back (`testContext.sendWindowFocus()`) and asks a button's set-focus action again
   (`testContext.focusAccessible()`, what Qt's bridge does for TalkBack): without `ScreenReaderFocusRelease` no Focus
   event follows (the control case, Qt's own behaviour), with it one does; a text field keeps its focus.
-  `tst_a11y_container_focus.qml` runs TalkBack's round trip from a control onto a container and back through the
-  set-focus action, where the node offers one (else the bridge lands the focus without asking Qt): Home's Listen
-  heading and its scrolling pane, the Monitor's Stop listening and its recent calls pane, the Network sheet's Done and
-  its panel and pane; the container takes the keyboard focus and the way back raises Focus.
+  `test_recent_calls_pane_is_no_focus_target` holds the Monitor's recent calls pane to no focus target: in the tree,
+  not focusable, no set-focus action, its header's parts swipe stops, and TalkBack's focus on it leaves the header
+  holding the keyboard focus (a focusable pane trapped backward swipes on the device; `docs/code_map.md`).
   `UI_QT_SCREEN_READER_STATE` checks the screen-reader state follows `QAccessible` on and off.
 - **Covered sheets, first Spectrum open.** `tst_a11y_closed_sheets.qml`'s `test_a_covered_sheet_leaves_the_tree`
   opens the Network sheet over the Site sheet, closes it and opens it again: nothing of the Site sheet is in the tree,
   focusable or named (`testContext.accessibleNodesUnder()` lists every node, in the tree or not), and each sheet's
   refresh node raised its hide or show under the window (`testContext.accessibleParentRole()`). The text walk's
   `test_3b_covered_sheet_leaves_the_tree` covers each sheet with another, every branch shown, and finds nothing of it
-  in the tree. `tst_a11y_scan_churn.qml`'s `test_j_first_spectrum_open_builds_over_turns` opens the Spectrum through
-  the monitor for the first time: built over several turns, out of sight until built, at most 20 nodes in the tree and
-  two shows or hides once shown. `P25_MOTOROLA_ALIAS`'s `test_held_call_keeps_its_names` holds an ended call on a
+  in the tree. `tst_a11y_scan_churn.qml`'s `test_j_first_spectrum_open_builds_at_once` opens the Spectrum through the
+  monitor for the first time with a screen reader on: the loader is not asynchronous, the screen is built and shown in
+  the same turn, and it puts at most 20 nodes in the tree. The first-open stall under TalkBack is a Qt limit, measured
+  on the emulator, not here. `P25_MOTOROLA_ALIAS`'s `test_held_call_keeps_its_names` holds an ended call on a
   labelled trunk-scan target and on a listed talkgroup: each is named while held as it was while active.
 - **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
   "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
@@ -2739,7 +2739,7 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   10 s is 40 updates over two 5 s periods): the Monitor's and Spectrum's readings, a recording's position, Signal
   Search's lines and the squelch readouts. Each node renames at least once, at most once a period over the measured
   time and once more, and at most a quarter as often as it is updated, then ends on the value on screen, while the text
-  on screen follows every update. The steps run at a 2 s period: a lost lock, a new scan target, a sync change, a call
+  on screen follows every update. The steps run at a 2 s period: a lost lock, a held scan, a sync change, a call
   ending, play, pause, a seek, the end of a part, a new hit, the squelch gate and a new squelch setting each rename
   within 100 ms. The harness cannot focus a node as TalkBack does, so every node is held to what a focused one needs.
   Other QML tests that read a paced name shorten the period in `initTestCase()` and restore it in
@@ -2753,7 +2753,10 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   more, ends on the current target, and a hold is heard at once. Case I retunes the canned spectrum
   (`testContext.setSpectrumCenterHz()`) over ten scan hops at the app's period: no focusable heading on the Monitor or
   the Spectrum is renamed, and no scale tick is in the tree. The site sheet's mixed-protocol hops
-  (`test_open_site_sheet_on_hops`) rename its heading 0 times.
+  (`test_open_site_sheet_on_hops`) rename its heading 0 times. Case K runs 50 scan hops at a tenth of the app's times
+  (30 ms apart, a 500 ms period, a 100 ms floor): the strip, the countdown, the hero, the Spectrum's status line and
+  readout, and the Signal & site description rename at most once a period and once more, end on the value on screen,
+  and a hold and then a lock are each heard at once.
   `tst_a11y_closed_sheets.qml`'s `test_open_site_sheet_on_hops` keeps the open site sheet to one rename per field group
   a hop and one hidden group per protocol change; `test_open_network_sheet_refreshes` gives the open Network sheet 10
   refreshes that change only the engine's last-seen times on 10 rows (no show, hide or rename), then one changed entry

@@ -10724,11 +10724,27 @@ Each run gives its setup, then what must hold:
   once when the scan is held or released.
 - **Stacked sheets (R-1).** Monitor → site row → Site sheet → Network → Back → Network again, then swipe through the
   Network sheet several times: only its own items are read, never the Site sheet's heading, buttons or lines.
-- **Container round trips (R-2).** On Home, swipe from the Listen heading back onto "Scrollable content" and forward
-  again; on the Monitor, from Stop listening onto "Recent calls" and back; on the Network sheet, from Done onto
-  "Dialog" and back. Each way back is heard at once, with no touch.
-- **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84: open the Spectrum for the first time. No
-  watchdog stall of 1.5 s or more; the screen appears when built and TalkBack reads it.
+- **Strip pace.** With TalkBack on the signal strip during a 300 ms dwell scan (Local84), it is read at most every 5 s,
+  not every second; the same for the countdown, the hero and "Signal & site". A hold or a lock is heard at once.
+- **Recent calls pane.** On the Monitor with the details open, swipe forward from "Lock out talkgroup and save": the
+  list header ("Signal & site", the site row, Decryption, the strip) is reached in order; swipe back up from "Signal &
+  site": no stop sticks.
+
+Observation runs: Qt 6.11.2 limits (below, and `android/README.md` "Known limits"), recorded on each bump to see
+whether the new Qt lifts them. A change in what they show is a reason to revisit the app's handling, not a failure.
+
+- **Container round trips (R-2).** On Home, swipe back from the Listen heading (onto the unnamed window node or
+  "Scrollable content") and forward again; on the Monitor, from Stop listening onto "Recent calls" and back; on the
+  Network sheet, from Done onto "Dialog" and back. Record which ways back stick until a touch. On 6.11.2 the Home case
+  sticks (`179bc9529` recheck 2).
+- **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84, `log.looper.<uid>.main.slow=30`: open the
+  Spectrum for the first time in three fresh launches. Record the watchdog stall and the main thread's messages of
+  30 ms or more in the 15 s after. On 6.11.2: stalls of 2.88 s and 3.08 s, 50–55 messages, 6.8 s in total
+  (`e32c05a36`, recheck 2).
+- **Newly shown controls.** In the key sheet, expand "Advanced: session direct override", then swipe forward once.
+  Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once.
+- **Window node.** Swipe forward past a screen's last item and back past its first. Record whether a silent stop
+  comes at the wrap. On 6.11.2 Android's host view is one, unnamed.
 
 ### Android screen modes
 
@@ -10980,14 +10996,20 @@ of the keyboard focus when the window gives its focus up, so the next focus acti
 its focus for the keyboard, so a field focused when a dialog opens can still hold TalkBack until a touch
 (`android/README.md` "Known limits"; `tst_a11y_focus_return.qml`).
 
-The same holds for TalkBack's swipe from a control onto a container and back. On a node without the set-focus action
-(not focusable) the bridge lands TalkBack's focus itself (`QtAccessibilityDelegate.performActionForVirtualViewId`'s
-fallback) and the keyboard focus stays on the control, so the way back changed nothing and TalkBack stuck there. The
-containers TalkBack lands on take the keyboard focus instead: a sheet's panel while it is the top sheet ("Dialog"),
-`PlexFlickable`'s panes ("Scrollable content") and the Monitor's recent calls pane are focusable while in the tree, none
-a Tab stop (`tst_a11y_container_focus.qml`). The node the bridge makes for the window itself, and Android's own host
-view, cannot take Qt's keyboard focus, so a swipe from a control onto one of those and back can still stick until a
-touch (`android/README.md` "Known limits").
+The same bridge behaviour makes a swipe onto a container and back stick, and that is left as a Qt 6.11.2 limit
+(`android/README.md` "Known limits"; an observation run in "Qt upgrade checks"). On a node without the set-focus action
+(a container: a sheet's panel, "Scrollable content", the recent calls pane; Android's own host view for the window,
+unnamed) the bridge lands TalkBack's focus itself (`QtAccessibilityDelegate.performActionForVirtualViewId`'s fallback)
+and Qt's keyboard focus stays on the control TalkBack left, so the swipe back onto that control changes nothing, raises
+nothing, and TalkBack stays until a touch. Making the containers take the keyboard focus was tried and made it worse on
+a device: the recent calls list is a focus scope that already holds the focus while a part of its header has it, so a
+backward swipe stuck on the pane, and TalkBack skipped the header going forward; and the window's node cannot take
+Qt's focus at all. So containers are not focusable (`tst_a11y_monitor_controls.qml`
+`test_recent_calls_pane_is_no_focus_target`). Two more bridge limits stay: a part that becomes visible on a
+disclosure is skipped by the first forward swipe after it, as its gate lifting raises ObjectCreated (`setIgnored`),
+which the bridge does not pass on, and its visibility changed while it was still out of the tree, so no show; and
+Android's host view, which the bridge builds without Qt's name for the window (`getNodeForView`), is a silent stop at
+the wrap of a swipe.
 
 A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
 screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an
@@ -11001,24 +11023,27 @@ only while in the tree, so a node TalkBack may still ask about offers nothing to
 (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
-`Accessible` properties are set, before its gate is evaluated. The bridge answers each with calls into the Qt thread
-made and waited on from Android's main thread, so a screen built in one go held the main thread for the whole build:
-the Spectrum's first open under TalkBack during a scan, 2.1–2.4 s. With a screen reader on, the Spectrum's loader is
-asynchronous (the window's incubation builds it a third of a frame at a time, the Qt thread serving the bridge between
-slices) and it shows once built (`tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_over_turns`). The hides
-themselves are Qt's and remain, each now waiting a slice of the build, not all of it.
+`Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
+calls into the Qt thread made and waited on from Android's main thread, and TalkBack refetches nodes after them, so the
+Spectrum's first open under TalkBack during a scan stalls the main thread: 2.88 s and 3.08 s on the emulator
+(`e32c05a36`; 50–55 messages of 30 ms or more, 6.8 s in total, in the 15 s after the open), and `main` stalls too. A Qt
+6.11.2 limit (`android/README.md` "Known limits"). Building it a slice at a time (an asynchronous loader) made it worse,
+4.35–4.88 s and 12.4–13.8 s of messages, as TalkBack refetched after each slice, so the Spectrum is built at once,
+screen reader or not (`tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`).
 
 A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node TalkBack
 has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an announcement, so a
 reading named by its live text would be read out on every tick. A reading that moves faster than every few seconds is
 named through `qml/SpeechPacer.qml`: its name catches up with the text on screen at most every 5 s, and at once on a
-meaningful step (a call starting or ending, a new scan target or carrier, a lock or sync change, the reading appearing
-or disappearing). The text on screen stays live, and nothing runs per tick: the pacer reads the reading only when its
-period or a step comes round, and runs only while the reading is shown. `LiveText` is a `ReadableText` named that way
-(`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set. Paced: the Monitor's reading
-groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call durations and "Signal & site"
-description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the Spectrum status line and readout,
-the recordings export progress text, SiteSheet's field groups (renamed once a rebuild is over, not once per row), a
+meaningful step (a call starting or ending, a lock or sync change, the reading appearing or disappearing, a scan held or
+released; off a scan, a new frequency). The text on screen stays live, and nothing runs per tick: the pacer reads the
+reading only when its period or a step comes round, and runs only while the reading is shown. `LiveText` is a
+`ReadableText` named that way (`step` says what is heard at once); a group takes a `SpeechPacer` with `group:` set.
+Paced: the Monitor's reading groups (`ReadingFlow`/`ReadingRow`, inline components), hero, scan timing line, call
+durations and "Signal & site" description (steps: `MonitorScreen.speechStep`; the squelch group adds the gate), the
+Spectrum status line and readout (a scan's hop is a step for none of these: `Util.tuneStep()` gives the tuning part of
+each step, whether the scan is held while one rotates, as the scan header's, else the frequency and target), the
+recordings export progress text, SiteSheet's field groups (renamed once a rebuild is over, not once per row), a
 recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
 seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
 detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
