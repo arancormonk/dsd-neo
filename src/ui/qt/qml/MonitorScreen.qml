@@ -2525,6 +2525,7 @@ Item {
             }
 
             OutlineButton {
+                id: holdTalkgroupButton
                 objectName: "holdTalkgroupButton"
                 x: liveActions.inset + (1 % liveActions.columns) * (liveActions.cell + liveActions.spacing)
                 y: Math.floor(1 / liveActions.columns) * (liveActions.cellHeight + liveActions.spacing)
@@ -2540,7 +2541,9 @@ Item {
                 commandToggle: true
                 // Callsigns and dial strings have no numeric talkgroup to hold.
                 enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
-                onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
+                // The state the press asked for (issue #782), not the engine's: a second press before the engine's
+                // state arrives is read as a release, so it sends one.
+                onClicked: commands.holdTalkgroup(holdTalkgroupButton.shownChecked ? screen.heroTgId : 0)
             }
 
             OutlineButton {

@@ -74,6 +74,24 @@ Item {
             compare(testContext.accessibleNode(hold).checked, false);
         }
 
+        // Hold TG sends the hold or release the press asks for, not one read from the engine's state: pressed twice
+        // before the engine's state arrives, it is read as held and then released, and the decoder is asked for the
+        // hold and then the release (twice "hold" read the engine's unchanged state).
+        function test_hold_tg_sends_the_state_asked_for() {
+            set({leadSlot: 1, slot1CallState: 2, slot1CallKind: 0, slot1TgText: "42", slot1TgId: 42, heldTg: 0});
+            var hold = findChild(monitor, "holdTalkgroupButton");
+            verify(hold !== null && hold.enabled);
+            var calls = testContext.holdCalls();
+            verify(testContext.pressAccessible(hold));
+            compare(testContext.accessibleNode(hold).checked, true);
+            compare(testContext.holdCalls(), calls + 1);
+            compare(testContext.lastHoldTg(), 42, "the hold is asked for");
+            verify(testContext.pressAccessible(hold));
+            compare(testContext.accessibleNode(hold).checked, false);
+            compare(testContext.holdCalls(), calls + 2);
+            compare(testContext.lastHoldTg(), 0, "and the release, as read out");
+        }
+
         // The recent calls pane holds the Monitor's list header ("Signal & site", the site row, the strip, the "Recent
         // calls" heading) above the calls. It is a container TalkBack may land on and pass through, never a node that
         // takes Qt's keyboard focus: a pane that took it (an earlier attempt to let TalkBack swipe back from it) trapped
