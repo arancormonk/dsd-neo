@@ -217,19 +217,22 @@ test_policy_and_heard_rows() {
            view.count() == 1 && view.data(view.index(0, 0), TalkgroupListModel::IdStartRole).toULongLong() == 1300);
     view.setFilterTag(QStringLiteral("fire"));
     expect("category match remains exact", view.count() == 0);
-    expect("a range filtered away has no row", view.rowForTalkgroup(1300) == -1);
+    expect("a range filtered away has no row", view.rowForTalkgroup(1300, 1399) == -1);
     view.setFilterTag(QString());
     view.setFilterText(QString());
     expect("each listed range is found at its view row", [&view]() {
         for (int i = 0; i < view.count(); ++i) {
-            const qulonglong first = view.data(view.index(i, 0), TalkgroupListModel::IdStartRole).toULongLong();
-            if (view.rowForTalkgroup(first) != i) {
+            const QModelIndex at = view.index(i, 0);
+            const qulonglong first = view.data(at, TalkgroupListModel::IdStartRole).toULongLong();
+            const qulonglong last = view.data(at, TalkgroupListModel::IdEndRole).toULongLong();
+            if (view.rowForTalkgroup(first, last) != i) {
                 return false;
             }
         }
         return view.count() > 0;
     }());
-    expect("a range that is not listed has no row", view.rowForTalkgroup(999999) == -1);
+    expect("a range that is not listed has no row", view.rowForTalkgroup(999999, 999999) == -1);
+    expect("a start with another end is another row", view.rowForTalkgroup(1300, 1300) == -1);
 
     changes = 0;
     DSD_SNPRINTF(fixture.opts->group_in_file, sizeof(fixture.opts->group_in_file), "groups.csv");
@@ -644,6 +647,33 @@ test_pattern_row_equality() {
     expect("another pattern resets the rows", resets == 1);
 }
 
+/* Issue #782: an exact row and a range can share a start ("Exact matches beat ranges"), so the Talkgroups screen
+ * finds the card it keeps the reader on by both bounds. */
+void
+test_filter_finds_a_row_by_both_bounds() {
+    Fixture fixture;
+    fixture.append(1200, 1299, "A", "Range", "");
+    fixture.append(1200, 1200, "A", "Exact", "");
+    fixture.append(1300, 1300, "A", "After", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    model.setHistorySession(history.session());
+    model.refresh(fixture.opts, fixture.state);
+    TalkgroupFilterModel view;
+    view.setSourceModel(&model);
+    expect("three listed rows", view.count() == 3);
+    const int exact = view.rowForTalkgroup(1200, 1200);
+    const int range = view.rowForTalkgroup(1200, 1299);
+    expect("the exact row and the range are different rows", exact >= 0 && range >= 0 && exact != range);
+    expect("the range is found at its own row",
+           view.data(view.index(range, 0), TalkgroupListModel::IdEndRole).toULongLong() == 1299
+               && view.data(view.index(range, 0), TalkgroupListModel::NameRole).toString() == QStringLiteral("Range"));
+    expect("the exact row is found at its own row",
+           view.data(view.index(exact, 0), TalkgroupListModel::IdEndRole).toULongLong() == 1200
+               && view.data(view.index(exact, 0), TalkgroupListModel::NameRole).toString() == QStringLiteral("Exact"));
+}
+
 } // namespace
 
 int
@@ -669,6 +699,7 @@ main(int argc, char** argv) {
     test_heard_rows_read_history_storage_directly();
     test_overlapping_ranges_cover_heard_talkgroups();
     test_pattern_rows();
+    test_filter_finds_a_row_by_both_bounds();
     test_catch_all_keeps_heard_talkgroups();
     test_catch_all_decides_heard_card_state();
     test_pattern_row_equality();
