@@ -810,7 +810,7 @@ test_p25p2_tracking_gain_honors_runtime_override_after_lock(void) {
  */
 static int
 expect_tetra_chain_gain(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
-    dsd_unsetenv("DSD_NEO_TED_GAIN");
+    dsd_test_unsetenv("DSD_NEO_TED_GAIN");
     dsd_neo_config_init();
     const int sps = 4;
     const int pairs = 64 * sps;
