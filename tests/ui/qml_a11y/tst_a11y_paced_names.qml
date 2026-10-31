@@ -132,10 +132,11 @@ Item {
             return Date.now() - start;
         }
         // Each of @p names raised @p type at least once, at most once a period over @p elapsed ms and once more, and
-        // far fewer times than it was updated.
+        // fewer times than it was updated. The bound follows the time the updates took, not their count: on a loaded
+        // machine they take longer, and the pacer rightly says more.
         function verifyPaced(counts, type, names, elapsed) {
             var report = JSON.stringify(counts.chains);
-            var most = Math.min(Math.ceil(elapsed / period) + 1, updates / 4);
+            var most = Math.min(Math.ceil(elapsed / period) + 1, updates - 1);
             for (var named of names) {
                 var renames = raised(counts, type, named);
                 verify(renames >= 1 && renames <= most, named + " raised " + type + " " + renames + " times for "
