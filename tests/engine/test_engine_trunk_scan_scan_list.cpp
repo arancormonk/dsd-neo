@@ -418,8 +418,9 @@ mixedAnalogRotation() {
     QFile file(dir.path() + "/mixed.csv");
     check(file.open(QIODevice::WriteOnly));
     check(file.write(generated.csv) == generated.csv.size());
-    file.write("fire,nfm-conventional,155475000,,,,,,,,,,--nfm-bandwidth-hz 12500\n");
-    file.write("plant,dmr-conventional,461112500,,,,,,,,,,\n");
+    // Rows in the generated header's order: an empty label, then the options.
+    file.write("fire,nfm-conventional,155475000,,,,,,,,,,,--nfm-bandwidth-hz 12500\n");
+    file.write("plant,dmr-conventional,461112500,,,,,,,,,,,\n");
     file.close();
 
     FakeRigctlPeer peer;
