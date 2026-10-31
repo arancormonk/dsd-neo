@@ -1526,13 +1526,22 @@ Window {
     // Built on first open, then kept. Its waterfall holds a full-resolution
     // history image, which is real memory to hand every user who never opens
     // the view — and rebuilding it on each visit would throw that history away.
+    //
+    // With a screen reader on, it is built over several event-loop turns
+    // (issue #782). Qt's Android bridge answers TalkBack on the Qt thread and
+    // waits for the answer on Android's main thread; built in one go, the
+    // screen kept the Qt thread for the whole build, and the first open under
+    // TalkBack during a scan held the main thread for over two seconds. It
+    // shows once it is built.
     Loader {
         id: spectrumLoader
+        objectName: "spectrumLoader"
 
         anchors.fill: safeArea
         active: false
+        asynchronous: screenReader.active
         sourceComponent: spectrumScreen
-        opacity: mainRoot.monitorMode && mainRoot.spectrumOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
+        opacity: mainRoot.monitorMode && mainRoot.spectrumOpen && !mainRoot.wizardOpen && status === Loader.Ready ? 1.0 : 0.0
         visible: opacity > 0.0
         // The wizard can now open over a running session ("Save as a system"), and
         // TapHandlers never take exclusive grabs — without this, a tap meant for a

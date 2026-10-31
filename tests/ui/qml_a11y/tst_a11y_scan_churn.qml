@@ -515,5 +515,33 @@ Item {
             compare(noisy.length, 0, "hidden or closed parts that raised events over time: " + JSON.stringify(noisy) + " "
                     + JSON.stringify(counts.chains));
         }
+
+        // Issue #782: the Spectrum's first open under TalkBack during a scan held Android's main thread for over two
+        // seconds. Building the screen raises a hide for each accessible item created hidden (Qt makes an item
+        // accessible as its Accessible properties are set, before its gate is evaluated), and the bridge answers each
+        // with calls it makes into the Qt thread and waits on from the main thread, while the Qt thread is still
+        // building. With a screen reader on, the screen is built over several event-loop turns (the window's
+        // incubation, a third of a frame at a time), so each of those calls waits a slice of the build, not all of it;
+        // it is out of sight until it is built, and showing it then raises next to nothing.
+        function test_j_first_spectrum_open_builds_over_turns() {
+            var loader = findChild(app, "spectrumLoader");
+            verify(loader !== null, "the spectrum's loader");
+            compare(loader.active, false, "the spectrum is not built yet");
+            verify(loader.asynchronous, "with a screen reader on it builds over several turns");
+            findChild(app, "monitorScreen").openSpectrum();
+            verify(loader.status !== Loader.Ready, "not built in one go");
+            compare(loader.opacity, 0, "and out of sight while it builds");
+            tryCompare(loader, "status", Loader.Ready, 5000);
+            testContext.startAccessibilityCount();
+            tryCompare(loader, "opacity", 1);
+            wait(50);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var nodes = testContext.accessibleNodesUnder(loader.item).filter(function (node) { return node.inTree; });
+            verify(nodes.length > 0 && nodes.length <= 20, nodes.length + " nodes in the tree when it shows");
+            verify(typed(counts, "ObjectShow") + typed(counts, "ObjectHide") <= 2, "showing it raised: " + churn(counts));
+            app.spectrumOpen = false;
+            wait(20);
+        }
     }
 }
