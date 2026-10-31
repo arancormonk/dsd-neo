@@ -2699,7 +2699,20 @@ ctest --preset dev-debug -R '^UI_QT_QML_A11Y_CHURN$' --output-on-failure
   focus and take it back (`testContext.sendWindowFocus()`) and asks a button's set-focus action again
   (`testContext.focusAccessible()`, what Qt's bridge does for TalkBack): without `ScreenReaderFocusRelease` no Focus
   event follows (the control case, Qt's own behaviour), with it one does; a text field keeps its focus.
+  `tst_a11y_container_focus.qml` runs TalkBack's round trip from a control onto a container and back through the
+  set-focus action, where the node offers one (else the bridge lands the focus without asking Qt): Home's Listen
+  heading and its scrolling pane, the Monitor's Stop listening and its recent calls pane, the Network sheet's Done and
+  its panel and pane; the container takes the keyboard focus and the way back raises Focus.
   `UI_QT_SCREEN_READER_STATE` checks the screen-reader state follows `QAccessible` on and off.
+- **Covered sheets, first Spectrum open.** `tst_a11y_closed_sheets.qml`'s `test_a_covered_sheet_leaves_the_tree`
+  opens the Network sheet over the Site sheet, closes it and opens it again: nothing of the Site sheet is in the tree,
+  focusable or named (`testContext.accessibleNodesUnder()` lists every node, in the tree or not), and each sheet's
+  refresh node raised its hide or show under the window (`testContext.accessibleParentRole()`). The text walk's
+  `test_3b_covered_sheet_leaves_the_tree` covers each sheet with another, every branch shown, and finds nothing of it
+  in the tree. `tst_a11y_scan_churn.qml`'s `test_j_first_spectrum_open_builds_over_turns` opens the Spectrum through
+  the monitor for the first time: built over several turns, out of sight until built, at most 20 nodes in the tree and
+  two shows or hides once shown. `P25_MOTOROLA_ALIAS`'s `test_held_call_keeps_its_names` holds an ended call on a
+  labelled trunk-scan target and on a listed talkgroup: each is named while held as it was while active.
 - **Text reach.** `tst_a11y_text_reach.qml` checks that TalkBack can read every visible word (`docs/code_map.md`,
   "Qt QML editing convention"). `testContext.unreachedTexts(root, skipped)` walks the visible, unfaded `Text` items
   under `root` (subtrees in `skipped` left out) and reports each whose words (letters and digits, lower-cased) are not

@@ -1522,6 +1522,18 @@ module behind it, so androiddeployqt has nothing extra to package.
   a button's or a row's keyboard focus while the window is behind the dialog, so
   TalkBack comes back at once; a text field keeps its focus for the keyboard, so on a
   field TalkBack can still stay put until the screen is touched.
+- **TalkBack can stay on a control after a swipe onto the window itself** (#782). The
+  same Qt behaviour: a swipe from a control onto a node that cannot take Qt's keyboard
+  focus leaves the control holding it, and the swipe back gets no answer. The app's
+  own containers (a sheet's panel, a scrolling pane, the recent calls list) take the
+  keyboard focus when TalkBack lands on them, so the way back works; the node for the
+  window as a whole, and Android's own view behind it, cannot, so a swipe onto one of
+  those and back can still need a touch.
+- **The first Spectrum open with TalkBack on can be slow** (#782). Building a screen
+  makes Qt send TalkBack a note for each hidden part, and Android waits for the app
+  on each. The Spectrum is built a slice at a time when TalkBack is on, so the wait
+  is spread out rather than one stall; its first open can still take a moment
+  longer than later ones.
 - **TalkBack reads the Network sheet in a fixed order** (#782). With TalkBack on,
   each section lists its entries by frequency, SGID or radio ID rather than most
   recent first: Qt tells TalkBack nothing when rows change places, and a list that

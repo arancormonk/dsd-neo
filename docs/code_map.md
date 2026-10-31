@@ -1426,8 +1426,11 @@ suite runs under this compiler.
   the talker without a source-table search per render. The row's target label is cached beside it when the row
   commits (`target_label`, keyed by `target_label_id`, the call's OTA target else its policy target; issue #773 B11),
   and `cached_group_name()` names an ENDED call from it once the staged row no longer matches; a textual target keeps
-  its text. Tests: `APP_CONTROL_CALL_VIEW` (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY`
-  (`test_commit_caches_target_label`), `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`).
+  its text. The row's channel label is cached the same way (`channel_label`, keyed by `channel_label_epoch`; issue
+  #782), so a held call with no name of its own is still named for the channel it was heard on (a held call on a
+  labelled trunk-scan target read "TG <n>" for the hold before). Tests: `APP_CONTROL_CALL_VIEW`
+  (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY` (`test_commit_caches_target_label`),
+  `P25_MOTOROLA_ALIAS` (`test_ended_hold_names_the_group`, `test_held_call_keeps_its_names`).
   Tests: `P25_MOTOROLA_ALIAS` (real LCW and MAC dispatch),
   `DMR_TALKER_ALIAS_HEADER_LEN` (store bounds and isolation).
 - API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
@@ -10719,6 +10722,13 @@ Each run gives its setup, then what must hold:
   state ("on" when it holds), matching the header's HOLD.
 - **Scan header.** With TalkBack on the scan header during a 300 ms dwell scan, it is read at most every 5 s, and at
   once when the scan is held or released.
+- **Stacked sheets (R-1).** Monitor → site row → Site sheet → Network → Back → Network again, then swipe through the
+  Network sheet several times: only its own items are read, never the Site sheet's heading, buttons or lines.
+- **Container round trips (R-2).** On Home, swipe from the Listen heading back onto "Scrollable content" and forward
+  again; on the Monitor, from Stop listening onto "Recent calls" and back; on the Network sheet, from Done onto
+  "Dialog" and back. Each way back is heard at once, with no touch.
+- **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84: open the Spectrum for the first time. No
+  watchdog stall of 1.5 s or more; the screen appears when built and TalkBack reads it.
 
 ### Android screen modes
 
@@ -10969,6 +10979,34 @@ asks again until a touch. `qml/ScreenReaderFocusRelease.qml` (in `Main.qml`, on 
 of the keyboard focus when the window gives its focus up, so the next focus action is a real change; a text field keeps
 its focus for the keyboard, so a field focused when a dialog opens can still hold TalkBack until a touch
 (`android/README.md` "Known limits"; `tst_a11y_focus_return.qml`).
+
+The same holds for TalkBack's swipe from a control onto a container and back. On a node without the set-focus action
+(not focusable) the bridge lands TalkBack's focus itself (`QtAccessibilityDelegate.performActionForVirtualViewId`'s
+fallback) and the keyboard focus stays on the control, so the way back changed nothing and TalkBack stuck there. The
+containers TalkBack lands on take the keyboard focus instead: a sheet's panel while it is the top sheet ("Dialog"),
+`PlexFlickable`'s panes ("Scrollable content") and the Monitor's recent calls pane are focusable while in the tree, none
+a Tab stop (`tst_a11y_container_focus.qml`). The node the bridge makes for the window itself, and Android's own host
+view, cannot take Qt's keyboard focus, so a swipe from a control onto one of those and back can still stick until a
+touch (`android/README.md` "Known limits").
+
+A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
+screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an
+ungated part over its ignored panel, and it stayed reachable under the top sheet (the text walk's covered-sheet case).
+Leaving the tree raises only ObjectDestroyed, which Android's bridge does not pass on, and a sheet opening raises no
+show (its parts are still out of the tree as they become visible), so each `ModalSheet` has a refresh node under the
+window's content item, never out of the tree, that shows and hides with the sheet's turn on top; the bridge passes that
+on as a change to the window's whole subtree, and TalkBack reads it again without the covered sheet. It has no size
+and no name. A covered panel is nameless, and headings and the controls that set `Accessible.focusable` are focusable
+only while in the tree, so a node TalkBack may still ask about offers nothing to stop on
+(`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
+
+Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
+`Accessible` properties are set, before its gate is evaluated. The bridge answers each with calls into the Qt thread
+made and waited on from Android's main thread, so a screen built in one go held the main thread for the whole build:
+the Spectrum's first open under TalkBack during a scan, 2.1–2.4 s. With a screen reader on, the Spectrum's loader is
+asynchronous (the window's incubation builds it a third of a frame at a time, the Qt thread serving the bridge between
+slices) and it shows once built (`tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_over_turns`). The hides
+themselves are Qt's and remain, each now waiting a slice of the build, not all of it.
 
 A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node TalkBack
 has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an announcement, so a
