@@ -519,8 +519,8 @@ Item {
         // Issue #782: the Spectrum is built at once on its first open, screen reader or not. Building it raises a hide
         // for each part created hidden, and Qt's Android bridge answers each with calls the main thread waits on, so
         // the first open under TalkBack stalls (a Qt limit, android/README.md "Known limits"). Building it a slice at a
-        // time made the stall longer on a device (TalkBack refetched after every slice), so it is not: open, it is
-        // built and shown in the same turn, and what it puts in the tree is small.
+        // time did not shorten the stall on a device, so it is not: open, it is built and shown in the same turn, and
+        // what it puts in the tree is small.
         function test_j_first_spectrum_open_builds_at_once() {
             var loader = findChild(app, "spectrumLoader");
             verify(loader !== null, "the spectrum's loader");

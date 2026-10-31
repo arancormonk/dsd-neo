@@ -1531,9 +1531,11 @@ module behind it, so androiddeployqt has nothing extra to package.
   swipes stick.
 - **The first Spectrum open with TalkBack on stalls for a few seconds** (#782).
   Building the screen makes Qt tell TalkBack about each hidden part, and Android's
-  main thread waits on the app for each answer: about 3 seconds on an emulator
-  (2.9–3.1 s), and earlier versions stall too. Later opens are quick. Building the
-  screen a piece at a time made the wait longer, so it is built at once.
+  main thread waits on the app for each answer: about 2 seconds on an emulator
+  (2.1–2.4 s), and earlier versions stall too. The first start after installing the
+  app on a freshly booted phone can wait much longer (26 s once on an emulator).
+  Later opens are quick. Building the screen a piece at a time did not shorten the
+  wait, so it is built at once.
 - **TalkBack can skip controls a disclosure has just shown** (#782). Right after
   expanding a section (the key sheet's "Advanced: session direct override") or
   adding a row, the first forward swipe can pass the new controls; Qt tells TalkBack

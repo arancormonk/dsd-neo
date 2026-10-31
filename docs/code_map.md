@@ -10739,8 +10739,8 @@ whether the new Qt lifts them. A change in what they show is a reason to revisit
   sticks (`179bc9529` recheck 2).
 - **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84, `log.looper.<uid>.main.slow=30`: open the
   Spectrum for the first time in three fresh launches. Record the watchdog stall and the main thread's messages of
-  30 ms or more in the 15 s after. On 6.11.2: stalls of 2.88 s and 3.08 s, 50–55 messages, 6.8 s in total
-  (`e32c05a36`, recheck 2).
+  30 ms or more in the 15 s after. On 6.11.2: stalls of 2.09 s and 2.36 s, 41–48 messages, 5.6–5.9 s in total
+  (`0b4f38981`); the first start after an install on a cold boot stalled 26.4 s.
 - **Newly shown controls.** In the key sheet, expand "Advanced: session direct override", then swipe forward once.
   Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once.
 - **Window node.** Swipe forward past a screen's last item and back past its first. Record whether a silent stop
@@ -11029,11 +11029,12 @@ stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
 calls into the Qt thread made and waited on from Android's main thread, and TalkBack refetches nodes after them, so the
-Spectrum's first open under TalkBack during a scan stalls the main thread: 2.88 s and 3.08 s on the emulator
-(`e32c05a36`; 50–55 messages of 30 ms or more, 6.8 s in total, in the 15 s after the open), and `main` stalls too. A Qt
-6.11.2 limit (`android/README.md` "Known limits"). Building it a slice at a time (an asynchronous loader) made it worse,
-4.35–4.88 s and 12.4–13.8 s of messages, as TalkBack refetched after each slice, so the Spectrum is built at once,
-screen reader or not (`tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`).
+Spectrum's first open under TalkBack during a scan stalls the main thread: 2.09 s and 2.36 s on the emulator
+(`0b4f38981`; 41–48 messages of 30 ms or more, 5.6–5.9 s in total, in the 15 s after the open; 26.4 s on the first
+start after an install on a cold boot), and `main` stalls too. A Qt 6.11.2 limit (`android/README.md` "Known limits").
+Building it a slice at a time (an asynchronous loader) did not shorten it (4.35–4.88 s, against 3.93–5.21 s built at
+once on the same build, both before the refresh node above was made only on a sheet's first top turn), so the Spectrum
+is built at once, screen reader or not (`tst_a11y_scan_churn.qml` `test_j_first_spectrum_open_builds_at_once`).
 
 A live value is never a live region. Qt's bridge forwards a NameChanged or DescriptionChanged only for the node TalkBack
 has focused (`QtAccessibilityDelegate.notifyDescriptionOrNameChanged`), where it is spoken as an announcement, so a

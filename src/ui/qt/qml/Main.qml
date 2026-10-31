@@ -1531,8 +1531,8 @@ Window {
     // hide for each part created hidden, and Qt's Android bridge answers each
     // with calls into the Qt thread that Android's main thread waits on, so
     // the first open under TalkBack stalls for a few seconds: a Qt limit
-    // (android/README.md "Known limits"). Building it a slice at a time made
-    // the stall longer on a device, as TalkBack refetched after each slice.
+    // (android/README.md "Known limits"). Building it a slice at a time did
+    // not shorten the stall on a device.
     Loader {
         id: spectrumLoader
         objectName: "spectrumLoader"
